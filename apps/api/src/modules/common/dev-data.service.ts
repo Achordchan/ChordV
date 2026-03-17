@@ -11,7 +11,9 @@ import {
   mockUser
 } from "@chordv/shared";
 import type {
+  AdminPanelConfigDto,
   AdminSnapshotDto,
+  AdminSubscriptionRecordDto,
   AnnouncementDto,
   AuthSessionDto,
   ClientBootstrapDto,
@@ -21,7 +23,10 @@ import type {
   PanelSyncRunDto,
   PanelSyncStatusDto,
   PolicyBundleDto,
+  SubscriptionState,
   SubscriptionStatusDto,
+  UpdatePanelInputDto,
+  UpdateSubscriptionInputDto,
   UserProfileDto
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
@@ -193,9 +198,77 @@ export class DevDataService implements OnModuleInit {
     }));
   }
 
+  async getAdminPanels(): Promise<AdminPanelConfigDto[]> {
+    const rows = await this.prisma.panel.findMany({
+      orderBy: { name: "asc" }
+    });
+
+    return rows.map((row) => ({
+      panelId: row.id,
+      name: row.name,
+      baseUrl: row.baseUrl,
+      apiBasePath: row.apiBasePath,
+      username: row.username,
+      syncEnabled: row.syncEnabled,
+      health: row.health,
+      lastSyncedAt: row.lastSyncedAt.toISOString(),
+      latencyMs: row.latencyMs,
+      activeUsers: row.activeUsers
+    }));
+  }
+
+  async updatePanel(panelId: string, input: UpdatePanelInputDto): Promise<AdminPanelConfigDto> {
+    const panel = await this.prisma.panel.findUnique({
+      where: { id: panelId }
+    });
+
+    if (!panel) {
+      throw new NotFoundException("Panel not found");
+    }
+
+    const updated = await this.prisma.panel.update({
+      where: { id: panelId },
+      data: {
+        name: input.name ?? panel.name,
+        baseUrl: input.baseUrl ?? panel.baseUrl,
+        apiBasePath: input.apiBasePath ?? panel.apiBasePath,
+        username: input.username === undefined ? panel.username : normalizeNullableString(input.username),
+        password: input.password === undefined ? panel.password : normalizeNullableString(input.password),
+        syncEnabled: input.syncEnabled ?? panel.syncEnabled
+      }
+    });
+
+    return {
+      panelId: updated.id,
+      name: updated.name,
+      baseUrl: updated.baseUrl,
+      apiBasePath: updated.apiBasePath,
+      username: updated.username,
+      syncEnabled: updated.syncEnabled,
+      health: updated.health,
+      lastSyncedAt: updated.lastSyncedAt.toISOString(),
+      latencyMs: updated.latencyMs,
+      activeUsers: updated.activeUsers
+    };
+  }
+
   async synchronizePanels(): Promise<PanelSyncRunDto[]> {
+    return this.synchronizePanelsByIds();
+  }
+
+  async synchronizePanel(panelId: string): Promise<PanelSyncRunDto> {
+    const [result] = await this.synchronizePanelsByIds([panelId]);
+
+    if (!result) {
+      throw new NotFoundException("Panel not found");
+    }
+
+    return result;
+  }
+
+  private async synchronizePanelsByIds(panelIds?: string[]): Promise<PanelSyncRunDto[]> {
     const panels = await this.prisma.panel.findMany({
-      where: { syncEnabled: true },
+      where: panelIds ? { id: { in: panelIds } } : { syncEnabled: true },
       orderBy: { name: "asc" }
     });
 
@@ -259,9 +332,9 @@ export class DevDataService implements OnModuleInit {
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
     const [users, subscriptions, nodes, panels, announcements] = await Promise.all([
       this.getUsers(),
-      this.getSubscriptions(),
+      this.getAdminSubscriptions(),
       this.getNodes(),
-      this.getPanels(),
+      this.getAdminPanels(),
       this.getAnnouncements()
     ]);
 
@@ -339,15 +412,88 @@ export class DevDataService implements OnModuleInit {
     return rows.map(toUserProfile);
   }
 
-  private async getSubscriptions(): Promise<SubscriptionStatusDto[]> {
+  async getAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
     const rows = await this.prisma.subscription.findMany({
       include: {
-        plan: true
+        plan: true,
+        user: true
       },
       orderBy: { createdAt: "asc" }
     });
 
-    return rows.map((row) => toSubscriptionDto(row, row.plan.name));
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      userEmail: row.user.email,
+      userDisplayName: row.user.displayName,
+      planId: row.planId,
+      planName: row.plan.name,
+      panelClientEmail: row.panelClientEmail,
+      totalTrafficGb: row.totalTrafficGb,
+      usedTrafficGb: row.usedTrafficGb,
+      remainingTrafficGb: row.remainingTrafficGb,
+      expireAt: row.expireAt.toISOString(),
+      state: row.state,
+      renewable: row.renewable,
+      lastSyncedAt: row.lastSyncedAt.toISOString()
+    }));
+  }
+
+  async updateSubscription(
+    subscriptionId: string,
+    input: UpdateSubscriptionInputDto
+  ): Promise<AdminSubscriptionRecordDto> {
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      include: {
+        plan: true,
+        user: true
+      }
+    });
+
+    if (!subscription) {
+      throw new NotFoundException("Subscription not found");
+    }
+
+    const totalTrafficGb = input.totalTrafficGb ?? subscription.totalTrafficGb;
+    const usedTrafficGb = subscription.usedTrafficGb;
+    const remainingTrafficGb = Math.max(0, Number((totalTrafficGb - usedTrafficGb).toFixed(2)));
+    const expireAt = input.expireAt ? new Date(input.expireAt) : subscription.expireAt;
+    const state = (input.state ?? deriveSubscriptionState(remainingTrafficGb, expireAt)) as SubscriptionState;
+
+    const updated = await this.prisma.subscription.update({
+      where: { id: subscriptionId },
+      data: {
+        panelClientEmail:
+          input.panelClientEmail === undefined ? subscription.panelClientEmail : normalizeNullableString(input.panelClientEmail),
+        totalTrafficGb,
+        remainingTrafficGb,
+        expireAt,
+        state,
+        renewable: input.renewable ?? subscription.renewable
+      },
+      include: {
+        plan: true,
+        user: true
+      }
+    });
+
+    return {
+      id: updated.id,
+      userId: updated.userId,
+      userEmail: updated.user.email,
+      userDisplayName: updated.user.displayName,
+      planId: updated.planId,
+      planName: updated.plan.name,
+      panelClientEmail: updated.panelClientEmail,
+      totalTrafficGb: updated.totalTrafficGb,
+      usedTrafficGb: updated.usedTrafficGb,
+      remainingTrafficGb: updated.remainingTrafficGb,
+      expireAt: updated.expireAt.toISOString(),
+      state: updated.state,
+      renewable: updated.renewable,
+      lastSyncedAt: updated.lastSyncedAt.toISOString()
+    };
   }
 
   private async getSubscriptionForUser(userId: string): Promise<SubscriptionStatusDto> {
@@ -796,6 +942,15 @@ function detokenize(value: string) {
 function tryEmailFromToken(token: string) {
   const raw = token.replace("Bearer ", "").replace("access_", "").trim();
   return raw ? detokenize(raw) : null;
+}
+
+function normalizeNullableString(value: string | null) {
+  if (value === null) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function joinUrl(baseUrl: string, path: string) {
