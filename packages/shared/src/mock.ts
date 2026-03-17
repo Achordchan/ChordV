@@ -1,5 +1,6 @@
 import type {
   AdminPanelConfigDto,
+  AdminNodeRecordDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
   AnnouncementDto,
@@ -186,6 +187,8 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
       shortId: "6ba85179",
       serverName: "cdn.cloudflare.com",
       fingerprint: "chrome"
+      ,
+      spiderX: "/"
     }
   };
 };
@@ -200,7 +203,7 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
   },
   users: [mockAdmin, mockUser],
   subscriptions: [toAdminSubscription(mockSubscription)],
-  nodes: mockNodes,
+  nodes: toAdminNodes(mockNodes),
   panels: toAdminPanels(mockPanels),
   announcements: mockAnnouncements
 };
@@ -246,5 +249,18 @@ function toAdminPanels(panels: typeof mockPanels): AdminPanelConfigDto[] {
     lastSyncedAt: panel.lastSyncedAt,
     latencyMs: panel.latencyMs,
     activeUsers: panel.activeUsers
+  }));
+}
+
+function toAdminNodes(nodes: typeof mockNodes): AdminNodeRecordDto[] {
+  return nodes.map((node) => ({
+    ...node,
+    panelId: node.id === "node_hk_01" ? "panel_hk_1" : null,
+    subscriptionUrl: null,
+    serverName: "aws.amazon.com",
+    serverHost: `${node.region.toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
+    serverPort: 443,
+    shortId: "6ba85179",
+    spiderX: "/"
   }));
 }

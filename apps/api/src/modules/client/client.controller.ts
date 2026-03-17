@@ -57,12 +57,12 @@ export class ClientController {
   }
 
   @Post("session/connect")
-  connect(@Body() body: ConnectDto) {
-    return this.clientService.connect(body.nodeId, body.mode, body.strategyGroupId);
+  connect(@Body() body: ConnectDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.connect(body.nodeId, body.mode, body.strategyGroupId, authorization);
   }
 
   @Post("session/disconnect")
-  disconnect() {
-    return this.clientService.disconnect();
+  disconnect(@Headers("authorization") authorization?: string) {
+    return this.clientService.disconnect(authorization);
   }
 }

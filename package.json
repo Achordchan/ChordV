@@ -8,8 +8,9 @@
     "build": "turbo build",
     "check": "turbo check",
     "lint": "turbo lint",
-    "setup:mac": "docker compose up -d postgres && pnpm install && pnpm --filter @chordv/api db:generate && pnpm --filter @chordv/api db:push && pnpm --filter @chordv/api db:seed",
+    "setup:mac": "docker compose up -d postgres && pnpm install && pnpm --filter @chordv/desktop setup:xray && pnpm --filter @chordv/api db:generate && pnpm --filter @chordv/api db:push && pnpm --filter @chordv/api db:seed",
     "dev:mac": "concurrently -k -n api,desktop -c blue,green \"pnpm --filter @chordv/api dev\" \"pnpm --filter @chordv/desktop tauri:dev\"",
+    "dev:ops": "concurrently -k -n api,admin -c blue,green \"pnpm --filter @chordv/api dev\" \"pnpm --filter @chordv/admin dev -- --host 127.0.0.1\"",
     "dev:api": "pnpm --filter @chordv/api dev",
     "dev:admin": "pnpm --filter @chordv/admin dev",
     "dev:desktop": "pnpm --filter @chordv/desktop dev"

@@ -25,12 +25,12 @@ export class ClientService {
     return this.devDataService.getBootstrap().then((result) => result.version);
   }
 
-  connect(nodeId: string, mode: "global" | "rule" | "direct", strategyGroupId?: string) {
-    return this.devDataService.connect({ nodeId, mode, strategyGroupId });
+  connect(nodeId: string, mode: "global" | "rule" | "direct", strategyGroupId?: string, token?: string) {
+    return this.devDataService.connect({ nodeId, mode, strategyGroupId }, token);
   }
 
-  disconnect() {
-    return this.devDataService.disconnect();
+  disconnect(token?: string) {
+    return this.devDataService.disconnect(token);
   }
 
   getRuntime() {

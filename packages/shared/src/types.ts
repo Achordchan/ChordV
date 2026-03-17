@@ -37,6 +37,16 @@ export interface NodeSummaryDto {
   security: "reality";
 }
 
+export interface AdminNodeRecordDto extends NodeSummaryDto {
+  panelId: string | null;
+  subscriptionUrl: string | null;
+  serverName: string;
+  serverHost: string;
+  serverPort: number;
+  shortId: string;
+  spiderX: string;
+}
+
 export interface StrategyGroupDto {
   id: string;
   name: string;
@@ -97,6 +107,7 @@ export interface RuntimeOutboundDto {
   shortId: string;
   serverName: string;
   fingerprint: string;
+  spiderX: string;
 }
 
 export interface GeneratedRuntimeConfigDto {
@@ -178,6 +189,16 @@ export interface UpdatePanelInputDto {
   syncEnabled?: boolean;
 }
 
+export interface ImportNodeInputDto {
+  subscriptionUrl: string;
+  name?: string;
+  region?: string;
+  provider?: string;
+  tags?: string[];
+  recommended?: boolean;
+  panelId?: string | null;
+}
+
 export interface DashboardSnapshotDto {
   users: number;
   activeSubscriptions: number;
@@ -190,7 +211,7 @@ export interface AdminSnapshotDto {
   dashboard: DashboardSnapshotDto;
   users: UserProfileDto[];
   subscriptions: AdminSubscriptionRecordDto[];
-  nodes: NodeSummaryDto[];
+  nodes: AdminNodeRecordDto[];
   panels: AdminPanelConfigDto[];
   announcements: AnnouncementDto[];
 }

@@ -25,6 +25,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "bin/*"
+    ],
     "macOS": {
       "minimumSystemVersion": "13.0"
     }

@@ -1,8 +1,17 @@
 import type { GeneratedRuntimeConfigDto } from "@chordv/shared";
 
-type RuntimeStatusResponse = {
+export type DesktopRuntimeStatus = {
   status: string;
   activeSessionId: string | null;
+  configPath: string | null;
+  logPath: string | null;
+  xrayBinaryPath: string | null;
+  activePid: number | null;
+  lastError: string | null;
+};
+
+export type DesktopRuntimeLogs = {
+  log: string;
 };
 
 async function loadInvoke() {
@@ -32,15 +41,30 @@ export async function invokeDesktopDisconnect() {
   return invoke("disconnect_runtime");
 }
 
-export async function loadDesktopRuntimeStatus(): Promise<RuntimeStatusResponse> {
+export async function loadDesktopRuntimeStatus(): Promise<DesktopRuntimeStatus> {
   const invoke = await loadInvoke();
   if (!invoke) {
     return {
       status: "idle",
-      activeSessionId: null
+      activeSessionId: null,
+      configPath: null,
+      logPath: null,
+      xrayBinaryPath: null,
+      activePid: null,
+      lastError: null
     };
   }
 
   return invoke("runtime_status");
 }
 
+export async function loadDesktopRuntimeLogs(): Promise<DesktopRuntimeLogs> {
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    return {
+      log: ""
+    };
+  }
+
+  return invoke("runtime_logs");
+}

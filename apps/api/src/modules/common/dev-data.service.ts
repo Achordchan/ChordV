@@ -11,12 +11,16 @@ import {
   mockUser
 } from "@chordv/shared";
 import type {
+  AdminPanelConfigDto,
+  AdminNodeRecordDto,
   AdminSnapshotDto,
+  AdminSubscriptionRecordDto,
   AnnouncementDto,
   AuthSessionDto,
   ClientBootstrapDto,
   ConnectRequestDto,
   GeneratedRuntimeConfigDto,
+  ImportNodeInputDto,
   NodeSummaryDto,
   PanelSyncRunDto,
   PanelSyncStatusDto,
@@ -129,6 +133,14 @@ export class DevDataService implements OnModuleInit {
     return rows.map(toNodeSummary);
   }
 
+  async getAdminNodes(): Promise<AdminNodeRecordDto[]> {
+    const rows = await this.prisma.node.findMany({
+      orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }]
+    });
+
+    return rows.map(toAdminNodeRecord);
+  }
+
   async getPolicies(): Promise<PolicyBundleDto> {
     const profile = await this.prisma.policyProfile.findUnique({
       where: { id: "default" },
@@ -187,6 +199,25 @@ export class DevDataService implements OnModuleInit {
       health: row.health,
       baseUrl: row.baseUrl,
       apiBasePath: row.apiBasePath,
+      lastSyncedAt: row.lastSyncedAt.toISOString(),
+      latencyMs: row.latencyMs,
+      activeUsers: row.activeUsers
+    }));
+  }
+
+  private async getAdminPanels(): Promise<AdminPanelConfigDto[]> {
+    const rows = await this.prisma.panel.findMany({
+      orderBy: { name: "asc" }
+    });
+
+    return rows.map((row) => ({
+      panelId: row.id,
+      name: row.name,
+      baseUrl: row.baseUrl,
+      apiBasePath: row.apiBasePath,
+      username: row.username,
+      syncEnabled: row.syncEnabled,
+      health: row.health,
       lastSyncedAt: row.lastSyncedAt.toISOString(),
       latencyMs: row.latencyMs,
       activeUsers: row.activeUsers
@@ -259,9 +290,9 @@ export class DevDataService implements OnModuleInit {
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
     const [users, subscriptions, nodes, panels, announcements] = await Promise.all([
       this.getUsers(),
-      this.getSubscriptions(),
-      this.getNodes(),
-      this.getPanels(),
+      this.getAdminSubscriptions(),
+      this.getAdminNodes(),
+      this.getAdminPanels(),
       this.getAnnouncements()
     ]);
 
@@ -285,7 +316,61 @@ export class DevDataService implements OnModuleInit {
     };
   }
 
-  async connect(request: ConnectRequestDto): Promise<GeneratedRuntimeConfigDto> {
+  async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
+    const imported = await this.fetchSubscriptionNode(input.subscriptionUrl);
+    const panelId = input.panelId === undefined ? await this.matchPanelIdByHost(imported.serverHost) : input.panelId;
+    const nodeId = toNodeId(imported.serverHost, imported.serverPort);
+
+    const saved = await this.prisma.node.upsert({
+      where: { id: nodeId },
+      create: {
+        id: nodeId,
+        panelId,
+        name: input.name?.trim() || imported.name,
+        region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
+        provider: input.provider?.trim() || "自有节点",
+        tags: normalizeTags(input.tags, imported.name),
+        recommended: input.recommended ?? true,
+        latencyMs: 0,
+        protocol: "vless",
+        security: "reality",
+        serverHost: imported.serverHost,
+        serverPort: imported.serverPort,
+        uuid: imported.uuid,
+        flow: imported.flow,
+        realityPublicKey: imported.realityPublicKey,
+        shortId: imported.shortId,
+        serverName: imported.serverName,
+        fingerprint: imported.fingerprint,
+        spiderX: imported.spiderX,
+        subscriptionUrl: input.subscriptionUrl
+      },
+      update: {
+        panelId,
+        name: input.name?.trim() || imported.name,
+        region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
+        provider: input.provider?.trim() || "自有节点",
+        tags: normalizeTags(input.tags, imported.name),
+        recommended: input.recommended ?? true,
+        protocol: "vless",
+        security: "reality",
+        serverHost: imported.serverHost,
+        serverPort: imported.serverPort,
+        uuid: imported.uuid,
+        flow: imported.flow,
+        realityPublicKey: imported.realityPublicKey,
+        shortId: imported.shortId,
+        serverName: imported.serverName,
+        fingerprint: imported.fingerprint,
+        spiderX: imported.spiderX,
+        subscriptionUrl: input.subscriptionUrl
+      }
+    });
+
+    return toAdminNodeRecord(saved);
+  }
+
+  async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {
     const node = await this.prisma.node.findUnique({
       where: { id: request.nodeId }
     });
@@ -293,6 +378,21 @@ export class DevDataService implements OnModuleInit {
     if (!node) {
       throw new NotFoundException("Node not found");
     }
+
+    const user = await this.resolveUserFromToken(token);
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { userId: user.id },
+      include: {
+        user: true
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    if (!subscription) {
+      throw new NotFoundException("Subscription not found");
+    }
+
+    const resolvedOutbound = await this.resolveOutboundForUser(node, subscription.panelClientEmail ?? subscription.user.email);
 
     this.activeRuntime = {
       sessionId: `session_${node.id}`,
@@ -302,23 +402,13 @@ export class DevDataService implements OnModuleInit {
       localSocksPort: 17891,
       routingProfile: request.strategyGroupId ?? "managed-rule-default",
       generatedAt: new Date().toISOString(),
-      outbound: {
-        protocol: "vless",
-        server: node.serverHost,
-        port: node.serverPort,
-        uuid: node.uuid,
-        flow: node.flow,
-        realityPublicKey: node.realityPublicKey,
-        shortId: node.shortId,
-        serverName: node.serverName,
-        fingerprint: node.fingerprint
-      }
+      outbound: resolvedOutbound
     };
 
     return this.activeRuntime;
   }
 
-  disconnect() {
+  disconnect(_token?: string) {
     const previous = this.activeRuntime;
     this.activeRuntime = undefined;
     return {
@@ -348,6 +438,33 @@ export class DevDataService implements OnModuleInit {
     });
 
     return rows.map((row) => toSubscriptionDto(row, row.plan.name));
+  }
+
+  private async getAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
+    const rows = await this.prisma.subscription.findMany({
+      include: {
+        plan: true,
+        user: true
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      userEmail: row.user.email,
+      userDisplayName: row.user.displayName,
+      planId: row.planId,
+      planName: row.plan.name,
+      panelClientEmail: row.panelClientEmail,
+      totalTrafficGb: row.totalTrafficGb,
+      usedTrafficGb: row.usedTrafficGb,
+      remainingTrafficGb: row.remainingTrafficGb,
+      expireAt: row.expireAt.toISOString(),
+      state: row.state,
+      renewable: row.renewable,
+      lastSyncedAt: row.lastSyncedAt.toISOString()
+    }));
   }
 
   private async getSubscriptionForUser(userId: string): Promise<SubscriptionStatusDto> {
@@ -442,6 +559,7 @@ export class DevDataService implements OnModuleInit {
     await this.prisma.node.createMany({
       data: mockNodes.map((node) => ({
         id: node.id,
+        panelId: node.id === "node_hk_01" ? "panel_hk_1" : null,
         name: node.name,
         region: node.region,
         provider: node.provider,
@@ -457,7 +575,9 @@ export class DevDataService implements OnModuleInit {
         realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
         shortId: "6ba85179",
         serverName: "cdn.cloudflare.com",
-        fingerprint: "chrome"
+        fingerprint: "chrome",
+        spiderX: "/",
+        subscriptionUrl: null
       }))
     });
 
@@ -517,6 +637,161 @@ export class DevDataService implements OnModuleInit {
         isActive: true
       }))
     });
+  }
+
+  private async fetchSubscriptionNode(subscriptionUrl: string) {
+    const response = await undiciFetch(subscriptionUrl, {
+      signal: AbortSignal.timeout(15000),
+      dispatcher: createDispatcher(15000, true)
+    });
+
+    if (!response.ok) {
+      throw new Error(`订阅地址请求失败：HTTP ${response.status}`);
+    }
+
+    const raw = (await response.text()).trim();
+    const decoded = decodeSubscriptionText(raw);
+    const firstLine = decoded
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("vless://"));
+
+    if (!firstLine) {
+      throw new Error("订阅内容里没有 vless 节点");
+    }
+
+    return parseVlessLink(firstLine);
+  }
+
+  private async matchPanelIdByHost(host: string): Promise<string | null> {
+    const panels = await this.prisma.panel.findMany();
+    const matched = panels.find((panel) => {
+      try {
+        return new URL(panel.baseUrl).hostname === host;
+      } catch {
+        return false;
+      }
+    });
+
+    return matched?.id ?? null;
+  }
+
+  private async resolveOutboundForUser(
+    node: {
+      panelId: string | null;
+      serverHost: string;
+      serverPort: number;
+      uuid: string;
+      flow: string;
+      realityPublicKey: string;
+      shortId: string;
+      serverName: string;
+      fingerprint: string;
+      spiderX: string;
+    },
+    panelClientEmail: string
+  ): Promise<GeneratedRuntimeConfigDto["outbound"]> {
+    if (!node.panelId) {
+      return {
+        protocol: "vless",
+        server: node.serverHost,
+        port: node.serverPort,
+        uuid: node.uuid,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX
+      };
+    }
+
+    const panel = await this.prisma.panel.findUnique({
+      where: { id: node.panelId }
+    });
+
+    if (!panel) {
+      return {
+        protocol: "vless",
+        server: node.serverHost,
+        port: node.serverPort,
+        uuid: node.uuid,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX
+      };
+    }
+
+    const credentials = this.resolvePanelCredentials(panel);
+    if (!credentials) {
+      return {
+        protocol: "vless",
+        server: node.serverHost,
+        port: node.serverPort,
+        uuid: node.uuid,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX
+      };
+    }
+
+    const client = await this.resolvePanelClientForNode(credentials, node.serverPort, panelClientEmail);
+
+    return {
+      protocol: "vless",
+      server: node.serverHost,
+      port: node.serverPort,
+      uuid: client?.uuid ?? node.uuid,
+      flow: client?.flow ?? node.flow,
+      realityPublicKey: node.realityPublicKey,
+      shortId: node.shortId,
+      serverName: node.serverName,
+      fingerprint: node.fingerprint,
+      spiderX: node.spiderX
+    };
+  }
+
+  private async resolvePanelClientForNode(
+    credentials: {
+      baseUrl: string;
+      username: string;
+      password: string;
+      apiBasePath: string;
+      timeoutMs: number;
+      allowInsecureTls: boolean;
+    },
+    serverPort: number,
+    panelClientEmail: string
+  ) {
+    try {
+      const timeoutMs = Math.min(credentials.timeoutMs, 2500);
+      const cookie = await this.loginPanel(
+        credentials.baseUrl,
+        credentials.username,
+        credentials.password,
+        credentials.apiBasePath,
+        timeoutMs,
+        credentials.allowInsecureTls
+      );
+      const inbounds = await this.fetchPanelInbounds(
+        credentials.baseUrl,
+        cookie,
+        credentials.apiBasePath,
+        timeoutMs,
+        credentials.allowInsecureTls
+      );
+
+      const matched = inbounds.find((inbound) => inbound.port === serverPort);
+      return matched ? findPanelClient(matched, panelClientEmail) : null;
+    } catch {
+      return null;
+    }
   }
 
   private resolvePanelCredentials(panel: {
@@ -608,9 +883,14 @@ export class DevDataService implements OnModuleInit {
       msg?: string;
       obj?: Array<{
         id: number;
+        port?: number;
+        protocol?: string;
+        settings?: string;
+        streamSettings?: string;
         remark?: string;
         clientStats?: Array<{
           email?: string;
+          uuid?: string;
           up?: number;
           down?: number;
           total?: number;
@@ -737,6 +1017,7 @@ function toUserProfile(row: {
 
 function toNodeSummary(row: {
   id: string;
+  panelId?: string | null;
   name: string;
   region: string;
   provider: string;
@@ -745,6 +1026,12 @@ function toNodeSummary(row: {
   latencyMs: number;
   protocol: string;
   security: string;
+  serverHost?: string;
+  serverPort?: number;
+  serverName?: string;
+  shortId?: string;
+  spiderX?: string;
+  subscriptionUrl?: string | null;
 }): NodeSummaryDto {
   return {
     id: row.id,
@@ -756,6 +1043,36 @@ function toNodeSummary(row: {
     latencyMs: row.latencyMs,
     protocol: row.protocol as "vless",
     security: row.security as "reality"
+  };
+}
+
+function toAdminNodeRecord(row: {
+  id: string;
+  panelId: string | null;
+  name: string;
+  region: string;
+  provider: string;
+  tags: string[];
+  recommended: boolean;
+  latencyMs: number;
+  protocol: string;
+  security: string;
+  serverHost: string;
+  serverPort: number;
+  serverName: string;
+  shortId: string;
+  spiderX: string;
+  subscriptionUrl: string | null;
+}): AdminNodeRecordDto {
+  return {
+    ...toNodeSummary(row),
+    panelId: row.panelId,
+    subscriptionUrl: row.subscriptionUrl,
+    serverName: row.serverName,
+    serverHost: row.serverHost,
+    serverPort: row.serverPort,
+    shortId: row.shortId,
+    spiderX: row.spiderX
   };
 }
 
@@ -796,6 +1113,102 @@ function detokenize(value: string) {
 function tryEmailFromToken(token: string) {
   const raw = token.replace("Bearer ", "").replace("access_", "").trim();
   return raw ? detokenize(raw) : null;
+}
+
+function toNodeId(host: string, port: number) {
+  return `node_${host.replaceAll(".", "_").replaceAll("-", "_")}_${port}`;
+}
+
+function normalizeTags(tags: string[] | undefined, name: string) {
+  if (tags && tags.length > 0) {
+    return tags.map((item) => item.trim()).filter(Boolean);
+  }
+
+  const lower = name.toLowerCase();
+  if (lower.includes("hk")) return ["香港"];
+  if (lower.includes("sg")) return ["新加坡"];
+  if (lower.includes("jp")) return ["日本"];
+  return ["导入"];
+}
+
+function inferRegion(name: string, host: string) {
+  const value = `${name} ${host}`.toLowerCase();
+  if (value.includes("hk") || value.includes("hong kong")) return "香港";
+  if (value.includes("sg") || value.includes("singapore")) return "新加坡";
+  if (value.includes("jp") || value.includes("tokyo") || value.includes("japan")) return "日本";
+  return "未分组";
+}
+
+function decodeSubscriptionText(raw: string) {
+  if (raw.includes("vless://")) {
+    return raw;
+  }
+
+  try {
+    return Buffer.from(raw, "base64").toString("utf8");
+  } catch {
+    return raw;
+  }
+}
+
+function parseVlessLink(link: string) {
+  const parsed = new URL(link);
+  const name = decodeURIComponent(parsed.hash.replace(/^#/, "")) || `${parsed.hostname}:${parsed.port}`;
+
+  return {
+    name,
+    serverHost: parsed.hostname,
+    serverPort: Number(parsed.port),
+    uuid: decodeURIComponent(parsed.username),
+    flow: parsed.searchParams.get("flow") || "xtls-rprx-vision",
+    realityPublicKey: parsed.searchParams.get("pbk") || "",
+    shortId: parsed.searchParams.get("sid") || "",
+    serverName: parsed.searchParams.get("sni") || "",
+    fingerprint: parsed.searchParams.get("fp") || "chrome",
+    spiderX: decodeURIComponent(parsed.searchParams.get("spx") || "/")
+  };
+}
+
+function findPanelClient(
+  inbound: {
+    settings?: string;
+    clientStats?: Array<{ email?: string; uuid?: string }>;
+  },
+  email: string
+) {
+  const stat = inbound.clientStats?.find((item) => item.email === email);
+  const settings = parseInboundSettings(inbound.settings);
+  const client = settings.clients.find((item) => item.email === email);
+
+  if (!stat && !client) {
+    return null;
+  }
+
+  return {
+    uuid: stat?.uuid ?? client?.id ?? "",
+    flow: client?.flow || "xtls-rprx-vision"
+  };
+}
+
+function parseInboundSettings(raw: string | undefined) {
+  if (!raw) {
+    return {
+      clients: [] as Array<{ id?: string; email?: string; flow?: string }>
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      clients?: Array<{ id?: string; email?: string; flow?: string }>;
+    };
+    return {
+      clients: parsed.clients ?? []
+    };
+  } catch {
+    return {
+      clients: [] as Array<{ id?: string; email?: string; flow?: string }>
+    };
+  }
 }
 
 function joinUrl(baseUrl: string, path: string) {

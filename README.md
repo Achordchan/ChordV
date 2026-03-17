@@ -16,6 +16,8 @@ pnpm setup:mac
 pnpm dev:mac
 ```
 
+`pnpm setup:mac` 会自动下载 macOS 对应的 `xray` 内核到 `apps/desktop/src-tauri/bin`。
+
 ## Environment
 
 - `CHORDV_API_PORT`: API 端口，默认 `3000`
@@ -30,9 +32,11 @@ pnpm dev:mac
 - `CHORDV_PANEL_SYNC_AUTOSTART`: 是否自动启动定时同步
 - `CHORDV_PANEL_SYNC_INTERVAL_MS`: 定时同步间隔
 - `CHORDV_PANEL_SYNC_BOOT_DELAY_MS`: 启动后首次同步延迟
+- `CHORDV_XRAY_BIN`: 可选，自定义本地 `xray` 可执行文件路径
 
 ## Notes
 
 - API 已通过 Prisma 接入 PostgreSQL，并自带演示数据初始化。
 - 面板同步优先使用 `Subscription.panelClientEmail`；为空时才回退到 `User.email`。
 - `pnpm dev:mac` 会启动后端并拉起 Tauri 原生 macOS 桌面窗口，不是单纯网页预览。
+- 桌面端现在会真正拉起 `xray` 进程，并显示 PID、配置路径和运行日志。

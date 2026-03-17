@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup:xray": "node ./scripts/setup-xray.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b",

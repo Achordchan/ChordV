@@ -8,6 +8,7 @@ import {
   Group,
   Loader,
   Paper,
+  ScrollArea,
   SegmentedControl,
   SimpleGrid,
   Stack,
@@ -22,9 +23,15 @@ import type {
   GeneratedRuntimeConfigDto,
   NodeSummaryDto
 } from "@chordv/shared";
-import { IconBolt, IconCloudLock, IconKey, IconPlugConnected } from "@tabler/icons-react";
+import { IconBolt, IconCloudLock, IconKey, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
 import { connectSession, disconnectSession, fetchBootstrap, fetchNodes, login } from "./api/client";
-import { invokeDesktopConnect, invokeDesktopDisconnect, loadDesktopRuntimeStatus } from "./lib/runtime";
+import {
+  invokeDesktopConnect,
+  invokeDesktopDisconnect,
+  loadDesktopRuntimeLogs,
+  loadDesktopRuntimeStatus,
+  type DesktopRuntimeStatus
+} from "./lib/runtime";
 
 const defaultEmail = "demo@chordv.app";
 const defaultPassword = "demo123456";
@@ -36,17 +43,55 @@ export function App() {
   const [selectedNode, setSelectedNode] = useState<NodeSummaryDto | null>(null);
   const [mode, setMode] = useState<ConnectionMode>("rule");
   const [runtime, setRuntime] = useState<GeneratedRuntimeConfigDto | null>(null);
-  const [runtimeStatus, setRuntimeStatus] = useState<string>("idle");
+  const [desktopStatus, setDesktopStatus] = useState<DesktopRuntimeStatus>({
+    status: "idle",
+    activeSessionId: null,
+    configPath: null,
+    logPath: null,
+    xrayBinaryPath: null,
+    activePid: null,
+    lastError: null
+  });
+  const [runtimeLog, setRuntimeLog] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [actionBusy, setActionBusy] = useState<"connect" | "disconnect" | null>(null);
 
   useEffect(() => {
-    loadDesktopRuntimeStatus()
-      .then((status) => setRuntimeStatus(status.status))
-      .catch(() => setRuntimeStatus("idle"));
+    void refreshRuntime();
+    const timer = window.setInterval(() => {
+      void refreshRuntime();
+    }, 2000);
+
+    return () => window.clearInterval(timer);
   }, []);
 
-  async function handleLogin() {
+  async function refreshRuntime() {
     try {
+      const [status, logs] = await Promise.all([loadDesktopRuntimeStatus(), loadDesktopRuntimeLogs()]);
+      setDesktopStatus(status);
+      setRuntimeLog(logs.log);
+    } catch {
+      setDesktopStatus({
+        status: "idle",
+        activeSessionId: null,
+        configPath: null,
+        logPath: null,
+        xrayBinaryPath: null,
+        activePid: null,
+        lastError: null
+      });
+      setRuntimeLog("");
+    }
+  }
+
+  async function handleLogin() {
+    if (loggingIn) {
+      return;
+    }
+
+    try {
+      setLoggingIn(true);
       setError(null);
       const nextSession = await login(defaultEmail, defaultPassword);
       const [nextBootstrap, nextNodes] = await Promise.all([
@@ -59,11 +104,13 @@ export function App() {
       setSelectedNode(nextNodes[0] ?? null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "登录失败");
+    } finally {
+      setLoggingIn(false);
     }
   }
 
   async function handleConnect() {
-    if (!bootstrap) {
+    if (!bootstrap || actionBusy || desktopStatus.status === "connected" || desktopStatus.status === "connecting") {
       return;
     }
 
@@ -73,35 +120,43 @@ export function App() {
     }
 
     try {
+      setActionBusy("connect");
       setError(null);
-      setRuntimeStatus("connecting");
+      setDesktopStatus((current) => ({ ...current, status: "connecting", lastError: null }));
       const config = await connectSession({
         accessToken: session?.accessToken ?? "",
         nodeId: nodeToUse.id,
         mode
       });
       await invokeDesktopConnect(config);
-      const status = await loadDesktopRuntimeStatus();
       setRuntime(config);
-      setRuntimeStatus(status.status);
+      await refreshRuntime();
     } catch (reason) {
-      setRuntimeStatus("error");
+      await refreshRuntime();
       setError(reason instanceof Error ? reason.message : "连接失败");
+    } finally {
+      setActionBusy(null);
     }
   }
 
   async function handleDisconnect() {
+    if (actionBusy || (desktopStatus.status !== "connected" && desktopStatus.status !== "error")) {
+      return;
+    }
+
     try {
+      setActionBusy("disconnect");
       setError(null);
-      setRuntimeStatus("disconnecting");
+      setDesktopStatus((current) => ({ ...current, status: "disconnecting", lastError: null }));
       await disconnectSession(session?.accessToken ?? "");
       await invokeDesktopDisconnect();
-      const status = await loadDesktopRuntimeStatus();
       setRuntime(null);
-      setRuntimeStatus(status.status);
+      await refreshRuntime();
     } catch (reason) {
-      setRuntimeStatus("error");
+      await refreshRuntime();
       setError(reason instanceof Error ? reason.message : "断开失败");
+    } finally {
+      setActionBusy(null);
     }
   }
 
@@ -128,7 +183,7 @@ export function App() {
             <StatusCard
               icon={<IconPlugConnected size={18} />}
               label="运行状态"
-              value={translateRuntimeStatus(runtimeStatus)}
+              value={translateRuntimeStatus(desktopStatus.status)}
               description={runtime?.node.name ?? "未连接"}
             />
             <StatusCard
@@ -160,7 +215,7 @@ export function App() {
             <Stack>
               <Title order={3}>快速登录</Title>
               <Text c="dimmed">使用演示账号进入</Text>
-              <Button leftSection={<IconBolt size={18} />} onClick={handleLogin}>
+              <Button leftSection={<IconBolt size={18} />} onClick={handleLogin} loading={loggingIn}>
                 登录
               </Button>
               {error ? <Text c="red.4">{error}</Text> : null}
@@ -242,15 +297,51 @@ export function App() {
 
               <Card withBorder radius="xl" padding="lg">
                 <Stack>
-                  <Title order={3}>连接控制</Title>
+                  <Group justify="space-between" align="center">
+                    <Title order={3}>连接控制</Title>
+                    <Button
+                      variant="subtle"
+                      size="compact-sm"
+                      leftSection={<IconRefresh size={14} />}
+                      onClick={() => void refreshRuntime()}
+                    >
+                      刷新
+                    </Button>
+                  </Group>
                   <Group>
-                    <Button onClick={handleConnect}>启动连接</Button>
-                    <Button variant="light" color="gray" onClick={handleDisconnect}>
+                    <Button
+                      onClick={handleConnect}
+                      loading={actionBusy === "connect"}
+                      disabled={desktopStatus.status === "connected" || desktopStatus.status === "connecting"}
+                    >
+                      启动连接
+                    </Button>
+                    <Button
+                      variant="light"
+                      color="gray"
+                      onClick={handleDisconnect}
+                      loading={actionBusy === "disconnect"}
+                      disabled={desktopStatus.status !== "connected" && desktopStatus.status !== "error"}
+                    >
                       断开
                     </Button>
                   </Group>
                   <Text c="dimmed">HTTP {runtime?.localHttpPort ?? "-"} / SOCKS {runtime?.localSocksPort ?? "-"}</Text>
                   <Code block>{runtime ? runtime.outbound.server : "当前还没有下发运行配置"}</Code>
+                  <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                    <Stat label="进程 PID" value={desktopStatus.activePid ? `${desktopStatus.activePid}` : "-"} />
+                    <Stat label="会话" value={desktopStatus.activeSessionId ?? "-"} />
+                  </SimpleGrid>
+                  <Text c="dimmed" size="sm">
+                    内核：{desktopStatus.xrayBinaryPath ?? "未安装"}
+                  </Text>
+                  <Text c="dimmed" size="sm">
+                    配置：{desktopStatus.configPath ?? "-"}
+                  </Text>
+                  <Text c="dimmed" size="sm">
+                    日志：{desktopStatus.logPath ?? "-"}
+                  </Text>
+                  {desktopStatus.lastError ? <Text c="red.4">{desktopStatus.lastError}</Text> : null}
                 </Stack>
               </Card>
 
@@ -275,6 +366,15 @@ export function App() {
                 </Stack>
               </Card>
             </SimpleGrid>
+
+            <Card withBorder radius="xl" padding="lg">
+              <Stack>
+                <Title order={3}>内核日志</Title>
+                <ScrollArea h={260} type="always">
+                  <Code block>{runtimeLog || "暂无日志"}</Code>
+                </ScrollArea>
+              </Stack>
+            </Card>
 
             {error ? <Text c="red.4">{error}</Text> : null}
           </Stack>
