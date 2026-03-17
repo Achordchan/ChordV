@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: chordv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chordv
+      POSTGRES_USER: chordv
+      POSTGRES_PASSWORD: chordv
+    ports:
+      - "54329:5432"
+    volumes:
+      - chordv-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chordv -d chordv"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  chordv-postgres-data:

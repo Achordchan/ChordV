@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  user
+  admin
+}
+
+enum UserStatus {
+  active
+  disabled
+}
+
+enum SubscriptionState {
+  active
+  expired
+  exhausted
+  paused
+}
+
+enum PanelHealth {
+  healthy
+  degraded
+  offline
+}
+
+enum AnnouncementLevel {
+  info
+  warning
+  success
+}
+
+model User {
+  id           String         @id
+  email        String         @unique
+  displayName  String
+  role         UserRole
+  status       UserStatus
+  passwordHash String
+  lastSeenAt   DateTime
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  subscriptions Subscription[]
+}
+
+model Plan {
+  id             String         @id
+  name           String
+  totalTrafficGb Float
+  durationDays   Int
+  renewable      Boolean
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  subscriptions  Subscription[]
+}
+
+model Subscription {
+  id                 String            @id
+  userId             String
+  planId             String
+  panelClientEmail   String?
+  totalTrafficGb     Float
+  usedTrafficGb      Float
+  remainingTrafficGb Float
+  expireAt           DateTime
+  state              SubscriptionState
+  renewable          Boolean
+  lastSyncedAt       DateTime
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  plan               Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, planId])
+}
+
+model Node {
+  id               String   @id
+  name             String
+  region           String
+  provider         String
+  tags             String[]
+  recommended      Boolean
+  latencyMs        Int
+  protocol         String
+  security         String
+  serverHost       String
+  serverPort       Int
+  uuid             String
+  flow             String
+  realityPublicKey String
+  shortId          String
+  serverName       String
+  fingerprint      String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model PolicyProfile {
+  id                String          @id
+  defaultMode       String
+  modes             String[]
+  ruleVersion       String
+  ruleUpdatedAt     DateTime
+  dnsProfile        String
+  blockAds          Boolean
+  chinaDirect       Boolean
+  aiServicesProxy   Boolean
+  currentVersion    String
+  minimumVersion    String
+  forceUpgrade      Boolean         @default(false)
+  changelog         String[]
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  strategyGroups    StrategyGroup[]
+}
+
+model StrategyGroup {
+  id            String        @id
+  policyId      String
+  name          String
+  description   String
+  defaultNodeId String
+  policy        PolicyProfile @relation(fields: [policyId], references: [id], onDelete: Cascade)
+}
+
+model Panel {
+  id           String      @id
+  name         String
+  baseUrl      String
+  apiBasePath  String      @default("/panel")
+  username     String?
+  password     String?
+  syncEnabled  Boolean     @default(true)
+  health       PanelHealth
+  lastSyncedAt DateTime
+  latencyMs    Int
+  activeUsers  Int
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+model Announcement {
+  id          String            @id
+  title       String
+  body        String
+  level       AnnouncementLevel
+  publishedAt DateTime
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+}
