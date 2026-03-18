@@ -32,6 +32,19 @@ export function login(email: string, password: string) {
   });
 }
 
+export function refreshSession(refreshToken: string) {
+  return request<AuthSessionDto>("/auth/refresh", {
+    method: "POST",
+    body: JSON.stringify({ refreshToken })
+  });
+}
+
+export function logoutSession() {
+  return request<{ ok: boolean }>("/auth/logout", {
+    method: "POST"
+  });
+}
+
 export function fetchBootstrap(accessToken: string) {
   return request<ClientBootstrapDto>("/client/bootstrap", {
     headers: {

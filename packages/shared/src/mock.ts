@@ -64,7 +64,10 @@ export const mockNodes: NodeSummaryDto[] = [
     recommended: true,
     latencyMs: 32,
     protocol: "vless",
-    security: "reality"
+    security: "reality",
+    serverHost: "hk.edge.chordv.app",
+    serverPort: 443,
+    serverName: "cdn.cloudflare.com"
   },
   {
     id: "node_sg_01",
@@ -75,7 +78,10 @@ export const mockNodes: NodeSummaryDto[] = [
     recommended: false,
     latencyMs: 68,
     protocol: "vless",
-    security: "reality"
+    security: "reality",
+    serverHost: "sg.edge.chordv.app",
+    serverPort: 443,
+    serverName: "cdn.cloudflare.com"
   },
   {
     id: "node_jp_01",
@@ -86,30 +92,16 @@ export const mockNodes: NodeSummaryDto[] = [
     recommended: false,
     latencyMs: 83,
     protocol: "vless",
-    security: "reality"
+    security: "reality",
+    serverHost: "jp.edge.chordv.app",
+    serverPort: 443,
+    serverName: "cdn.cloudflare.com"
   }
 ];
 
 export const mockPolicies: PolicyBundleDto = {
   defaultMode: "rule",
   modes: ["global", "rule", "direct"],
-  strategyGroups: [
-    {
-      id: "sg_auto",
-      name: "自动选择",
-      description: "默认策略",
-      defaultNodeId: "node_hk_01"
-    },
-    {
-      id: "sg_streaming",
-      name: "流媒体优先",
-      description: "优先流媒体体验",
-      defaultNodeId: "node_sg_01"
-    }
-  ],
-  ruleVersion: "2026.03.17",
-  ruleUpdatedAt: new Date().toISOString(),
-  dnsProfile: "remote-secure",
   features: {
     blockAds: true,
     chinaDirect: true,
@@ -165,6 +157,11 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
     localSocksPort: 17891,
     routingProfile: "managed-rule-default",
     generatedAt: new Date().toISOString(),
+    features: {
+      blockAds: true,
+      chinaDirect: true,
+      aiServicesProxy: true
+    },
     outbound: {
       protocol: "vless",
       server: `${node.region.toLowerCase()}.edge.chordv.app`,
@@ -245,7 +242,9 @@ export const mockAdminSubscriptions: AdminSubscriptionRecordDto[] = [
     state: mockSubscription.state,
     renewable: mockSubscription.renewable,
     sourceAction: "created",
-    lastSyncedAt: mockSubscription.lastSyncedAt
+    lastSyncedAt: mockSubscription.lastSyncedAt,
+    nodeCount: 2,
+    hasNodeAccess: true
   }
 ];
 

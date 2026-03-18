@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs::{self, File},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, RunEvent, State};
 
@@ -54,6 +54,9 @@ struct NodeSummaryDto {
     latency_ms: u32,
     protocol: String,
     security: String,
+    server_host: String,
+    server_port: u16,
+    server_name: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -81,7 +84,45 @@ struct GeneratedRuntimeConfigDto {
     local_socks_port: u16,
     routing_profile: String,
     generated_at: String,
+    features: RuntimePolicyFeaturesDto,
     outbound: RuntimeOutboundDto,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicyFeaturesDto {
+    block_ads: bool,
+    china_direct: bool,
+    ai_services_proxy: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UserProfileDto {
+    id: String,
+    email: String,
+    display_name: String,
+    role: String,
+    status: String,
+    last_seen_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AuthSessionDto {
+    access_token: String,
+    refresh_token: String,
+    user: UserProfileDto,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NodeProbeResultDto {
+    node_id: String,
+    status: String,
+    latency_ms: Option<u32>,
+    checked_at: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +150,70 @@ struct CommandResult {
     config_path: Option<String>,
     log_path: Option<String>,
     active_pid: Option<u32>,
+}
+
+#[tauri::command]
+fn load_session(app: AppHandle) -> Result<Option<AuthSessionDto>, String> {
+    let path = session_path(&app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let session = serde_json::from_str::<AuthSessionDto>(&content).map_err(|error| error.to_string())?;
+    Ok(Some(session))
+}
+
+#[tauri::command]
+fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult, String> {
+    let path = session_path(&app)?;
+    let parent = path.parent().ok_or_else(|| "会话路径无效".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let serialized = serde_json::to_string(&session).map_err(|error| error.to_string())?;
+    fs::write(&path, serialized).map_err(|error| error.to_string())?;
+    set_private_permissions(&path)?;
+
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
+    let path = session_path(&app)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Vec<NodeProbeResultDto> {
+    nodes.into_iter().map(probe_single_node).collect()
+}
+
+#[tauri::command]
+fn app_ready(app: AppHandle) -> Result<CommandResult, String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+        let _ = disable_context_menu(&window);
+    }
+
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
 }
 
 #[tauri::command]
@@ -345,6 +450,19 @@ fn ensure_executable(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn set_private_permissions(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .permissions();
+        permissions.set_mode(0o600);
+        fs::set_permissions(path, permissions).map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
 fn ensure_geo_data(app: &AppHandle, runtime_dir: &Path) -> Result<(), String> {
     let bin_dir = runtime_dir.join("bin");
     fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
@@ -467,12 +585,12 @@ fn build_xray_config(config: &GeneratedRuntimeConfigDto, log_path: &Path) -> Val
       "routing": {
         "domainMatcher": "hybrid",
         "domainStrategy": "AsIs",
-        "rules": routing_rules(config.mode.as_str())
+        "rules": routing_rules(config.mode.as_str(), &config.features)
       }
     })
 }
 
-fn routing_rules(mode: &str) -> Value {
+fn routing_rules(mode: &str, features: &RuntimePolicyFeaturesDto) -> Value {
     match mode {
         "global" => json!([
           {
@@ -488,49 +606,84 @@ fn routing_rules(mode: &str) -> Value {
             "outboundTag": "direct"
           }
         ]),
-        _ => json!([
-          {
-            "type": "field",
-            "domain": ["geosite:category-ads-all"],
-            "outboundTag": "block"
-          },
-          {
-            "type": "field",
-            "ip": ["geoip:private"],
-            "outboundTag": "direct"
-          },
-          {
-            "type": "field",
-            "domain": ["geosite:cn"],
-            "outboundTag": "direct"
-          },
-          {
-            "type": "field",
-            "ip": ["geoip:cn"],
-            "outboundTag": "direct"
-          },
-          {
-            "type": "field",
-            "domain": [
-              "geosite:openai",
-              "geosite:google",
-              "geosite:youtube",
-              "geosite:github",
-              "geosite:telegram",
-              "geosite:twitter",
-              "geosite:discord",
-              "geosite:netflix",
-              "geosite:geolocation-!cn"
-            ],
-            "outboundTag": "proxy"
-          },
-          {
-            "type": "field",
-            "network": "tcp,udp",
-            "outboundTag": "proxy"
-          }
-        ]),
+        _ => {
+            let mut rules = vec![json!({
+                "type": "field",
+                "ip": ["geoip:private"],
+                "outboundTag": "direct"
+            })];
+
+            if features.block_ads {
+                rules.push(json!({
+                    "type": "field",
+                    "domain": ["geosite:category-ads-all"],
+                    "outboundTag": "block"
+                }));
+            }
+
+            if features.china_direct {
+                rules.push(json!({
+                    "type": "field",
+                    "domain": ["geosite:cn"],
+                    "outboundTag": "direct"
+                }));
+                rules.push(json!({
+                    "type": "field",
+                    "ip": ["geoip:cn"],
+                    "outboundTag": "direct"
+                }));
+            }
+
+            rules.push(json!({
+                "type": "field",
+                "domain": ai_service_domains(),
+                "outboundTag": if features.ai_services_proxy { "proxy" } else { "direct" }
+            }));
+
+            rules.push(json!({
+                "type": "field",
+                "domain": [
+                    "domain:google.com",
+                    "domain:youtube.com",
+                    "domain:github.com",
+                    "domain:telegram.org",
+                    "domain:t.me",
+                    "domain:twitter.com",
+                    "domain:x.com",
+                    "domain:discord.com",
+                    "domain:discord.gg",
+                    "domain:netflix.com",
+                    "geosite:geolocation-!cn"
+                ],
+                "outboundTag": "proxy"
+            }));
+
+            rules.push(json!({
+                "type": "field",
+                "network": "tcp,udp",
+                "outboundTag": "proxy"
+            }));
+
+            Value::Array(rules)
+        }
     }
+}
+
+fn ai_service_domains() -> Value {
+    json!([
+        "domain:openai.com",
+        "domain:chatgpt.com",
+        "domain:oaistatic.com",
+        "domain:oaiusercontent.com",
+        "domain:anthropic.com",
+        "domain:claude.ai",
+        "domain:perplexity.ai",
+        "domain:x.ai",
+        "domain:grok.com",
+        "domain:ai.google.dev",
+        "domain:gemini.google.com",
+        "domain:makersuite.google.com"
+    ])
 }
 
 fn refresh_child_state(state: &mut RuntimeState) {
@@ -586,6 +739,54 @@ fn stop_runtime_process(state: &mut RuntimeState) {
     }
 
     state.active_pid = None;
+}
+
+fn session_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let mut path = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"));
+    path.push("session.json");
+    Ok(path)
+}
+
+fn probe_single_node(node: NodeSummaryDto) -> NodeProbeResultDto {
+    let checked_at = chrono_like_now();
+    let start = Instant::now();
+    let outcome = resolve_socket_addr(&node.server_host, node.server_port)
+        .and_then(|address| TcpStream::connect_timeout(&address, Duration::from_secs(4)).map_err(|error| error.to_string()));
+
+    match outcome {
+        Ok(_) => NodeProbeResultDto {
+            node_id: node.id,
+            status: "healthy".into(),
+            latency_ms: Some(start.elapsed().as_millis().min(u128::from(u32::MAX)) as u32),
+            checked_at,
+            error: None,
+        },
+        Err(error) => NodeProbeResultDto {
+            node_id: node.id,
+            status: "offline".into(),
+            latency_ms: None,
+            checked_at,
+            error: Some(error),
+        },
+    }
+}
+
+fn resolve_socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
+    let mut addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| error.to_string())?;
+    addresses
+        .next()
+        .ok_or_else(|| format!("无法解析地址：{host}:{port}"))
+}
+
+fn chrono_like_now() -> String {
+    let now = std::time::SystemTime::now();
+    let datetime: chrono::DateTime<chrono::Utc> = now.into();
+    datetime.to_rfc3339()
 }
 
 fn shutdown_runtime(state: &mut RuntimeState) {
@@ -757,6 +958,18 @@ fn cleanup_stale_runtime(app: &AppHandle) {
     }
 }
 
+fn disable_context_menu(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .eval(
+            r#"
+            window.addEventListener('contextmenu', (event) => {
+              event.preventDefault();
+            }, { capture: true });
+            "#,
+        )
+        .map_err(|error| error.to_string())
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .manage(Mutex::new(RuntimeState::default()))
@@ -764,10 +977,16 @@ fn main() {
             cleanup_stale_runtime(&app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
+                let _ = disable_context_menu(&window);
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_ready,
+            load_session,
+            save_session,
+            clear_session,
+            probe_nodes,
             runtime_status,
             runtime_logs,
             connect_runtime,

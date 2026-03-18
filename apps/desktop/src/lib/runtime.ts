@@ -1,4 +1,4 @@
-import type { GeneratedRuntimeConfigDto } from "@chordv/shared";
+import type { AuthSessionDto, GeneratedRuntimeConfigDto, NodeSummaryDto } from "@chordv/shared";
 
 export type DesktopRuntimeStatus = {
   status: string;
@@ -12,6 +12,14 @@ export type DesktopRuntimeStatus = {
 
 export type DesktopRuntimeLogs = {
   log: string;
+};
+
+export type DesktopNodeProbeResult = {
+  nodeId: string;
+  status: "healthy" | "offline";
+  latencyMs: number | null;
+  checkedAt: string;
+  error: string | null;
 };
 
 async function loadInvoke() {
@@ -81,4 +89,55 @@ export async function focusDesktopWindow() {
   } catch {
     window.focus();
   }
+}
+
+export async function appReady() {
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    return { ok: true, mocked: true };
+  }
+
+  return invoke("app_ready");
+}
+
+export async function loadStoredSession(): Promise<AuthSessionDto | null> {
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    return null;
+  }
+
+  return invoke("load_session");
+}
+
+export async function saveStoredSession(session: AuthSessionDto) {
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    return { ok: true, mocked: true };
+  }
+
+  return invoke("save_session", { session });
+}
+
+export async function clearStoredSession() {
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    return { ok: true, mocked: true };
+  }
+
+  return invoke("clear_session");
+}
+
+export async function probeNodes(nodes: NodeSummaryDto[]): Promise<DesktopNodeProbeResult[]> {
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    return nodes.map((node) => ({
+      nodeId: node.id,
+      status: "healthy",
+      latencyMs: node.latencyMs,
+      checkedAt: new Date().toISOString(),
+      error: null
+    }));
+  }
+
+  return invoke("probe_nodes", { nodes });
 }

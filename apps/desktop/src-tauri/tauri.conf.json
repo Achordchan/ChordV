@@ -13,9 +13,12 @@
     "windows": [
       {
         "title": "ChordV",
-        "width": 1440,
-        "height": 920,
-        "resizable": true
+        "width": 980,
+        "height": 700,
+        "minWidth": 980,
+        "minHeight": 700,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {

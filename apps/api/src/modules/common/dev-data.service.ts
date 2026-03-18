@@ -52,7 +52,6 @@ import type {
   NodeSummaryDto,
   PolicyBundleDto,
   RenewSubscriptionInputDto,
-  StrategyGroupInputDto,
   SubscriptionNodeAccessDto,
   SubscriptionSourceAction,
   SubscriptionState,
@@ -187,12 +186,7 @@ export class DevDataService implements OnModuleInit {
 
   async getPolicies(): Promise<PolicyBundleDto> {
     const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" },
-      include: {
-        strategyGroups: {
-          orderBy: { name: "asc" }
-        }
-      }
+      where: { id: "default" }
     });
 
     if (!profile) {
@@ -202,10 +196,6 @@ export class DevDataService implements OnModuleInit {
     return {
       defaultMode: profile.defaultMode as PolicyBundleDto["defaultMode"],
       modes: profile.modes as PolicyBundleDto["modes"],
-      strategyGroups: [],
-      ruleVersion: profile.ruleVersion,
-      ruleUpdatedAt: profile.ruleUpdatedAt.toISOString(),
-      dnsProfile: profile.dnsProfile,
       features: {
         blockAds: profile.blockAds,
         chinaDirect: profile.chinaDirect,
@@ -260,6 +250,14 @@ export class DevDataService implements OnModuleInit {
 
     assertSubscriptionConnectable(access.subscription);
 
+    const policy = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" }
+    });
+
+    if (!policy) {
+      throw new NotFoundException("策略配置不存在");
+    }
+
     const allowed = await this.prisma.subscriptionNodeAccess.findFirst({
       where: {
         subscriptionId: access.subscription.id,
@@ -279,6 +277,11 @@ export class DevDataService implements OnModuleInit {
       localSocksPort: 17891,
       routingProfile: request.strategyGroupId ?? "managed-rule-default",
       generatedAt: new Date().toISOString(),
+      features: {
+        blockAds: policy.blockAds,
+        chinaDirect: policy.chinaDirect,
+        aiServicesProxy: policy.aiServicesProxy
+      },
       outbound: {
         protocol: "vless",
         server: node.serverHost,
@@ -1184,12 +1187,7 @@ export class DevDataService implements OnModuleInit {
 
   async getAdminPolicy(): Promise<AdminPolicyRecordDto> {
     const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" },
-      include: {
-        strategyGroups: {
-          orderBy: { name: "asc" }
-        }
-      }
+      where: { id: "default" }
     });
     if (!profile) {
       throw new NotFoundException("策略配置不存在");
@@ -1198,18 +1196,11 @@ export class DevDataService implements OnModuleInit {
   }
 
   async updatePolicy(input: UpdatePolicyInputDto): Promise<AdminPolicyRecordDto> {
-    if (input.strategyGroups) {
-      await this.validateStrategyGroups(input.strategyGroups);
-    }
-
     await this.prisma.policyProfile.update({
       where: { id: "default" },
       data: {
         ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
         ...(input.modes !== undefined ? { modes: input.modes } : {}),
-        ...(input.ruleVersion !== undefined ? { ruleVersion: input.ruleVersion.trim() } : {}),
-        ...(input.ruleUpdatedAt !== undefined ? { ruleUpdatedAt: new Date(input.ruleUpdatedAt) } : {}),
-        ...(input.dnsProfile !== undefined ? { dnsProfile: input.dnsProfile.trim() } : {}),
         ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
         ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
         ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {}),
@@ -1220,22 +1211,6 @@ export class DevDataService implements OnModuleInit {
         ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl || null } : {})
       }
     });
-
-    if (input.strategyGroups) {
-      await this.prisma.strategyGroup.deleteMany({
-        where: { policyId: "default" }
-      });
-
-      await this.prisma.strategyGroup.createMany({
-        data: input.strategyGroups.map((item) => ({
-          id: item.id?.trim() || createId("strategy"),
-          policyId: "default",
-          name: item.name.trim(),
-          description: item.description.trim(),
-          defaultNodeId: item.defaultNodeId
-        }))
-      });
-    }
 
     return this.getAdminPolicy();
   }
@@ -1403,22 +1378,6 @@ export class DevDataService implements OnModuleInit {
     const personal = await this.findCurrentPersonalSubscription(userId);
     if (personal && isEffectiveSubscription(personal)) {
       throw new BadRequestException("该账号已有个人有效订阅，不能加入团队");
-    }
-  }
-
-  private async validateStrategyGroups(groups: StrategyGroupInputDto[]) {
-    const ids = new Set(
-      (
-        await this.prisma.node.findMany({
-          select: { id: true }
-        })
-      ).map((item) => item.id)
-    );
-
-    for (const group of groups) {
-      if (!ids.has(group.defaultNodeId)) {
-        throw new BadRequestException(`默认节点不存在：${group.defaultNodeId}`);
-      }
     }
   }
 
@@ -1629,9 +1588,9 @@ export class DevDataService implements OnModuleInit {
         id: "default",
         defaultMode: mockPolicies.defaultMode,
         modes: mockPolicies.modes,
-        ruleVersion: mockPolicies.ruleVersion,
-        ruleUpdatedAt: new Date(mockPolicies.ruleUpdatedAt),
-        dnsProfile: mockPolicies.dnsProfile,
+        ruleVersion: "managed",
+        ruleUpdatedAt: new Date(),
+        dnsProfile: "default",
         blockAds: mockPolicies.features.blockAds,
         chinaDirect: mockPolicies.features.chinaDirect,
         aiServicesProxy: mockPolicies.features.aiServicesProxy,
@@ -1641,16 +1600,6 @@ export class DevDataService implements OnModuleInit {
         changelog: mockVersion.changelog,
         downloadUrl: mockVersion.downloadUrl ?? null
       }
-    });
-
-    await this.prisma.strategyGroup.createMany({
-      data: mockPolicies.strategyGroups.map((item) => ({
-        id: item.id,
-        policyId: "default",
-        name: item.name,
-        description: item.description,
-        defaultNodeId: item.defaultNodeId
-      }))
     });
 
     await this.prisma.announcement.createMany({
@@ -1747,6 +1696,9 @@ function toNodeSummary(row: {
   probeLatencyMs?: number | null;
   protocol: string;
   security: string;
+  serverHost: string;
+  serverPort: number;
+  serverName: string;
 }): NodeSummaryDto {
   return {
     id: row.id,
@@ -1757,7 +1709,10 @@ function toNodeSummary(row: {
     recommended: row.recommended,
     latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
-    security: row.security as "reality"
+    security: row.security as "reality",
+    serverHost: row.serverHost,
+    serverPort: row.serverPort,
+    serverName: row.serverName
   };
 }
 
@@ -1798,8 +1753,7 @@ function toAdminSubscriptionRecord(row: {
     state: row.state,
     renewable: row.renewable,
     sourceAction: row.sourceAction,
-    lastSyncedAt: row.lastSyncedAt.toISOString()
-    ,
+    lastSyncedAt: row.lastSyncedAt.toISOString(),
     nodeCount,
     hasNodeAccess: nodeCount > 0
   };
@@ -1894,9 +1848,6 @@ function toAnnouncementDto(row: {
 function toAdminPolicyRecord(row: {
   defaultMode: string;
   modes: string[];
-  ruleVersion: string;
-  ruleUpdatedAt: Date;
-  dnsProfile: string;
   blockAds: boolean;
   chinaDirect: boolean;
   aiServicesProxy: boolean;
@@ -1905,20 +1856,10 @@ function toAdminPolicyRecord(row: {
   forceUpgrade: boolean;
   changelog: string[];
   downloadUrl: string | null;
-  strategyGroups: Array<{
-    id: string;
-    name: string;
-    description: string;
-    defaultNodeId: string;
-  }>;
 }): AdminPolicyRecordDto {
   return {
     defaultMode: row.defaultMode as PolicyBundleDto["defaultMode"],
     modes: row.modes as PolicyBundleDto["modes"],
-    strategyGroups: [],
-    ruleVersion: row.ruleVersion,
-    ruleUpdatedAt: row.ruleUpdatedAt.toISOString(),
-    dnsProfile: row.dnsProfile,
     features: {
       blockAds: row.blockAds,
       chinaDirect: row.chinaDirect,
@@ -2222,14 +2163,16 @@ function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {
 async function probeNodeConnectivity(
   host: string,
   port: number,
-  serverName: string,
-  subscriptionUrl: string | null
+  _serverName: string,
+  _subscriptionUrl: string | null
 ): Promise<{ status: NodeProbeStatus; latencyMs: number | null; error: string | null }> {
-  let latencyMs: number | null = null;
-  const errors: string[] = [];
-
   try {
-    latencyMs = await probeTcp(host, port);
+    const latencyMs = await probeTcp(host, port);
+    return {
+      status: "healthy",
+      latencyMs,
+      error: null
+    };
   } catch (error) {
     return {
       status: "offline",
@@ -2237,30 +2180,6 @@ async function probeNodeConnectivity(
       error: formatError(error)
     };
   }
-
-  let tlsHealthy = true;
-  try {
-    await probeTls(host, port, serverName || host);
-  } catch (error) {
-    tlsHealthy = false;
-    errors.push(`TLS:${formatError(error)}`);
-  }
-
-  let subscriptionHealthy = true;
-  if (subscriptionUrl) {
-    try {
-      await probeSubscriptionUrl(subscriptionUrl);
-    } catch (error) {
-      subscriptionHealthy = false;
-      errors.push(`订阅:${formatError(error)}`);
-    }
-  }
-
-  return {
-    status: tlsHealthy && subscriptionHealthy ? "healthy" : "degraded",
-    latencyMs,
-    error: errors.length > 0 ? errors.join(" | ") : null
-  };
 }
 
 function probeTcp(host: string, port: number) {
@@ -2287,49 +2206,6 @@ function probeTcp(host: string, port: number) {
       reject(error);
     });
   });
-}
-
-function probeTls(host: string, port: number, serverName: string) {
-  return new Promise<void>((resolve, reject) => {
-    const socket = tls.connect({
-      host,
-      port,
-      servername: serverName,
-      rejectUnauthorized: false,
-      timeout: 5000
-    });
-
-    const cleanup = () => {
-      socket.removeAllListeners();
-      socket.destroy();
-    };
-
-    socket.once("secureConnect", () => {
-      cleanup();
-      resolve();
-    });
-    socket.once("timeout", () => {
-      cleanup();
-      reject(new Error("TLS 超时"));
-    });
-    socket.once("error", (error: Error) => {
-      cleanup();
-      reject(error);
-    });
-  });
-}
-
-async function probeSubscriptionUrl(subscriptionUrl: string) {
-  const response = await undiciFetch(subscriptionUrl, {
-    signal: AbortSignal.timeout(5000),
-    dispatcher: createDispatcher(5000, true)
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  await response.arrayBuffer();
 }
 
 function formatError(error: unknown) {

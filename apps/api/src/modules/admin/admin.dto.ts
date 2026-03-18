@@ -1,18 +1,5 @@
 import { Type } from "class-transformer";
-import {
-  ArrayNotEmpty,
-  IsArray,
-  IsBoolean,
-  IsEmail,
-  IsIn,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  IsUrl,
-  Min,
-  MinLength
-} from "class-validator";
+import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength } from "class-validator";
 import type {
   AnnouncementDisplayMode,
   AnnouncementLevel,
@@ -420,25 +407,6 @@ export class UpdateAnnouncementDto {
   countdownSeconds?: number;
 }
 
-export class StrategyGroupDto {
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  id?: string;
-
-  @IsString()
-  @IsNotEmpty()
-  name!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  description!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  defaultNodeId!: string;
-}
-
 export class UpdatePolicyDto {
   @IsOptional()
   @IsIn(["global", "rule", "direct"])
@@ -449,21 +417,6 @@ export class UpdatePolicyDto {
   @ArrayNotEmpty()
   @IsIn(["global", "rule", "direct"], { each: true })
   modes?: ConnectionMode[];
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  ruleVersion?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  ruleUpdatedAt?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  dnsProfile?: string;
 
   @IsOptional()
   @IsBoolean()

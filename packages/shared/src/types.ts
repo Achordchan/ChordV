@@ -49,6 +49,9 @@ export interface NodeSummaryDto {
   latencyMs: number;
   protocol: "vless";
   security: "reality";
+  serverHost: string;
+  serverPort: number;
+  serverName: string;
 }
 
 export interface StrategyGroupDto {
@@ -61,10 +64,6 @@ export interface StrategyGroupDto {
 export interface PolicyBundleDto {
   defaultMode: ConnectionMode;
   modes: ConnectionMode[];
-  strategyGroups: StrategyGroupDto[];
-  ruleVersion: string;
-  ruleUpdatedAt: string;
-  dnsProfile: string;
   features: {
     blockAds: boolean;
     chinaDirect: boolean;
@@ -126,6 +125,11 @@ export interface GeneratedRuntimeConfigDto {
   localSocksPort: number;
   routingProfile: string;
   generatedAt: string;
+  features: {
+    blockAds: boolean;
+    chinaDirect: boolean;
+    aiServicesProxy: boolean;
+  };
   outbound: RuntimeOutboundDto;
 }
 
@@ -449,10 +453,6 @@ export interface CreateTeamSubscriptionInputDto {
 export interface UpdatePolicyInputDto {
   defaultMode?: ConnectionMode;
   modes?: ConnectionMode[];
-  strategyGroups?: StrategyGroupInputDto[];
-  ruleVersion?: string;
-  ruleUpdatedAt?: string;
-  dnsProfile?: string;
   blockAds?: boolean;
   chinaDirect?: boolean;
   aiServicesProxy?: boolean;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Accordion,
   ActionIcon,
+  Alert,
   AppShell,
   Badge,
   Button,
@@ -52,7 +53,6 @@ import type {
   ImportNodeInputDto,
   PlanScope,
   RenewSubscriptionInputDto,
-  SubscriptionNodeAccessDto,
   SubscriptionState,
   TeamMemberRole,
   TeamStatus,
@@ -226,9 +226,6 @@ type AnnouncementFormState = {
 type PolicyFormState = {
   defaultMode: ConnectionMode;
   modes: ConnectionMode[];
-  ruleVersion: string;
-  ruleUpdatedAt: string;
-  dnsProfile: string;
   blockAds: boolean;
   chinaDirect: boolean;
   aiServicesProxy: boolean;
@@ -336,9 +333,10 @@ export function App() {
       filterByKeyword(snapshot?.plans ?? [], search.plans, (item) => [item.name, String(item.totalTrafficGb)]),
     [snapshot?.plans, search.plans]
   );
+  const allSubscriptions = useMemo(() => snapshot?.subscriptions ?? [], [snapshot?.subscriptions]);
   const subscriptions = useMemo(
     () =>
-      filterByKeyword(snapshot?.subscriptions ?? [], search.subscriptions, (item) => [
+      filterByKeyword(allSubscriptions, search.subscriptions, (item) => [
         item.userEmail ?? "",
         item.userDisplayName ?? "",
         item.teamName ?? "",
@@ -346,7 +344,7 @@ export function App() {
         item.state,
         item.sourceAction
       ]),
-    [snapshot?.subscriptions, search.subscriptions]
+    [allSubscriptions, search.subscriptions]
   );
   const teams = useMemo(() => snapshot?.teams ?? [], [snapshot?.teams]);
   const filteredTeams = useMemo(
@@ -887,9 +885,6 @@ export function App() {
           updatePolicy({
             defaultMode: policyForm.defaultMode,
             modes: policyForm.modes,
-            ruleVersion: policyForm.ruleVersion,
-            ruleUpdatedAt: fromDateTimeLocal(policyForm.ruleUpdatedAt),
-            dnsProfile: policyForm.dnsProfile,
             blockAds: policyForm.blockAds,
             chinaDirect: policyForm.chinaDirect,
             aiServicesProxy: policyForm.aiServicesProxy,
@@ -1124,7 +1119,12 @@ export function App() {
                     </Tabs.Panel>
                     <Tabs.Panel value="team" pt="md">
                       <Accordion variant="separated" radius="xl">
-                        {filteredTeams.map((item) => (
+                        {filteredTeams.map((item) => {
+                          const teamSubscriptionRecord = item.currentSubscription
+                            ? allSubscriptions.find((subscription) => subscription.id === item.currentSubscription?.id)
+                            : null;
+
+                          return (
                           <Accordion.Item key={item.id} value={item.id}>
                             <Accordion.Control>
                               <Group justify="space-between" wrap="nowrap">
@@ -1216,13 +1216,17 @@ export function App() {
                                       </Text>
                                       <Text fw={600}>
                                         {item.currentSubscription
-                                          ? item.currentSubscription.state === "active"
-                                            ? "按订阅配置"
-                                            : "订阅未生效"
+                                          ? teamSubscriptionRecord?.hasNodeAccess
+                                            ? `${teamSubscriptionRecord.nodeCount} 个节点`
+                                            : "未分配节点"
                                           : "未分配"}
                                       </Text>
                                       <Text size="sm" c="dimmed">
-                                        {item.currentSubscription ? "在 Team 订阅里设置可用节点" : "无共享订阅时不可分配节点"}
+                                        {item.currentSubscription
+                                          ? teamSubscriptionRecord?.hasNodeAccess
+                                            ? "仅团队成员可见这些节点"
+                                            : "当前订阅还未分配节点"
+                                          : "无共享订阅时不可分配节点"}
                                       </Text>
                                     </Stack>
                                   </Paper>
@@ -1290,7 +1294,8 @@ export function App() {
                               </Stack>
                             </Accordion.Panel>
                           </Accordion.Item>
-                        ))}
+                          );
+                        })}
                       </Accordion>
                     </Tabs.Panel>
                   </Tabs>
@@ -1430,7 +1435,12 @@ export function App() {
                         </Table.Tr>
                       </Table.Thead>
                       <Table.Tbody>
-                        {filteredTeamSubscriptions.map((team) => (
+                        {filteredTeamSubscriptions.map((team) => {
+                          const teamSubscriptionRecord = team.currentSubscription
+                            ? allSubscriptions.find((item) => item.id === team.currentSubscription?.id)
+                            : null;
+
+                          return (
                           <Table.Tr key={team.id}>
                             <Table.Td>
                               <Stack gap={0}>
@@ -1445,7 +1455,9 @@ export function App() {
                             <Table.Td>{team.currentSubscription ? `${team.currentSubscription.remainingTrafficGb} GB` : "-"}</Table.Td>
                             <Table.Td>
                               {team.currentSubscription ? (
-                                <Text c="orange.7">待配置节点</Text>
+                                <Text c={teamSubscriptionRecord?.hasNodeAccess ? undefined : "orange.7"}>
+                                  {teamSubscriptionRecord?.hasNodeAccess ? `${teamSubscriptionRecord.nodeCount} 个节点` : "未分配节点"}
+                                </Text>
                               ) : (
                                 <Text c="dimmed">未分配</Text>
                               )}
@@ -1479,7 +1491,8 @@ export function App() {
                               </RowActions>
                             </Table.Td>
                           </Table.Tr>
-                        ))}
+                          );
+                        })}
                       </Table.Tbody>
                     </DataTable>
                   </Tabs.Panel>
@@ -1620,22 +1633,6 @@ export function App() {
                             <Checkbox value="direct" label="直连模式" />
                           </Group>
                         </Checkbox.Group>
-                        <TextInput
-                          label="规则版本"
-                          value={policyForm.ruleVersion}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, ruleVersion: event.currentTarget.value } : current)}
-                        />
-                        <TextInput
-                          label="规则更新时间"
-                          type="datetime-local"
-                          value={policyForm.ruleUpdatedAt}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, ruleUpdatedAt: event.currentTarget.value } : current)}
-                        />
-                        <TextInput
-                          label="DNS 配置"
-                          value={policyForm.dnsProfile}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, dnsProfile: event.currentTarget.value } : current)}
-                        />
                         <Group grow>
                           <Switch
                             checked={policyForm.blockAds}
@@ -1786,9 +1783,7 @@ export function App() {
             <>
               <Select
                 label="用户"
-                data={snapshot.users
-                  .filter((item) => item.accountType === "personal")
-                  .map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
+                data={eligiblePersonalUsers.map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
                 value={subscriptionCreateForm.userId}
                 onChange={(value) => setSubscriptionCreateForm((current) => ({ ...current, userId: value || "" }))}
               />
@@ -2126,8 +2121,7 @@ export function App() {
               <Select
                 label="成员账号"
                 disabled={drawer.recordId !== null}
-                data={snapshot.users
-                  .filter((item) => item.role === "user" && item.accountType === "personal" && item.currentSubscription === null)
+                data={eligiblePersonalUsers
                   .map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
                 value={teamMemberForm.userId}
                 onChange={(value) => setTeamMemberForm((current) => ({ ...current, userId: value || "" }))}
@@ -2195,6 +2189,51 @@ export function App() {
             </Button>
             <Button color="red" onClick={() => void handleDeleteNode()}>
               删除
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={nodeAccessEditor !== null}
+        onClose={closeNodeAccessEditor}
+        title="节点授权"
+        centered
+        size="lg"
+      >
+        <Stack>
+          <Text size="sm" c="dimmed">
+            {nodeAccessEditor?.ownerLabel ?? "当前订阅"}
+          </Text>
+          <MultiSelect
+            label="可用节点"
+            placeholder={nodeAccessLoading ? "正在加载节点..." : "选择当前订阅可用的节点"}
+            searchable
+            nothingFoundMessage="没有匹配节点"
+            data={nodeOptions}
+            value={nodeAccessSelection}
+            onChange={setNodeAccessSelection}
+            disabled={nodeAccessLoading || nodeAccessSaving}
+          />
+          <Group justify="space-between">
+            <Text size="sm" c={nodeAccessSelection.length > 0 ? "dimmed" : "orange.7"}>
+              {nodeAccessSelection.length > 0 ? `已分配 ${nodeAccessSelection.length} 个节点` : "当前订阅未分配节点"}
+            </Text>
+            <Group gap="xs">
+              <Button variant="default" size="xs" onClick={() => setNodeAccessSelection(nodeOptions.map((item) => item.value))}>
+                全选
+              </Button>
+              <Button variant="default" size="xs" onClick={() => setNodeAccessSelection([])}>
+                清空
+              </Button>
+            </Group>
+          </Group>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={closeNodeAccessEditor}>
+              取消
+            </Button>
+            <Button onClick={() => void saveNodeAccessEditor()} loading={nodeAccessSaving || nodeAccessLoading}>
+              保存
             </Button>
           </Group>
         </Stack>
@@ -2413,9 +2452,6 @@ function toPolicyForm(policy: AdminPolicyRecordDto): PolicyFormState {
   return {
     defaultMode: policy.defaultMode,
     modes: policy.modes,
-    ruleVersion: policy.ruleVersion,
-    ruleUpdatedAt: toDateTimeLocal(policy.ruleUpdatedAt),
-    dnsProfile: policy.dnsProfile,
     blockAds: policy.features.blockAds,
     chinaDirect: policy.features.chinaDirect,
     aiServicesProxy: policy.features.aiServicesProxy,

@@ -341,9 +341,9 @@ async function main() {
     update: {
       defaultMode: mockPolicies.defaultMode,
       modes: mockPolicies.modes,
-      ruleVersion: mockPolicies.ruleVersion,
-      ruleUpdatedAt: new Date(mockPolicies.ruleUpdatedAt),
-      dnsProfile: mockPolicies.dnsProfile,
+      ruleVersion: "managed",
+      ruleUpdatedAt: new Date(),
+      dnsProfile: "default",
       blockAds: mockPolicies.features.blockAds,
       chinaDirect: mockPolicies.features.chinaDirect,
       aiServicesProxy: mockPolicies.features.aiServicesProxy,
@@ -357,9 +357,9 @@ async function main() {
       id: "default",
       defaultMode: mockPolicies.defaultMode,
       modes: mockPolicies.modes,
-      ruleVersion: mockPolicies.ruleVersion,
-      ruleUpdatedAt: new Date(mockPolicies.ruleUpdatedAt),
-      dnsProfile: mockPolicies.dnsProfile,
+      ruleVersion: "managed",
+      ruleUpdatedAt: new Date(),
+      dnsProfile: "default",
       blockAds: mockPolicies.features.blockAds,
       chinaDirect: mockPolicies.features.chinaDirect,
       aiServicesProxy: mockPolicies.features.aiServicesProxy,
@@ -371,24 +371,9 @@ async function main() {
     }
   });
 
-  for (const strategy of mockPolicies.strategyGroups) {
-    await prisma.strategyGroup.upsert({
-      where: { id: strategy.id },
-      update: {
-        policyId: "default",
-        name: strategy.name,
-        description: strategy.description,
-        defaultNodeId: strategy.defaultNodeId
-      },
-      create: {
-        id: strategy.id,
-        policyId: "default",
-        name: strategy.name,
-        description: strategy.description,
-        defaultNodeId: strategy.defaultNodeId
-      }
-    });
-  }
+  await prisma.strategyGroup.deleteMany({
+    where: { policyId: "default" }
+  });
 
   for (const announcement of mockAnnouncements) {
     await prisma.announcement.upsert({
