@@ -12,8 +12,5 @@ command = "pnpm dev:mac"
 
 [[actions]]
 name = "后台"
-icon = "tool"
-command = '''
-cd "/Users/achordchan/Downloads/不同步的桌面/项目/ChordV"
-pnpm dev:admin -- --host 127.0.0.1
-'''
+icon = "run"
+command = "pnpm dev:ops"

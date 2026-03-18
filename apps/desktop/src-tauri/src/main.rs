@@ -4,13 +4,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs::{self, File},
+    net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
     time::Duration,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, RunEvent, State};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -560,6 +561,18 @@ fn refresh_child_state(state: &mut RuntimeState) {
             }
         }
     }
+
+    if (state.status == "connected" || state.status == "connecting")
+        && (!is_port_open(17890) && !is_port_open(17891))
+    {
+        if cfg!(target_os = "macos") {
+            let _ = clear_proxy();
+        }
+        state.status = "error".into();
+        state.active_pid = None;
+        state.child = None;
+        state.last_error = Some("内核未运行".into());
+    }
 }
 
 fn stop_runtime_process(state: &mut RuntimeState) {
@@ -573,6 +586,17 @@ fn stop_runtime_process(state: &mut RuntimeState) {
     }
 
     state.active_pid = None;
+}
+
+fn shutdown_runtime(state: &mut RuntimeState) {
+    if cfg!(target_os = "macos") {
+        let _ = clear_proxy();
+    }
+
+    stop_runtime_process(state);
+    state.status = "idle".into();
+    state.active_session_id = None;
+    state.last_error = None;
 }
 
 fn tail_log(path: &Path, lines: usize) -> String {
@@ -590,6 +614,10 @@ fn tail_log(path: &Path, lines: usize) -> String {
         .collect::<Vec<_>>();
 
     collected.join("\n")
+}
+
+fn is_port_open(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
 fn to_runtime_status_response(state: &RuntimeState) -> RuntimeStatusResponse {
@@ -699,15 +727,65 @@ fn network_services() -> Vec<String> {
     }
 }
 
+fn cleanup_stale_runtime(app: &AppHandle) {
+    let runtime_dir = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+        .join("runtime");
+
+    let stale_binary = runtime_dir.join("bin").join("xray");
+    if stale_binary.exists() {
+        let _ = Command::new("pkill")
+            .args(["-f", &stale_binary.to_string_lossy()])
+            .status();
+    }
+
+    let _ = fs::remove_dir_all(runtime_dir.join("bin").join("cache"));
+
+    if let Ok(entries) = fs::read_dir(&runtime_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        let _ = clear_proxy();
+    }
+}
+
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(Mutex::new(RuntimeState::default()))
+        .setup(|app| {
+            cleanup_stale_runtime(&app.handle());
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             runtime_status,
             runtime_logs,
             connect_runtime,
             disconnect_runtime
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+            let state: State<'_, Mutex<RuntimeState>> = app_handle.state();
+            if let Ok(mut state) = state.lock() {
+                shutdown_runtime(&mut state);
+            } else if cfg!(target_os = "macos") {
+                let _ = clear_proxy();
+            }
+            cleanup_stale_runtime(app_handle);
+        }
+        _ => {}
+    });
 }

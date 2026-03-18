@@ -5,7 +5,6 @@ import {
   mockAdmin,
   mockAnnouncements,
   mockNodes,
-  mockPanels,
   mockPolicies,
   mockSubscription,
   mockUser,
@@ -17,8 +16,8 @@ const prisma = new PrismaClient();
 async function main() {
   const demoPasswordHash = await bcrypt.hash("demo123456", 10);
   const adminPasswordHash = await bcrypt.hash("admin123456", 10);
-  const demoPanelClientEmail = process.env.CHORDV_DEMO_PANEL_CLIENT_EMAIL || mockUser.email;
-  const defaultPanelBaseUrl = process.env.CHORDV_PANEL_DEFAULT_URL;
+  const ownerPasswordHash = await bcrypt.hash("team123456", 10);
+  const memberPasswordHash = await bcrypt.hash("team123456", 10);
 
   await prisma.user.upsert({
     where: { email: mockUser.email },
@@ -60,21 +59,80 @@ async function main() {
     }
   });
 
+  await prisma.user.upsert({
+    where: { email: "team-owner@chordv.app" },
+    update: {
+      displayName: "团队负责人",
+      role: "user",
+      status: "active",
+      passwordHash: ownerPasswordHash,
+      lastSeenAt: new Date()
+    },
+    create: {
+      id: "user_team_owner_001",
+      email: "team-owner@chordv.app",
+      displayName: "团队负责人",
+      role: "user",
+      status: "active",
+      passwordHash: ownerPasswordHash,
+      lastSeenAt: new Date()
+    }
+  });
+
+  await prisma.user.upsert({
+    where: { email: "team-member@chordv.app" },
+    update: {
+      displayName: "团队成员",
+      role: "user",
+      status: "active",
+      passwordHash: memberPasswordHash,
+      lastSeenAt: new Date()
+    },
+    create: {
+      id: "user_team_member_001",
+      email: "team-member@chordv.app",
+      displayName: "团队成员",
+      role: "user",
+      status: "active",
+      passwordHash: memberPasswordHash,
+      lastSeenAt: new Date()
+    }
+  });
+
   await prisma.plan.upsert({
     where: { id: mockSubscription.planId },
     update: {
       name: mockSubscription.planName,
+      scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
-      durationDays: 30,
       renewable: mockSubscription.renewable,
       isActive: true
     },
     create: {
       id: mockSubscription.planId,
       name: mockSubscription.planName,
+      scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
-      durationDays: 30,
       renewable: mockSubscription.renewable,
+      isActive: true
+    }
+  });
+
+  await prisma.plan.upsert({
+    where: { id: "plan_team_500" },
+    update: {
+      name: "团队版 500G",
+      scope: "team",
+      totalTrafficGb: 500,
+      renewable: true,
+      isActive: true
+    },
+    create: {
+      id: "plan_team_500",
+      name: "团队版 500G",
+      scope: "team",
+      totalTrafficGb: 500,
+      renewable: true,
       isActive: true
     }
   });
@@ -83,28 +141,146 @@ async function main() {
     where: { id: "subscription_demo_001" },
     update: {
       userId: mockUser.id,
+      teamId: null,
       planId: mockSubscription.planId,
-      panelClientEmail: demoPanelClientEmail,
       totalTrafficGb: mockSubscription.totalTrafficGb,
       usedTrafficGb: mockSubscription.usedTrafficGb,
       remainingTrafficGb: mockSubscription.remainingTrafficGb,
       expireAt: new Date(mockSubscription.expireAt),
       state: mockSubscription.state,
       renewable: mockSubscription.renewable,
+      sourceAction: "created",
       lastSyncedAt: new Date(mockSubscription.lastSyncedAt)
     },
     create: {
       id: "subscription_demo_001",
       userId: mockUser.id,
+      teamId: null,
       planId: mockSubscription.planId,
-      panelClientEmail: demoPanelClientEmail,
       totalTrafficGb: mockSubscription.totalTrafficGb,
       usedTrafficGb: mockSubscription.usedTrafficGb,
       remainingTrafficGb: mockSubscription.remainingTrafficGb,
       expireAt: new Date(mockSubscription.expireAt),
       state: mockSubscription.state,
       renewable: mockSubscription.renewable,
+      sourceAction: "created",
       lastSyncedAt: new Date(mockSubscription.lastSyncedAt)
+    }
+  });
+
+  await prisma.team.upsert({
+    where: { id: "team_demo_001" },
+    update: {
+      name: "示例团队",
+      ownerUserId: "user_team_owner_001",
+      status: "active"
+    },
+    create: {
+      id: "team_demo_001",
+      name: "示例团队",
+      ownerUserId: "user_team_owner_001",
+      status: "active"
+    }
+  });
+
+  await prisma.teamMember.upsert({
+    where: { userId: "user_team_owner_001" },
+    update: {
+      id: "member_owner_001",
+      teamId: "team_demo_001",
+      userId: "user_team_owner_001",
+      role: "owner"
+    },
+    create: {
+      id: "member_owner_001",
+      teamId: "team_demo_001",
+      userId: "user_team_owner_001",
+      role: "owner"
+    }
+  });
+
+  await prisma.teamMember.upsert({
+    where: { userId: "user_team_member_001" },
+    update: {
+      id: "member_user_001",
+      teamId: "team_demo_001",
+      userId: "user_team_member_001",
+      role: "member"
+    },
+    create: {
+      id: "member_user_001",
+      teamId: "team_demo_001",
+      userId: "user_team_member_001",
+      role: "member"
+    }
+  });
+
+  await prisma.subscription.upsert({
+    where: { id: "subscription_team_001" },
+    update: {
+      userId: null,
+      teamId: "team_demo_001",
+      planId: "plan_team_500",
+      totalTrafficGb: 500,
+      usedTrafficGb: 120,
+      remainingTrafficGb: 380,
+      expireAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
+      state: "active",
+      renewable: true,
+      sourceAction: "created",
+      lastSyncedAt: new Date()
+    },
+    create: {
+      id: "subscription_team_001",
+      userId: null,
+      teamId: "team_demo_001",
+      planId: "plan_team_500",
+      totalTrafficGb: 500,
+      usedTrafficGb: 120,
+      remainingTrafficGb: 380,
+      expireAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
+      state: "active",
+      renewable: true,
+      sourceAction: "created",
+      lastSyncedAt: new Date()
+    }
+  });
+
+  await prisma.trafficLedger.upsert({
+    where: { id: "ledger_001" },
+    update: {
+      teamId: "team_demo_001",
+      userId: "user_team_owner_001",
+      subscriptionId: "subscription_team_001",
+      usedTrafficGb: 42,
+      recordedAt: new Date()
+    },
+    create: {
+      id: "ledger_001",
+      teamId: "team_demo_001",
+      userId: "user_team_owner_001",
+      subscriptionId: "subscription_team_001",
+      usedTrafficGb: 42,
+      recordedAt: new Date()
+    }
+  });
+
+  await prisma.trafficLedger.upsert({
+    where: { id: "ledger_002" },
+    update: {
+      teamId: "team_demo_001",
+      userId: "user_team_member_001",
+      subscriptionId: "subscription_team_001",
+      usedTrafficGb: 78,
+      recordedAt: new Date()
+    },
+    create: {
+      id: "ledger_002",
+      teamId: "team_demo_001",
+      userId: "user_team_member_001",
+      subscriptionId: "subscription_team_001",
+      usedTrafficGb: 78,
+      recordedAt: new Date()
     }
   });
 
@@ -127,7 +303,13 @@ async function main() {
         realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
         shortId: "6ba85179",
         serverName: "cdn.cloudflare.com",
-        fingerprint: "chrome"
+        fingerprint: "chrome",
+        spiderX: "/",
+        subscriptionUrl: null,
+        probeStatus: "unknown",
+        probeLatencyMs: null,
+        probeCheckedAt: null,
+        probeError: null
       },
       create: {
         id: node.id,
@@ -146,7 +328,10 @@ async function main() {
         realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
         shortId: "6ba85179",
         serverName: "cdn.cloudflare.com",
-        fingerprint: "chrome"
+        fingerprint: "chrome",
+        spiderX: "/",
+        subscriptionUrl: null,
+        probeStatus: "unknown"
       }
     });
   }
@@ -165,7 +350,8 @@ async function main() {
       currentVersion: mockVersion.currentVersion,
       minimumVersion: mockVersion.minimumVersion,
       forceUpgrade: mockVersion.forceUpgrade,
-      changelog: mockVersion.changelog
+      changelog: mockVersion.changelog,
+      downloadUrl: mockVersion.downloadUrl ?? null
     },
     create: {
       id: "default",
@@ -180,7 +366,8 @@ async function main() {
       currentVersion: mockVersion.currentVersion,
       minimumVersion: mockVersion.minimumVersion,
       forceUpgrade: mockVersion.forceUpgrade,
-      changelog: mockVersion.changelog
+      changelog: mockVersion.changelog,
+      downloadUrl: mockVersion.downloadUrl ?? null
     }
   });
 
@@ -203,34 +390,6 @@ async function main() {
     });
   }
 
-  for (const panel of mockPanels) {
-    const panelBaseUrl = panel.panelId === "panel_hk_1" && defaultPanelBaseUrl ? defaultPanelBaseUrl : panel.baseUrl;
-    await prisma.panel.upsert({
-      where: { id: panel.panelId },
-      update: {
-        name: panel.name,
-        baseUrl: panelBaseUrl,
-        apiBasePath: panel.apiBasePath ?? "/panel",
-        health: panel.health,
-        lastSyncedAt: new Date(panel.lastSyncedAt),
-        latencyMs: panel.latencyMs,
-        activeUsers: panel.activeUsers,
-        syncEnabled: panel.panelId === "panel_hk_1"
-      },
-      create: {
-        id: panel.panelId,
-        name: panel.name,
-        baseUrl: panelBaseUrl,
-        apiBasePath: panel.apiBasePath ?? "/panel",
-        health: panel.health,
-        lastSyncedAt: new Date(panel.lastSyncedAt),
-        latencyMs: panel.latencyMs,
-        activeUsers: panel.activeUsers,
-        syncEnabled: panel.panelId === "panel_hk_1"
-      }
-    });
-  }
-
   for (const announcement of mockAnnouncements) {
     await prisma.announcement.upsert({
       where: { id: announcement.id },
@@ -239,7 +398,9 @@ async function main() {
         body: announcement.body,
         level: announcement.level,
         publishedAt: new Date(announcement.publishedAt),
-        isActive: true
+        isActive: true,
+        displayMode: announcement.displayMode,
+        countdownSeconds: announcement.countdownSeconds
       },
       create: {
         id: announcement.id,
@@ -247,7 +408,9 @@ async function main() {
         body: announcement.body,
         level: announcement.level,
         publishedAt: new Date(announcement.publishedAt),
-        isActive: true
+        isActive: true,
+        displayMode: announcement.displayMode,
+        countdownSeconds: announcement.countdownSeconds
       }
     });
   }

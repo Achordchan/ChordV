@@ -32,8 +32,8 @@ export class ClientController {
   }
 
   @Get("nodes")
-  getNodes() {
-    return this.clientService.getNodes();
+  getNodes(@Headers("authorization") authorization?: string) {
+    return this.clientService.getNodes(authorization);
   }
 
   @Get("policies")

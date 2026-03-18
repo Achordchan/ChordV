@@ -13,8 +13,8 @@ export class ClientService {
     return this.devDataService.getSubscription(token);
   }
 
-  getNodes() {
-    return this.devDataService.getNodes();
+  getNodes(token?: string) {
+    return this.devDataService.getNodes(token);
   }
 
   getPolicies() {
@@ -30,7 +30,7 @@ export class ClientService {
   }
 
   disconnect(token?: string) {
-    return this.devDataService.disconnect(token);
+    return this.devDataService.disconnect();
   }
 
   getRuntime() {

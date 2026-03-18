@@ -68,3 +68,17 @@ export async function loadDesktopRuntimeLogs(): Promise<DesktopRuntimeLogs> {
 
   return invoke("runtime_logs");
 }
+
+export async function focusDesktopWindow() {
+  if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    window.focus();
+    return;
+  }
+
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().setFocus();
+  } catch {
+    window.focus();
+  }
+}

@@ -17,6 +17,21 @@ enum UserStatus {
   disabled
 }
 
+enum PlanScope {
+  personal
+  team
+}
+
+enum TeamStatus {
+  active
+  disabled
+}
+
+enum TeamMemberRole {
+  owner
+  member
+}
+
 enum SubscriptionState {
   active
   expired
@@ -24,7 +39,15 @@ enum SubscriptionState {
   paused
 }
 
-enum PanelHealth {
+enum SubscriptionSourceAction {
+  created
+  renewed
+  plan_changed
+  adjusted
+}
+
+enum NodeProbeStatus {
+  unknown
   healthy
   degraded
   offline
@@ -36,24 +59,33 @@ enum AnnouncementLevel {
   success
 }
 
+enum AnnouncementDisplayMode {
+  passive
+  modal_confirm
+  modal_countdown
+}
+
 model User {
-  id           String         @id
-  email        String         @unique
-  displayName  String
-  role         UserRole
-  status       UserStatus
-  passwordHash String
-  lastSeenAt   DateTime
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  subscriptions Subscription[]
+  id                   String              @id
+  email                String              @unique
+  displayName          String
+  role                 UserRole
+  status               UserStatus
+  passwordHash         String
+  lastSeenAt           DateTime
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  subscriptions        Subscription[]
+  ownedTeams           Team[]              @relation("TeamOwner")
+  teamMemberships      TeamMember[]
+  trafficLedgerEntries TrafficLedger[]
 }
 
 model Plan {
   id             String         @id
   name           String
+  scope          PlanScope      @default(personal)
   totalTrafficGb Float
-  durationDays   Int
   renewable      Boolean
   isActive       Boolean        @default(true)
   createdAt      DateTime       @default(now())
@@ -62,28 +94,70 @@ model Plan {
 }
 
 model Subscription {
-  id                 String            @id
-  userId             String
+  id                 String                   @id
+  userId             String?
+  teamId             String?
   planId             String
-  panelClientEmail   String?
   totalTrafficGb     Float
   usedTrafficGb      Float
   remainingTrafficGb Float
   expireAt           DateTime
   state              SubscriptionState
   renewable          Boolean
+  sourceAction       SubscriptionSourceAction @default(created)
   lastSyncedAt       DateTime
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  plan               Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
-  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+  plan               Plan                     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team               Team?                    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  trafficLedgerEntries TrafficLedger[]
+  nodeAccesses       SubscriptionNodeAccess[]
+}
 
-  @@unique([userId, planId])
+model Team {
+  id            String         @id
+  name          String
+  ownerUserId   String
+  status        TeamStatus
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  owner         User           @relation("TeamOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  members       TeamMember[]
+  subscriptions Subscription[]
+  trafficLedgerEntries TrafficLedger[]
+}
+
+model TeamMember {
+  id        String         @id
+  teamId    String
+  userId    String
+  role      TeamMemberRole
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  team      Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@unique([userId])
+}
+
+model TrafficLedger {
+  id             String       @id
+  teamId         String
+  userId         String
+  subscriptionId String
+  usedTrafficGb  Float
+  recordedAt     DateTime
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  team           Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 }
 
 model Node {
-  id               String   @id
-  panelId          String?
+  id               String          @id
   name             String
   region           String
   provider         String
@@ -100,29 +174,47 @@ model Node {
   shortId          String
   serverName       String
   fingerprint      String
-  spiderX          String   @default("/")
+  spiderX          String          @default("/")
   subscriptionUrl  String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  probeStatus      NodeProbeStatus @default(unknown)
+  probeLatencyMs   Int?
+  probeCheckedAt   DateTime?
+  probeError       String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  subscriptionAccesses SubscriptionNodeAccess[]
+}
+
+model SubscriptionNodeAccess {
+  id             String       @id
+  subscriptionId String
+  nodeId         String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  node           Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, nodeId])
 }
 
 model PolicyProfile {
-  id                String          @id
-  defaultMode       String
-  modes             String[]
-  ruleVersion       String
-  ruleUpdatedAt     DateTime
-  dnsProfile        String
-  blockAds          Boolean
-  chinaDirect       Boolean
-  aiServicesProxy   Boolean
-  currentVersion    String
-  minimumVersion    String
-  forceUpgrade      Boolean         @default(false)
-  changelog         String[]
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  strategyGroups    StrategyGroup[]
+  id              String          @id
+  defaultMode     String
+  modes           String[]
+  ruleVersion     String
+  ruleUpdatedAt   DateTime
+  dnsProfile      String
+  blockAds        Boolean
+  chinaDirect     Boolean
+  aiServicesProxy Boolean
+  currentVersion  String
+  minimumVersion  String
+  forceUpgrade    Boolean         @default(false)
+  changelog       String[]
+  downloadUrl     String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  strategyGroups  StrategyGroup[]
 }
 
 model StrategyGroup {
@@ -134,29 +226,15 @@ model StrategyGroup {
   policy        PolicyProfile @relation(fields: [policyId], references: [id], onDelete: Cascade)
 }
 
-model Panel {
-  id           String      @id
-  name         String
-  baseUrl      String
-  apiBasePath  String      @default("/panel")
-  username     String?
-  password     String?
-  syncEnabled  Boolean     @default(true)
-  health       PanelHealth
-  lastSyncedAt DateTime
-  latencyMs    Int
-  activeUsers  Int
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-}
-
 model Announcement {
-  id          String            @id
-  title       String
-  body        String
-  level       AnnouncementLevel
-  publishedAt DateTime
-  isActive    Boolean           @default(true)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id              String                  @id
+  title           String
+  body            String
+  level           AnnouncementLevel
+  publishedAt     DateTime
+  isActive        Boolean                 @default(true)
+  displayMode     AnnouncementDisplayMode @default(passive)
+  countdownSeconds Int                    @default(0)
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
 }

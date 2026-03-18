@@ -1,18 +1,22 @@
 import type {
-  AdminPanelConfigDto,
+  AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
+  AdminPlanRecordDto,
+  AdminPolicyRecordDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
+  AdminTeamRecordDto,
+  AdminUserRecordDto,
   AnnouncementDto,
   AuthSessionDto,
   ClientBootstrapDto,
   ClientVersionDto,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
-  PanelSyncStatusDto,
   PolicyBundleDto,
   SubscriptionStatusDto,
-  UserProfileDto
+  UserProfileDto,
+  UserSubscriptionSummaryDto
 } from "./types";
 
 export const mockUser: UserProfileDto = {
@@ -34,24 +38,29 @@ export const mockAdmin: UserProfileDto = {
 };
 
 export const mockSubscription: SubscriptionStatusDto = {
+  id: "subscription_demo_001",
+  ownerType: "user",
   planId: "plan_pro_100",
-  planName: "Pro 100G",
+  planName: "专业版 100G",
   totalTrafficGb: 100,
   usedTrafficGb: 36.4,
   remainingTrafficGb: 63.6,
   expireAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 18).toISOString(),
   state: "active",
   renewable: true,
-  lastSyncedAt: new Date().toISOString()
+  lastSyncedAt: new Date().toISOString(),
+  teamId: null,
+  teamName: null,
+  memberUsedTrafficGb: null
 };
 
 export const mockNodes: NodeSummaryDto[] = [
   {
     id: "node_hk_01",
-    name: "Hong Kong 01",
-    region: "Hong Kong",
-    provider: "Akari",
-    tags: ["streaming", "low-latency"],
+    name: "香港 01",
+    region: "香港",
+    provider: "自有节点",
+    tags: ["流媒体", "低延迟"],
     recommended: true,
     latencyMs: 32,
     protocol: "vless",
@@ -59,10 +68,10 @@ export const mockNodes: NodeSummaryDto[] = [
   },
   {
     id: "node_sg_01",
-    name: "Singapore 01",
-    region: "Singapore",
-    provider: "Akari",
-    tags: ["ai", "stable"],
+    name: "新加坡 01",
+    region: "新加坡",
+    provider: "自有节点",
+    tags: ["AI", "稳定"],
     recommended: false,
     latencyMs: 68,
     protocol: "vless",
@@ -70,10 +79,10 @@ export const mockNodes: NodeSummaryDto[] = [
   },
   {
     id: "node_jp_01",
-    name: "Tokyo 01",
-    region: "Japan",
-    provider: "Akari",
-    tags: ["gaming", "backup"],
+    name: "日本 01",
+    region: "日本",
+    provider: "自有节点",
+    tags: ["游戏", "备用"],
     recommended: false,
     latencyMs: 83,
     protocol: "vless",
@@ -87,14 +96,14 @@ export const mockPolicies: PolicyBundleDto = {
   strategyGroups: [
     {
       id: "sg_auto",
-      name: "Auto Route",
-      description: "Balanced routing for AI, streaming, and direct mainland traffic",
+      name: "自动选择",
+      description: "默认策略",
       defaultNodeId: "node_hk_01"
     },
     {
       id: "sg_streaming",
-      name: "Streaming Priority",
-      description: "Prefer media optimized routes",
+      name: "流媒体优先",
+      description: "优先流媒体体验",
       defaultNodeId: "node_sg_01"
     }
   ],
@@ -111,17 +120,21 @@ export const mockPolicies: PolicyBundleDto = {
 export const mockAnnouncements: AnnouncementDto[] = [
   {
     id: "ann_001",
-    title: "运行架构已就绪",
-    body: "ChordV 现在已经通过业务后端统一下发受控运行配置。",
+    title: "客户端已升级",
+    body: "管理后台已支持完整资源维护。",
     level: "success",
-    publishedAt: new Date().toISOString()
+    publishedAt: new Date().toISOString(),
+    displayMode: "passive",
+    countdownSeconds: 0
   },
   {
     id: "ann_002",
-    title: "例行维护提醒",
-    body: "香港面板将在本周末进行证书轮换维护。",
+    title: "维护提醒",
+    body: "本周末将进行规则集更新。",
     level: "warning",
-    publishedAt: new Date().toISOString()
+    publishedAt: new Date().toISOString(),
+    displayMode: "modal_confirm",
+    countdownSeconds: 0
   }
 ];
 
@@ -129,42 +142,17 @@ export const mockVersion: ClientVersionDto = {
   currentVersion: "0.1.0",
   minimumVersion: "0.1.0",
   forceUpgrade: false,
-  changelog: [
-    "桌面端原型已具备连接与断开链路",
-    "后台已具备用户、面板与公告视图",
-    "已接入 3x-ui 同步契约"
-  ]
+  changelog: ["后台工作台已上线", "节点导入改为订阅驱动", "客户端规则模式已更新"],
+  downloadUrl: "https://github.com/Achordchan/ChordV/releases"
 };
-
-export const mockPanels: PanelSyncStatusDto[] = [
-  {
-    panelId: "panel_hk_1",
-    name: "Hong Kong Edge",
-    health: "healthy",
-    baseUrl: "https://panel.hk.example.com",
-    apiBasePath: "/panel",
-    lastSyncedAt: new Date().toISOString(),
-    latencyMs: 118,
-    activeUsers: 142
-  },
-  {
-    panelId: "panel_sg_1",
-    name: "Singapore Edge",
-    health: "degraded",
-    baseUrl: "https://panel.sg.example.com",
-    apiBasePath: "/panel",
-    lastSyncedAt: new Date().toISOString(),
-    latencyMs: 191,
-    activeUsers: 88
-  }
-];
 
 export const mockBootstrap: ClientBootstrapDto = {
   user: mockUser,
   subscription: mockSubscription,
   policies: mockPolicies,
   announcements: mockAnnouncements,
-  version: mockVersion
+  version: mockVersion,
+  team: null
 };
 
 export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => {
@@ -179,33 +167,137 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
     generatedAt: new Date().toISOString(),
     outbound: {
       protocol: "vless",
-      server: `${node.region.toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
+      server: `${node.region.toLowerCase()}.edge.chordv.app`,
       port: 443,
       uuid: "d5076fbe-b935-4dc6-8f59-a056d05db6f3",
       flow: "xtls-rprx-vision",
       realityPublicKey: "5C3G02RWVBX3e2tHAh9d69Vk4g8JwG2Zx2N0TTTPD2M",
       shortId: "6ba85179",
       serverName: "cdn.cloudflare.com",
-      fingerprint: "chrome"
-      ,
+      fingerprint: "chrome",
       spiderX: "/"
     }
   };
 };
 
+const mockCurrentSubscription: UserSubscriptionSummaryDto = {
+  id: "subscription_demo_001",
+  ownerType: "user",
+  planId: mockSubscription.planId,
+  planName: mockSubscription.planName,
+  remainingTrafficGb: mockSubscription.remainingTrafficGb,
+  expireAt: mockSubscription.expireAt,
+  state: mockSubscription.state,
+  teamId: null,
+  teamName: null
+};
+
+export const mockAdminUsers: AdminUserRecordDto[] = [
+  {
+    ...mockAdmin,
+    accountType: "personal",
+    teamId: null,
+    teamName: null,
+    subscriptionCount: 0,
+    activeSubscriptionCount: 0,
+    currentSubscription: null
+  },
+  {
+    ...mockUser,
+    accountType: "personal",
+    teamId: null,
+    teamName: null,
+    subscriptionCount: 1,
+    activeSubscriptionCount: 1,
+    currentSubscription: mockCurrentSubscription
+  }
+];
+
+export const mockAdminPlans: AdminPlanRecordDto[] = [
+  {
+    id: mockSubscription.planId,
+    name: mockSubscription.planName,
+    scope: "personal",
+    totalTrafficGb: mockSubscription.totalTrafficGb,
+    renewable: true,
+    isActive: true,
+    subscriptionCount: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+];
+
+export const mockAdminSubscriptions: AdminSubscriptionRecordDto[] = [
+  {
+    id: "subscription_demo_001",
+    ownerType: "user",
+    userId: mockUser.id,
+    userEmail: mockUser.email,
+    userDisplayName: mockUser.displayName,
+    teamId: null,
+    teamName: null,
+    planId: mockSubscription.planId,
+    planName: mockSubscription.planName,
+    totalTrafficGb: mockSubscription.totalTrafficGb,
+    usedTrafficGb: mockSubscription.usedTrafficGb,
+    remainingTrafficGb: mockSubscription.remainingTrafficGb,
+    expireAt: mockSubscription.expireAt,
+    state: mockSubscription.state,
+    renewable: mockSubscription.renewable,
+    sourceAction: "created",
+    lastSyncedAt: mockSubscription.lastSyncedAt
+  }
+];
+
+export const mockAdminTeams: AdminTeamRecordDto[] = [];
+
+export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
+  ...node,
+  subscriptionUrl: null,
+  serverName: "aws.amazon.com",
+  serverHost: `${node.region.toLowerCase()}.edge.chordv.app`,
+  serverPort: 443,
+  shortId: "6ba85179",
+  spiderX: "/",
+  probeStatus: "unknown",
+  probeLatencyMs: null,
+  probeCheckedAt: null,
+  probeError: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+}));
+
+export const mockAdminAnnouncements: AdminAnnouncementRecordDto[] = mockAnnouncements.map((item) => ({
+  ...item,
+  isActive: true,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+}));
+
+export const mockAdminPolicy: AdminPolicyRecordDto = {
+  ...mockPolicies,
+  currentVersion: mockVersion.currentVersion,
+  minimumVersion: mockVersion.minimumVersion,
+  forceUpgrade: mockVersion.forceUpgrade,
+  changelog: mockVersion.changelog,
+  downloadUrl: mockVersion.downloadUrl
+};
+
 export const mockAdminSnapshot: AdminSnapshotDto = {
   dashboard: {
-    users: 248,
-    activeSubscriptions: 201,
-    activeNodes: mockNodes.length,
-    announcements: mockAnnouncements.length,
-    panelHealth: "healthy"
+    users: mockAdminUsers.length,
+    activeSubscriptions: mockAdminSubscriptions.filter((item) => item.state === "active").length,
+    activeNodes: mockAdminNodes.length,
+    announcements: mockAdminAnnouncements.filter((item) => item.isActive).length,
+    activePlans: mockAdminPlans.filter((item) => item.isActive).length
   },
-  users: [mockAdmin, mockUser],
-  subscriptions: [toAdminSubscription(mockSubscription)],
-  nodes: toAdminNodes(mockNodes),
-  panels: toAdminPanels(mockPanels),
-  announcements: mockAnnouncements
+  users: mockAdminUsers,
+  plans: mockAdminPlans,
+  subscriptions: mockAdminSubscriptions,
+  teams: mockAdminTeams,
+  nodes: mockAdminNodes,
+  announcements: mockAdminAnnouncements,
+  policy: mockAdminPolicy
 };
 
 export const mockAuthSession = (email: string): AuthSessionDto => ({
@@ -216,51 +308,4 @@ export const mockAuthSession = (email: string): AuthSessionDto => ({
 
 function tokenize(value: string) {
   return value.trim().toLowerCase().replaceAll("@", "_at_").replaceAll(".", "_dot_");
-}
-
-function toAdminSubscription(subscription: typeof mockSubscription): AdminSubscriptionRecordDto {
-  return {
-    id: "subscription_demo_001",
-    userId: mockUser.id,
-    userEmail: mockUser.email,
-    userDisplayName: mockUser.displayName,
-    planId: subscription.planId,
-    planName: subscription.planName,
-    panelClientEmail: "Admin",
-    totalTrafficGb: subscription.totalTrafficGb,
-    usedTrafficGb: subscription.usedTrafficGb,
-    remainingTrafficGb: subscription.remainingTrafficGb,
-    expireAt: subscription.expireAt,
-    state: subscription.state,
-    renewable: subscription.renewable,
-    lastSyncedAt: subscription.lastSyncedAt
-  };
-}
-
-function toAdminPanels(panels: typeof mockPanels): AdminPanelConfigDto[] {
-  return panels.map((panel) => ({
-    panelId: panel.panelId,
-    name: panel.name,
-    baseUrl: panel.baseUrl,
-    apiBasePath: panel.apiBasePath ?? "/panel",
-    username: panel.panelId === "panel_hk_1" ? "achord" : null,
-    syncEnabled: panel.panelId === "panel_hk_1",
-    health: panel.health,
-    lastSyncedAt: panel.lastSyncedAt,
-    latencyMs: panel.latencyMs,
-    activeUsers: panel.activeUsers
-  }));
-}
-
-function toAdminNodes(nodes: typeof mockNodes): AdminNodeRecordDto[] {
-  return nodes.map((node) => ({
-    ...node,
-    panelId: node.id === "node_hk_01" ? "panel_hk_1" : null,
-    subscriptionUrl: null,
-    serverName: "aws.amazon.com",
-    serverHost: `${node.region.toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
-    serverPort: 443,
-    shortId: "6ba85179",
-    spiderX: "/"
-  }));
 }

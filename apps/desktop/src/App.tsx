@@ -1,12 +1,15 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Alert,
   AppShell,
   Badge,
   Button,
   Card,
   Code,
   Group,
+  LoadingOverlay,
   Loader,
+  Modal,
   Paper,
   ScrollArea,
   SegmentedControl,
@@ -17,6 +20,7 @@ import {
   Title
 } from "@mantine/core";
 import type {
+  AnnouncementDto,
   AuthSessionDto,
   ClientBootstrapDto,
   ConnectionMode,
@@ -28,6 +32,7 @@ import { connectSession, disconnectSession, fetchBootstrap, fetchNodes, login } 
 import {
   invokeDesktopConnect,
   invokeDesktopDisconnect,
+  focusDesktopWindow,
   loadDesktopRuntimeLogs,
   loadDesktopRuntimeStatus,
   type DesktopRuntimeStatus
@@ -35,6 +40,7 @@ import {
 
 const defaultEmail = "demo@chordv.app";
 const defaultPassword = "demo123456";
+const appVersion = import.meta.env.VITE_APP_VERSION ?? "0.1.0";
 
 export function App() {
   const [session, setSession] = useState<AuthSessionDto | null>(null);
@@ -56,9 +62,15 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
   const [actionBusy, setActionBusy] = useState<"connect" | "disconnect" | null>(null);
+  const [booting, setBooting] = useState(true);
+  const [forcedAnnouncement, setForcedAnnouncement] = useState<AnnouncementDto | null>(null);
+  const [countdown, setCountdown] = useState(0);
 
   useEffect(() => {
-    void refreshRuntime();
+    void focusDesktopWindow();
+    void refreshRuntime().finally(() => {
+      window.setTimeout(() => setBooting(false), 500);
+    });
     const timer = window.setInterval(() => {
       void refreshRuntime();
     }, 2000);
@@ -66,10 +78,43 @@ export function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!bootstrap) {
+      setForcedAnnouncement(null);
+      setCountdown(0);
+      return;
+    }
+
+    const pending = bootstrap.announcements.find((item) => {
+      if (item.displayMode === "passive") {
+        return false;
+      }
+      return localStorage.getItem(announcementStorageKey(item.id)) !== "ack";
+    });
+
+    setForcedAnnouncement(pending ?? null);
+    setCountdown(pending?.displayMode === "modal_countdown" ? pending.countdownSeconds : 0);
+  }, [bootstrap]);
+
+  useEffect(() => {
+    if (!forcedAnnouncement || forcedAnnouncement.displayMode !== "modal_countdown" || countdown <= 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setCountdown((current) => current - 1);
+    }, 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [forcedAnnouncement, countdown]);
+
   async function refreshRuntime() {
     try {
       const [status, logs] = await Promise.all([loadDesktopRuntimeStatus(), loadDesktopRuntimeLogs()]);
       setDesktopStatus(status);
+      if (!status.activeSessionId && status.status !== "connecting" && status.status !== "disconnecting") {
+        setRuntime(null);
+      }
       setRuntimeLog(logs.log);
     } catch {
       setDesktopStatus({
@@ -81,6 +126,7 @@ export function App() {
         activePid: null,
         lastError: null
       });
+      setRuntime(null);
       setRuntimeLog("");
     }
   }
@@ -160,15 +206,27 @@ export function App() {
     }
   }
 
+  function acknowledgeAnnouncement() {
+    if (!forcedAnnouncement) {
+      return;
+    }
+
+    localStorage.setItem(announcementStorageKey(forcedAnnouncement.id), "ack");
+    setForcedAnnouncement(null);
+    setCountdown(0);
+  }
+
   return (
-    <AppShell
-      navbar={{
-        width: 320,
-        breakpoint: "md"
-      }}
-      padding="lg"
-    >
-      <AppShell.Navbar p="lg">
+    <div style={{ position: "relative", minHeight: "100vh" }}>
+      <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ blur: 1 }} />
+      <AppShell
+        navbar={{
+          width: 320,
+          breakpoint: "md"
+        }}
+        padding="lg"
+      >
+        <AppShell.Navbar p="lg">
         <Stack justify="space-between" h="100%">
           <Stack gap="lg">
             <div>
@@ -207,11 +265,11 @@ export function App() {
             </Stack>
           </Paper>
         </Stack>
-      </AppShell.Navbar>
+        </AppShell.Navbar>
 
-      <AppShell.Main>
-        {!session || !bootstrap ? (
-          <Paper withBorder radius="xl" p="xl" maw={560}>
+        <AppShell.Main>
+          {!session || !bootstrap ? (
+            <Paper withBorder radius="xl" p="xl" maw={560}>
             <Stack>
               <Title order={3}>快速登录</Title>
               <Text c="dimmed">使用演示账号进入</Text>
@@ -220,18 +278,20 @@ export function App() {
               </Button>
               {error ? <Text c="red.4">{error}</Text> : null}
             </Stack>
-          </Paper>
-        ) : (
-          <Stack gap="lg">
+            </Paper>
+          ) : (
+            <Stack gap="lg">
             <Paper withBorder radius="xl" p="xl">
               <Stack gap="lg">
                 <div>
                   <Text size="xs" fw={700} tt="uppercase" c="cyan.3">
-                    套餐信息
+                    {bootstrap.subscription.ownerType === "team" ? "团队套餐" : "套餐信息"}
                   </Text>
                   <Title order={2}>{bootstrap.subscription.planName}</Title>
                   <Text c="dimmed">
-                    {bootstrap.user.displayName} · 到期 {formatDate(bootstrap.subscription.expireAt)}
+                    {bootstrap.subscription.ownerType === "team"
+                      ? `${bootstrap.team?.name ?? bootstrap.subscription.teamName ?? "团队"} · 到期 ${formatDate(bootstrap.subscription.expireAt)}`
+                      : `${bootstrap.user.displayName} · 到期 ${formatDate(bootstrap.subscription.expireAt)}`}
                   </Text>
                 </div>
 
@@ -241,6 +301,12 @@ export function App() {
                   <Stat label="剩余流量" value={`${bootstrap.subscription.remainingTrafficGb} GB`} />
                   <Stat label="最近同步" value={formatDate(bootstrap.subscription.lastSyncedAt)} />
                 </SimpleGrid>
+                {bootstrap.subscription.ownerType === "team" ? (
+                  <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                    <Stat label="团队名称" value={bootstrap.team?.name ?? bootstrap.subscription.teamName ?? "团队"} />
+                    <Stat label="我的已用" value={`${bootstrap.subscription.memberUsedTrafficGb ?? 0} GB`} />
+                  </SimpleGrid>
+                ) : null}
               </Stack>
             </Paper>
 
@@ -377,10 +443,58 @@ export function App() {
             </Card>
 
             {error ? <Text c="red.4">{error}</Text> : null}
-          </Stack>
-        )}
-      </AppShell.Main>
-    </AppShell>
+            {bootstrap && shouldShowUpdate(bootstrap) ? (
+              <Alert color={bootstrap.version.forceUpgrade ? "red" : "blue"}>
+                <Group justify="space-between" align="center">
+                  <div>
+                    <Text fw={600}>发现新版本 {bootstrap.version.currentVersion}</Text>
+                    <Text size="sm" c="dimmed">
+                      当前版本 {appVersion}
+                    </Text>
+                  </div>
+                  <Button
+                    size="xs"
+                    onClick={() => {
+                      const target = bootstrap.version.downloadUrl || "https://github.com/Achordchan/ChordV/releases";
+                      window.open(target, "_blank", "noopener,noreferrer");
+                    }}
+                  >
+                    去更新
+                  </Button>
+                </Group>
+              </Alert>
+            ) : null}
+            </Stack>
+          )}
+        </AppShell.Main>
+      </AppShell>
+      <Modal
+        opened={forcedAnnouncement !== null}
+        onClose={() => {
+          if (forcedAnnouncement?.displayMode === "passive") {
+            setForcedAnnouncement(null);
+          }
+        }}
+        closeOnClickOutside={false}
+        closeOnEscape={false}
+        withCloseButton={false}
+        centered
+        title={forcedAnnouncement?.title ?? "公告"}
+      >
+        <Stack>
+          <Badge color={forcedAnnouncement?.level === "warning" ? "yellow" : forcedAnnouncement?.level === "success" ? "green" : "blue"} variant="light">
+            {forcedAnnouncement ? translateAnnouncementLevel(forcedAnnouncement.level) : "通知"}
+          </Badge>
+          <Text>{forcedAnnouncement?.body}</Text>
+          <Button
+            onClick={acknowledgeAnnouncement}
+            disabled={forcedAnnouncement?.displayMode === "modal_countdown" && countdown > 0}
+          >
+            {forcedAnnouncement?.displayMode === "modal_countdown" && countdown > 0 ? `请等待 ${countdown} 秒` : "我已知晓"}
+          </Button>
+        </Stack>
+      </Modal>
+    </div>
   );
 }
 
@@ -453,4 +567,29 @@ function translateAnnouncementLevel(level: "info" | "warning" | "success") {
   if (level === "info") return "通知";
   if (level === "warning") return "提醒";
   return "成功";
+}
+
+function announcementStorageKey(id: string) {
+  return `chordv_announcement_ack_${id}`;
+}
+
+function shouldShowUpdate(bootstrap: ClientBootstrapDto) {
+  return compareVersion(bootstrap.version.currentVersion, appVersion) > 0
+    || compareVersion(bootstrap.version.minimumVersion, appVersion) > 0
+    || bootstrap.version.forceUpgrade;
+}
+
+function compareVersion(left: string, right: string) {
+  const leftParts = left.split(".").map((item) => Number(item) || 0);
+  const rightParts = right.split(".").map((item) => Number(item) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = leftParts[index] ?? 0;
+    const rightValue = rightParts[index] ?? 0;
+    if (leftValue > rightValue) return 1;
+    if (leftValue < rightValue) return -1;
+  }
+
+  return 0;
 }

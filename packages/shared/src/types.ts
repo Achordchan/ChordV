@@ -1,19 +1,30 @@
 export type ConnectionMode = "global" | "rule" | "direct";
 export type SubscriptionState = "active" | "expired" | "exhausted" | "paused";
-export type PanelHealth = "healthy" | "degraded" | "offline";
 export type RuntimeStatus = "idle" | "connecting" | "connected" | "disconnecting" | "error";
 export type PlatformTarget = "macos" | "windows" | "android";
+export type UserRole = "user" | "admin";
+export type UserStatus = "active" | "disabled";
+export type PlanScope = "personal" | "team";
+export type TeamStatus = "active" | "disabled";
+export type TeamMemberRole = "owner" | "member";
+export type AnnouncementLevel = "info" | "warning" | "success";
+export type AnnouncementDisplayMode = "passive" | "modal_confirm" | "modal_countdown";
+export type SubscriptionSourceAction = "created" | "renewed" | "plan_changed" | "adjusted";
+export type NodeProbeStatus = "unknown" | "healthy" | "degraded" | "offline";
+export type SubscriptionOwnerType = "user" | "team";
 
 export interface UserProfileDto {
   id: string;
   email: string;
   displayName: string;
-  role: "user" | "admin";
-  status: "active" | "disabled";
+  role: UserRole;
+  status: UserStatus;
   lastSeenAt: string;
 }
 
 export interface SubscriptionStatusDto {
+  id?: string;
+  ownerType: SubscriptionOwnerType;
   planId: string;
   planName: string;
   totalTrafficGb: number;
@@ -23,6 +34,9 @@ export interface SubscriptionStatusDto {
   state: SubscriptionState;
   renewable: boolean;
   lastSyncedAt: string;
+  teamId?: string | null;
+  teamName?: string | null;
+  memberUsedTrafficGb?: number | null;
 }
 
 export interface NodeSummaryDto {
@@ -35,16 +49,6 @@ export interface NodeSummaryDto {
   latencyMs: number;
   protocol: "vless";
   security: "reality";
-}
-
-export interface AdminNodeRecordDto extends NodeSummaryDto {
-  panelId: string | null;
-  subscriptionUrl: string | null;
-  serverName: string;
-  serverHost: string;
-  serverPort: number;
-  shortId: string;
-  spiderX: string;
 }
 
 export interface StrategyGroupDto {
@@ -72,8 +76,10 @@ export interface AnnouncementDto {
   id: string;
   title: string;
   body: string;
-  level: "info" | "warning" | "success";
+  level: AnnouncementLevel;
   publishedAt: string;
+  displayMode: AnnouncementDisplayMode;
+  countdownSeconds: number;
 }
 
 export interface ClientVersionDto {
@@ -81,6 +87,7 @@ export interface ClientVersionDto {
   minimumVersion: string;
   forceUpgrade: boolean;
   changelog: string[];
+  downloadUrl?: string | null;
 }
 
 export interface ClientBootstrapDto {
@@ -89,6 +96,7 @@ export interface ClientBootstrapDto {
   policies: PolicyBundleDto;
   announcements: AnnouncementDto[];
   version: ClientVersionDto;
+  team?: ClientTeamSummaryDto | null;
 }
 
 export interface ConnectRequestDto {
@@ -121,72 +129,247 @@ export interface GeneratedRuntimeConfigDto {
   outbound: RuntimeOutboundDto;
 }
 
-export interface PanelSyncStatusDto {
-  panelId: string;
-  name: string;
-  health: PanelHealth;
-  baseUrl: string;
-  apiBasePath?: string;
-  lastSyncedAt: string;
-  latencyMs: number;
-  activeUsers: number;
+export interface UserSubscriptionSummaryDto {
+  id: string;
+  ownerType: SubscriptionOwnerType;
+  planId: string;
+  planName: string;
+  remainingTrafficGb: number;
+  expireAt: string;
+  state: SubscriptionState;
+  teamId?: string | null;
+  teamName?: string | null;
 }
 
-export interface PanelSyncRunDto {
-  panelId: string;
-  health: PanelHealth;
-  synchronizedUsers: number;
-  matchedSubscriptions: number;
-  latencyMs: number;
-  lastSyncedAt: string;
-  error?: string | null;
+export interface AdminUserRecordDto extends UserProfileDto {
+  accountType: "personal" | "team";
+  teamId: string | null;
+  teamName: string | null;
+  subscriptionCount: number;
+  activeSubscriptionCount: number;
+  currentSubscription: UserSubscriptionSummaryDto | null;
+}
+
+export interface AdminPlanRecordDto {
+  id: string;
+  name: string;
+  scope: PlanScope;
+  totalTrafficGb: number;
+  renewable: boolean;
+  isActive: boolean;
+  subscriptionCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AdminSubscriptionRecordDto {
   id: string;
-  userId: string;
-  userEmail: string;
-  userDisplayName: string;
+  ownerType: SubscriptionOwnerType;
+  userId: string | null;
+  userEmail: string | null;
+  userDisplayName: string | null;
+  teamId: string | null;
+  teamName: string | null;
   planId: string;
   planName: string;
-  panelClientEmail: string | null;
   totalTrafficGb: number;
   usedTrafficGb: number;
   remainingTrafficGb: number;
   expireAt: string;
   state: SubscriptionState;
   renewable: boolean;
+  sourceAction: SubscriptionSourceAction;
   lastSyncedAt: string;
+  nodeCount: number;
+  hasNodeAccess: boolean;
 }
 
-export interface AdminPanelConfigDto {
-  panelId: string;
+export interface SubscriptionNodeAccessDto {
+  subscriptionId: string;
+  nodeIds: string[];
+  nodes: NodeSummaryDto[];
+}
+
+export interface UpdateSubscriptionNodeAccessInputDto {
+  nodeIds: string[];
+}
+
+export interface AdminNodeRecordDto extends NodeSummaryDto {
+  subscriptionUrl: string | null;
+  serverName: string;
+  serverHost: string;
+  serverPort: number;
+  shortId: string;
+  spiderX: string;
+  probeStatus: NodeProbeStatus;
+  probeLatencyMs: number | null;
+  probeCheckedAt: string | null;
+  probeError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminAnnouncementRecordDto {
+  id: string;
+  title: string;
+  body: string;
+  level: AnnouncementLevel;
+  publishedAt: string;
+  isActive: boolean;
+  displayMode: AnnouncementDisplayMode;
+  countdownSeconds: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminPolicyRecordDto extends PolicyBundleDto {
+  currentVersion: string;
+  minimumVersion: string;
+  forceUpgrade: boolean;
+  changelog: string[];
+  downloadUrl?: string | null;
+}
+
+export interface ClientTeamSummaryDto {
+  id: string;
   name: string;
-  baseUrl: string;
-  apiBasePath: string;
-  username: string | null;
-  syncEnabled: boolean;
-  health: PanelHealth;
-  lastSyncedAt: string;
-  latencyMs: number;
-  activeUsers: number;
+  status: TeamStatus;
+  role: TeamMemberRole;
 }
 
-export interface UpdateSubscriptionInputDto {
-  panelClientEmail?: string | null;
+export interface AdminTeamSubscriptionSummaryDto {
+  id: string;
+  planId: string;
+  planName: string;
+  totalTrafficGb: number;
+  usedTrafficGb: number;
+  remainingTrafficGb: number;
+  expireAt: string;
+  state: SubscriptionState;
+}
+
+export interface AdminTeamMemberRecordDto {
+  id: string;
+  teamId: string;
+  userId: string;
+  email: string;
+  displayName: string;
+  role: TeamMemberRole;
+  usedTrafficGb: number;
+  createdAt: string;
+}
+
+export interface AdminTeamUsageRecordDto {
+  id: string;
+  teamId: string;
+  userId: string;
+  userDisplayName: string;
+  userEmail: string;
+  subscriptionId: string;
+  usedTrafficGb: number;
+  recordedAt: string;
+}
+
+export interface AdminTeamRecordDto {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  ownerDisplayName: string;
+  ownerEmail: string;
+  status: TeamStatus;
+  memberCount: number;
+  currentSubscription: AdminTeamSubscriptionSummaryDto | null;
+  members: AdminTeamMemberRecordDto[];
+  usage: AdminTeamUsageRecordDto[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DashboardSnapshotDto {
+  users: number;
+  activeSubscriptions: number;
+  activeNodes: number;
+  announcements: number;
+  activePlans: number;
+}
+
+export interface AdminSnapshotDto {
+  dashboard: DashboardSnapshotDto;
+  users: AdminUserRecordDto[];
+  plans: AdminPlanRecordDto[];
+  subscriptions: AdminSubscriptionRecordDto[];
+  teams: AdminTeamRecordDto[];
+  nodes: AdminNodeRecordDto[];
+  announcements: AdminAnnouncementRecordDto[];
+  policy: AdminPolicyRecordDto;
+}
+
+export interface AuthSessionDto {
+  accessToken: string;
+  refreshToken: string;
+  user: UserProfileDto;
+}
+
+export interface CreateUserInputDto {
+  email: string;
+  password: string;
+  displayName: string;
+  role: UserRole;
+}
+
+export interface UpdateUserInputDto {
+  displayName?: string;
+  role?: UserRole;
+  status?: UserStatus;
+  password?: string;
+}
+
+export interface CreatePlanInputDto {
+  name: string;
+  scope: PlanScope;
+  totalTrafficGb: number;
+  renewable: boolean;
+  isActive?: boolean;
+}
+
+export interface UpdatePlanInputDto {
+  name?: string;
+  scope?: PlanScope;
   totalTrafficGb?: number;
-  expireAt?: string;
+  renewable?: boolean;
+  isActive?: boolean;
+}
+
+export interface CreateSubscriptionInputDto {
+  userId: string;
+  planId: string;
+  totalTrafficGb?: number;
+  usedTrafficGb?: number;
+  expireAt: string;
   state?: SubscriptionState;
   renewable?: boolean;
 }
 
-export interface UpdatePanelInputDto {
-  name?: string;
-  baseUrl?: string;
-  apiBasePath?: string;
-  username?: string | null;
-  password?: string | null;
-  syncEnabled?: boolean;
+export interface RenewSubscriptionInputDto {
+  expireAt?: string;
+  extendDays?: number;
+  resetTraffic?: boolean;
+  totalTrafficGb?: number;
+}
+
+export interface ChangeSubscriptionPlanInputDto {
+  planId: string;
+  totalTrafficGb?: number;
+  expireAt?: string;
+  renewable?: boolean;
+}
+
+export interface UpdateSubscriptionInputDto {
+  totalTrafficGb?: number;
+  usedTrafficGb?: number;
+  expireAt?: string;
+  state?: SubscriptionState;
+  renewable?: boolean;
 }
 
 export interface ImportNodeInputDto {
@@ -196,28 +379,86 @@ export interface ImportNodeInputDto {
   provider?: string;
   tags?: string[];
   recommended?: boolean;
-  panelId?: string | null;
 }
 
-export interface DashboardSnapshotDto {
-  users: number;
-  activeSubscriptions: number;
-  activeNodes: number;
-  announcements: number;
-  panelHealth: PanelHealth;
+export interface UpdateNodeInputDto {
+  name?: string;
+  region?: string;
+  provider?: string;
+  tags?: string[];
+  recommended?: boolean;
+  subscriptionUrl?: string;
 }
 
-export interface AdminSnapshotDto {
-  dashboard: DashboardSnapshotDto;
-  users: UserProfileDto[];
-  subscriptions: AdminSubscriptionRecordDto[];
-  nodes: AdminNodeRecordDto[];
-  panels: AdminPanelConfigDto[];
-  announcements: AnnouncementDto[];
+export interface CreateAnnouncementInputDto {
+  title: string;
+  body: string;
+  level: AnnouncementLevel;
+  publishedAt?: string;
+  isActive?: boolean;
+  displayMode?: AnnouncementDisplayMode;
+  countdownSeconds?: number;
 }
 
-export interface AuthSessionDto {
-  accessToken: string;
-  refreshToken: string;
-  user: UserProfileDto;
+export interface UpdateAnnouncementInputDto {
+  title?: string;
+  body?: string;
+  level?: AnnouncementLevel;
+  publishedAt?: string;
+  isActive?: boolean;
+  displayMode?: AnnouncementDisplayMode;
+  countdownSeconds?: number;
+}
+
+export interface StrategyGroupInputDto {
+  id?: string;
+  name: string;
+  description: string;
+  defaultNodeId: string;
+}
+
+export interface CreateTeamInputDto {
+  name: string;
+  ownerUserId: string;
+  status?: TeamStatus;
+}
+
+export interface UpdateTeamInputDto {
+  name?: string;
+  ownerUserId?: string;
+  status?: TeamStatus;
+}
+
+export interface CreateTeamMemberInputDto {
+  userId: string;
+  role?: TeamMemberRole;
+}
+
+export interface UpdateTeamMemberInputDto {
+  role?: TeamMemberRole;
+}
+
+export interface CreateTeamSubscriptionInputDto {
+  planId: string;
+  expireAt: string;
+  totalTrafficGb?: number;
+  usedTrafficGb?: number;
+  renewable?: boolean;
+}
+
+export interface UpdatePolicyInputDto {
+  defaultMode?: ConnectionMode;
+  modes?: ConnectionMode[];
+  strategyGroups?: StrategyGroupInputDto[];
+  ruleVersion?: string;
+  ruleUpdatedAt?: string;
+  dnsProfile?: string;
+  blockAds?: boolean;
+  chinaDirect?: boolean;
+  aiServicesProxy?: boolean;
+  currentVersion?: string;
+  minimumVersion?: string;
+  forceUpgrade?: boolean;
+  changelog?: string[];
+  downloadUrl?: string | null;
 }

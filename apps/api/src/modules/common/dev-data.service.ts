@@ -1,32 +1,75 @@
-import { Injectable, NotFoundException, OnModuleInit, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  OnModuleInit,
+  UnauthorizedException
+} from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
+import * as net from "node:net";
+import * as tls from "node:tls";
 import { Agent, fetch as undiciFetch } from "undici";
 import {
   mockAdmin,
   mockAnnouncements,
   mockNodes,
-  mockPanels,
   mockPolicies,
   mockSubscription,
-  mockUser
+  mockUser,
+  mockVersion
 } from "@chordv/shared";
 import type {
-  AdminPanelConfigDto,
+  AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
+  AdminPlanRecordDto,
+  AdminPolicyRecordDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
+  AdminTeamMemberRecordDto,
+  AdminTeamRecordDto,
+  AdminTeamUsageRecordDto,
+  AdminUserRecordDto,
   AnnouncementDto,
   AuthSessionDto,
+  ChangeSubscriptionPlanInputDto,
   ClientBootstrapDto,
+  ClientTeamSummaryDto,
+  ClientVersionDto,
   ConnectRequestDto,
+  CreateAnnouncementInputDto,
+  CreatePlanInputDto,
+  CreateSubscriptionInputDto,
+  CreateTeamInputDto,
+  CreateTeamMemberInputDto,
+  CreateTeamSubscriptionInputDto,
+  CreateUserInputDto,
   GeneratedRuntimeConfigDto,
   ImportNodeInputDto,
+  NodeProbeStatus,
   NodeSummaryDto,
-  PanelSyncRunDto,
-  PanelSyncStatusDto,
   PolicyBundleDto,
+  RenewSubscriptionInputDto,
+  StrategyGroupInputDto,
+  SubscriptionNodeAccessDto,
+  SubscriptionSourceAction,
+  SubscriptionState,
   SubscriptionStatusDto,
-  UserProfileDto
+  TeamMemberRole,
+  TeamStatus,
+  UpdateAnnouncementInputDto,
+  UpdateNodeInputDto,
+  UpdatePlanInputDto,
+  UpdatePolicyInputDto,
+  UpdateSubscriptionInputDto,
+  UpdateSubscriptionNodeAccessInputDto,
+  UpdateTeamInputDto,
+  UpdateTeamMemberInputDto,
+  UpdateUserInputDto,
+  UserProfileDto,
+  UserSubscriptionSummaryDto
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
 
@@ -42,126 +85,124 @@ export class DevDataService implements OnModuleInit {
 
   async login(email: string, password: string): Promise<AuthSessionDto> {
     const user = await this.prisma.user.findUnique({
-      where: { email }
+      where: { email: email.trim().toLowerCase() }
     });
 
-    if (!user) {
-      throw new UnauthorizedException("Invalid email or password");
+    if (!user || user.status !== "active") {
+      throw new UnauthorizedException("邮箱或密码错误");
     }
 
-    const passwordMatched = await bcrypt.compare(password, user.passwordHash);
-    if (!passwordMatched) {
-      throw new UnauthorizedException("Invalid email or password");
+    const matched = await bcrypt.compare(password, user.passwordHash);
+    if (!matched) {
+      throw new UnauthorizedException("邮箱或密码错误");
     }
 
-    const updatedUser = await this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: user.id },
-      data: {
-        lastSeenAt: new Date()
-      }
+      data: { lastSeenAt: new Date() }
     });
 
     return {
-      accessToken: `access_${tokenize(email)}`,
-      refreshToken: `refresh_${tokenize(email)}`,
-      user: toUserProfile(updatedUser)
+      accessToken: `access_${tokenize(updated.email)}`,
+      refreshToken: `refresh_${tokenize(updated.email)}`,
+      user: toUserProfile(updated)
     };
   }
 
   async refresh(token: string): Promise<AuthSessionDto> {
     if (!token.startsWith("refresh_")) {
-      throw new UnauthorizedException("Invalid refresh token");
+      throw new UnauthorizedException("无效刷新令牌");
     }
 
     const email = detokenize(token.replace("refresh_", ""));
-    const user = await this.prisma.user.findUnique({
-      where: { email }
-    });
-
-    if (!user) {
-      throw new UnauthorizedException("User not found");
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user || user.status !== "active") {
+      throw new UnauthorizedException("用户不可用");
     }
 
     return {
-      accessToken: `access_${tokenize(email)}`,
+      accessToken: `access_${tokenize(user.email)}`,
       refreshToken: token,
       user: toUserProfile(user)
     };
   }
 
-  logout(): { ok: true } {
+  logout() {
     return { ok: true };
   }
 
   async getBootstrap(token?: string): Promise<ClientBootstrapDto> {
-    const user = await this.resolveUserFromToken(token);
-    const subscription = await this.getSubscriptionForUser(user.id);
-    const policies = await this.getPolicies();
-    const announcements = await this.getAnnouncements();
-    const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" }
-    });
-
-    if (!profile) {
-      throw new NotFoundException("Policy profile not found");
+    const user = await this.resolveActiveUserFromToken(token);
+    const access = await this.resolveSubscriptionAccessForUser(user.id);
+    if (!access.subscription) {
+      throw new NotFoundException("当前没有可用订阅");
     }
+
+    const [policies, announcements, version] = await Promise.all([
+      this.getPolicies(),
+      this.getAnnouncements(),
+      this.getClientVersion()
+    ]);
 
     return {
       user,
-      subscription,
+      subscription: toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb),
       policies,
       announcements,
-      version: {
-        currentVersion: profile.currentVersion,
-        minimumVersion: profile.minimumVersion,
-        forceUpgrade: profile.forceUpgrade,
-        changelog: profile.changelog
-      }
+      version,
+      team: access.team
+        ? {
+            id: access.team.id,
+            name: access.team.name,
+            status: access.team.status as TeamStatus,
+            role: access.memberRole ?? "member"
+          }
+        : null
     };
   }
 
   async getSubscription(token?: string): Promise<SubscriptionStatusDto> {
-    const user = await this.resolveUserFromToken(token);
-    return this.getSubscriptionForUser(user.id);
+    const user = await this.resolveActiveUserFromToken(token);
+    const access = await this.resolveSubscriptionAccessForUser(user.id);
+    if (!access.subscription) {
+      throw new NotFoundException("当前没有可用订阅");
+    }
+    return toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb);
   }
 
-  async getNodes(): Promise<NodeSummaryDto[]> {
-    const rows = await this.prisma.node.findMany({
-      orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }]
+  async getNodes(token?: string): Promise<NodeSummaryDto[]> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const access = await this.resolveSubscriptionAccessForUser(user.id);
+    if (!access.subscription) {
+      return [];
+    }
+
+    const rows = await this.prisma.subscriptionNodeAccess.findMany({
+      where: { subscriptionId: access.subscription.id },
+      include: { node: true },
+      orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
     });
-
-    return rows.map(toNodeSummary);
-  }
-
-  async getAdminNodes(): Promise<AdminNodeRecordDto[]> {
-    const rows = await this.prisma.node.findMany({
-      orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }]
-    });
-
-    return rows.map(toAdminNodeRecord);
+    return rows.map((item) => toNodeSummary(item.node));
   }
 
   async getPolicies(): Promise<PolicyBundleDto> {
     const profile = await this.prisma.policyProfile.findUnique({
       where: { id: "default" },
       include: {
-        strategyGroups: true
+        strategyGroups: {
+          orderBy: { name: "asc" }
+        }
       }
     });
 
     if (!profile) {
-      throw new NotFoundException("Policy profile not found");
+      throw new NotFoundException("策略配置不存在");
     }
 
     return {
       defaultMode: profile.defaultMode as PolicyBundleDto["defaultMode"],
       modes: profile.modes as PolicyBundleDto["modes"],
-      strategyGroups: profile.strategyGroups.map((item) => ({
-        id: item.id,
-        name: item.name,
-        description: item.description,
-        defaultNodeId: item.defaultNodeId
-      })),
+      strategyGroups: [],
       ruleVersion: profile.ruleVersion,
       ruleUpdatedAt: profile.ruleUpdatedAt.toISOString(),
       dnsProfile: profile.dnsProfile,
@@ -175,125 +216,105 @@ export class DevDataService implements OnModuleInit {
 
   async getAnnouncements(): Promise<AnnouncementDto[]> {
     const rows = await this.prisma.announcement.findMany({
-      where: { isActive: true },
-      orderBy: { publishedAt: "desc" }
+      where: {
+        isActive: true,
+        publishedAt: { lte: new Date() }
+      },
+      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
     });
-
-    return rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      body: row.body,
-      level: row.level,
-      publishedAt: row.publishedAt.toISOString()
-    }));
+    return rows.map(toAnnouncementDto);
   }
 
-  async getPanels(): Promise<PanelSyncStatusDto[]> {
-    const rows = await this.prisma.panel.findMany({
-      orderBy: { name: "asc" }
+  async getClientVersion(): Promise<ClientVersionDto> {
+    const profile = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" }
     });
 
-    return rows.map((row) => ({
-      panelId: row.id,
-      name: row.name,
-      health: row.health,
-      baseUrl: row.baseUrl,
-      apiBasePath: row.apiBasePath,
-      lastSyncedAt: row.lastSyncedAt.toISOString(),
-      latencyMs: row.latencyMs,
-      activeUsers: row.activeUsers
-    }));
-  }
-
-  private async getAdminPanels(): Promise<AdminPanelConfigDto[]> {
-    const rows = await this.prisma.panel.findMany({
-      orderBy: { name: "asc" }
-    });
-
-    return rows.map((row) => ({
-      panelId: row.id,
-      name: row.name,
-      baseUrl: row.baseUrl,
-      apiBasePath: row.apiBasePath,
-      username: row.username,
-      syncEnabled: row.syncEnabled,
-      health: row.health,
-      lastSyncedAt: row.lastSyncedAt.toISOString(),
-      latencyMs: row.latencyMs,
-      activeUsers: row.activeUsers
-    }));
-  }
-
-  async synchronizePanels(): Promise<PanelSyncRunDto[]> {
-    const panels = await this.prisma.panel.findMany({
-      where: { syncEnabled: true },
-      orderBy: { name: "asc" }
-    });
-
-    const results: PanelSyncRunDto[] = [];
-
-    for (const panel of panels) {
-      const startedAt = Date.now();
-      const credentials = this.resolvePanelCredentials(panel);
-      if (!credentials) {
-        const result: PanelSyncRunDto = {
-          panelId: panel.id,
-          health: "degraded",
-          synchronizedUsers: 0,
-          matchedSubscriptions: 0,
-          latencyMs: Date.now() - startedAt,
-          lastSyncedAt: new Date().toISOString(),
-          error: "Missing panel credentials"
-        };
-        await this.persistPanelStatus(result, panel, 0);
-        results.push(result);
-        continue;
-      }
-
-      try {
-        const cookie = await this.loginPanel(
-          credentials.baseUrl,
-          credentials.username,
-          credentials.password,
-          credentials.apiBasePath,
-          credentials.timeoutMs,
-          credentials.allowInsecureTls
-        );
-        const payload = await this.fetchPanelInbounds(
-          credentials.baseUrl,
-          cookie,
-          credentials.apiBasePath,
-          credentials.timeoutMs,
-          credentials.allowInsecureTls
-        );
-        const result = await this.applyPanelPayload(panel.id, payload, Date.now() - startedAt);
-        await this.persistPanelStatus(result, panel, result.synchronizedUsers);
-        results.push(result);
-      } catch (error) {
-        const result: PanelSyncRunDto = {
-          panelId: panel.id,
-          health: "offline",
-          synchronizedUsers: 0,
-          matchedSubscriptions: 0,
-          latencyMs: Date.now() - startedAt,
-          lastSyncedAt: new Date().toISOString(),
-          error: formatPanelError(error)
-        };
-        await this.persistPanelStatus(result, panel, 0);
-        results.push(result);
-      }
+    if (!profile) {
+      throw new NotFoundException("版本配置不存在");
     }
 
-    return results;
+    return {
+      currentVersion: profile.currentVersion,
+      minimumVersion: profile.minimumVersion,
+      forceUpgrade: profile.forceUpgrade,
+      changelog: profile.changelog,
+      downloadUrl: profile.downloadUrl
+    };
+  }
+
+  async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {
+    const node = await this.prisma.node.findUnique({
+      where: { id: request.nodeId }
+    });
+
+    if (!node) {
+      throw new NotFoundException("节点不存在");
+    }
+
+    const user = await this.resolveActiveUserFromToken(token);
+    const access = await this.resolveSubscriptionAccessForUser(user.id);
+    if (!access.subscription) {
+      throw new NotFoundException("当前没有可用订阅");
+    }
+
+    assertSubscriptionConnectable(access.subscription);
+
+    const allowed = await this.prisma.subscriptionNodeAccess.findFirst({
+      where: {
+        subscriptionId: access.subscription.id,
+        nodeId: request.nodeId
+      }
+    });
+
+    if (!allowed) {
+      throw new ForbiddenException("当前订阅未开通该节点");
+    }
+
+    this.activeRuntime = {
+      sessionId: `session_${node.id}`,
+      node: toNodeSummary(node),
+      mode: request.mode,
+      localHttpPort: 17890,
+      localSocksPort: 17891,
+      routingProfile: request.strategyGroupId ?? "managed-rule-default",
+      generatedAt: new Date().toISOString(),
+      outbound: {
+        protocol: "vless",
+        server: node.serverHost,
+        port: node.serverPort,
+        uuid: node.uuid,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX
+      }
+    };
+
+    return this.activeRuntime;
+  }
+
+  disconnect() {
+    const previous = this.activeRuntime;
+    this.activeRuntime = undefined;
+    return { ok: true, previousSessionId: previous?.sessionId ?? null };
+  }
+
+  getActiveRuntime() {
+    return this.activeRuntime ?? null;
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [users, subscriptions, nodes, panels, announcements] = await Promise.all([
-      this.getUsers(),
-      this.getAdminSubscriptions(),
-      this.getAdminNodes(),
-      this.getAdminPanels(),
-      this.getAnnouncements()
+    const [users, plans, subscriptions, teams, nodes, announcements, policy] = await Promise.all([
+      this.listAdminUsers(),
+      this.listAdminPlans(),
+      this.listAdminSubscriptions(),
+      this.listAdminTeams(),
+      this.listAdminNodes(),
+      this.listAdminAnnouncements(),
+      this.getAdminPolicy()
     ]);
 
     return {
@@ -301,31 +322,667 @@ export class DevDataService implements OnModuleInit {
         users: users.length,
         activeSubscriptions: subscriptions.filter((item) => item.state === "active").length,
         activeNodes: nodes.length,
-        announcements: announcements.length,
-        panelHealth: panels.every((panel) => panel.health === "healthy")
-          ? "healthy"
-          : panels.some((panel) => panel.health === "offline")
-            ? "offline"
-            : "degraded"
+        announcements: announcements.filter((item) => item.isActive).length,
+        activePlans: plans.filter((item) => item.isActive).length
       },
       users,
+      plans,
       subscriptions,
+      teams,
       nodes,
-      panels,
-      announcements
+      announcements,
+      policy
     };
+  }
+
+  async listAdminUsers(): Promise<AdminUserRecordDto[]> {
+    const rows = await this.prisma.user.findMany({
+      include: {
+        subscriptions: {
+          include: { plan: true },
+          orderBy: [{ createdAt: "desc" }]
+        },
+        teamMemberships: {
+          include: {
+            team: {
+              include: {
+                subscriptions: {
+                  include: { plan: true },
+                  orderBy: [{ createdAt: "desc" }]
+                }
+              }
+            }
+          }
+        }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return rows.map((row) => {
+      const membership = row.teamMemberships[0] ?? null;
+      const currentSubscription = membership
+        ? pickCurrentSubscription(membership.team.subscriptions)
+        : pickCurrentSubscription(row.subscriptions);
+
+      return {
+        ...toUserProfile(row),
+        accountType: membership ? "team" : "personal",
+        teamId: membership?.team.id ?? null,
+        teamName: membership?.team.name ?? null,
+        subscriptionCount: membership
+          ? membership.team.subscriptions.length
+          : row.subscriptions.length,
+        activeSubscriptionCount: membership
+          ? membership.team.subscriptions.filter((item) => item.state === "active").length
+          : row.subscriptions.filter((item) => item.state === "active").length,
+        currentSubscription: currentSubscription
+          ? toUserSubscriptionSummary(currentSubscription, membership?.team ?? null)
+          : null
+      };
+    });
+  }
+
+  async createUser(input: CreateUserInputDto): Promise<AdminUserRecordDto> {
+    const email = input.email.trim().toLowerCase();
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      throw new ConflictException("邮箱已存在");
+    }
+
+    const passwordHash = await bcrypt.hash(input.password, 10);
+    const row = await this.prisma.user.create({
+      data: {
+        id: createId("user"),
+        email,
+        displayName: input.displayName.trim(),
+        role: input.role,
+        status: "active",
+        passwordHash,
+        lastSeenAt: new Date()
+      }
+    });
+
+    return {
+      ...toUserProfile(row),
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 0,
+      activeSubscriptionCount: 0,
+      currentSubscription: null
+    };
+  }
+
+  async updateUser(userId: string, input: UpdateUserInputDto): Promise<AdminUserRecordDto> {
+    await this.ensureUserExists(userId);
+    const data: Record<string, unknown> = {};
+    if (input.displayName !== undefined) data.displayName = input.displayName.trim();
+    if (input.role !== undefined) data.role = input.role;
+    if (input.status !== undefined) data.status = input.status;
+    if (input.password !== undefined) data.passwordHash = await bcrypt.hash(input.password, 10);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data
+    });
+
+    const rows = await this.listAdminUsers();
+    const row = rows.find((item) => item.id === userId);
+    if (!row) throw new NotFoundException("用户不存在");
+    return row;
+  }
+
+  async listAdminPlans(): Promise<AdminPlanRecordDto[]> {
+    const [plans, subscriptions] = await Promise.all([
+      this.prisma.plan.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.subscription.findMany()
+    ]);
+
+    return plans.map((plan) => ({
+      id: plan.id,
+      name: plan.name,
+      scope: plan.scope,
+      totalTrafficGb: plan.totalTrafficGb,
+      renewable: plan.renewable,
+      isActive: plan.isActive,
+      subscriptionCount: subscriptions.filter((item) => item.planId === plan.id).length,
+      createdAt: plan.createdAt.toISOString(),
+      updatedAt: plan.updatedAt.toISOString()
+    }));
+  }
+
+  async createPlan(input: CreatePlanInputDto): Promise<AdminPlanRecordDto> {
+    const row = await this.prisma.plan.create({
+      data: {
+        id: createId("plan"),
+        name: input.name.trim(),
+        scope: input.scope,
+        totalTrafficGb: input.totalTrafficGb,
+        renewable: input.renewable,
+        isActive: input.isActive ?? true
+      }
+    });
+
+    return {
+      id: row.id,
+      name: row.name,
+      scope: row.scope,
+      totalTrafficGb: row.totalTrafficGb,
+      renewable: row.renewable,
+      isActive: row.isActive,
+      subscriptionCount: 0,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString()
+    };
+  }
+
+  async updatePlan(planId: string, input: UpdatePlanInputDto): Promise<AdminPlanRecordDto> {
+    await this.ensurePlanExists(planId);
+
+    const row = await this.prisma.plan.update({
+      where: { id: planId },
+      data: {
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
+        ...(input.totalTrafficGb !== undefined ? { totalTrafficGb: input.totalTrafficGb } : {}),
+        ...(input.renewable !== undefined ? { renewable: input.renewable } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
+      }
+    });
+
+    const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    return {
+      id: row.id,
+      name: row.name,
+      scope: row.scope,
+      totalTrafficGb: row.totalTrafficGb,
+      renewable: row.renewable,
+      isActive: row.isActive,
+      subscriptionCount,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString()
+    };
+  }
+
+  async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
+    const rows = await this.prisma.subscription.findMany({
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      },
+      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+    });
+
+    return rows.map(toAdminSubscriptionRecord);
+  }
+
+  async createSubscription(input: CreateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    const user = await this.ensureUserExists(input.userId);
+    if (user.status !== "active") {
+      throw new BadRequestException("用户已禁用");
+    }
+
+    const membership = await this.getUserMembership(input.userId);
+    if (membership) {
+      throw new BadRequestException("团队成员不能创建个人订阅");
+    }
+
+    const existing = await this.findCurrentPersonalSubscription(input.userId);
+    if (existing && isEffectiveSubscription(existing)) {
+      throw new ConflictException("该账号已有有效订阅，请使用续期、变更套餐或校正。");
+    }
+
+    const plan = await this.ensurePlanExists(input.planId);
+    if (!plan.isActive) {
+      throw new BadRequestException("套餐已停用，不能新建订阅");
+    }
+    if (plan.scope !== "personal") {
+      throw new BadRequestException("个人订阅只能选择个人套餐");
+    }
+
+    const expireAt = new Date(input.expireAt);
+    if (Number.isNaN(expireAt.getTime())) {
+      throw new BadRequestException("到期时间无效");
+    }
+
+    const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
+    const usedTrafficGb = input.usedTrafficGb ?? 0;
+    const renewable = input.renewable ?? plan.renewable;
+    const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+    const state = resolveSubscriptionState(input.state ?? "active", remainingTrafficGb, expireAt);
+
+    const row = await this.prisma.subscription.create({
+      data: {
+        id: createId("subscription"),
+        userId: input.userId,
+        planId: input.planId,
+        totalTrafficGb,
+        usedTrafficGb,
+        remainingTrafficGb,
+        expireAt,
+        state,
+        renewable,
+        sourceAction: "created",
+        lastSyncedAt: new Date()
+      },
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      }
+    });
+
+    return toAdminSubscriptionRecord(row);
+  }
+
+  async renewSubscription(subscriptionId: string, input: RenewSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    const current = await this.requireSubscription(subscriptionId);
+    const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt, input.extendDays);
+    const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
+    const usedTrafficGb = input.resetTraffic ? 0 : current.usedTrafficGb;
+    const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+
+    const row = await this.prisma.subscription.update({
+      where: { id: subscriptionId },
+      data: {
+        totalTrafficGb,
+        usedTrafficGb,
+        remainingTrafficGb,
+        expireAt: nextExpireAt,
+        state: resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt),
+        sourceAction: "renewed",
+        lastSyncedAt: new Date()
+      },
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      }
+    });
+
+    return toAdminSubscriptionRecord(row);
+  }
+
+  async changeSubscriptionPlan(subscriptionId: string, input: ChangeSubscriptionPlanInputDto): Promise<AdminSubscriptionRecordDto> {
+    const current = await this.requireSubscription(subscriptionId);
+    const plan = await this.ensurePlanExists(input.planId);
+    if (!plan.isActive) {
+      throw new BadRequestException("套餐已停用，不能切换");
+    }
+
+    const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
+    if (Number.isNaN(expireAt.getTime())) {
+      throw new BadRequestException("到期时间无效");
+    }
+
+    const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
+    const renewable = input.renewable ?? plan.renewable;
+    const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
+
+    const row = await this.prisma.subscription.update({
+      where: { id: subscriptionId },
+      data: {
+        planId: plan.id,
+        totalTrafficGb,
+        remainingTrafficGb,
+        expireAt,
+        renewable,
+        state: resolveSubscriptionState("active", remainingTrafficGb, expireAt),
+        sourceAction: "plan_changed",
+        lastSyncedAt: new Date()
+      },
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      }
+    });
+
+    return toAdminSubscriptionRecord(row);
+  }
+
+  async updateSubscription(subscriptionId: string, input: UpdateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    const current = await this.requireSubscription(subscriptionId);
+    const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
+    const usedTrafficGb = input.usedTrafficGb ?? current.usedTrafficGb;
+    const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
+    const renewable = input.renewable ?? current.renewable;
+    const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+    const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
+
+    const row = await this.prisma.subscription.update({
+      where: { id: subscriptionId },
+      data: {
+        totalTrafficGb,
+        usedTrafficGb,
+        remainingTrafficGb,
+        expireAt,
+        renewable,
+        state,
+        sourceAction: "adjusted",
+        lastSyncedAt: new Date()
+      },
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      }
+    });
+
+    return toAdminSubscriptionRecord(row);
+  }
+
+  async listAdminTeams(): Promise<AdminTeamRecordDto[]> {
+    const teams = await this.prisma.team.findMany({
+      include: {
+        owner: true,
+        members: {
+          include: { user: true },
+          orderBy: { createdAt: "asc" }
+        },
+        subscriptions: {
+          include: { plan: true },
+          orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+        },
+        trafficLedgerEntries: {
+          include: { user: true },
+          orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
+        }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return teams.map((team) => toAdminTeamRecord(team));
+  }
+
+  async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
+    const owner = await this.ensureUserExists(input.ownerUserId);
+    if (owner.status !== "active") {
+      throw new BadRequestException("负责人账号已禁用");
+    }
+
+    await this.assertUserCanJoinTeam(owner.id);
+
+    const teamId = createId("team");
+    await this.prisma.team.create({
+      data: {
+        id: teamId,
+        name: input.name.trim(),
+        ownerUserId: owner.id,
+        status: input.status ?? "active"
+      }
+    });
+
+    await this.prisma.teamMember.create({
+      data: {
+        id: createId("member"),
+        teamId,
+        userId: owner.id,
+        role: "owner"
+      }
+    });
+
+    return this.requireTeamRecord(teamId);
+  }
+
+  async updateTeam(teamId: string, input: UpdateTeamInputDto): Promise<AdminTeamRecordDto> {
+    const current = await this.requireTeam(teamId);
+    const data: Record<string, unknown> = {};
+
+    if (input.name !== undefined) data.name = input.name.trim();
+    if (input.status !== undefined) data.status = input.status;
+
+    if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
+      const nextOwner = await this.ensureUserExists(input.ownerUserId);
+      if (nextOwner.status !== "active") {
+        throw new BadRequestException("负责人账号已禁用");
+      }
+
+      const nextMembership = await this.getUserMembership(nextOwner.id);
+      if (nextMembership && nextMembership.teamId !== teamId) {
+        throw new BadRequestException("该账号已属于其他团队");
+      }
+
+      const activePersonal = await this.findCurrentPersonalSubscription(nextOwner.id);
+      if (activePersonal && isEffectiveSubscription(activePersonal)) {
+        throw new BadRequestException("该账号已有个人有效订阅，不能切为团队负责人");
+      }
+
+      data.ownerUserId = nextOwner.id;
+      await this.prisma.teamMember.updateMany({
+        where: { teamId, role: "owner" },
+        data: { role: "member" }
+      });
+
+      await this.prisma.teamMember.upsert({
+        where: { userId: nextOwner.id },
+        update: { role: "owner" },
+        create: {
+          id: createId("member"),
+          teamId,
+          userId: nextOwner.id,
+          role: "owner"
+        }
+      });
+    }
+
+    await this.prisma.team.update({
+      where: { id: teamId },
+      data
+    });
+
+    return this.requireTeamRecord(teamId);
+  }
+
+  async createTeamMember(teamId: string, input: CreateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
+    await this.requireTeam(teamId);
+    await this.assertUserCanJoinTeam(input.userId);
+
+    await this.prisma.teamMember.create({
+      data: {
+        id: createId("member"),
+        teamId,
+        userId: input.userId,
+        role: input.role ?? "member"
+      }
+    });
+
+    return this.requireTeamRecord(teamId);
+  }
+
+  async updateTeamMember(memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
+    const member = await this.requireTeamMember(memberId);
+    const nextRole = input.role ?? member.role;
+
+    await this.prisma.teamMember.update({
+      where: { id: memberId },
+      data: { role: nextRole }
+    });
+
+    if (nextRole === "owner") {
+      await this.prisma.teamMember.updateMany({
+        where: {
+          teamId: member.teamId,
+          NOT: { id: memberId }
+        },
+        data: { role: "member" }
+      });
+
+      await this.prisma.team.update({
+        where: { id: member.teamId },
+        data: { ownerUserId: member.userId }
+      });
+    }
+
+    return this.requireTeamRecord(member.teamId);
+  }
+
+  async deleteTeamMember(memberId: string) {
+    const member = await this.requireTeamMember(memberId);
+    if (member.role === "owner") {
+      throw new BadRequestException("负责人不能直接移除，请先转移负责人");
+    }
+
+    await this.prisma.teamMember.delete({
+      where: { id: memberId }
+    });
+
+    return { ok: true };
+  }
+
+  async createTeamSubscription(teamId: string, input: CreateTeamSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    const team = await this.requireTeam(teamId);
+    if (team.status !== "active") {
+      throw new BadRequestException("团队已停用");
+    }
+
+    const current = await this.findCurrentTeamSubscription(teamId);
+    if (current && isEffectiveSubscription(current)) {
+      throw new ConflictException("该团队已有有效共享订阅，请使用续期、变更套餐或校正。");
+    }
+
+    const plan = await this.ensurePlanExists(input.planId);
+    if (!plan.isActive) {
+      throw new BadRequestException("套餐已停用，不能分配");
+    }
+    if (plan.scope !== "team") {
+      throw new BadRequestException("团队订阅只能选择 Team 套餐");
+    }
+
+    const expireAt = new Date(input.expireAt);
+    if (Number.isNaN(expireAt.getTime())) {
+      throw new BadRequestException("到期时间无效");
+    }
+
+    const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
+    const usedTrafficGb = input.usedTrafficGb ?? 0;
+    const renewable = input.renewable ?? plan.renewable;
+    const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+    const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
+
+    const row = await this.prisma.subscription.create({
+      data: {
+        id: createId("subscription"),
+        teamId,
+        planId: input.planId,
+        totalTrafficGb,
+        usedTrafficGb,
+        remainingTrafficGb,
+        expireAt,
+        state,
+        renewable,
+        sourceAction: "created",
+        lastSyncedAt: new Date()
+      },
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      }
+    });
+
+    return toAdminSubscriptionRecord(row);
+  }
+
+  async getSubscriptionNodeAccess(subscriptionId: string): Promise<SubscriptionNodeAccessDto> {
+    const subscription = await this.requireSubscription(subscriptionId);
+    const rows = await this.prisma.subscriptionNodeAccess.findMany({
+      where: { subscriptionId },
+      include: { node: true },
+      orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
+    });
+
+    return {
+      subscriptionId: subscription.id,
+      nodeIds: rows.map((item) => item.nodeId),
+      nodes: rows.map((item) => toNodeSummary(item.node))
+    };
+  }
+
+  async updateSubscriptionNodeAccess(
+    subscriptionId: string,
+    input: UpdateSubscriptionNodeAccessInputDto
+  ): Promise<SubscriptionNodeAccessDto> {
+    await this.requireSubscription(subscriptionId);
+
+    if (input.nodeIds.length === 0) {
+      await this.prisma.subscriptionNodeAccess.deleteMany({
+        where: { subscriptionId }
+      });
+      return {
+        subscriptionId,
+        nodeIds: [],
+        nodes: []
+      };
+    }
+
+    const uniqueNodeIds = [...new Set(input.nodeIds)];
+    const availableNodes = await this.prisma.node.findMany({
+      where: { id: { in: uniqueNodeIds } }
+    });
+
+    if (availableNodes.length !== uniqueNodeIds.length) {
+      throw new BadRequestException("存在无效节点");
+    }
+
+    await this.prisma.subscriptionNodeAccess.deleteMany({
+      where: { subscriptionId }
+    });
+
+    await this.prisma.subscriptionNodeAccess.createMany({
+      data: uniqueNodeIds.map((nodeId) => ({
+        id: createId("subscription_node"),
+        subscriptionId,
+        nodeId
+      }))
+    });
+
+    const rows = await this.prisma.subscriptionNodeAccess.findMany({
+      where: { subscriptionId },
+      include: { node: true },
+      orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
+    });
+
+    return {
+      subscriptionId,
+      nodeIds: rows.map((item) => item.nodeId),
+      nodes: rows.map((item) => toNodeSummary(item.node))
+    };
+  }
+
+  async getTeamUsage(teamId: string): Promise<AdminTeamUsageRecordDto[]> {
+    await this.requireTeam(teamId);
+    const rows = await this.prisma.trafficLedger.findMany({
+      where: { teamId },
+      include: { user: true },
+      orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
+    });
+
+    return rows.map(toAdminTeamUsageRecord);
+  }
+
+  async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
+    const rows = await this.prisma.node.findMany({
+      orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
+    });
+    return rows.map(toAdminNodeRecord);
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
     const imported = await this.fetchSubscriptionNode(input.subscriptionUrl);
-    const panelId = input.panelId === undefined ? await this.matchPanelIdByHost(imported.serverHost) : input.panelId;
     const nodeId = toNodeId(imported.serverHost, imported.serverPort);
 
-    const saved = await this.prisma.node.upsert({
+    const row = await this.prisma.node.upsert({
       where: { id: nodeId },
       create: {
         id: nodeId,
-        panelId,
         name: input.name?.trim() || imported.name,
         region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
         provider: input.provider?.trim() || "自有节点",
@@ -346,14 +1003,12 @@ export class DevDataService implements OnModuleInit {
         subscriptionUrl: input.subscriptionUrl
       },
       update: {
-        panelId,
         name: input.name?.trim() || imported.name,
         region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
         provider: input.provider?.trim() || "自有节点",
         tags: normalizeTags(input.tags, imported.name),
         recommended: input.recommended ?? true,
-        protocol: "vless",
-        security: "reality",
+        latencyMs: 0,
         serverHost: imported.serverHost,
         serverPort: imported.serverPort,
         uuid: imported.uuid,
@@ -367,144 +1022,416 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
-    return toAdminNodeRecord(saved);
+    return toAdminNodeRecord(row);
   }
 
-  async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {
-    const node = await this.prisma.node.findUnique({
-      where: { id: request.nodeId }
-    });
-
-    if (!node) {
-      throw new NotFoundException("Node not found");
+  async updateNode(nodeId: string, input: UpdateNodeInputDto): Promise<AdminNodeRecordDto> {
+    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    if (!current) {
+      throw new NotFoundException("节点不存在");
     }
 
-    const user = await this.resolveUserFromToken(token);
-    const subscription = await this.prisma.subscription.findFirst({
-      where: { userId: user.id },
+    let derived: ReturnType<typeof parseVlessLink> | null = null;
+    if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
+      derived = await this.fetchSubscriptionNode(input.subscriptionUrl);
+    }
+
+    const row = await this.prisma.node.update({
+      where: { id: nodeId },
+      data: {
+        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(input.region !== undefined ? { region: input.region.trim() } : {}),
+        ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
+        ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
+        ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
+        ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl } : {}),
+        ...(derived
+          ? {
+              serverHost: derived.serverHost,
+              serverPort: derived.serverPort,
+              uuid: derived.uuid,
+              flow: derived.flow,
+              realityPublicKey: derived.realityPublicKey,
+              shortId: derived.shortId,
+              serverName: derived.serverName,
+              fingerprint: derived.fingerprint,
+              spiderX: derived.spiderX
+            }
+          : {})
+      }
+    });
+
+    return toAdminNodeRecord(row);
+  }
+
+  async refreshNode(nodeId: string): Promise<AdminNodeRecordDto> {
+    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    if (!current) {
+      throw new NotFoundException("节点不存在");
+    }
+    if (!current.subscriptionUrl) {
+      throw new BadRequestException("当前节点没有订阅地址");
+    }
+
+    const derived = await this.fetchSubscriptionNode(current.subscriptionUrl);
+    const row = await this.prisma.node.update({
+      where: { id: nodeId },
+      data: {
+        serverHost: derived.serverHost,
+        serverPort: derived.serverPort,
+        uuid: derived.uuid,
+        flow: derived.flow,
+        realityPublicKey: derived.realityPublicKey,
+        shortId: derived.shortId,
+        serverName: derived.serverName,
+        fingerprint: derived.fingerprint,
+        spiderX: derived.spiderX
+      }
+    });
+
+    return toAdminNodeRecord(row);
+  }
+
+  async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {
+    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    if (!current) {
+      throw new NotFoundException("节点不存在");
+    }
+
+    const result = await probeNodeConnectivity(current.serverHost, current.serverPort, current.serverName, current.subscriptionUrl);
+    const row = await this.prisma.node.update({
+      where: { id: nodeId },
+      data: {
+        probeStatus: result.status,
+        probeLatencyMs: result.latencyMs,
+        probeCheckedAt: new Date(),
+        probeError: result.error,
+        latencyMs: result.latencyMs ?? current.latencyMs
+      }
+    });
+
+    return toAdminNodeRecord(row);
+  }
+
+  async probeAllNodes() {
+    const nodes = await this.prisma.node.findMany({ orderBy: { createdAt: "desc" } });
+    const results: AdminNodeRecordDto[] = [];
+    for (const node of nodes) {
+      results.push(await this.probeNode(node.id));
+    }
+    return results;
+  }
+
+  async deleteNode(nodeId: string) {
+    await this.prisma.node.delete({ where: { id: nodeId } });
+    return { ok: true };
+  }
+
+  async listAdminAnnouncements(): Promise<AdminAnnouncementRecordDto[]> {
+    const rows = await this.prisma.announcement.findMany({
+      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
+    });
+    return rows.map(toAdminAnnouncementRecord);
+  }
+
+  async createAnnouncement(input: CreateAnnouncementInputDto): Promise<AdminAnnouncementRecordDto> {
+    const displayMode = input.displayMode ?? "passive";
+    const countdownSeconds = displayMode === "modal_countdown" ? Math.max(1, input.countdownSeconds ?? 5) : 0;
+
+    const row = await this.prisma.announcement.create({
+      data: {
+        id: createId("announcement"),
+        title: input.title.trim(),
+        body: input.body.trim(),
+        level: input.level,
+        publishedAt: input.publishedAt ? new Date(input.publishedAt) : new Date(),
+        isActive: input.isActive ?? true,
+        displayMode,
+        countdownSeconds
+      }
+    });
+
+    return toAdminAnnouncementRecord(row);
+  }
+
+  async updateAnnouncement(announcementId: string, input: UpdateAnnouncementInputDto): Promise<AdminAnnouncementRecordDto> {
+    const current = await this.prisma.announcement.findUnique({
+      where: { id: announcementId }
+    });
+    if (!current) {
+      throw new NotFoundException("公告不存在");
+    }
+
+    const displayMode = input.displayMode ?? current.displayMode;
+    const countdownBase = input.countdownSeconds ?? current.countdownSeconds ?? 5;
+    const countdownSeconds = displayMode === "modal_countdown" ? Math.max(1, countdownBase) : 0;
+
+    const row = await this.prisma.announcement.update({
+      where: { id: announcementId },
+      data: {
+        ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+        ...(input.body !== undefined ? { body: input.body.trim() } : {}),
+        ...(input.level !== undefined ? { level: input.level } : {}),
+        ...(input.publishedAt !== undefined ? { publishedAt: new Date(input.publishedAt) } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        ...(input.displayMode !== undefined ? { displayMode } : {}),
+        ...(input.displayMode !== undefined || input.countdownSeconds !== undefined ? { countdownSeconds } : {})
+      }
+    });
+
+    return toAdminAnnouncementRecord(row);
+  }
+
+  async getAdminPolicy(): Promise<AdminPolicyRecordDto> {
+    const profile = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" },
       include: {
-        user: true
-      },
-      orderBy: { createdAt: "asc" }
+        strategyGroups: {
+          orderBy: { name: "asc" }
+        }
+      }
     });
+    if (!profile) {
+      throw new NotFoundException("策略配置不存在");
+    }
+    return toAdminPolicyRecord(profile);
+  }
 
-    if (!subscription) {
-      throw new NotFoundException("Subscription not found");
+  async updatePolicy(input: UpdatePolicyInputDto): Promise<AdminPolicyRecordDto> {
+    if (input.strategyGroups) {
+      await this.validateStrategyGroups(input.strategyGroups);
     }
 
-    const resolvedOutbound = await this.resolveOutboundForUser(node, subscription.panelClientEmail ?? subscription.user.email);
+    await this.prisma.policyProfile.update({
+      where: { id: "default" },
+      data: {
+        ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
+        ...(input.modes !== undefined ? { modes: input.modes } : {}),
+        ...(input.ruleVersion !== undefined ? { ruleVersion: input.ruleVersion.trim() } : {}),
+        ...(input.ruleUpdatedAt !== undefined ? { ruleUpdatedAt: new Date(input.ruleUpdatedAt) } : {}),
+        ...(input.dnsProfile !== undefined ? { dnsProfile: input.dnsProfile.trim() } : {}),
+        ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
+        ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
+        ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {}),
+        ...(input.currentVersion !== undefined ? { currentVersion: input.currentVersion.trim() } : {}),
+        ...(input.minimumVersion !== undefined ? { minimumVersion: input.minimumVersion.trim() } : {}),
+        ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
+        ...(input.changelog !== undefined ? { changelog: input.changelog.map((item) => item.trim()).filter(Boolean) } : {}),
+        ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl || null } : {})
+      }
+    });
 
-    this.activeRuntime = {
-      sessionId: `session_${node.id}`,
-      node: toNodeSummary(node),
-      mode: request.mode,
-      localHttpPort: 17890,
-      localSocksPort: 17891,
-      routingProfile: request.strategyGroupId ?? "managed-rule-default",
-      generatedAt: new Date().toISOString(),
-      outbound: resolvedOutbound
-    };
+    if (input.strategyGroups) {
+      await this.prisma.strategyGroup.deleteMany({
+        where: { policyId: "default" }
+      });
 
-    return this.activeRuntime;
-  }
+      await this.prisma.strategyGroup.createMany({
+        data: input.strategyGroups.map((item) => ({
+          id: item.id?.trim() || createId("strategy"),
+          policyId: "default",
+          name: item.name.trim(),
+          description: item.description.trim(),
+          defaultNodeId: item.defaultNodeId
+        }))
+      });
+    }
 
-  disconnect(_token?: string) {
-    const previous = this.activeRuntime;
-    this.activeRuntime = undefined;
-    return {
-      ok: true,
-      previousSessionId: previous?.sessionId ?? null
-    };
-  }
-
-  getActiveRuntime() {
-    return this.activeRuntime ?? null;
+    return this.getAdminPolicy();
   }
 
   async getUsers(): Promise<UserProfileDto[]> {
     const rows = await this.prisma.user.findMany({
       orderBy: { createdAt: "asc" }
     });
-
     return rows.map(toUserProfile);
   }
 
-  private async getSubscriptions(): Promise<SubscriptionStatusDto[]> {
-    const rows = await this.prisma.subscription.findMany({
-      include: {
-        plan: true
-      },
-      orderBy: { createdAt: "asc" }
-    });
-
-    return rows.map((row) => toSubscriptionDto(row, row.plan.name));
-  }
-
-  private async getAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
-    const rows = await this.prisma.subscription.findMany({
-      include: {
-        plan: true,
-        user: true
-      },
-      orderBy: { createdAt: "asc" }
-    });
-
-    return rows.map((row) => ({
-      id: row.id,
-      userId: row.userId,
-      userEmail: row.user.email,
-      userDisplayName: row.user.displayName,
-      planId: row.planId,
-      planName: row.plan.name,
-      panelClientEmail: row.panelClientEmail,
-      totalTrafficGb: row.totalTrafficGb,
-      usedTrafficGb: row.usedTrafficGb,
-      remainingTrafficGb: row.remainingTrafficGb,
-      expireAt: row.expireAt.toISOString(),
-      state: row.state,
-      renewable: row.renewable,
-      lastSyncedAt: row.lastSyncedAt.toISOString()
-    }));
-  }
-
-  private async getSubscriptionForUser(userId: string): Promise<SubscriptionStatusDto> {
-    const row = await this.prisma.subscription.findFirst({
+  private async resolveSubscriptionAccessForUser(userId: string) {
+    const membership = await this.prisma.teamMember.findUnique({
       where: { userId },
       include: {
-        plan: true
-      },
-      orderBy: { createdAt: "asc" }
+        team: {
+          include: {
+            subscriptions: {
+              include: { plan: true },
+              orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+            }
+          }
+        }
+      }
     });
 
-    if (!row) {
-      throw new NotFoundException("Subscription not found");
+    if (membership) {
+      const subscription = pickCurrentSubscription(membership.team.subscriptions);
+      const memberUsedTrafficGb = subscription
+        ? await this.getMemberUsedTrafficGb(membership.teamId, userId, subscription.id)
+        : 0;
+      return {
+        subscription,
+        team: membership.team,
+        memberRole: membership.role as TeamMemberRole,
+        memberUsedTrafficGb
+      };
     }
 
-    return toSubscriptionDto(row, row.plan.name);
+    const subscription = await this.findCurrentPersonalSubscription(userId);
+    return {
+      subscription,
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    };
   }
 
-  private async resolveUserFromToken(token?: string): Promise<UserProfileDto> {
+  private async findCurrentPersonalSubscription(userId: string) {
+    return this.prisma.subscription.findFirst({
+      where: {
+        userId
+      },
+      include: { plan: true, user: true, team: true },
+      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+    });
+  }
+
+  private async findCurrentTeamSubscription(teamId: string) {
+    return this.prisma.subscription.findFirst({
+      where: { teamId },
+      include: { plan: true, user: true, team: true },
+      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+    });
+  }
+
+  private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
+    const rows = await this.prisma.trafficLedger.findMany({
+      where: { teamId, userId, subscriptionId }
+    });
+    return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
+  }
+
+  private async resolveActiveUserFromToken(token?: string): Promise<UserProfileDto> {
     const email = token ? tryEmailFromToken(token) : mockUser.email;
-    const user = await this.prisma.user.findUnique({
+    const row = await this.prisma.user.findUnique({
       where: { email: email ?? mockUser.email }
     });
 
-    if (!user) {
-      throw new UnauthorizedException("User not found");
+    if (!row) {
+      throw new UnauthorizedException("用户不存在");
+    }
+    if (row.status !== "active") {
+      throw new ForbiddenException("当前用户已禁用");
     }
 
-    return toUserProfile(user);
+    return toUserProfile(row);
+  }
+
+  private async ensureUserExists(userId: string) {
+    const row = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!row) {
+      throw new NotFoundException("用户不存在");
+    }
+    return row;
+  }
+
+  private async ensurePlanExists(planId: string) {
+    const row = await this.prisma.plan.findUnique({ where: { id: planId } });
+    if (!row) {
+      throw new NotFoundException("套餐不存在");
+    }
+    return row;
+  }
+
+  private async requireSubscription(subscriptionId: string) {
+    const row = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      include: {
+        plan: true,
+        user: true,
+        team: true
+      }
+    });
+    if (!row) {
+      throw new NotFoundException("订阅不存在");
+    }
+    return row;
+  }
+
+  private async requireTeam(teamId: string) {
+    const row = await this.prisma.team.findUnique({ where: { id: teamId } });
+    if (!row) {
+      throw new NotFoundException("团队不存在");
+    }
+    return row;
+  }
+
+  private async requireTeamRecord(teamId: string) {
+    const rows = await this.listAdminTeams();
+    const row = rows.find((item) => item.id === teamId);
+    if (!row) {
+      throw new NotFoundException("团队不存在");
+    }
+    return row;
+  }
+
+  private async requireTeamMember(memberId: string) {
+    const row = await this.prisma.teamMember.findUnique({
+      where: { id: memberId }
+    });
+    if (!row) {
+      throw new NotFoundException("团队成员不存在");
+    }
+    return row;
+  }
+
+  private async getUserMembership(userId: string) {
+    return this.prisma.teamMember.findUnique({
+      where: { userId }
+    });
+  }
+
+  private async assertUserCanJoinTeam(userId: string) {
+    const user = await this.ensureUserExists(userId);
+    if (user.status !== "active") {
+      throw new BadRequestException("账号已禁用，不能加入团队");
+    }
+
+    const membership = await this.getUserMembership(userId);
+    if (membership) {
+      throw new BadRequestException("该账号已属于其他团队");
+    }
+
+    const personal = await this.findCurrentPersonalSubscription(userId);
+    if (personal && isEffectiveSubscription(personal)) {
+      throw new BadRequestException("该账号已有个人有效订阅，不能加入团队");
+    }
+  }
+
+  private async validateStrategyGroups(groups: StrategyGroupInputDto[]) {
+    const ids = new Set(
+      (
+        await this.prisma.node.findMany({
+          select: { id: true }
+        })
+      ).map((item) => item.id)
+    );
+
+    for (const group of groups) {
+      if (!ids.has(group.defaultNodeId)) {
+        throw new BadRequestException(`默认节点不存在：${group.defaultNodeId}`);
+      }
+    }
   }
 
   private async seedIfEmpty() {
-    const userCount = await this.prisma.user.count();
-    if (userCount > 0) {
+    const count = await this.prisma.user.count();
+    if (count > 0) {
       return;
     }
 
     const demoPasswordHash = await bcrypt.hash("demo123456", 10);
     const adminPasswordHash = await bcrypt.hash("admin123456", 10);
-    const defaultPanelBaseUrl = process.env.CHORDV_PANEL_DEFAULT_URL;
+    const ownerPasswordHash = await bcrypt.hash("team123456", 10);
+    const memberPasswordHash = await bcrypt.hash("team123456", 10);
 
     await this.prisma.user.createMany({
       data: [
@@ -525,19 +1452,47 @@ export class DevDataService implements OnModuleInit {
           status: mockAdmin.status,
           passwordHash: adminPasswordHash,
           lastSeenAt: new Date(mockAdmin.lastSeenAt)
+        },
+        {
+          id: "user_team_owner_001",
+          email: "team-owner@chordv.app",
+          displayName: "团队负责人",
+          role: "user",
+          status: "active",
+          passwordHash: ownerPasswordHash,
+          lastSeenAt: new Date()
+        },
+        {
+          id: "user_team_member_001",
+          email: "team-member@chordv.app",
+          displayName: "团队成员",
+          role: "user",
+          status: "active",
+          passwordHash: memberPasswordHash,
+          lastSeenAt: new Date()
         }
       ]
     });
 
-    await this.prisma.plan.create({
-      data: {
-        id: mockSubscription.planId,
-        name: mockSubscription.planName,
-        totalTrafficGb: mockSubscription.totalTrafficGb,
-        durationDays: 30,
-        renewable: mockSubscription.renewable,
-        isActive: true
-      }
+    await this.prisma.plan.createMany({
+      data: [
+        {
+          id: mockSubscription.planId,
+          name: mockSubscription.planName,
+          scope: "personal",
+          totalTrafficGb: mockSubscription.totalTrafficGb,
+          renewable: mockSubscription.renewable,
+          isActive: true
+        },
+        {
+          id: "plan_team_500",
+          name: "团队版 500G",
+          scope: "team",
+          totalTrafficGb: 500,
+          renewable: true,
+          isActive: true
+        }
+      ]
     });
 
     await this.prisma.subscription.create({
@@ -545,21 +1500,83 @@ export class DevDataService implements OnModuleInit {
         id: "subscription_demo_001",
         userId: mockUser.id,
         planId: mockSubscription.planId,
-        panelClientEmail: process.env.CHORDV_DEMO_PANEL_CLIENT_EMAIL || mockUser.email,
         totalTrafficGb: mockSubscription.totalTrafficGb,
         usedTrafficGb: mockSubscription.usedTrafficGb,
         remainingTrafficGb: mockSubscription.remainingTrafficGb,
         expireAt: new Date(mockSubscription.expireAt),
         state: mockSubscription.state,
         renewable: mockSubscription.renewable,
+        sourceAction: "created",
         lastSyncedAt: new Date(mockSubscription.lastSyncedAt)
       }
+    });
+
+    await this.prisma.team.create({
+      data: {
+        id: "team_demo_001",
+        name: "示例团队",
+        ownerUserId: "user_team_owner_001",
+        status: "active"
+      }
+    });
+
+    await this.prisma.teamMember.createMany({
+      data: [
+        {
+          id: "member_owner_001",
+          teamId: "team_demo_001",
+          userId: "user_team_owner_001",
+          role: "owner"
+        },
+        {
+          id: "member_user_001",
+          teamId: "team_demo_001",
+          userId: "user_team_member_001",
+          role: "member"
+        }
+      ]
+    });
+
+    await this.prisma.subscription.create({
+      data: {
+        id: "subscription_team_001",
+        teamId: "team_demo_001",
+        planId: "plan_team_500",
+        totalTrafficGb: 500,
+        usedTrafficGb: 120,
+        remainingTrafficGb: 380,
+        expireAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30),
+        state: "active",
+        renewable: true,
+        sourceAction: "created",
+        lastSyncedAt: new Date()
+      }
+    });
+
+    await this.prisma.trafficLedger.createMany({
+      data: [
+        {
+          id: "ledger_001",
+          teamId: "team_demo_001",
+          userId: "user_team_owner_001",
+          subscriptionId: "subscription_team_001",
+          usedTrafficGb: 42,
+          recordedAt: new Date()
+        },
+        {
+          id: "ledger_002",
+          teamId: "team_demo_001",
+          userId: "user_team_member_001",
+          subscriptionId: "subscription_team_001",
+          usedTrafficGb: 78,
+          recordedAt: new Date()
+        }
+      ]
     });
 
     await this.prisma.node.createMany({
       data: mockNodes.map((node) => ({
         id: node.id,
-        panelId: node.id === "node_hk_01" ? "panel_hk_1" : null,
         name: node.name,
         region: node.region,
         provider: node.provider,
@@ -577,8 +1594,34 @@ export class DevDataService implements OnModuleInit {
         serverName: "cdn.cloudflare.com",
         fingerprint: "chrome",
         spiderX: "/",
-        subscriptionUrl: null
+        subscriptionUrl: null,
+        probeStatus: "unknown"
       }))
+    });
+
+    await this.prisma.subscriptionNodeAccess.createMany({
+      data: [
+        {
+          id: "subscription_node_demo_001",
+          subscriptionId: "subscription_demo_001",
+          nodeId: mockNodes[0]?.id ?? "node_hk_01"
+        },
+        {
+          id: "subscription_node_demo_002",
+          subscriptionId: "subscription_demo_001",
+          nodeId: mockNodes[1]?.id ?? "node_sg_01"
+        },
+        {
+          id: "subscription_node_team_001",
+          subscriptionId: "subscription_team_001",
+          nodeId: mockNodes[0]?.id ?? "node_hk_01"
+        },
+        {
+          id: "subscription_node_team_002",
+          subscriptionId: "subscription_team_001",
+          nodeId: mockNodes[2]?.id ?? "node_jp_01"
+        }
+      ]
     });
 
     await this.prisma.policyProfile.create({
@@ -592,14 +1635,11 @@ export class DevDataService implements OnModuleInit {
         blockAds: mockPolicies.features.blockAds,
         chinaDirect: mockPolicies.features.chinaDirect,
         aiServicesProxy: mockPolicies.features.aiServicesProxy,
-        currentVersion: "0.1.0",
-        minimumVersion: "0.1.0",
-        forceUpgrade: false,
-        changelog: [
-          "Prisma-backed PostgreSQL data layer",
-          "Docker Compose local database bootstrap",
-          "Managed runtime config contracts still intact"
-        ]
+        currentVersion: mockVersion.currentVersion,
+        minimumVersion: mockVersion.minimumVersion,
+        forceUpgrade: mockVersion.forceUpgrade,
+        changelog: mockVersion.changelog,
+        downloadUrl: mockVersion.downloadUrl ?? null
       }
     });
 
@@ -613,20 +1653,6 @@ export class DevDataService implements OnModuleInit {
       }))
     });
 
-    await this.prisma.panel.createMany({
-      data: mockPanels.map((panel) => ({
-        id: panel.panelId,
-        name: panel.name,
-        baseUrl: panel.panelId === "panel_hk_1" && defaultPanelBaseUrl ? defaultPanelBaseUrl : panel.baseUrl,
-        apiBasePath: panel.apiBasePath ?? "/panel",
-        health: panel.health,
-        lastSyncedAt: new Date(panel.lastSyncedAt),
-        latencyMs: panel.latencyMs,
-        activeUsers: panel.activeUsers,
-        syncEnabled: panel.panelId === "panel_hk_1"
-      }))
-    });
-
     await this.prisma.announcement.createMany({
       data: mockAnnouncements.map((item) => ({
         id: item.id,
@@ -634,366 +1660,37 @@ export class DevDataService implements OnModuleInit {
         body: item.body,
         level: item.level,
         publishedAt: new Date(item.publishedAt),
-        isActive: true
+        isActive: true,
+        displayMode: item.displayMode,
+        countdownSeconds: item.countdownSeconds
       }))
     });
   }
 
   private async fetchSubscriptionNode(subscriptionUrl: string) {
+    const timeoutMs = Number(process.env.CHORDV_SUBSCRIPTION_TIMEOUT_MS ?? 15000);
+    const allowInsecureTls = (process.env.CHORDV_SUBSCRIPTION_ALLOW_INSECURE_TLS ?? "true").toLowerCase() === "true";
     const response = await undiciFetch(subscriptionUrl, {
-      signal: AbortSignal.timeout(15000),
-      dispatcher: createDispatcher(15000, true)
+      signal: AbortSignal.timeout(timeoutMs),
+      dispatcher: createDispatcher(timeoutMs, allowInsecureTls)
     });
 
     if (!response.ok) {
-      throw new Error(`订阅地址请求失败：HTTP ${response.status}`);
+      throw new BadRequestException(`订阅地址请求失败：HTTP ${response.status}`);
     }
 
     const raw = (await response.text()).trim();
     const decoded = decodeSubscriptionText(raw);
-    const firstLine = decoded
+    const first = decoded
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.startsWith("vless://"));
+      .map((item) => item.trim())
+      .find((item) => item.startsWith("vless://"));
 
-    if (!firstLine) {
-      throw new Error("订阅内容里没有 vless 节点");
+    if (!first) {
+      throw new BadRequestException("订阅内容里没有可用的 vless 节点");
     }
 
-    return parseVlessLink(firstLine);
-  }
-
-  private async matchPanelIdByHost(host: string): Promise<string | null> {
-    const panels = await this.prisma.panel.findMany();
-    const matched = panels.find((panel) => {
-      try {
-        return new URL(panel.baseUrl).hostname === host;
-      } catch {
-        return false;
-      }
-    });
-
-    return matched?.id ?? null;
-  }
-
-  private async resolveOutboundForUser(
-    node: {
-      panelId: string | null;
-      serverHost: string;
-      serverPort: number;
-      uuid: string;
-      flow: string;
-      realityPublicKey: string;
-      shortId: string;
-      serverName: string;
-      fingerprint: string;
-      spiderX: string;
-    },
-    panelClientEmail: string
-  ): Promise<GeneratedRuntimeConfigDto["outbound"]> {
-    if (!node.panelId) {
-      return {
-        protocol: "vless",
-        server: node.serverHost,
-        port: node.serverPort,
-        uuid: node.uuid,
-        flow: node.flow,
-        realityPublicKey: node.realityPublicKey,
-        shortId: node.shortId,
-        serverName: node.serverName,
-        fingerprint: node.fingerprint,
-        spiderX: node.spiderX
-      };
-    }
-
-    const panel = await this.prisma.panel.findUnique({
-      where: { id: node.panelId }
-    });
-
-    if (!panel) {
-      return {
-        protocol: "vless",
-        server: node.serverHost,
-        port: node.serverPort,
-        uuid: node.uuid,
-        flow: node.flow,
-        realityPublicKey: node.realityPublicKey,
-        shortId: node.shortId,
-        serverName: node.serverName,
-        fingerprint: node.fingerprint,
-        spiderX: node.spiderX
-      };
-    }
-
-    const credentials = this.resolvePanelCredentials(panel);
-    if (!credentials) {
-      return {
-        protocol: "vless",
-        server: node.serverHost,
-        port: node.serverPort,
-        uuid: node.uuid,
-        flow: node.flow,
-        realityPublicKey: node.realityPublicKey,
-        shortId: node.shortId,
-        serverName: node.serverName,
-        fingerprint: node.fingerprint,
-        spiderX: node.spiderX
-      };
-    }
-
-    const client = await this.resolvePanelClientForNode(credentials, node.serverPort, panelClientEmail);
-
-    return {
-      protocol: "vless",
-      server: node.serverHost,
-      port: node.serverPort,
-      uuid: client?.uuid ?? node.uuid,
-      flow: client?.flow ?? node.flow,
-      realityPublicKey: node.realityPublicKey,
-      shortId: node.shortId,
-      serverName: node.serverName,
-      fingerprint: node.fingerprint,
-      spiderX: node.spiderX
-    };
-  }
-
-  private async resolvePanelClientForNode(
-    credentials: {
-      baseUrl: string;
-      username: string;
-      password: string;
-      apiBasePath: string;
-      timeoutMs: number;
-      allowInsecureTls: boolean;
-    },
-    serverPort: number,
-    panelClientEmail: string
-  ) {
-    try {
-      const timeoutMs = Math.min(credentials.timeoutMs, 2500);
-      const cookie = await this.loginPanel(
-        credentials.baseUrl,
-        credentials.username,
-        credentials.password,
-        credentials.apiBasePath,
-        timeoutMs,
-        credentials.allowInsecureTls
-      );
-      const inbounds = await this.fetchPanelInbounds(
-        credentials.baseUrl,
-        cookie,
-        credentials.apiBasePath,
-        timeoutMs,
-        credentials.allowInsecureTls
-      );
-
-      const matched = inbounds.find((inbound) => inbound.port === serverPort);
-      return matched ? findPanelClient(matched, panelClientEmail) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private resolvePanelCredentials(panel: {
-    id: string;
-    baseUrl: string;
-    apiBasePath: string;
-    username: string | null;
-    password: string | null;
-  }) {
-    const baseUrl = process.env.CHORDV_PANEL_DEFAULT_URL ?? panel.baseUrl;
-    const username = panel.username ?? process.env.CHORDV_PANEL_DEFAULT_USERNAME ?? "";
-    const password = panel.password ?? process.env.CHORDV_PANEL_DEFAULT_PASSWORD ?? "";
-    const apiBasePath = panel.apiBasePath || process.env.CHORDV_PANEL_DEFAULT_API_BASE_PATH || "/panel";
-    const timeoutMs = Number(process.env.CHORDV_PANEL_DEFAULT_TIMEOUT_MS ?? 10000);
-    const allowInsecureTls = (process.env.CHORDV_PANEL_ALLOW_INSECURE_TLS ?? "false").toLowerCase() === "true";
-
-    if (!username || !password) {
-      return null;
-    }
-
-    return {
-      baseUrl,
-      username,
-      password,
-      apiBasePath,
-      timeoutMs,
-      allowInsecureTls
-    };
-  }
-
-  private async loginPanel(
-    baseUrl: string,
-    username: string,
-    password: string,
-    apiBasePath: string,
-    timeoutMs: number,
-    allowInsecureTls: boolean
-  ) {
-    const response = await undiciFetch(joinUrl(baseUrl, "/login"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ username, password }),
-      signal: AbortSignal.timeout(timeoutMs),
-      dispatcher: createDispatcher(timeoutMs, allowInsecureTls)
-    });
-
-    if (!response.ok) {
-      throw new Error(`Panel login failed with HTTP ${response.status}`);
-    }
-
-    const payload = (await response.json()) as { success?: boolean; msg?: string };
-    if (!payload.success) {
-      throw new Error(payload.msg ?? "Panel login returned unsuccessful response");
-    }
-
-    const setCookie = readSetCookie(response.headers);
-    const cookie = extractCookie(setCookie, "3x-ui");
-    if (!cookie) {
-      throw new Error("Panel login succeeded without 3x-ui cookie");
-    }
-
-    return cookie;
-  }
-
-  private async fetchPanelInbounds(
-    baseUrl: string,
-    cookie: string,
-    apiBasePath: string,
-    timeoutMs: number,
-    allowInsecureTls: boolean
-  ) {
-    const url = joinUrl(baseUrl, `${trimSlashes(apiBasePath)}/api/inbounds/list`);
-    const response = await undiciFetch(url, {
-      headers: {
-        Cookie: cookie
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-      dispatcher: createDispatcher(timeoutMs, allowInsecureTls)
-    });
-
-    if (!response.ok) {
-      throw new Error(`Panel inbounds request failed with HTTP ${response.status}`);
-    }
-
-    const payload = (await response.json()) as {
-      success?: boolean;
-      msg?: string;
-      obj?: Array<{
-        id: number;
-        port?: number;
-        protocol?: string;
-        settings?: string;
-        streamSettings?: string;
-        remark?: string;
-        clientStats?: Array<{
-          email?: string;
-          uuid?: string;
-          up?: number;
-          down?: number;
-          total?: number;
-          expiryTime?: number;
-          enable?: boolean;
-        }>;
-      }>;
-    };
-
-    if (!payload.success || !Array.isArray(payload.obj)) {
-      throw new Error(payload.msg ?? "Panel inbounds payload invalid");
-    }
-
-    return payload.obj;
-  }
-
-  private async applyPanelPayload(panelId: string, inbounds: Array<{
-    id: number;
-    clientStats?: Array<{
-      email?: string;
-      up?: number;
-      down?: number;
-      total?: number;
-      expiryTime?: number;
-      enable?: boolean;
-    }>;
-  }>, latencyMs: number): Promise<PanelSyncRunDto> {
-    const statsByEmail = new Map<string, { usedBytes: number; totalBytes: number; expiryTime?: number }>();
-
-    for (const inbound of inbounds) {
-      for (const client of inbound.clientStats ?? []) {
-        if (!client.email) {
-          continue;
-        }
-
-        statsByEmail.set(client.email, {
-          usedBytes: (client.up ?? 0) + (client.down ?? 0),
-          totalBytes: client.total ?? 0,
-          expiryTime: client.expiryTime
-        });
-      }
-    }
-
-    const subscriptions = await this.prisma.subscription.findMany({
-      include: {
-        user: true
-      }
-    });
-
-    let matchedSubscriptions = 0;
-
-    for (const subscription of subscriptions) {
-      const panelClientEmail = subscription.panelClientEmail ?? subscription.user.email;
-      const stat = statsByEmail.get(panelClientEmail);
-      if (!stat) {
-        continue;
-      }
-
-      matchedSubscriptions += 1;
-      const usedTrafficGb = toGigabytes(stat.usedBytes);
-      const totalTrafficGb = stat.totalBytes > 0 ? toGigabytes(stat.totalBytes) : subscription.totalTrafficGb;
-      const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
-      const expireAt = normalizeExpiry(stat.expiryTime, subscription.expireAt);
-      const state = deriveSubscriptionState(remainingTrafficGb, expireAt);
-
-      await this.prisma.subscription.update({
-        where: { id: subscription.id },
-        data: {
-          usedTrafficGb,
-          totalTrafficGb,
-          remainingTrafficGb,
-          expireAt,
-          state,
-          lastSyncedAt: new Date()
-        }
-      });
-    }
-
-    return {
-      panelId,
-      health: "healthy",
-      synchronizedUsers: statsByEmail.size,
-      matchedSubscriptions,
-      latencyMs,
-      lastSyncedAt: new Date().toISOString(),
-      error: null
-    };
-  }
-
-  private async persistPanelStatus(
-    result: PanelSyncRunDto,
-    panel: { id: string },
-    activeUsers: number
-  ) {
-    await this.prisma.panel.update({
-      where: { id: panel.id },
-      data: {
-        health: result.health,
-        latencyMs: result.latencyMs,
-        activeUsers,
-        lastSyncedAt: new Date(result.lastSyncedAt)
-      }
-    });
+    return parseVlessLink(first);
   }
 }
 
@@ -1015,23 +1712,41 @@ function toUserProfile(row: {
   };
 }
 
+function toUserSubscriptionSummary(
+  row: {
+    id: string;
+    planId: string;
+    plan: { name: string };
+    remainingTrafficGb: number;
+    expireAt: Date;
+    state: SubscriptionState;
+  },
+  team: { id: string; name: string } | null
+): UserSubscriptionSummaryDto {
+  return {
+    id: row.id,
+    ownerType: team ? "team" : "user",
+    planId: row.planId,
+    planName: row.plan.name,
+    remainingTrafficGb: row.remainingTrafficGb,
+    expireAt: row.expireAt.toISOString(),
+    state: row.state,
+    teamId: team?.id ?? null,
+    teamName: team?.name ?? null
+  };
+}
+
 function toNodeSummary(row: {
   id: string;
-  panelId?: string | null;
   name: string;
   region: string;
   provider: string;
   tags: string[];
   recommended: boolean;
   latencyMs: number;
+  probeLatencyMs?: number | null;
   protocol: string;
   security: string;
-  serverHost?: string;
-  serverPort?: number;
-  serverName?: string;
-  shortId?: string;
-  spiderX?: string;
-  subscriptionUrl?: string | null;
 }): NodeSummaryDto {
   return {
     id: row.id,
@@ -1040,21 +1755,65 @@ function toNodeSummary(row: {
     provider: row.provider,
     tags: row.tags,
     recommended: row.recommended,
-    latencyMs: row.latencyMs,
+    latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
     security: row.security as "reality"
   };
 }
 
+function toAdminSubscriptionRecord(row: {
+  id: string;
+  userId: string | null;
+  teamId: string | null;
+  planId: string;
+  totalTrafficGb: number;
+  usedTrafficGb: number;
+  remainingTrafficGb: number;
+  expireAt: Date;
+  state: SubscriptionState;
+  renewable: boolean;
+  sourceAction: SubscriptionSourceAction;
+  lastSyncedAt: Date;
+  plan: { name: string };
+  user: { email: string; displayName: string } | null;
+  team: { name: string } | null;
+  nodeAccesses?: Array<{ nodeId: string }>;
+}): AdminSubscriptionRecordDto {
+  const ownerType = row.teamId ? "team" : "user";
+  const nodeCount = row.nodeAccesses?.length ?? 0;
+  return {
+    id: row.id,
+    ownerType,
+    userId: row.userId,
+    userEmail: row.user?.email ?? null,
+    userDisplayName: row.user?.displayName ?? null,
+    teamId: row.teamId,
+    teamName: row.team?.name ?? null,
+    planId: row.planId,
+    planName: row.plan.name,
+    totalTrafficGb: row.totalTrafficGb,
+    usedTrafficGb: row.usedTrafficGb,
+    remainingTrafficGb: row.remainingTrafficGb,
+    expireAt: row.expireAt.toISOString(),
+    state: row.state,
+    renewable: row.renewable,
+    sourceAction: row.sourceAction,
+    lastSyncedAt: row.lastSyncedAt.toISOString()
+    ,
+    nodeCount,
+    hasNodeAccess: nodeCount > 0
+  };
+}
+
 function toAdminNodeRecord(row: {
   id: string;
-  panelId: string | null;
   name: string;
   region: string;
   provider: string;
   tags: string[];
   recommended: boolean;
   latencyMs: number;
+  probeLatencyMs: number | null;
   protocol: string;
   security: string;
   serverHost: string;
@@ -1063,42 +1822,260 @@ function toAdminNodeRecord(row: {
   shortId: string;
   spiderX: string;
   subscriptionUrl: string | null;
+  probeStatus: NodeProbeStatus;
+  probeCheckedAt: Date | null;
+  probeError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }): AdminNodeRecordDto {
   return {
     ...toNodeSummary(row),
-    panelId: row.panelId,
     subscriptionUrl: row.subscriptionUrl,
     serverName: row.serverName,
     serverHost: row.serverHost,
     serverPort: row.serverPort,
     shortId: row.shortId,
-    spiderX: row.spiderX
+    spiderX: row.spiderX,
+    probeStatus: row.probeStatus,
+    probeLatencyMs: row.probeLatencyMs,
+    probeCheckedAt: row.probeCheckedAt?.toISOString() ?? null,
+    probeError: row.probeError,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
   };
 }
 
-function toSubscriptionDto(
+function toAdminAnnouncementRecord(row: {
+  id: string;
+  title: string;
+  body: string;
+  level: "info" | "warning" | "success";
+  publishedAt: Date;
+  isActive: boolean;
+  displayMode: "passive" | "modal_confirm" | "modal_countdown";
+  countdownSeconds: number;
+  createdAt: Date;
+  updatedAt: Date;
+}): AdminAnnouncementRecordDto {
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    level: row.level,
+    publishedAt: row.publishedAt.toISOString(),
+    isActive: row.isActive,
+    displayMode: row.displayMode,
+    countdownSeconds: row.countdownSeconds,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+}
+
+function toAnnouncementDto(row: {
+  id: string;
+  title: string;
+  body: string;
+  level: "info" | "warning" | "success";
+  publishedAt: Date;
+  displayMode: "passive" | "modal_confirm" | "modal_countdown";
+  countdownSeconds: number;
+}): AnnouncementDto {
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    level: row.level,
+    publishedAt: row.publishedAt.toISOString(),
+    displayMode: row.displayMode,
+    countdownSeconds: row.countdownSeconds
+  };
+}
+
+function toAdminPolicyRecord(row: {
+  defaultMode: string;
+  modes: string[];
+  ruleVersion: string;
+  ruleUpdatedAt: Date;
+  dnsProfile: string;
+  blockAds: boolean;
+  chinaDirect: boolean;
+  aiServicesProxy: boolean;
+  currentVersion: string;
+  minimumVersion: string;
+  forceUpgrade: boolean;
+  changelog: string[];
+  downloadUrl: string | null;
+  strategyGroups: Array<{
+    id: string;
+    name: string;
+    description: string;
+    defaultNodeId: string;
+  }>;
+}): AdminPolicyRecordDto {
+  return {
+    defaultMode: row.defaultMode as PolicyBundleDto["defaultMode"],
+    modes: row.modes as PolicyBundleDto["modes"],
+    strategyGroups: [],
+    ruleVersion: row.ruleVersion,
+    ruleUpdatedAt: row.ruleUpdatedAt.toISOString(),
+    dnsProfile: row.dnsProfile,
+    features: {
+      blockAds: row.blockAds,
+      chinaDirect: row.chinaDirect,
+      aiServicesProxy: row.aiServicesProxy
+    },
+    currentVersion: row.currentVersion,
+    minimumVersion: row.minimumVersion,
+    forceUpgrade: row.forceUpgrade,
+    changelog: row.changelog,
+    downloadUrl: row.downloadUrl
+  };
+}
+
+function toSubscriptionStatusDto(
   row: {
+    id: string;
     planId: string;
     totalTrafficGb: number;
     usedTrafficGb: number;
     remainingTrafficGb: number;
     expireAt: Date;
-    state: "active" | "expired" | "exhausted" | "paused";
+    state: SubscriptionState;
     renewable: boolean;
     lastSyncedAt: Date;
+    plan: { name: string };
   },
-  planName: string
+  team: { id: string; name: string } | null,
+  memberUsedTrafficGb: number | null
 ): SubscriptionStatusDto {
   return {
+    id: row.id,
+    ownerType: team ? "team" : "user",
     planId: row.planId,
-    planName,
+    planName: row.plan.name,
     totalTrafficGb: row.totalTrafficGb,
     usedTrafficGb: row.usedTrafficGb,
     remainingTrafficGb: row.remainingTrafficGb,
     expireAt: row.expireAt.toISOString(),
     state: row.state,
     renewable: row.renewable,
-    lastSyncedAt: row.lastSyncedAt.toISOString()
+    lastSyncedAt: row.lastSyncedAt.toISOString(),
+    teamId: team?.id ?? null,
+    teamName: team?.name ?? null,
+    memberUsedTrafficGb
+  };
+}
+
+function toAdminTeamMemberRecord(
+  row: {
+    id: string;
+    teamId: string;
+    userId: string;
+    role: TeamMemberRole;
+    createdAt: Date;
+    user: { email: string; displayName: string };
+  },
+  usedTrafficGb: number
+): AdminTeamMemberRecordDto {
+  return {
+    id: row.id,
+    teamId: row.teamId,
+    userId: row.userId,
+    email: row.user.email,
+    displayName: row.user.displayName,
+    role: row.role,
+    usedTrafficGb,
+    createdAt: row.createdAt.toISOString()
+  };
+}
+
+function toAdminTeamUsageRecord(row: {
+  id: string;
+  teamId: string;
+  userId: string;
+  subscriptionId: string;
+  usedTrafficGb: number;
+  recordedAt: Date;
+  user: { displayName: string; email: string };
+}): AdminTeamUsageRecordDto {
+  return {
+    id: row.id,
+    teamId: row.teamId,
+    userId: row.userId,
+    userDisplayName: row.user.displayName,
+    userEmail: row.user.email,
+    subscriptionId: row.subscriptionId,
+    usedTrafficGb: row.usedTrafficGb,
+    recordedAt: row.recordedAt.toISOString()
+  };
+}
+
+function toAdminTeamRecord(row: {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  status: TeamStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  owner: { displayName: string; email: string };
+  members: Array<{
+    id: string;
+    teamId: string;
+    userId: string;
+    role: TeamMemberRole;
+    createdAt: Date;
+    user: { email: string; displayName: string };
+  }>;
+  subscriptions: Array<{
+    id: string;
+    planId: string;
+    totalTrafficGb: number;
+    usedTrafficGb: number;
+    remainingTrafficGb: number;
+    expireAt: Date;
+    state: SubscriptionState;
+    plan: { name: string };
+  }>;
+  trafficLedgerEntries: Array<{
+    id: string;
+    teamId: string;
+    userId: string;
+    subscriptionId: string;
+    usedTrafficGb: number;
+    recordedAt: Date;
+    user: { displayName: string; email: string };
+  }>;
+}): AdminTeamRecordDto {
+  const currentSubscription = pickCurrentSubscription(row.subscriptions);
+  const usageByUser = new Map<string, number>();
+  for (const entry of row.trafficLedgerEntries) {
+    usageByUser.set(entry.userId, (usageByUser.get(entry.userId) ?? 0) + entry.usedTrafficGb);
+  }
+
+  return {
+    id: row.id,
+    name: row.name,
+    ownerUserId: row.ownerUserId,
+    ownerDisplayName: row.owner.displayName,
+    ownerEmail: row.owner.email,
+    status: row.status,
+    memberCount: row.members.length,
+    currentSubscription: currentSubscription
+      ? {
+          id: currentSubscription.id,
+          planId: currentSubscription.planId,
+          planName: currentSubscription.plan.name,
+          totalTrafficGb: currentSubscription.totalTrafficGb,
+          usedTrafficGb: currentSubscription.usedTrafficGb,
+          remainingTrafficGb: currentSubscription.remainingTrafficGb,
+          expireAt: currentSubscription.expireAt.toISOString(),
+          state: currentSubscription.state
+        }
+      : null,
+    members: row.members.map((member) => toAdminTeamMemberRecord(member, usageByUser.get(member.userId) ?? 0)),
+    usage: row.trafficLedgerEntries.map(toAdminTeamUsageRecord),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
   };
 }
 
@@ -1115,6 +2092,10 @@ function tryEmailFromToken(token: string) {
   return raw ? detokenize(raw) : null;
 }
 
+function createId(prefix: string) {
+  return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
 function toNodeId(host: string, port: number) {
   return `node_${host.replaceAll(".", "_").replaceAll("-", "_")}_${port}`;
 }
@@ -1125,17 +2106,19 @@ function normalizeTags(tags: string[] | undefined, name: string) {
   }
 
   const lower = name.toLowerCase();
-  if (lower.includes("hk")) return ["香港"];
-  if (lower.includes("sg")) return ["新加坡"];
-  if (lower.includes("jp")) return ["日本"];
+  if (lower.includes("hk") || lower.includes("香港")) return ["香港"];
+  if (lower.includes("sg") || lower.includes("新加坡")) return ["新加坡"];
+  if (lower.includes("jp") || lower.includes("日本")) return ["日本"];
+  if (lower.includes("us") || lower.includes("美国")) return ["美国"];
   return ["导入"];
 }
 
 function inferRegion(name: string, host: string) {
   const value = `${name} ${host}`.toLowerCase();
-  if (value.includes("hk") || value.includes("hong kong")) return "香港";
-  if (value.includes("sg") || value.includes("singapore")) return "新加坡";
-  if (value.includes("jp") || value.includes("tokyo") || value.includes("japan")) return "日本";
+  if (value.includes("hk") || value.includes("hong kong") || value.includes("香港")) return "香港";
+  if (value.includes("sg") || value.includes("singapore") || value.includes("新加坡")) return "新加坡";
+  if (value.includes("jp") || value.includes("japan") || value.includes("日本")) return "日本";
+  if (value.includes("us") || value.includes("united states") || value.includes("america") || value.includes("美国")) return "美国";
   return "未分组";
 }
 
@@ -1169,93 +2152,62 @@ function parseVlessLink(link: string) {
   };
 }
 
-function findPanelClient(
-  inbound: {
-    settings?: string;
-    clientStats?: Array<{ email?: string; uuid?: string }>;
-  },
-  email: string
-) {
-  const stat = inbound.clientStats?.find((item) => item.email === email);
-  const settings = parseInboundSettings(inbound.settings);
-  const client = settings.clients.find((item) => item.email === email);
+function pickCurrentSubscription<T extends { state: string; expireAt: Date }>(rows: T[]) {
+  return rows.find((item) => item.state === "active")
+    ?? rows.find((item) => item.state === "paused")
+    ?? rows.sort((a, b) => b.expireAt.getTime() - a.expireAt.getTime())[0]
+    ?? null;
+}
 
-  if (!stat && !client) {
-    return null;
+function resolveRenewExpireAt(currentExpireAt: Date, explicitExpireAt?: string, extendDays?: number) {
+  if (explicitExpireAt) {
+    const date = new Date(explicitExpireAt);
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException("到期时间无效");
+    }
+    return date;
   }
 
-  return {
-    uuid: stat?.uuid ?? client?.id ?? "",
-    flow: client?.flow || "xtls-rprx-vision"
-  };
-}
-
-function parseInboundSettings(raw: string | undefined) {
-  if (!raw) {
-    return {
-      clients: [] as Array<{ id?: string; email?: string; flow?: string }>
-    };
+  if (!extendDays) {
+    throw new BadRequestException("请设置新的到期时间，或填写顺延天数");
   }
 
-  try {
-    const parsed = JSON.parse(raw) as {
-      clients?: Array<{ id?: string; email?: string; flow?: string }>;
-    };
-    return {
-      clients: parsed.clients ?? []
-    };
-  } catch {
-    return {
-      clients: [] as Array<{ id?: string; email?: string; flow?: string }>
-    };
+  const base = currentExpireAt.getTime() > Date.now() ? currentExpireAt : new Date();
+  const next = new Date(base);
+  next.setDate(next.getDate() + extendDays);
+  return next;
+}
+
+function resolveSubscriptionState(preferred: SubscriptionState, remainingTrafficGb: number, expireAt: Date) {
+  if (preferred === "paused") return "paused" as const;
+  if (preferred === "expired") return "expired" as const;
+  if (preferred === "exhausted") return "exhausted" as const;
+  if (expireAt.getTime() <= Date.now()) return "expired" as const;
+  if (remainingTrafficGb <= 0) return "exhausted" as const;
+  return "active" as const;
+}
+
+function isEffectiveSubscription(subscription: { state: SubscriptionState; expireAt: Date; remainingTrafficGb: number }) {
+  if (subscription.state === "paused") return true;
+  if (subscription.expireAt.getTime() <= Date.now()) return false;
+  if (subscription.remainingTrafficGb <= 0) return false;
+  return subscription.state === "active";
+}
+
+function assertSubscriptionConnectable(subscription: {
+  state: SubscriptionState;
+  remainingTrafficGb: number;
+  expireAt: Date;
+}) {
+  if (subscription.state === "paused") {
+    throw new ForbiddenException("当前订阅已暂停");
   }
-}
-
-function joinUrl(baseUrl: string, path: string) {
-  return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
-}
-
-function trimSlashes(value: string) {
-  return `/${value.replace(/^\/+/, "").replace(/\/+$/, "")}`;
-}
-
-function readSetCookie(headers: Headers) {
-  const setCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
-  if (setCookie.length > 0) {
-    return setCookie.join("; ");
+  if (subscription.expireAt.getTime() <= Date.now() || subscription.state === "expired") {
+    throw new ForbiddenException("当前订阅已到期");
   }
-
-  return headers.get("set-cookie") ?? "";
-}
-
-function extractCookie(header: string, cookieName: string) {
-  const match = header.match(new RegExp(`${cookieName}=([^;]+)`));
-  return match ? `${cookieName}=${match[1]}` : null;
-}
-
-function toGigabytes(bytes: number) {
-  return Number((bytes / 1024 / 1024 / 1024).toFixed(2));
-}
-
-function normalizeExpiry(expiryTime: number | undefined, fallback: Date) {
-  if (!expiryTime || expiryTime <= 0) {
-    return fallback;
+  if (subscription.remainingTrafficGb <= 0 || subscription.state === "exhausted") {
+    throw new ForbiddenException("当前订阅流量已用尽");
   }
-
-  const value = expiryTime > 1_000_000_000_000 ? expiryTime : expiryTime * 1000;
-  return new Date(value);
-}
-
-function deriveSubscriptionState(remainingTrafficGb: number, expireAt: Date): "active" | "expired" | "exhausted" | "paused" {
-  if (expireAt.getTime() <= Date.now()) {
-    return "expired";
-  }
-
-  if (remainingTrafficGb <= 0) {
-    return "exhausted";
-  }
-
-  return "active";
 }
 
 function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {
@@ -1267,14 +2219,122 @@ function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {
   });
 }
 
-function formatPanelError(error: unknown) {
-  if (error instanceof Error) {
-    const cause = (error as Error & { cause?: { code?: string; message?: string } }).cause;
-    if (cause?.code || cause?.message) {
-      return `${error.message}: ${cause.code ?? cause.message}`;
-    }
-    return error.message;
+async function probeNodeConnectivity(
+  host: string,
+  port: number,
+  serverName: string,
+  subscriptionUrl: string | null
+): Promise<{ status: NodeProbeStatus; latencyMs: number | null; error: string | null }> {
+  let latencyMs: number | null = null;
+  const errors: string[] = [];
+
+  try {
+    latencyMs = await probeTcp(host, port);
+  } catch (error) {
+    return {
+      status: "offline",
+      latencyMs: null,
+      error: formatError(error)
+    };
   }
 
-  return "Unknown panel sync error";
+  let tlsHealthy = true;
+  try {
+    await probeTls(host, port, serverName || host);
+  } catch (error) {
+    tlsHealthy = false;
+    errors.push(`TLS:${formatError(error)}`);
+  }
+
+  let subscriptionHealthy = true;
+  if (subscriptionUrl) {
+    try {
+      await probeSubscriptionUrl(subscriptionUrl);
+    } catch (error) {
+      subscriptionHealthy = false;
+      errors.push(`订阅:${formatError(error)}`);
+    }
+  }
+
+  return {
+    status: tlsHealthy && subscriptionHealthy ? "healthy" : "degraded",
+    latencyMs,
+    error: errors.length > 0 ? errors.join(" | ") : null
+  };
+}
+
+function probeTcp(host: string, port: number) {
+  return new Promise<number>((resolve, reject) => {
+    const startedAt = Date.now();
+    const socket = net.createConnection({ host, port });
+    const cleanup = () => {
+      socket.removeAllListeners();
+      socket.destroy();
+    };
+
+    socket.setTimeout(5000);
+    socket.once("connect", () => {
+      const latency = Date.now() - startedAt;
+      cleanup();
+      resolve(latency);
+    });
+    socket.once("timeout", () => {
+      cleanup();
+      reject(new Error("TCP 超时"));
+    });
+    socket.once("error", (error: Error) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
+function probeTls(host: string, port: number, serverName: string) {
+  return new Promise<void>((resolve, reject) => {
+    const socket = tls.connect({
+      host,
+      port,
+      servername: serverName,
+      rejectUnauthorized: false,
+      timeout: 5000
+    });
+
+    const cleanup = () => {
+      socket.removeAllListeners();
+      socket.destroy();
+    };
+
+    socket.once("secureConnect", () => {
+      cleanup();
+      resolve();
+    });
+    socket.once("timeout", () => {
+      cleanup();
+      reject(new Error("TLS 超时"));
+    });
+    socket.once("error", (error: Error) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
+async function probeSubscriptionUrl(subscriptionUrl: string) {
+  const response = await undiciFetch(subscriptionUrl, {
+    signal: AbortSignal.timeout(5000),
+    dispatcher: createDispatcher(5000, true)
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  await response.arrayBuffer();
+}
+
+function formatError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
