@@ -306,6 +306,21 @@ export class ImportNodeDto {
   @IsOptional()
   @IsBoolean()
   recommended?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  statsEnabled?: boolean;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  statsApiUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  statsApiToken?: string;
 }
 
 export class UpdateNodeDto {
@@ -338,6 +353,21 @@ export class UpdateNodeDto {
     require_tld: false
   })
   subscriptionUrl?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  statsEnabled?: boolean;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  statsApiUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  statsApiToken?: string;
 }
 
 export class CreateAnnouncementDto {

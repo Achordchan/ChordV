@@ -75,11 +75,18 @@ import { PrismaService } from "./prisma.service";
 @Injectable()
 export class DevDataService implements OnModuleInit {
   private activeRuntime?: GeneratedRuntimeConfigDto;
+  private activeRuntimeUsageContext?: {
+    subscriptionId: string;
+    nodeId: string;
+    userId: string;
+    teamId: string | null;
+  };
 
   constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit() {
     await this.seedIfEmpty();
+    await this.ensureNodeUsageDefaults();
   }
 
   async login(email: string, password: string): Promise<AuthSessionDto> {
@@ -295,6 +302,12 @@ export class DevDataService implements OnModuleInit {
         spiderX: node.spiderX
       }
     };
+    this.activeRuntimeUsageContext = {
+      subscriptionId: access.subscription.id,
+      nodeId: node.id,
+      userId: user.id,
+      teamId: access.subscription.teamId
+    };
 
     return this.activeRuntime;
   }
@@ -302,11 +315,16 @@ export class DevDataService implements OnModuleInit {
   disconnect() {
     const previous = this.activeRuntime;
     this.activeRuntime = undefined;
+    this.activeRuntimeUsageContext = undefined;
     return { ok: true, previousSessionId: previous?.sessionId ?? null };
   }
 
   getActiveRuntime() {
     return this.activeRuntime ?? null;
+  }
+
+  getActiveRuntimeUsageContext() {
+    return this.activeRuntimeUsageContext ?? null;
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
@@ -1003,7 +1021,10 @@ export class DevDataService implements OnModuleInit {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
-        subscriptionUrl: input.subscriptionUrl
+        subscriptionUrl: input.subscriptionUrl,
+        statsEnabled: input.statsEnabled ?? false,
+        statsApiUrl: input.statsApiUrl?.trim() || null,
+        statsApiToken: input.statsApiToken?.trim() || null
       },
       update: {
         name: input.name?.trim() || imported.name,
@@ -1021,7 +1042,10 @@ export class DevDataService implements OnModuleInit {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
-        subscriptionUrl: input.subscriptionUrl
+        subscriptionUrl: input.subscriptionUrl,
+        statsEnabled: input.statsEnabled ?? false,
+        statsApiUrl: input.statsApiUrl?.trim() || null,
+        statsApiToken: input.statsApiToken?.trim() || null
       }
     });
 
@@ -1048,6 +1072,9 @@ export class DevDataService implements OnModuleInit {
         ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
         ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
         ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl } : {}),
+        ...(input.statsEnabled !== undefined ? { statsEnabled: input.statsEnabled } : {}),
+        ...(input.statsApiUrl !== undefined ? { statsApiUrl: input.statsApiUrl.trim() || null } : {}),
+        ...(input.statsApiToken !== undefined ? { statsApiToken: input.statsApiToken.trim() || null } : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -1554,6 +1581,9 @@ export class DevDataService implements OnModuleInit {
         fingerprint: "chrome",
         spiderX: "/",
         subscriptionUrl: null,
+        statsEnabled: true,
+        statsApiUrl: `mock://${node.id}`,
+        statsApiToken: null,
         probeStatus: "unknown"
       }))
     });
@@ -1614,6 +1644,32 @@ export class DevDataService implements OnModuleInit {
         countdownSeconds: item.countdownSeconds
       }))
     });
+  }
+
+  private async ensureNodeUsageDefaults() {
+    const nodes = await this.prisma.node.findMany({
+      select: {
+        id: true,
+        statsEnabled: true,
+        statsApiUrl: true
+      }
+    });
+
+    await Promise.all(
+      nodes.map((node) => {
+        if (node.statsEnabled && node.statsApiUrl) {
+          return Promise.resolve();
+        }
+
+        return this.prisma.node.update({
+          where: { id: node.id },
+          data: {
+            statsEnabled: true,
+            statsApiUrl: node.statsApiUrl ?? `mock://${node.id}`
+          }
+        });
+      })
+    );
   }
 
   private async fetchSubscriptionNode(subscriptionUrl: string) {
@@ -1776,6 +1832,9 @@ function toAdminNodeRecord(row: {
   shortId: string;
   spiderX: string;
   subscriptionUrl: string | null;
+  statsEnabled: boolean;
+  statsApiUrl: string | null;
+  statsLastSyncedAt: Date | null;
   probeStatus: NodeProbeStatus;
   probeCheckedAt: Date | null;
   probeError: string | null;
@@ -1785,6 +1844,9 @@ function toAdminNodeRecord(row: {
   return {
     ...toNodeSummary(row),
     subscriptionUrl: row.subscriptionUrl,
+    statsEnabled: row.statsEnabled,
+    statsApiUrl: row.statsApiUrl,
+    statsLastSyncedAt: row.statsLastSyncedAt?.toISOString() ?? null,
     serverName: row.serverName,
     serverHost: row.serverHost,
     serverPort: row.serverPort,

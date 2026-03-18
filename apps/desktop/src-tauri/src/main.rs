@@ -204,6 +204,7 @@ fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Vec<NodeProbeResultDto> {
 #[tauri::command]
 fn app_ready(app: AppHandle) -> Result<CommandResult, String> {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
         let _ = window.set_focus();
         let _ = disable_context_menu(&window);
     }
@@ -975,10 +976,6 @@ fn main() {
         .manage(Mutex::new(RuntimeState::default()))
         .setup(|app| {
             cleanup_stale_runtime(&app.handle());
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
-                let _ = disable_context_menu(&window);
-            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

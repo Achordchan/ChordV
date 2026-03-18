@@ -13,7 +13,7 @@ export function LogDrawer(props: LogDrawerProps) {
         <div>
           <Title order={4}>Xray 日志</Title>
           <Text size="sm" c="dimmed" mt={4}>
-            默认隐藏，需要时手动展开查看
+            如遇连接问题，请复制日志联系管理员
           </Text>
         </div>
 

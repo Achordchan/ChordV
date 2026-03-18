@@ -253,6 +253,9 @@ export const mockAdminTeams: AdminTeamRecordDto[] = [];
 export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   ...node,
   subscriptionUrl: null,
+  statsEnabled: true,
+  statsApiUrl: `mock://${node.id}`,
+  statsLastSyncedAt: null,
   serverName: "aws.amazon.com",
   serverHost: `${node.region.toLowerCase()}.edge.chordv.app`,
   serverPort: 443,

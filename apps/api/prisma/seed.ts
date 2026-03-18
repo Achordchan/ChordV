@@ -331,6 +331,9 @@ async function main() {
         fingerprint: "chrome",
         spiderX: "/",
         subscriptionUrl: null,
+        statsEnabled: true,
+        statsApiUrl: `mock://${node.id}`,
+        statsApiToken: null,
         probeStatus: "unknown"
       }
     });

@@ -200,6 +200,9 @@ export interface UpdateSubscriptionNodeAccessInputDto {
 
 export interface AdminNodeRecordDto extends NodeSummaryDto {
   subscriptionUrl: string | null;
+  statsEnabled: boolean;
+  statsApiUrl: string | null;
+  statsLastSyncedAt: string | null;
   serverName: string;
   serverHost: string;
   serverPort: number;
@@ -383,6 +386,9 @@ export interface ImportNodeInputDto {
   provider?: string;
   tags?: string[];
   recommended?: boolean;
+  statsEnabled?: boolean;
+  statsApiUrl?: string;
+  statsApiToken?: string;
 }
 
 export interface UpdateNodeInputDto {
@@ -392,6 +398,9 @@ export interface UpdateNodeInputDto {
   tags?: string[];
   recommended?: boolean;
   subscriptionUrl?: string;
+  statsEnabled?: boolean;
+  statsApiUrl?: string;
+  statsApiToken?: string;
 }
 
 export interface CreateAnnouncementInputDto {

@@ -20,14 +20,12 @@ type ControlPanelProps = {
 
 export function ControlPanel(props: ControlPanelProps) {
   return (
-    <Paper withBorder radius="xl" p="lg" className="desktop-panel">
-      <Stack h="100%" gap="md" className="control-shell">
-        <Stack gap="md">
+    <Paper withBorder radius="xl" p="md" className="desktop-panel">
+      <Stack h="100%" gap="sm" className="control-shell">
+        <Stack gap="sm">
           <div>
             <Title order={3}>连接控制</Title>
-            <Text size="sm" c="dimmed">
-              单按钮控制连接与断开
-            </Text>
+           
           </div>
 
           <StatusSurface status={props.desktopStatus.status} nodeName={props.runtime?.node.name ?? "未连接"} />
@@ -44,7 +42,7 @@ export function ControlPanel(props: ControlPanelProps) {
           />
 
           <Button
-            size="xl"
+            size="lg"
             radius="xl"
             className="primary-action"
             leftSection={<IconPlugConnected size={20} />}
@@ -56,7 +54,7 @@ export function ControlPanel(props: ControlPanelProps) {
             {props.primaryLabel}
           </Button>
 
-          <Group grow wrap="nowrap">
+          <Group grow wrap="nowrap" className="control-metrics">
             <MetricBlock label="HTTP" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
             <MetricBlock label="SOCKS" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} />
           </Group>

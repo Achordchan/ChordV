@@ -79,6 +79,7 @@ model User {
   ownedTeams           Team[]              @relation("TeamOwner")
   teamMemberships      TeamMember[]
   trafficLedgerEntries TrafficLedger[]
+  trafficSnapshots     TrafficSnapshot[]
 }
 
 model Plan {
@@ -112,6 +113,7 @@ model Subscription {
   user               User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   team               Team?                    @relation(fields: [teamId], references: [id], onDelete: Cascade)
   trafficLedgerEntries TrafficLedger[]
+  trafficSnapshots   TrafficSnapshot[]
   nodeAccesses       SubscriptionNodeAccess[]
 }
 
@@ -126,6 +128,7 @@ model Team {
   members       TeamMember[]
   subscriptions Subscription[]
   trafficLedgerEntries TrafficLedger[]
+  trafficSnapshots TrafficSnapshot[]
 }
 
 model TeamMember {
@@ -176,6 +179,10 @@ model Node {
   fingerprint      String
   spiderX          String          @default("/")
   subscriptionUrl  String?
+  statsEnabled     Boolean         @default(false)
+  statsApiUrl      String?
+  statsApiToken    String?
+  statsLastSyncedAt DateTime?
   probeStatus      NodeProbeStatus @default(unknown)
   probeLatencyMs   Int?
   probeCheckedAt   DateTime?
@@ -183,6 +190,7 @@ model Node {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   subscriptionAccesses SubscriptionNodeAccess[]
+  trafficSnapshots TrafficSnapshot[]
 }
 
 model SubscriptionNodeAccess {
@@ -195,6 +203,27 @@ model SubscriptionNodeAccess {
   node           Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
 
   @@unique([subscriptionId, nodeId])
+}
+
+model TrafficSnapshot {
+  id               String       @id
+  snapshotKey      String       @unique
+  nodeId           String
+  subscriptionId   String
+  userId           String?
+  teamId           String?
+  uplinkBytes      BigInt       @default(0)
+  downlinkBytes    BigInt       @default(0)
+  totalBytes       BigInt       @default(0)
+  sampledAt        DateTime
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  node             Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  user             User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team             Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([nodeId, subscriptionId])
 }
 
 model PolicyProfile {

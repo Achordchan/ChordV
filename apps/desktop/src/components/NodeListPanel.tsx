@@ -19,10 +19,8 @@ export function NodeListPanel(props: NodeListPanelProps) {
       <Stack gap="md" h="100%">
         <Group justify="space-between" align="center">
           <div>
-            <Title order={3}>节点</Title>
-            <Text size="sm" c="dimmed">
-              进入时自动测速，本地结果优先
-            </Text>
+            <Title order={3}>节点列表</Title>
+            
           </div>
           <Button
             variant="default"

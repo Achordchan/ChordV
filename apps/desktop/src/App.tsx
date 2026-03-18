@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, LoadingOverlay, Modal, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import type { AnnouncementDto, AuthSessionDto, ClientBootstrapDto, ConnectionMode, GeneratedRuntimeConfigDto, NodeSummaryDto } from "@chordv/shared";
-import { connectSession, disconnectSession, fetchBootstrap, fetchNodes, login, logoutSession, refreshSession } from "./api/client";
+import type {
+  AnnouncementDto,
+  AuthSessionDto,
+  ClientBootstrapDto,
+  ConnectionMode,
+  GeneratedRuntimeConfigDto,
+  NodeSummaryDto,
+  SubscriptionStatusDto
+} from "@chordv/shared";
+import { connectSession, disconnectSession, fetchBootstrap, fetchNodes, fetchSubscription, login, logoutSession, refreshSession } from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogDrawer } from "./components/LogDrawer";
@@ -134,17 +142,44 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [forcedAnnouncement, countdown]);
 
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void syncSubscriptionState(session.accessToken);
+    }, 30_000);
+
+    return () => window.clearInterval(timer);
+  }, [session]);
+
+  useEffect(() => {
+    const exhausted =
+      bootstrap?.subscription.state === "exhausted" || (bootstrap?.subscription.remainingTrafficGb ?? 1) <= 0;
+    if (!exhausted || actionBusy || desktopStatus.status !== "connected") {
+      return;
+    }
+
+    showErrorToast("当前订阅流量已用尽，连接已自动断开");
+    void handleDisconnect();
+  }, [actionBusy, bootstrap?.subscription.remainingTrafficGb, bootstrap?.subscription.state, desktopStatus.status]);
+
   async function initializeApp() {
     try {
-      await focusDesktopWindow();
       await refreshRuntime();
       const storedSession = await loadStoredSession();
       if (storedSession) {
-        await bootstrapSession(storedSession, true, false);
+        await bootstrapSession(storedSession, true, false, true);
       }
     } finally {
       await appReady().catch(() => null);
-      setBooting(false);
+      window.requestAnimationFrame(() => {
+        setBooting(false);
+        window.requestAnimationFrame(() => {
+          void focusDesktopWindow();
+        });
+      });
     }
   }
 
@@ -171,7 +206,21 @@ export function App() {
     }
   }
 
-  async function bootstrapSession(nextSession: AuthSessionDto, allowRefresh: boolean, preserveMode: boolean) {
+  async function syncSubscriptionState(accessToken: string) {
+    try {
+      const subscription = await fetchSubscription(accessToken);
+      mergeSubscriptionState(subscription);
+    } catch {
+      return;
+    }
+  }
+
+  async function bootstrapSession(
+    nextSession: AuthSessionDto,
+    allowRefresh: boolean,
+    preserveMode: boolean,
+    autoProbe: boolean
+  ) {
     try {
       const [nextBootstrap, nextNodes] = await Promise.all([
         fetchBootstrap(nextSession.accessToken),
@@ -186,14 +235,18 @@ export function App() {
       }
       setError(null);
       if (nextNodes.length === 0) {
-        showErrorToast("当前订阅未分配节点");
+        showErrorToast("当前订阅未分配节点，请联系服务商处理");
       }
 
       const preferred = pickNode(nextNodes, loadLastNodeId());
       setSelectedNodeId(preferred?.id ?? null);
 
-      if (nextNodes.length > 0) {
+      if (autoProbe && nextNodes.length > 0) {
         await runProbe(nextNodes, true);
+      } else if (nextNodes.length > 0) {
+        setProbeResults((current) =>
+          Object.fromEntries(Object.entries(current).filter(([nodeId]) => nextNodes.some((node) => node.id === nodeId)))
+        );
       } else {
         setProbeResults({});
       }
@@ -204,7 +257,7 @@ export function App() {
         try {
           const refreshed = await refreshSession(nextSession.refreshToken);
           await saveStoredSession(refreshed);
-          return await bootstrapSession(refreshed, false, preserveMode);
+          return await bootstrapSession(refreshed, false, preserveMode, autoProbe);
         } catch {
           await clearSession();
         }
@@ -226,7 +279,7 @@ export function App() {
       setAuthBusy(true);
       const nextSession = await login(credentials.email.trim(), credentials.password);
       await saveStoredSession(nextSession);
-      await bootstrapSession(nextSession, false, false);
+      await bootstrapSession(nextSession, false, false, true);
     } catch (reason) {
       showErrorToast(reason instanceof Error ? readError(reason.message) : "登录失败");
     } finally {
@@ -242,7 +295,7 @@ export function App() {
     try {
       setRefreshing(true);
       await refreshRuntime();
-      await bootstrapSession(session, true, modeLocked);
+      await bootstrapSession(session, true, modeLocked, false);
     } catch (reason) {
       showErrorToast(reason instanceof Error ? readError(reason.message) : "刷新失败");
     } finally {
@@ -277,6 +330,10 @@ export function App() {
     setProbeResults({});
     setRuntime(null);
     setMode("rule");
+  }
+
+  function mergeSubscriptionState(subscription: SubscriptionStatusDto) {
+    setBootstrap((current) => (current ? { ...current, subscription } : current));
   }
 
   async function handlePrimaryAction() {

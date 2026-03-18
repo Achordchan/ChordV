@@ -85,7 +85,9 @@ export async function focusDesktopWindow() {
 
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().setFocus();
+    const currentWindow = getCurrentWindow();
+    await currentWindow.show().catch(() => null);
+    await currentWindow.setFocus();
   } catch {
     window.focus();
   }

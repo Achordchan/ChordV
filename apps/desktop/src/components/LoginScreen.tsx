@@ -18,16 +18,14 @@ export function LoginScreen(props: LoginScreenProps) {
           <div>
             <Text className="desktop-eyebrow">ChordV</Text>
             <Title order={2} mt="xs">
-              登录客户端
+              欢迎登录
             </Title>
-            <Text c="dimmed" mt="xs">
-              使用你的账号进入桌面端
-            </Text>
+            
           </div>
 
           <TextInput
             label="邮箱"
-            placeholder="name@example.com"
+            placeholder="请输入邮箱"
             value={props.email}
             onChange={(event) => props.onEmailChange(event.currentTarget.value)}
             autoComplete="username"

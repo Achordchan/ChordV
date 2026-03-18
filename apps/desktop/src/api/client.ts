@@ -3,7 +3,8 @@ import type {
   ClientBootstrapDto,
   ConnectionMode,
   GeneratedRuntimeConfigDto,
-  NodeSummaryDto
+  NodeSummaryDto,
+  SubscriptionStatusDto
 } from "@chordv/shared";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
@@ -55,6 +56,14 @@ export function fetchBootstrap(accessToken: string) {
 
 export function fetchNodes(accessToken: string) {
   return request<NodeSummaryDto[]>("/client/nodes", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+}
+
+export function fetchSubscription(accessToken: string) {
+  return request<SubscriptionStatusDto>("/client/subscription", {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
