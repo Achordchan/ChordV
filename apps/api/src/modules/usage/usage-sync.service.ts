@@ -1,122 +1,126 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
-import { Agent, fetch as undiciFetch } from "undici";
-import { DevDataService } from "../common/dev-data.service";
+import {
+  METERING_REASON_COUNTER_ROLLBACK,
+  METERING_REASON_MAPPING_MISSING,
+  METERING_REASON_NODE_UNAVAILABLE,
+  METERING_REASON_SAMPLE_MISSING
+} from "../common/metering.constants";
+import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
 
-const SYNC_INTERVAL_MS = 30_000;
 const GB_IN_BYTES = 1024 ** 3;
+const NODE_USAGE_STALE_SECONDS = Number(process.env.CHORDV_NODE_USAGE_STALE_SECONDS ?? 90);
+const NODE_USAGE_WARN_INTERVAL_MS = Number(process.env.CHORDV_NODE_USAGE_WARN_INTERVAL_SECONDS ?? 600) * 1000;
 
 @Injectable()
 export class UsageSyncService {
   private readonly logger = new Logger(UsageSyncService.name);
-  private readonly httpsAgent = new Agent({
-    connect: {
-      rejectUnauthorized: false
-    }
-  });
-  private readonly mockCounters = new Map<string, { uplinkBytes: bigint; downlinkBytes: bigint }>();
-  private syncInFlight = false;
+  private readonly warningTimestamps = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly devDataService: DevDataService
+    private readonly meteringIncidentService: MeteringIncidentService
   ) {}
+
+  async ingestUsageReport(nodeId: string, records: unknown, reportedAt: string) {
+    const context = await this.loadNodeSyncContext(nodeId);
+    const samples = normalizeStatsResponse({ records });
+    await this.applyNodeSamples(nodeId, samples, context);
+
+    const reportedAtDate = parseSampledAt(reportedAt);
+    await this.prisma.node.update({
+      where: { id: nodeId },
+      data: {
+        statsLastSyncedAt: reportedAtDate
+      }
+    });
+    await this.resolveIncidentForSubscriptions(context.subscriptionIds, nodeId, METERING_REASON_NODE_UNAVAILABLE);
+  }
 
   @Cron("*/30 * * * * *")
   async syncNodeUsage() {
-    if (this.syncInFlight) {
-      return;
-    }
-
-    this.syncInFlight = true;
-    try {
-      const nodes = await this.prisma.node.findMany({
-        where: {
-          statsEnabled: true,
-          statsApiUrl: { not: null }
-        },
-        orderBy: [{ recommended: "desc" }, { createdAt: "asc" }]
-      });
-
-      for (const node of nodes) {
-        try {
-          const samples = await this.readNodeSamples(node.id, node.statsApiUrl ?? "", node.statsApiToken ?? null);
-          await this.applyNodeSamples(node.id, samples);
-          await this.prisma.node.update({
-            where: { id: node.id },
-            data: { statsLastSyncedAt: new Date() }
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "未知错误";
-          this.logger.warn(`节点 ${node.id} 用量同步失败: ${message}`);
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        status: "active",
+        expiresAt: { gt: new Date() }
+      },
+      select: {
+        nodeId: true,
+        subscriptionId: true,
+        node: {
+          select: {
+            statsLastSyncedAt: true
+          }
         }
-      }
-    } finally {
-      this.syncInFlight = false;
-    }
-  }
-
-  private async readNodeSamples(nodeId: string, statsApiUrl: string, statsApiToken: string | null) {
-    if (statsApiUrl.startsWith("mock://")) {
-      return this.readMockSamples(nodeId);
-    }
-
-    const response = await undiciFetch(statsApiUrl, {
-      dispatcher: statsApiUrl.startsWith("https://") ? this.httpsAgent : undefined,
-      headers: {
-        Accept: "application/json",
-        ...(statsApiToken ? { Authorization: `Bearer ${statsApiToken}` } : {})
       }
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const now = Date.now();
+    const perNode = new Map<string, { statsLastSyncedAt: Date | null; subscriptionIds: string[] }>();
+    for (const lease of activeLeases) {
+      const current = perNode.get(lease.nodeId) ?? {
+        statsLastSyncedAt: lease.node.statsLastSyncedAt,
+        subscriptionIds: []
+      };
+      current.statsLastSyncedAt = lease.node.statsLastSyncedAt;
+      current.subscriptionIds.push(lease.subscriptionId);
+      perNode.set(lease.nodeId, current);
     }
 
-    const body = (await response.json()) as unknown;
-    return normalizeStatsResponse(body);
-  }
-
-  private readMockSamples(nodeId: string): NodeTrafficSample[] {
-    const context = this.devDataService.getActiveRuntimeUsageContext();
-    if (!context || context.nodeId !== nodeId) {
-      return [];
-    }
-
-    const key = buildSnapshotKey(nodeId, context.subscriptionId, context.userId ?? null);
-    const current = this.mockCounters.get(key) ?? {
-      uplinkBytes: 0n,
-      downlinkBytes: 0n
-    };
-
-    const uplinkBytes = current.uplinkBytes + 12n * 1024n * 1024n;
-    const downlinkBytes = current.downlinkBytes + 48n * 1024n * 1024n;
-    this.mockCounters.set(key, { uplinkBytes, downlinkBytes });
-
-    return [
-      {
-        subscriptionId: context.subscriptionId,
-        userId: context.teamId ? context.userId : null,
-        uplinkBytes,
-        downlinkBytes,
-        sampledAt: new Date().toISOString()
-      }
-    ];
-  }
-
-  private async applyNodeSamples(nodeId: string, samples: NodeTrafficSample[]) {
-    for (const sample of samples) {
-      const subscription = await this.prisma.subscription.findUnique({
-        where: { id: sample.subscriptionId }
-      });
-      if (!subscription) {
+    for (const [nodeId, item] of perNode.entries()) {
+      const subscriptionIds = Array.from(new Set(item.subscriptionIds));
+      const sampleFresh =
+        item.statsLastSyncedAt && now - item.statsLastSyncedAt.getTime() <= NODE_USAGE_STALE_SECONDS * 1000;
+      if (sampleFresh) {
+        await this.resolveIncidentForSubscriptions(subscriptionIds, nodeId, METERING_REASON_NODE_UNAVAILABLE);
         continue;
       }
 
-      const snapshotKey = buildSnapshotKey(nodeId, sample.subscriptionId, sample.userId ?? null);
+      const reason = "中心转发计费样本上报超时";
+      this.warnThrottled(nodeId, reason);
+      await this.openIncidentForSubscriptions(
+        subscriptionIds,
+        nodeId,
+        METERING_REASON_NODE_UNAVAILABLE,
+        `${reason}，等待节点恢复上报`
+      );
+    }
+  }
+
+  private async applyNodeSamples(nodeId: string, samples: NodeTrafficSample[], context: NodeSyncContext) {
+    const seenEmails = new Set<string>();
+    const mappedSubscriptions = new Set<string>();
+    const rollbackSubscriptions = new Set<string>();
+    const rollbackDetails = new Map<string, string>();
+    const mappingIssues = new Map<string, string[]>();
+
+    for (const item of context.invalidMappings) {
+      appendIssue(mappingIssues, item.subscriptionId, item.detail);
+    }
+
+    for (const sample of samples) {
+      const normalizedEmail = sample.xrayUserEmail.trim().toLowerCase();
+      if (!normalizedEmail) {
+        continue;
+      }
+      seenEmails.add(normalizedEmail);
+
+      const mapping =
+        (sample.xrayUserUuid ? context.leaseMappingsByUuid.get(sample.xrayUserUuid) : undefined) ??
+        context.mappings.get(normalizedEmail);
+      if (!mapping) {
+        for (const subscriptionId of context.subscriptionIds) {
+          appendIssue(mappingIssues, subscriptionId, `未识别用户 ${normalizedEmail} 的计费映射`);
+        }
+        continue;
+      }
+
+      mappedSubscriptions.add(mapping.subscriptionId);
+
       const totalBytes = sample.uplinkBytes + sample.downlinkBytes;
+      const snapshotKey = buildSnapshotKey(nodeId, mapping.subscriptionId, mapping.userId);
       const snapshot = await this.prisma.trafficSnapshot.findUnique({
         where: { snapshotKey }
       });
@@ -128,30 +132,23 @@ export class UsageSyncService {
             id: randomUUID(),
             snapshotKey,
             nodeId,
-            subscriptionId: subscription.id,
-            userId: sample.userId ?? null,
-            teamId: subscription.teamId,
+            subscriptionId: mapping.subscriptionId,
+            userId: mapping.userId,
+            teamId: mapping.teamId,
             uplinkBytes: sample.uplinkBytes,
             downlinkBytes: sample.downlinkBytes,
             totalBytes,
             sampledAt
           }
         });
-        await this.touchSubscriptionSyncState(subscription.id, sampledAt);
+        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
         continue;
       }
 
       if (totalBytes < snapshot.totalBytes) {
-        await this.prisma.trafficSnapshot.update({
-          where: { snapshotKey },
-          data: {
-            uplinkBytes: sample.uplinkBytes,
-            downlinkBytes: sample.downlinkBytes,
-            totalBytes,
-            sampledAt
-          }
-        });
-        await this.touchSubscriptionSyncState(subscription.id, sampledAt);
+        rollbackSubscriptions.add(mapping.subscriptionId);
+        rollbackDetails.set(mapping.subscriptionId, `用户 ${normalizedEmail} 的累计流量计数发生回退`);
+        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
         continue;
       }
 
@@ -167,11 +164,84 @@ export class UsageSyncService {
       });
 
       if (deltaBytes <= 0n) {
-        await this.touchSubscriptionSyncState(subscription.id, sampledAt);
+        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
         continue;
       }
 
-      await this.applyUsageDelta(subscription.id, subscription.teamId, sample.userId ?? null, deltaBytes, sampledAt);
+      await this.applyUsageDelta(mapping.subscriptionId, mapping.teamId, mapping.userId, deltaBytes, sampledAt);
+    }
+
+    const missingSnapshotKeys = Array.from(context.mappings.entries())
+      .filter(([email]) => !seenEmails.has(email))
+      .map(([, mapping]) => ({
+        subscriptionId: mapping.subscriptionId,
+        snapshotKey: buildSnapshotKey(nodeId, mapping.subscriptionId, mapping.userId)
+      }));
+
+    const existingMissingSnapshots =
+      missingSnapshotKeys.length > 0
+        ? await this.prisma.trafficSnapshot.findMany({
+            where: {
+              snapshotKey: {
+                in: missingSnapshotKeys.map((item) => item.snapshotKey)
+              }
+            },
+            select: {
+              snapshotKey: true
+            }
+          })
+        : [];
+    const existingMissingSet = new Set(existingMissingSnapshots.map((item) => item.snapshotKey));
+    const missingSubscriptions = new Set<string>();
+    for (const item of missingSnapshotKeys) {
+      if (existingMissingSet.has(item.snapshotKey)) {
+        missingSubscriptions.add(item.subscriptionId);
+      }
+    }
+
+    for (const subscriptionId of missingSubscriptions) {
+      await this.meteringIncidentService.open(
+        subscriptionId,
+        nodeId,
+        METERING_REASON_SAMPLE_MISSING,
+        "节点本轮未返回该用户累计流量样本，待后续同步追平"
+      );
+    }
+
+    for (const subscriptionId of mappedSubscriptions) {
+      if (!missingSubscriptions.has(subscriptionId)) {
+        await this.meteringIncidentService.resolve(subscriptionId, nodeId, METERING_REASON_SAMPLE_MISSING);
+      }
+    }
+
+    for (const subscriptionId of rollbackSubscriptions) {
+      await this.meteringIncidentService.open(
+        subscriptionId,
+        nodeId,
+        METERING_REASON_COUNTER_ROLLBACK,
+        rollbackDetails.get(subscriptionId) ?? "节点累计计数回退，已等待后续样本恢复"
+      );
+    }
+
+    for (const subscriptionId of mappedSubscriptions) {
+      if (!rollbackSubscriptions.has(subscriptionId)) {
+        await this.meteringIncidentService.resolve(subscriptionId, nodeId, METERING_REASON_COUNTER_ROLLBACK);
+      }
+    }
+
+    for (const [subscriptionId, details] of mappingIssues.entries()) {
+      await this.meteringIncidentService.open(
+        subscriptionId,
+        nodeId,
+        METERING_REASON_MAPPING_MISSING,
+        details.slice(0, 3).join("；")
+      );
+    }
+
+    for (const subscriptionId of context.subscriptionIds) {
+      if (!mappingIssues.has(subscriptionId)) {
+        await this.meteringIncidentService.resolve(subscriptionId, nodeId, METERING_REASON_MAPPING_MISSING);
+      }
     }
   }
 
@@ -235,14 +305,99 @@ export class UsageSyncService {
       data: { lastSyncedAt: sampledAt }
     });
   }
+
+  private async loadNodeSyncContext(nodeId: string): Promise<NodeSyncContext> {
+    const subscriptionIds: string[] = [];
+    const mappings = new Map<string, UsageMapping>();
+    const leaseMappingsByUuid = new Map<string, UsageMapping>();
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        nodeId,
+        status: "active",
+        expiresAt: { gt: new Date() }
+      },
+      select: {
+        xrayUserEmail: true,
+        xrayUserUuid: true,
+        subscriptionId: true,
+        userId: true,
+        subscription: {
+          select: {
+            teamId: true
+          }
+        }
+      }
+    });
+    for (const lease of activeLeases) {
+      subscriptionIds.push(lease.subscriptionId);
+      mappings.set(lease.xrayUserEmail.trim().toLowerCase(), {
+        subscriptionId: lease.subscriptionId,
+        teamId: lease.subscription.teamId,
+        userId: lease.userId
+      });
+      leaseMappingsByUuid.set(lease.xrayUserUuid, {
+        subscriptionId: lease.subscriptionId,
+        teamId: lease.subscription.teamId,
+        userId: lease.userId
+      });
+    }
+
+    return {
+      subscriptionIds: Array.from(new Set(subscriptionIds)),
+      mappings,
+      leaseMappingsByUuid,
+      invalidMappings: []
+    };
+  }
+
+  private async openIncidentForSubscriptions(
+    subscriptionIds: string[],
+    nodeId: string,
+    reason: string,
+    detail: string
+  ) {
+    await Promise.all(
+      subscriptionIds.map((subscriptionId) => this.meteringIncidentService.open(subscriptionId, nodeId, reason, detail))
+    );
+  }
+
+  private async resolveIncidentForSubscriptions(subscriptionIds: string[], nodeId: string, reason: string) {
+    await Promise.all(
+      subscriptionIds.map((subscriptionId) => this.meteringIncidentService.resolve(subscriptionId, nodeId, reason))
+    );
+  }
+
+  private warnThrottled(nodeId: string, reason: string) {
+    const key = `${nodeId}:${reason}`;
+    const now = Date.now();
+    const lastWarnedAt = this.warningTimestamps.get(key) ?? 0;
+    if (now - lastWarnedAt < NODE_USAGE_WARN_INTERVAL_MS) {
+      return;
+    }
+    this.warningTimestamps.set(key, now);
+    this.logger.warn(`节点 ${nodeId} 用量同步异常: ${reason}`);
+  }
 }
 
 type NodeTrafficSample = {
-  subscriptionId: string;
-  userId: string | null;
+  xrayUserEmail: string;
+  xrayUserUuid?: string;
   uplinkBytes: bigint;
   downlinkBytes: bigint;
   sampledAt?: string;
+};
+
+type UsageMapping = {
+  subscriptionId: string;
+  teamId: string | null;
+  userId: string;
+};
+
+type NodeSyncContext = {
+  subscriptionIds: string[];
+  mappings: Map<string, UsageMapping>;
+  leaseMappingsByUuid: Map<string, UsageMapping>;
+  invalidMappings: Array<{ subscriptionId: string; detail: string }>;
 };
 
 function normalizeStatsResponse(body: unknown): NodeTrafficSample[] {
@@ -257,15 +412,16 @@ function normalizeStatsResponse(body: unknown): NodeTrafficSample[] {
       return [];
     }
 
-    const subscriptionId = readString(entry, "subscriptionId");
-    if (!subscriptionId) {
+    const xrayUserEmail =
+      readString(entry, "xrayUserEmail") ?? readString(entry, "userEmail") ?? readString(entry, "email");
+    if (!xrayUserEmail) {
       return [];
     }
 
     return [
       {
-        subscriptionId,
-        userId: readString(entry, "userId") ?? null,
+        xrayUserEmail: xrayUserEmail.toLowerCase(),
+        xrayUserUuid: readString(entry, "xrayUserUuid") ?? undefined,
         uplinkBytes: readBigInt(entry, "uplinkBytes"),
         downlinkBytes: readBigInt(entry, "downlinkBytes"),
         sampledAt: readString(entry, "sampledAt") ?? undefined
@@ -282,13 +438,20 @@ function readString(value: object, key: string) {
 function readBigInt(value: object, key: string) {
   const target = Reflect.get(value, key);
   if (typeof target === "bigint") {
-    return target;
+    return target >= 0n ? target : 0n;
   }
   if (typeof target === "number" && Number.isFinite(target)) {
     return BigInt(Math.max(0, Math.trunc(target)));
   }
   if (typeof target === "string" && target.trim()) {
-    return BigInt(target.trim());
+    try {
+      return BigInt(target.trim());
+    } catch {
+      const fallback = Number(target.trim());
+      if (Number.isFinite(fallback)) {
+        return BigInt(Math.max(0, Math.trunc(fallback)));
+      }
+    }
   }
   return 0n;
 }
@@ -308,4 +471,10 @@ function buildSnapshotKey(nodeId: string, subscriptionId: string, userId: string
 
 function roundTrafficGb(value: number) {
   return Math.round(value * 1000) / 1000;
+}
+
+function appendIssue(issueMap: Map<string, string[]>, subscriptionId: string, detail: string) {
+  const next = issueMap.get(subscriptionId) ?? [];
+  next.push(detail);
+  issueMap.set(subscriptionId, next);
 }

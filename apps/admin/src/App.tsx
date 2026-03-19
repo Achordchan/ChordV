@@ -107,10 +107,18 @@ import {
   updatePolicy,
   updateSubscription,
   updateSubscriptionNodeAccess,
+  clearAdminSession,
+  getAdminRefreshToken,
+  hasAdminSession,
+  loginAdmin,
+  logoutAdminSession,
+  persistAdminSession,
+  refreshAdminSession,
   updateTeam,
   updateTeamMember,
   updateUser
 } from "./api/client";
+import { AdminLoginPanel } from "./components/AdminLoginPanel";
 
 type SectionKey = "overview" | "users" | "plans" | "subscriptions" | "nodes" | "announcements" | "policies";
 type DrawerType =
@@ -236,6 +244,11 @@ type PolicyFormState = {
   downloadUrl: string;
 };
 
+type AdminAuthFormState = {
+  account: string;
+  password: string;
+};
+
 const sectionMeta: Record<SectionKey, { label: string; description: string; icon: ReactNode }> = {
   overview: {
     label: "概览",
@@ -277,6 +290,13 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
 export function App() {
   const [snapshot, setSnapshot] = useState<AdminSnapshotDto | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authForm, setAuthForm] = useState<AdminAuthFormState>({
+    account: "admin",
+    password: ""
+  });
   const [section, setSection] = useState<SectionKey>("overview");
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
@@ -315,8 +335,13 @@ export function App() {
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
 
   useEffect(() => {
+    if (!authenticated) {
+      setSnapshot(null);
+      setLoading(false);
+      return;
+    }
     void loadSnapshot();
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => {
     if (snapshot) {
@@ -410,9 +435,86 @@ export function App() {
       const data = await getAdminSnapshot();
       setSnapshot(data);
     } catch (reason) {
-      setError(readError(reason, "加载失败"));
+      const message = readError(reason, "加载失败");
+      if (isAccessTokenError(message) && (await tryRefreshAdminToken())) {
+        try {
+          const data = await getAdminSnapshot();
+          setSnapshot(data);
+          setError(null);
+          return;
+        } catch (refreshReason) {
+          clearAdminSession();
+          setAuthenticated(false);
+          setAuthError(readError(refreshReason, "登录已失效，请重新登录"));
+          return;
+        }
+      }
+
+      if (isAccessTokenError(message)) {
+        clearAdminSession();
+        setAuthenticated(false);
+        setAuthError("登录已失效，请重新登录");
+        return;
+      }
+
+      setError(message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function tryRefreshAdminToken() {
+    const refreshToken = getAdminRefreshToken();
+    if (!refreshToken) {
+      return false;
+    }
+    try {
+      const session = await refreshAdminSession(refreshToken);
+      if (session.user.role !== "admin") {
+        return false;
+      }
+      persistAdminSession(session);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleAdminLogin() {
+    if (!authForm.account.trim() || !authForm.password.trim()) {
+      setAuthError("请输入管理员账号和密码");
+      return;
+    }
+
+    try {
+      setAuthSubmitting(true);
+      setAuthError(null);
+      const session = await loginAdmin(authForm.account.trim(), authForm.password);
+      if (session.user.role !== "admin") {
+        throw new Error("当前账号没有后台权限");
+      }
+      persistAdminSession(session);
+      setAuthenticated(true);
+      setError(null);
+      setAuthForm((current) => ({ ...current, password: "" }));
+    } catch (reason) {
+      setAuthError(readError(reason, "登录失败"));
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  async function handleAdminLogout() {
+    try {
+      await logoutAdminSession();
+    } catch {
+      // ignore
+    } finally {
+      clearAdminSession();
+      setSnapshot(null);
+      setAuthenticated(false);
+      setAuthError(null);
+      setError(null);
     }
   }
 
@@ -902,6 +1004,20 @@ export function App() {
     }
   }
 
+  if (!authenticated) {
+    return (
+      <AdminLoginPanel
+        account={authForm.account}
+        password={authForm.password}
+        loading={authSubmitting}
+        error={authError}
+        onAccountChange={(value) => setAuthForm((current) => ({ ...current, account: value }))}
+        onPasswordChange={(value) => setAuthForm((current) => ({ ...current, password: value }))}
+        onSubmit={() => void handleAdminLogin()}
+      />
+    );
+  }
+
   if (loading && !snapshot) {
     return (
       <Group justify="center" mt="xl">
@@ -982,6 +1098,9 @@ export function App() {
             <Group>
               <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadSnapshot()} loading={loading}>
                 刷新
+              </Button>
+              <Button variant="default" onClick={() => void handleAdminLogout()}>
+                退出登录
               </Button>
               {section === "users" ? (
                 <Group gap="xs">
@@ -1504,12 +1623,13 @@ export function App() {
               <SectionCard searchValue={search.nodes} onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}>
                 <DataTable>
                   <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>节点</Table.Th>
-                      <Table.Th>地址</Table.Th>
-                      <Table.Th>探测状态</Table.Th>
-                      <Table.Th>延迟</Table.Th>
-                      <Table.Th>最后检测</Table.Th>
+                      <Table.Tr>
+                        <Table.Th>节点</Table.Th>
+                        <Table.Th>地址</Table.Th>
+                        <Table.Th>中转</Table.Th>
+                        <Table.Th>探测状态</Table.Th>
+                        <Table.Th>延迟</Table.Th>
+                        <Table.Th>最后检测</Table.Th>
                       <Table.Th>错误</Table.Th>
                       <Table.Th>操作</Table.Th>
                     </Table.Tr>
@@ -1526,6 +1646,9 @@ export function App() {
                           </Stack>
                         </Table.Td>
                         <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
+                        <Table.Td>
+                          <StatusBadge color={nodeGatewayColor(item.gatewayStatus)} label={translateGatewayStatus(item.gatewayStatus)} />
+                        </Table.Td>
                         <Table.Td>
                           <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
                         </Table.Td>
@@ -2518,6 +2641,10 @@ function readError(reason: unknown, fallback: string) {
   return reason.message || fallback;
 }
 
+function isAccessTokenError(message: string) {
+  return message.includes("缺少访问令牌") || message.includes("访问令牌无效") || message.includes("登录态已失效");
+}
+
 function filterByKeyword<T>(items: T[], keyword: string, projector: (item: T) => string[]) {
   if (!keyword.trim()) return items;
   const normalized = keyword.trim().toLowerCase();
@@ -2622,6 +2749,18 @@ function nodeProbeColor(status: AdminNodeRecordDto["probeStatus"]) {
   if (status === "degraded") return "yellow";
   if (status === "offline") return "red";
   return "gray";
+}
+
+function translateGatewayStatus(status: AdminNodeRecordDto["gatewayStatus"]) {
+  if (status === "online") return "已就绪";
+  if (status === "degraded") return "异常";
+  return "未启动";
+}
+
+function nodeGatewayColor(status: AdminNodeRecordDto["gatewayStatus"]) {
+  if (status === "online") return "green";
+  if (status === "degraded") return "yellow";
+  return "red";
 }
 
 function translateAnnouncementLevel(level: AnnouncementLevel) {

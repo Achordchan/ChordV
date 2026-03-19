@@ -4,12 +4,37 @@ import type {
   ConnectionMode,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
+  SessionLeaseStatusDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+type NativeInvoke = (command: string, payload?: unknown) => Promise<{ status: number; body: string }>;
 
 async function request<T>(path: string, init?: RequestInit) {
+  const nativeInvoke = await loadNativeInvoke();
+  if (nativeInvoke) {
+    const headers = normalizeHeaders(init?.headers);
+    if (!headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    const response = await nativeInvoke("api_request", {
+      request: {
+        method: init?.method ?? "GET",
+        path,
+        headers,
+        body: typeof init?.body === "string" ? init.body : undefined
+      }
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(response.body || `HTTP ${response.status}`);
+    }
+    if (!response.body) {
+      return {} as T;
+    }
+    return JSON.parse(response.body) as T;
+  }
+
   const response = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: {
@@ -26,6 +51,34 @@ async function request<T>(path: string, init?: RequestInit) {
   return response.json() as Promise<T>;
 }
 
+async function loadNativeInvoke(): Promise<NativeInvoke | null> {
+  if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    return null;
+  }
+  const module = await import("@tauri-apps/api/core");
+  return module.invoke as NativeInvoke;
+}
+
+function normalizeHeaders(headers?: HeadersInit) {
+  const result: Record<string, string> = {};
+  if (!headers) {
+    return result;
+  }
+  if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      result[key] = value;
+    }
+    return result;
+  }
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      result[key] = value;
+    });
+    return result;
+  }
+  return { ...headers };
+}
+
 export function login(email: string, password: string) {
   return request<AuthSessionDto>("/auth/login", {
     method: "POST",
@@ -40,9 +93,12 @@ export function refreshSession(refreshToken: string) {
   });
 }
 
-export function logoutSession() {
+export function logoutSession(accessToken: string) {
   return request<{ ok: boolean }>("/auth/logout", {
-    method: "POST"
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
   });
 }
 
@@ -89,11 +145,22 @@ export function connectSession(input: {
   });
 }
 
-export function disconnectSession(accessToken: string) {
+export function disconnectSession(accessToken: string, sessionId: string) {
   return request<{ ok: boolean; previousSessionId: string | null }>("/client/session/disconnect", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`
-    }
+    },
+    body: JSON.stringify({ sessionId })
+  });
+}
+
+export function heartbeatSession(accessToken: string, sessionId: string) {
+  return request<SessionLeaseStatusDto>("/client/session/heartbeat", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify({ sessionId })
   });
 }

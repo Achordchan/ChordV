@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   OnModuleInit,
   UnauthorizedException
@@ -11,9 +12,9 @@ import * as bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 import * as net from "node:net";
 import * as tls from "node:tls";
+import { Cron } from "@nestjs/schedule";
 import { Agent, fetch as undiciFetch } from "undici";
 import {
-  mockAdmin,
   mockAnnouncements,
   mockNodes,
   mockPolicies,
@@ -61,19 +62,34 @@ import type {
   UpdateAnnouncementInputDto,
   UpdateNodeInputDto,
   UpdatePlanInputDto,
+  UpdatePlanSecurityInputDto,
   UpdatePolicyInputDto,
   UpdateSubscriptionInputDto,
   UpdateSubscriptionNodeAccessInputDto,
   UpdateTeamInputDto,
   UpdateTeamMemberInputDto,
+  UpdateUserSecurityInputDto,
   UpdateUserInputDto,
   UserProfileDto,
   UserSubscriptionSummaryDto
 } from "@chordv/shared";
+import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
+import { AuthSessionService } from "./auth-session.service";
+import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
+import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
+
+const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ?? 600);
+const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 20);
+const LEASE_GRACE_SECONDS = Number(process.env.CHORDV_SESSION_GRACE_SECONDS ?? 60);
+const SECURITY_REASON_CONCURRENCY = "concurrency_limit";
+const BUILTIN_ADMIN_ID = "admin_001";
+const BUILTIN_ADMIN_ACCOUNT = "admin";
+const BUILTIN_ADMIN_PASSWORD = "woshichen123";
 
 @Injectable()
 export class DevDataService implements OnModuleInit {
+  private readonly logger = new Logger(DevDataService.name);
   private activeRuntime?: GeneratedRuntimeConfigDto;
   private activeRuntimeUsageContext?: {
     subscriptionId: string;
@@ -82,58 +98,43 @@ export class DevDataService implements OnModuleInit {
     teamId: string | null;
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly meteringIncidentService: MeteringIncidentService,
+    private readonly authSessionService: AuthSessionService,
+    private readonly edgeGatewayService: EdgeGatewayService
+  ) {}
 
   async onModuleInit() {
     await this.seedIfEmpty();
-    await this.ensureNodeUsageDefaults();
+    await this.ensureBuiltinAdminAccount();
   }
 
-  async login(email: string, password: string): Promise<AuthSessionDto> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: email.trim().toLowerCase() }
-    });
+  async login(account: string, password: string): Promise<AuthSessionDto> {
+    const user = await this.resolveUserForLogin(account.trim().toLowerCase());
 
     if (!user || user.status !== "active") {
-      throw new UnauthorizedException("邮箱或密码错误");
+      throw new UnauthorizedException("账号或密码错误");
     }
 
     const matched = await bcrypt.compare(password, user.passwordHash);
     if (!matched) {
-      throw new UnauthorizedException("邮箱或密码错误");
+      throw new UnauthorizedException("账号或密码错误");
     }
 
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data: { lastSeenAt: new Date() }
     });
-
-    return {
-      accessToken: `access_${tokenize(updated.email)}`,
-      refreshToken: `refresh_${tokenize(updated.email)}`,
-      user: toUserProfile(updated)
-    };
+    return this.authSessionService.issueSession(updated.id);
   }
 
   async refresh(token: string): Promise<AuthSessionDto> {
-    if (!token.startsWith("refresh_")) {
-      throw new UnauthorizedException("无效刷新令牌");
-    }
-
-    const email = detokenize(token.replace("refresh_", ""));
-    const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user || user.status !== "active") {
-      throw new UnauthorizedException("用户不可用");
-    }
-
-    return {
-      accessToken: `access_${tokenize(user.email)}`,
-      refreshToken: token,
-      user: toUserProfile(user)
-    };
+    return this.authSessionService.rotateRefreshToken(token);
   }
 
-  logout() {
+  async logout(token?: string) {
+    await this.authSessionService.revokeByAccessToken(token);
     return { ok: true };
   }
 
@@ -143,6 +144,7 @@ export class DevDataService implements OnModuleInit {
     if (!access.subscription) {
       throw new NotFoundException("当前没有可用订阅");
     }
+    const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
 
     const [policies, announcements, version] = await Promise.all([
       this.getPolicies(),
@@ -152,7 +154,7 @@ export class DevDataService implements OnModuleInit {
 
     return {
       user,
-      subscription: toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb),
+      subscription: toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb, metering),
       policies,
       announcements,
       version,
@@ -173,7 +175,8 @@ export class DevDataService implements OnModuleInit {
     if (!access.subscription) {
       throw new NotFoundException("当前没有可用订阅");
     }
-    return toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb);
+    const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
+    return toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb, metering);
   }
 
   async getNodes(token?: string): Promise<NodeSummaryDto[]> {
@@ -188,7 +191,13 @@ export class DevDataService implements OnModuleInit {
       include: { node: true },
       orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
     });
-    return rows.map((item) => toNodeSummary(item.node));
+    const nodeMap = new Map<string, NodeSummaryDto>();
+    for (const row of rows) {
+      if (!nodeMap.has(row.nodeId)) {
+        nodeMap.set(row.nodeId, toNodeSummary(row.node));
+      }
+    }
+    return Array.from(nodeMap.values());
   }
 
   async getPolicies(): Promise<PolicyBundleDto> {
@@ -265,19 +274,105 @@ export class DevDataService implements OnModuleInit {
       throw new NotFoundException("策略配置不存在");
     }
 
-    const allowed = await this.prisma.subscriptionNodeAccess.findFirst({
+    const allowedRows = await this.prisma.subscriptionNodeAccess.findMany({
       where: {
         subscriptionId: access.subscription.id,
         nodeId: request.nodeId
       }
     });
 
-    if (!allowed) {
+    if (allowedRows.length === 0) {
       throw new ForbiddenException("当前订阅未开通该节点");
     }
 
+    const userSecurity = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: { maxConcurrentSessionsOverride: true }
+    });
+    const concurrentLimit = Math.max(
+      1,
+      userSecurity?.maxConcurrentSessionsOverride ?? access.subscription.plan.maxConcurrentSessions ?? 1
+    );
+    await this.evictExceededUserLeases(user.id, concurrentLimit);
+
+    const now = new Date();
+    const sessionId = `session_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+    const leaseId = createId("lease");
+    const xrayUserEmail = buildLeaseEmail(user.id, leaseId);
+    const xrayUserUuid = randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
+
+    await this.prisma.nodeSessionLease.create({
+      data: {
+        id: leaseId,
+        sessionId,
+        userId: user.id,
+        subscriptionId: access.subscription.id,
+        nodeId: node.id,
+        xrayUserEmail,
+        xrayUserUuid,
+        status: "active",
+        issuedAt: now,
+        expiresAt: leaseExpiresAt,
+        lastHeartbeatAt: now
+      }
+    });
+
+    try {
+      await this.edgeGatewayService.openSession({
+        sessionId,
+        leaseId,
+        subscriptionId: access.subscription.id,
+        userId: user.id,
+        xrayUserEmail,
+        xrayUserUuid,
+        expiresAt: leaseExpiresAt.toISOString(),
+        node: {
+          nodeId: node.id,
+          serverHost: node.serverHost,
+          serverPort: node.serverPort,
+          uuid: node.uuid,
+          flow: node.flow,
+          realityPublicKey: node.realityPublicKey,
+          shortId: node.shortId,
+          serverName: node.serverName,
+          fingerprint: node.fingerprint,
+          spiderX: node.spiderX
+        }
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "下发临时租约失败";
+      await this.prisma.nodeSessionLease.update({
+        where: { id: leaseId },
+        data: {
+          status: "revoked",
+          revokedAt: new Date(),
+          revokedReason: "edge_open_failed"
+        }
+      });
+      await this.prisma.securityEvent.create({
+        data: {
+          id: createId("security"),
+          type: "relay_open_failed",
+          userId: user.id,
+          subscriptionId: access.subscription.id,
+          nodeId: node.id,
+          leaseId,
+          detail
+        }
+      });
+      await this.edgeGatewayService.markNodeUnavailable(node.id, detail);
+      throw new BadRequestException(`中心中转会话创建失败：${detail}`);
+    }
+
+    const edgeConfig = this.edgeGatewayService.getPublicRuntimeConfig();
+
     this.activeRuntime = {
-      sessionId: `session_${node.id}`,
+      sessionId,
+      leaseId,
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+      leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
+      leaseGraceSeconds: LEASE_GRACE_SECONDS,
       node: toNodeSummary(node),
       mode: request.mode,
       localHttpPort: 17890,
@@ -291,15 +386,15 @@ export class DevDataService implements OnModuleInit {
       },
       outbound: {
         protocol: "vless",
-        server: node.serverHost,
-        port: node.serverPort,
-        uuid: node.uuid,
-        flow: node.flow,
-        realityPublicKey: node.realityPublicKey,
-        shortId: node.shortId,
-        serverName: node.serverName,
-        fingerprint: node.fingerprint,
-        spiderX: node.spiderX
+        server: edgeConfig.server,
+        port: edgeConfig.port,
+        uuid: xrayUserUuid,
+        flow: edgeConfig.flow,
+        realityPublicKey: edgeConfig.realityPublicKey,
+        shortId: edgeConfig.shortId,
+        serverName: edgeConfig.serverName,
+        fingerprint: edgeConfig.fingerprint,
+        spiderX: edgeConfig.spiderX
       }
     };
     this.activeRuntimeUsageContext = {
@@ -309,13 +404,111 @@ export class DevDataService implements OnModuleInit {
       teamId: access.subscription.teamId
     };
 
+    await this.meteringIncidentService.resolve(access.subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
     return this.activeRuntime;
   }
 
-  disconnect() {
+  async heartbeatSession(sessionId: string, token?: string) {
+    const user = await this.resolveActiveUserFromToken(token);
+    const lease = await this.prisma.nodeSessionLease.findUnique({
+      where: { sessionId },
+      include: {
+        node: true
+      }
+    });
+
+    if (!lease || lease.userId !== user.id) {
+      throw new NotFoundException("会话不存在");
+    }
+    if (lease.status !== "active") {
+      throw new ForbiddenException("会话已失效");
+    }
+
+    const now = new Date();
+    if (lease.expiresAt.getTime() <= now.getTime()) {
+      await this.prisma.nodeSessionLease.update({
+        where: { id: lease.id },
+        data: {
+          status: "expired",
+          revokedAt: now,
+          revokedReason: "lease_expired"
+        }
+      });
+      throw new ForbiddenException("会话已过期");
+    }
+
+    const nextExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
+    try {
+      await this.edgeGatewayService.openSession({
+        sessionId: lease.sessionId,
+        leaseId: lease.id,
+        subscriptionId: lease.subscriptionId,
+        userId: lease.userId,
+        xrayUserEmail: lease.xrayUserEmail,
+        xrayUserUuid: lease.xrayUserUuid,
+        expiresAt: nextExpiresAt.toISOString(),
+        node: {
+          nodeId: lease.node.id,
+          serverHost: lease.node.serverHost,
+          serverPort: lease.node.serverPort,
+          uuid: lease.node.uuid,
+          flow: lease.node.flow,
+          realityPublicKey: lease.node.realityPublicKey,
+          shortId: lease.node.shortId,
+          serverName: lease.node.serverName,
+          fingerprint: lease.node.fingerprint,
+          spiderX: lease.node.spiderX
+        }
+      });
+      await this.prisma.nodeSessionLease.update({
+        where: { id: lease.id },
+        data: {
+          status: "active",
+          expiresAt: nextExpiresAt,
+          lastHeartbeatAt: now,
+          revokedAt: null,
+          revokedReason: null
+        }
+      });
+    } catch (error) {
+      await this.revokeLease(lease.id, lease.node, "lease_renew_failed");
+      await this.edgeGatewayService.markNodeUnavailable(lease.nodeId, error instanceof Error ? error.message : "未知错误");
+      throw new ForbiddenException(`会话续租失败：${error instanceof Error ? error.message : "未知错误"}`);
+    }
+
+    if (this.activeRuntime?.sessionId === sessionId) {
+      this.activeRuntime = {
+        ...this.activeRuntime,
+        leaseExpiresAt: nextExpiresAt.toISOString()
+      };
+    }
+
+    return {
+      sessionId,
+      status: "active" as const,
+      leaseExpiresAt: nextExpiresAt.toISOString(),
+      evictedReason: null
+    };
+  }
+
+  async disconnect(sessionId: string, token?: string) {
+    const user = await this.resolveActiveUserFromToken(token);
+    const lease = await this.prisma.nodeSessionLease.findUnique({
+      where: { sessionId },
+      include: {
+        node: true
+      }
+    });
+
+    if (lease && lease.userId === user.id && lease.status === "active") {
+      await this.revokeLease(lease.id, lease.node, "revoked_by_client");
+    }
+
     const previous = this.activeRuntime;
-    this.activeRuntime = undefined;
-    this.activeRuntimeUsageContext = undefined;
+    if (!sessionId || previous?.sessionId === sessionId) {
+      this.activeRuntime = undefined;
+      this.activeRuntimeUsageContext = undefined;
+    }
     return { ok: true, previousSessionId: previous?.sessionId ?? null };
   }
 
@@ -325,6 +518,101 @@ export class DevDataService implements OnModuleInit {
 
   getActiveRuntimeUsageContext() {
     return this.activeRuntimeUsageContext ?? null;
+  }
+
+  @Cron("*/30 * * * * *")
+  async sweepExpiredLeases() {
+    const now = new Date();
+    const expired = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        status: "active",
+        expiresAt: { lte: now }
+      },
+      include: { node: true },
+      take: 100
+    });
+
+    for (const lease of expired) {
+      try {
+        await this.revokeLease(lease.id, lease.node, "lease_expired");
+      } catch (error) {
+        this.logger.warn(
+          `会话 ${lease.sessionId} 过期回收失败：${error instanceof Error ? error.message : "未知错误"}`
+        );
+      }
+    }
+  }
+
+  private async evictExceededUserLeases(userId: string, maxConcurrentSessions: number) {
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        userId,
+        status: "active",
+        expiresAt: { gt: new Date() }
+      },
+      include: { node: true },
+      orderBy: [{ lastHeartbeatAt: "asc" }, { issuedAt: "asc" }]
+    });
+
+    const evictCount = activeLeases.length - maxConcurrentSessions + 1;
+    if (evictCount <= 0) {
+      return;
+    }
+
+    for (const lease of activeLeases.slice(0, evictCount)) {
+      await this.revokeLease(lease.id, lease.node, SECURITY_REASON_CONCURRENCY);
+      if (this.activeRuntime?.sessionId === lease.sessionId) {
+        this.activeRuntime = undefined;
+        this.activeRuntimeUsageContext = undefined;
+      }
+    }
+  }
+
+  private async revokeLease(
+    leaseId: string,
+    node: { id: string; flow: string },
+    reason: string
+  ) {
+    const lease = await this.prisma.nodeSessionLease.findUnique({
+      where: { id: leaseId }
+    });
+    if (!lease) {
+      return;
+    }
+
+    await this.prisma.nodeSessionLease.update({
+      where: { id: lease.id },
+      data: {
+        status: reason === SECURITY_REASON_CONCURRENCY ? "evicted" : "revoked",
+        revokedAt: new Date(),
+        revokedReason: reason
+      }
+    });
+
+    await this.prisma.securityEvent.create({
+      data: {
+        id: createId("security"),
+        type: reason === SECURITY_REASON_CONCURRENCY ? "session_evicted" : "session_revoked",
+        userId: lease.userId,
+        subscriptionId: lease.subscriptionId,
+        nodeId: lease.nodeId,
+        leaseId: lease.id,
+        detail: reason
+      }
+    });
+    try {
+      await this.edgeGatewayService.closeSession({
+        sessionId: lease.sessionId,
+        leaseId: lease.id,
+        nodeId: lease.nodeId
+      });
+      await this.meteringIncidentService.resolve(lease.subscriptionId, lease.nodeId, METERING_REASON_NODE_UNAVAILABLE);
+    } catch (error) {
+      await this.edgeGatewayService.markNodeUnavailable(
+        lease.nodeId,
+        error instanceof Error ? error.message : "关闭中心中转会话失败"
+      );
+    }
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
@@ -390,6 +678,7 @@ export class DevDataService implements OnModuleInit {
         accountType: membership ? "team" : "personal",
         teamId: membership?.team.id ?? null,
         teamName: membership?.team.name ?? null,
+        maxConcurrentSessionsOverride: row.maxConcurrentSessionsOverride ?? null,
         subscriptionCount: membership
           ? membership.team.subscriptions.length
           : row.subscriptions.length,
@@ -418,6 +707,7 @@ export class DevDataService implements OnModuleInit {
         displayName: input.displayName.trim(),
         role: input.role,
         status: "active",
+        maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null,
         passwordHash,
         lastSeenAt: new Date()
       }
@@ -428,6 +718,7 @@ export class DevDataService implements OnModuleInit {
       accountType: "personal",
       teamId: null,
       teamName: null,
+      maxConcurrentSessionsOverride: row.maxConcurrentSessionsOverride ?? null,
       subscriptionCount: 0,
       activeSubscriptionCount: 0,
       currentSubscription: null
@@ -441,6 +732,9 @@ export class DevDataService implements OnModuleInit {
     if (input.role !== undefined) data.role = input.role;
     if (input.status !== undefined) data.status = input.status;
     if (input.password !== undefined) data.passwordHash = await bcrypt.hash(input.password, 10);
+    if (input.maxConcurrentSessionsOverride !== undefined) {
+      data.maxConcurrentSessionsOverride = input.maxConcurrentSessionsOverride;
+    }
 
     await this.prisma.user.update({
       where: { id: userId },
@@ -450,6 +744,23 @@ export class DevDataService implements OnModuleInit {
     const rows = await this.listAdminUsers();
     const row = rows.find((item) => item.id === userId);
     if (!row) throw new NotFoundException("用户不存在");
+    return row;
+  }
+
+  async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {
+    await this.ensureUserExists(userId);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
+      }
+    });
+
+    const rows = await this.listAdminUsers();
+    const row = rows.find((item) => item.id === userId);
+    if (!row) {
+      throw new NotFoundException("用户不存在");
+    }
     return row;
   }
 
@@ -465,6 +776,7 @@ export class DevDataService implements OnModuleInit {
       scope: plan.scope,
       totalTrafficGb: plan.totalTrafficGb,
       renewable: plan.renewable,
+      maxConcurrentSessions: plan.maxConcurrentSessions,
       isActive: plan.isActive,
       subscriptionCount: subscriptions.filter((item) => item.planId === plan.id).length,
       createdAt: plan.createdAt.toISOString(),
@@ -480,6 +792,7 @@ export class DevDataService implements OnModuleInit {
         scope: input.scope,
         totalTrafficGb: input.totalTrafficGb,
         renewable: input.renewable,
+        maxConcurrentSessions: input.maxConcurrentSessions ?? 1,
         isActive: input.isActive ?? true
       }
     });
@@ -490,6 +803,7 @@ export class DevDataService implements OnModuleInit {
       scope: row.scope,
       totalTrafficGb: row.totalTrafficGb,
       renewable: row.renewable,
+      maxConcurrentSessions: row.maxConcurrentSessions,
       isActive: row.isActive,
       subscriptionCount: 0,
       createdAt: row.createdAt.toISOString(),
@@ -507,6 +821,7 @@ export class DevDataService implements OnModuleInit {
         ...(input.scope !== undefined ? { scope: input.scope } : {}),
         ...(input.totalTrafficGb !== undefined ? { totalTrafficGb: input.totalTrafficGb } : {}),
         ...(input.renewable !== undefined ? { renewable: input.renewable } : {}),
+        ...(input.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: input.maxConcurrentSessions } : {}),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
       }
     });
@@ -518,6 +833,30 @@ export class DevDataService implements OnModuleInit {
       scope: row.scope,
       totalTrafficGb: row.totalTrafficGb,
       renewable: row.renewable,
+      maxConcurrentSessions: row.maxConcurrentSessions,
+      isActive: row.isActive,
+      subscriptionCount,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString()
+    };
+  }
+
+  async updatePlanSecurity(planId: string, input: UpdatePlanSecurityInputDto): Promise<AdminPlanRecordDto> {
+    await this.ensurePlanExists(planId);
+    const row = await this.prisma.plan.update({
+      where: { id: planId },
+      data: {
+        maxConcurrentSessions: input.maxConcurrentSessions
+      }
+    });
+    const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    return {
+      id: row.id,
+      name: row.name,
+      scope: row.scope,
+      totalTrafficGb: row.totalTrafficGb,
+      renewable: row.renewable,
+      maxConcurrentSessions: row.maxConcurrentSessions,
       isActive: row.isActive,
       subscriptionCount,
       createdAt: row.createdAt.toISOString(),
@@ -919,11 +1258,12 @@ export class DevDataService implements OnModuleInit {
       include: { node: true },
       orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
     });
+    const deduped = dedupeNodeAccessRows(rows);
 
     return {
       subscriptionId: subscription.id,
-      nodeIds: rows.map((item) => item.nodeId),
-      nodes: rows.map((item) => toNodeSummary(item.node))
+      nodeIds: deduped.map((item) => item.nodeId),
+      nodes: deduped.map((item) => toNodeSummary(item.node))
     };
   }
 
@@ -970,11 +1310,12 @@ export class DevDataService implements OnModuleInit {
       include: { node: true },
       orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
     });
+    const deduped = dedupeNodeAccessRows(rows);
 
     return {
       subscriptionId,
-      nodeIds: rows.map((item) => item.nodeId),
-      nodes: rows.map((item) => toNodeSummary(item.node))
+      nodeIds: deduped.map((item) => item.nodeId),
+      nodes: deduped.map((item) => toNodeSummary(item.node))
     };
   }
 
@@ -999,6 +1340,7 @@ export class DevDataService implements OnModuleInit {
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
     const imported = await this.fetchSubscriptionNode(input.subscriptionUrl);
     const nodeId = toNodeId(imported.serverHost, imported.serverPort);
+    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
 
     const row = await this.prisma.node.upsert({
       where: { id: nodeId },
@@ -1022,9 +1364,7 @@ export class DevDataService implements OnModuleInit {
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
         subscriptionUrl: input.subscriptionUrl,
-        statsEnabled: input.statsEnabled ?? false,
-        statsApiUrl: input.statsApiUrl?.trim() || null,
-        statsApiToken: input.statsApiToken?.trim() || null
+        gatewayStatus: current?.gatewayStatus ?? "offline"
       },
       update: {
         name: input.name?.trim() || imported.name,
@@ -1042,10 +1382,7 @@ export class DevDataService implements OnModuleInit {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
-        subscriptionUrl: input.subscriptionUrl,
-        statsEnabled: input.statsEnabled ?? false,
-        statsApiUrl: input.statsApiUrl?.trim() || null,
-        statsApiToken: input.statsApiToken?.trim() || null
+        subscriptionUrl: input.subscriptionUrl
       }
     });
 
@@ -1072,9 +1409,6 @@ export class DevDataService implements OnModuleInit {
         ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
         ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
         ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl } : {}),
-        ...(input.statsEnabled !== undefined ? { statsEnabled: input.statsEnabled } : {}),
-        ...(input.statsApiUrl !== undefined ? { statsApiUrl: input.statsApiUrl.trim() || null } : {}),
-        ...(input.statsApiToken !== undefined ? { statsApiToken: input.statsApiToken.trim() || null } : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -1128,6 +1462,7 @@ export class DevDataService implements OnModuleInit {
       throw new NotFoundException("节点不存在");
     }
 
+    const gatewayStatus = await this.edgeGatewayService.getGatewayStatus();
     const result = await probeNodeConnectivity(current.serverHost, current.serverPort, current.serverName, current.subscriptionUrl);
     const row = await this.prisma.node.update({
       where: { id: nodeId },
@@ -1140,7 +1475,10 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
-    return toAdminNodeRecord(row);
+    return {
+      ...toAdminNodeRecord(row),
+      gatewayStatus
+    };
   }
 
   async probeAllNodes() {
@@ -1312,19 +1650,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async resolveActiveUserFromToken(token?: string): Promise<UserProfileDto> {
-    const email = token ? tryEmailFromToken(token) : mockUser.email;
-    const row = await this.prisma.user.findUnique({
-      where: { email: email ?? mockUser.email }
-    });
-
-    if (!row) {
-      throw new UnauthorizedException("用户不存在");
-    }
-    if (row.status !== "active") {
-      throw new ForbiddenException("当前用户已禁用");
-    }
-
-    return toUserProfile(row);
+    return this.authSessionService.authenticateAccessToken(token);
   }
 
   private async ensureUserExists(userId: string) {
@@ -1415,7 +1741,7 @@ export class DevDataService implements OnModuleInit {
     }
 
     const demoPasswordHash = await bcrypt.hash("demo123456", 10);
-    const adminPasswordHash = await bcrypt.hash("admin123456", 10);
+    const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
     const ownerPasswordHash = await bcrypt.hash("team123456", 10);
     const memberPasswordHash = await bcrypt.hash("team123456", 10);
 
@@ -1427,17 +1753,21 @@ export class DevDataService implements OnModuleInit {
           displayName: mockUser.displayName,
           role: mockUser.role,
           status: mockUser.status,
+          authVersion: 1,
+          maxConcurrentSessionsOverride: null,
           passwordHash: demoPasswordHash,
           lastSeenAt: new Date(mockUser.lastSeenAt)
         },
         {
-          id: mockAdmin.id,
-          email: mockAdmin.email,
-          displayName: mockAdmin.displayName,
-          role: mockAdmin.role,
-          status: mockAdmin.status,
+          id: BUILTIN_ADMIN_ID,
+          email: BUILTIN_ADMIN_ACCOUNT,
+          displayName: "系统管理员",
+          role: "admin",
+          status: "active",
+          authVersion: 1,
+          maxConcurrentSessionsOverride: null,
           passwordHash: adminPasswordHash,
-          lastSeenAt: new Date(mockAdmin.lastSeenAt)
+          lastSeenAt: new Date()
         },
         {
           id: "user_team_owner_001",
@@ -1445,6 +1775,8 @@ export class DevDataService implements OnModuleInit {
           displayName: "团队负责人",
           role: "user",
           status: "active",
+          authVersion: 1,
+          maxConcurrentSessionsOverride: null,
           passwordHash: ownerPasswordHash,
           lastSeenAt: new Date()
         },
@@ -1454,6 +1786,8 @@ export class DevDataService implements OnModuleInit {
           displayName: "团队成员",
           role: "user",
           status: "active",
+          authVersion: 1,
+          maxConcurrentSessionsOverride: null,
           passwordHash: memberPasswordHash,
           lastSeenAt: new Date()
         }
@@ -1468,6 +1802,7 @@ export class DevDataService implements OnModuleInit {
           scope: "personal",
           totalTrafficGb: mockSubscription.totalTrafficGb,
           renewable: mockSubscription.renewable,
+          maxConcurrentSessions: 1,
           isActive: true
         },
         {
@@ -1476,6 +1811,7 @@ export class DevDataService implements OnModuleInit {
           scope: "team",
           totalTrafficGb: 500,
           renewable: true,
+          maxConcurrentSessions: 1,
           isActive: true
         }
       ]
@@ -1581,9 +1917,6 @@ export class DevDataService implements OnModuleInit {
         fingerprint: "chrome",
         spiderX: "/",
         subscriptionUrl: null,
-        statsEnabled: true,
-        statsApiUrl: `mock://${node.id}`,
-        statsApiToken: null,
         probeStatus: "unknown"
       }))
     });
@@ -1646,30 +1979,79 @@ export class DevDataService implements OnModuleInit {
     });
   }
 
-  private async ensureNodeUsageDefaults() {
-    const nodes = await this.prisma.node.findMany({
-      select: {
-        id: true,
-        statsEnabled: true,
-        statsApiUrl: true
+  private async resolveUserForLogin(account: string) {
+    if (account === BUILTIN_ADMIN_ACCOUNT) {
+      const adminByAccount = await this.prisma.user.findUnique({
+        where: { email: BUILTIN_ADMIN_ACCOUNT }
+      });
+      if (adminByAccount) {
+        return adminByAccount;
+      }
+      return this.prisma.user.findFirst({
+        where: { role: "admin" },
+        orderBy: { createdAt: "asc" }
+      });
+    }
+
+    return this.prisma.user.findUnique({
+      where: { email: account }
+    });
+  }
+
+  private async ensureBuiltinAdminAccount() {
+    const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
+    const now = new Date();
+
+    const builtInAdmin = await this.prisma.user.findUnique({
+      where: { id: BUILTIN_ADMIN_ID }
+    });
+    if (builtInAdmin) {
+      await this.prisma.user.update({
+        where: { id: builtInAdmin.id },
+        data: {
+          email: BUILTIN_ADMIN_ACCOUNT,
+          displayName: "系统管理员",
+          role: "admin",
+          status: "active",
+          maxConcurrentSessionsOverride: null,
+          passwordHash: adminPasswordHash,
+          lastSeenAt: now
+        }
+      });
+      return;
+    }
+
+    const accountAdmin = await this.prisma.user.findUnique({
+      where: { email: BUILTIN_ADMIN_ACCOUNT }
+    });
+    if (accountAdmin) {
+      await this.prisma.user.update({
+        where: { id: accountAdmin.id },
+        data: {
+          displayName: "系统管理员",
+          role: "admin",
+          status: "active",
+          maxConcurrentSessionsOverride: null,
+          passwordHash: adminPasswordHash,
+          lastSeenAt: now
+        }
+      });
+      return;
+    }
+
+    await this.prisma.user.create({
+      data: {
+        id: BUILTIN_ADMIN_ID,
+        email: BUILTIN_ADMIN_ACCOUNT,
+        displayName: "系统管理员",
+        role: "admin",
+        status: "active",
+        authVersion: 1,
+        maxConcurrentSessionsOverride: null,
+        passwordHash: adminPasswordHash,
+        lastSeenAt: now
       }
     });
-
-    await Promise.all(
-      nodes.map((node) => {
-        if (node.statsEnabled && node.statsApiUrl) {
-          return Promise.resolve();
-        }
-
-        return this.prisma.node.update({
-          where: { id: node.id },
-          data: {
-            statsEnabled: true,
-            statsApiUrl: node.statsApiUrl ?? `mock://${node.id}`
-          }
-        });
-      })
-    );
   }
 
   private async fetchSubscriptionNode(subscriptionUrl: string) {
@@ -1756,6 +2138,7 @@ function toNodeSummary(row: {
   serverPort: number;
   serverName: string;
 }): NodeSummaryDto {
+  const edgeConfig = readEdgeProbeConfig();
   return {
     id: row.id,
     name: row.name,
@@ -1766,9 +2149,9 @@ function toNodeSummary(row: {
     latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
     security: row.security as "reality",
-    serverHost: row.serverHost,
-    serverPort: row.serverPort,
-    serverName: row.serverName
+    serverHost: edgeConfig.serverHost,
+    serverPort: edgeConfig.serverPort,
+    serverName: edgeConfig.serverName
   };
 }
 
@@ -1791,7 +2174,7 @@ function toAdminSubscriptionRecord(row: {
   nodeAccesses?: Array<{ nodeId: string }>;
 }): AdminSubscriptionRecordDto {
   const ownerType = row.teamId ? "team" : "user";
-  const nodeCount = row.nodeAccesses?.length ?? 0;
+  const nodeCount = row.nodeAccesses ? new Set(row.nodeAccesses.map((item) => item.nodeId)).size : 0;
   return {
     id: row.id,
     ownerType,
@@ -1815,6 +2198,35 @@ function toAdminSubscriptionRecord(row: {
   };
 }
 
+function dedupeNodeAccessRows(
+  rows: Array<{
+    nodeId: string;
+    node: {
+      id: string;
+      name: string;
+      region: string;
+      provider: string;
+      tags: string[];
+      recommended: boolean;
+      latencyMs: number;
+      probeLatencyMs?: number | null;
+      protocol: string;
+      security: string;
+      serverHost: string;
+      serverPort: number;
+      serverName: string;
+    };
+  }>
+) {
+  const nodeMap = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    if (!nodeMap.has(row.nodeId)) {
+      nodeMap.set(row.nodeId, row);
+    }
+  }
+  return Array.from(nodeMap.values());
+}
+
 function toAdminNodeRecord(row: {
   id: string;
   name: string;
@@ -1832,8 +2244,7 @@ function toAdminNodeRecord(row: {
   shortId: string;
   spiderX: string;
   subscriptionUrl: string | null;
-  statsEnabled: boolean;
-  statsApiUrl: string | null;
+  gatewayStatus: "online" | "offline" | "degraded";
   statsLastSyncedAt: Date | null;
   probeStatus: NodeProbeStatus;
   probeCheckedAt: Date | null;
@@ -1844,8 +2255,7 @@ function toAdminNodeRecord(row: {
   return {
     ...toNodeSummary(row),
     subscriptionUrl: row.subscriptionUrl,
-    statsEnabled: row.statsEnabled,
-    statsApiUrl: row.statsApiUrl,
+    gatewayStatus: row.gatewayStatus,
     statsLastSyncedAt: row.statsLastSyncedAt?.toISOString() ?? null,
     serverName: row.serverName,
     serverHost: row.serverHost,
@@ -1858,6 +2268,14 @@ function toAdminNodeRecord(row: {
     probeError: row.probeError,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
+  };
+}
+
+function readEdgeProbeConfig() {
+  return {
+    serverHost: process.env.CHORDV_EDGE_PUBLIC_HOST?.trim() || "127.0.0.1",
+    serverPort: Number(process.env.CHORDV_EDGE_PUBLIC_PORT ?? 8443),
+    serverName: process.env.CHORDV_EDGE_SERVER_NAME?.trim() || "edge.chordv.app"
   };
 }
 
@@ -1949,7 +2367,8 @@ function toSubscriptionStatusDto(
     plan: { name: string };
   },
   team: { id: string; name: string } | null,
-  memberUsedTrafficGb: number | null
+  memberUsedTrafficGb: number | null,
+  metering: { meteringStatus: "ok" | "degraded"; meteringMessage: string | null }
 ): SubscriptionStatusDto {
   return {
     id: row.id,
@@ -1965,7 +2384,9 @@ function toSubscriptionStatusDto(
     lastSyncedAt: row.lastSyncedAt.toISOString(),
     teamId: team?.id ?? null,
     teamName: team?.name ?? null,
-    memberUsedTrafficGb
+    memberUsedTrafficGb,
+    meteringStatus: metering.meteringStatus,
+    meteringMessage: metering.meteringMessage
   };
 }
 
@@ -2082,21 +2503,12 @@ function toAdminTeamRecord(row: {
   };
 }
 
-function tokenize(value: string) {
-  return value.trim().toLowerCase().replaceAll("@", "_at_").replaceAll(".", "_dot_");
-}
-
-function detokenize(value: string) {
-  return value.replace("_at_", "@").replaceAll("_dot_", ".");
-}
-
-function tryEmailFromToken(token: string) {
-  const raw = token.replace("Bearer ", "").replace("access_", "").trim();
-  return raw ? detokenize(raw) : null;
-}
-
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function buildLeaseEmail(userId: string, leaseId: string) {
+  return `${userId}.${leaseId}@lease.chordv`;
 }
 
 function toNodeId(host: string, port: number) {

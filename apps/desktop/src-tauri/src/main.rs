@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     fs::{self, File},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -12,6 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, RunEvent, State};
+use native_tls::TlsConnector;
+use reqwest::Client;
+use sha2::{Digest, Sha256};
+use url::Url;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -152,6 +157,22 @@ struct CommandResult {
     active_pid: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiRequestInput {
+    method: String,
+    path: String,
+    headers: Option<HashMap<String, String>>,
+    body: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiResponseOutput {
+    status: u16,
+    body: String,
+}
+
 #[tauri::command]
 fn load_session(app: AppHandle) -> Result<Option<AuthSessionDto>, String> {
     let path = session_path(&app)?;
@@ -194,6 +215,59 @@ fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
         log_path: None,
         active_pid: None,
     })
+}
+
+#[tauri::command]
+async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, String> {
+    let base = std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let base = base.trim_end_matches('/');
+    let api_path = if request.path.starts_with("/api/") {
+        request.path.clone()
+    } else {
+        format!("/api{}", request.path)
+    };
+    let full_url = format!("{base}{api_path}");
+    let url = Url::parse(&full_url).map_err(|error| format!("API 地址无效：{error}"))?;
+
+    let force_https = std::env::var("CHORDV_DESKTOP_FORCE_HTTPS")
+        .unwrap_or_else(|_| if cfg!(debug_assertions) { "false".into() } else { "true".into() })
+        .to_lowercase()
+        == "true";
+    if force_https && url.scheme() != "https" {
+        return Err("生产环境仅允许 HTTPS API".into());
+    }
+
+    let pinned_fingerprint = std::env::var("CHORDV_API_CERT_SHA256")
+        .ok()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty());
+    if let Some(expected) = pinned_fingerprint {
+        verify_server_certificate_fingerprint(&url, &expected)?;
+    }
+
+    let method = reqwest::Method::from_bytes(request.method.trim().to_uppercase().as_bytes())
+        .map_err(|error| format!("HTTP 方法无效：{error}"))?;
+
+    let mut req = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| format!("初始化 API 客户端失败：{error}"))?
+        .request(method, url);
+
+    if let Some(headers) = request.headers {
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+    }
+
+    if let Some(body) = request.body {
+        req = req.body(body);
+    }
+
+    let response = req.send().await.map_err(|error| format!("请求 API 失败：{error}"))?;
+    let status = response.status().as_u16();
+    let body = response.text().await.map_err(|error| format!("读取响应失败：{error}"))?;
+    Ok(ApiResponseOutput { status, body })
 }
 
 #[tauri::command]
@@ -784,6 +858,35 @@ fn resolve_socket_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("无法解析地址：{host}:{port}"))
 }
 
+fn verify_server_certificate_fingerprint(url: &Url, expected: &str) -> Result<(), String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "API 地址缺少主机名".to_string())?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let tcp = TcpStream::connect((host, port)).map_err(|error| format!("建立 TLS 连接失败：{error}"))?;
+    let connector = TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|error| format!("初始化 TLS 连接器失败：{error}"))?;
+    let tls = connector
+        .connect(host, tcp)
+        .map_err(|error| format!("TLS 握手失败：{error}"))?;
+    let cert = tls
+        .peer_certificate()
+        .map_err(|error| format!("读取服务端证书失败：{error}"))?
+        .ok_or_else(|| "服务端未返回证书".to_string())?;
+    let der = cert
+        .to_der()
+        .map_err(|error| format!("解析服务端证书失败：{error}"))?;
+    let hash = Sha256::digest(der);
+    let actual = hex::encode(hash);
+    let normalized = expected.replace(':', "").to_lowercase();
+    if actual != normalized {
+        return Err("API 证书指纹校验失败".into());
+    }
+    Ok(())
+}
+
 fn chrono_like_now() -> String {
     let now = std::time::SystemTime::now();
     let datetime: chrono::DateTime<chrono::Utc> = now.into();
@@ -980,6 +1083,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_ready,
+            api_request,
             load_session,
             save_session,
             clear_session,

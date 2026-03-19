@@ -12,6 +12,10 @@ export type AnnouncementDisplayMode = "passive" | "modal_confirm" | "modal_count
 export type SubscriptionSourceAction = "created" | "renewed" | "plan_changed" | "adjusted";
 export type NodeProbeStatus = "unknown" | "healthy" | "degraded" | "offline";
 export type SubscriptionOwnerType = "user" | "team";
+export type MeteringStatus = "ok" | "degraded";
+export type SessionLeaseStatus = "active" | "expired" | "revoked" | "evicted";
+export type SessionEvictedReason = "concurrency_limit";
+export type EdgeGatewayStatus = "online" | "offline" | "degraded";
 
 export interface UserProfileDto {
   id: string;
@@ -37,6 +41,8 @@ export interface SubscriptionStatusDto {
   teamId?: string | null;
   teamName?: string | null;
   memberUsedTrafficGb?: number | null;
+  meteringStatus: MeteringStatus;
+  meteringMessage?: string | null;
 }
 
 export interface NodeSummaryDto {
@@ -119,6 +125,10 @@ export interface RuntimeOutboundDto {
 
 export interface GeneratedRuntimeConfigDto {
   sessionId: string;
+  leaseId: string;
+  leaseExpiresAt: string;
+  leaseHeartbeatIntervalSeconds: number;
+  leaseGraceSeconds: number;
   node: NodeSummaryDto;
   mode: ConnectionMode;
   localHttpPort: number;
@@ -149,6 +159,7 @@ export interface AdminUserRecordDto extends UserProfileDto {
   accountType: "personal" | "team";
   teamId: string | null;
   teamName: string | null;
+  maxConcurrentSessionsOverride: number | null;
   subscriptionCount: number;
   activeSubscriptionCount: number;
   currentSubscription: UserSubscriptionSummaryDto | null;
@@ -160,6 +171,7 @@ export interface AdminPlanRecordDto {
   scope: PlanScope;
   totalTrafficGb: number;
   renewable: boolean;
+  maxConcurrentSessions: number;
   isActive: boolean;
   subscriptionCount: number;
   createdAt: string;
@@ -200,8 +212,7 @@ export interface UpdateSubscriptionNodeAccessInputDto {
 
 export interface AdminNodeRecordDto extends NodeSummaryDto {
   subscriptionUrl: string | null;
-  statsEnabled: boolean;
-  statsApiUrl: string | null;
+  gatewayStatus: EdgeGatewayStatus;
   statsLastSyncedAt: string | null;
   serverName: string;
   serverHost: string;
@@ -314,6 +325,8 @@ export interface AdminSnapshotDto {
 export interface AuthSessionDto {
   accessToken: string;
   refreshToken: string;
+  accessTokenExpiresAt: string;
+  refreshTokenExpiresAt: string;
   user: UserProfileDto;
 }
 
@@ -322,6 +335,7 @@ export interface CreateUserInputDto {
   password: string;
   displayName: string;
   role: UserRole;
+  maxConcurrentSessionsOverride?: number | null;
 }
 
 export interface UpdateUserInputDto {
@@ -329,6 +343,7 @@ export interface UpdateUserInputDto {
   role?: UserRole;
   status?: UserStatus;
   password?: string;
+  maxConcurrentSessionsOverride?: number | null;
 }
 
 export interface CreatePlanInputDto {
@@ -336,6 +351,7 @@ export interface CreatePlanInputDto {
   scope: PlanScope;
   totalTrafficGb: number;
   renewable: boolean;
+  maxConcurrentSessions?: number;
   isActive?: boolean;
 }
 
@@ -344,7 +360,27 @@ export interface UpdatePlanInputDto {
   scope?: PlanScope;
   totalTrafficGb?: number;
   renewable?: boolean;
+  maxConcurrentSessions?: number;
   isActive?: boolean;
+}
+
+export interface UpdatePlanSecurityInputDto {
+  maxConcurrentSessions: number;
+}
+
+export interface UpdateUserSecurityInputDto {
+  maxConcurrentSessionsOverride?: number | null;
+}
+
+export interface SessionHeartbeatInputDto {
+  sessionId: string;
+}
+
+export interface SessionLeaseStatusDto {
+  sessionId: string;
+  status: SessionLeaseStatus;
+  leaseExpiresAt: string;
+  evictedReason?: SessionEvictedReason | null;
 }
 
 export interface CreateSubscriptionInputDto {
@@ -386,9 +422,6 @@ export interface ImportNodeInputDto {
   provider?: string;
   tags?: string[];
   recommended?: boolean;
-  statsEnabled?: boolean;
-  statsApiUrl?: string;
-  statsApiToken?: string;
 }
 
 export interface UpdateNodeInputDto {
@@ -398,9 +431,52 @@ export interface UpdateNodeInputDto {
   tags?: string[];
   recommended?: boolean;
   subscriptionUrl?: string;
-  statsEnabled?: boolean;
-  statsApiUrl?: string;
-  statsApiToken?: string;
+}
+
+export interface EdgeRelayNodeDto {
+  nodeId: string;
+  serverHost: string;
+  serverPort: number;
+  uuid: string;
+  flow: string;
+  realityPublicKey: string;
+  shortId: string;
+  serverName: string;
+  fingerprint: string;
+  spiderX: string;
+}
+
+export interface EdgeSessionOpenInputDto {
+  sessionId: string;
+  leaseId: string;
+  subscriptionId: string;
+  userId: string;
+  node: EdgeRelayNodeDto;
+  xrayUserEmail: string;
+  xrayUserUuid: string;
+  expiresAt: string;
+}
+
+export interface EdgeSessionCloseInputDto {
+  sessionId: string;
+  leaseId: string;
+  nodeId: string;
+}
+
+export interface EdgeTrafficRecordDto {
+  sessionId: string;
+  leaseId: string;
+  xrayUserEmail: string;
+  xrayUserUuid: string;
+  uplinkBytes: string;
+  downlinkBytes: string;
+  sampledAt: string;
+}
+
+export interface EdgeTrafficReportInputDto {
+  nodeId: string;
+  reportedAt: string;
+  records: EdgeTrafficRecordDto[];
 }
 
 export interface CreateAnnouncementInputDto {

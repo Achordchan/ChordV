@@ -53,6 +53,30 @@ enum NodeProbeStatus {
   offline
 }
 
+enum MeteringIncidentStatus {
+  open
+  resolved
+}
+
+enum EdgeGatewayStatus {
+  online
+  offline
+  degraded
+}
+
+enum NodeSessionLeaseStatus {
+  active
+  expired
+  revoked
+  evicted
+}
+
+enum SecurityEventType {
+  session_evicted
+  session_revoked
+  relay_open_failed
+}
+
 enum AnnouncementLevel {
   info
   warning
@@ -71,6 +95,8 @@ model User {
   displayName          String
   role                 UserRole
   status               UserStatus
+  authVersion          Int                 @default(1)
+  maxConcurrentSessionsOverride Int?
   passwordHash         String
   lastSeenAt           DateTime
   createdAt            DateTime            @default(now())
@@ -80,6 +106,9 @@ model User {
   teamMemberships      TeamMember[]
   trafficLedgerEntries TrafficLedger[]
   trafficSnapshots     TrafficSnapshot[]
+  refreshTokens        RefreshToken[]
+  sessionLeases        NodeSessionLease[]
+  securityEvents       SecurityEvent[]
 }
 
 model Plan {
@@ -88,6 +117,7 @@ model Plan {
   scope          PlanScope      @default(personal)
   totalTrafficGb Float
   renewable      Boolean
+  maxConcurrentSessions Int      @default(1)
   isActive       Boolean        @default(true)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
@@ -115,6 +145,9 @@ model Subscription {
   trafficLedgerEntries TrafficLedger[]
   trafficSnapshots   TrafficSnapshot[]
   nodeAccesses       SubscriptionNodeAccess[]
+  meteringIncidents  MeteringIncident[]
+  sessionLeases      NodeSessionLease[]
+  securityEvents     SecurityEvent[]
 }
 
 model Team {
@@ -179,9 +212,7 @@ model Node {
   fingerprint      String
   spiderX          String          @default("/")
   subscriptionUrl  String?
-  statsEnabled     Boolean         @default(false)
-  statsApiUrl      String?
-  statsApiToken    String?
+  gatewayStatus    EdgeGatewayStatus @default(offline)
   statsLastSyncedAt DateTime?
   probeStatus      NodeProbeStatus @default(unknown)
   probeLatencyMs   Int?
@@ -191,6 +222,9 @@ model Node {
   updatedAt        DateTime        @updatedAt
   subscriptionAccesses SubscriptionNodeAccess[]
   trafficSnapshots TrafficSnapshot[]
+  meteringIncidents MeteringIncident[]
+  sessionLeases     NodeSessionLease[]
+  securityEvents    SecurityEvent[]
 }
 
 model SubscriptionNodeAccess {
@@ -202,7 +236,27 @@ model SubscriptionNodeAccess {
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   node           Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
 
+  @@index([subscriptionId, nodeId])
   @@unique([subscriptionId, nodeId])
+}
+
+model MeteringIncident {
+  id             String                @id
+  subscriptionId String
+  nodeId         String
+  reason         String
+  status         MeteringIncidentStatus @default(open)
+  detail         String?
+  openedAt       DateTime
+  resolvedAt     DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  subscription   Subscription          @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  node           Node                  @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status, openedAt])
+  @@index([nodeId, status, openedAt])
+  @@index([subscriptionId, nodeId, reason, status])
 }
 
 model TrafficSnapshot {
@@ -224,6 +278,66 @@ model TrafficSnapshot {
   team             Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
   @@index([nodeId, subscriptionId])
+}
+
+model RefreshToken {
+  id        String   @id
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([userId, revokedAt, createdAt])
+}
+
+model NodeSessionLease {
+  id             String               @id
+  sessionId      String               @unique
+  userId         String
+  subscriptionId String
+  nodeId         String
+  xrayUserEmail  String
+  xrayUserUuid   String
+  status         NodeSessionLeaseStatus @default(active)
+  issuedAt       DateTime
+  expiresAt      DateTime
+  lastHeartbeatAt DateTime
+  revokedAt      DateTime?
+  revokedReason  String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription   Subscription         @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  node           Node                 @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  securityEvents SecurityEvent[]
+
+  @@index([userId, status, expiresAt])
+  @@index([subscriptionId, status, expiresAt])
+  @@index([nodeId, status, expiresAt])
+}
+
+model SecurityEvent {
+  id             String            @id
+  type           SecurityEventType
+  userId         String?
+  subscriptionId String?
+  nodeId         String?
+  leaseId        String?
+  detail         String?
+  createdAt      DateTime          @default(now())
+  user           User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  subscription   Subscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  node           Node?             @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  lease          NodeSessionLease? @relation(fields: [leaseId], references: [id], onDelete: SetNull)
+
+  @@index([type, createdAt])
+  @@index([userId, createdAt])
+  @@index([subscriptionId, createdAt])
+  @@index([nodeId, createdAt])
 }
 
 model PolicyProfile {

@@ -1,4 +1,4 @@
-import { Badge, Button, Group, Indicator, Paper, Text, Title } from "@mantine/core";
+import { Alert, Badge, Button, Group, Indicator, Paper, Text, Title } from "@mantine/core";
 import type { ClientBootstrapDto } from "@chordv/shared";
 import { IconBell, IconLogout, IconRefresh, IconSparkles } from "@tabler/icons-react";
 
@@ -91,6 +91,12 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Button>
           </Group>
         </div>
+
+        {props.bootstrap.subscription.meteringStatus === "degraded" ? (
+          <Alert color="yellow" variant={isTeam ? "light" : "outline"} radius="md" mb="md">
+            {props.bootstrap.subscription.meteringMessage ?? "计费待同步，正在等待节点统计恢复"}
+          </Alert>
+        ) : null}
 
         <div className="subscription-metrics">
           {metrics.map((item) => (

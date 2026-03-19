@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from "@nestjs/common";
+import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
 import {
   ChangeSubscriptionPlanDto,
@@ -14,15 +15,18 @@ import {
   UpdateAnnouncementDto,
   UpdateNodeDto,
   UpdatePlanDto,
+  UpdatePlanSecurityDto,
   UpdatePolicyDto,
   UpdateSubscriptionDto,
   UpdateSubscriptionNodeAccessDto,
   UpdateTeamDto,
   UpdateTeamMemberDto,
+  UpdateUserSecurityDto,
   UpdateUserDto
 } from "./admin.dto";
 
 @Controller("admin")
+@UseGuards(AdminAuthGuard)
 export class AdminController {
   constructor(private readonly devDataService: DevDataService) {}
 
@@ -46,6 +50,11 @@ export class AdminController {
     return this.devDataService.updateUser(userId, body);
   }
 
+  @Put("users/:userId/security")
+  updateUserSecurity(@Param("userId") userId: string, @Body() body: UpdateUserSecurityDto) {
+    return this.devDataService.updateUserSecurity(userId, body);
+  }
+
   @Get("plans")
   getPlans() {
     return this.devDataService.listAdminPlans();
@@ -59,6 +68,11 @@ export class AdminController {
   @Patch("plans/:planId")
   updatePlan(@Param("planId") planId: string, @Body() body: UpdatePlanDto) {
     return this.devDataService.updatePlan(planId, body);
+  }
+
+  @Put("plans/:planId/security")
+  updatePlanSecurity(@Param("planId") planId: string, @Body() body: UpdatePlanSecurityDto) {
+    return this.devDataService.updatePlanSecurity(planId, body);
   }
 
   @Get("subscriptions")

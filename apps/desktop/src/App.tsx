@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, LoadingOverlay, Modal, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type {
@@ -10,7 +10,17 @@ import type {
   NodeSummaryDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
-import { connectSession, disconnectSession, fetchBootstrap, fetchNodes, fetchSubscription, login, logoutSession, refreshSession } from "./api/client";
+import {
+  connectSession,
+  disconnectSession,
+  fetchBootstrap,
+  fetchNodes,
+  fetchSubscription,
+  heartbeatSession,
+  login,
+  logoutSession,
+  refreshSession
+} from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogDrawer } from "./components/LogDrawer";
@@ -35,6 +45,7 @@ import {
 const appVersion = import.meta.env.VITE_APP_VERSION ?? "0.1.0";
 const PROBE_COOLDOWN_MS = 25000;
 const LAST_NODE_KEY = "chordv_last_node_id";
+const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 
 export function App() {
   const [session, setSession] = useState<AuthSessionDto | null>(null);
@@ -65,9 +76,11 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState({ email: "", password: "" });
+  const [rememberPassword, setRememberPassword] = useState(false);
   const [forcedAnnouncement, setForcedAnnouncement] = useState<AnnouncementDto | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [now, setNow] = useState(Date.now());
+  const leaseHeartbeatFailedAtRef = useRef<number | null>(null);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -155,6 +168,50 @@ export function App() {
   }, [session]);
 
   useEffect(() => {
+    if (!session || !runtime || desktopStatus.status !== "connected") {
+      leaseHeartbeatFailedAtRef.current = null;
+      return;
+    }
+
+    const tick = async () => {
+      try {
+        const lease = await heartbeatSession(session.accessToken, runtime.sessionId);
+        leaseHeartbeatFailedAtRef.current = null;
+        setRuntime((current) =>
+          current && current.sessionId === runtime.sessionId ? { ...current, leaseExpiresAt: lease.leaseExpiresAt } : current
+        );
+      } catch {
+        const nowMs = Date.now();
+        if (!leaseHeartbeatFailedAtRef.current) {
+          leaseHeartbeatFailedAtRef.current = nowMs;
+          return;
+        }
+        if (nowMs - leaseHeartbeatFailedAtRef.current >= runtime.leaseGraceSeconds * 1000) {
+          showErrorToast("租约续签失败，连接已断开，请重新连接");
+          leaseHeartbeatFailedAtRef.current = null;
+          await handleDisconnect();
+        }
+      }
+    };
+
+    const intervalMs = Math.max(5, runtime.leaseHeartbeatIntervalSeconds) * 1000;
+    const timer = window.setInterval(() => {
+      void tick();
+    }, intervalMs);
+    void tick();
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    desktopStatus.status,
+    runtime?.sessionId,
+    runtime?.leaseHeartbeatIntervalSeconds,
+    runtime?.leaseGraceSeconds,
+    session?.accessToken
+  ]);
+
+  useEffect(() => {
     const exhausted =
       bootstrap?.subscription.state === "exhausted" || (bootstrap?.subscription.remainingTrafficGb ?? 1) <= 0;
     if (!exhausted || actionBusy || desktopStatus.status !== "connected") {
@@ -167,6 +224,11 @@ export function App() {
 
   async function initializeApp() {
     try {
+      const rememberedCredentials = loadRememberedCredentials();
+      if (rememberedCredentials) {
+        setCredentials(rememberedCredentials);
+        setRememberPassword(true);
+      }
       await refreshRuntime();
       const storedSession = await loadStoredSession();
       if (storedSession) {
@@ -277,8 +339,15 @@ export function App() {
 
     try {
       setAuthBusy(true);
-      const nextSession = await login(credentials.email.trim(), credentials.password);
+      const normalizedEmail = credentials.email.trim();
+      const nextSession = await login(normalizedEmail, credentials.password);
       await saveStoredSession(nextSession);
+      if (rememberPassword) {
+        saveRememberedCredentials(normalizedEmail, credentials.password);
+      } else {
+        clearRememberedCredentials();
+      }
+      setCredentials((current) => ({ ...current, email: normalizedEmail }));
       await bootstrapSession(nextSession, false, false, true);
     } catch (reason) {
       showErrorToast(reason instanceof Error ? readError(reason.message) : "登录失败");
@@ -313,9 +382,13 @@ export function App() {
       if (desktopStatus.status === "connected" || desktopStatus.status === "error") {
         await handleDisconnect();
       }
-      await logoutSession().catch(() => null);
+      if (session) {
+        await logoutSession(session.accessToken).catch(() => null);
+      }
       await clearSession();
-      setCredentials((current) => ({ ...current, password: "" }));
+      if (!rememberPassword) {
+        setCredentials((current) => ({ ...current, password: "" }));
+      }
     } finally {
       setLogoutBusy(false);
     }
@@ -361,6 +434,7 @@ export function App() {
       await invokeDesktopConnect(config);
       localStorage.setItem(LAST_NODE_KEY, selectedNode.id);
       setRuntime(config);
+      leaseHeartbeatFailedAtRef.current = null;
       await refreshRuntime();
     } catch (reason) {
       await refreshRuntime();
@@ -378,9 +452,13 @@ export function App() {
     try {
       setActionBusy("disconnect");
       setDesktopStatus((current) => ({ ...current, status: "disconnecting", lastError: null }));
-      await disconnectSession(session.accessToken);
+      const sessionId = runtime?.sessionId ?? desktopStatus.activeSessionId;
+      if (sessionId) {
+        await disconnectSession(session.accessToken, sessionId);
+      }
       await invokeDesktopDisconnect();
       setRuntime(null);
+      leaseHeartbeatFailedAtRef.current = null;
       await refreshRuntime();
     } catch (reason) {
       await refreshRuntime();
@@ -444,10 +522,17 @@ export function App() {
         <LoginScreen
           email={credentials.email}
           password={credentials.password}
+          rememberPassword={rememberPassword}
           loading={authBusy}
           error={null}
           onEmailChange={(value) => setCredentials((current) => ({ ...current, email: value }))}
           onPasswordChange={(value) => setCredentials((current) => ({ ...current, password: value }))}
+          onRememberPasswordChange={(checked) => {
+            setRememberPassword(checked);
+            if (!checked) {
+              clearRememberedCredentials();
+            }
+          }}
           onSubmit={() => void handleLogin()}
         />
       ) : (
@@ -578,6 +663,41 @@ function announcementStorageKey(id: string) {
 
 function passiveAnnouncementStorageKey(id: string) {
   return `chordv_announcement_seen_${id}`;
+}
+
+function loadRememberedCredentials() {
+  const raw = localStorage.getItem(REMEMBER_CREDENTIALS_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { email?: string; password?: string };
+    if (typeof parsed.email === "string" && typeof parsed.password === "string") {
+      return {
+        email: parsed.email,
+        password: parsed.password
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function saveRememberedCredentials(email: string, password: string) {
+  localStorage.setItem(
+    REMEMBER_CREDENTIALS_KEY,
+    JSON.stringify({
+      email,
+      password
+    })
+  );
+}
+
+function clearRememberedCredentials() {
+  localStorage.removeItem(REMEMBER_CREDENTIALS_KEY);
 }
 
 function shouldShowUpdate(bootstrap: ClientBootstrapDto) {

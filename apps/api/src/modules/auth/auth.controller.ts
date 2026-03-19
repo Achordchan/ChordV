@@ -1,9 +1,10 @@
-import { Body, Controller, Post } from "@nestjs/common";
-import { IsEmail, IsNotEmpty, IsString, MinLength } from "class-validator";
+import { Body, Controller, Headers, Post } from "@nestjs/common";
+import { IsNotEmpty, IsString, MinLength } from "class-validator";
 import { AuthService } from "./auth.service";
 
 class LoginDto {
-  @IsEmail()
+  @IsString()
+  @IsNotEmpty()
   email!: string;
 
   @IsString()
@@ -32,7 +33,7 @@ export class AuthController {
   }
 
   @Post("logout")
-  logout() {
-    return this.authService.logout();
+  logout(@Headers("authorization") authorization?: string) {
+    return this.authService.logout(authorization);
   }
 }

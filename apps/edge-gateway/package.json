@@ -1,0 +1,24 @@
+{
+  "name": "@chordv/edge-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@chordv/shared": "workspace:*",
+    "@grpc/grpc-js": "^1.14.1",
+    "@grpc/proto-loader": "^0.8.0",
+    "dotenv": "^16.4.7",
+    "protobufjs": "^7.5.4",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.7.3"
+  }
+}

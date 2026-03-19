@@ -51,7 +51,9 @@ export const mockSubscription: SubscriptionStatusDto = {
   lastSyncedAt: new Date().toISOString(),
   teamId: null,
   teamName: null,
-  memberUsedTrafficGb: null
+  memberUsedTrafficGb: null,
+  meteringStatus: "ok",
+  meteringMessage: null
 };
 
 export const mockNodes: NodeSummaryDto[] = [
@@ -151,6 +153,10 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
   const node = mockNodes.find((item) => item.id === nodeId) ?? mockNodes[0];
   return {
     sessionId: `session_${node.id}`,
+    leaseId: `lease_${node.id}`,
+    leaseExpiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    leaseHeartbeatIntervalSeconds: 20,
+    leaseGraceSeconds: 60,
     node,
     mode: "rule",
     localHttpPort: 17890,
@@ -195,6 +201,7 @@ export const mockAdminUsers: AdminUserRecordDto[] = [
     accountType: "personal",
     teamId: null,
     teamName: null,
+    maxConcurrentSessionsOverride: null,
     subscriptionCount: 0,
     activeSubscriptionCount: 0,
     currentSubscription: null
@@ -204,6 +211,7 @@ export const mockAdminUsers: AdminUserRecordDto[] = [
     accountType: "personal",
     teamId: null,
     teamName: null,
+    maxConcurrentSessionsOverride: null,
     subscriptionCount: 1,
     activeSubscriptionCount: 1,
     currentSubscription: mockCurrentSubscription
@@ -217,6 +225,7 @@ export const mockAdminPlans: AdminPlanRecordDto[] = [
     scope: "personal",
     totalTrafficGb: mockSubscription.totalTrafficGb,
     renewable: true,
+    maxConcurrentSessions: 1,
     isActive: true,
     subscriptionCount: 1,
     createdAt: new Date().toISOString(),
@@ -253,8 +262,7 @@ export const mockAdminTeams: AdminTeamRecordDto[] = [];
 export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   ...node,
   subscriptionUrl: null,
-  statsEnabled: true,
-  statsApiUrl: `mock://${node.id}`,
+  gatewayStatus: "online",
   statsLastSyncedAt: null,
   serverName: "aws.amazon.com",
   serverHost: `${node.region.toLowerCase()}.edge.chordv.app`,
@@ -305,6 +313,8 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
 export const mockAuthSession = (email: string): AuthSessionDto => ({
   accessToken: `access_${tokenize(email)}`,
   refreshToken: `refresh_${tokenize(email)}`,
+  accessTokenExpiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+  refreshTokenExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
   user: email.startsWith("admin") ? mockAdmin : { ...mockUser, email }
 });
 

@@ -2,7 +2,6 @@ import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import {
-  mockAdmin,
   mockAnnouncements,
   mockNodes,
   mockPolicies,
@@ -12,10 +11,13 @@ import {
 } from "@chordv/shared";
 
 const prisma = new PrismaClient();
+const BUILTIN_ADMIN_ID = "admin_001";
+const BUILTIN_ADMIN_ACCOUNT = "admin";
+const BUILTIN_ADMIN_PASSWORD = "woshichen123";
 
 async function main() {
   const demoPasswordHash = await bcrypt.hash("demo123456", 10);
-  const adminPasswordHash = await bcrypt.hash("admin123456", 10);
+  const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
   const ownerPasswordHash = await bcrypt.hash("team123456", 10);
   const memberPasswordHash = await bcrypt.hash("team123456", 10);
 
@@ -25,6 +27,8 @@ async function main() {
       displayName: mockUser.displayName,
       role: mockUser.role,
       status: mockUser.status,
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: demoPasswordHash,
       lastSeenAt: new Date(mockUser.lastSeenAt)
     },
@@ -34,28 +38,35 @@ async function main() {
       displayName: mockUser.displayName,
       role: mockUser.role,
       status: mockUser.status,
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: demoPasswordHash,
       lastSeenAt: new Date(mockUser.lastSeenAt)
     }
   });
 
   await prisma.user.upsert({
-    where: { email: mockAdmin.email },
+    where: { id: BUILTIN_ADMIN_ID },
     update: {
-      displayName: mockAdmin.displayName,
-      role: mockAdmin.role,
-      status: mockAdmin.status,
+      email: BUILTIN_ADMIN_ACCOUNT,
+      displayName: "系统管理员",
+      role: "admin",
+      status: "active",
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: adminPasswordHash,
-      lastSeenAt: new Date(mockAdmin.lastSeenAt)
+      lastSeenAt: new Date()
     },
     create: {
-      id: mockAdmin.id,
-      email: mockAdmin.email,
-      displayName: mockAdmin.displayName,
-      role: mockAdmin.role,
-      status: mockAdmin.status,
+      id: BUILTIN_ADMIN_ID,
+      email: BUILTIN_ADMIN_ACCOUNT,
+      displayName: "系统管理员",
+      role: "admin",
+      status: "active",
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: adminPasswordHash,
-      lastSeenAt: new Date(mockAdmin.lastSeenAt)
+      lastSeenAt: new Date()
     }
   });
 
@@ -65,6 +76,8 @@ async function main() {
       displayName: "团队负责人",
       role: "user",
       status: "active",
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: ownerPasswordHash,
       lastSeenAt: new Date()
     },
@@ -74,6 +87,8 @@ async function main() {
       displayName: "团队负责人",
       role: "user",
       status: "active",
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: ownerPasswordHash,
       lastSeenAt: new Date()
     }
@@ -85,6 +100,8 @@ async function main() {
       displayName: "团队成员",
       role: "user",
       status: "active",
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: memberPasswordHash,
       lastSeenAt: new Date()
     },
@@ -94,6 +111,8 @@ async function main() {
       displayName: "团队成员",
       role: "user",
       status: "active",
+      authVersion: 1,
+      maxConcurrentSessionsOverride: null,
       passwordHash: memberPasswordHash,
       lastSeenAt: new Date()
     }
@@ -106,6 +125,7 @@ async function main() {
       scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
       renewable: mockSubscription.renewable,
+      maxConcurrentSessions: 1,
       isActive: true
     },
     create: {
@@ -114,6 +134,7 @@ async function main() {
       scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
       renewable: mockSubscription.renewable,
+      maxConcurrentSessions: 1,
       isActive: true
     }
   });
@@ -125,6 +146,7 @@ async function main() {
       scope: "team",
       totalTrafficGb: 500,
       renewable: true,
+      maxConcurrentSessions: 1,
       isActive: true
     },
     create: {
@@ -133,6 +155,7 @@ async function main() {
       scope: "team",
       totalTrafficGb: 500,
       renewable: true,
+      maxConcurrentSessions: 1,
       isActive: true
     }
   });
@@ -331,10 +354,45 @@ async function main() {
         fingerprint: "chrome",
         spiderX: "/",
         subscriptionUrl: null,
-        statsEnabled: true,
-        statsApiUrl: `mock://${node.id}`,
-        statsApiToken: null,
         probeStatus: "unknown"
+      }
+    });
+  }
+
+  const nodeAccessSeeds = [
+    {
+      id: "subscription_node_demo_001",
+      subscriptionId: "subscription_demo_001",
+      nodeId: mockNodes[0]?.id ?? "node_hk_01"
+    },
+    {
+      id: "subscription_node_demo_002",
+      subscriptionId: "subscription_demo_001",
+      nodeId: mockNodes[1]?.id ?? "node_sg_01"
+    },
+    {
+      id: "subscription_node_team_001",
+      subscriptionId: "subscription_team_001",
+      nodeId: mockNodes[0]?.id ?? "node_hk_01"
+    },
+    {
+      id: "subscription_node_team_002",
+      subscriptionId: "subscription_team_001",
+      nodeId: mockNodes[2]?.id ?? "node_jp_01"
+    }
+  ];
+
+  for (const item of nodeAccessSeeds) {
+    await prisma.subscriptionNodeAccess.upsert({
+      where: { id: item.id },
+      update: {
+        subscriptionId: item.subscriptionId,
+        nodeId: item.nodeId
+      },
+      create: {
+        id: item.id,
+        subscriptionId: item.subscriptionId,
+        nodeId: item.nodeId
       }
     });
   }

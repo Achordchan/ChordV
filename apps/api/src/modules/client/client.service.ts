@@ -21,16 +21,20 @@ export class ClientService {
     return this.devDataService.getPolicies();
   }
 
-  getVersion() {
-    return this.devDataService.getBootstrap().then((result) => result.version);
+  getVersion(token?: string) {
+    return this.devDataService.getBootstrap(token).then((result) => result.version);
   }
 
   connect(nodeId: string, mode: "global" | "rule" | "direct", strategyGroupId?: string, token?: string) {
     return this.devDataService.connect({ nodeId, mode, strategyGroupId }, token);
   }
 
-  disconnect(token?: string) {
-    return this.devDataService.disconnect();
+  heartbeat(sessionId: string, token?: string) {
+    return this.devDataService.heartbeatSession(sessionId, token);
+  }
+
+  disconnect(sessionId: string, token?: string) {
+    return this.devDataService.disconnect(sessionId, token);
   }
 
   getRuntime() {

@@ -1,0 +1,574 @@
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 20:58:41.355108 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 20:58:41.363914 [Warning] core: Xray 26.2.6 started
+2026/03/19 20:59:09.181406 from 127.0.0.1:49210 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:34:53.428399 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:34:53.430265 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:34:56.834871 from 127.0.0.1:60199 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:34:57.357456 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:34:57.359180 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:35:04.124202 from 127.0.0.1:60252 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:35:17.469636 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:35:17.471248 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:35:30.970617 from 127.0.0.1:60539 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.131528 from 127.0.0.1:60546 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.190537 from 127.0.0.1:60549 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.204131 from 127.0.0.1:60553 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.421739 from 127.0.0.1:60569 accepted tcp:gae2-dealer.g2.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.588095 from 127.0.0.1:60576 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.715703 from 127.0.0.1:60583 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.869011 from 127.0.0.1:60589 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.979489 from 127.0.0.1:60540 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:31.989709 from 127.0.0.1:60593 accepted tcp:gae2-dealer.g2.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:32.453482 from 127.0.0.1:60602 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:32.746299 from 127.0.0.1:60620 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:32.748257 from 127.0.0.1:60619 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:32.749497 from 127.0.0.1:60617 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:32.749917 from 127.0.0.1:60618 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:32.750748 from 127.0.0.1:60616 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:34.070598 from 127.0.0.1:60638 accepted tcp:chromewebstore.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:34.126906 from 127.0.0.1:60641 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 21:35:34.860603 from 127.0.0.1:60647 accepted tcp:github.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:35.967929 from 127.0.0.1:60657 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:36.472987 from 127.0.0.1:60663 accepted tcp:www.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:35:37.451501 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:35:37.453808 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:35:37.642565 from 127.0.0.1:60688 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:38.004003 from 127.0.0.1:60693 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:38.007871 from 127.0.0.1:60696 accepted tcp:gae2-dealer.g2.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:38.469188 from 127.0.0.1:60703 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:38.508262 from 127.0.0.1:60706 accepted tcp:gae2-dealer.g2.spotify.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:39.005202 from 127.0.0.1:60712 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:39.533773 from 127.0.0.1:60718 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:39.736495 from 127.0.0.1:60728 accepted tcp:api3.cursor.sh:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:39.771520 from 127.0.0.1:60732 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:39.820319 from 127.0.0.1:60736 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:40.053892 from 127.0.0.1:60748 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:40.059484 from 127.0.0.1:60747 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:40.087645 from 127.0.0.1:60752 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:40.119117 from 127.0.0.1:60757 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:41.517529 from 127.0.0.1:60773 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_dffde3cbcdc7] email: user_c4feba72d957.lease_dffde3cbcdc7@lease.chordv
+2026/03/19 21:35:42.681914 from 127.0.0.1:60789 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:35:53.462006 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:35:53.463888 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:35:57.112127 from 127.0.0.1:60893 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:35:57.633283 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:35:57.635492 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:36:01.220087 from 127.0.0.1:60916 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:02.339306 from 127.0.0.1:60925 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:03.739938 from 127.0.0.1:60930 accepted tcp:www.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:04.103621 from 127.0.0.1:60933 accepted tcp:www.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:04.127554 from 127.0.0.1:60941 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 21:36:07.861640 from 127.0.0.1:60970 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:07.895115 from 127.0.0.1:60950 accepted tcp:sspanel.net:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:09.502928 from 127.0.0.1:60984 accepted tcp:apresolve.spotify.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:09.559904 from 127.0.0.1:60980 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:10.179929 from 127.0.0.1:60999 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:10.645627 from 127.0.0.1:60996 accepted tcp:github.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:16.320935 from 127.0.0.1:61045 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:16.467870 from 127.0.0.1:61057 accepted tcp:accounts.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:16.521968 from 127.0.0.1:61053 accepted tcp:waa-pa.clients6.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 21:36:17.727262 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 21:36:17.728924 [Warning] core: Xray 26.2.6 started
+2026/03/19 21:36:18.052984 from 127.0.0.1:61104 accepted tcp:www.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:18.371711 from 127.0.0.1:61095 accepted tcp:encrypted-tbn0.gstatic.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:18.549748 from 127.0.0.1:61099 accepted tcp:www.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:18.593014 from 127.0.0.1:61101 accepted tcp:encrypted-tbn0.gstatic.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:18.789137 from 127.0.0.1:61103 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:19.268977 from 127.0.0.1:61112 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:19.519444 from 127.0.0.1:61161 accepted tcp:encrypted-tbn1.gstatic.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:19.781392 from 127.0.0.1:61137 accepted tcp:waa-pa.clients6.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.094687 from 127.0.0.1:61145 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.135386 from 127.0.0.1:61154 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.165156 from 127.0.0.1:61180 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.191948 from 127.0.0.1:61157 accepted tcp:accounts.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.250016 from 127.0.0.1:61168 accepted tcp:encrypted-tbn2.gstatic.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.268612 from 127.0.0.1:61165 accepted tcp:encrypted-tbn2.gstatic.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.419168 from 127.0.0.1:61164 accepted tcp:encrypted-tbn1.gstatic.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:20.699709 from 127.0.0.1:61175 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:21.118303 from 127.0.0.1:61196 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:22.355582 from 127.0.0.1:61203 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:22.655028 from 127.0.0.1:61215 accepted tcp:jnn-pa.googleapis.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:23.359360 from 127.0.0.1:61221 accepted tcp:ogs.google.com:443 [edge-in -> relay-lease_6b2016f082b2] email: user_c4feba72d957.lease_6b2016f082b2@lease.chordv
+2026/03/19 21:36:24.303418 from 127.0.0.1:61234 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:08:27.778042 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:08:27.781750 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:08:31.162999 from 127.0.0.1:55619 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:08:31.687455 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:08:31.689567 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:08:35.809322 from 127.0.0.1:55659 accepted tcp:api2.cursor.sh:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:35.844238 from 127.0.0.1:55664 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:36.715163 from 127.0.0.1:55672 accepted tcp:api.mousegesturesapi.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:37.177546 from 127.0.0.1:55678 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:37.919537 from 127.0.0.1:55692 accepted tcp:play.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:38.360669 from 127.0.0.1:55703 accepted tcp:waa-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:38.360898 from 127.0.0.1:55706 accepted tcp:accounts.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:39.096494 from 127.0.0.1:55717 accepted tcp:encrypted-tbn0.gstatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:39.158151 from 127.0.0.1:55721 accepted tcp:lh3.googleusercontent.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:39.751857 from 127.0.0.1:55735 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:39.787508 from 127.0.0.1:55747 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:39.790082 from 127.0.0.1:55750 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.068642 from 127.0.0.1:55763 accepted tcp:encrypted-tbn0.gstatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.085907 from 127.0.0.1:55766 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.102999 from 127.0.0.1:55770 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.110539 from 127.0.0.1:55771 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.125750 from 127.0.0.1:55775 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.275920 from 127.0.0.1:55726 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:40.498055 from 127.0.0.1:55787 accepted tcp:encrypted-tbn3.gstatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:41.016391 from 127.0.0.1:55805 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:41.829412 from 127.0.0.1:55814 accepted tcp:encrypted-tbn2.gstatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:41.832293 from 127.0.0.1:55813 accepted tcp:encrypted-tbn1.gstatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:42.480607 from 127.0.0.1:55821 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:43.188389 from 127.0.0.1:55829 accepted tcp:ab.chatgpt.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:44.220184 from 127.0.0.1:55846 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:44.678893 from 127.0.0.1:55860 accepted tcp:ogs.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:45.720989 from 127.0.0.1:55872 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:08:46.014708 from 127.0.0.1:55886 accepted tcp:jnn-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:48.042646 from 127.0.0.1:55913 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:50.819860 from 127.0.0.1:55942 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:08:51.786598 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:08:51.791319 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:08:51.976864 from 127.0.0.1:56013 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:51.982252 from 127.0.0.1:56012 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:53.345554 from 127.0.0.1:56032 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:54.036634 from 127.0.0.1:56048 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:54.343531 from 127.0.0.1:56058 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:54.363750 from 127.0.0.1:56035 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:56.638881 from 127.0.0.1:56176 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:57.753999 from 127.0.0.1:56236 accepted tcp:github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:59.147231 from 127.0.0.1:56270 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:08:59.681545 from 127.0.0.1:56304 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:01.307649 from 127.0.0.1:56362 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:03.702792 from 127.0.0.1:56395 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:04.742684 from 127.0.0.1:56424 accepted tcp:encrypted-tbn0.gstatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:04.977215 from 127.0.0.1:56434 accepted tcp:play.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:05.665872 from 127.0.0.1:56457 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:05.958054 from 127.0.0.1:56477 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:06.815036 from 127.0.0.1:56508 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:07.200427 from 127.0.0.1:56522 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:08.581689 from 127.0.0.1:56548 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:09.070190 from 127.0.0.1:56562 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:09.210470 from 127.0.0.1:56568 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:09.820442 from 127.0.0.1:56587 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:10.267412 from 127.0.0.1:56609 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:11.363873 from 127.0.0.1:56630 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:09:11.894098 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:09:11.896936 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:09:13.184179 from 127.0.0.1:56668 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:14.912151 from 127.0.0.1:56690 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:15.715777 from 127.0.0.1:56696 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:09:16.989613 from 127.0.0.1:56650 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:17.315127 from 127.0.0.1:56658 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:25.541530 from 127.0.0.1:56805 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:25.746462 from 127.0.0.1:56812 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:09:31.863364 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:09:31.866616 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:09:32.426440 from 127.0.0.1:56888 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:36.355838 from 127.0.0.1:56953 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:38.793447 from 127.0.0.1:56984 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:39.576777 from 127.0.0.1:56998 accepted tcp:accounts.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:39.780530 from 127.0.0.1:57039 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:39.784326 from 127.0.0.1:57036 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:40.088268 from 127.0.0.1:57063 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:40.091867 from 127.0.0.1:57069 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:40.104256 from 127.0.0.1:57074 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:40.109708 from 127.0.0.1:57070 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:45.718533 from 127.0.0.1:57150 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:09:46.839619 from 127.0.0.1:57180 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:48.022373 from 127.0.0.1:57193 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:50.059265 from 127.0.0.1:57222 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:50.324462 from 127.0.0.1:57219 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:09:51.987146 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:09:51.990085 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:09:57.256499 from 127.0.0.1:57311 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:09:57.564931 from 127.0.0.1:57266 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:01.428879 from 127.0.0.1:57371 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:01.792026 from 127.0.0.1:57381 accepted tcp:yunwu.ai:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:06.325633 from 127.0.0.1:57416 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:09.313797 from 127.0.0.1:57456 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:09.824939 from 127.0.0.1:57463 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:10.161101 from 127.0.0.1:57473 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:10.225970 from 127.0.0.1:57475 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:11.557321 from 127.0.0.1:57495 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:10:12.078275 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:10:12.081186 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:10:13.249656 from 127.0.0.1:57520 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:13.412839 from 127.0.0.1:57544 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:14.858018 from 127.0.0.1:57583 accepted tcp:status.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:15.715889 from 127.0.0.1:57595 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:10:17.670210 from 127.0.0.1:57516 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:17.713497 from 127.0.0.1:57522 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:18.264931 from 127.0.0.1:57633 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:18.401950 from 127.0.0.1:57637 accepted tcp:yunwu.ai:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:21.181620 from 127.0.0.1:57657 accepted tcp:persistent.oaistatic.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:25.195272 from 127.0.0.1:57699 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:27.715397 from 127.0.0.1:57715 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:10:32.178288 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:10:32.180588 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:10:32.740658 from 127.0.0.1:57786 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:34.221078 from 127.0.0.1:57804 accepted tcp:chromewebstore.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:37.106939 from 127.0.0.1:57860 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:37.406039 from 127.0.0.1:57868 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:39.765155 from 127.0.0.1:57886 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:39.787120 from 127.0.0.1:57896 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:39.800113 from 127.0.0.1:57900 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:40.088601 from 127.0.0.1:57915 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:40.106463 from 127.0.0.1:57922 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:40.116711 from 127.0.0.1:57919 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:40.224939 from 127.0.0.1:57931 accepted tcp:accounts.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:40.930265 from 127.0.0.1:57920 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:41.953011 from 127.0.0.1:57968 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:45.718184 from 127.0.0.1:58013 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:10:46.820872 from 127.0.0.1:58027 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:48.037015 from 127.0.0.1:58050 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:10:52.285179 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:10:52.287789 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:10:52.907992 from 127.0.0.1:58110 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.378731 from 127.0.0.1:58116 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.382524 from 127.0.0.1:58114 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.399918 from 127.0.0.1:58120 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.710947 from 127.0.0.1:58129 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.711870 from 127.0.0.1:58132 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.722675 from 127.0.0.1:58136 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.969554 from 127.0.0.1:58151 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:53.995869 from 127.0.0.1:58154 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:54.100439 from 127.0.0.1:58159 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:55.192208 from 127.0.0.1:58168 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:55.939542 from 127.0.0.1:58182 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:10:58.886106 from 127.0.0.1:58218 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:01.262062 from 127.0.0.1:58241 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:01.758139 from 127.0.0.1:58249 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:09.063623 from 127.0.0.1:58324 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:09.853479 from 127.0.0.1:58331 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:11.761485 from 127.0.0.1:58358 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:11:12.285367 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:11:12.287328 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:11:12.459587 from 127.0.0.1:58380 accepted tcp:edge-205.hkhkg2.icloud-content.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:12.462175 from 127.0.0.1:58379 accepted tcp:gateway.icloud.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:12.858064 from 127.0.0.1:58389 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:12.858460 from 127.0.0.1:58390 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:14.351726 from 127.0.0.1:58407 accepted tcp:p172-content.icloud.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:15.728744 from 127.0.0.1:58428 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:11:16.117844 from 127.0.0.1:58439 accepted tcp:cognito-identity.us-west-2.amazonaws.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:17.206172 from 127.0.0.1:58458 accepted tcp:pinpoint.us-west-2.amazonaws.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:17.800886 from 127.0.0.1:58446 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:18.877808 from 127.0.0.1:58472 accepted tcp:setup.icloud.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:19.968549 from 127.0.0.1:58499 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:21.622613 from 127.0.0.1:58505 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:25.759399 from 127.0.0.1:58550 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:11:32.276963 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:11:32.279271 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:11:32.831870 from 127.0.0.1:58631 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:34.004380 from 127.0.0.1:58647 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:34.218234 from 127.0.0.1:58651 accepted tcp:chromewebstore.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:36.053702 from 127.0.0.1:58683 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:39.675991 from 127.0.0.1:58729 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:39.777931 from 127.0.0.1:58750 accepted tcp:metrics.cursor.sh:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:39.785662 from 127.0.0.1:58745 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:39.799701 from 127.0.0.1:58754 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:40.078129 from 127.0.0.1:58767 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:40.092079 from 127.0.0.1:58774 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:40.098770 from 127.0.0.1:58772 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:40.100018 from 127.0.0.1:58771 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:41.112511 from 127.0.0.1:58779 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:42.983238 from 127.0.0.1:58808 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:45.719969 from 127.0.0.1:58840 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:11:48.051545 from 127.0.0.1:58874 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:11:52.279983 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:11:52.281752 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:11:52.843417 from 127.0.0.1:58925 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:53.675169 from 127.0.0.1:58930 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:55.916054 from 127.0.0.1:58969 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:59.305119 from 127.0.0.1:59013 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:11:59.583188 from 127.0.0.1:59017 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:01.268355 from 127.0.0.1:59034 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:09.049704 from 127.0.0.1:59108 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:09.840852 from 127.0.0.1:59114 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:11.861033 from 127.0.0.1:59144 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:12:12.390003 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:12:12.391963 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:12:15.719643 from 127.0.0.1:59188 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:12:17.951027 from 127.0.0.1:59155 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:17.959911 from 127.0.0.1:59156 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:17.959937 from 127.0.0.1:59157 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:18.253658 from 127.0.0.1:59167 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:21.198398 from 127.0.0.1:59240 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:22.966434 from 127.0.0.1:59267 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:12:32.474601 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:12:32.476470 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:12:33.043380 from 127.0.0.1:59371 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:33.539824 from 127.0.0.1:59379 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:34.047655 from 127.0.0.1:59391 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:36.952086 from 127.0.0.1:59421 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:38.006130 from 127.0.0.1:59440 accepted tcp:w.deepl.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:39.409056 from 127.0.0.1:59470 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:39.772568 from 127.0.0.1:59480 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:39.801444 from 127.0.0.1:59484 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:40.067021 from 127.0.0.1:59496 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:40.101973 from 127.0.0.1:59502 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:40.110891 from 127.0.0.1:59501 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:41.122617 from 127.0.0.1:59506 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:41.373338 from 127.0.0.1:59528 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:41.806995 from 127.0.0.1:59536 accepted tcp:clients2.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:45.722036 from 127.0.0.1:59571 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:12:47.782657 from 127.0.0.1:59593 accepted tcp:edge-205.hkhkg2.icloud-content.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:48.034476 from 127.0.0.1:59605 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:48.314048 from 127.0.0.1:59610 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:48.392190 from 127.0.0.1:59613 accepted tcp:p172-content.icloud.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:50.483495 from 127.0.0.1:59633 accepted tcp:rr3---sn-hxa76n7s.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:51.409259 from 127.0.0.1:59642 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:12:53.272861 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:12:53.274863 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:12:53.826537 from 127.0.0.1:59676 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:55.760646 from 127.0.0.1:59695 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:55.769597 from 127.0.0.1:59698 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:56.406585 from 127.0.0.1:59710 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:56.700672 from 127.0.0.1:59714 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:58.508228 from 127.0.0.1:59740 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:58.541223 from 127.0.0.1:59743 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:58.547406 from 127.0.0.1:59746 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:58.564954 from 127.0.0.1:59749 accepted tcp:rr1---sn-q4fzenez.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:58.848581 from 127.0.0.1:59765 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:12:58.852675 from 127.0.0.1:59766 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:00.096896 from 127.0.0.1:59774 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:00.653586 from 127.0.0.1:59794 accepted tcp:content-autofill.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:01.250151 from 127.0.0.1:59799 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:02.463110 from 127.0.0.1:59815 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:09.054586 from 127.0.0.1:59872 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:09.820226 from 127.0.0.1:59886 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:13.258333 from 127.0.0.1:59926 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:13:13.772211 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:13:13.773689 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:13:14.198041 from 127.0.0.1:59953 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:14.344568 from 127.0.0.1:59958 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:14.357745 from 127.0.0.1:59959 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:15.722664 from 127.0.0.1:59968 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:13:18.028314 from 127.0.0.1:59991 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:18.323895 from 127.0.0.1:60012 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:26.300806 from 127.0.0.1:60091 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:26.385437 from 127.0.0.1:60095 accepted tcp:api2.cursor.sh:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:13:33.783401 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:13:33.784965 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:13:34.362553 from 127.0.0.1:60175 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:37.746128 from 127.0.0.1:60215 accepted tcp:api2.cursor.sh:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:38.046043 from 127.0.0.1:60227 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:38.950919 from 127.0.0.1:60244 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:39.758401 from 127.0.0.1:60260 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:39.785413 from 127.0.0.1:60266 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:40.061096 from 127.0.0.1:60292 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:40.080669 from 127.0.0.1:60296 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:40.100916 from 127.0.0.1:60297 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:40.108069 from 127.0.0.1:60301 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:42.712009 from 127.0.0.1:60332 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:45.722817 from 127.0.0.1:60355 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:13:47.596406 from 127.0.0.1:60378 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:48.035767 from 127.0.0.1:60390 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:48.197777 from 127.0.0.1:60394 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:13:53.794493 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:13:53.797472 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:13:54.354518 from 127.0.0.1:60462 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:54.359386 from 127.0.0.1:60464 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:55.443872 from 127.0.0.1:60478 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:55.929380 from 127.0.0.1:60470 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:58.878635 from 127.0.0.1:60524 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:13:59.109830 from 127.0.0.1:60530 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:01.255695 from 127.0.0.1:60547 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:03.448941 from 127.0.0.1:60584 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:09.072899 from 127.0.0.1:60644 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:09.812163 from 127.0.0.1:60655 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:13.276129 from 127.0.0.1:60706 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:14:13.803027 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:14:13.805372 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:14:14.448361 from 127.0.0.1:60730 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:14.464020 from 127.0.0.1:60734 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:15.123889 from 127.0.0.1:60741 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:15.642648 from 127.0.0.1:60749 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:15.723746 from 127.0.0.1:60752 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:14:15.876703 from 127.0.0.1:60759 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:15.968509 from 127.0.0.1:60766 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:16.463855 from 127.0.0.1:60729 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:19.995149 from 127.0.0.1:60806 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:20.628943 from 127.0.0.1:60811 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:20.987632 from 127.0.0.1:60815 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:22.147823 from 127.0.0.1:60831 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:22.440245 from 127.0.0.1:60841 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:22.454729 from 127.0.0.1:60840 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:23.245903 from 127.0.0.1:60835 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:25.749012 from 127.0.0.1:60878 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:14:33.902789 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:14:33.907541 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:14:34.467013 from 127.0.0.1:60969 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:34.492178 from 127.0.0.1:60973 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:35.819038 from 127.0.0.1:61000 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:36.293263 from 127.0.0.1:61011 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:37.276004 from 127.0.0.1:61018 accepted tcp:mtalk.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:38.363235 from 127.0.0.1:61033 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:39.110115 from 127.0.0.1:61061 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:39.475046 from 127.0.0.1:61067 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:39.655844 from 127.0.0.1:61078 accepted tcp:rr5---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:39.768693 from 127.0.0.1:61088 accepted tcp:gae2-spclient.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:39.802096 from 127.0.0.1:61098 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:39.820037 from 127.0.0.1:61103 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:40.101923 from 127.0.0.1:61117 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:40.115691 from 127.0.0.1:61121 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:40.120375 from 127.0.0.1:61126 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:40.122164 from 127.0.0.1:61122 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:40.699929 from 127.0.0.1:61136 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:42.755808 from 127.0.0.1:61159 accepted tcp:www.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:42.762256 from 127.0.0.1:61156 accepted tcp:optimizationguide-pa.googleapis.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:42.809866 from 127.0.0.1:61162 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:44.045159 from 127.0.0.1:61170 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:45.090653 from 127.0.0.1:61199 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:45.725396 from 127.0.0.1:61205 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:14:48.043968 from 127.0.0.1:61234 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:14:53.876821 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:14:53.878466 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:14:54.453433 from 127.0.0.1:61306 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:54.457149 from 127.0.0.1:61301 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:54.458411 from 127.0.0.1:61303 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:54.460175 from 127.0.0.1:61311 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:55.367077 from 127.0.0.1:61331 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:55.985543 from 127.0.0.1:61351 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:56.026172 from 127.0.0.1:61354 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:56.965441 from 127.0.0.1:61368 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:57.769285 from 127.0.0.1:61379 accepted tcp:clients4.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:14:58.835461 from 127.0.0.1:61406 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:01.258764 from 127.0.0.1:61428 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:05.877829 from 127.0.0.1:61473 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:09.064273 from 127.0.0.1:61496 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:09.824792 from 127.0.0.1:61512 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:10.168678 from 127.0.0.1:61524 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:11.229130 from 127.0.0.1:61528 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:13.366546 from 127.0.0.1:61568 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:15:13.881658 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:15:13.884059 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:15:14.462286 from 127.0.0.1:61591 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:14.464147 from 127.0.0.1:61589 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:14.467640 from 127.0.0.1:61588 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:14.475581 from 127.0.0.1:61596 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:14.872553 from 127.0.0.1:61606 accepted tcp:status.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:14.971356 from 127.0.0.1:61610 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:15.091759 from 127.0.0.1:61614 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:15.722976 from 127.0.0.1:61620 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:15:22.467962 from 127.0.0.1:61685 accepted tcp:b1.nel.goog:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:22.978046 from 127.0.0.1:61698 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:26.434881 from 127.0.0.1:61755 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:32.307414 from 127.0.0.1:61816 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:15:33.953201 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:15:33.956107 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:15:34.493380 from 127.0.0.1:61850 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:34.506203 from 127.0.0.1:61844 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:34.506733 from 127.0.0.1:61851 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:34.513287 from 127.0.0.1:61845 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:35.053322 from 127.0.0.1:61872 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:35.349197 from 127.0.0.1:61876 accepted tcp:rr2---sn-npoldnez.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:35.844365 from 127.0.0.1:61883 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:35.976026 from 127.0.0.1:61893 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:36.258069 from 127.0.0.1:61898 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:36.264426 from 127.0.0.1:61899 accepted tcp:i.ytimg.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:37.002193 from 127.0.0.1:61908 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:37.398944 from 127.0.0.1:61915 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:37.695024 from 127.0.0.1:61924 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:37.696332 from 127.0.0.1:61926 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:37.702732 from 127.0.0.1:61925 accepted tcp:yt3.ggpht.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:39.764714 from 127.0.0.1:61954 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:39.790565 from 127.0.0.1:61962 accepted tcp:aixj.vip:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:40.067797 from 127.0.0.1:61974 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:40.071851 from 127.0.0.1:61977 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:40.080170 from 127.0.0.1:61980 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:40.102217 from 127.0.0.1:61983 accepted tcp:unleash.codeium.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:45.725333 from 127.0.0.1:62077 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:15:48.011868 from 127.0.0.1:62120 accepted tcp:sub.baymaxgroup.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:48.465738 from 127.0.0.1:62124 accepted tcp:stocks-data-service.apple.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:48.786639 from 127.0.0.1:62111 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:15:53.933028 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:15:53.935221 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:15:54.483347 from 127.0.0.1:62206 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:54.772664 from 127.0.0.1:62203 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:54.977003 from 127.0.0.1:62211 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:55.102904 from 127.0.0.1:62204 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:55.237270 from 127.0.0.1:62221 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:55.550932 from 127.0.0.1:62228 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:55.871802 from 127.0.0.1:62232 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:15:58.920309 from 127.0.0.1:62247 accepted tcp:rr2---sn-npoldnez.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:00.710552 from 127.0.0.1:62296 accepted tcp:spclient.wg.spotify.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:01.072455 from 127.0.0.1:62293 accepted tcp:alive.github.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:01.165683 from 127.0.0.1:62302 accepted tcp:rr1---sn-i3belnsy.googlevideo.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:02.971025 from 127.0.0.1:62325 accepted tcp:www.youtube.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:03.254920 from 127.0.0.1:62306 accepted tcp:sub2.de5.net:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:09.794327 from 127.0.0.1:62390 accepted tcp:ai.novacode.top:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:11.480380 from 127.0.0.1:62379 accepted tcp:154.12.94.233:8080 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:13.421400 from 127.0.0.1:62439 accepted tcp:127.0.0.1:11085 [api-in -> api]
+Xray 26.2.6 (Xray, Penetrates Everything.) 12ee51e (go1.25.7 darwin/arm64)
+A unified platform for anti-censorship.
+2026/03/19 22:16:13.944870 [Info] infra/conf/serial: Reading config: &{Name:/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/edge-gateway/.runtime/edge-gateway.json Format:json}
+2026/03/19 22:16:13.947001 [Warning] core: Xray 26.2.6 started
+2026/03/19 22:16:14.489491 from 127.0.0.1:62468 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:14.490632 from 127.0.0.1:62466 accepted tcp:mtalk.google.com:5228 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:14.937629 from 127.0.0.1:62467 accepted tcp:beacons5.gvt3.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:15.724285 from 127.0.0.1:62497 accepted tcp:127.0.0.1:11085 [api-in -> api]
+2026/03/19 22:16:15.961876 from 127.0.0.1:62474 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv
+2026/03/19 22:16:16.636572 from 127.0.0.1:62509 accepted tcp:signaler-pa.clients6.google.com:443 [edge-in -> relay-lease_2ba6945efe9a] email: user_c4feba72d957.lease_2ba6945efe9a@lease.chordv

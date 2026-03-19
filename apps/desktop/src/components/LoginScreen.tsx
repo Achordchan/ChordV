@@ -1,55 +1,134 @@
-import { Button, Paper, PasswordInput, Stack, Text, TextInput, Title } from "@mantine/core";
+import { Button, Checkbox, Paper, PasswordInput, TextInput } from "@mantine/core";
+import { IconLock, IconMail } from "@tabler/icons-react";
+import "./LoginScreen.css";
 
 type LoginScreenProps = {
   email: string;
   password: string;
+  rememberPassword: boolean;
   loading: boolean;
   error: string | null;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
+  onRememberPasswordChange: (checked: boolean) => void;
   onSubmit: () => void;
 };
 
 export function LoginScreen(props: LoginScreenProps) {
   return (
-    <div className="desktop-login">
-      <Paper className="desktop-login-card" radius="xl" withBorder p="xl">
-        <Stack gap="lg">
-          <div>
-            <Text className="desktop-eyebrow">ChordV</Text>
-            <Title order={2} mt="xs">
-              欢迎登录
-            </Title>
-            
+    <div className="auth-screen">
+      <div className="auth-screen__shell">
+        <section className="auth-screen__brand">
+          <div className="auth-screen__hero">
+            <p className="auth-screen__brand-eyebrow">Xray内核驱动 稳定连接</p>
+            <h1 className="auth-screen__brand-title">ChordV</h1>
+            <p className="auth-screen__brand-desc">登录即同步节点与策略，无需重复配置。</p>
           </div>
 
-          <TextInput
-            label="邮箱"
-            placeholder="请输入邮箱"
-            value={props.email}
-            onChange={(event) => props.onEmailChange(event.currentTarget.value)}
-            autoComplete="username"
-          />
+          <div className="auth-screen__stats">
+            <div className="auth-screen__stat-card">
+              <span className="auth-screen__stat-label">策略</span>
+              <strong className="auth-screen__stat-value">规则分流</strong>
+            </div>
+            <div className="auth-screen__stat-card">
+              <span className="auth-screen__stat-label">状态</span>
+              <strong className="auth-screen__stat-value">节点就绪</strong>
+            </div>
+          </div>
 
-          <PasswordInput
-            label="密码"
-            placeholder="请输入密码"
-            value={props.password}
-            onChange={(event) => props.onPasswordChange(event.currentTarget.value)}
-            autoComplete="current-password"
-          />
+          <div className="auth-screen__note">
+            <div className="auth-screen__note-title">登录后自动完成</div>
+            <div className="auth-screen__note-list">
+              <div className="auth-screen__note-item">订阅状态校验</div>
+              <div className="auth-screen__note-item">节点与策略同步</div>
+              <div className="auth-screen__note-item">上次连接恢复</div>
+            </div>
+          </div>
+        </section>
 
-          {props.error ? (
-            <Text c="red.6" size="sm">
-              {props.error}
-            </Text>
-          ) : null}
+        <Paper className="auth-screen__panel" radius={30}>
+          <div className="auth-screen__panel-inner">
+            <div className="auth-screen__panel-head">
+              <p className="auth-screen__panel-eyebrow">账号登录</p>
+              <h2 className="auth-screen__panel-title">欢迎回来</h2>
+              <p className="auth-screen__panel-desc">登录后恢复订阅、节点与策略状态。</p>
+            </div>
 
-          <Button size="lg" onClick={props.onSubmit} loading={props.loading}>
-            登录
-          </Button>
-        </Stack>
-      </Paper>
+            <div className="auth-screen__form">
+              <label className="auth-screen__field">
+                <span className="auth-screen__field-label">邮箱</span>
+                <TextInput
+                  placeholder="请输入邮箱"
+                  value={props.email}
+                  onChange={(event) => props.onEmailChange(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      props.onSubmit();
+                    }
+                  }}
+                  autoComplete="username"
+                  leftSection={<IconMail size={18} stroke={1.8} />}
+                  classNames={{
+                    input: "auth-screen__control",
+                    section: "auth-screen__control-section"
+                  }}
+                />
+              </label>
+
+              <label className="auth-screen__field">
+                <span className="auth-screen__field-label">密码</span>
+                <PasswordInput
+                  placeholder="请输入密码"
+                  value={props.password}
+                  onChange={(event) => props.onPasswordChange(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      props.onSubmit();
+                    }
+                  }}
+                  autoComplete="current-password"
+                  leftSection={<IconLock size={18} stroke={1.8} />}
+                  classNames={{
+                    input: "auth-screen__control",
+                    section: "auth-screen__control-section",
+                    visibilityToggle: "auth-screen__visibility-toggle"
+                  }}
+                />
+              </label>
+            </div>
+
+            <div className="auth-screen__helper">
+              <Checkbox
+                label="记住密码"
+                checked={props.rememberPassword}
+                onChange={(event) => props.onRememberPasswordChange(event.currentTarget.checked)}
+                classNames={{
+                  root: "auth-screen__remember",
+                  input: "auth-screen__remember-input",
+                  label: "auth-screen__remember-label"
+                }}
+              />
+              <button type="button" className="auth-screen__helper-action">
+                需要帮助？
+              </button>
+            </div>
+
+            {props.error ? <div className="auth-screen__error">{props.error}</div> : null}
+
+            <Button
+              size="lg"
+              onClick={props.onSubmit}
+              loading={props.loading}
+              fullWidth
+              className="auth-screen__submit"
+            >
+              登录 ChordV
+            </Button>
+
+            <p className="auth-screen__agreement">继续即表示你同意服务协议与隐私说明。</p>
+          </div>
+        </Paper>
+      </div>
     </div>
   );
 }

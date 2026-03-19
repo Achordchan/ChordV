@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Headers, Post } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Post, UseGuards } from "@nestjs/common";
 import { IsIn, IsNotEmpty, IsOptional, IsString } from "class-validator";
 import type { ConnectionMode } from "@chordv/shared";
+import { ClientAuthGuard } from "../common/client-auth.guard";
 import { ClientService } from "./client.service";
 
 class ConnectDto {
@@ -17,7 +18,14 @@ class ConnectDto {
   strategyGroupId?: string;
 }
 
+class SessionLeaseDto {
+  @IsString()
+  @IsNotEmpty()
+  sessionId!: string;
+}
+
 @Controller("client")
+@UseGuards(ClientAuthGuard)
 export class ClientController {
   constructor(private readonly clientService: ClientService) {}
 
@@ -42,13 +50,13 @@ export class ClientController {
   }
 
   @Get("announcements")
-  getAnnouncements() {
-    return this.clientService.getBootstrap().then((result) => result.announcements);
+  getAnnouncements(@Headers("authorization") authorization?: string) {
+    return this.clientService.getBootstrap(authorization).then((result) => result.announcements);
   }
 
   @Get("version")
-  getVersion() {
-    return this.clientService.getVersion();
+  getVersion(@Headers("authorization") authorization?: string) {
+    return this.clientService.getVersion(authorization);
   }
 
   @Get("runtime")
@@ -61,8 +69,13 @@ export class ClientController {
     return this.clientService.connect(body.nodeId, body.mode, body.strategyGroupId, authorization);
   }
 
+  @Post("session/heartbeat")
+  heartbeat(@Body() body: SessionLeaseDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.heartbeat(body.sessionId, authorization);
+  }
+
   @Post("session/disconnect")
-  disconnect(@Headers("authorization") authorization?: string) {
-    return this.clientService.disconnect(authorization);
+  disconnect(@Body() body: SessionLeaseDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.disconnect(body.sessionId, authorization);
   }
 }

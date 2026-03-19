@@ -19,23 +19,32 @@ import type {
   ImportNodeInputDto,
   RenewSubscriptionInputDto,
   SubscriptionNodeAccessDto,
+  AuthSessionDto,
   UpdateAnnouncementInputDto,
   UpdateNodeInputDto,
   UpdatePlanInputDto,
+  UpdatePlanSecurityInputDto,
   UpdatePolicyInputDto,
   UpdateSubscriptionInputDto,
   UpdateSubscriptionNodeAccessInputDto,
   UpdateTeamInputDto,
   UpdateTeamMemberInputDto,
+  UpdateUserSecurityInputDto,
   UpdateUserInputDto
 } from "@chordv/shared";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+const ADMIN_ACCESS_TOKEN_KEY = "chordv_admin_access_token";
+const ADMIN_REFRESH_TOKEN_KEY = "chordv_admin_refresh_token";
 
-async function request<T>(path: string, init?: RequestInit) {
+async function request<T>(path: string, init?: RequestInit, useAuth = true) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 15000);
   let response: Response;
+
+  const adminAccessToken = useAuth
+    ? localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) ?? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? ""
+    : "";
 
   try {
     response = await fetch(`${API_BASE}/api${path}`, {
@@ -43,6 +52,7 @@ async function request<T>(path: string, init?: RequestInit) {
       signal: init?.signal ?? controller.signal,
       headers: {
         "Content-Type": "application/json",
+        ...(adminAccessToken ? { Authorization: `Bearer ${adminAccessToken}` } : {}),
         ...(init?.headers ?? {})
       }
     });
@@ -66,6 +76,54 @@ export function getAdminSnapshot() {
   return request<AdminSnapshotDto>("/admin/snapshot");
 }
 
+export function loginAdmin(account: string, password: string) {
+  return request<AuthSessionDto>(
+    "/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify({ email: account, password })
+    },
+    false
+  );
+}
+
+export function refreshAdminSession(refreshToken: string) {
+  return request<AuthSessionDto>(
+    "/auth/refresh",
+    {
+      method: "POST",
+      body: JSON.stringify({ refreshToken })
+    },
+    false
+  );
+}
+
+export function logoutAdminSession() {
+  return request<{ ok: boolean }>("/auth/logout", {
+    method: "POST"
+  });
+}
+
+export function persistAdminSession(session: AuthSessionDto) {
+  localStorage.setItem(ADMIN_ACCESS_TOKEN_KEY, session.accessToken);
+  localStorage.setItem(ADMIN_REFRESH_TOKEN_KEY, session.refreshToken);
+}
+
+export function clearAdminSession() {
+  localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
+}
+
+export function hasAdminSession() {
+  const adminAccessToken =
+    localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) ?? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "";
+  return Boolean(adminAccessToken);
+}
+
+export function getAdminRefreshToken() {
+  return localStorage.getItem(ADMIN_REFRESH_TOKEN_KEY) ?? "";
+}
+
 export function createUser(input: CreateUserInputDto) {
   return request<AdminUserRecordDto>("/admin/users", {
     method: "POST",
@@ -80,6 +138,13 @@ export function updateUser(userId: string, input: UpdateUserInputDto) {
   });
 }
 
+export function updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto) {
+  return request<AdminUserRecordDto>(`/admin/users/${userId}/security`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
 export function createPlan(input: CreatePlanInputDto) {
   return request<AdminPlanRecordDto>("/admin/plans", {
     method: "POST",
@@ -90,6 +155,13 @@ export function createPlan(input: CreatePlanInputDto) {
 export function updatePlan(planId: string, input: UpdatePlanInputDto) {
   return request<AdminPlanRecordDto>(`/admin/plans/${planId}`, {
     method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updatePlanSecurity(planId: string, input: UpdatePlanSecurityInputDto) {
+  return request<AdminPlanRecordDto>(`/admin/plans/${planId}/security`, {
+    method: "PUT",
     body: JSON.stringify(input)
   });
 }

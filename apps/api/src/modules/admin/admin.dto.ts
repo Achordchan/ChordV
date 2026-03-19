@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength } from "class-validator";
+import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength, ValidateNested } from "class-validator";
 import type {
   AnnouncementDisplayMode,
   AnnouncementLevel,
@@ -26,6 +26,12 @@ export class CreateUserDto {
 
   @IsIn(["user", "admin"])
   role!: UserRole;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxConcurrentSessionsOverride?: number | null;
 }
 
 export class UpdateUserDto {
@@ -46,6 +52,12 @@ export class UpdateUserDto {
   @IsString()
   @MinLength(8)
   password?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxConcurrentSessionsOverride?: number | null;
 }
 
 export class CreatePlanDto {
@@ -63,6 +75,12 @@ export class CreatePlanDto {
 
   @IsBoolean()
   renewable!: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxConcurrentSessions?: number;
 
   @IsOptional()
   @IsBoolean()
@@ -90,8 +108,29 @@ export class UpdatePlanDto {
   renewable?: boolean;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxConcurrentSessions?: number;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+}
+
+export class UpdatePlanSecurityDto {
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxConcurrentSessions!: number;
+}
+
+export class UpdateUserSecurityDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxConcurrentSessionsOverride?: number | null;
 }
 
 export class CreateSubscriptionDto {
@@ -306,21 +345,6 @@ export class ImportNodeDto {
   @IsOptional()
   @IsBoolean()
   recommended?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  statsEnabled?: boolean;
-
-  @IsOptional()
-  @IsUrl({
-    require_tld: false
-  })
-  statsApiUrl?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  statsApiToken?: string;
 }
 
 export class UpdateNodeDto {
@@ -353,21 +377,6 @@ export class UpdateNodeDto {
     require_tld: false
   })
   subscriptionUrl?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  statsEnabled?: boolean;
-
-  @IsOptional()
-  @IsUrl({
-    require_tld: false
-  })
-  statsApiUrl?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  statsApiToken?: string;
 }
 
 export class CreateAnnouncementDto {
