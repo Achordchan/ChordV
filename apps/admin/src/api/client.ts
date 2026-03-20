@@ -1,6 +1,7 @@
 import type {
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
+  AdminNodePanelInboundDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminSnapshotDto,
@@ -252,6 +253,18 @@ export function getTeamUsage(teamId: string) {
 
 export function importNode(input: ImportNodeInputDto) {
   return request<AdminNodeRecordDto>("/admin/nodes/import", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function fetchNodePanelInbounds(input: {
+  panelBaseUrl: string;
+  panelApiBasePath?: string;
+  panelUsername: string;
+  panelPassword: string;
+}) {
+  return request<AdminNodePanelInboundDto[]>("/admin/nodes/panel-inbounds", {
     method: "POST",
     body: JSON.stringify(input)
   });

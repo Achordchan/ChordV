@@ -1,6 +1,7 @@
 import { Type } from "class-transformer";
 import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength, ValidateNested } from "class-validator";
 import type {
+  AccessMode,
   AnnouncementDisplayMode,
   AnnouncementLevel,
   ConnectionMode,
@@ -317,10 +318,11 @@ export class CreateTeamSubscriptionDto {
 }
 
 export class ImportNodeDto {
+  @IsOptional()
   @IsUrl({
     require_tld: false
   })
-  subscriptionUrl!: string;
+  subscriptionUrl?: string;
 
   @IsOptional()
   @IsString()
@@ -345,6 +347,36 @@ export class ImportNodeDto {
   @IsOptional()
   @IsBoolean()
   recommended?: boolean;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  panelBaseUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  panelApiBasePath?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  panelUsername?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  panelPassword?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  panelInboundId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  panelEnabled?: boolean;
 }
 
 export class UpdateNodeDto {
@@ -377,6 +409,53 @@ export class UpdateNodeDto {
     require_tld: false
   })
   subscriptionUrl?: string;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  panelBaseUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  panelApiBasePath?: string | null;
+
+  @IsOptional()
+  @IsString()
+  panelUsername?: string | null;
+
+  @IsOptional()
+  @IsString()
+  panelPassword?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  panelInboundId?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  panelEnabled?: boolean;
+}
+
+export class ReadNodePanelInboundsDto {
+  @IsUrl({
+    require_tld: false
+  })
+  panelBaseUrl!: string;
+
+  @IsOptional()
+  @IsString()
+  panelApiBasePath?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  panelUsername!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  panelPassword!: string;
 }
 
 export class CreateAnnouncementDto {
@@ -447,6 +526,10 @@ export class UpdateAnnouncementDto {
 }
 
 export class UpdatePolicyDto {
+  @IsOptional()
+  @IsIn(["relay", "xui"])
+  accessMode?: AccessMode;
+
   @IsOptional()
   @IsIn(["global", "rule", "direct"])
   defaultMode?: ConnectionMode;

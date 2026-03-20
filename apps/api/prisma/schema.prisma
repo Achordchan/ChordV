@@ -64,6 +64,12 @@ enum EdgeGatewayStatus {
   degraded
 }
 
+enum XuiPanelStatus {
+  online
+  offline
+  degraded
+}
+
 enum NodeSessionLeaseStatus {
   active
   expired
@@ -109,6 +115,7 @@ model User {
   refreshTokens        RefreshToken[]
   sessionLeases        NodeSessionLease[]
   securityEvents       SecurityEvent[]
+  panelClientBindings  PanelClientBinding[]
 }
 
 model Plan {
@@ -148,6 +155,7 @@ model Subscription {
   meteringIncidents  MeteringIncident[]
   sessionLeases      NodeSessionLease[]
   securityEvents     SecurityEvent[]
+  panelClientBindings PanelClientBinding[]
 }
 
 model Team {
@@ -162,6 +170,7 @@ model Team {
   subscriptions Subscription[]
   trafficLedgerEntries TrafficLedger[]
   trafficSnapshots TrafficSnapshot[]
+  panelClientBindings PanelClientBinding[]
 }
 
 model TeamMember {
@@ -218,6 +227,15 @@ model Node {
   probeLatencyMs   Int?
   probeCheckedAt   DateTime?
   probeError       String?
+  panelBaseUrl     String?
+  panelApiBasePath String?         @default("/")
+  panelUsername    String?
+  panelPassword    String?
+  panelInboundId   Int?
+  panelEnabled     Boolean         @default(false)
+  panelStatus      XuiPanelStatus  @default(offline)
+  panelLastSyncedAt DateTime?
+  panelError       String?
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   subscriptionAccesses SubscriptionNodeAccess[]
@@ -225,6 +243,7 @@ model Node {
   meteringIncidents MeteringIncident[]
   sessionLeases     NodeSessionLease[]
   securityEvents    SecurityEvent[]
+  panelClientBindings PanelClientBinding[]
 }
 
 model SubscriptionNodeAccess {
@@ -297,6 +316,7 @@ model RefreshToken {
 model NodeSessionLease {
   id             String               @id
   sessionId      String               @unique
+  accessMode     String               @default("relay")
   userId         String
   subscriptionId String
   nodeId         String
@@ -340,8 +360,34 @@ model SecurityEvent {
   @@index([nodeId, createdAt])
 }
 
+model PanelClientBinding {
+  id               String       @id
+  subscriptionId   String
+  userId           String?
+  teamId           String?
+  nodeId           String
+  panelClientEmail String
+  panelClientId    String
+  panelInboundId   Int
+  lastUplinkBytes  BigInt       @default(0)
+  lastDownlinkBytes BigInt      @default(0)
+  lastSyncedAt     DateTime?
+  status           String       @default("active")
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  user             User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team             Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  node             Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, userId, nodeId])
+  @@index([subscriptionId, nodeId, status])
+  @@index([nodeId, panelClientEmail])
+}
+
 model PolicyProfile {
   id              String          @id
+  accessMode      String          @default("xui")
   defaultMode     String
   modes           String[]
   ruleVersion     String

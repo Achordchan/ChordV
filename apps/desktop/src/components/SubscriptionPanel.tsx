@@ -16,11 +16,11 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   const title = isTeam ? props.bootstrap.team?.name ?? props.bootstrap.subscription.teamName ?? "团队订阅" : props.bootstrap.user.displayName;
   const subtitle = isTeam ? props.bootstrap.subscription.planName : `${props.bootstrap.subscription.planName} · 个人订阅`;
   const metrics = [
-    { label: isTeam ? "团队总流量" : "总流量", value: `${props.bootstrap.subscription.totalTrafficGb} GB` },
-    { label: isTeam ? "团队已使用" : "已使用", value: `${props.bootstrap.subscription.usedTrafficGb} GB` },
-    { label: isTeam ? "团队剩余流量" : "剩余流量", value: `${props.bootstrap.subscription.remainingTrafficGb} GB` },
+    { label: isTeam ? "团队总流量" : "总流量", value: `${formatTrafficGb(props.bootstrap.subscription.totalTrafficGb)} GB` },
+    { label: isTeam ? "团队已使用" : "已使用", value: `${formatTrafficGb(props.bootstrap.subscription.usedTrafficGb)} GB` },
+    { label: isTeam ? "团队剩余流量" : "剩余流量", value: `${formatTrafficGb(props.bootstrap.subscription.remainingTrafficGb)} GB` },
     { label: "到期时间", value: formatDate(props.bootstrap.subscription.expireAt) },
-    ...(isTeam ? [{ label: "我已使用", value: `${props.bootstrap.subscription.memberUsedTrafficGb ?? 0} GB` }] : [])
+    ...(isTeam ? [{ label: "我已使用", value: `${formatTrafficGb(props.bootstrap.subscription.memberUsedTrafficGb ?? 0)} GB` }] : [])
   ];
 
   return (
@@ -135,4 +135,11 @@ function formatDate(value: string) {
   const hour = `${date.getHours()}`.padStart(2, "0");
   const minute = `${date.getMinutes()}`.padStart(2, "0");
   return `${year}/${month}/${day} ${hour}:${minute}`;
+}
+
+function formatTrafficGb(value: number) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+  return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
 }

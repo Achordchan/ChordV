@@ -9,6 +9,7 @@ import {
 } from "../common/metering.constants";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
+import { XuiService } from "../xui/xui.service";
 
 const GB_IN_BYTES = 1024 ** 3;
 const NODE_USAGE_STALE_SECONDS = Number(process.env.CHORDV_NODE_USAGE_STALE_SECONDS ?? 90);
@@ -21,7 +22,8 @@ export class UsageSyncService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly meteringIncidentService: MeteringIncidentService
+    private readonly meteringIncidentService: MeteringIncidentService,
+    private readonly xuiService: XuiService
   ) {}
 
   async ingestUsageReport(nodeId: string, records: unknown, reportedAt: string) {
@@ -41,6 +43,16 @@ export class UsageSyncService {
 
   @Cron("*/30 * * * * *")
   async syncNodeUsage() {
+    const policy = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" },
+      select: { accessMode: true }
+    });
+
+    if (policy?.accessMode === "xui") {
+      await this.syncXuiUsage();
+      return;
+    }
+
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         status: "active",
@@ -86,6 +98,85 @@ export class UsageSyncService {
         METERING_REASON_NODE_UNAVAILABLE,
         `${reason}，等待节点恢复上报`
       );
+    }
+  }
+
+  private async syncXuiUsage() {
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        status: "active",
+        subscription: {
+          state: "active"
+        },
+        node: {
+          panelEnabled: true
+        }
+      },
+      include: {
+        node: {
+          select: {
+            id: true,
+            panelBaseUrl: true,
+            panelApiBasePath: true,
+            panelUsername: true,
+            panelPassword: true,
+            panelInboundId: true
+          }
+        }
+      }
+    });
+
+    const nodeMap = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const current = nodeMap.get(binding.nodeId) ?? [];
+      current.push(binding);
+      nodeMap.set(binding.nodeId, current);
+    }
+
+    for (const [nodeId, nodeBindings] of nodeMap.entries()) {
+      const subscriptionIds = Array.from(new Set(nodeBindings.map((item) => item.subscriptionId)));
+      try {
+        const allowedEmails = new Set(
+          nodeBindings.map((item) => item.panelClientEmail.trim().toLowerCase()).filter(Boolean)
+        );
+        const records = (await this.xuiService.listNodeUsage({
+          id: nodeId,
+          panelBaseUrl: nodeBindings[0].node.panelBaseUrl,
+          panelApiBasePath: nodeBindings[0].node.panelApiBasePath,
+          panelUsername: nodeBindings[0].node.panelUsername,
+          panelPassword: nodeBindings[0].node.panelPassword,
+          panelInboundId: nodeBindings[0].node.panelInboundId
+        })).filter((item) => allowedEmails.has(item.xrayUserEmail.trim().toLowerCase()));
+        const context = await this.loadNodeSyncContext(nodeId, "xui");
+        await this.applyNodeSamples(nodeId, records, context);
+        const now = new Date();
+        await this.prisma.node.update({
+          where: { id: nodeId },
+          data: {
+            panelStatus: "online",
+            panelError: null,
+            panelLastSyncedAt: now,
+            statsLastSyncedAt: now
+          }
+        });
+        await this.resolveIncidentForSubscriptions(subscriptionIds, nodeId, METERING_REASON_NODE_UNAVAILABLE);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "3x-ui 面板流量同步失败";
+        this.warnThrottled(nodeId, detail);
+        await this.prisma.node.update({
+          where: { id: nodeId },
+          data: {
+            panelStatus: "degraded",
+            panelError: detail
+          }
+        });
+        await this.openIncidentForSubscriptions(
+          subscriptionIds,
+          nodeId,
+          METERING_REASON_NODE_UNAVAILABLE,
+          `3x-ui 面板流量同步失败：${detail}`
+        );
+      }
     }
   }
 
@@ -253,6 +344,7 @@ export class UsageSyncService {
     sampledAt: Date
   ) {
     const deltaGb = Number(deltaBytes) / GB_IN_BYTES;
+    let nextState: "active" | "expired" | "exhausted" | "paused" = "active";
 
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.subscription.findUnique({
@@ -265,7 +357,7 @@ export class UsageSyncService {
 
       const nextUsedTrafficGb = roundTrafficGb(current.usedTrafficGb + deltaGb);
       const nextRemainingTrafficGb = roundTrafficGb(Math.max(0, current.totalTrafficGb - nextUsedTrafficGb));
-      const nextState =
+      nextState =
         current.expireAt.getTime() <= sampledAt.getTime()
           ? "expired"
           : nextRemainingTrafficGb <= 0
@@ -297,6 +389,10 @@ export class UsageSyncService {
         });
       }
     });
+
+    if (nextState !== "active") {
+      await this.deactivatePanelClients(subscriptionId);
+    }
   }
 
   private async touchSubscriptionSyncState(subscriptionId: string, sampledAt: Date) {
@@ -306,40 +402,69 @@ export class UsageSyncService {
     });
   }
 
-  private async loadNodeSyncContext(nodeId: string): Promise<NodeSyncContext> {
+  private async loadNodeSyncContext(nodeId: string, accessMode: "relay" | "xui" = "relay"): Promise<NodeSyncContext> {
     const subscriptionIds: string[] = [];
     const mappings = new Map<string, UsageMapping>();
     const leaseMappingsByUuid = new Map<string, UsageMapping>();
-    const activeLeases = await this.prisma.nodeSessionLease.findMany({
-      where: {
-        nodeId,
-        status: "active",
-        expiresAt: { gt: new Date() }
-      },
-      select: {
-        xrayUserEmail: true,
-        xrayUserUuid: true,
-        subscriptionId: true,
-        userId: true,
-        subscription: {
-          select: {
-            teamId: true
+    if (accessMode === "xui") {
+      const bindings = await this.prisma.panelClientBinding.findMany({
+        where: {
+          nodeId,
+          status: "active"
+        },
+        select: {
+          panelClientEmail: true,
+          panelClientId: true,
+          subscriptionId: true,
+          userId: true,
+          teamId: true
+        }
+      });
+      for (const binding of bindings) {
+        subscriptionIds.push(binding.subscriptionId);
+        mappings.set(binding.panelClientEmail.trim().toLowerCase(), {
+          subscriptionId: binding.subscriptionId,
+          teamId: binding.teamId,
+          userId: binding.userId
+        });
+        leaseMappingsByUuid.set(binding.panelClientId, {
+          subscriptionId: binding.subscriptionId,
+          teamId: binding.teamId,
+          userId: binding.userId
+        });
+      }
+    } else {
+      const activeLeases = await this.prisma.nodeSessionLease.findMany({
+        where: {
+          nodeId,
+          status: "active",
+          expiresAt: { gt: new Date() }
+        },
+        select: {
+          xrayUserEmail: true,
+          xrayUserUuid: true,
+          subscriptionId: true,
+          userId: true,
+          subscription: {
+            select: {
+              teamId: true
+            }
           }
         }
+      });
+      for (const lease of activeLeases) {
+        subscriptionIds.push(lease.subscriptionId);
+        mappings.set(lease.xrayUserEmail.trim().toLowerCase(), {
+          subscriptionId: lease.subscriptionId,
+          teamId: lease.subscription.teamId,
+          userId: lease.userId
+        });
+        leaseMappingsByUuid.set(lease.xrayUserUuid, {
+          subscriptionId: lease.subscriptionId,
+          teamId: lease.subscription.teamId,
+          userId: lease.userId
+        });
       }
-    });
-    for (const lease of activeLeases) {
-      subscriptionIds.push(lease.subscriptionId);
-      mappings.set(lease.xrayUserEmail.trim().toLowerCase(), {
-        subscriptionId: lease.subscriptionId,
-        teamId: lease.subscription.teamId,
-        userId: lease.userId
-      });
-      leaseMappingsByUuid.set(lease.xrayUserUuid, {
-        subscriptionId: lease.subscriptionId,
-        teamId: lease.subscription.teamId,
-        userId: lease.userId
-      });
     }
 
     return {
@@ -377,6 +502,53 @@ export class UsageSyncService {
     this.warningTimestamps.set(key, now);
     this.logger.warn(`节点 ${nodeId} 用量同步异常: ${reason}`);
   }
+
+  private async deactivatePanelClients(subscriptionId: string) {
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        subscriptionId,
+        status: "active"
+      },
+      include: {
+        node: {
+          select: {
+            id: true,
+            panelBaseUrl: true,
+            panelApiBasePath: true,
+            panelUsername: true,
+            panelPassword: true,
+            panelInboundId: true
+          }
+        }
+      }
+    });
+
+    for (const binding of bindings) {
+      try {
+        await this.xuiService.removeClient(
+          {
+            id: binding.node.id,
+            panelBaseUrl: binding.node.panelBaseUrl,
+            panelApiBasePath: binding.node.panelApiBasePath,
+            panelUsername: binding.node.panelUsername,
+            panelPassword: binding.node.panelPassword,
+            panelInboundId: binding.node.panelInboundId
+          },
+          binding.panelClientId,
+          binding.panelClientEmail
+        );
+      } catch {
+        // 这里不抛错，避免计量主链被节点面板异常打断，后续轮询会继续尝试修复。
+      }
+
+      await this.prisma.panelClientBinding.update({
+        where: { id: binding.id },
+        data: {
+          status: "deleted"
+        }
+      });
+    }
+  }
 }
 
 type NodeTrafficSample = {
@@ -390,7 +562,7 @@ type NodeTrafficSample = {
 type UsageMapping = {
   subscriptionId: string;
   teamId: string | null;
-  userId: string;
+  userId: string | null;
 };
 
 type NodeSyncContext = {

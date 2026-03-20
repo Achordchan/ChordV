@@ -16,6 +16,8 @@ export type MeteringStatus = "ok" | "degraded";
 export type SessionLeaseStatus = "active" | "expired" | "revoked" | "evicted";
 export type SessionEvictedReason = "concurrency_limit";
 export type EdgeGatewayStatus = "online" | "offline" | "degraded";
+export type XuiPanelStatus = "online" | "offline" | "degraded";
+export type AccessMode = "relay" | "xui";
 
 export interface UserProfileDto {
   id: string;
@@ -214,6 +216,15 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   subscriptionUrl: string | null;
   gatewayStatus: EdgeGatewayStatus;
   statsLastSyncedAt: string | null;
+  panelBaseUrl: string | null;
+  panelApiBasePath: string | null;
+  panelUsername: string | null;
+  panelPassword: string | null;
+  panelInboundId: number | null;
+  panelEnabled: boolean;
+  panelStatus: XuiPanelStatus;
+  panelLastSyncedAt: string | null;
+  panelError: string | null;
   serverName: string;
   serverHost: string;
   serverPort: number;
@@ -225,6 +236,14 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   probeError: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AdminNodePanelInboundDto {
+  id: number;
+  remark: string;
+  port: number;
+  protocol: string;
+  clientCount: number;
 }
 
 export interface AdminAnnouncementRecordDto {
@@ -241,6 +260,7 @@ export interface AdminAnnouncementRecordDto {
 }
 
 export interface AdminPolicyRecordDto extends PolicyBundleDto {
+  accessMode: AccessMode;
   currentVersion: string;
   minimumVersion: string;
   forceUpgrade: boolean;
@@ -416,12 +436,18 @@ export interface UpdateSubscriptionInputDto {
 }
 
 export interface ImportNodeInputDto {
-  subscriptionUrl: string;
+  subscriptionUrl?: string;
   name?: string;
   region?: string;
   provider?: string;
   tags?: string[];
   recommended?: boolean;
+  panelBaseUrl?: string;
+  panelApiBasePath?: string;
+  panelUsername?: string;
+  panelPassword?: string;
+  panelInboundId?: number;
+  panelEnabled?: boolean;
 }
 
 export interface UpdateNodeInputDto {
@@ -431,6 +457,12 @@ export interface UpdateNodeInputDto {
   tags?: string[];
   recommended?: boolean;
   subscriptionUrl?: string;
+  panelBaseUrl?: string | null;
+  panelApiBasePath?: string | null;
+  panelUsername?: string | null;
+  panelPassword?: string | null;
+  panelInboundId?: number | null;
+  panelEnabled?: boolean;
 }
 
 export interface EdgeRelayNodeDto {
@@ -536,6 +568,7 @@ export interface CreateTeamSubscriptionInputDto {
 }
 
 export interface UpdatePolicyInputDto {
+  accessMode?: AccessMode;
   defaultMode?: ConnectionMode;
   modes?: ConnectionMode[];
   blockAds?: boolean;

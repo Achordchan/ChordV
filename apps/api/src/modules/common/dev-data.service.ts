@@ -25,6 +25,7 @@ import {
 import type {
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
+  AdminNodePanelInboundDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminSnapshotDto,
@@ -78,6 +79,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
 import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
+import { XuiService } from "../xui/xui.service";
 
 const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ?? 600);
 const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 20);
@@ -102,7 +104,8 @@ export class DevDataService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly authSessionService: AuthSessionService,
-    private readonly edgeGatewayService: EdgeGatewayService
+    private readonly edgeGatewayService: EdgeGatewayService,
+    private readonly xuiService: XuiService
   ) {}
 
   async onModuleInit() {
@@ -273,7 +276,6 @@ export class DevDataService implements OnModuleInit {
     if (!policy) {
       throw new NotFoundException("策略配置不存在");
     }
-
     const allowedRows = await this.prisma.subscriptionNodeAccess.findMany({
       where: {
         subscriptionId: access.subscription.id,
@@ -295,6 +297,13 @@ export class DevDataService implements OnModuleInit {
     );
     await this.evictExceededUserLeases(user.id, concurrentLimit);
 
+    if (policy.accessMode === "xui") {
+      return this.connectWithXui(node, user, access, request, policy);
+    }
+    if (policy.accessMode !== "relay") {
+      throw new BadRequestException("当前接入模式未启用");
+    }
+
     const now = new Date();
     const sessionId = `session_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
     const leaseId = createId("lease");
@@ -306,6 +315,7 @@ export class DevDataService implements OnModuleInit {
       data: {
         id: leaseId,
         sessionId,
+        accessMode: "relay",
         userId: user.id,
         subscriptionId: access.subscription.id,
         nodeId: node.id,
@@ -438,6 +448,31 @@ export class DevDataService implements OnModuleInit {
     }
 
     const nextExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
+    if (lease.accessMode === "xui") {
+      await this.prisma.nodeSessionLease.update({
+        where: { id: lease.id },
+        data: {
+          status: "active",
+          expiresAt: nextExpiresAt,
+          lastHeartbeatAt: now,
+          revokedAt: null,
+          revokedReason: null
+        }
+      });
+      if (this.activeRuntime?.sessionId === sessionId) {
+        this.activeRuntime = {
+          ...this.activeRuntime,
+          leaseExpiresAt: nextExpiresAt.toISOString()
+        };
+      }
+      return {
+        sessionId,
+        status: "active" as const,
+        leaseExpiresAt: nextExpiresAt.toISOString(),
+        evictedReason: null
+      };
+    }
+
     try {
       await this.edgeGatewayService.openSession({
         sessionId: lease.sessionId,
@@ -491,6 +526,117 @@ export class DevDataService implements OnModuleInit {
     };
   }
 
+  private async connectWithXui(
+    node: {
+      id: string;
+      name: string;
+      region: string;
+      provider: string;
+      tags: string[];
+      recommended: boolean;
+      latencyMs: number;
+      protocol: string;
+      security: string;
+      serverHost: string;
+      serverPort: number;
+      serverName: string;
+      uuid: string;
+      flow: string;
+      realityPublicKey: string;
+      shortId: string;
+      fingerprint: string;
+      spiderX: string;
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+      panelInboundId: number | null;
+      panelEnabled: boolean;
+    },
+    user: UserProfileDto,
+    access: Awaited<ReturnType<DevDataService["resolveSubscriptionAccessForUser"]>>,
+    request: ConnectRequestDto,
+    policy: Awaited<ReturnType<PrismaService["policyProfile"]["findUnique"]>>
+  ): Promise<GeneratedRuntimeConfigDto> {
+    const now = new Date();
+    const sessionId = `session_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+    const leaseId = createId("lease");
+    const leaseExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
+    const binding = await this.ensurePanelClientBinding({
+      node,
+      subscriptionId: access.subscription!.id,
+      userId: user.id,
+      teamId: access.subscription!.teamId,
+      userEmail: user.email,
+      userDisplayName: user.displayName,
+      expireAt: access.subscription!.expireAt
+    });
+
+    await this.prisma.nodeSessionLease.create({
+      data: {
+        id: leaseId,
+        sessionId,
+        accessMode: "xui",
+        userId: user.id,
+        subscriptionId: access.subscription!.id,
+        nodeId: node.id,
+        xrayUserEmail: binding.panelClientEmail,
+        xrayUserUuid: binding.panelClientId,
+        status: "active",
+        issuedAt: now,
+        expiresAt: leaseExpiresAt,
+        lastHeartbeatAt: now
+      }
+    });
+
+    this.activeRuntime = {
+      sessionId,
+      leaseId,
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+      leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
+      leaseGraceSeconds: LEASE_GRACE_SECONDS,
+      node: toNodeSummary(node),
+      mode: request.mode,
+      localHttpPort: 17890,
+      localSocksPort: 17891,
+      routingProfile: request.strategyGroupId ?? "managed-rule-default",
+      generatedAt: new Date().toISOString(),
+      features: {
+        blockAds: policy?.blockAds ?? true,
+        chinaDirect: policy?.chinaDirect ?? true,
+        aiServicesProxy: policy?.aiServicesProxy ?? true
+      },
+      outbound: {
+        protocol: "vless",
+        server: node.serverHost,
+        port: node.serverPort,
+        uuid: binding.panelClientId,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX
+      }
+    };
+    this.activeRuntimeUsageContext = {
+      subscriptionId: access.subscription!.id,
+      nodeId: node.id,
+      userId: user.id,
+      teamId: access.subscription!.teamId
+    };
+
+    await this.prisma.node.update({
+      where: { id: node.id },
+      data: {
+        panelStatus: "online",
+        panelError: null
+      }
+    });
+    await this.meteringIncidentService.resolve(access.subscription!.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
+    return this.activeRuntime;
+  }
+
   async disconnect(sessionId: string, token?: string) {
     const user = await this.resolveActiveUserFromToken(token);
     const lease = await this.prisma.nodeSessionLease.findUnique({
@@ -518,6 +664,186 @@ export class DevDataService implements OnModuleInit {
 
   getActiveRuntimeUsageContext() {
     return this.activeRuntimeUsageContext ?? null;
+  }
+
+  private async ensurePanelClientBinding(input: {
+    node: {
+      id: string;
+      name: string;
+      flow: string;
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+      panelInboundId: number | null;
+      panelEnabled: boolean;
+    };
+    subscriptionId: string;
+    userId: string;
+    teamId: string | null;
+    userEmail: string;
+    userDisplayName: string;
+    expireAt: Date;
+  }) {
+    if (!input.node.panelEnabled) {
+      throw new BadRequestException("节点未启用 3x-ui 面板接入");
+    }
+
+    const existing = await this.prisma.panelClientBinding.findFirst({
+      where: {
+        subscriptionId: input.subscriptionId,
+        nodeId: input.node.id,
+        userId: input.userId
+      }
+    });
+
+    const panelClientEmail =
+      existing?.panelClientEmail ??
+      buildPanelClientEmail(input.userEmail, input.subscriptionId, input.node.id, input.userId);
+    const panelClientId = existing?.panelClientId ?? randomUUID();
+    const panelInboundId = input.node.panelInboundId ?? existing?.panelInboundId ?? null;
+
+    await this.xuiService.ensureClient(
+      {
+        id: input.node.id,
+        panelBaseUrl: input.node.panelBaseUrl,
+        panelApiBasePath: input.node.panelApiBasePath,
+        panelUsername: input.node.panelUsername,
+        panelPassword: input.node.panelPassword,
+        panelInboundId
+      },
+      {
+        id: panelClientId,
+        email: panelClientEmail,
+        enable: true,
+        flow: input.node.flow,
+        expiryTime: input.expireAt.getTime(),
+        limitIp: 0,
+        totalGB: 0,
+        subId: "",
+        reset: 0,
+        tgId: "",
+        comment: `${input.userDisplayName} · ${input.node.name}`
+      }
+    );
+
+    if (existing) {
+      return this.prisma.panelClientBinding.update({
+        where: { id: existing.id },
+        data: {
+          panelClientEmail,
+          panelClientId,
+          panelInboundId: panelInboundId ?? existing.panelInboundId,
+          status: "active"
+        }
+      });
+    }
+
+    return this.prisma.panelClientBinding.create({
+      data: {
+        id: createId("panel_client"),
+        subscriptionId: input.subscriptionId,
+        userId: input.userId,
+        teamId: input.teamId,
+        nodeId: input.node.id,
+        panelClientEmail,
+        panelClientId,
+        panelInboundId: panelInboundId ?? 0,
+        status: "active"
+      }
+    });
+  }
+
+  private async removePanelBindingsForSubscription(subscriptionId: string, filter?: { userId?: string; nodeIds?: string[] }) {
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        subscriptionId,
+        ...(filter?.userId ? { userId: filter.userId } : {}),
+        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
+        status: "active"
+      },
+      include: {
+        node: true
+      }
+    });
+
+    for (const binding of bindings) {
+      try {
+        await this.xuiService.removeClient(
+          {
+            id: binding.node.id,
+            panelBaseUrl: binding.node.panelBaseUrl,
+            panelApiBasePath: binding.node.panelApiBasePath,
+            panelUsername: binding.node.panelUsername,
+            panelPassword: binding.node.panelPassword,
+            panelInboundId: binding.node.panelInboundId
+          },
+          binding.panelClientId,
+          binding.panelClientEmail
+        );
+      } catch (error) {
+        await this.prisma.node.update({
+          where: { id: binding.nodeId },
+          data: {
+            panelStatus: "degraded",
+            panelError: error instanceof Error ? error.message : "删除 3x-ui 客户端失败"
+          }
+        });
+      }
+
+      await this.prisma.panelClientBinding.update({
+        where: { id: binding.id },
+        data: {
+          status: "deleted"
+        }
+      });
+    }
+  }
+
+  private async syncSubscriptionPanelAccess(subscriptionId: string) {
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      include: {
+        team: {
+          include: {
+            members: true
+          }
+        },
+        nodeAccesses: true
+      }
+    });
+
+    if (!subscription) {
+      return;
+    }
+
+    const allowedNodeIds = new Set(subscription.nodeAccesses.map((item) => item.nodeId));
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        subscriptionId,
+        status: "active"
+      }
+    });
+
+    const deletedUserIds =
+      subscription.teamId && subscription.team
+        ? new Set(subscription.team.members.map((item) => item.userId))
+        : null;
+
+    for (const binding of bindings) {
+      const invalidByNode = !allowedNodeIds.has(binding.nodeId);
+      const invalidByUser = deletedUserIds ? !deletedUserIds.has(binding.userId ?? "") : false;
+      if (invalidByNode || invalidByUser) {
+        await this.removePanelBindingsForSubscription(subscriptionId, {
+          userId: invalidByUser ? binding.userId ?? undefined : undefined,
+          nodeIds: invalidByNode ? [binding.nodeId] : undefined
+        });
+      }
+    }
+
+    if (!isEffectiveSubscription(subscription)) {
+      await this.removePanelBindingsForSubscription(subscriptionId);
+    }
   }
 
   @Cron("*/30 * * * * *")
@@ -600,18 +926,20 @@ export class DevDataService implements OnModuleInit {
         detail: reason
       }
     });
-    try {
-      await this.edgeGatewayService.closeSession({
-        sessionId: lease.sessionId,
-        leaseId: lease.id,
-        nodeId: lease.nodeId
-      });
-      await this.meteringIncidentService.resolve(lease.subscriptionId, lease.nodeId, METERING_REASON_NODE_UNAVAILABLE);
-    } catch (error) {
-      await this.edgeGatewayService.markNodeUnavailable(
-        lease.nodeId,
-        error instanceof Error ? error.message : "关闭中心中转会话失败"
-      );
+    if (lease.accessMode === "relay") {
+      try {
+        await this.edgeGatewayService.closeSession({
+          sessionId: lease.sessionId,
+          leaseId: lease.id,
+          nodeId: lease.nodeId
+        });
+        await this.meteringIncidentService.resolve(lease.subscriptionId, lease.nodeId, METERING_REASON_NODE_UNAVAILABLE);
+      } catch (error) {
+        await this.edgeGatewayService.markNodeUnavailable(
+          lease.nodeId,
+          error instanceof Error ? error.message : "关闭中心中转会话失败"
+        );
+      }
     }
   }
 
@@ -740,6 +1068,13 @@ export class DevDataService implements OnModuleInit {
       where: { id: userId },
       data
     });
+
+    if (input.status === "disabled") {
+      const personalSubscription = await this.findCurrentPersonalSubscription(userId);
+      if (personalSubscription) {
+        await this.removePanelBindingsForSubscription(personalSubscription.id, { userId });
+      }
+    }
 
     const rows = await this.listAdminUsers();
     const row = rows.find((item) => item.id === userId);
@@ -935,6 +1270,8 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    await this.syncSubscriptionPanelAccess(row.id);
+
     return toAdminSubscriptionRecord(row);
   }
 
@@ -963,6 +1300,8 @@ export class DevDataService implements OnModuleInit {
         nodeAccesses: true
       }
     });
+
+    await this.syncSubscriptionPanelAccess(subscriptionId);
 
     return toAdminSubscriptionRecord(row);
   }
@@ -1003,6 +1342,8 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    await this.syncSubscriptionPanelAccess(subscriptionId);
+
     return toAdminSubscriptionRecord(row);
   }
 
@@ -1034,6 +1375,8 @@ export class DevDataService implements OnModuleInit {
         nodeAccesses: true
       }
     });
+
+    await this.syncSubscriptionPanelAccess(subscriptionId);
 
     return toAdminSubscriptionRecord(row);
   }
@@ -1153,6 +1496,11 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    const subscription = await this.findCurrentTeamSubscription(teamId);
+    if (subscription) {
+      await this.syncSubscriptionPanelAccess(subscription.id);
+    }
+
     return this.requireTeamRecord(teamId);
   }
 
@@ -1187,6 +1535,11 @@ export class DevDataService implements OnModuleInit {
     const member = await this.requireTeamMember(memberId);
     if (member.role === "owner") {
       throw new BadRequestException("负责人不能直接移除，请先转移负责人");
+    }
+
+    const subscription = await this.findCurrentTeamSubscription(member.teamId);
+    if (subscription) {
+      await this.removePanelBindingsForSubscription(subscription.id, { userId: member.userId });
     }
 
     await this.prisma.teamMember.delete({
@@ -1248,6 +1601,8 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    await this.syncSubscriptionPanelAccess(row.id);
+
     return toAdminSubscriptionRecord(row);
   }
 
@@ -1274,9 +1629,11 @@ export class DevDataService implements OnModuleInit {
     await this.requireSubscription(subscriptionId);
 
     if (input.nodeIds.length === 0) {
-      await this.prisma.subscriptionNodeAccess.deleteMany({
-        where: { subscriptionId }
-      });
+    await this.prisma.subscriptionNodeAccess.deleteMany({
+      where: { subscriptionId }
+    });
+
+    await this.syncSubscriptionPanelAccess(subscriptionId);
       return {
         subscriptionId,
         nodeIds: [],
@@ -1304,6 +1661,8 @@ export class DevDataService implements OnModuleInit {
         nodeId
       }))
     });
+
+    await this.syncSubscriptionPanelAccess(subscriptionId);
 
     const rows = await this.prisma.subscriptionNodeAccess.findMany({
       where: { subscriptionId },
@@ -1338,7 +1697,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
-    const imported = await this.fetchSubscriptionNode(input.subscriptionUrl);
+    const imported = await this.resolveNodeRuntimeSource(input);
     const nodeId = toNodeId(imported.serverHost, imported.serverPort);
     const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
 
@@ -1363,8 +1722,15 @@ export class DevDataService implements OnModuleInit {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
-        subscriptionUrl: input.subscriptionUrl,
-        gatewayStatus: current?.gatewayStatus ?? "offline"
+        subscriptionUrl: input.subscriptionUrl?.trim() || null,
+        gatewayStatus: current?.gatewayStatus ?? "offline",
+        panelBaseUrl: input.panelBaseUrl?.trim() || current?.panelBaseUrl || null,
+        panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/"),
+        panelUsername: input.panelUsername?.trim() || current?.panelUsername || null,
+        panelPassword: input.panelPassword?.trim() || current?.panelPassword || null,
+        panelInboundId: input.panelInboundId ?? current?.panelInboundId ?? null,
+        panelEnabled: input.panelEnabled ?? current?.panelEnabled ?? false,
+        panelStatus: current?.panelStatus ?? "offline"
       },
       update: {
         name: input.name?.trim() || imported.name,
@@ -1382,11 +1748,35 @@ export class DevDataService implements OnModuleInit {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
-        subscriptionUrl: input.subscriptionUrl
+        subscriptionUrl: input.subscriptionUrl?.trim() || null,
+        panelBaseUrl: input.panelBaseUrl?.trim() || current?.panelBaseUrl || null,
+        panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/"),
+        panelUsername: input.panelUsername?.trim() || current?.panelUsername || null,
+        panelPassword: input.panelPassword?.trim() || current?.panelPassword || null,
+        panelInboundId: input.panelInboundId ?? current?.panelInboundId ?? null,
+        panelEnabled: input.panelEnabled ?? current?.panelEnabled ?? false
       }
     });
 
-    return toAdminNodeRecord(row);
+    return this.probeNode(row.id);
+  }
+
+  async listNodePanelInbounds(input: {
+    panelBaseUrl: string;
+    panelApiBasePath?: string;
+    panelUsername: string;
+    panelPassword: string;
+  }): Promise<AdminNodePanelInboundDto[]> {
+    const inbounds = await this.xuiService.listInbounds({
+      id: createId("panel"),
+      panelBaseUrl: input.panelBaseUrl,
+      panelApiBasePath: input.panelApiBasePath ?? "/",
+      panelUsername: input.panelUsername,
+      panelPassword: input.panelPassword,
+      panelInboundId: null
+    });
+
+    return inbounds;
   }
 
   async updateNode(nodeId: string, input: UpdateNodeInputDto): Promise<AdminNodeRecordDto> {
@@ -1398,6 +1788,18 @@ export class DevDataService implements OnModuleInit {
     let derived: ReturnType<typeof parseVlessLink> | null = null;
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
       derived = await this.fetchSubscriptionNode(input.subscriptionUrl);
+    } else if (
+      input.panelEnabled === true &&
+      (input.panelBaseUrl !== undefined || input.panelApiBasePath !== undefined || input.panelUsername !== undefined || input.panelPassword !== undefined || input.panelInboundId !== undefined)
+    ) {
+      derived = await this.xuiService.getInboundRuntime({
+        id: current.id,
+        panelBaseUrl: input.panelBaseUrl ?? current.panelBaseUrl,
+        panelApiBasePath: input.panelApiBasePath ?? current.panelApiBasePath,
+        panelUsername: input.panelUsername ?? current.panelUsername,
+        panelPassword: input.panelPassword ?? current.panelPassword,
+        panelInboundId: input.panelInboundId ?? current.panelInboundId
+      });
     }
 
     const row = await this.prisma.node.update({
@@ -1408,7 +1810,13 @@ export class DevDataService implements OnModuleInit {
         ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
         ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
         ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
-        ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl } : {}),
+        ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl?.trim() || null } : {}),
+        ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
+        ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
+        ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),
+        ...(input.panelPassword !== undefined ? { panelPassword: input.panelPassword?.trim() || null } : {}),
+        ...(input.panelInboundId !== undefined ? { panelInboundId: input.panelInboundId } : {}),
+        ...(input.panelEnabled !== undefined ? { panelEnabled: input.panelEnabled } : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -1433,11 +1841,22 @@ export class DevDataService implements OnModuleInit {
     if (!current) {
       throw new NotFoundException("节点不存在");
     }
-    if (!current.subscriptionUrl) {
-      throw new BadRequestException("当前节点没有订阅地址");
+    let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>>;
+    if (current.panelEnabled) {
+      derived = await this.xuiService.getInboundRuntime({
+        id: current.id,
+        panelBaseUrl: current.panelBaseUrl,
+        panelApiBasePath: current.panelApiBasePath,
+        panelUsername: current.panelUsername,
+        panelPassword: current.panelPassword,
+        panelInboundId: current.panelInboundId
+      });
+    } else {
+      if (!current.subscriptionUrl) {
+        throw new BadRequestException("当前节点没有订阅地址");
+      }
+      derived = await this.fetchSubscriptionNode(current.subscriptionUrl);
     }
-
-    const derived = await this.fetchSubscriptionNode(current.subscriptionUrl);
     const row = await this.prisma.node.update({
       where: { id: nodeId },
       data: {
@@ -1456,6 +1875,25 @@ export class DevDataService implements OnModuleInit {
     return toAdminNodeRecord(row);
   }
 
+  private async resolveNodeRuntimeSource(input: ImportNodeInputDto) {
+    if (input.subscriptionUrl?.trim()) {
+      return this.fetchSubscriptionNode(input.subscriptionUrl.trim());
+    }
+
+    if (input.panelEnabled && input.panelBaseUrl && input.panelUsername && input.panelPassword && input.panelInboundId) {
+      return this.xuiService.getInboundRuntime({
+        id: createId("panel_runtime"),
+        panelBaseUrl: input.panelBaseUrl,
+        panelApiBasePath: input.panelApiBasePath ?? "/",
+        panelUsername: input.panelUsername,
+        panelPassword: input.panelPassword,
+        panelInboundId: input.panelInboundId
+      });
+    }
+
+    throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板后再导入节点");
+  }
+
   async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {
     const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
     if (!current) {
@@ -1464,6 +1902,27 @@ export class DevDataService implements OnModuleInit {
 
     const gatewayStatus = await this.edgeGatewayService.getGatewayStatus();
     const result = await probeNodeConnectivity(current.serverHost, current.serverPort, current.serverName, current.subscriptionUrl);
+    let panelStatus = current.panelStatus;
+    let panelError = current.panelError;
+    let panelLastSyncedAt = current.panelLastSyncedAt;
+    if (current.panelEnabled) {
+      try {
+        await this.xuiService.checkNodeHealth({
+          id: current.id,
+          panelBaseUrl: current.panelBaseUrl,
+          panelApiBasePath: current.panelApiBasePath,
+          panelUsername: current.panelUsername,
+          panelPassword: current.panelPassword,
+          panelInboundId: current.panelInboundId
+        });
+        panelStatus = "online";
+        panelError = null;
+        panelLastSyncedAt = new Date();
+      } catch (error) {
+        panelStatus = "degraded";
+        panelError = error instanceof Error ? error.message : "3x-ui 面板探测失败";
+      }
+    }
     const row = await this.prisma.node.update({
       where: { id: nodeId },
       data: {
@@ -1471,7 +1930,10 @@ export class DevDataService implements OnModuleInit {
         probeLatencyMs: result.latencyMs,
         probeCheckedAt: new Date(),
         probeError: result.error,
-        latencyMs: result.latencyMs ?? current.latencyMs
+        latencyMs: result.latencyMs ?? current.latencyMs,
+        panelStatus,
+        panelError,
+        panelLastSyncedAt
       }
     });
 
@@ -1564,6 +2026,7 @@ export class DevDataService implements OnModuleInit {
     await this.prisma.policyProfile.update({
       where: { id: "default" },
       data: {
+        ...(input.accessMode !== undefined ? { accessMode: input.accessMode } : {}),
         ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
         ...(input.modes !== undefined ? { modes: input.modes } : {}),
         ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
@@ -1917,7 +2380,10 @@ export class DevDataService implements OnModuleInit {
         fingerprint: "chrome",
         spiderX: "/",
         subscriptionUrl: null,
-        probeStatus: "unknown"
+        probeStatus: "unknown",
+        panelApiBasePath: "/",
+        panelEnabled: false,
+        panelStatus: "offline"
       }))
     });
 
@@ -1949,6 +2415,7 @@ export class DevDataService implements OnModuleInit {
     await this.prisma.policyProfile.create({
       data: {
         id: "default",
+        accessMode: "xui",
         defaultMode: mockPolicies.defaultMode,
         modes: mockPolicies.modes,
         ruleVersion: "managed",
@@ -2138,7 +2605,6 @@ function toNodeSummary(row: {
   serverPort: number;
   serverName: string;
 }): NodeSummaryDto {
-  const edgeConfig = readEdgeProbeConfig();
   return {
     id: row.id,
     name: row.name,
@@ -2149,9 +2615,9 @@ function toNodeSummary(row: {
     latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
     security: row.security as "reality",
-    serverHost: edgeConfig.serverHost,
-    serverPort: edgeConfig.serverPort,
-    serverName: edgeConfig.serverName
+    serverHost: row.serverHost,
+    serverPort: row.serverPort,
+    serverName: row.serverName
   };
 }
 
@@ -2246,6 +2712,15 @@ function toAdminNodeRecord(row: {
   subscriptionUrl: string | null;
   gatewayStatus: "online" | "offline" | "degraded";
   statsLastSyncedAt: Date | null;
+  panelBaseUrl: string | null;
+  panelApiBasePath: string | null;
+  panelUsername: string | null;
+  panelPassword: string | null;
+  panelInboundId: number | null;
+  panelEnabled: boolean;
+  panelStatus: "online" | "offline" | "degraded";
+  panelLastSyncedAt: Date | null;
+  panelError: string | null;
   probeStatus: NodeProbeStatus;
   probeCheckedAt: Date | null;
   probeError: string | null;
@@ -2257,6 +2732,15 @@ function toAdminNodeRecord(row: {
     subscriptionUrl: row.subscriptionUrl,
     gatewayStatus: row.gatewayStatus,
     statsLastSyncedAt: row.statsLastSyncedAt?.toISOString() ?? null,
+    panelBaseUrl: row.panelBaseUrl,
+    panelApiBasePath: row.panelApiBasePath,
+    panelUsername: row.panelUsername,
+    panelPassword: row.panelPassword,
+    panelInboundId: row.panelInboundId,
+    panelEnabled: row.panelEnabled,
+    panelStatus: row.panelStatus,
+    panelLastSyncedAt: row.panelLastSyncedAt?.toISOString() ?? null,
+    panelError: row.panelError,
     serverName: row.serverName,
     serverHost: row.serverHost,
     serverPort: row.serverPort,
@@ -2326,6 +2810,7 @@ function toAnnouncementDto(row: {
 }
 
 function toAdminPolicyRecord(row: {
+  accessMode: string;
   defaultMode: string;
   modes: string[];
   blockAds: boolean;
@@ -2338,6 +2823,7 @@ function toAdminPolicyRecord(row: {
   downloadUrl: string | null;
 }): AdminPolicyRecordDto {
   return {
+    accessMode: row.accessMode as AdminPolicyRecordDto["accessMode"],
     defaultMode: row.defaultMode as PolicyBundleDto["defaultMode"],
     modes: row.modes as PolicyBundleDto["modes"],
     features: {
@@ -2511,8 +2997,24 @@ function buildLeaseEmail(userId: string, leaseId: string) {
   return `${userId}.${leaseId}@lease.chordv`;
 }
 
+function buildPanelClientEmail(userEmail: string, subscriptionId: string, nodeId: string, userId: string) {
+  const sanitizedEmail = userEmail.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const sanitizedNode = nodeId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const sanitizedSubscription = subscriptionId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const sanitizedUser = userId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return [sanitizedEmail || "user", sanitizedSubscription.slice(-8), sanitizedNode.slice(-8), sanitizedUser.slice(-8)].join("_");
+}
+
 function toNodeId(host: string, port: number) {
   return `node_${host.replaceAll(".", "_").replaceAll("-", "_")}_${port}`;
+}
+
+function normalizePanelApiBasePath(value: string | null | undefined) {
+  const raw = value?.trim() || "/";
+  if (raw === "/") {
+    return "/";
+  }
+  return `/${raw.replace(/^\/+/, "").replace(/\/+$/, "")}`;
 }
 
 function normalizeTags(tags: string[] | undefined, name: string) {
@@ -2667,7 +3169,7 @@ function probeTcp(host: string, port: number) {
 
     socket.setTimeout(5000);
     socket.once("connect", () => {
-      const latency = Date.now() - startedAt;
+      const latency = Math.max(1, Date.now() - startedAt);
       cleanup();
       resolve(latency);
     });

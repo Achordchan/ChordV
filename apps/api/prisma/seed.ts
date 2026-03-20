@@ -332,7 +332,10 @@ async function main() {
         probeStatus: "unknown",
         probeLatencyMs: null,
         probeCheckedAt: null,
-        probeError: null
+        probeError: null,
+        panelApiBasePath: "/",
+        panelEnabled: false,
+        panelStatus: "offline"
       },
       create: {
         id: node.id,
@@ -354,7 +357,10 @@ async function main() {
         fingerprint: "chrome",
         spiderX: "/",
         subscriptionUrl: null,
-        probeStatus: "unknown"
+        probeStatus: "unknown",
+        panelApiBasePath: "/",
+        panelEnabled: false,
+        panelStatus: "offline"
       }
     });
   }
@@ -400,6 +406,7 @@ async function main() {
   await prisma.policyProfile.upsert({
     where: { id: "default" },
     update: {
+      accessMode: "xui",
       defaultMode: mockPolicies.defaultMode,
       modes: mockPolicies.modes,
       ruleVersion: "managed",
@@ -416,6 +423,7 @@ async function main() {
     },
     create: {
       id: "default",
+      accessMode: "xui",
       defaultMode: mockPolicies.defaultMode,
       modes: mockPolicies.modes,
       ruleVersion: "managed",

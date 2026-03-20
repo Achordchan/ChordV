@@ -14,9 +14,8 @@ ChordV 是一个面向自有订阅体系的代理平台单仓工程。
 
 ```bash
 pnpm setup:mac
+pnpm dev:ops
 pnpm dev:mac
-# 本地联调中心中转时再执行
-pnpm dev:edge
 ```
 
 `pnpm setup:mac` 会自动下载 macOS 对应的 `xray` 内核到 `apps/desktop/src-tauri/bin`。
@@ -52,6 +51,7 @@ pnpm dev:edge
 - 登录态改为 JWT + 可吊销 Refresh Token，旧版可推导 token 不再可用。
 - 客户端连接现在只拿中心入口参数，真实节点参数仅保存在服务端。
 - 真实扣量以中心中转层看到的上下行字节为准，由 `edge-gateway` 主动上报到中心 API。
-- `pnpm dev:mac` 会启动后端并拉起 Tauri 原生 macOS 桌面窗口，不是单纯网页预览。
-- `pnpm dev:ops` 与 `pnpm dev:mac` 默认不启动 `edge-gateway`；需要联调中心中转时单独执行 `pnpm dev:edge`。
+- `pnpm dev:ops` 会启动 `api + edge-gateway + admin`，作为本地后台整套开发入口。
+- `pnpm dev:mac` 只拉起 Tauri 原生 macOS 桌面窗口，默认依赖已经运行中的后台服务。
+- 只有单独调试中心中转时，才需要手动执行 `pnpm dev:edge`。
 - 桌面端现在会真正拉起 `xray` 进程，并显示 PID、配置路径和运行日志。

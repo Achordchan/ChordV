@@ -51,6 +51,7 @@ let xrayBinaryPath: string | null = null;
 let edgeRealityPrivateKey = process.env.CHORDV_EDGE_REALITY_PRIVATE_KEY?.trim() || "";
 let edgeRealityPublicKey = process.env.CHORDV_EDGE_REALITY_PUBLIC_KEY?.trim() || "";
 let edgeRealityShortId = process.env.CHORDV_EDGE_REALITY_SHORT_ID?.trim() || "";
+let expectedXrayExit = false;
 
 void bootstrap();
 
@@ -139,12 +140,15 @@ function isAuthorized(authorization?: string) {
 
 async function upsertSession(input: EdgeSessionOpenInputDto) {
   const current = sessions.get(input.leaseId);
+  const shouldRebuild = !current || hasSessionRouteChanged(current, input);
   sessions.set(input.leaseId, {
     ...input,
     uplinkBaseBytes: current?.uplinkBaseBytes ?? 0n,
     downlinkBaseBytes: current?.downlinkBaseBytes ?? 0n
   });
-  await rebuildGateway();
+  if (shouldRebuild) {
+    await rebuildGateway();
+  }
 }
 
 async function removeSession(input: EdgeSessionCloseInputDto) {
@@ -173,7 +177,10 @@ async function rebuildGateway() {
   child.stdout.pipe(logStream);
   child.stderr.pipe(logStream);
   child.on("exit", (code) => {
-    warnThrottled("xray-exit", `中心中转 xray 已退出: ${code ?? "unknown"}`);
+    if (!expectedXrayExit) {
+      warnThrottled("xray-exit", `中心中转 xray 异常退出: ${code ?? "unknown"}`);
+    }
+    expectedXrayExit = false;
     xrayChild = null;
   });
 
@@ -204,6 +211,7 @@ async function stopXray() {
 
   const child = xrayChild;
   xrayChild = null;
+  expectedXrayExit = true;
   child.kill("SIGTERM");
   await sleep(500);
   if (!child.killed) {
@@ -599,6 +607,23 @@ function normalizeApiBaseUrl(input: string) {
     return trimmed;
   }
   return `${trimmed}/api`;
+}
+
+function hasSessionRouteChanged(current: RelaySession, next: EdgeSessionOpenInputDto) {
+  return (
+    current.xrayUserEmail !== next.xrayUserEmail ||
+    current.xrayUserUuid !== next.xrayUserUuid ||
+    current.node.nodeId !== next.node.nodeId ||
+    current.node.serverHost !== next.node.serverHost ||
+    current.node.serverPort !== next.node.serverPort ||
+    current.node.uuid !== next.node.uuid ||
+    current.node.flow !== next.node.flow ||
+    current.node.realityPublicKey !== next.node.realityPublicKey ||
+    current.node.shortId !== next.node.shortId ||
+    current.node.serverName !== next.node.serverName ||
+    current.node.fingerprint !== next.node.fingerprint ||
+    current.node.spiderX !== next.node.spiderX
+  );
 }
 
 function enqueue<T>(job: () => Promise<T>) {

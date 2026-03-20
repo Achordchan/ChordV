@@ -835,7 +835,7 @@ fn probe_single_node(node: NodeSummaryDto) -> NodeProbeResultDto {
         Ok(_) => NodeProbeResultDto {
             node_id: node.id,
             status: "healthy".into(),
-            latency_ms: Some(start.elapsed().as_millis().min(u128::from(u32::MAX)) as u32),
+            latency_ms: Some((start.elapsed().as_millis().max(1)).min(u128::from(u32::MAX)) as u32),
             checked_at,
             error: None,
         },

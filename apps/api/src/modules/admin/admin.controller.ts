@@ -11,6 +11,7 @@ import {
   CreateTeamSubscriptionDto,
   CreateUserDto,
   ImportNodeDto,
+  ReadNodePanelInboundsDto,
   RenewSubscriptionDto,
   UpdateAnnouncementDto,
   UpdateNodeDto,
@@ -158,6 +159,11 @@ export class AdminController {
   @Post("nodes/import")
   importNode(@Body() body: ImportNodeDto) {
     return this.devDataService.importNodeFromSubscription(body);
+  }
+
+  @Post("nodes/panel-inbounds")
+  listNodePanelInbounds(@Body() body: ReadNodePanelInboundsDto) {
+    return this.devDataService.listNodePanelInbounds(body);
   }
 
   @Patch("nodes/:nodeId")

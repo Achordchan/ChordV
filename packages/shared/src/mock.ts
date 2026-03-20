@@ -264,6 +264,15 @@ export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   subscriptionUrl: null,
   gatewayStatus: "online",
   statsLastSyncedAt: null,
+  panelBaseUrl: null,
+  panelApiBasePath: "/",
+  panelUsername: null,
+  panelPassword: null,
+  panelInboundId: null,
+  panelEnabled: false,
+  panelStatus: "offline",
+  panelLastSyncedAt: null,
+  panelError: null,
   serverName: "aws.amazon.com",
   serverHost: `${node.region.toLowerCase()}.edge.chordv.app`,
   serverPort: 443,
@@ -286,6 +295,7 @@ export const mockAdminAnnouncements: AdminAnnouncementRecordDto[] = mockAnnounce
 
 export const mockAdminPolicy: AdminPolicyRecordDto = {
   ...mockPolicies,
+  accessMode: "xui",
   currentVersion: mockVersion.currentVersion,
   minimumVersion: mockVersion.minimumVersion,
   forceUpgrade: mockVersion.forceUpgrade,

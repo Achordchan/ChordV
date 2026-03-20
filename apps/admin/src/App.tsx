@@ -31,6 +31,7 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type {
+  AccessMode,
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
   AdminPlanRecordDto,
@@ -219,6 +220,12 @@ type NodeFormState = {
   provider: string;
   tags: string;
   recommended: boolean;
+  panelBaseUrl: string;
+  panelApiBasePath: string;
+  panelUsername: string;
+  panelPassword: string;
+  panelInboundId: number;
+  panelEnabled: boolean;
 };
 
 type AnnouncementFormState = {
@@ -232,6 +239,7 @@ type AnnouncementFormState = {
 };
 
 type PolicyFormState = {
+  accessMode: AccessMode;
   defaultMode: ConnectionMode;
   modes: ConnectionMode[];
   blockAds: boolean;
@@ -427,6 +435,7 @@ export function App() {
       })),
     [snapshot?.nodes]
   );
+  const currentAccessMode = policyForm?.accessMode ?? snapshot?.policy.accessMode ?? "xui";
 
   async function loadSnapshot() {
     try {
@@ -716,7 +725,13 @@ export function App() {
           region: record.region,
           provider: record.provider,
           tags: record.tags.join(", "),
-          recommended: record.recommended
+          recommended: record.recommended,
+          panelBaseUrl: record.panelBaseUrl ?? "",
+          panelApiBasePath: record.panelApiBasePath ?? "/",
+          panelUsername: record.panelUsername ?? "",
+          panelPassword: record.panelPassword ?? "",
+          panelInboundId: record.panelInboundId ?? 1,
+          panelEnabled: record.panelEnabled
         });
       } else {
         setNodeForm(emptyNodeForm());
@@ -897,13 +912,20 @@ export function App() {
       }
 
       if (drawer.type === "node") {
+        const isXuiMode = currentAccessMode === "xui";
         const payload = {
-          subscriptionUrl: nodeForm.subscriptionUrl,
+          subscriptionUrl: isXuiMode ? undefined : nodeForm.subscriptionUrl,
           name: nodeForm.name || undefined,
           region: nodeForm.region || undefined,
           provider: nodeForm.provider || undefined,
           tags: splitCsv(nodeForm.tags),
-          recommended: nodeForm.recommended
+          recommended: nodeForm.recommended,
+          panelBaseUrl: nodeForm.panelBaseUrl || undefined,
+          panelApiBasePath: nodeForm.panelApiBasePath || undefined,
+          panelUsername: nodeForm.panelUsername || undefined,
+          panelPassword: nodeForm.panelPassword || undefined,
+          panelInboundId: Number(nodeForm.panelInboundId) || undefined,
+          panelEnabled: nodeForm.panelEnabled
         };
         const success = drawer.recordId
           ? await runAction(
@@ -914,7 +936,13 @@ export function App() {
                   region: payload.region,
                   provider: payload.provider,
                   tags: payload.tags,
-                  recommended: payload.recommended
+                  recommended: payload.recommended,
+                  panelBaseUrl: payload.panelBaseUrl,
+                  panelApiBasePath: payload.panelApiBasePath,
+                  panelUsername: payload.panelUsername,
+                  panelPassword: payload.panelPassword,
+                  panelInboundId: payload.panelInboundId,
+                  panelEnabled: payload.panelEnabled
                 } satisfies UpdateNodeInputDto),
               "节点已更新"
             )
@@ -985,6 +1013,7 @@ export function App() {
       const success = await runAction(
         () =>
           updatePolicy({
+            accessMode: policyForm.accessMode,
             defaultMode: policyForm.defaultMode,
             modes: policyForm.modes,
             blockAds: policyForm.blockAds,
@@ -1626,7 +1655,8 @@ export function App() {
                       <Table.Tr>
                         <Table.Th>节点</Table.Th>
                         <Table.Th>地址</Table.Th>
-                        <Table.Th>中转</Table.Th>
+                        <Table.Th>3x-ui</Table.Th>
+                        {currentAccessMode === "relay" ? <Table.Th>中转</Table.Th> : null}
                         <Table.Th>探测状态</Table.Th>
                         <Table.Th>延迟</Table.Th>
                         <Table.Th>最后检测</Table.Th>
@@ -1647,16 +1677,21 @@ export function App() {
                         </Table.Td>
                         <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
                         <Table.Td>
-                          <StatusBadge color={nodeGatewayColor(item.gatewayStatus)} label={translateGatewayStatus(item.gatewayStatus)} />
+                          <StatusBadge color={nodePanelColor(item.panelStatus)} label={translatePanelStatus(item.panelStatus)} />
                         </Table.Td>
+                        {currentAccessMode === "relay" ? (
+                          <Table.Td>
+                            <StatusBadge color={nodeGatewayColor(item.gatewayStatus)} label={translateGatewayStatus(item.gatewayStatus)} />
+                          </Table.Td>
+                        ) : null}
                         <Table.Td>
                           <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
                         </Table.Td>
-                        <Table.Td>{item.probeLatencyMs ? `${item.probeLatencyMs} ms` : "-"}</Table.Td>
+                        <Table.Td>{item.probeLatencyMs !== null ? `${item.probeLatencyMs} ms` : "-"}</Table.Td>
                         <Table.Td>{item.probeCheckedAt ? formatDateTime(item.probeCheckedAt) : "-"}</Table.Td>
                         <Table.Td>
                           <Text size="sm" c="dimmed" lineClamp={2}>
-                            {item.probeError || "-"}
+                            {item.panelError || item.probeError || "-"}
                           </Text>
                         </Table.Td>
                         <Table.Td>
@@ -1739,6 +1774,24 @@ export function App() {
                     <Card withBorder radius="xl" p="lg">
                       <Stack gap="md">
                         <Title order={4}>基础策略</Title>
+                        <Select
+                          label="接入模式"
+                          data={[
+                            { value: "xui", label: "3x-ui 直连模式" },
+                            { value: "relay", label: "中心中转模式" }
+                          ]}
+                          value={policyForm.accessMode}
+                          onChange={(value) => setPolicyForm((current) => current ? { ...current, accessMode: (value || "xui") as AccessMode } : current)}
+                        />
+                        {policyForm.accessMode === "xui" ? (
+                          <Alert color="blue" variant="light">
+                            当前使用 3x-ui 直连接入，中心负责开通、删号与汇总计量。
+                          </Alert>
+                        ) : (
+                          <Alert color="yellow" variant="light">
+                            当前使用中心中转接入，客户端不会直接拿到真实节点参数，但需要额外中转资源。
+                          </Alert>
+                        )}
                         <Select
                           label="默认模式"
                           data={modeOptions}
@@ -2065,11 +2118,17 @@ export function App() {
 
           {drawer.type === "node" ? (
             <>
-              <TextInput
-                label="订阅地址"
-                value={nodeForm.subscriptionUrl}
-                onChange={(event) => setNodeForm((current) => ({ ...current, subscriptionUrl: event.currentTarget.value }))}
-              />
+              {currentAccessMode === "relay" ? (
+                <TextInput
+                  label="订阅地址"
+                  value={nodeForm.subscriptionUrl}
+                  onChange={(event) => setNodeForm((current) => ({ ...current, subscriptionUrl: event.currentTarget.value }))}
+                />
+              ) : (
+                <Alert color="blue" variant="light">
+                  当前为 3x-ui 直连模式，节点运行参数会直接从面板入站读取，无需填写订阅地址。
+                </Alert>
+              )}
               <TextInput
                 label="节点名称"
                 value={nodeForm.name}
@@ -2098,6 +2157,44 @@ export function App() {
                 onChange={(event) => setNodeForm((current) => ({ ...current, recommended: event.currentTarget.checked }))}
                 label="推荐节点"
               />
+              <Switch
+                checked={nodeForm.panelEnabled}
+                onChange={(event) => setNodeForm((current) => ({ ...current, panelEnabled: event.currentTarget.checked }))}
+                label="启用 3x-ui 面板"
+              />
+              <TextInput
+                label="面板地址"
+                placeholder="https://panel.example.com:2053"
+                value={nodeForm.panelBaseUrl}
+                onChange={(event) => setNodeForm((current) => ({ ...current, panelBaseUrl: event.currentTarget.value }))}
+              />
+              <Group grow>
+                <TextInput
+                  label="面板路径"
+                  placeholder="/"
+                  value={nodeForm.panelApiBasePath}
+                  onChange={(event) => setNodeForm((current) => ({ ...current, panelApiBasePath: event.currentTarget.value }))}
+                />
+                <NumberInput
+                  label="入站 ID"
+                  min={1}
+                  value={nodeForm.panelInboundId}
+                  onChange={(value) => setNodeForm((current) => ({ ...current, panelInboundId: Number(value) || 1 }))}
+                />
+              </Group>
+              <Group grow>
+                <TextInput
+                  label="面板账号"
+                  value={nodeForm.panelUsername}
+                  onChange={(event) => setNodeForm((current) => ({ ...current, panelUsername: event.currentTarget.value }))}
+                />
+                <TextInput
+                  label="面板密码"
+                  type="password"
+                  value={nodeForm.panelPassword}
+                  onChange={(event) => setNodeForm((current) => ({ ...current, panelPassword: event.currentTarget.value }))}
+                />
+              </Group>
             </>
           ) : null}
 
@@ -2555,7 +2652,13 @@ function emptyNodeForm(): NodeFormState {
     region: "",
     provider: "自有节点",
     tags: "",
-    recommended: true
+    recommended: true,
+    panelBaseUrl: "",
+    panelApiBasePath: "/",
+    panelUsername: "",
+    panelPassword: "",
+    panelInboundId: 1,
+    panelEnabled: false
   };
 }
 
@@ -2573,6 +2676,7 @@ function emptyAnnouncementForm(): AnnouncementFormState {
 
 function toPolicyForm(policy: AdminPolicyRecordDto): PolicyFormState {
   return {
+    accessMode: policy.accessMode,
     defaultMode: policy.defaultMode,
     modes: policy.modes,
     blockAds: policy.features.blockAds,
@@ -2761,6 +2865,18 @@ function nodeGatewayColor(status: AdminNodeRecordDto["gatewayStatus"]) {
   if (status === "online") return "green";
   if (status === "degraded") return "yellow";
   return "red";
+}
+
+function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"]) {
+  if (status === "online") return "在线";
+  if (status === "degraded") return "异常";
+  return "未配置";
+}
+
+function nodePanelColor(status: AdminNodeRecordDto["panelStatus"]) {
+  if (status === "online") return "green";
+  if (status === "degraded") return "yellow";
+  return "gray";
 }
 
 function translateAnnouncementLevel(level: AnnouncementLevel) {

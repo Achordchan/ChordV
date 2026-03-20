@@ -89,7 +89,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
                         <Badge variant="light" color={status === "healthy" ? "green" : "red"}>
                           {status === "healthy" ? "可用" : "不可用"}
                         </Badge>
-                        <Text fw={700}>{latency ? `${latency}ms` : "--"}</Text>
+                        <Text fw={700}>{latency !== null && latency !== undefined ? `${latency}ms` : "--"}</Text>
                       </Stack>
                     </Group>
                   </Paper>

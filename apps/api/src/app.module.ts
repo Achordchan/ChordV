@@ -8,6 +8,7 @@ import { DevDataModule } from "./modules/common/dev-data.module";
 import { EdgeGatewayModule } from "./modules/edge-gateway/edge-gateway.module";
 import { PrismaModule } from "./modules/common/prisma.module";
 import { UsageModule } from "./modules/usage/usage.module";
+import { XuiModule } from "./modules/xui/xui.module";
 
 @Module({
   imports: [
@@ -19,7 +20,8 @@ import { UsageModule } from "./modules/usage/usage.module";
     ClientModule,
     AnnouncementsModule,
     AdminModule,
-    UsageModule
+    UsageModule,
+    XuiModule
   ]
 })
 export class AppModule {}
