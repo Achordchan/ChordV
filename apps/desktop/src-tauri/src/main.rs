@@ -204,6 +204,13 @@ fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult
 
 #[tauri::command]
 fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
+    let state: State<'_, Mutex<RuntimeState>> = app.state();
+    if let Ok(mut state) = state.lock() {
+        shutdown_runtime(&app, &mut state);
+    } else if cfg!(target_os = "macos") {
+        let _ = clear_proxy();
+    }
+
     let path = session_path(&app)?;
     if path.exists() {
         fs::remove_file(path).map_err(|error| error.to_string())?;
@@ -319,7 +326,7 @@ fn connect_runtime(
     state: State<'_, Mutex<RuntimeState>>,
 ) -> Result<CommandResult, String> {
     let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
-    stop_runtime_process(&mut state);
+    stop_runtime_process(&app, &mut state);
 
     if cfg!(target_os = "macos") {
         let _ = clear_proxy();
@@ -374,6 +381,11 @@ fn connect_runtime(
             let _ = child.wait();
             state.status = "error".into();
             state.active_session_id = None;
+            state.config_path = None;
+            state.log_path = None;
+            state.xray_binary_path = None;
+            state.child = None;
+            state.active_pid = None;
             state.last_error = Some(format!("设置系统代理失败：{error}"));
             return Err(format!("设置系统代理失败：{error}"));
         }
@@ -384,6 +396,7 @@ fn connect_runtime(
     state.log_path = Some(log_path.clone());
     state.xray_binary_path = Some(xray_binary_path.clone());
     state.active_pid = Some(child.id());
+    persist_runtime_pid(&app, child.id());
     state.child = Some(child);
 
     Ok(CommandResult {
@@ -395,21 +408,30 @@ fn connect_runtime(
 }
 
 #[tauri::command]
-fn disconnect_runtime(state: State<'_, Mutex<RuntimeState>>) -> Result<CommandResult, String> {
+fn disconnect_runtime(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Result<CommandResult, String> {
     let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
     state.status = "disconnecting".into();
+    let mut proxy_error: Option<String> = None;
 
     if cfg!(target_os = "macos") {
-        clear_proxy().map_err(|error| error.to_string())?;
+        if let Err(error) = clear_proxy() {
+            proxy_error = Some(error.to_string());
+        }
     }
 
-    stop_runtime_process(&mut state);
+    stop_runtime_process(&app, &mut state);
 
     state.status = "idle".into();
     state.active_session_id = None;
     state.config_path = None;
     state.active_pid = None;
+    state.log_path = None;
+    state.xray_binary_path = None;
     state.last_error = None;
+
+    if let Some(error) = proxy_error {
+        state.last_error = Some(format!("已停止内核，但清理系统代理失败：{error}"));
+    }
 
     Ok(CommandResult {
         ok: true,
@@ -771,6 +793,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
                 state.status = "error".into();
                 state.active_pid = None;
                 state.child = None;
+                state.config_path = None;
                 state.last_error = Some(format!("xray 已退出：{status}"));
             }
             Ok(None) => {
@@ -785,6 +808,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
                 state.status = "error".into();
                 state.active_pid = None;
                 state.child = None;
+                state.config_path = None;
                 state.last_error = Some(format!("读取 xray 状态失败：{error}"));
             }
         }
@@ -799,20 +823,26 @@ fn refresh_child_state(state: &mut RuntimeState) {
         state.status = "error".into();
         state.active_pid = None;
         state.child = None;
+        state.config_path = None;
         state.last_error = Some("内核未运行".into());
     }
 }
 
-fn stop_runtime_process(state: &mut RuntimeState) {
+fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
     if let Some(mut child) = state.child.take() {
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    if let Some(pid) = load_runtime_pid(app) {
+        let _ = kill_pid(pid);
     }
 
     if let Some(path) = state.config_path.take() {
         let _ = fs::remove_file(path);
     }
 
+    clear_runtime_pid(app);
     state.active_pid = None;
 }
 
@@ -823,6 +853,62 @@ fn session_path(app: &AppHandle) -> Result<PathBuf, String> {
         .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"));
     path.push("session.json");
     Ok(path)
+}
+
+fn runtime_pid_path(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+        .join("runtime")
+        .join("xray.pid")
+}
+
+fn persist_runtime_pid(app: &AppHandle, pid: u32) {
+    let path = runtime_pid_path(app);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, pid.to_string());
+}
+
+fn load_runtime_pid(app: &AppHandle) -> Option<u32> {
+    let path = runtime_pid_path(app);
+    let content = fs::read_to_string(path).ok()?;
+    content.trim().parse::<u32>().ok()
+}
+
+fn clear_runtime_pid(app: &AppHandle) {
+    let path = runtime_pid_path(app);
+    let _ = fs::remove_file(path);
+}
+
+fn kill_pid(pid: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("结束进程失败：{pid}"));
+    }
+
+    #[cfg(windows)]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .map_err(|error| error.to_string())?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!("结束进程失败：{pid}"));
+    }
+
+    #[allow(unreachable_code)]
+    Err(format!("当前平台不支持结束进程：{pid}"))
 }
 
 fn probe_single_node(node: NodeSummaryDto) -> NodeProbeResultDto {
@@ -893,14 +979,17 @@ fn chrono_like_now() -> String {
     datetime.to_rfc3339()
 }
 
-fn shutdown_runtime(state: &mut RuntimeState) {
+fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
     if cfg!(target_os = "macos") {
         let _ = clear_proxy();
     }
 
-    stop_runtime_process(state);
+    stop_runtime_process(app, state);
     state.status = "idle".into();
     state.active_session_id = None;
+    state.config_path = None;
+    state.log_path = None;
+    state.xray_binary_path = None;
     state.last_error = None;
 }
 
@@ -1039,6 +1128,11 @@ fn cleanup_stale_runtime(app: &AppHandle) {
         .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
         .join("runtime");
 
+    if let Some(pid) = load_runtime_pid(app) {
+        let _ = kill_pid(pid);
+        clear_runtime_pid(app);
+    }
+
     let stale_binary = runtime_dir.join("bin").join("xray");
     if stale_binary.exists() {
         let _ = Command::new("pkill")
@@ -1052,7 +1146,10 @@ fn cleanup_stale_runtime(app: &AppHandle) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-                let _ = fs::remove_file(path);
+                let _ = fs::remove_file(&path);
+            }
+            if path.extension().and_then(|ext| ext.to_str()) == Some("log") {
+                let _ = fs::remove_file(&path);
             }
         }
     }
@@ -1100,7 +1197,7 @@ fn main() {
         RunEvent::ExitRequested { .. } | RunEvent::Exit => {
             let state: State<'_, Mutex<RuntimeState>> = app_handle.state();
             if let Ok(mut state) = state.lock() {
-                shutdown_runtime(&mut state);
+                shutdown_runtime(app_handle, &mut state);
             } else if cfg!(target_os = "macos") {
                 let _ = clear_proxy();
             }

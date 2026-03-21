@@ -1,32 +1,18 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Accordion,
   ActionIcon,
   Alert,
   AppShell,
-  Badge,
   Button,
   Card,
-  Checkbox,
-  Drawer,
   Group,
   Loader,
-  Modal,
-  MultiSelect,
   NavLink,
-  NumberInput,
   Paper,
-  ScrollArea,
-  Select,
   SimpleGrid,
   Stack,
-  Switch,
   Table,
-  Tabs,
   Text,
-  TextInput,
-  Textarea,
-  ThemeIcon,
   Title
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -34,16 +20,15 @@ import type {
   AccessMode,
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
+  AdminNodePanelInboundDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
   AdminTeamRecordDto,
+  AdminTeamUsageRecordDto,
   AdminUserRecordDto,
-  AnnouncementDisplayMode,
-  AnnouncementLevel,
   ChangeSubscriptionPlanInputDto,
-  ConnectionMode,
   CreateAnnouncementInputDto,
   CreatePlanInputDto,
   CreateSubscriptionInputDto,
@@ -54,9 +39,6 @@ import type {
   ImportNodeInputDto,
   PlanScope,
   RenewSubscriptionInputDto,
-  SubscriptionState,
-  TeamMemberRole,
-  TeamStatus,
   UpdateAnnouncementInputDto,
   UpdateNodeInputDto,
   UpdatePlanInputDto,
@@ -64,9 +46,7 @@ import type {
   UpdateSubscriptionInputDto,
   UpdateTeamInputDto,
   UpdateTeamMemberInputDto,
-  UpdateUserInputDto,
-  UserRole,
-  UserStatus
+  UpdateUserInputDto
 } from "@chordv/shared";
 import {
   IconBell,
@@ -95,12 +75,15 @@ import {
   createUser,
   deleteNode,
   deleteTeamMember,
+  fetchNodePanelInbounds,
   getAdminSnapshot,
   getSubscriptionNodeAccess,
   importNode,
+  kickTeamMember,
   probeAllNodes,
   probeNode,
   refreshNode,
+  resetSubscriptionTraffic,
   renewSubscription,
   updateAnnouncement,
   updateNode,
@@ -120,136 +103,66 @@ import {
   updateUser
 } from "./api/client";
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
+import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
+import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
+import { DataTable } from "./features/shared/DataTable";
+import { SectionCard } from "./features/shared/SectionCard";
+import { StatusBadge } from "./features/shared/StatusBadge";
+import { AnnouncementsPage } from "./pages/AnnouncementsPage";
+import { NodesPage } from "./pages/NodesPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { PlansPage } from "./pages/PlansPage";
+import { PoliciesPage } from "./pages/PoliciesPage";
+import { SubscriptionsPage } from "./pages/SubscriptionsPage";
+import { UsersPage } from "./pages/UsersPage";
+import {
+  applyPlanToChangePlanForm,
+  applyPlanToCreateForm,
+  applyPlanToTeamSubscriptionForm,
+  emptyAnnouncementForm,
+  emptyNodeForm,
+  emptyPlanForm,
+  emptySubscriptionAdjustForm,
+  emptySubscriptionChangePlanForm,
+  emptySubscriptionCreateForm,
+  emptySubscriptionRenewForm,
+  emptyTeamForm,
+  emptyTeamMemberForm,
+  emptyTeamSubscriptionForm,
+  emptyUserForm,
+  modeOptions,
+  toPolicyForm,
+  type AnnouncementFormState,
+  type NodeFormState,
+  type PlanFormState,
+  type PolicyFormState,
+  type SubscriptionAdjustFormState,
+  type SubscriptionChangePlanFormState,
+  type SubscriptionCreateFormState,
+  type SubscriptionRenewFormState,
+  type TeamFormState,
+  type TeamMemberFormState,
+  type TeamSubscriptionFormState,
+  type UserFormState
+} from "./utils/admin-forms";
+import { filterByKeyword, readError } from "./utils/admin-filters";
+import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
+import {
+  getRenewActionDescription,
+  subscriptionStateColor,
+  translateSubscriptionState
+} from "./utils/admin-translate";
 
 type SectionKey = "overview" | "users" | "plans" | "subscriptions" | "nodes" | "announcements" | "policies";
-type DrawerType =
-  | "user"
-  | "plan"
-  | "subscription-create"
-  | "subscription-adjust"
-  | "subscription-renew"
-  | "subscription-change-plan"
-  | "team"
-  | "team-member"
-  | "team-subscription"
-  | "node"
-  | "announcement"
-  | null;
-
 type EditorState = {
   type: DrawerType;
   recordId: string | null;
   parentId: string | null;
 };
 
-type UserFormState = {
-  email: string;
-  password: string;
-  displayName: string;
-  role: UserRole;
-  status: UserStatus;
-};
-
-type PlanFormState = {
-  name: string;
-  scope: PlanScope;
-  totalTrafficGb: number;
-  renewable: boolean;
-  isActive: boolean;
-};
-
-type SubscriptionCreateFormState = {
-  userId: string;
-  planId: string;
-  totalTrafficGb: number;
-  usedTrafficGb: number;
-  expireAt: string;
-  state: SubscriptionState;
-  renewable: boolean;
-};
-
-type SubscriptionAdjustFormState = {
-  totalTrafficGb: number;
-  usedTrafficGb: number;
-  expireAt: string;
-  state: SubscriptionState;
-  renewable: boolean;
-};
-
-type SubscriptionRenewFormState = {
-  expireAt: string;
-  extendDays: number;
-  resetTraffic: boolean;
-  totalTrafficGb: number | "";
-};
-
-type SubscriptionChangePlanFormState = {
-  planId: string;
-  totalTrafficGb: number;
-  expireAt: string;
-  renewable: boolean;
-};
-
-type TeamFormState = {
-  name: string;
-  ownerUserId: string;
-  status: TeamStatus;
-};
-
-type TeamMemberFormState = {
-  userId: string;
-  role: TeamMemberRole;
-};
-
-type TeamSubscriptionFormState = {
-  planId: string;
-  totalTrafficGb: number;
-  expireAt: string;
-  renewable: boolean;
-};
-
 type NodeAccessEditorState = {
   subscriptionId: string;
   ownerLabel: string;
-};
-
-type NodeFormState = {
-  subscriptionUrl: string;
-  name: string;
-  region: string;
-  provider: string;
-  tags: string;
-  recommended: boolean;
-  panelBaseUrl: string;
-  panelApiBasePath: string;
-  panelUsername: string;
-  panelPassword: string;
-  panelInboundId: number;
-  panelEnabled: boolean;
-};
-
-type AnnouncementFormState = {
-  title: string;
-  body: string;
-  level: AnnouncementLevel;
-  publishedAt: string;
-  isActive: boolean;
-  displayMode: AnnouncementDisplayMode;
-  countdownSeconds: number;
-};
-
-type PolicyFormState = {
-  accessMode: AccessMode;
-  defaultMode: ConnectionMode;
-  modes: ConnectionMode[];
-  blockAds: boolean;
-  chinaDirect: boolean;
-  aiServicesProxy: boolean;
-  currentVersion: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
-  changelog: string;
-  downloadUrl: string;
 };
 
 type AdminAuthFormState = {
@@ -265,7 +178,7 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
   },
   users: {
     label: "用户",
-    description: "账号、角色和当前套餐",
+    description: "账号、角色和启停状态",
     icon: <IconUsers size={18} />
   },
   plans: {
@@ -308,6 +221,10 @@ export function App() {
   const [section, setSection] = useState<SectionKey>("overview");
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
+  const [teamInlineEditorId, setTeamInlineEditorId] = useState<string | null>(null);
+  const [teamMemberInlineEditor, setTeamMemberInlineEditor] = useState<{ teamId: string; memberId: string | null } | null>(null);
+  const [teamSubscriptionInlineEditorId, setTeamSubscriptionInlineEditorId] = useState<string | null>(null);
+  const [teamInlineBusy, setTeamInlineBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
@@ -320,6 +237,16 @@ export function App() {
     announcements: ""
   });
   const [deleteNodeTarget, setDeleteNodeTarget] = useState<AdminNodeRecordDto | null>(null);
+  const [kickMemberTarget, setKickMemberTarget] = useState<{ teamId: string; memberId: string; memberName: string } | null>(null);
+  const [kickDisableAccount, setKickDisableAccount] = useState(false);
+  const [kickSubmitting, setKickSubmitting] = useState(false);
+  const [resetTrafficBusyKey, setResetTrafficBusyKey] = useState<string | null>(null);
+  const [teamUsageDetailTarget, setTeamUsageDetailTarget] = useState<{
+    teamName: string;
+    userDisplayName: string;
+    userEmail: string;
+    entry: AdminTeamUsageRecordDto;
+  } | null>(null);
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
 
@@ -341,6 +268,8 @@ export function App() {
   const [nodeAccessSelection, setNodeAccessSelection] = useState<string[]>([]);
   const [nodeAccessLoading, setNodeAccessLoading] = useState(false);
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
+  const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
+  const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
 
   useEffect(() => {
     if (!authenticated) {
@@ -386,7 +315,6 @@ export function App() {
         item.name,
         item.ownerDisplayName,
         item.ownerEmail,
-        item.currentSubscription?.planName ?? "",
         item.status
       ]),
     [teams, search.users]
@@ -427,6 +355,17 @@ export function App() {
     () => (snapshot?.users ?? []).filter((item) => item.role === "user" && item.accountType === "personal" && item.currentSubscription === null),
     [snapshot?.users]
   );
+  const buildTeamMemberOptions = (currentUserId?: string) => {
+    const base = eligiblePersonalUsers.map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }));
+    if (!currentUserId || !snapshot) {
+      return base;
+    }
+    const currentUser = snapshot.users.find((item) => item.id === currentUserId);
+    if (!currentUser || base.some((item) => item.value === currentUserId)) {
+      return base;
+    }
+    return [{ value: currentUser.id, label: `${currentUser.displayName} · ${currentUser.email}` }, ...base];
+  };
   const nodeOptions = useMemo(
     () =>
       (snapshot?.nodes ?? []).map((item) => ({
@@ -436,6 +375,19 @@ export function App() {
     [snapshot?.nodes]
   );
   const currentAccessMode = policyForm?.accessMode ?? snapshot?.policy.accessMode ?? "xui";
+  const renewTargetSubscription =
+    drawer.type === "subscription-renew" && drawer.recordId
+      ? snapshot?.subscriptions.find((item) => item.id === drawer.recordId) ?? null
+      : null;
+  const renewActionDisabled = drawer.type === "subscription-renew" && renewTargetSubscription !== null && !renewTargetSubscription.renewable;
+  const nodePanelInboundOptions = useMemo(
+    () =>
+      nodePanelInbounds.map((item) => ({
+        value: String(item.id),
+        label: `${item.remark} · ID ${item.id} · ${item.protocol.toUpperCase()} · ${item.port} · ${item.clientCount} 个客户端`
+      })),
+    [nodePanelInbounds]
+  );
 
   async function loadSnapshot() {
     try {
@@ -469,6 +421,50 @@ export function App() {
       setError(message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm) {
+    if (!form.panelBaseUrl || !form.panelUsername || !form.panelPassword) {
+      notifications.show({
+        title: "缺少面板信息",
+        message: "请先填写面板地址、账号和密码",
+        color: "yellow"
+      });
+      return;
+    }
+
+    try {
+      setNodePanelInboundsLoading(true);
+      const result = await fetchNodePanelInbounds({
+        panelBaseUrl: form.panelBaseUrl,
+        panelApiBasePath: form.panelApiBasePath || "/",
+        panelUsername: form.panelUsername,
+        panelPassword: form.panelPassword
+      });
+      setNodePanelInbounds(result);
+
+      if (result.length > 0) {
+        const hasCurrent = result.some((item) => item.id === form.panelInboundId);
+        if (!hasCurrent) {
+          setNodeForm((current) => ({ ...current, panelInboundId: result[0].id }));
+        }
+      }
+
+      notifications.show({
+        title: "读取成功",
+        message: result.length > 0 ? `已获取 ${result.length} 条入站` : "面板中暂无可用入站",
+        color: result.length > 0 ? "green" : "yellow"
+      });
+    } catch (reason) {
+      notifications.show({
+        title: "读取失败",
+        message: readError(reason, "读取 3x-ui 入站失败"),
+        color: "red"
+      });
+      setNodePanelInbounds([]);
+    } finally {
+      setNodePanelInboundsLoading(false);
     }
   }
 
@@ -649,17 +645,25 @@ export function App() {
         totalTrafficGb: record.totalTrafficGb,
         usedTrafficGb: record.usedTrafficGb,
         expireAt: toDateTimeLocal(record.expireAt),
-        state: record.state,
-        renewable: record.renewable
+        baseExpireAt: toDateTimeLocal(record.expireAt),
+        state: record.state
       });
     }
 
     if (type === "subscription-renew" && recordId) {
       const record = snapshot.subscriptions.find((item) => item.id === recordId);
       if (!record) return;
+      if (!record.renewable) {
+        notifications.show({
+          color: "yellow",
+          title: "当前套餐不支持续期",
+          message: getRenewActionDescription(false)
+        });
+        return;
+      }
       setSubscriptionRenewForm({
         expireAt: toDateTimeLocal(record.expireAt),
-        extendDays: 30,
+        baseExpireAt: toDateTimeLocal(record.expireAt),
         resetTraffic: false,
         totalTrafficGb: ""
       });
@@ -668,11 +672,13 @@ export function App() {
     if (type === "subscription-change-plan" && recordId) {
       const record = snapshot.subscriptions.find((item) => item.id === recordId);
       if (!record) return;
+      const targetPlan = snapshot.plans.find((item) => item.id === record.planId);
       setSubscriptionChangePlanForm({
+        scope: targetPlan?.scope ?? "personal",
         planId: record.planId,
         totalTrafficGb: record.totalTrafficGb,
-        expireAt: "",
-        renewable: record.renewable
+        expireAt: toDateTimeLocal(record.expireAt),
+        baseExpireAt: toDateTimeLocal(record.expireAt)
       });
     }
 
@@ -710,8 +716,7 @@ export function App() {
       setTeamSubscriptionForm({
         planId: defaultPlan?.id ?? "",
         totalTrafficGb: defaultPlan?.totalTrafficGb ?? 100,
-        expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString()),
-        renewable: defaultPlan?.renewable ?? true
+        expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString())
       });
     }
 
@@ -719,7 +724,7 @@ export function App() {
       if (recordId) {
         const record = snapshot.nodes.find((item) => item.id === recordId);
         if (!record) return;
-        setNodeForm({
+        const nextForm = {
           subscriptionUrl: record.subscriptionUrl ?? "",
           name: record.name,
           region: record.region,
@@ -732,9 +737,18 @@ export function App() {
           panelPassword: record.panelPassword ?? "",
           panelInboundId: record.panelInboundId ?? 1,
           panelEnabled: record.panelEnabled
-        });
+        };
+        setNodePanelInbounds([]);
+        setNodeForm(nextForm);
+        if (currentAccessMode === "xui" && nextForm.panelBaseUrl && nextForm.panelUsername && nextForm.panelPassword) {
+          void handleLoadNodePanelInbounds(nextForm);
+        }
       } else {
-        setNodeForm(emptyNodeForm());
+        setNodePanelInbounds([]);
+        setNodeForm({
+          ...emptyNodeForm(),
+          panelEnabled: currentAccessMode === "xui"
+        });
       }
     }
 
@@ -816,8 +830,7 @@ export function App() {
               totalTrafficGb: subscriptionCreateForm.totalTrafficGb,
               usedTrafficGb: subscriptionCreateForm.usedTrafficGb,
               expireAt: fromDateTimeLocal(subscriptionCreateForm.expireAt) ?? new Date().toISOString(),
-              state: subscriptionCreateForm.state,
-              renewable: subscriptionCreateForm.renewable
+              state: subscriptionCreateForm.state
             } satisfies CreateSubscriptionInputDto),
           "订阅已创建"
         );
@@ -831,8 +844,7 @@ export function App() {
               totalTrafficGb: subscriptionAdjustForm.totalTrafficGb,
               usedTrafficGb: subscriptionAdjustForm.usedTrafficGb,
               expireAt: fromDateTimeLocal(subscriptionAdjustForm.expireAt),
-              state: subscriptionAdjustForm.state,
-              renewable: subscriptionAdjustForm.renewable
+              state: subscriptionAdjustForm.state
             } satisfies UpdateSubscriptionInputDto),
           "订阅已校正"
         );
@@ -844,7 +856,6 @@ export function App() {
           () =>
             renewSubscription(drawer.recordId!, {
               expireAt: fromDateTimeLocal(subscriptionRenewForm.expireAt),
-              extendDays: subscriptionRenewForm.extendDays || undefined,
               resetTraffic: subscriptionRenewForm.resetTraffic,
               totalTrafficGb:
                 subscriptionRenewForm.totalTrafficGb === "" ? undefined : Number(subscriptionRenewForm.totalTrafficGb)
@@ -860,8 +871,7 @@ export function App() {
             changeSubscriptionPlan(drawer.recordId!, {
               planId: subscriptionChangePlanForm.planId,
               totalTrafficGb: subscriptionChangePlanForm.totalTrafficGb,
-              expireAt: subscriptionChangePlanForm.expireAt ? fromDateTimeLocal(subscriptionChangePlanForm.expireAt) : undefined,
-              renewable: subscriptionChangePlanForm.renewable
+              expireAt: fromDateTimeLocal(subscriptionChangePlanForm.expireAt)
             } satisfies ChangeSubscriptionPlanInputDto),
           "套餐已变更"
         );
@@ -903,8 +913,7 @@ export function App() {
             createTeamSubscription(drawer.parentId!, {
               planId: teamSubscriptionForm.planId,
               totalTrafficGb: teamSubscriptionForm.totalTrafficGb,
-              expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString(),
-              renewable: teamSubscriptionForm.renewable
+              expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
             } satisfies CreateTeamSubscriptionInputDto),
           "团队套餐已分配"
         );
@@ -1003,6 +1012,185 @@ export function App() {
 
   async function handleDeleteTeamMember(teamId: string, memberId: string) {
     await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除");
+  }
+
+  function openKickMemberModal(teamId: string, memberId: string, memberName: string) {
+    setKickMemberTarget({ teamId, memberId, memberName });
+    setKickDisableAccount(false);
+  }
+
+  function closeKickMemberModal() {
+    if (kickSubmitting) return;
+    setKickMemberTarget(null);
+    setKickDisableAccount(false);
+  }
+
+  async function handleKickMember() {
+    if (!kickMemberTarget) return;
+
+    try {
+      setKickSubmitting(true);
+      const success = await runAction(
+        () =>
+          kickTeamMember(kickMemberTarget.teamId, kickMemberTarget.memberId, {
+            disableAccount: kickDisableAccount
+          }),
+        kickDisableAccount ? "成员已立即断网并禁用账号" : "成员已立即断网"
+      );
+      if (success) {
+        closeKickMemberModal();
+      }
+    } finally {
+      setKickSubmitting(false);
+    }
+  }
+
+  async function handleResetSubscriptionTraffic(subscriptionId: string, ownerLabel: string, userId?: string) {
+    const targetKey = `${subscriptionId}:${userId ?? "all"}`;
+    const confirmed = window.confirm(
+      `确认重置 ${ownerLabel} 的流量吗？这会同步清空 3x-ui 面板计量，并重置后台本地基线。`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setResetTrafficBusyKey(targetKey);
+      await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置");
+    } finally {
+      setResetTrafficBusyKey(null);
+    }
+  }
+
+  function openTeamInlineEditor(teamId: string) {
+    if (!snapshot) return;
+    const team = snapshot.teams.find((item) => item.id === teamId);
+    if (!team) return;
+    setTeamForm({
+      name: team.name,
+      ownerUserId: team.ownerUserId,
+      status: team.status
+    });
+    setTeamInlineEditorId(teamId);
+    setTeamMemberInlineEditor(null);
+    setTeamSubscriptionInlineEditorId(null);
+  }
+
+  function closeTeamInlineEditor() {
+    setTeamInlineEditorId(null);
+    setTeamForm(emptyTeamForm(snapshot));
+  }
+
+  async function saveTeamInlineEditor(teamId: string) {
+    try {
+      setTeamInlineBusy(true);
+      const success = await runAction(
+        () =>
+          updateTeam(teamId, {
+            name: teamForm.name,
+            ownerUserId: teamForm.ownerUserId,
+            status: teamForm.status
+          } satisfies UpdateTeamInputDto),
+        "团队已更新"
+      );
+      if (success) {
+        closeTeamInlineEditor();
+      }
+    } finally {
+      setTeamInlineBusy(false);
+    }
+  }
+
+  function openTeamMemberInlineEditor(teamId: string, memberId: string | null = null) {
+    if (!snapshot) return;
+    if (memberId) {
+      const team = snapshot.teams.find((item) => item.id === teamId);
+      const member = team?.members.find((item) => item.id === memberId);
+      if (!member) return;
+      setTeamMemberForm({
+        userId: member.userId,
+        role: member.role
+      });
+    } else {
+      setTeamMemberForm(emptyTeamMemberForm());
+    }
+    setTeamMemberInlineEditor({ teamId, memberId });
+    setTeamInlineEditorId(null);
+    setTeamSubscriptionInlineEditorId(null);
+  }
+
+  function closeTeamMemberInlineEditor() {
+    setTeamMemberInlineEditor(null);
+    setTeamMemberForm(emptyTeamMemberForm());
+  }
+
+  function openTeamSubscriptionInlineEditor(teamId: string) {
+    if (!snapshot) return;
+    const team = snapshot.teams.find((item) => item.id === teamId);
+    const defaultPlan = snapshot.plans.find((item) => item.isActive && item.scope === "team") ?? snapshot.plans.find((item) => item.scope === "team");
+    setTeamSubscriptionForm({
+      planId: defaultPlan?.id ?? "",
+      totalTrafficGb: defaultPlan?.totalTrafficGb ?? 100,
+      expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString())
+    });
+    setTeamSubscriptionInlineEditorId(teamId);
+    setTeamInlineEditorId(null);
+    setTeamMemberInlineEditor(null);
+  }
+
+  function closeTeamSubscriptionInlineEditor() {
+    setTeamSubscriptionInlineEditorId(null);
+    setTeamSubscriptionForm(emptyTeamSubscriptionForm());
+  }
+
+  async function saveTeamSubscriptionInlineEditor(teamId: string) {
+    try {
+      setTeamInlineBusy(true);
+      const success = await runAction(
+        () =>
+          createTeamSubscription(teamId, {
+            planId: teamSubscriptionForm.planId,
+            totalTrafficGb: teamSubscriptionForm.totalTrafficGb,
+            expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
+          } satisfies CreateTeamSubscriptionInputDto),
+        "团队套餐已分配"
+      );
+      if (success) {
+        closeTeamSubscriptionInlineEditor();
+      }
+    } finally {
+      setTeamInlineBusy(false);
+    }
+  }
+
+  async function saveTeamMemberInlineEditor() {
+    if (!teamMemberInlineEditor) return;
+
+    try {
+      setTeamInlineBusy(true);
+      const payload = {
+        userId: teamMemberForm.userId,
+        role: teamMemberForm.role
+      };
+      const success = teamMemberInlineEditor.memberId
+        ? await runAction(
+            () =>
+              updateTeamMember(teamMemberInlineEditor.teamId, teamMemberInlineEditor.memberId!, {
+                role: teamMemberForm.role
+              } satisfies UpdateTeamMemberInputDto),
+            "成员已更新"
+          )
+        : await runAction(
+            () =>
+              createTeamMember(teamMemberInlineEditor.teamId, payload satisfies CreateTeamMemberInputDto),
+            "成员已加入"
+          );
+      if (success) {
+        closeTeamMemberInlineEditor();
+      }
+    } finally {
+      setTeamInlineBusy(false);
+    }
   }
 
   async function handleSavePolicy() {
@@ -1177,1582 +1365,203 @@ export function App() {
         <AppShell.Main>
           <Stack gap="lg">
             {section === "overview" ? (
-              <>
-                <SimpleGrid cols={{ base: 1, sm: 2, xl: 5 }}>
-                  <MetricCard label="用户数" value={snapshot.dashboard.users} icon={<IconUsers size={18} />} />
-                  <MetricCard label="团队数" value={snapshot.teams.length} icon={<IconUsers size={18} />} />
-                  <MetricCard label="有效套餐" value={snapshot.dashboard.activePlans} icon={<IconListDetails size={18} />} />
-                  <MetricCard label="有效订阅" value={snapshot.dashboard.activeSubscriptions} icon={<IconUser size={18} />} />
-                  <MetricCard label="节点数" value={snapshot.dashboard.activeNodes} icon={<IconMapPin size={18} />} />
-                  <MetricCard label="在线公告" value={snapshot.dashboard.announcements} icon={<IconBell size={18} />} />
-                </SimpleGrid>
-
-                <SimpleGrid cols={{ base: 1, xl: 2 }}>
-                  <Card withBorder radius="xl" p="lg">
-                    <Stack gap="md">
-                      <Group justify="space-between">
-                        <Title order={4}>当前订阅</Title>
-                        <Button size="xs" variant="subtle" onClick={() => setSection("subscriptions")}>
-                          查看全部
-                        </Button>
-                      </Group>
-                      <CompactSubscriptionList items={snapshot.subscriptions.slice(0, 6)} />
-                    </Stack>
-                  </Card>
-                  <Card withBorder radius="xl" p="lg">
-                    <Stack gap="md">
-                      <Group justify="space-between">
-                        <Title order={4}>节点状态</Title>
-                        <Button size="xs" variant="subtle" onClick={() => setSection("nodes")}>
-                          查看全部
-                        </Button>
-                      </Group>
-                      <CompactNodeList items={snapshot.nodes.slice(0, 6)} />
-                    </Stack>
-                  </Card>
-                </SimpleGrid>
-              </>
+              <OverviewPage
+                snapshot={snapshot}
+                onOpenSubscriptions={() => setSection("subscriptions")}
+                onOpenNodes={() => setSection("nodes")}
+              />
             ) : null}
 
             {section === "users" ? (
-              <Stack gap="lg">
-                <SectionCard searchValue={search.users} onSearchChange={(value) => setSearch((current) => ({ ...current, users: value }))}>
-                  <Tabs value={userTab} onChange={(value) => setUserTab((value as "personal" | "team") || "personal")}>
-                    <Tabs.List>
-                      <Tabs.Tab value="personal">个人用户</Tabs.Tab>
-                      <Tabs.Tab value="team">Team 用户</Tabs.Tab>
-                    </Tabs.List>
-                    <Tabs.Panel value="personal" pt="md">
-                      <DataTable>
-                        <Table.Thead>
-                          <Table.Tr>
-                            <Table.Th>邮箱</Table.Th>
-                            <Table.Th>名称</Table.Th>
-                            <Table.Th>角色</Table.Th>
-                            <Table.Th>状态</Table.Th>
-                            <Table.Th>当前套餐</Table.Th>
-                            <Table.Th>操作</Table.Th>
-                          </Table.Tr>
-                        </Table.Thead>
-                        <Table.Tbody>
-                          {users.filter((item) => item.accountType === "personal").map((item) => (
-                            <Table.Tr key={item.id}>
-                              <Table.Td>{item.email}</Table.Td>
-                              <Table.Td>{item.displayName}</Table.Td>
-                              <Table.Td>
-                                <Badge variant="light">{translateRole(item.role)}</Badge>
-                              </Table.Td>
-                              <Table.Td>
-                                <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
-                              </Table.Td>
-                              <Table.Td>
-                                {item.currentSubscription ? (
-                                  <Stack gap={0}>
-                                    <Text>{item.currentSubscription.planName}</Text>
-                                    <Text size="sm" c="dimmed">个人套餐 · 剩余 {item.currentSubscription.remainingTrafficGb} GB</Text>
-                                  </Stack>
-                                ) : (
-                                  <Text c="dimmed">无套餐</Text>
-                                )}
-                              </Table.Td>
-                              <Table.Td>
-                                <ActionIcon variant="subtle" onClick={() => openDrawer("user", item.id)}>
-                                  <IconPencil size={16} />
-                                </ActionIcon>
-                              </Table.Td>
-                            </Table.Tr>
-                          ))}
-                        </Table.Tbody>
-                      </DataTable>
-                    </Tabs.Panel>
-                    <Tabs.Panel value="team" pt="md">
-                      <Accordion variant="separated" radius="xl">
-                        {filteredTeams.map((item) => {
-                          const teamSubscriptionRecord = item.currentSubscription
-                            ? allSubscriptions.find((subscription) => subscription.id === item.currentSubscription?.id)
-                            : null;
-
-                          return (
-                          <Accordion.Item key={item.id} value={item.id}>
-                            <Accordion.Control>
-                              <Group justify="space-between" wrap="nowrap">
-                                <Group gap="xl" wrap="nowrap">
-                                  <Stack gap={0} miw={220}>
-                                    <Text fw={600}>{item.name}</Text>
-                                    <Text size="sm" c="dimmed">
-                                      {item.ownerDisplayName} · {item.ownerEmail}
-                                    </Text>
-                                  </Stack>
-                                  <Stack gap={0} miw={120}>
-                                    <Text size="sm" c="dimmed">
-                                      成员数
-                                    </Text>
-                                    <Text fw={600}>{item.memberCount}</Text>
-                                  </Stack>
-                                  <Stack gap={0} miw={160}>
-                                    <Text size="sm" c="dimmed">
-                                      当前套餐
-                                    </Text>
-                                    <Text fw={600}>{item.currentSubscription?.planName ?? "未分配"}</Text>
-                                  </Stack>
-                                  <Stack gap={0} miw={120}>
-                                    <Text size="sm" c="dimmed">
-                                      剩余流量
-                                    </Text>
-                                    <Text fw={600}>
-                                      {item.currentSubscription ? `${item.currentSubscription.remainingTrafficGb} GB` : "-"}
-                                    </Text>
-                                  </Stack>
-                                </Group>
-                                <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
-                              </Group>
-                            </Accordion.Control>
-                            <Accordion.Panel>
-                              <Stack gap="md">
-                                <Group justify="space-between">
-                                  <Text size="sm" c="dimmed">
-                                    团队主体下的登录账号与共享套餐
-                                  </Text>
-                                  <RowActions>
-                                    <ActionIcon variant="subtle" onClick={() => openDrawer("team", item.id)}>
-                                      <IconPencil size={16} />
-                                    </ActionIcon>
-                                    <ActionIcon variant="subtle" onClick={() => openDrawer("team-member", null, item.id)}>
-                                      <IconUsers size={16} />
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      onClick={() => openDrawer("team-subscription", null, item.id)}
-                                      disabled={item.currentSubscription?.state === "active"}
-                                    >
-                                      <IconListDetails size={16} />
-                                    </ActionIcon>
-                                    {item.currentSubscription ? (
-                                      <ActionIcon
-                                        variant="subtle"
-                                        onClick={() =>
-                                          void openNodeAccessEditor(
-                                            item.currentSubscription!.id,
-                                            `${item.name} · ${item.currentSubscription!.planName}`
-                                          )
-                                        }
-                                      >
-                                        <IconMapPin size={16} />
-                                      </ActionIcon>
-                                    ) : null}
-                                  </RowActions>
-                                </Group>
-
-                                <SimpleGrid cols={{ base: 1, lg: 3 }}>
-                                  <Paper withBorder radius="lg" p="md">
-                                    <Stack gap={4}>
-                                      <Text size="sm" c="dimmed">
-                                        共享套餐
-                                      </Text>
-                                      <Text fw={600}>{item.currentSubscription?.planName ?? "未分配"}</Text>
-                                      <Text size="sm" c="dimmed">
-                                        {item.currentSubscription
-                                          ? `剩余 ${item.currentSubscription.remainingTrafficGb} GB · 到期 ${formatDateTime(item.currentSubscription.expireAt)}`
-                                          : "请先分配 Team 套餐"}
-                                      </Text>
-                                    </Stack>
-                                  </Paper>
-                                  <Paper withBorder radius="lg" p="md">
-                                    <Stack gap={4}>
-                                      <Text size="sm" c="dimmed">
-                                        节点授权
-                                      </Text>
-                                      <Text fw={600}>
-                                        {item.currentSubscription
-                                          ? teamSubscriptionRecord?.hasNodeAccess
-                                            ? `${teamSubscriptionRecord.nodeCount} 个节点`
-                                            : "未分配节点"
-                                          : "未分配"}
-                                      </Text>
-                                      <Text size="sm" c="dimmed">
-                                        {item.currentSubscription
-                                          ? teamSubscriptionRecord?.hasNodeAccess
-                                            ? "仅团队成员可见这些节点"
-                                            : "当前订阅还未分配节点"
-                                          : "无共享订阅时不可分配节点"}
-                                      </Text>
-                                    </Stack>
-                                  </Paper>
-                                  <Paper withBorder radius="lg" p="md">
-                                    <Stack gap={4}>
-                                      <Text size="sm" c="dimmed">
-                                        团队状态
-                                      </Text>
-                                      <Text fw={600}>{item.status === "active" ? "启用" : "停用"}</Text>
-                                      <Text size="sm" c="dimmed">
-                                        成员 {item.memberCount} 人
-                                      </Text>
-                                    </Stack>
-                                  </Paper>
-                                </SimpleGrid>
-
-                                <DataTable>
-                                  <Table.Thead>
-                                    <Table.Tr>
-                                      <Table.Th>账号</Table.Th>
-                                      <Table.Th>角色</Table.Th>
-                                      <Table.Th>我的用量</Table.Th>
-                                      <Table.Th>状态</Table.Th>
-                                      <Table.Th>操作</Table.Th>
-                                    </Table.Tr>
-                                  </Table.Thead>
-                                  <Table.Tbody>
-                                    {item.members.map((member) => {
-                                      const userRecord = snapshot.users.find((user) => user.id === member.userId);
-                                      return (
-                                        <Table.Tr key={member.id}>
-                                          <Table.Td>
-                                            <Stack gap={0}>
-                                              <Text>{member.displayName}</Text>
-                                              <Text size="sm" c="dimmed">
-                                                {member.email}
-                                              </Text>
-                                            </Stack>
-                                          </Table.Td>
-                                          <Table.Td>
-                                            <Badge variant="light">{member.role === "owner" ? "负责人" : "成员"}</Badge>
-                                          </Table.Td>
-                                          <Table.Td>{member.usedTrafficGb} GB</Table.Td>
-                                          <Table.Td>
-                                            <StatusBadge
-                                              color={userRecord?.status === "active" ? "green" : "gray"}
-                                              label={translateUserStatus(userRecord?.status ?? "disabled")}
-                                            />
-                                          </Table.Td>
-                                          <Table.Td>
-                                            <RowActions>
-                                              <ActionIcon variant="subtle" onClick={() => openDrawer("user", member.userId)}>
-                                                <IconPencil size={16} />
-                                              </ActionIcon>
-                                              <ActionIcon variant="subtle" onClick={() => openDrawer("team-member", member.id, item.id)}>
-                                                <IconUsers size={16} />
-                                              </ActionIcon>
-                                            </RowActions>
-                                          </Table.Td>
-                                        </Table.Tr>
-                                      );
-                                    })}
-                                  </Table.Tbody>
-                                </DataTable>
-                              </Stack>
-                            </Accordion.Panel>
-                          </Accordion.Item>
-                          );
-                        })}
-                      </Accordion>
-                    </Tabs.Panel>
-                  </Tabs>
-                </SectionCard>
-              </Stack>
+              <UsersPage
+                searchValue={search.users}
+                onSearchChange={(value) => setSearch((current) => ({ ...current, users: value }))}
+                userTab={userTab}
+                onUserTabChange={setUserTab}
+                users={users}
+                filteredTeams={filteredTeams}
+                allUsers={snapshot.users}
+                teamInlineEditorId={teamInlineEditorId}
+                teamMemberInlineEditor={teamMemberInlineEditor}
+                teamInlineBusy={teamInlineBusy}
+                teamForm={teamForm}
+                setTeamForm={setTeamForm}
+                teamMemberForm={teamMemberForm}
+                setTeamMemberForm={setTeamMemberForm}
+                buildTeamMemberOptions={buildTeamMemberOptions}
+                onOpenUserDrawer={(userId) => openDrawer("user", userId)}
+                onOpenTeamInlineEditor={openTeamInlineEditor}
+                onCloseTeamInlineEditor={closeTeamInlineEditor}
+                onSaveTeamInlineEditor={(teamId) => void saveTeamInlineEditor(teamId)}
+                onOpenTeamMemberInlineEditor={openTeamMemberInlineEditor}
+                onCloseTeamMemberInlineEditor={closeTeamMemberInlineEditor}
+                onSaveTeamMemberInlineEditor={() => void saveTeamMemberInlineEditor()}
+                onDeleteTeamMember={(teamId, memberId) => void handleDeleteTeamMember(teamId, memberId)}
+              />
             ) : null}
 
             {section === "plans" ? (
-              <SectionCard searchValue={search.plans} onSearchChange={(value) => setSearch((current) => ({ ...current, plans: value }))}>
-                <Tabs value={planScopeTab} onChange={(value) => setPlanScopeTab((value as PlanScope) || "personal")}>
-                  <Tabs.List>
-                    <Tabs.Tab value="personal">个人套餐</Tabs.Tab>
-                    <Tabs.Tab value="team">Team 套餐</Tabs.Tab>
-                  </Tabs.List>
-                  <Tabs.Panel value={planScopeTab} pt="md">
-                    <DataTable>
-                      <Table.Thead>
-                        <Table.Tr>
-                          <Table.Th>名称</Table.Th>
-                          <Table.Th>总流量</Table.Th>
-                          <Table.Th>续费</Table.Th>
-                          <Table.Th>状态</Table.Th>
-                          <Table.Th>订阅数</Table.Th>
-                          <Table.Th>操作</Table.Th>
-                        </Table.Tr>
-                      </Table.Thead>
-                      <Table.Tbody>
-                        {plans.filter((item) => item.scope === planScopeTab).map((item) => (
-                          <Table.Tr key={item.id}>
-                            <Table.Td>{item.name}</Table.Td>
-                            <Table.Td>{item.totalTrafficGb} GB</Table.Td>
-                            <Table.Td>{item.renewable ? "可续费" : "不可续费"}</Table.Td>
-                            <Table.Td>
-                              <StatusBadge color={item.isActive ? "green" : "gray"} label={item.isActive ? "启用" : "停用"} />
-                            </Table.Td>
-                            <Table.Td>{item.subscriptionCount}</Table.Td>
-                            <Table.Td>
-                              <ActionIcon variant="subtle" onClick={() => openDrawer("plan", item.id)}>
-                                <IconPencil size={16} />
-                              </ActionIcon>
-                            </Table.Td>
-                          </Table.Tr>
-                        ))}
-                      </Table.Tbody>
-                    </DataTable>
-                  </Tabs.Panel>
-                </Tabs>
-              </SectionCard>
+              <PlansPage
+                searchValue={search.plans}
+                onSearchChange={(value) => setSearch((current) => ({ ...current, plans: value }))}
+                planScopeTab={planScopeTab}
+                onPlanScopeTabChange={setPlanScopeTab}
+                plans={plans}
+                onOpenPlanDrawer={(planId) => openDrawer("plan", planId)}
+              />
             ) : null}
 
             {section === "subscriptions" ? (
-              <SectionCard searchValue={search.subscriptions} onSearchChange={(value) => setSearch((current) => ({ ...current, subscriptions: value }))}>
-                <Tabs value={subscriptionTab} onChange={(value) => setSubscriptionTab((value as "personal" | "team") || "personal")}>
-                  <Tabs.List>
-                    <Tabs.Tab value="personal">个人订阅</Tabs.Tab>
-                    <Tabs.Tab value="team">Team 订阅</Tabs.Tab>
-                  </Tabs.List>
-                  <Tabs.Panel value="personal" pt="md">
-                    <DataTable>
-                      <Table.Thead>
-                        <Table.Tr>
-                          <Table.Th>用户</Table.Th>
-                          <Table.Th>套餐</Table.Th>
-                          <Table.Th>总量</Table.Th>
-                          <Table.Th>剩余</Table.Th>
-                          <Table.Th>节点</Table.Th>
-                          <Table.Th>到期时间</Table.Th>
-                          <Table.Th>状态</Table.Th>
-                          <Table.Th>来源</Table.Th>
-                          <Table.Th>操作</Table.Th>
-                        </Table.Tr>
-                      </Table.Thead>
-                      <Table.Tbody>
-                        {subscriptions.filter((item) => item.ownerType === "user").map((item) => (
-                          <Table.Tr key={item.id}>
-                            <Table.Td>
-                              <Stack gap={0}>
-                                <Text>{item.userDisplayName}</Text>
-                                <Text size="sm" c="dimmed">{item.userEmail}</Text>
-                              </Stack>
-                            </Table.Td>
-                            <Table.Td>{item.planName}</Table.Td>
-                            <Table.Td>{item.totalTrafficGb} GB</Table.Td>
-                            <Table.Td>{item.remainingTrafficGb} GB</Table.Td>
-                            <Table.Td>
-                              <Text c={item.hasNodeAccess ? undefined : "orange.7"}>
-                                {item.hasNodeAccess ? `${item.nodeCount} 个节点` : "未分配节点"}
-                              </Text>
-                            </Table.Td>
-                            <Table.Td>{formatDateTime(item.expireAt)}</Table.Td>
-                            <Table.Td>
-                              <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
-                            </Table.Td>
-                            <Table.Td>{translateSourceAction(item.sourceAction)}</Table.Td>
-                            <Table.Td>
-                              <RowActions>
-                                <ActionIcon variant="subtle" onClick={() => openDrawer("subscription-renew", item.id)}>
-                                  <IconRefresh size={16} />
-                                </ActionIcon>
-                                <ActionIcon variant="subtle" onClick={() => openDrawer("subscription-change-plan", item.id)}>
-                                  <IconListDetails size={16} />
-                                </ActionIcon>
-                                <ActionIcon variant="subtle" onClick={() => openDrawer("subscription-adjust", item.id)}>
-                                  <IconPencil size={16} />
-                                </ActionIcon>
-                                <ActionIcon
-                                  variant="subtle"
-                                  onClick={() =>
-                                    void openNodeAccessEditor(
-                                      item.id,
-                                      `${item.userDisplayName ?? item.userEmail ?? "个人用户"} · ${item.planName}`
-                                    )
-                                  }
-                                >
-                                  <IconMapPin size={16} />
-                                </ActionIcon>
-                              </RowActions>
-                            </Table.Td>
-                          </Table.Tr>
-                        ))}
-                      </Table.Tbody>
-                    </DataTable>
-                  </Tabs.Panel>
-                  <Tabs.Panel value="team" pt="md">
-                    <DataTable>
-                      <Table.Thead>
-                        <Table.Tr>
-                          <Table.Th>团队</Table.Th>
-                          <Table.Th>套餐</Table.Th>
-                          <Table.Th>总量</Table.Th>
-                          <Table.Th>剩余</Table.Th>
-                          <Table.Th>节点</Table.Th>
-                          <Table.Th>到期时间</Table.Th>
-                          <Table.Th>状态</Table.Th>
-                          <Table.Th>来源</Table.Th>
-                          <Table.Th>操作</Table.Th>
-                        </Table.Tr>
-                      </Table.Thead>
-                      <Table.Tbody>
-                        {filteredTeamSubscriptions.map((team) => {
-                          const teamSubscriptionRecord = team.currentSubscription
-                            ? allSubscriptions.find((item) => item.id === team.currentSubscription?.id)
-                            : null;
-
-                          return (
-                          <Table.Tr key={team.id}>
-                            <Table.Td>
-                              <Stack gap={0}>
-                                <Text>{team.name}</Text>
-                                <Text size="sm" c="dimmed">
-                                  {team.ownerDisplayName} · {team.memberCount} 人
-                                </Text>
-                              </Stack>
-                            </Table.Td>
-                            <Table.Td>{team.currentSubscription?.planName ?? "未分配"}</Table.Td>
-                            <Table.Td>{team.currentSubscription ? `${team.currentSubscription.totalTrafficGb} GB` : "-"}</Table.Td>
-                            <Table.Td>{team.currentSubscription ? `${team.currentSubscription.remainingTrafficGb} GB` : "-"}</Table.Td>
-                            <Table.Td>
-                              {team.currentSubscription ? (
-                                <Text c={teamSubscriptionRecord?.hasNodeAccess ? undefined : "orange.7"}>
-                                  {teamSubscriptionRecord?.hasNodeAccess ? `${teamSubscriptionRecord.nodeCount} 个节点` : "未分配节点"}
-                                </Text>
-                              ) : (
-                                <Text c="dimmed">未分配</Text>
-                              )}
-                            </Table.Td>
-                            <Table.Td>{team.currentSubscription ? formatDateTime(team.currentSubscription.expireAt) : "-"}</Table.Td>
-                            <Table.Td>
-                              <StatusBadge
-                                color={subscriptionStateColor(team.currentSubscription?.state ?? "paused")}
-                                label={team.currentSubscription ? translateSubscriptionState(team.currentSubscription.state) : "未分配"}
-                              />
-                            </Table.Td>
-                            <Table.Td>{team.currentSubscription ? "共享订阅" : "-"}</Table.Td>
-                            <Table.Td>
-                              <RowActions>
-                                <ActionIcon variant="subtle" onClick={() => openDrawer("team", team.id)}>
-                                  <IconUsers size={16} />
-                                </ActionIcon>
-                                {team.currentSubscription ? (
-                                  <ActionIcon
-                                    variant="subtle"
-                                    onClick={() =>
-                                      void openNodeAccessEditor(
-                                        team.currentSubscription!.id,
-                                        `${team.name} · ${team.currentSubscription!.planName}`
-                                      )
-                                    }
-                                  >
-                                    <IconMapPin size={16} />
-                                  </ActionIcon>
-                                ) : null}
-                              </RowActions>
-                            </Table.Td>
-                          </Table.Tr>
-                          );
-                        })}
-                      </Table.Tbody>
-                    </DataTable>
-                  </Tabs.Panel>
-                </Tabs>
-              </SectionCard>
+              <SubscriptionsPage
+                searchValue={search.subscriptions}
+                onSearchChange={(value) => setSearch((current) => ({ ...current, subscriptions: value }))}
+                subscriptionTab={subscriptionTab}
+                onSubscriptionTabChange={setSubscriptionTab}
+                subscriptions={subscriptions}
+                filteredTeamSubscriptions={filteredTeamSubscriptions}
+                allSubscriptions={allSubscriptions}
+                plans={snapshot.plans}
+                teamSubscriptionInlineEditorId={teamSubscriptionInlineEditorId}
+                teamSubscriptionForm={teamSubscriptionForm}
+                setTeamSubscriptionForm={setTeamSubscriptionForm}
+                teamInlineBusy={teamInlineBusy}
+                onOpenRenewDrawer={(subscriptionId) => openDrawer("subscription-renew", subscriptionId)}
+                onOpenChangePlanDrawer={(subscriptionId) => openDrawer("subscription-change-plan", subscriptionId)}
+                onOpenAdjustDrawer={(subscriptionId) => openDrawer("subscription-adjust", subscriptionId)}
+                onOpenNodeAccessEditor={(subscriptionId, ownerLabel) => void openNodeAccessEditor(subscriptionId, ownerLabel)}
+                onOpenTeamSubscriptionInlineEditor={openTeamSubscriptionInlineEditor}
+                onCloseTeamSubscriptionInlineEditor={closeTeamSubscriptionInlineEditor}
+                onSaveTeamSubscriptionInlineEditor={(teamId) => void saveTeamSubscriptionInlineEditor(teamId)}
+                onResetSubscriptionTraffic={(subscriptionId, ownerLabel, userId) =>
+                  void handleResetSubscriptionTraffic(subscriptionId, ownerLabel, userId)
+                }
+                resetTrafficBusyKey={resetTrafficBusyKey}
+                allUsers={snapshot.users.map((item) => ({ id: item.id, status: item.status }))}
+                onOpenKickMemberModal={openKickMemberModal}
+                onOpenTeamUsageDetail={setTeamUsageDetailTarget}
+              />
             ) : null}
 
             {section === "nodes" ? (
-              <SectionCard searchValue={search.nodes} onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}>
-                <DataTable>
-                  <Table.Thead>
-                      <Table.Tr>
-                        <Table.Th>节点</Table.Th>
-                        <Table.Th>地址</Table.Th>
-                        <Table.Th>3x-ui</Table.Th>
-                        {currentAccessMode === "relay" ? <Table.Th>中转</Table.Th> : null}
-                        <Table.Th>探测状态</Table.Th>
-                        <Table.Th>延迟</Table.Th>
-                        <Table.Th>最后检测</Table.Th>
-                      <Table.Th>错误</Table.Th>
-                      <Table.Th>操作</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {nodes.map((item) => (
-                      <Table.Tr key={item.id}>
-                        <Table.Td>
-                          <Stack gap={0}>
-                            <Text>{item.name}</Text>
-                            <Text size="sm" c="dimmed">
-                              {item.region} · {item.provider}
-                            </Text>
-                          </Stack>
-                        </Table.Td>
-                        <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
-                        <Table.Td>
-                          <StatusBadge color={nodePanelColor(item.panelStatus)} label={translatePanelStatus(item.panelStatus)} />
-                        </Table.Td>
-                        {currentAccessMode === "relay" ? (
-                          <Table.Td>
-                            <StatusBadge color={nodeGatewayColor(item.gatewayStatus)} label={translateGatewayStatus(item.gatewayStatus)} />
-                          </Table.Td>
-                        ) : null}
-                        <Table.Td>
-                          <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
-                        </Table.Td>
-                        <Table.Td>{item.probeLatencyMs !== null ? `${item.probeLatencyMs} ms` : "-"}</Table.Td>
-                        <Table.Td>{item.probeCheckedAt ? formatDateTime(item.probeCheckedAt) : "-"}</Table.Td>
-                        <Table.Td>
-                          <Text size="sm" c="dimmed" lineClamp={2}>
-                            {item.panelError || item.probeError || "-"}
-                          </Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <RowActions>
-                            <ActionIcon
-                              variant="subtle"
-                              onClick={() => void handleProbeNode(item.id)}
-                              loading={probingNodeId === item.id}
-                            >
-                              <IconBolt size={16} />
-                            </ActionIcon>
-                            <ActionIcon variant="subtle" onClick={() => void handleRefreshNode(item.id)}>
-                              <IconRefresh size={16} />
-                            </ActionIcon>
-                            <ActionIcon variant="subtle" onClick={() => openDrawer("node", item.id)}>
-                              <IconPencil size={16} />
-                            </ActionIcon>
-                            <ActionIcon color="red" variant="subtle" onClick={() => setDeleteNodeTarget(item)}>
-                              <IconTrash size={16} />
-                            </ActionIcon>
-                          </RowActions>
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </DataTable>
-              </SectionCard>
+              <NodesPage
+                searchValue={search.nodes}
+                onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}
+                nodes={nodes}
+                currentAccessMode={currentAccessMode}
+                probingNodeId={probingNodeId}
+                onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
+                onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
+                onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
+                onDeleteNode={setDeleteNodeTarget}
+              />
             ) : null}
 
             {section === "announcements" ? (
-              <SectionCard searchValue={search.announcements} onSearchChange={(value) => setSearch((current) => ({ ...current, announcements: value }))}>
-                <DataTable>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>标题</Table.Th>
-                      <Table.Th>级别</Table.Th>
-                      <Table.Th>模式</Table.Th>
-                      <Table.Th>发布时间</Table.Th>
-                      <Table.Th>状态</Table.Th>
-                      <Table.Th>操作</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {announcements.map((item) => (
-                      <Table.Tr key={item.id}>
-                        <Table.Td>
-                          <Stack gap={0}>
-                            <Text>{item.title}</Text>
-                            <Text size="sm" c="dimmed" lineClamp={1}>
-                              {item.body}
-                            </Text>
-                          </Stack>
-                        </Table.Td>
-                        <Table.Td>
-                          <Badge variant="light" color={announcementLevelColor(item.level)}>
-                            {translateAnnouncementLevel(item.level)}
-                          </Badge>
-                        </Table.Td>
-                        <Table.Td>{translateDisplayMode(item.displayMode, item.countdownSeconds)}</Table.Td>
-                        <Table.Td>{formatDateTime(item.publishedAt)}</Table.Td>
-                        <Table.Td>
-                          <StatusBadge color={item.isActive ? "green" : "gray"} label={item.isActive ? "上线" : "下线"} />
-                        </Table.Td>
-                        <Table.Td>
-                          <ActionIcon variant="subtle" onClick={() => openDrawer("announcement", item.id)}>
-                            <IconPencil size={16} />
-                          </ActionIcon>
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </DataTable>
-              </SectionCard>
+              <AnnouncementsPage
+                searchValue={search.announcements}
+                onSearchChange={(value) => setSearch((current) => ({ ...current, announcements: value }))}
+                announcements={announcements}
+                onOpenAnnouncementDrawer={(announcementId) => openDrawer("announcement", announcementId)}
+              />
             ) : null}
 
             {section === "policies" && policyForm ? (
-              <Card withBorder radius="xl" p="lg">
-                <Stack gap="lg">
-                  <SimpleGrid cols={{ base: 1, xl: 2 }}>
-                    <Card withBorder radius="xl" p="lg">
-                      <Stack gap="md">
-                        <Title order={4}>基础策略</Title>
-                        <Select
-                          label="接入模式"
-                          data={[
-                            { value: "xui", label: "3x-ui 直连模式" },
-                            { value: "relay", label: "中心中转模式" }
-                          ]}
-                          value={policyForm.accessMode}
-                          onChange={(value) => setPolicyForm((current) => current ? { ...current, accessMode: (value || "xui") as AccessMode } : current)}
-                        />
-                        {policyForm.accessMode === "xui" ? (
-                          <Alert color="blue" variant="light">
-                            当前使用 3x-ui 直连接入，中心负责开通、删号与汇总计量。
-                          </Alert>
-                        ) : (
-                          <Alert color="yellow" variant="light">
-                            当前使用中心中转接入，客户端不会直接拿到真实节点参数，但需要额外中转资源。
-                          </Alert>
-                        )}
-                        <Select
-                          label="默认模式"
-                          data={modeOptions}
-                          value={policyForm.defaultMode}
-                          onChange={(value) => setPolicyForm((current) => current ? { ...current, defaultMode: (value || "rule") as ConnectionMode } : current)}
-                        />
-                        <Checkbox.Group
-                          label="可用模式"
-                          value={policyForm.modes}
-                          onChange={(value) => setPolicyForm((current) => current ? { ...current, modes: value as ConnectionMode[] } : current)}
-                        >
-                          <Group mt="xs">
-                            <Checkbox value="rule" label="规则模式" />
-                            <Checkbox value="global" label="全局代理" />
-                            <Checkbox value="direct" label="直连模式" />
-                          </Group>
-                        </Checkbox.Group>
-                        <Group grow>
-                          <Switch
-                            checked={policyForm.blockAds}
-                            onChange={(event) => setPolicyForm((current) => current ? { ...current, blockAds: event.currentTarget.checked } : current)}
-                            label="广告拦截"
-                          />
-                          <Switch
-                            checked={policyForm.chinaDirect}
-                            onChange={(event) => setPolicyForm((current) => current ? { ...current, chinaDirect: event.currentTarget.checked } : current)}
-                            label="大陆直连"
-                          />
-                          <Switch
-                            checked={policyForm.aiServicesProxy}
-                            onChange={(event) => setPolicyForm((current) => current ? { ...current, aiServicesProxy: event.currentTarget.checked } : current)}
-                            label="AI 代理"
-                          />
-                        </Group>
-                      </Stack>
-                    </Card>
-
-                    <Card withBorder radius="xl" p="lg">
-                      <Stack gap="md">
-                        <Title order={4}>版本更新</Title>
-                        <TextInput
-                          label="当前版本"
-                          value={policyForm.currentVersion}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, currentVersion: event.currentTarget.value } : current)}
-                        />
-                        <TextInput
-                          label="最低版本"
-                          value={policyForm.minimumVersion}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, minimumVersion: event.currentTarget.value } : current)}
-                        />
-                        <Switch
-                          checked={policyForm.forceUpgrade}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, forceUpgrade: event.currentTarget.checked } : current)}
-                          label="强制升级"
-                        />
-                        <TextInput
-                          label="下载地址"
-                          value={policyForm.downloadUrl}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, downloadUrl: event.currentTarget.value } : current)}
-                        />
-                        <Textarea
-                          label="更新日志"
-                          minRows={6}
-                          value={policyForm.changelog}
-                          onChange={(event) => setPolicyForm((current) => current ? { ...current, changelog: event.currentTarget.value } : current)}
-                        />
-                      </Stack>
-                    </Card>
-                  </SimpleGrid>
-                  <Group justify="flex-end">
-                    <Button onClick={() => void handleSavePolicy()} loading={policySaving}>
-                      保存策略
-                    </Button>
-                  </Group>
-                </Stack>
-              </Card>
+              <PoliciesPage
+                policyForm={policyForm}
+                setPolicyForm={setPolicyForm}
+                policySaving={policySaving}
+                onSave={() => void handleSavePolicy()}
+              />
             ) : null}
           </Stack>
         </AppShell.Main>
       </AppShell>
 
-      <Drawer opened={drawer.type !== null} onClose={closeDrawer} title={drawerTitle(drawer.type)} position="right" size="lg">
-        <Stack>
-          {drawer.type === "user" ? (
-            <>
-              <TextInput
-                label="邮箱"
-                value={userForm.email}
-                onChange={(event) => setUserForm((current) => ({ ...current, email: event.currentTarget.value }))}
-                disabled={drawer.recordId !== null}
-              />
-              <TextInput
-                label={drawer.recordId ? "重置密码" : "登录密码"}
-                type="password"
-                value={userForm.password}
-                placeholder={drawer.recordId ? "留空则不修改" : ""}
-                onChange={(event) => setUserForm((current) => ({ ...current, password: event.currentTarget.value }))}
-              />
-              <TextInput
-                label="名称"
-                value={userForm.displayName}
-                onChange={(event) => setUserForm((current) => ({ ...current, displayName: event.currentTarget.value }))}
-              />
-              <Select
-                label="角色"
-                data={[
-                  { value: "user", label: "用户" },
-                  { value: "admin", label: "管理员" }
-                ]}
-                value={userForm.role}
-                onChange={(value) => setUserForm((current) => ({ ...current, role: (value || "user") as UserRole }))}
-              />
-              {drawer.recordId ? (
-                <Select
-                  label="状态"
-                  data={[
-                    { value: "active", label: "启用" },
-                    { value: "disabled", label: "禁用" }
-                  ]}
-                  value={userForm.status}
-                  onChange={(value) => setUserForm((current) => ({ ...current, status: (value || "active") as UserStatus }))}
-                />
-              ) : null}
-            </>
-          ) : null}
+      <AdminDrawerForm
+        opened={drawer.type !== null}
+        title={renewActionDisabled ? `${drawerTitle(drawer.type)} · 已关闭` : drawerTitle(drawer.type)}
+        drawerType={drawer.type}
+        drawerRecordId={drawer.recordId}
+        snapshot={snapshot}
+        currentAccessMode={currentAccessMode}
+        eligiblePersonalUsers={eligiblePersonalUsers}
+        nodePanelInbounds={nodePanelInbounds}
+        nodePanelInboundsLoading={nodePanelInboundsLoading}
+        userForm={userForm}
+        setUserForm={setUserForm}
+        planForm={planForm}
+        setPlanForm={setPlanForm}
+        subscriptionCreateForm={subscriptionCreateForm}
+        setSubscriptionCreateForm={setSubscriptionCreateForm}
+        subscriptionAdjustForm={subscriptionAdjustForm}
+        setSubscriptionAdjustForm={setSubscriptionAdjustForm}
+        subscriptionRenewForm={subscriptionRenewForm}
+        setSubscriptionRenewForm={setSubscriptionRenewForm}
+        subscriptionChangePlanForm={subscriptionChangePlanForm}
+        setSubscriptionChangePlanForm={setSubscriptionChangePlanForm}
+        teamForm={teamForm}
+        setTeamForm={setTeamForm}
+        teamMemberForm={teamMemberForm}
+        setTeamMemberForm={setTeamMemberForm}
+        teamSubscriptionForm={teamSubscriptionForm}
+        setTeamSubscriptionForm={setTeamSubscriptionForm}
+        nodeForm={nodeForm}
+        setNodeForm={setNodeForm}
+        announcementForm={announcementForm}
+        setAnnouncementForm={setAnnouncementForm}
+        drawerBusy={drawerBusy}
+        onClose={closeDrawer}
+        onSubmit={() => {
+          if (renewActionDisabled) {
+            notifications.show({
+              color: "yellow",
+              title: "当前套餐不支持续期",
+              message: getRenewActionDescription(false)
+            });
+            return;
+          }
+          void submitDrawer();
+        }}
+        onLoadNodePanelInbounds={() => void handleLoadNodePanelInbounds()}
+      />
 
-          {drawer.type === "plan" ? (
-            <>
-              <TextInput
-                label="套餐名称"
-                value={planForm.name}
-                onChange={(event) => setPlanForm((current) => ({ ...current, name: event.currentTarget.value }))}
-              />
-              <Select
-                label="套餐类型"
-                data={[
-                  { value: "personal", label: "个人套餐" },
-                  { value: "team", label: "Team 套餐" }
-                ]}
-                value={planForm.scope}
-                onChange={(value) => setPlanForm((current) => ({ ...current, scope: (value || "personal") as PlanScope }))}
-              />
-              <NumberInput
-                label="总流量 (GB)"
-                min={0}
-                value={planForm.totalTrafficGb}
-                onChange={(value) => setPlanForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
-              />
-              <Group grow>
-                <Switch
-                  checked={planForm.renewable}
-                  onChange={(event) => setPlanForm((current) => ({ ...current, renewable: event.currentTarget.checked }))}
-                  label="允许续费"
-                />
-                <Switch
-                  checked={planForm.isActive}
-                  onChange={(event) => setPlanForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
-                  label="启用"
-                />
-              </Group>
-            </>
-          ) : null}
+      <DeleteNodeModal target={deleteNodeTarget} onClose={() => setDeleteNodeTarget(null)} onConfirm={() => void handleDeleteNode()} />
 
-          {drawer.type === "subscription-create" ? (
-            <>
-              <Select
-                label="用户"
-                data={eligiblePersonalUsers.map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
-                value={subscriptionCreateForm.userId}
-                onChange={(value) => setSubscriptionCreateForm((current) => ({ ...current, userId: value || "" }))}
-              />
-              <Select
-                label="套餐"
-                data={snapshot.plans
-                  .filter((item) => item.isActive && item.scope === "personal")
-                  .map((item) => ({ value: item.id, label: item.name }))}
-                value={subscriptionCreateForm.planId}
-                onChange={(value) => setSubscriptionCreateForm((current) => applyPlanToCreateForm(snapshot, current, value || ""))}
-              />
-              <Group grow>
-                <NumberInput
-                  label="总流量 (GB)"
-                  min={0}
-                  value={subscriptionCreateForm.totalTrafficGb}
-                  onChange={(value) => setSubscriptionCreateForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
-                />
-                <NumberInput
-                  label="已用流量 (GB)"
-                  min={0}
-                  value={subscriptionCreateForm.usedTrafficGb}
-                  onChange={(value) => setSubscriptionCreateForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
-                />
-              </Group>
-              <TextInput
-                label="到期时间"
-                type="datetime-local"
-                value={subscriptionCreateForm.expireAt}
-                onChange={(event) => setSubscriptionCreateForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
-              />
-              <Group grow>
-                <Select
-                  label="状态"
-                  data={subscriptionStateOptions}
-                  value={subscriptionCreateForm.state}
-                  onChange={(value) =>
-                    setSubscriptionCreateForm((current) => ({ ...current, state: (value || "active") as SubscriptionState }))
-                  }
-                />
-                <Switch
-                  checked={subscriptionCreateForm.renewable}
-                  onChange={(event) => setSubscriptionCreateForm((current) => ({ ...current, renewable: event.currentTarget.checked }))}
-                  label="允许续费"
-                  mt={30}
-                />
-              </Group>
-            </>
-          ) : null}
+      <KickMemberModal
+        opened={kickMemberTarget !== null}
+        memberName={kickMemberTarget?.memberName ?? null}
+        disableAccount={kickDisableAccount}
+        submitting={kickSubmitting}
+        onDisableAccountChange={setKickDisableAccount}
+        onClose={closeKickMemberModal}
+        onConfirm={() => void handleKickMember()}
+      />
 
-          {drawer.type === "subscription-adjust" ? (
-            <>
-              <NumberInput
-                label="总流量 (GB)"
-                min={0}
-                value={subscriptionAdjustForm.totalTrafficGb}
-                onChange={(value) => setSubscriptionAdjustForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
-              />
-              <NumberInput
-                label="已用流量 (GB)"
-                min={0}
-                value={subscriptionAdjustForm.usedTrafficGb}
-                onChange={(value) => setSubscriptionAdjustForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
-              />
-              <TextInput
-                label="到期时间"
-                type="datetime-local"
-                value={subscriptionAdjustForm.expireAt}
-                onChange={(event) => setSubscriptionAdjustForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
-              />
-              <Group grow>
-                <Select
-                  label="状态"
-                  data={subscriptionStateOptions}
-                  value={subscriptionAdjustForm.state}
-                  onChange={(value) =>
-                    setSubscriptionAdjustForm((current) => ({ ...current, state: (value || "active") as SubscriptionState }))
-                  }
-                />
-                <Switch
-                  checked={subscriptionAdjustForm.renewable}
-                  onChange={(event) => setSubscriptionAdjustForm((current) => ({ ...current, renewable: event.currentTarget.checked }))}
-                  label="允许续费"
-                  mt={30}
-                />
-              </Group>
-            </>
-          ) : null}
+      <TeamUsageDetailModal
+        opened={teamUsageDetailTarget !== null}
+        target={teamUsageDetailTarget}
+        onClose={() => setTeamUsageDetailTarget(null)}
+      />
 
-          {drawer.type === "subscription-renew" ? (
-            <>
-              <TextInput
-                label="新的到期时间"
-                type="datetime-local"
-                value={subscriptionRenewForm.expireAt}
-                onChange={(event) => setSubscriptionRenewForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
-              />
-              <NumberInput
-                label="顺延天数 (可选)"
-                min={1}
-                value={subscriptionRenewForm.extendDays}
-                onChange={(value) => setSubscriptionRenewForm((current) => ({ ...current, extendDays: Number(value) || 1 }))}
-              />
-              <Group grow>
-                <NumberInput
-                  label="续后总流量 (留空保持原值)"
-                  value={subscriptionRenewForm.totalTrafficGb}
-                  min={0}
-                  onChange={(value) =>
-                    setSubscriptionRenewForm((current) => ({
-                      ...current,
-                      totalTrafficGb: value === "" || value === null ? "" : Number(value)
-                    }))
-                  }
-                />
-              </Group>
-              <Switch
-                checked={subscriptionRenewForm.resetTraffic}
-                onChange={(event) => setSubscriptionRenewForm((current) => ({ ...current, resetTraffic: event.currentTarget.checked }))}
-                label="续期时重置已用流量"
-              />
-            </>
-          ) : null}
-
-          {drawer.type === "subscription-change-plan" ? (
-            <>
-              <Select
-                label="目标套餐"
-                data={snapshot.plans
-                  .filter((item) => item.isActive && item.scope === "personal")
-                  .map((item) => ({ value: item.id, label: item.name }))}
-                value={subscriptionChangePlanForm.planId}
-                onChange={(value) => setSubscriptionChangePlanForm((current) => applyPlanToChangePlanForm(snapshot, current, value || ""))}
-              />
-              <NumberInput
-                label="总流量 (GB)"
-                min={0}
-                value={subscriptionChangePlanForm.totalTrafficGb}
-                onChange={(value) => setSubscriptionChangePlanForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
-              />
-              <TextInput
-                label="到期时间 (留空保持原值)"
-                type="datetime-local"
-                value={subscriptionChangePlanForm.expireAt}
-                onChange={(event) => setSubscriptionChangePlanForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
-              />
-              <Switch
-                checked={subscriptionChangePlanForm.renewable}
-                onChange={(event) =>
-                  setSubscriptionChangePlanForm((current) => ({ ...current, renewable: event.currentTarget.checked }))
-                }
-                label="允许续费"
-              />
-            </>
-          ) : null}
-
-          {drawer.type === "node" ? (
-            <>
-              {currentAccessMode === "relay" ? (
-                <TextInput
-                  label="订阅地址"
-                  value={nodeForm.subscriptionUrl}
-                  onChange={(event) => setNodeForm((current) => ({ ...current, subscriptionUrl: event.currentTarget.value }))}
-                />
-              ) : (
-                <Alert color="blue" variant="light">
-                  当前为 3x-ui 直连模式，节点运行参数会直接从面板入站读取，无需填写订阅地址。
-                </Alert>
-              )}
-              <TextInput
-                label="节点名称"
-                value={nodeForm.name}
-                onChange={(event) => setNodeForm((current) => ({ ...current, name: event.currentTarget.value }))}
-              />
-              <Group grow>
-                <TextInput
-                  label="地区"
-                  value={nodeForm.region}
-                  onChange={(event) => setNodeForm((current) => ({ ...current, region: event.currentTarget.value }))}
-                />
-                <TextInput
-                  label="供应商"
-                  value={nodeForm.provider}
-                  onChange={(event) => setNodeForm((current) => ({ ...current, provider: event.currentTarget.value }))}
-                />
-              </Group>
-              <TextInput
-                label="标签"
-                description="使用英文逗号分隔"
-                value={nodeForm.tags}
-                onChange={(event) => setNodeForm((current) => ({ ...current, tags: event.currentTarget.value }))}
-              />
-              <Switch
-                checked={nodeForm.recommended}
-                onChange={(event) => setNodeForm((current) => ({ ...current, recommended: event.currentTarget.checked }))}
-                label="推荐节点"
-              />
-              <Switch
-                checked={nodeForm.panelEnabled}
-                onChange={(event) => setNodeForm((current) => ({ ...current, panelEnabled: event.currentTarget.checked }))}
-                label="启用 3x-ui 面板"
-              />
-              <TextInput
-                label="面板地址"
-                placeholder="https://panel.example.com:2053"
-                value={nodeForm.panelBaseUrl}
-                onChange={(event) => setNodeForm((current) => ({ ...current, panelBaseUrl: event.currentTarget.value }))}
-              />
-              <Group grow>
-                <TextInput
-                  label="面板路径"
-                  placeholder="/"
-                  value={nodeForm.panelApiBasePath}
-                  onChange={(event) => setNodeForm((current) => ({ ...current, panelApiBasePath: event.currentTarget.value }))}
-                />
-                <NumberInput
-                  label="入站 ID"
-                  min={1}
-                  value={nodeForm.panelInboundId}
-                  onChange={(value) => setNodeForm((current) => ({ ...current, panelInboundId: Number(value) || 1 }))}
-                />
-              </Group>
-              <Group grow>
-                <TextInput
-                  label="面板账号"
-                  value={nodeForm.panelUsername}
-                  onChange={(event) => setNodeForm((current) => ({ ...current, panelUsername: event.currentTarget.value }))}
-                />
-                <TextInput
-                  label="面板密码"
-                  type="password"
-                  value={nodeForm.panelPassword}
-                  onChange={(event) => setNodeForm((current) => ({ ...current, panelPassword: event.currentTarget.value }))}
-                />
-              </Group>
-            </>
-          ) : null}
-
-          {drawer.type === "announcement" ? (
-            <>
-              <TextInput
-                label="标题"
-                value={announcementForm.title}
-                onChange={(event) => setAnnouncementForm((current) => ({ ...current, title: event.currentTarget.value }))}
-              />
-              <Textarea
-                label="内容"
-                minRows={6}
-                value={announcementForm.body}
-                onChange={(event) => setAnnouncementForm((current) => ({ ...current, body: event.currentTarget.value }))}
-              />
-              <Group grow>
-                <Select
-                  label="级别"
-                  data={announcementLevelOptions}
-                  value={announcementForm.level}
-                  onChange={(value) =>
-                    setAnnouncementForm((current) => ({ ...current, level: (value || "info") as AnnouncementLevel }))
-                  }
-                />
-                <TextInput
-                  label="发布时间"
-                  type="datetime-local"
-                  value={announcementForm.publishedAt}
-                  onChange={(event) => setAnnouncementForm((current) => ({ ...current, publishedAt: event.currentTarget.value }))}
-                />
-              </Group>
-              <Select
-                label="展示模式"
-                data={displayModeOptions}
-                value={announcementForm.displayMode}
-                onChange={(value) =>
-                  setAnnouncementForm((current) => ({
-                    ...current,
-                    displayMode: (value || "passive") as AnnouncementDisplayMode,
-                    countdownSeconds: value === "modal_countdown" ? Math.max(1, current.countdownSeconds) : 0
-                  }))
-                }
-              />
-              {announcementForm.displayMode === "modal_countdown" ? (
-                <NumberInput
-                  label="倒计时秒数"
-                  min={1}
-                  value={announcementForm.countdownSeconds}
-                  onChange={(value) => setAnnouncementForm((current) => ({ ...current, countdownSeconds: Number(value) || 1 }))}
-                />
-              ) : null}
-              <Switch
-                checked={announcementForm.isActive}
-                onChange={(event) => setAnnouncementForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
-                label="立即上线"
-              />
-            </>
-          ) : null}
-
-          {drawer.type === "team" ? (
-            <>
-              <TextInput
-                label="团队名称"
-                value={teamForm.name}
-                onChange={(event) => setTeamForm((current) => ({ ...current, name: event.currentTarget.value }))}
-              />
-              <Select
-                label="负责人"
-                data={snapshot.users
-                  .filter((item) => item.role === "user" && (drawer.recordId ? item.teamId === null || item.id === teamForm.ownerUserId : item.teamId === null))
-                  .map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
-                value={teamForm.ownerUserId}
-                onChange={(value) => setTeamForm((current) => ({ ...current, ownerUserId: value || "" }))}
-              />
-              <Select
-                label="状态"
-                data={[
-                  { value: "active", label: "启用" },
-                  { value: "disabled", label: "停用" }
-                ]}
-                value={teamForm.status}
-                onChange={(value) => setTeamForm((current) => ({ ...current, status: (value || "active") as TeamStatus }))}
-              />
-              {drawer.recordId ? (
-                <Card withBorder radius="xl" p="md">
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Title order={5}>成员</Title>
-                      <Button size="xs" variant="default" onClick={() => openDrawer("team-member", null, drawer.recordId)}>
-                        添加成员
-                      </Button>
-                    </Group>
-                    {(snapshot.teams.find((item) => item.id === drawer.recordId)?.members ?? []).map((member) => (
-                      <Paper key={member.id} withBorder radius="lg" p="sm">
-                        <Group justify="space-between">
-                          <div>
-                            <Text fw={600}>{member.displayName}</Text>
-                            <Text size="sm" c="dimmed">
-                              {member.email} · 已用 {member.usedTrafficGb} GB
-                            </Text>
-                          </div>
-                          <RowActions>
-                            <ActionIcon variant="subtle" onClick={() => openDrawer("team-member", member.id, drawer.recordId)}>
-                              <IconPencil size={16} />
-                            </ActionIcon>
-                            {member.role !== "owner" ? (
-                              <ActionIcon color="red" variant="subtle" onClick={() => void handleDeleteTeamMember(drawer.recordId!, member.id)}>
-                                <IconTrash size={16} />
-                              </ActionIcon>
-                            ) : null}
-                          </RowActions>
-                        </Group>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </Card>
-              ) : null}
-              {drawer.recordId ? (
-                <Card withBorder radius="xl" p="md">
-                  <Stack gap="sm">
-                    <Title order={5}>流量明细</Title>
-                    {(snapshot.teams.find((item) => item.id === drawer.recordId)?.usage ?? []).map((entry) => (
-                      <Paper key={entry.id} withBorder radius="lg" p="sm">
-                        <Group justify="space-between">
-                          <div>
-                            <Text fw={600}>{entry.userDisplayName}</Text>
-                            <Text size="sm" c="dimmed">
-                              {entry.userEmail} · {formatDateTime(entry.recordedAt)}
-                            </Text>
-                          </div>
-                          <Badge variant="light">{entry.usedTrafficGb} GB</Badge>
-                        </Group>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </Card>
-              ) : null}
-            </>
-          ) : null}
-
-          {drawer.type === "team-member" ? (
-            <>
-              <Select
-                label="成员账号"
-                disabled={drawer.recordId !== null}
-                data={eligiblePersonalUsers
-                  .map((item) => ({ value: item.id, label: `${item.displayName} · ${item.email}` }))}
-                value={teamMemberForm.userId}
-                onChange={(value) => setTeamMemberForm((current) => ({ ...current, userId: value || "" }))}
-              />
-              <Select
-                label="角色"
-                data={[
-                  { value: "member", label: "成员" },
-                  { value: "owner", label: "负责人" }
-                ]}
-                value={teamMemberForm.role}
-                onChange={(value) => setTeamMemberForm((current) => ({ ...current, role: (value || "member") as TeamMemberRole }))}
-              />
-            </>
-          ) : null}
-
-          {drawer.type === "team-subscription" ? (
-            <>
-              <Select
-                label="套餐"
-                data={snapshot.plans
-                  .filter((item) => item.isActive && item.scope === "team")
-                  .map((item) => ({ value: item.id, label: item.name }))}
-                value={teamSubscriptionForm.planId}
-                onChange={(value) => setTeamSubscriptionForm((current) => applyPlanToTeamSubscriptionForm(snapshot, current, value || ""))}
-              />
-              <NumberInput
-                label="总流量 (GB)"
-                min={0}
-                value={teamSubscriptionForm.totalTrafficGb}
-                onChange={(value) => setTeamSubscriptionForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
-              />
-              <TextInput
-                label="到期时间"
-                type="datetime-local"
-                value={teamSubscriptionForm.expireAt}
-                onChange={(event) => setTeamSubscriptionForm((current) => ({ ...current, expireAt: event.currentTarget.value }))}
-              />
-              <Switch
-                checked={teamSubscriptionForm.renewable}
-                onChange={(event) => setTeamSubscriptionForm((current) => ({ ...current, renewable: event.currentTarget.checked }))}
-                label="允许续费"
-              />
-            </>
-          ) : null}
-
-          <Group justify="flex-end">
-            <Button variant="default" onClick={closeDrawer}>
-              取消
-            </Button>
-            <Button onClick={() => void submitDrawer()} loading={drawerBusy}>
-              保存
-            </Button>
-          </Group>
-        </Stack>
-      </Drawer>
-
-      <Modal opened={deleteNodeTarget !== null} onClose={() => setDeleteNodeTarget(null)} title="删除节点" centered>
-        <Stack>
-          <Text>删除后不可恢复。</Text>
-          <Text fw={600}>{deleteNodeTarget?.name}</Text>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setDeleteNodeTarget(null)}>
-              取消
-            </Button>
-            <Button color="red" onClick={() => void handleDeleteNode()}>
-              删除
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
-
-      <Modal
+      <NodeAccessEditorModal
         opened={nodeAccessEditor !== null}
+        ownerLabel={nodeAccessEditor?.ownerLabel ?? null}
+        nodeOptions={nodeOptions}
+        selection={nodeAccessSelection}
+        loading={nodeAccessLoading}
+        saving={nodeAccessSaving}
+        onSelectionChange={setNodeAccessSelection}
+        onSelectAll={() => setNodeAccessSelection(nodeOptions.map((item) => item.value))}
+        onClear={() => setNodeAccessSelection([])}
         onClose={closeNodeAccessEditor}
-        title="节点授权"
-        centered
-        size="lg"
-      >
-        <Stack>
-          <Text size="sm" c="dimmed">
-            {nodeAccessEditor?.ownerLabel ?? "当前订阅"}
-          </Text>
-          <MultiSelect
-            label="可用节点"
-            placeholder={nodeAccessLoading ? "正在加载节点..." : "选择当前订阅可用的节点"}
-            searchable
-            nothingFoundMessage="没有匹配节点"
-            data={nodeOptions}
-            value={nodeAccessSelection}
-            onChange={setNodeAccessSelection}
-            disabled={nodeAccessLoading || nodeAccessSaving}
-          />
-          <Group justify="space-between">
-            <Text size="sm" c={nodeAccessSelection.length > 0 ? "dimmed" : "orange.7"}>
-              {nodeAccessSelection.length > 0 ? `已分配 ${nodeAccessSelection.length} 个节点` : "当前订阅未分配节点"}
-            </Text>
-            <Group gap="xs">
-              <Button variant="default" size="xs" onClick={() => setNodeAccessSelection(nodeOptions.map((item) => item.value))}>
-                全选
-              </Button>
-              <Button variant="default" size="xs" onClick={() => setNodeAccessSelection([])}>
-                清空
-              </Button>
-            </Group>
-          </Group>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={closeNodeAccessEditor}>
-              取消
-            </Button>
-            <Button onClick={() => void saveNodeAccessEditor()} loading={nodeAccessSaving || nodeAccessLoading}>
-              保存
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+        onSave={() => void saveNodeAccessEditor()}
+      />
     </>
   );
 }
 
-function SectionCard(props: { searchValue: string; onSearchChange: (value: string) => void; children: ReactNode }) {
-  return (
-    <Card withBorder radius="xl" p="lg">
-      <Stack gap="md">
-        <TextInput
-          leftSection={<IconSearch size={16} />}
-          placeholder="搜索"
-          value={props.searchValue}
-          onChange={(event) => props.onSearchChange(event.currentTarget.value)}
-        />
-        {props.children}
-      </Stack>
-    </Card>
-  );
-}
-
-function MetricCard(props: { label: string; value: number | string; icon: ReactNode }) {
-  return (
-    <Paper withBorder radius="xl" p="lg" className="metric-card">
-      <Group justify="space-between">
-        <div>
-          <Text size="sm" c="dimmed">
-            {props.label}
-          </Text>
-          <Title order={2} mt="sm">
-            {props.value}
-          </Title>
-        </div>
-        <ThemeIcon size={42} radius="lg" variant="light">
-          {props.icon}
-        </ThemeIcon>
-      </Group>
-    </Paper>
-  );
-}
-
-function DataTable({ children }: { children: ReactNode }) {
-  return (
-    <ScrollArea>
-      <Table verticalSpacing="sm" horizontalSpacing="md" highlightOnHover>
-        {children}
-      </Table>
-    </ScrollArea>
-  );
-}
-
-function CompactSubscriptionList({ items }: { items: AdminSubscriptionRecordDto[] }) {
-  return (
-    <Stack gap="sm">
-      {items.map((item) => (
-        <Paper key={item.id} withBorder radius="lg" p="md">
-          <Group justify="space-between" align="start">
-            <div>
-              <Text fw={600}>{item.userDisplayName}</Text>
-              <Text size="sm" c="dimmed">
-                {item.planName} · 到期 {formatDateTime(item.expireAt)}
-              </Text>
-            </div>
-            <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
-          </Group>
-        </Paper>
-      ))}
-    </Stack>
-  );
-}
-
-function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
-  return (
-    <Stack gap="sm">
-      {items.map((item) => (
-        <Paper key={item.id} withBorder radius="lg" p="md">
-          <Group justify="space-between" align="start">
-            <div>
-              <Text fw={600}>{item.name}</Text>
-              <Text size="sm" c="dimmed">
-                {item.serverHost}:{item.serverPort}
-              </Text>
-            </div>
-            <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
-          </Group>
-        </Paper>
-      ))}
-    </Stack>
-  );
-}
-
-function StatusBadge(props: { color: string; label: string }) {
-  return (
-    <Badge color={props.color} variant="light">
-      {props.label}
-    </Badge>
-  );
-}
-
-function RowActions({ children }: { children: ReactNode }) {
-  return <Group gap={4} wrap="nowrap">{children}</Group>;
-}
-
-function emptyUserForm(): UserFormState {
-  return {
-    email: "",
-    password: "",
-    displayName: "",
-    role: "user",
-    status: "active"
-  };
-}
-
-function emptyPlanForm(): PlanFormState {
-  return {
-    name: "",
-    scope: "personal",
-    totalTrafficGb: 100,
-    renewable: true,
-    isActive: true
-  };
-}
-
-function emptySubscriptionCreateForm(snapshot?: AdminSnapshotDto | null): SubscriptionCreateFormState {
-  const plan = snapshot?.plans.find((item) => item.isActive && item.scope === "personal") ?? snapshot?.plans.find((item) => item.scope === "personal");
-  return {
-    userId: snapshot?.users.find((item) => item.role === "user" && item.accountType === "personal" && item.currentSubscription === null)?.id ?? "",
-    planId: plan?.id ?? "",
-    totalTrafficGb: plan?.totalTrafficGb ?? 100,
-    usedTrafficGb: 0,
-    expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString()),
-    state: "active",
-    renewable: plan?.renewable ?? true
-  };
-}
-
-function emptySubscriptionAdjustForm(): SubscriptionAdjustFormState {
-  return {
-    totalTrafficGb: 100,
-    usedTrafficGb: 0,
-    expireAt: toDateTimeLocal(new Date().toISOString()),
-    state: "active",
-    renewable: true
-  };
-}
-
-function emptySubscriptionRenewForm(): SubscriptionRenewFormState {
-  return {
-    expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString()),
-    extendDays: 30,
-    resetTraffic: false,
-    totalTrafficGb: ""
-  };
-}
-
-function emptySubscriptionChangePlanForm(): SubscriptionChangePlanFormState {
-  return {
-    planId: "",
-    totalTrafficGb: 100,
-    expireAt: "",
-    renewable: true
-  };
-}
-
-function emptyTeamForm(snapshot?: AdminSnapshotDto | null): TeamFormState {
-  return {
-    name: "",
-    ownerUserId: snapshot?.users.find((item) => item.role === "user" && item.accountType === "personal" && item.currentSubscription === null)?.id ?? "",
-    status: "active"
-  };
-}
-
-function emptyTeamMemberForm(): TeamMemberFormState {
-  return {
-    userId: "",
-    role: "member"
-  };
-}
-
-function emptyTeamSubscriptionForm(): TeamSubscriptionFormState {
-  return {
-    planId: "",
-    totalTrafficGb: 100,
-    expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString()),
-    renewable: true
-  };
-}
-
-function emptyNodeForm(): NodeFormState {
-  return {
-    subscriptionUrl: "",
-    name: "",
-    region: "",
-    provider: "自有节点",
-    tags: "",
-    recommended: true,
-    panelBaseUrl: "",
-    panelApiBasePath: "/",
-    panelUsername: "",
-    panelPassword: "",
-    panelInboundId: 1,
-    panelEnabled: false
-  };
-}
-
-function emptyAnnouncementForm(): AnnouncementFormState {
-  return {
-    title: "",
-    body: "",
-    level: "info",
-    publishedAt: toDateTimeLocal(new Date().toISOString()),
-    isActive: true,
-    displayMode: "passive",
-    countdownSeconds: 0
-  };
-}
-
-function toPolicyForm(policy: AdminPolicyRecordDto): PolicyFormState {
-  return {
-    accessMode: policy.accessMode,
-    defaultMode: policy.defaultMode,
-    modes: policy.modes,
-    blockAds: policy.features.blockAds,
-    chinaDirect: policy.features.chinaDirect,
-    aiServicesProxy: policy.features.aiServicesProxy,
-    currentVersion: policy.currentVersion,
-    minimumVersion: policy.minimumVersion,
-    forceUpgrade: policy.forceUpgrade,
-    changelog: policy.changelog.join("\n"),
-    downloadUrl: policy.downloadUrl ?? ""
-  };
-}
-
-function applyPlanToCreateForm(snapshot: AdminSnapshotDto, current: SubscriptionCreateFormState, planId: string): SubscriptionCreateFormState {
-  const plan = snapshot.plans.find((item) => item.id === planId && item.scope === "personal");
-  if (!plan) return { ...current, planId };
-  return {
-    ...current,
-    planId,
-    totalTrafficGb: plan.totalTrafficGb,
-    renewable: plan.renewable
-  };
-}
-
-function applyPlanToChangePlanForm(
-  snapshot: AdminSnapshotDto,
-  current: SubscriptionChangePlanFormState,
-  planId: string
-): SubscriptionChangePlanFormState {
-  const plan = snapshot.plans.find((item) => item.id === planId && item.scope === "personal");
-  if (!plan) return { ...current, planId };
-  return {
-    ...current,
-    planId,
-    totalTrafficGb: plan.totalTrafficGb,
-    renewable: plan.renewable
-  };
-}
-
-function applyPlanToTeamSubscriptionForm(
-  snapshot: AdminSnapshotDto,
-  current: TeamSubscriptionFormState,
-  planId: string
-): TeamSubscriptionFormState {
-  const plan = snapshot.plans.find((item) => item.id === planId && item.scope === "team");
-  if (!plan) return { ...current, planId };
-  return {
-    ...current,
-    planId,
-    totalTrafficGb: plan.totalTrafficGb,
-    renewable: plan.renewable
-  };
-}
-
-function readError(reason: unknown, fallback: string) {
-  if (!(reason instanceof Error)) {
-    return fallback;
-  }
-  try {
-    const parsed = JSON.parse(reason.message) as { message?: string[] | string };
-    if (Array.isArray(parsed.message)) return parsed.message.join("，");
-    if (typeof parsed.message === "string") return parsed.message;
-  } catch {
-    return reason.message || fallback;
-  }
-  return reason.message || fallback;
-}
-
 function isAccessTokenError(message: string) {
   return message.includes("缺少访问令牌") || message.includes("访问令牌无效") || message.includes("登录态已失效");
-}
-
-function filterByKeyword<T>(items: T[], keyword: string, projector: (item: T) => string[]) {
-  if (!keyword.trim()) return items;
-  const normalized = keyword.trim().toLowerCase();
-  return items.filter((item) => projector(item).join(" ").toLowerCase().includes(normalized));
 }
 
 function splitCsv(value: string) {
@@ -2769,35 +1578,6 @@ function splitLines(value: string) {
     .filter(Boolean);
 }
 
-function toDateTimeLocal(value: string) {
-  const date = new Date(value);
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hour = `${date.getHours()}`.padStart(2, "0");
-  const minute = `${date.getMinutes()}`.padStart(2, "0");
-  return `${year}-${month}-${day}T${hour}:${minute}`;
-}
-
-function fromDateTimeLocal(value: string) {
-  return value ? new Date(value).toISOString() : undefined;
-}
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
-
-function addDays(base: Date, value: number) {
-  const next = new Date(base);
-  next.setDate(next.getDate() + value);
-  return next;
-}
-
 function drawerTitle(type: DrawerType) {
   if (type === "user") return "用户";
   if (type === "plan") return "套餐";
@@ -2812,112 +1592,3 @@ function drawerTitle(type: DrawerType) {
   if (type === "announcement") return "公告";
   return "";
 }
-
-function translateRole(role: UserRole) {
-  return role === "admin" ? "管理员" : "用户";
-}
-
-function translateUserStatus(status: UserStatus) {
-  return status === "active" ? "启用" : "禁用";
-}
-
-function translateSubscriptionState(state: SubscriptionState) {
-  if (state === "active") return "有效";
-  if (state === "paused") return "暂停";
-  if (state === "expired") return "到期";
-  return "流量耗尽";
-}
-
-function translateSourceAction(action: AdminSubscriptionRecordDto["sourceAction"]) {
-  if (action === "created") return "新建";
-  if (action === "renewed") return "续期";
-  if (action === "plan_changed") return "变更套餐";
-  return "校正";
-}
-
-function subscriptionStateColor(state: SubscriptionState) {
-  if (state === "active") return "green";
-  if (state === "paused") return "yellow";
-  return "red";
-}
-
-function translateProbeStatus(status: AdminNodeRecordDto["probeStatus"]) {
-  if (status === "healthy") return "正常";
-  if (status === "degraded") return "降级";
-  if (status === "offline") return "离线";
-  return "未检测";
-}
-
-function nodeProbeColor(status: AdminNodeRecordDto["probeStatus"]) {
-  if (status === "healthy") return "green";
-  if (status === "degraded") return "yellow";
-  if (status === "offline") return "red";
-  return "gray";
-}
-
-function translateGatewayStatus(status: AdminNodeRecordDto["gatewayStatus"]) {
-  if (status === "online") return "已就绪";
-  if (status === "degraded") return "异常";
-  return "未启动";
-}
-
-function nodeGatewayColor(status: AdminNodeRecordDto["gatewayStatus"]) {
-  if (status === "online") return "green";
-  if (status === "degraded") return "yellow";
-  return "red";
-}
-
-function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"]) {
-  if (status === "online") return "在线";
-  if (status === "degraded") return "异常";
-  return "未配置";
-}
-
-function nodePanelColor(status: AdminNodeRecordDto["panelStatus"]) {
-  if (status === "online") return "green";
-  if (status === "degraded") return "yellow";
-  return "gray";
-}
-
-function translateAnnouncementLevel(level: AnnouncementLevel) {
-  if (level === "info") return "通知";
-  if (level === "warning") return "提醒";
-  return "成功";
-}
-
-function announcementLevelColor(level: AnnouncementLevel) {
-  if (level === "info") return "blue";
-  if (level === "warning") return "yellow";
-  return "green";
-}
-
-function translateDisplayMode(mode: AnnouncementDisplayMode, countdownSeconds: number) {
-  if (mode === "modal_confirm") return "确认弹窗";
-  if (mode === "modal_countdown") return `倒计时确认 · ${countdownSeconds}s`;
-  return "普通公告";
-}
-
-const modeOptions = [
-  { value: "rule", label: "规则模式" },
-  { value: "global", label: "全局代理" },
-  { value: "direct", label: "直连模式" }
-];
-
-const subscriptionStateOptions = [
-  { value: "active", label: "有效" },
-  { value: "paused", label: "暂停" },
-  { value: "expired", label: "到期" },
-  { value: "exhausted", label: "流量耗尽" }
-];
-
-const announcementLevelOptions = [
-  { value: "info", label: "通知" },
-  { value: "warning", label: "提醒" },
-  { value: "success", label: "成功" }
-];
-
-const displayModeOptions = [
-  { value: "passive", label: "普通公告" },
-  { value: "modal_confirm", label: "确认弹窗" },
-  { value: "modal_countdown", label: "倒计时确认" }
-];

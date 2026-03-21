@@ -124,7 +124,7 @@ model Plan {
   scope          PlanScope      @default(personal)
   totalTrafficGb Float
   renewable      Boolean
-  maxConcurrentSessions Int      @default(1)
+  maxConcurrentSessions Int      @default(3)
   isActive       Boolean        @default(true)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
@@ -192,6 +192,7 @@ model TrafficLedger {
   teamId         String
   userId         String
   subscriptionId String
+  nodeId         String?
   usedTrafficGb  Float
   recordedAt     DateTime
   createdAt      DateTime     @default(now())
@@ -199,6 +200,10 @@ model TrafficLedger {
   team           Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  node           Node?        @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+
+  @@index([teamId, subscriptionId, userId, recordedAt])
+  @@index([teamId, userId, nodeId, recordedAt])
 }
 
 model Node {
@@ -239,6 +244,7 @@ model Node {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   subscriptionAccesses SubscriptionNodeAccess[]
+  trafficLedgerEntries TrafficLedger[]
   trafficSnapshots TrafficSnapshot[]
   meteringIncidents MeteringIncident[]
   sessionLeases     NodeSessionLease[]

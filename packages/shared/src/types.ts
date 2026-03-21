@@ -306,6 +306,21 @@ export interface AdminTeamUsageRecordDto {
   subscriptionId: string;
   usedTrafficGb: number;
   recordedAt: string;
+  recordCount?: number;
+  nodeId?: string | null;
+  nodeName?: string | null;
+  nodeRegion?: string | null;
+  memberTotalUsedTrafficGb?: number;
+  nodeBreakdown?: AdminTeamUsageNodeSummaryDto[];
+}
+
+export interface AdminTeamUsageNodeSummaryDto {
+  nodeId: string;
+  nodeName: string;
+  nodeRegion: string;
+  usedTrafficGb: number;
+  recordCount: number;
+  lastRecordedAt: string;
 }
 
 export interface AdminTeamRecordDto {
@@ -410,12 +425,10 @@ export interface CreateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt: string;
   state?: SubscriptionState;
-  renewable?: boolean;
 }
 
 export interface RenewSubscriptionInputDto {
   expireAt?: string;
-  extendDays?: number;
   resetTraffic?: boolean;
   totalTrafficGb?: number;
 }
@@ -424,7 +437,6 @@ export interface ChangeSubscriptionPlanInputDto {
   planId: string;
   totalTrafficGb?: number;
   expireAt?: string;
-  renewable?: boolean;
 }
 
 export interface UpdateSubscriptionInputDto {
@@ -432,7 +444,6 @@ export interface UpdateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt?: string;
   state?: SubscriptionState;
-  renewable?: boolean;
 }
 
 export interface ImportNodeInputDto {
@@ -559,12 +570,41 @@ export interface UpdateTeamMemberInputDto {
   role?: TeamMemberRole;
 }
 
+export interface KickTeamMemberInputDto {
+  disableAccount?: boolean;
+}
+
+export interface KickTeamMemberResultDto {
+  ok: boolean;
+  action: "disconnect_session";
+  disconnectedSessionCount: number;
+  accountDisabled: boolean;
+  message: string;
+  team: AdminTeamRecordDto;
+  user: AdminUserRecordDto | null;
+}
+
+export interface ResetSubscriptionTrafficInputDto {
+  userId?: string | null;
+}
+
+export interface ResetSubscriptionTrafficResultDto {
+  ok: boolean;
+  subscriptionId: string;
+  userId: string | null;
+  clearedBindingCount: number;
+  message: string;
+  subscription: AdminSubscriptionRecordDto;
+  user: AdminUserRecordDto | null;
+}
+
+export type ResetUserTrafficResultDto = ResetSubscriptionTrafficResultDto;
+
 export interface CreateTeamSubscriptionInputDto {
   planId: string;
   expireAt: string;
   totalTrafficGb?: number;
   usedTrafficGb?: number;
-  renewable?: boolean;
 }
 
 export interface UpdatePolicyInputDto {

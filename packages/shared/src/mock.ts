@@ -225,7 +225,7 @@ export const mockAdminPlans: AdminPlanRecordDto[] = [
     scope: "personal",
     totalTrafficGb: mockSubscription.totalTrafficGb,
     renewable: true,
-    maxConcurrentSessions: 1,
+    maxConcurrentSessions: 3,
     isActive: true,
     subscriptionCount: 1,
     createdAt: new Date().toISOString(),

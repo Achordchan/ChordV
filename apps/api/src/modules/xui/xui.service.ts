@@ -67,6 +67,7 @@ type XuiInbound = {
 };
 
 type XuiInboundRuntime = {
+  inboundId: number;
   name: string;
   serverHost: string;
   serverPort: number;
@@ -127,7 +128,7 @@ export class XuiService {
   async ensureClient(
     node: XuiNodeConfig,
     payload: XuiClientPayload
-  ): Promise<{ email: string; uuid: string }> {
+  ): Promise<{ email: string; uuid: string; inboundId: number }> {
     const inbound = await this.getInbound(node);
     const existing = this.findInboundClient(inbound, payload.email);
     if (existing) {
@@ -136,19 +137,50 @@ export class XuiService {
       }
       return {
         email: existing.email,
-        uuid: existing.id
+        uuid: existing.id,
+        inboundId: inbound.id
       };
     }
 
     await this.addClient(node, payload);
     return {
       email: payload.email,
-      uuid: payload.id
+      uuid: payload.id,
+      inboundId: inbound.id
     };
   }
 
+  async setClientEnabled(node: XuiNodeConfig, clientId: string, email: string, enabled: boolean) {
+    const inbound = await this.getInbound(node);
+    const existing = this.findInboundClient(inbound, email);
+    if (!existing) {
+      if (enabled) {
+        throw new BadGatewayException(`3x-ui 未找到客户端 ${email}`);
+      }
+      return;
+    }
+
+    if (existing.enable === enabled) {
+      return;
+    }
+
+    await this.updateClient(node, {
+      id: existing.id || clientId,
+      email: existing.email || email,
+      enable: enabled,
+      flow: existing.flow ?? "",
+      expiryTime: existing.expiryTime ?? 0,
+      limitIp: existing.limitIp ?? 0,
+      totalGB: existing.totalGB ?? 0,
+      subId: existing.subId ?? "",
+      reset: existing.reset ?? 0,
+      tgId: existing.tgId ?? "",
+      comment: existing.comment ?? ""
+    });
+  }
+
   async removeClient(node: XuiNodeConfig, clientId: string, email: string) {
-    const inboundId = this.requireInboundId(node);
+    const inboundId = await this.resolveInboundId(node);
     const attempts = [
       { path: `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(clientId)}` },
       { path: `/panel/api/inbounds/delClient/${encodeURIComponent(clientId)}`, body: JSON.stringify({ id: inboundId }), contentType: "application/json" },
@@ -195,6 +227,37 @@ export class XuiService {
     throw new BadGatewayException("删除 3x-ui 客户端失败");
   }
 
+  async resetClientTraffic(node: XuiNodeConfig, email: string) {
+    const inboundId = await this.resolveInboundId(node);
+    const attempts = [
+      { path: `/panel/api/inbounds/resetClientTraffic/${inboundId}/${encodeURIComponent(email)}` },
+      { path: `/panel/api/inbounds/${inboundId}/resetClientTraffic/${encodeURIComponent(email)}` },
+      {
+        path: `/panel/api/inbounds/resetClientTraffic/${encodeURIComponent(email)}`,
+        body: JSON.stringify({ id: inboundId }),
+        contentType: "application/json"
+      }
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        await this.request({
+          node,
+          path: attempt.path,
+          method: "POST",
+          body: attempt.body,
+          contentType: attempt.contentType,
+          useJson: true
+        });
+        return;
+      } catch {
+        continue;
+      }
+    }
+
+    throw new BadGatewayException(`重置 3x-ui 客户端流量失败：${email}`);
+  }
+
   async listNodeUsage(node: XuiNodeConfig) {
     const inbound = await this.getInboundWithStats(node);
     const stats = this.extractClientStats(inbound);
@@ -207,8 +270,25 @@ export class XuiService {
     }));
   }
 
+  async getClientUsage(node: XuiNodeConfig, email: string) {
+    const inbound = await this.getInboundWithStats(node);
+    const stat =
+      this.extractClientStats(inbound).find((item) => item.email?.trim().toLowerCase() === email.trim().toLowerCase()) ??
+      null;
+    if (!stat) {
+      return null;
+    }
+    return {
+      xrayUserEmail: stat.email.toLowerCase(),
+      xrayUserUuid: stat.uuid ?? undefined,
+      uplinkBytes: toBigInt(stat.up),
+      downlinkBytes: toBigInt(stat.down),
+      sampledAt: new Date().toISOString()
+    };
+  }
+
   async getInbound(node: XuiNodeConfig): Promise<XuiInbound> {
-    const inboundId = this.requireInboundId(node);
+    const inboundId = await this.resolveInboundId(node);
     const payload = await this.request({
       node,
       path: `/panel/api/inbounds/get/${inboundId}`,
@@ -222,7 +302,7 @@ export class XuiService {
   }
 
   private async getInboundWithStats(node: XuiNodeConfig): Promise<XuiInbound> {
-    const inboundId = this.requireInboundId(node);
+    const inboundId = await this.resolveInboundId(node);
     const payload = await this.request({
       node,
       path: "/panel/api/inbounds/list",
@@ -258,6 +338,7 @@ export class XuiService {
     const panelHost = new URL(normalizeBaseUrl(normalizeNodeConfig(node).panelBaseUrl)).hostname;
 
     return {
+      inboundId: inbound.id,
       name: readString(inbound.remark) ?? `${panelHost}:${inbound.port ?? 443}`,
       serverHost: readString(inbound.listen) ?? panelHost,
       serverPort: typeof inbound.port === "number" && Number.isFinite(inbound.port) ? inbound.port : 443,
@@ -295,12 +376,13 @@ export class XuiService {
   }
 
   private async addClient(node: XuiNodeConfig, client: XuiClientPayload) {
+    const inboundId = await this.resolveInboundId(node);
     await this.request({
       node,
       path: "/panel/api/inbounds/addClient",
       method: "POST",
       body: JSON.stringify({
-        id: this.requireInboundId(node),
+        id: inboundId,
         settings: JSON.stringify({
           clients: [client]
         })
@@ -311,7 +393,7 @@ export class XuiService {
   }
 
   private async updateClient(node: XuiNodeConfig, client: XuiClientPayload) {
-    const inboundId = this.requireInboundId(node);
+    const inboundId = await this.resolveInboundId(node);
     const attempts = [
       `/panel/api/inbounds/updateClient/${encodeURIComponent(client.id)}`,
       `/panel/api/inbounds/updateClient/${inboundId}/${encodeURIComponent(client.id)}`
@@ -355,6 +437,9 @@ export class XuiService {
     }
 
     if (!response.ok) {
+      if (response.status === 404) {
+        throw new BadGatewayException("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
+      }
       const text = await response.text().catch(() => "");
       throw new BadGatewayException(`3x-ui 面板请求失败：HTTP ${response.status}${text ? ` ${text}` : ""}`);
     }
@@ -414,9 +499,27 @@ export class XuiService {
       signal: AbortSignal.timeout(PANEL_TIMEOUT_MS)
     });
 
+    const responseText = await response.text().catch(() => "");
+    const payload = parseJsonRecord(responseText);
+    const loginMessage = readString(payload?.msg);
+    const loginSuccess = typeof payload?.success === "boolean" ? payload.success : null;
+
+    if (response.status === 404) {
+      throw new BadGatewayException("3x-ui 登录接口不存在，请检查面板地址或 API 基础路径");
+    }
+
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new BadGatewayException(`3x-ui 登录失败：HTTP ${response.status}${text ? ` ${text}` : ""}`);
+      if (response.status === 401 || response.status === 403 || isCredentialError(loginMessage)) {
+        throw new BadRequestException("3x-ui 账号或密码错误");
+      }
+      throw new BadGatewayException(`3x-ui 登录失败：HTTP ${response.status}`);
+    }
+
+    if (loginSuccess === false) {
+      if (isCredentialError(loginMessage)) {
+        throw new BadRequestException("3x-ui 账号或密码错误");
+      }
+      throw new BadGatewayException(loginMessage ? `3x-ui 登录失败：${loginMessage}` : "3x-ui 登录失败");
     }
 
     const cookies = response.headers.getSetCookie?.() ?? [];
@@ -427,7 +530,10 @@ export class XuiService {
         this.sessions.set(this.sessionKey(node), { cookieHeader: fallbackCookie.split(";")[0] });
         return;
       }
-      throw new BadGatewayException("3x-ui 登录成功但未返回会话 Cookie");
+      if (isCredentialError(loginMessage)) {
+        throw new BadRequestException("3x-ui 账号或密码错误");
+      }
+      throw new BadGatewayException("3x-ui 登录失败：未获取到会话 Cookie，请检查面板地址或登录接口路径");
     }
 
     this.sessions.set(this.sessionKey(node), { cookieHeader });
@@ -444,13 +550,38 @@ export class XuiService {
   }
 
   private extractClientStats(inbound: XuiInbound) {
-    const direct = Array.isArray(inbound.clientStats) ? inbound.clientStats : null;
-    if (direct && direct.length > 0) {
-      return direct;
+    const clients = this.extractInboundClients(inbound);
+    const direct = Array.isArray(inbound.clientStats) ? inbound.clientStats : [];
+    const statsByEmail = new Map<string, XuiInboundStat>();
+
+    for (const item of direct) {
+      const email = item.email?.trim().toLowerCase();
+      if (!email) {
+        continue;
+      }
+      statsByEmail.set(email, item);
+    }
+
+    for (const client of clients) {
+      const email = client.email?.trim().toLowerCase();
+      if (!email || statsByEmail.has(email)) {
+        continue;
+      }
+      statsByEmail.set(email, {
+        email: client.email,
+        uuid: client.id,
+        enable: client.enable,
+        up: 0,
+        down: 0,
+        total: 0
+      });
+    }
+
+    if (statsByEmail.size > 0) {
+      return Array.from(statsByEmail.values());
     }
 
     const settings = parseJsonRecord(inbound.settings);
-    const clients = this.extractInboundClients(inbound);
     const stats = parseJsonRecord(settings?.clientStats);
     if (Array.isArray(stats)) {
       return stats as XuiInboundStat[];
@@ -465,11 +596,19 @@ export class XuiService {
     }));
   }
 
-  private requireInboundId(node: XuiNodeConfig) {
-    if (!node.panelInboundId) {
-      throw new BadRequestException("节点未配置 3x-ui 入站 ID");
+  private async resolveInboundId(node: XuiNodeConfig) {
+    if (node.panelInboundId && node.panelInboundId > 0) {
+      return node.panelInboundId;
     }
-    return node.panelInboundId;
+
+    const inbounds = await this.listInbounds(node);
+    if (inbounds.length === 0) {
+      throw new BadRequestException("3x-ui 面板没有可用入站，请先在面板创建入站");
+    }
+    if (inbounds.length === 1) {
+      return inbounds[0].id;
+    }
+    throw new BadRequestException("未选择 3x-ui 入站，请先读取入站列表并选择目标入站");
   }
 
   private sessionKey(node: XuiNodeConfig) {
@@ -554,4 +693,11 @@ function toBigInt(value: unknown) {
     }
   }
   return 0n;
+}
+
+function isCredentialError(message: string | null) {
+  if (!message) {
+    return false;
+  }
+  return /账号|账户|用户名|密码|credential|invalid|unauthorized|login/i.test(message);
 }

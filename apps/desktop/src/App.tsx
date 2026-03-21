@@ -81,6 +81,8 @@ export function App() {
   const [countdown, setCountdown] = useState(0);
   const [now, setNow] = useState(Date.now());
   const leaseHeartbeatFailedAtRef = useRef<number | null>(null);
+  const lastMeteringToastRef = useRef<string | null>(null);
+  const localStopInFlightRef = useRef<Promise<void> | null>(null);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -222,6 +224,26 @@ export function App() {
     void handleDisconnect();
   }, [actionBusy, bootstrap?.subscription.remainingTrafficGb, bootstrap?.subscription.state, desktopStatus.status]);
 
+  useEffect(() => {
+    const status = bootstrap?.subscription.meteringStatus;
+    const message = bootstrap?.subscription.meteringMessage ?? "计费待同步，正在等待节点统计恢复";
+    if (status !== "degraded") {
+      lastMeteringToastRef.current = null;
+      return;
+    }
+    const key = `${bootstrap?.subscription.id ?? "subscription"}:${message}`;
+    if (lastMeteringToastRef.current === key) {
+      return;
+    }
+    lastMeteringToastRef.current = key;
+    notifications.show({
+      color: "yellow",
+      title: "计量同步提醒",
+      message,
+      autoClose: 4000
+    });
+  }, [bootstrap?.subscription.id, bootstrap?.subscription.meteringMessage, bootstrap?.subscription.meteringStatus]);
+
   async function initializeApp() {
     try {
       const rememberedCredentials = loadRememberedCredentials();
@@ -265,6 +287,43 @@ export function App() {
       });
       setRuntime(null);
       setRuntimeLog("");
+    }
+  }
+
+  async function forceStopLocalRuntime() {
+    if (localStopInFlightRef.current) {
+      await localStopInFlightRef.current;
+      return;
+    }
+
+    const task = (async () => {
+      try {
+        await invokeDesktopDisconnect();
+      } catch {
+        // 本地断开兜底不向外抛，避免阻断后续清理。
+      } finally {
+        leaseHeartbeatFailedAtRef.current = null;
+        setRuntime(null);
+        await refreshRuntime().catch(() => {
+          setDesktopStatus({
+            status: "idle",
+            activeSessionId: null,
+            configPath: null,
+            logPath: null,
+            xrayBinaryPath: null,
+            activePid: null,
+            lastError: null
+          });
+          setRuntimeLog("");
+        });
+      }
+    })();
+
+    localStopInFlightRef.current = task;
+    try {
+      await task;
+    } finally {
+      localStopInFlightRef.current = null;
     }
   }
 
@@ -320,11 +379,11 @@ export function App() {
           const refreshed = await refreshSession(nextSession.refreshToken);
           await saveStoredSession(refreshed);
           return await bootstrapSession(refreshed, false, preserveMode, autoProbe);
-        } catch {
-          await clearSession();
+      } catch {
+          await clearSession(true);
         }
       } else {
-        await clearSession();
+        await clearSession(true);
       }
 
       showErrorToast(reason instanceof Error ? readError(reason.message) : "登录态已失效");
@@ -364,8 +423,12 @@ export function App() {
     try {
       setRefreshing(true);
       await refreshRuntime();
-      await bootstrapSession(session, true, modeLocked, false);
+      const ok = await bootstrapSession(session, true, modeLocked, false);
+      if (!ok) {
+        await forceStopLocalRuntime();
+      }
     } catch (reason) {
+      await forceStopLocalRuntime();
       showErrorToast(reason instanceof Error ? readError(reason.message) : "刷新失败");
     } finally {
       setRefreshing(false);
@@ -379,13 +442,12 @@ export function App() {
 
     try {
       setLogoutBusy(true);
-      if (desktopStatus.status === "connected" || desktopStatus.status === "error") {
-        await handleDisconnect();
-      }
+      const accessToken = session?.accessToken ?? null;
+      await forceStopLocalRuntime();
       if (session) {
-        await logoutSession(session.accessToken).catch(() => null);
+        await logoutSession(accessToken ?? session.accessToken).catch(() => null);
       }
-      await clearSession();
+      await clearSession(false);
       if (!rememberPassword) {
         setCredentials((current) => ({ ...current, password: "" }));
       }
@@ -394,7 +456,10 @@ export function App() {
     }
   }
 
-  async function clearSession() {
+  async function clearSession(stopRuntime = true) {
+    if (stopRuntime) {
+      await forceStopLocalRuntime();
+    }
     await clearStoredSession().catch(() => null);
     setSession(null);
     setBootstrap(null);
@@ -437,6 +502,7 @@ export function App() {
       leaseHeartbeatFailedAtRef.current = null;
       await refreshRuntime();
     } catch (reason) {
+      await forceStopLocalRuntime();
       await refreshRuntime();
       showErrorToast(reason instanceof Error ? readError(reason.message) : "连接失败");
     } finally {
@@ -445,25 +511,24 @@ export function App() {
   }
 
   async function handleDisconnect() {
-    if (!session || actionBusy || (desktopStatus.status !== "connected" && desktopStatus.status !== "error")) {
+    if (actionBusy || (desktopStatus.status !== "connected" && desktopStatus.status !== "error")) {
       return;
     }
+
+    const sessionId = runtime?.sessionId ?? desktopStatus.activeSessionId;
+    const accessToken = session?.accessToken ?? null;
 
     try {
       setActionBusy("disconnect");
       setDesktopStatus((current) => ({ ...current, status: "disconnecting", lastError: null }));
-      const sessionId = runtime?.sessionId ?? desktopStatus.activeSessionId;
-      if (sessionId) {
-        await disconnectSession(session.accessToken, sessionId);
+      await forceStopLocalRuntime();
+      if (sessionId && accessToken) {
+        await disconnectSession(accessToken, sessionId).catch(() => null);
       }
-      await invokeDesktopDisconnect();
-      setRuntime(null);
-      leaseHeartbeatFailedAtRef.current = null;
-      await refreshRuntime();
     } catch (reason) {
-      await refreshRuntime();
       showErrorToast(reason instanceof Error ? readError(reason.message) : "断开失败");
     } finally {
+      await refreshRuntime();
       setActionBusy(null);
     }
   }

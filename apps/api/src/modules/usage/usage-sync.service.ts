@@ -232,6 +232,7 @@ export class UsageSyncService {
             sampledAt
           }
         });
+        await this.touchBindingSyncState(mapping.bindingId, sample.uplinkBytes, sample.downlinkBytes, sampledAt);
         await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
         continue;
       }
@@ -253,13 +254,14 @@ export class UsageSyncService {
           sampledAt
         }
       });
+      await this.touchBindingSyncState(mapping.bindingId, sample.uplinkBytes, sample.downlinkBytes, sampledAt);
 
       if (deltaBytes <= 0n) {
         await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
         continue;
       }
 
-      await this.applyUsageDelta(mapping.subscriptionId, mapping.teamId, mapping.userId, deltaBytes, sampledAt);
+      await this.applyUsageDelta(nodeId, mapping.subscriptionId, mapping.teamId, mapping.userId, deltaBytes, sampledAt);
     }
 
     const missingSnapshotKeys = Array.from(context.mappings.entries())
@@ -285,7 +287,12 @@ export class UsageSyncService {
     const existingMissingSet = new Set(existingMissingSnapshots.map((item) => item.snapshotKey));
     const missingSubscriptions = new Set<string>();
     for (const item of missingSnapshotKeys) {
-      if (existingMissingSet.has(item.snapshotKey)) {
+      const mapping = Array.from(context.mappings.values()).find(
+        (entry) => buildSnapshotKey(nodeId, entry.subscriptionId, entry.userId) === item.snapshotKey
+      );
+      const lastSyncedAt = mapping?.bindingLastSyncedAt?.getTime() ?? 0;
+      const staleEnough = lastSyncedAt > 0 && Date.now() - lastSyncedAt >= NODE_USAGE_STALE_SECONDS * 1000;
+      if (existingMissingSet.has(item.snapshotKey) && staleEnough) {
         missingSubscriptions.add(item.subscriptionId);
       }
     }
@@ -337,6 +344,7 @@ export class UsageSyncService {
   }
 
   private async applyUsageDelta(
+    nodeId: string,
     subscriptionId: string,
     teamId: string | null,
     userId: string | null,
@@ -383,6 +391,7 @@ export class UsageSyncService {
             teamId,
             userId,
             subscriptionId,
+            nodeId,
             usedTrafficGb: roundTrafficGb(deltaGb),
             recordedAt: sampledAt
           }
@@ -391,7 +400,15 @@ export class UsageSyncService {
     });
 
     if (nextState !== "active") {
-      await this.deactivatePanelClients(subscriptionId);
+      await this.deactivatePanelClients(subscriptionId, "disabled");
+      await this.revokeActiveLeases(
+        subscriptionId,
+        nextState === "expired"
+          ? "subscription_expired"
+          : nextState === "exhausted"
+            ? "subscription_exhausted"
+            : "subscription_paused"
+      );
     }
   }
 
@@ -399,6 +416,25 @@ export class UsageSyncService {
     await this.prisma.subscription.update({
       where: { id: subscriptionId },
       data: { lastSyncedAt: sampledAt }
+    });
+  }
+
+  private async touchBindingSyncState(
+    bindingId: string | undefined,
+    uplinkBytes: bigint,
+    downlinkBytes: bigint,
+    sampledAt: Date
+  ) {
+    if (!bindingId) {
+      return;
+    }
+    await this.prisma.panelClientBinding.update({
+      where: { id: bindingId },
+      data: {
+        lastUplinkBytes: uplinkBytes,
+        lastDownlinkBytes: downlinkBytes,
+        lastSyncedAt: sampledAt
+      }
     });
   }
 
@@ -413,24 +449,30 @@ export class UsageSyncService {
           status: "active"
         },
         select: {
+          id: true,
           panelClientEmail: true,
           panelClientId: true,
           subscriptionId: true,
           userId: true,
-          teamId: true
+          teamId: true,
+          lastSyncedAt: true
         }
       });
       for (const binding of bindings) {
         subscriptionIds.push(binding.subscriptionId);
         mappings.set(binding.panelClientEmail.trim().toLowerCase(), {
+          bindingId: binding.id,
           subscriptionId: binding.subscriptionId,
           teamId: binding.teamId,
-          userId: binding.userId
+          userId: binding.userId,
+          bindingLastSyncedAt: binding.lastSyncedAt
         });
         leaseMappingsByUuid.set(binding.panelClientId, {
+          bindingId: binding.id,
           subscriptionId: binding.subscriptionId,
           teamId: binding.teamId,
-          userId: binding.userId
+          userId: binding.userId,
+          bindingLastSyncedAt: binding.lastSyncedAt
         });
       }
     } else {
@@ -503,7 +545,7 @@ export class UsageSyncService {
     this.logger.warn(`节点 ${nodeId} 用量同步异常: ${reason}`);
   }
 
-  private async deactivatePanelClients(subscriptionId: string) {
+  private async deactivatePanelClients(subscriptionId: string, nextStatus: "disabled" | "deleted" = "disabled") {
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
         subscriptionId,
@@ -525,7 +567,7 @@ export class UsageSyncService {
 
     for (const binding of bindings) {
       try {
-        await this.xuiService.removeClient(
+        await this.xuiService.setClientEnabled(
           {
             id: binding.node.id,
             panelBaseUrl: binding.node.panelBaseUrl,
@@ -535,7 +577,8 @@ export class UsageSyncService {
             panelInboundId: binding.node.panelInboundId
           },
           binding.panelClientId,
-          binding.panelClientEmail
+          binding.panelClientEmail,
+          false
         );
       } catch {
         // 这里不抛错，避免计量主链被节点面板异常打断，后续轮询会继续尝试修复。
@@ -544,10 +587,24 @@ export class UsageSyncService {
       await this.prisma.panelClientBinding.update({
         where: { id: binding.id },
         data: {
-          status: "deleted"
+          status: nextStatus
         }
       });
     }
+  }
+
+  private async revokeActiveLeases(subscriptionId: string, reason: string) {
+    await this.prisma.nodeSessionLease.updateMany({
+      where: {
+        subscriptionId,
+        status: "active"
+      },
+      data: {
+        status: "revoked",
+        revokedReason: reason,
+        revokedAt: new Date()
+      }
+    });
   }
 }
 
@@ -560,9 +617,11 @@ type NodeTrafficSample = {
 };
 
 type UsageMapping = {
+  bindingId?: string;
   subscriptionId: string;
   teamId: string | null;
   userId: string | null;
+  bindingLastSyncedAt?: Date | null;
 };
 
 type NodeSyncContext = {

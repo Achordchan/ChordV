@@ -9,7 +9,7 @@ import {
   UnauthorizedException
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as net from "node:net";
 import * as tls from "node:tls";
 import { Cron } from "@nestjs/schedule";
@@ -32,6 +32,7 @@ import type {
   AdminSubscriptionRecordDto,
   AdminTeamMemberRecordDto,
   AdminTeamRecordDto,
+  AdminTeamUsageNodeSummaryDto,
   AdminTeamUsageRecordDto,
   AdminUserRecordDto,
   AnnouncementDto,
@@ -45,6 +46,10 @@ import type {
   CreatePlanInputDto,
   CreateSubscriptionInputDto,
   CreateTeamInputDto,
+  KickTeamMemberInputDto,
+  KickTeamMemberResultDto,
+  ResetSubscriptionTrafficInputDto,
+  ResetSubscriptionTrafficResultDto,
   CreateTeamMemberInputDto,
   CreateTeamSubscriptionInputDto,
   CreateUserInputDto,
@@ -85,6 +90,7 @@ const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ??
 const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 20);
 const LEASE_GRACE_SECONDS = Number(process.env.CHORDV_SESSION_GRACE_SECONDS ?? 60);
 const SECURITY_REASON_CONCURRENCY = "concurrency_limit";
+const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
 const BUILTIN_ADMIN_PASSWORD = "woshichen123";
@@ -111,6 +117,7 @@ export class DevDataService implements OnModuleInit {
   async onModuleInit() {
     await this.seedIfEmpty();
     await this.ensureBuiltinAdminAccount();
+    await this.backfillTrafficLedgerNodeIds();
   }
 
   async login(account: string, password: string): Promise<AuthSessionDto> {
@@ -293,7 +300,9 @@ export class DevDataService implements OnModuleInit {
     });
     const concurrentLimit = Math.max(
       1,
-      userSecurity?.maxConcurrentSessionsOverride ?? access.subscription.plan.maxConcurrentSessions ?? 1
+      userSecurity?.maxConcurrentSessionsOverride ??
+        access.subscription.plan.maxConcurrentSessions ??
+        DEFAULT_MAX_CONCURRENT_SESSIONS
     );
     await this.evictExceededUserLeases(user.id, concurrentLimit);
 
@@ -447,6 +456,8 @@ export class DevDataService implements OnModuleInit {
       throw new ForbiddenException("会话已过期");
     }
 
+    await this.assertLeaseCanHeartbeat(lease, user.id);
+
     const nextExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
     if (lease.accessMode === "xui") {
       await this.prisma.nodeSessionLease.update({
@@ -459,12 +470,6 @@ export class DevDataService implements OnModuleInit {
           revokedReason: null
         }
       });
-      if (this.activeRuntime?.sessionId === sessionId) {
-        this.activeRuntime = {
-          ...this.activeRuntime,
-          leaseExpiresAt: nextExpiresAt.toISOString()
-        };
-      }
       return {
         sessionId,
         status: "active" as const,
@@ -509,13 +514,6 @@ export class DevDataService implements OnModuleInit {
       await this.revokeLease(lease.id, lease.node, "lease_renew_failed");
       await this.edgeGatewayService.markNodeUnavailable(lease.nodeId, error instanceof Error ? error.message : "未知错误");
       throw new ForbiddenException(`会话续租失败：${error instanceof Error ? error.message : "未知错误"}`);
-    }
-
-    if (this.activeRuntime?.sessionId === sessionId) {
-      this.activeRuntime = {
-        ...this.activeRuntime,
-        leaseExpiresAt: nextExpiresAt.toISOString()
-      };
     }
 
     return {
@@ -694,24 +692,26 @@ export class DevDataService implements OnModuleInit {
         subscriptionId: input.subscriptionId,
         nodeId: input.node.id,
         userId: input.userId
-      }
+      },
+      orderBy: { createdAt: "desc" }
     });
 
     const panelClientEmail =
       existing?.panelClientEmail ??
       buildPanelClientEmail(input.userEmail, input.subscriptionId, input.node.id, input.userId);
-    const panelClientId = existing?.panelClientId ?? randomUUID();
+    const panelClientId = existing?.status === "deleted" ? randomUUID() : existing?.panelClientId ?? randomUUID();
     const panelInboundId = input.node.panelInboundId ?? existing?.panelInboundId ?? null;
+    const nodeConfig = {
+      id: input.node.id,
+      panelBaseUrl: input.node.panelBaseUrl,
+      panelApiBasePath: input.node.panelApiBasePath,
+      panelUsername: input.node.panelUsername,
+      panelPassword: input.node.panelPassword,
+      panelInboundId
+    };
 
-    await this.xuiService.ensureClient(
-      {
-        id: input.node.id,
-        panelBaseUrl: input.node.panelBaseUrl,
-        panelApiBasePath: input.node.panelApiBasePath,
-        panelUsername: input.node.panelUsername,
-        panelPassword: input.node.panelPassword,
-        panelInboundId
-      },
+    const ensured = await this.xuiService.ensureClient(
+      nodeConfig,
       {
         id: panelClientId,
         email: panelClientEmail,
@@ -726,20 +726,48 @@ export class DevDataService implements OnModuleInit {
         comment: `${input.userDisplayName} · ${input.node.name}`
       }
     );
+    const resolvedPanelInboundId = panelInboundId ?? ensured.inboundId;
+    const baseline = await this.readPanelClientBaseline(
+      {
+        ...nodeConfig,
+        panelInboundId: resolvedPanelInboundId
+      },
+      panelClientEmail
+    );
 
     if (existing) {
-      return this.prisma.panelClientBinding.update({
+      const binding = await this.prisma.panelClientBinding.update({
         where: { id: existing.id },
         data: {
           panelClientEmail,
           panelClientId,
-          panelInboundId: panelInboundId ?? existing.panelInboundId,
-          status: "active"
+          panelInboundId: resolvedPanelInboundId ?? existing.panelInboundId,
+          status: "active",
+          lastUplinkBytes: baseline.uplinkBytes,
+          lastDownlinkBytes: baseline.downlinkBytes,
+          lastSyncedAt: baseline.sampledAt
         }
       });
+      const snapshot = await this.prisma.trafficSnapshot.findUnique({
+        where: {
+          snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
+        }
+      });
+      if (existing.status === "deleted" || !snapshot) {
+        await this.ensureTrafficSnapshotBaseline({
+          nodeId: binding.nodeId,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          uplinkBytes: baseline.uplinkBytes,
+          downlinkBytes: baseline.downlinkBytes,
+          sampledAt: baseline.sampledAt
+        });
+      }
+      return binding;
     }
 
-    return this.prisma.panelClientBinding.create({
+    const binding = await this.prisma.panelClientBinding.create({
       data: {
         id: createId("panel_client"),
         subscriptionId: input.subscriptionId,
@@ -748,10 +776,90 @@ export class DevDataService implements OnModuleInit {
         nodeId: input.node.id,
         panelClientEmail,
         panelClientId,
-        panelInboundId: panelInboundId ?? 0,
+        panelInboundId: resolvedPanelInboundId ?? 0,
+        lastUplinkBytes: baseline.uplinkBytes,
+        lastDownlinkBytes: baseline.downlinkBytes,
+        lastSyncedAt: baseline.sampledAt,
         status: "active"
       }
     });
+    await this.ensureTrafficSnapshotBaseline({
+      nodeId: binding.nodeId,
+      subscriptionId: binding.subscriptionId,
+      userId: binding.userId,
+      teamId: binding.teamId,
+      uplinkBytes: baseline.uplinkBytes,
+      downlinkBytes: baseline.downlinkBytes,
+      sampledAt: baseline.sampledAt
+    });
+    return binding;
+  }
+
+  private async readPanelClientBaseline(
+    node: {
+      id: string;
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+      panelInboundId: number | null;
+    },
+    panelClientEmail: string
+  ) {
+    const usage = await this.xuiService.getClientUsage(node, panelClientEmail);
+    const sampledAt = usage?.sampledAt ? new Date(usage.sampledAt) : new Date();
+    return {
+      uplinkBytes: usage?.uplinkBytes ?? 0n,
+      downlinkBytes: usage?.downlinkBytes ?? 0n,
+      sampledAt: Number.isNaN(sampledAt.getTime()) ? new Date() : sampledAt
+    };
+  }
+
+  private async disablePanelBindingsForSubscription(subscriptionId: string, filter?: { userId?: string; nodeIds?: string[] }) {
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        subscriptionId,
+        ...(filter?.userId ? { userId: filter.userId } : {}),
+        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
+        status: "active"
+      },
+      include: {
+        node: true
+      }
+    });
+
+    for (const binding of bindings) {
+      try {
+        await this.xuiService.setClientEnabled(
+          {
+            id: binding.node.id,
+            panelBaseUrl: binding.node.panelBaseUrl,
+            panelApiBasePath: binding.node.panelApiBasePath,
+            panelUsername: binding.node.panelUsername,
+            panelPassword: binding.node.panelPassword,
+            panelInboundId: binding.node.panelInboundId
+          },
+          binding.panelClientId,
+          binding.panelClientEmail,
+          false
+        );
+      } catch (error) {
+        await this.prisma.node.update({
+          where: { id: binding.nodeId },
+          data: {
+            panelStatus: "degraded",
+            panelError: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
+          }
+        });
+      }
+
+      await this.prisma.panelClientBinding.update({
+        where: { id: binding.id },
+        data: {
+          status: "disabled"
+        }
+      });
+    }
   }
 
   private async removePanelBindingsForSubscription(subscriptionId: string, filter?: { userId?: string; nodeIds?: string[] }) {
@@ -760,7 +868,7 @@ export class DevDataService implements OnModuleInit {
         subscriptionId,
         ...(filter?.userId ? { userId: filter.userId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
-        status: "active"
+        status: { in: ["active", "disabled"] }
       },
       include: {
         node: true
@@ -791,6 +899,12 @@ export class DevDataService implements OnModuleInit {
         });
       }
 
+      await this.prisma.trafficSnapshot.deleteMany({
+        where: {
+          snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
+        }
+      });
+
       await this.prisma.panelClientBinding.update({
         where: { id: binding.id },
         data: {
@@ -800,16 +914,60 @@ export class DevDataService implements OnModuleInit {
     }
   }
 
+  private async ensureTrafficSnapshotBaseline(input: {
+    nodeId: string;
+    subscriptionId: string;
+    userId: string | null;
+    teamId: string | null;
+    uplinkBytes: bigint;
+    downlinkBytes: bigint;
+    sampledAt?: Date;
+  }) {
+    const snapshotKey = buildSnapshotKey(input.nodeId, input.subscriptionId, input.userId);
+    const sampledAt = input.sampledAt ?? new Date();
+    const totalBytes = input.uplinkBytes + input.downlinkBytes;
+    await this.prisma.trafficSnapshot.upsert({
+      where: { snapshotKey },
+      update: {
+        uplinkBytes: input.uplinkBytes,
+        downlinkBytes: input.downlinkBytes,
+        totalBytes,
+        sampledAt
+      },
+      create: {
+        id: randomUUID(),
+        snapshotKey,
+        nodeId: input.nodeId,
+        subscriptionId: input.subscriptionId,
+        userId: input.userId,
+        teamId: input.teamId,
+        uplinkBytes: input.uplinkBytes,
+        downlinkBytes: input.downlinkBytes,
+        totalBytes,
+        sampledAt
+      }
+    });
+  }
+
   private async syncSubscriptionPanelAccess(subscriptionId: string) {
     const subscription = await this.prisma.subscription.findUnique({
       where: { id: subscriptionId },
       include: {
+        user: true,
         team: {
           include: {
-            members: true
+            members: {
+              include: {
+                user: true
+              }
+            }
           }
         },
-        nodeAccesses: true
+        nodeAccesses: {
+          include: {
+            node: true
+          }
+        }
       }
     });
 
@@ -820,29 +978,105 @@ export class DevDataService implements OnModuleInit {
     const allowedNodeIds = new Set(subscription.nodeAccesses.map((item) => item.nodeId));
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
-        subscriptionId,
-        status: "active"
+        subscriptionId
       }
     });
-
-    const deletedUserIds =
+    const activeTeamMemberIds =
       subscription.teamId && subscription.team
-        ? new Set(subscription.team.members.map((item) => item.userId))
+        ? new Set(
+            subscription.team.members
+              .filter((item) => item.user.status === "active")
+              .map((item) => item.userId)
+          )
         : null;
+    const shouldProvision = shouldProvisionPanelClients(subscription);
+    const shouldDeleteAll = shouldDeletePanelClients(subscription);
+
+    if (shouldDeleteAll) {
+      await this.removePanelBindingsForSubscription(subscriptionId);
+      return;
+    }
 
     for (const binding of bindings) {
       const invalidByNode = !allowedNodeIds.has(binding.nodeId);
-      const invalidByUser = deletedUserIds ? !deletedUserIds.has(binding.userId ?? "") : false;
-      if (invalidByNode || invalidByUser) {
+      const invalidByUser = activeTeamMemberIds ? !activeTeamMemberIds.has(binding.userId ?? "") : false;
+      if (invalidByUser) {
+        await this.revokeSubscriptionLeases(subscriptionId, "team_member_removed", {
+          userId: binding.userId ?? undefined,
+          nodeIds: [binding.nodeId]
+        });
         await this.removePanelBindingsForSubscription(subscriptionId, {
-          userId: invalidByUser ? binding.userId ?? undefined : undefined,
-          nodeIds: invalidByNode ? [binding.nodeId] : undefined
+          userId: binding.userId ?? undefined,
+          nodeIds: [binding.nodeId]
+        });
+        continue;
+      }
+      if (invalidByNode || !shouldProvision) {
+        await this.revokeSubscriptionLeases(
+          subscriptionId,
+          invalidByNode ? "node_access_revoked" : "subscription_inactive",
+          {
+            userId: binding.userId ?? undefined,
+            nodeIds: [binding.nodeId]
+          }
+        );
+        await this.disablePanelBindingsForSubscription(subscriptionId, {
+          userId: binding.userId ?? undefined,
+          nodeIds: [binding.nodeId]
         });
       }
     }
 
-    if (!isEffectiveSubscription(subscription)) {
-      await this.removePanelBindingsForSubscription(subscriptionId);
+    if (!shouldProvision) {
+      return;
+    }
+
+    const targets =
+      subscription.teamId && subscription.team
+        ? subscription.team.members
+            .filter((item) => item.user.status === "active")
+            .map((item) => ({
+              userId: item.userId,
+              userEmail: item.user.email,
+              userDisplayName: item.user.displayName,
+              teamId: subscription.teamId
+            }))
+        : subscription.user && subscription.user.status === "active"
+          ? [
+              {
+                userId: subscription.user.id,
+                userEmail: subscription.user.email,
+                userDisplayName: subscription.user.displayName,
+                teamId: null
+              }
+            ]
+          : [];
+
+    for (const target of targets) {
+      for (const access of subscription.nodeAccesses) {
+        if (!access.node.panelEnabled) {
+          continue;
+        }
+        await this.ensurePanelClientBinding({
+          node: {
+            id: access.node.id,
+            name: access.node.name,
+            flow: access.node.flow,
+            panelBaseUrl: access.node.panelBaseUrl,
+            panelApiBasePath: access.node.panelApiBasePath,
+            panelUsername: access.node.panelUsername,
+            panelPassword: access.node.panelPassword,
+            panelInboundId: access.node.panelInboundId,
+            panelEnabled: access.node.panelEnabled
+          },
+          subscriptionId,
+          userId: target.userId,
+          teamId: target.teamId,
+          userEmail: target.userEmail,
+          userDisplayName: target.userDisplayName,
+          expireAt: subscription.expireAt
+        });
+      }
     }
   }
 
@@ -887,11 +1121,193 @@ export class DevDataService implements OnModuleInit {
 
     for (const lease of activeLeases.slice(0, evictCount)) {
       await this.revokeLease(lease.id, lease.node, SECURITY_REASON_CONCURRENCY);
-      if (this.activeRuntime?.sessionId === lease.sessionId) {
-        this.activeRuntime = undefined;
-        this.activeRuntimeUsageContext = undefined;
+    }
+  }
+
+  private async revokeUserLeases(
+    userId: string,
+    reason: string,
+    filter?: { subscriptionId?: string; nodeIds?: string[] }
+  ) {
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        userId,
+        status: "active",
+        expiresAt: { gt: new Date() },
+        ...(filter?.subscriptionId ? { subscriptionId: filter.subscriptionId } : {}),
+        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {})
+      },
+      include: {
+        node: {
+          select: {
+            id: true,
+            flow: true
+          }
+        }
+      }
+    });
+
+    for (const lease of activeLeases) {
+      await this.revokeLease(lease.id, lease.node, reason);
+    }
+
+    return activeLeases.length;
+  }
+
+  private async revokeSubscriptionLeases(
+    subscriptionId: string,
+    reason: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        subscriptionId,
+        status: "active",
+        expiresAt: { gt: new Date() },
+        ...(filter?.userId ? { userId: filter.userId } : {}),
+        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {})
+      },
+      include: {
+        node: {
+          select: {
+            id: true,
+            flow: true
+          }
+        }
+      }
+    });
+
+    for (const lease of activeLeases) {
+      await this.revokeLease(lease.id, lease.node, reason);
+    }
+
+    return activeLeases.length;
+  }
+
+  private async assertLeaseCanHeartbeat(
+    lease: {
+      id: string;
+      sessionId: string;
+      accessMode: string;
+      userId: string;
+      subscriptionId: string;
+      nodeId: string;
+      xrayUserEmail: string;
+      xrayUserUuid: string;
+      node: {
+        id: string;
+        flow: string;
+      };
+    },
+    userId: string
+  ) {
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { id: lease.subscriptionId },
+      include: {
+        user: true,
+        team: true,
+        nodeAccesses: {
+          where: { nodeId: lease.nodeId },
+          select: { nodeId: true }
+        }
+      }
+    });
+
+    const revokeAndThrow = async (message: string, reason: string) => {
+      await this.revokeLease(lease.id, lease.node, reason);
+      throw new ForbiddenException(message);
+    };
+
+    if (!subscription) {
+      await revokeAndThrow("当前订阅不存在，会话已失效", "subscription_missing");
+    }
+    const ensuredSubscription = subscription as NonNullable<typeof subscription>;
+
+    if (ensuredSubscription.userId) {
+      if (ensuredSubscription.userId !== userId) {
+        await revokeAndThrow("当前会话不属于该账号", "subscription_owner_mismatch");
+      }
+      if (!ensuredSubscription.user || ensuredSubscription.user.status !== "active") {
+        await revokeAndThrow("当前账号已禁用，会话已失效", "subscription_user_disabled");
+      }
+    } else if (ensuredSubscription.teamId) {
+      const membership = await this.prisma.teamMember.findUnique({
+        where: { userId },
+        include: {
+          team: true
+        }
+      });
+      if (!membership || membership.teamId !== ensuredSubscription.teamId) {
+        await revokeAndThrow("当前成员已失去团队访问权限，会话已失效", "team_membership_missing");
+      }
+      const ensuredMembership = membership as NonNullable<typeof membership>;
+      if (ensuredMembership.team.status !== "active") {
+        await revokeAndThrow("当前团队已停用，会话已失效", "team_disabled");
+      }
+    } else {
+      await revokeAndThrow("当前订阅缺少归属信息，会话已失效", "subscription_owner_missing");
+    }
+
+    if (ensuredSubscription.nodeAccesses.length === 0) {
+      await revokeAndThrow("当前节点授权已取消，会话已失效", "node_access_revoked");
+    }
+
+    try {
+      assertSubscriptionConnectable(ensuredSubscription);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "当前订阅不可继续使用";
+      const reason =
+        ensuredSubscription.expireAt.getTime() <= Date.now() || ensuredSubscription.state === "expired"
+          ? "subscription_expired"
+          : ensuredSubscription.remainingTrafficGb <= 0 || ensuredSubscription.state === "exhausted"
+            ? "subscription_exhausted"
+            : ensuredSubscription.state === "paused"
+              ? "subscription_paused"
+              : "subscription_unavailable";
+      await revokeAndThrow(message, reason);
+    }
+
+    if (lease.accessMode === "xui") {
+      const binding = await this.prisma.panelClientBinding.findFirst({
+        where: {
+          subscriptionId: lease.subscriptionId,
+          nodeId: lease.nodeId,
+          userId: lease.userId,
+          status: "active"
+        }
+      });
+
+      if (!binding) {
+        await revokeAndThrow("当前节点客户端已停用，会话已失效", "panel_client_disabled");
+      }
+      const ensuredBinding = binding as NonNullable<typeof binding>;
+
+      if (ensuredBinding.panelClientEmail !== lease.xrayUserEmail || ensuredBinding.panelClientId !== lease.xrayUserUuid) {
+        await revokeAndThrow("当前节点客户端凭据已更新，会话已失效", "panel_client_rotated");
       }
     }
+  }
+
+  private async syncActiveLeasesForSubscription(subscription: {
+    id: string;
+    state: SubscriptionState;
+    remainingTrafficGb: number;
+    expireAt: Date;
+  }) {
+    const reason =
+      subscription.expireAt.getTime() <= Date.now() || subscription.state === "expired"
+        ? "subscription_expired"
+        : subscription.remainingTrafficGb <= 0 || subscription.state === "exhausted"
+          ? "subscription_exhausted"
+          : subscription.state === "paused"
+            ? "subscription_paused"
+            : null;
+
+    if (!reason) {
+      return 0;
+    }
+
+    return this.revokeSubscriptionLeases(subscription.id, reason);
   }
 
   private async revokeLease(
@@ -1054,7 +1470,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   async updateUser(userId: string, input: UpdateUserInputDto): Promise<AdminUserRecordDto> {
-    await this.ensureUserExists(userId);
+    const currentUser = await this.ensureUserExists(userId);
     const data: Record<string, unknown> = {};
     if (input.displayName !== undefined) data.displayName = input.displayName.trim();
     if (input.role !== undefined) data.role = input.role;
@@ -1069,10 +1485,32 @@ export class DevDataService implements OnModuleInit {
       data
     });
 
-    if (input.status === "disabled") {
+    if (input.status !== undefined && input.status !== currentUser.status) {
       const personalSubscription = await this.findCurrentPersonalSubscription(userId);
       if (personalSubscription) {
-        await this.removePanelBindingsForSubscription(personalSubscription.id, { userId });
+        if (input.status === "disabled") {
+          await this.revokeUserLeases(userId, "user_disabled", { subscriptionId: personalSubscription.id });
+          await this.removePanelBindingsForSubscription(personalSubscription.id, { userId });
+        } else if (input.status === "active") {
+          await this.syncSubscriptionPanelAccess(personalSubscription.id);
+        }
+      }
+
+      const memberships = await this.prisma.teamMember.findMany({
+        where: { userId },
+        select: { teamId: true }
+      });
+      for (const membership of memberships) {
+        const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
+        if (!teamSubscription) {
+          continue;
+        }
+        if (input.status === "disabled") {
+          await this.revokeUserLeases(userId, "user_disabled", { subscriptionId: teamSubscription.id });
+          await this.removePanelBindingsForSubscription(teamSubscription.id, { userId });
+        } else if (input.status === "active") {
+          await this.syncSubscriptionPanelAccess(teamSubscription.id);
+        }
       }
     }
 
@@ -1097,6 +1535,172 @@ export class DevDataService implements OnModuleInit {
       throw new NotFoundException("用户不存在");
     }
     return row;
+  }
+
+  async resetSubscriptionTraffic(
+    subscriptionId: string,
+    input: ResetSubscriptionTrafficInputDto = {}
+  ): Promise<ResetSubscriptionTrafficResultDto> {
+    const subscription = await this.requireSubscription(subscriptionId);
+    const requestedUserId = normalizeOptionalString(input.userId);
+
+    let targetUserId: string | null;
+    if (subscription.teamId) {
+      if (!requestedUserId) {
+        throw new BadRequestException("Team 订阅重置流量时必须指定成员账号");
+      }
+      const membership = await this.prisma.teamMember.findFirst({
+        where: {
+          teamId: subscription.teamId,
+          userId: requestedUserId
+        }
+      });
+      if (!membership) {
+        throw new BadRequestException("指定成员不属于当前 Team 订阅");
+      }
+      targetUserId = requestedUserId;
+    } else {
+      if (!subscription.userId) {
+        throw new BadRequestException("个人订阅缺少所属用户，不能重置流量");
+      }
+      if (requestedUserId && requestedUserId !== subscription.userId) {
+        throw new BadRequestException("个人订阅不能指定其他成员流量");
+      }
+      targetUserId = subscription.userId;
+    }
+
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        subscriptionId: subscription.id,
+        ...(targetUserId ? { userId: targetUserId } : {}),
+        status: { in: ["active", "disabled"] }
+      },
+      include: {
+        node: true
+      }
+    });
+
+    const baselineSamples = await Promise.all(
+      bindings.map(async (binding) => {
+        const nodeConfig = {
+          id: binding.node.id,
+          panelBaseUrl: binding.node.panelBaseUrl,
+          panelApiBasePath: binding.node.panelApiBasePath,
+          panelUsername: binding.node.panelUsername,
+          panelPassword: binding.node.panelPassword,
+          panelInboundId: binding.node.panelInboundId
+        };
+        await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
+        const baseline = await this.readPanelClientBaseline(nodeConfig, binding.panelClientEmail);
+        return {
+          binding,
+          uplinkBytes: baseline.uplinkBytes,
+          downlinkBytes: baseline.downlinkBytes,
+          sampledAt: baseline.sampledAt.toISOString()
+        };
+      })
+    );
+    const expireAt = new Date(subscription.expireAt);
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of baselineSamples) {
+        const sampledAt = item.sampledAt ? new Date(item.sampledAt) : new Date();
+        const totalBytes = item.uplinkBytes + item.downlinkBytes;
+        const snapshotKey = buildSnapshotKey(item.binding.nodeId, item.binding.subscriptionId, item.binding.userId);
+        await tx.trafficSnapshot.upsert({
+          where: { snapshotKey },
+          update: {
+            uplinkBytes: item.uplinkBytes,
+            downlinkBytes: item.downlinkBytes,
+            totalBytes,
+            sampledAt
+          },
+          create: {
+            id: randomUUID(),
+            snapshotKey,
+            nodeId: item.binding.nodeId,
+            subscriptionId: item.binding.subscriptionId,
+            userId: item.binding.userId,
+            teamId: item.binding.teamId,
+            uplinkBytes: item.uplinkBytes,
+            downlinkBytes: item.downlinkBytes,
+            totalBytes,
+            sampledAt
+          }
+        });
+
+        await tx.panelClientBinding.update({
+          where: { id: item.binding.id },
+          data: {
+            lastUplinkBytes: item.uplinkBytes,
+            lastDownlinkBytes: item.downlinkBytes,
+            lastSyncedAt: sampledAt
+          }
+        });
+      }
+
+      if (subscription.teamId && targetUserId) {
+        await tx.trafficLedger.deleteMany({
+          where: {
+            teamId: subscription.teamId,
+            subscriptionId: subscription.id,
+            userId: targetUserId
+          }
+        });
+
+        const aggregate = await tx.trafficLedger.aggregate({
+          where: { subscriptionId: subscription.id },
+          _sum: { usedTrafficGb: true }
+        });
+        const usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+        const remainingTrafficGb = Math.max(0, subscription.totalTrafficGb - usedTrafficGb);
+        await tx.subscription.update({
+          where: { id: subscription.id },
+          data: {
+            usedTrafficGb,
+            remainingTrafficGb,
+            state: resolveSubscriptionState(subscription.state === "paused" ? "paused" : "active", remainingTrafficGb, expireAt),
+            lastSyncedAt: new Date()
+          }
+        });
+      } else {
+        await tx.subscription.update({
+          where: { id: subscription.id },
+          data: {
+            usedTrafficGb: 0,
+            remainingTrafficGb: subscription.totalTrafficGb,
+            state: resolveSubscriptionState(subscription.state === "paused" ? "paused" : "active", subscription.totalTrafficGb, expireAt),
+            lastSyncedAt: new Date()
+          }
+        });
+      }
+    });
+
+    const updatedSubscription = await this.prisma.subscription.findUnique({
+      where: { id: subscription.id },
+      include: {
+        plan: true,
+        user: true,
+        team: true,
+        nodeAccesses: true
+      }
+    });
+    if (!updatedSubscription) {
+      throw new NotFoundException("订阅不存在");
+    }
+    const user = targetUserId ? await this.requireAdminUserRecord(targetUserId) : null;
+    return {
+      ok: true,
+      subscriptionId: subscription.id,
+      userId: targetUserId,
+      clearedBindingCount: bindings.length,
+      message:
+        bindings.length > 0
+          ? "已重置订阅流量，并同步清空 3x-ui 面板计量"
+          : "已重置订阅流量，当前没有可同步的 3x-ui 客户端",
+      subscription: toAdminSubscriptionRecord(updatedSubscription),
+      user
+    };
   }
 
   async listAdminPlans(): Promise<AdminPlanRecordDto[]> {
@@ -1127,7 +1731,7 @@ export class DevDataService implements OnModuleInit {
         scope: input.scope,
         totalTrafficGb: input.totalTrafficGb,
         renewable: input.renewable,
-        maxConcurrentSessions: input.maxConcurrentSessions ?? 1,
+        maxConcurrentSessions: input.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS,
         isActive: input.isActive ?? true
       }
     });
@@ -1244,7 +1848,6 @@ export class DevDataService implements OnModuleInit {
 
     const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
     const usedTrafficGb = input.usedTrafficGb ?? 0;
-    const renewable = input.renewable ?? plan.renewable;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState(input.state ?? "active", remainingTrafficGb, expireAt);
 
@@ -1258,7 +1861,7 @@ export class DevDataService implements OnModuleInit {
         remainingTrafficGb,
         expireAt,
         state,
-        renewable,
+        renewable: plan.renewable,
         sourceAction: "created",
         lastSyncedAt: new Date()
       },
@@ -1277,7 +1880,7 @@ export class DevDataService implements OnModuleInit {
 
   async renewSubscription(subscriptionId: string, input: RenewSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
     const current = await this.requireSubscription(subscriptionId);
-    const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt, input.extendDays);
+    const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
     const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
     const usedTrafficGb = input.resetTraffic ? 0 : current.usedTrafficGb;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
@@ -1302,6 +1905,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
+    await this.syncActiveLeasesForSubscription(row);
 
     return toAdminSubscriptionRecord(row);
   }
@@ -1319,7 +1923,6 @@ export class DevDataService implements OnModuleInit {
     }
 
     const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
-    const renewable = input.renewable ?? plan.renewable;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
 
     const row = await this.prisma.subscription.update({
@@ -1329,7 +1932,7 @@ export class DevDataService implements OnModuleInit {
         totalTrafficGb,
         remainingTrafficGb,
         expireAt,
-        renewable,
+        renewable: plan.renewable,
         state: resolveSubscriptionState("active", remainingTrafficGb, expireAt),
         sourceAction: "plan_changed",
         lastSyncedAt: new Date()
@@ -1343,6 +1946,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
+    await this.syncActiveLeasesForSubscription(row);
 
     return toAdminSubscriptionRecord(row);
   }
@@ -1352,7 +1956,6 @@ export class DevDataService implements OnModuleInit {
     const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
     const usedTrafficGb = input.usedTrafficGb ?? current.usedTrafficGb;
     const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
-    const renewable = input.renewable ?? current.renewable;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
 
@@ -1363,7 +1966,6 @@ export class DevDataService implements OnModuleInit {
         usedTrafficGb,
         remainingTrafficGb,
         expireAt,
-        renewable,
         state,
         sourceAction: "adjusted",
         lastSyncedAt: new Date()
@@ -1377,6 +1979,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
+    await this.syncActiveLeasesForSubscription(row);
 
     return toAdminSubscriptionRecord(row);
   }
@@ -1394,7 +1997,7 @@ export class DevDataService implements OnModuleInit {
           orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
         },
         trafficLedgerEntries: {
-          include: { user: true },
+          include: { user: true, node: true },
           orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
         }
       },
@@ -1539,6 +2142,9 @@ export class DevDataService implements OnModuleInit {
 
     const subscription = await this.findCurrentTeamSubscription(member.teamId);
     if (subscription) {
+      await this.revokeSubscriptionLeases(subscription.id, "team_member_removed", {
+        userId: member.userId
+      });
       await this.removePanelBindingsForSubscription(subscription.id, { userId: member.userId });
     }
 
@@ -1547,6 +2153,44 @@ export class DevDataService implements OnModuleInit {
     });
 
     return { ok: true };
+  }
+
+  async kickTeamMember(teamId: string, memberId: string, input: KickTeamMemberInputDto): Promise<KickTeamMemberResultDto> {
+    const member = await this.requireTeamMember(memberId);
+    if (member.teamId !== teamId) {
+      throw new BadRequestException("团队成员不属于当前团队");
+    }
+
+    let disconnectedSessionCount = 0;
+    const subscription = await this.findCurrentTeamSubscription(teamId);
+    if (subscription) {
+      await this.disablePanelBindingsForSubscription(subscription.id, { userId: member.userId });
+      disconnectedSessionCount = await this.revokeSubscriptionLeases(subscription.id, "team_member_disconnected", {
+        userId: member.userId
+      });
+    }
+
+    let user: AdminUserRecordDto | null = null;
+    let accountDisabled = false;
+    if (input.disableAccount) {
+      user = await this.updateUser(member.userId, { status: "disabled" });
+      accountDisabled = true;
+    }
+
+    let message = disconnectedSessionCount > 0 ? "已立即断开该成员会话连接" : "当前无活跃会话，未发生断开";
+    if (accountDisabled) {
+      message = disconnectedSessionCount > 0 ? "已立即断开会话并禁用账号" : "账号已禁用，当前无活跃会话";
+    }
+
+    return {
+      ok: true,
+      action: "disconnect_session",
+      disconnectedSessionCount,
+      accountDisabled,
+      message,
+      team: await this.requireTeamRecord(teamId),
+      user
+    };
   }
 
   async createTeamSubscription(teamId: string, input: CreateTeamSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
@@ -1575,7 +2219,6 @@ export class DevDataService implements OnModuleInit {
 
     const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
     const usedTrafficGb = input.usedTrafficGb ?? 0;
-    const renewable = input.renewable ?? plan.renewable;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
 
@@ -1589,7 +2232,7 @@ export class DevDataService implements OnModuleInit {
         remainingTrafficGb,
         expireAt,
         state,
-        renewable,
+        renewable: plan.renewable,
         sourceAction: "created",
         lastSyncedAt: new Date()
       },
@@ -1628,12 +2271,23 @@ export class DevDataService implements OnModuleInit {
   ): Promise<SubscriptionNodeAccessDto> {
     await this.requireSubscription(subscriptionId);
 
-    if (input.nodeIds.length === 0) {
-    await this.prisma.subscriptionNodeAccess.deleteMany({
-      where: { subscriptionId }
+    const uniqueNodeIds = [...new Set(input.nodeIds)];
+    const existingRows = await this.prisma.subscriptionNodeAccess.findMany({
+      where: { subscriptionId },
+      select: { id: true, nodeId: true }
     });
+    const existingNodeIds = new Set(existingRows.map((item) => item.nodeId));
 
-    await this.syncSubscriptionPanelAccess(subscriptionId);
+    if (uniqueNodeIds.length === 0) {
+      if (existingRows.length > 0) {
+        await this.prisma.subscriptionNodeAccess.deleteMany({
+          where: { subscriptionId }
+        });
+        await this.disablePanelBindingsForSubscription(subscriptionId);
+        await this.revokeSubscriptionLeases(subscriptionId, "node_access_revoked");
+      }
+
+      await this.syncSubscriptionPanelAccess(subscriptionId);
       return {
         subscriptionId,
         nodeIds: [],
@@ -1641,7 +2295,6 @@ export class DevDataService implements OnModuleInit {
       };
     }
 
-    const uniqueNodeIds = [...new Set(input.nodeIds)];
     const availableNodes = await this.prisma.node.findMany({
       where: { id: { in: uniqueNodeIds } }
     });
@@ -1650,17 +2303,31 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("存在无效节点");
     }
 
-    await this.prisma.subscriptionNodeAccess.deleteMany({
-      where: { subscriptionId }
-    });
+    const removedNodeIds = existingRows
+      .filter((item) => !uniqueNodeIds.includes(item.nodeId))
+      .map((item) => item.nodeId);
+    const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
 
-    await this.prisma.subscriptionNodeAccess.createMany({
-      data: uniqueNodeIds.map((nodeId) => ({
-        id: createId("subscription_node"),
-        subscriptionId,
-        nodeId
-      }))
-    });
+    if (removedNodeIds.length > 0) {
+      await this.prisma.subscriptionNodeAccess.deleteMany({
+        where: {
+          subscriptionId,
+          nodeId: { in: removedNodeIds }
+        }
+      });
+      await this.disablePanelBindingsForSubscription(subscriptionId, { nodeIds: removedNodeIds });
+      await this.revokeSubscriptionLeases(subscriptionId, "node_access_revoked", { nodeIds: removedNodeIds });
+    }
+
+    if (addedNodeIds.length > 0) {
+      await this.prisma.subscriptionNodeAccess.createMany({
+        data: addedNodeIds.map((nodeId) => ({
+          id: createId("subscription_node"),
+          subscriptionId,
+          nodeId
+        }))
+      });
+    }
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
 
@@ -1682,11 +2349,11 @@ export class DevDataService implements OnModuleInit {
     await this.requireTeam(teamId);
     const rows = await this.prisma.trafficLedger.findMany({
       where: { teamId },
-      include: { user: true },
+      include: { user: true, node: true },
       orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
     });
 
-    return rows.map(toAdminTeamUsageRecord);
+    return summarizeTeamUsageRecords(rows);
   }
 
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
@@ -1697,9 +2364,35 @@ export class DevDataService implements OnModuleInit {
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
-    const imported = await this.resolveNodeRuntimeSource(input);
+    const panelBaseUrl = input.panelBaseUrl?.trim() || null;
+    const panelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath);
+    const panelUsername = input.panelUsername?.trim() || null;
+    const panelPassword = input.panelPassword?.trim() || null;
+    const panelEnabled = await this.resolveNodePanelEnabled({
+      inputValue: input.panelEnabled,
+      currentValue: null,
+      panelBaseUrl,
+      panelUsername,
+      panelPassword,
+      applyXuiDefault: true
+    });
+    const imported = await this.resolveNodeRuntimeSource(input, panelEnabled);
     const nodeId = toNodeId(imported.serverHost, imported.serverPort);
     const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    const nextPanelBaseUrl = panelBaseUrl ?? current?.panelBaseUrl ?? null;
+    const nextPanelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/");
+    const nextPanelUsername = panelUsername ?? current?.panelUsername ?? null;
+    const nextPanelPassword = panelPassword ?? current?.panelPassword ?? null;
+    const resolvedInboundId = readRuntimeInboundId(imported);
+    const nextPanelInboundId = input.panelInboundId ?? current?.panelInboundId ?? resolvedInboundId ?? null;
+    const nextPanelEnabled = await this.resolveNodePanelEnabled({
+      inputValue: input.panelEnabled,
+      currentValue: current?.panelEnabled ?? null,
+      panelBaseUrl: nextPanelBaseUrl,
+      panelUsername: nextPanelUsername,
+      panelPassword: nextPanelPassword,
+      applyXuiDefault: true
+    });
 
     const row = await this.prisma.node.upsert({
       where: { id: nodeId },
@@ -1724,12 +2417,12 @@ export class DevDataService implements OnModuleInit {
         spiderX: imported.spiderX,
         subscriptionUrl: input.subscriptionUrl?.trim() || null,
         gatewayStatus: current?.gatewayStatus ?? "offline",
-        panelBaseUrl: input.panelBaseUrl?.trim() || current?.panelBaseUrl || null,
-        panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/"),
-        panelUsername: input.panelUsername?.trim() || current?.panelUsername || null,
-        panelPassword: input.panelPassword?.trim() || current?.panelPassword || null,
-        panelInboundId: input.panelInboundId ?? current?.panelInboundId ?? null,
-        panelEnabled: input.panelEnabled ?? current?.panelEnabled ?? false,
+        panelBaseUrl: nextPanelBaseUrl,
+        panelApiBasePath: nextPanelApiBasePath,
+        panelUsername: nextPanelUsername,
+        panelPassword: nextPanelPassword,
+        panelInboundId: nextPanelInboundId,
+        panelEnabled: nextPanelEnabled,
         panelStatus: current?.panelStatus ?? "offline"
       },
       update: {
@@ -1749,12 +2442,12 @@ export class DevDataService implements OnModuleInit {
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
         subscriptionUrl: input.subscriptionUrl?.trim() || null,
-        panelBaseUrl: input.panelBaseUrl?.trim() || current?.panelBaseUrl || null,
-        panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/"),
-        panelUsername: input.panelUsername?.trim() || current?.panelUsername || null,
-        panelPassword: input.panelPassword?.trim() || current?.panelPassword || null,
-        panelInboundId: input.panelInboundId ?? current?.panelInboundId ?? null,
-        panelEnabled: input.panelEnabled ?? current?.panelEnabled ?? false
+        panelBaseUrl: nextPanelBaseUrl,
+        panelApiBasePath: nextPanelApiBasePath,
+        panelUsername: nextPanelUsername,
+        panelPassword: nextPanelPassword,
+        panelInboundId: nextPanelInboundId,
+        panelEnabled: nextPanelEnabled
       }
     });
 
@@ -1785,12 +2478,30 @@ export class DevDataService implements OnModuleInit {
       throw new NotFoundException("节点不存在");
     }
 
+    const panelConfigTouched =
+      input.panelBaseUrl !== undefined ||
+      input.panelApiBasePath !== undefined ||
+      input.panelUsername !== undefined ||
+      input.panelPassword !== undefined ||
+      input.panelInboundId !== undefined;
+    const nextPanelBaseUrl = input.panelBaseUrl !== undefined ? input.panelBaseUrl?.trim() || null : current.panelBaseUrl;
+    const nextPanelUsername = input.panelUsername !== undefined ? input.panelUsername?.trim() || null : current.panelUsername;
+    const nextPanelPassword = input.panelPassword !== undefined ? input.panelPassword?.trim() || null : current.panelPassword;
+    const nextPanelEnabled = await this.resolveNodePanelEnabled({
+      inputValue: input.panelEnabled,
+      currentValue: current.panelEnabled,
+      panelBaseUrl: nextPanelBaseUrl,
+      panelUsername: nextPanelUsername,
+      panelPassword: nextPanelPassword,
+      applyXuiDefault: panelConfigTouched
+    });
+
     let derived: ReturnType<typeof parseVlessLink> | null = null;
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
       derived = await this.fetchSubscriptionNode(input.subscriptionUrl);
     } else if (
-      input.panelEnabled === true &&
-      (input.panelBaseUrl !== undefined || input.panelApiBasePath !== undefined || input.panelUsername !== undefined || input.panelPassword !== undefined || input.panelInboundId !== undefined)
+      nextPanelEnabled &&
+      panelConfigTouched
     ) {
       derived = await this.xuiService.getInboundRuntime({
         id: current.id,
@@ -1798,9 +2509,12 @@ export class DevDataService implements OnModuleInit {
         panelApiBasePath: input.panelApiBasePath ?? current.panelApiBasePath,
         panelUsername: input.panelUsername ?? current.panelUsername,
         panelPassword: input.panelPassword ?? current.panelPassword,
-        panelInboundId: input.panelInboundId ?? current.panelInboundId
+        panelInboundId: input.panelInboundId ?? current.panelInboundId ?? null
       });
     }
+    const derivedInboundId = readRuntimeInboundId(derived);
+    const shouldPersistPanelEnabledByDefault = panelConfigTouched && input.panelEnabled === undefined && nextPanelEnabled !== current.panelEnabled;
+    const shouldPersistDerivedInboundId = input.panelInboundId === undefined && derivedInboundId !== null;
 
     const row = await this.prisma.node.update({
       where: { id: nodeId },
@@ -1815,8 +2529,16 @@ export class DevDataService implements OnModuleInit {
         ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
         ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),
         ...(input.panelPassword !== undefined ? { panelPassword: input.panelPassword?.trim() || null } : {}),
-        ...(input.panelInboundId !== undefined ? { panelInboundId: input.panelInboundId } : {}),
-        ...(input.panelEnabled !== undefined ? { panelEnabled: input.panelEnabled } : {}),
+        ...(input.panelInboundId !== undefined
+          ? { panelInboundId: input.panelInboundId }
+          : shouldPersistDerivedInboundId
+            ? { panelInboundId: derivedInboundId }
+            : {}),
+        ...(input.panelEnabled !== undefined
+          ? { panelEnabled: input.panelEnabled }
+          : shouldPersistPanelEnabledByDefault
+            ? { panelEnabled: nextPanelEnabled }
+            : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -1875,23 +2597,53 @@ export class DevDataService implements OnModuleInit {
     return toAdminNodeRecord(row);
   }
 
-  private async resolveNodeRuntimeSource(input: ImportNodeInputDto) {
+  private async resolveNodeRuntimeSource(input: ImportNodeInputDto, panelEnabled: boolean) {
     if (input.subscriptionUrl?.trim()) {
       return this.fetchSubscriptionNode(input.subscriptionUrl.trim());
     }
 
-    if (input.panelEnabled && input.panelBaseUrl && input.panelUsername && input.panelPassword && input.panelInboundId) {
+    if (panelEnabled && input.panelBaseUrl && input.panelUsername && input.panelPassword) {
       return this.xuiService.getInboundRuntime({
         id: createId("panel_runtime"),
         panelBaseUrl: input.panelBaseUrl,
         panelApiBasePath: input.panelApiBasePath ?? "/",
         panelUsername: input.panelUsername,
         panelPassword: input.panelPassword,
-        panelInboundId: input.panelInboundId
+        panelInboundId: input.panelInboundId ?? null
       });
     }
 
-    throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板后再导入节点");
+    throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板账号后读取入站并导入节点");
+  }
+
+  private async resolveNodePanelEnabled(input: {
+    inputValue?: boolean;
+    currentValue: boolean | null;
+    panelBaseUrl: string | null;
+    panelUsername: string | null;
+    panelPassword: string | null;
+    applyXuiDefault: boolean;
+  }) {
+    if (input.inputValue !== undefined) {
+      return input.inputValue;
+    }
+    if (!input.applyXuiDefault) {
+      return input.currentValue ?? false;
+    }
+
+    const hasPanelConfig = Boolean(input.panelBaseUrl && input.panelUsername && input.panelPassword);
+    if (!hasPanelConfig) {
+      return input.currentValue ?? false;
+    }
+
+    const profile = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" },
+      select: { accessMode: true }
+    });
+    if (profile?.accessMode === "xui") {
+      return true;
+    }
+    return input.currentValue ?? false;
   }
 
   async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {
@@ -2066,7 +2818,13 @@ export class DevDataService implements OnModuleInit {
     });
 
     if (membership) {
-      const subscription = pickCurrentSubscription(membership.team.subscriptions);
+      const pickedSubscription = pickCurrentSubscription(membership.team.subscriptions);
+      const subscription = pickedSubscription
+        ? await this.prisma.subscription.findUnique({
+            where: { id: pickedSubscription.id },
+            include: { plan: true, user: true, team: true }
+          })
+        : null;
       const memberUsedTrafficGb = subscription
         ? await this.getMemberUsedTrafficGb(membership.teamId, userId, subscription.id)
         : 0;
@@ -2118,6 +2876,15 @@ export class DevDataService implements OnModuleInit {
 
   private async ensureUserExists(userId: string) {
     const row = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!row) {
+      throw new NotFoundException("用户不存在");
+    }
+    return row;
+  }
+
+  private async requireAdminUserRecord(userId: string) {
+    const rows = await this.listAdminUsers();
+    const row = rows.find((item) => item.id === userId);
     if (!row) {
       throw new NotFoundException("用户不存在");
     }
@@ -2265,7 +3032,7 @@ export class DevDataService implements OnModuleInit {
           scope: "personal",
           totalTrafficGb: mockSubscription.totalTrafficGb,
           renewable: mockSubscription.renewable,
-          maxConcurrentSessions: 1,
+          maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
           isActive: true
         },
         {
@@ -2274,7 +3041,7 @@ export class DevDataService implements OnModuleInit {
           scope: "team",
           totalTrafficGb: 500,
           renewable: true,
-          maxConcurrentSessions: 1,
+          maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
           isActive: true
         }
       ]
@@ -2338,27 +3105,6 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
-    await this.prisma.trafficLedger.createMany({
-      data: [
-        {
-          id: "ledger_001",
-          teamId: "team_demo_001",
-          userId: "user_team_owner_001",
-          subscriptionId: "subscription_team_001",
-          usedTrafficGb: 42,
-          recordedAt: new Date()
-        },
-        {
-          id: "ledger_002",
-          teamId: "team_demo_001",
-          userId: "user_team_member_001",
-          subscriptionId: "subscription_team_001",
-          usedTrafficGb: 78,
-          recordedAt: new Date()
-        }
-      ]
-    });
-
     await this.prisma.node.createMany({
       data: mockNodes.map((node) => ({
         id: node.id,
@@ -2385,6 +3131,29 @@ export class DevDataService implements OnModuleInit {
         panelEnabled: false,
         panelStatus: "offline"
       }))
+    });
+
+    await this.prisma.trafficLedger.createMany({
+      data: [
+        {
+          id: "ledger_001",
+          teamId: "team_demo_001",
+          userId: "user_team_owner_001",
+          subscriptionId: "subscription_team_001",
+          nodeId: mockNodes[0]?.id ?? "node_hk_01",
+          usedTrafficGb: 42,
+          recordedAt: new Date()
+        },
+        {
+          id: "ledger_002",
+          teamId: "team_demo_001",
+          userId: "user_team_member_001",
+          subscriptionId: "subscription_team_001",
+          nodeId: mockNodes[1]?.id ?? "node_sg_01",
+          usedTrafficGb: 78,
+          recordedAt: new Date()
+        }
+      ]
     });
 
     await this.prisma.subscriptionNodeAccess.createMany({
@@ -2546,6 +3315,75 @@ export class DevDataService implements OnModuleInit {
 
     return parseVlessLink(first);
   }
+
+  private async backfillTrafficLedgerNodeIds() {
+    const missingRows = await this.prisma.$queryRaw<Array<{
+      id: string;
+      userId: string;
+      subscriptionId: string;
+      recordedAt: Date;
+    }>>`
+      SELECT "id", "userId", "subscriptionId", "recordedAt"
+      FROM "TrafficLedger"
+      WHERE "nodeId" IS NULL
+      ORDER BY "recordedAt" ASC
+    `;
+
+    if (missingRows.length === 0) {
+      return;
+    }
+
+    const subscriptionIds = [...new Set(missingRows.map((row) => row.subscriptionId))];
+    const userIds = [...new Set(missingRows.map((row) => row.userId))];
+    const leases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        subscriptionId: { in: subscriptionIds },
+        userId: { in: userIds }
+      },
+      select: {
+        userId: true,
+        subscriptionId: true,
+        nodeId: true,
+        issuedAt: true,
+        expiresAt: true,
+        lastHeartbeatAt: true,
+        revokedAt: true
+      },
+      orderBy: { issuedAt: "asc" }
+    });
+
+    const leaseMap = new Map<string, typeof leases>();
+    for (const lease of leases) {
+      const key = `${lease.userId}:${lease.subscriptionId}`;
+      const current = leaseMap.get(key) ?? [];
+      current.push(lease);
+      leaseMap.set(key, current);
+    }
+
+    let updatedCount = 0;
+    for (const row of missingRows) {
+      const key = `${row.userId}:${row.subscriptionId}`;
+      const candidates = leaseMap.get(key) ?? [];
+      const matched = pickLedgerNodeCandidate(candidates, row.recordedAt);
+      if (!matched) {
+        continue;
+      }
+      await this.prisma.$executeRaw`
+        UPDATE "TrafficLedger"
+        SET "nodeId" = ${matched.nodeId}
+        WHERE "id" = ${row.id}
+      `;
+      updatedCount += 1;
+    }
+
+    const remainingRows = await this.prisma.$queryRaw<Array<{ count: bigint }>>`
+      SELECT COUNT(*)::bigint AS "count"
+      FROM "TrafficLedger"
+      WHERE "nodeId" IS NULL
+    `;
+    const remaining = Number(remainingRows[0]?.count ?? 0n);
+    this.logger.log(`历史账单节点归属回填完成：已补 ${updatedCount} 条，剩余 ${remaining} 条`);
+  }
 }
 
 function toUserProfile(row: {
@@ -2577,6 +3415,7 @@ function toUserSubscriptionSummary(
   },
   team: { id: string; name: string } | null
 ): UserSubscriptionSummaryDto {
+  const state = readEffectiveSubscriptionState(row);
   return {
     id: row.id,
     ownerType: team ? "team" : "user",
@@ -2584,7 +3423,7 @@ function toUserSubscriptionSummary(
     planName: row.plan.name,
     remainingTrafficGb: row.remainingTrafficGb,
     expireAt: row.expireAt.toISOString(),
-    state: row.state,
+    state,
     teamId: team?.id ?? null,
     teamName: team?.name ?? null
   };
@@ -2641,6 +3480,7 @@ function toAdminSubscriptionRecord(row: {
 }): AdminSubscriptionRecordDto {
   const ownerType = row.teamId ? "team" : "user";
   const nodeCount = row.nodeAccesses ? new Set(row.nodeAccesses.map((item) => item.nodeId)).size : 0;
+  const state = readEffectiveSubscriptionState(row);
   return {
     id: row.id,
     ownerType,
@@ -2655,7 +3495,7 @@ function toAdminSubscriptionRecord(row: {
     usedTrafficGb: row.usedTrafficGb,
     remainingTrafficGb: row.remainingTrafficGb,
     expireAt: row.expireAt.toISOString(),
-    state: row.state,
+    state,
     renewable: row.renewable,
     sourceAction: row.sourceAction,
     lastSyncedAt: row.lastSyncedAt.toISOString(),
@@ -2856,6 +3696,7 @@ function toSubscriptionStatusDto(
   memberUsedTrafficGb: number | null,
   metering: { meteringStatus: "ok" | "degraded"; meteringMessage: string | null }
 ): SubscriptionStatusDto {
+  const state = readEffectiveSubscriptionState(row);
   return {
     id: row.id,
     ownerType: team ? "team" : "user",
@@ -2865,7 +3706,7 @@ function toSubscriptionStatusDto(
     usedTrafficGb: row.usedTrafficGb,
     remainingTrafficGb: row.remainingTrafficGb,
     expireAt: row.expireAt.toISOString(),
-    state: row.state,
+    state,
     renewable: row.renewable,
     lastSyncedAt: row.lastSyncedAt.toISOString(),
     teamId: team?.id ?? null,
@@ -2896,27 +3737,6 @@ function toAdminTeamMemberRecord(
     role: row.role,
     usedTrafficGb,
     createdAt: row.createdAt.toISOString()
-  };
-}
-
-function toAdminTeamUsageRecord(row: {
-  id: string;
-  teamId: string;
-  userId: string;
-  subscriptionId: string;
-  usedTrafficGb: number;
-  recordedAt: Date;
-  user: { displayName: string; email: string };
-}): AdminTeamUsageRecordDto {
-  return {
-    id: row.id,
-    teamId: row.teamId,
-    userId: row.userId,
-    userDisplayName: row.user.displayName,
-    userEmail: row.user.email,
-    subscriptionId: row.subscriptionId,
-    usedTrafficGb: row.usedTrafficGb,
-    recordedAt: row.recordedAt.toISOString()
   };
 }
 
@@ -2951,16 +3771,16 @@ function toAdminTeamRecord(row: {
     teamId: string;
     userId: string;
     subscriptionId: string;
+    nodeId: string | null;
     usedTrafficGb: number;
     recordedAt: Date;
     user: { displayName: string; email: string };
+    node: { id: string; name: string; region: string } | null;
   }>;
 }): AdminTeamRecordDto {
   const currentSubscription = pickCurrentSubscription(row.subscriptions);
-  const usageByUser = new Map<string, number>();
-  for (const entry of row.trafficLedgerEntries) {
-    usageByUser.set(entry.userId, (usageByUser.get(entry.userId) ?? 0) + entry.usedTrafficGb);
-  }
+  const usage = summarizeTeamUsageRecords(row.trafficLedgerEntries);
+  const usageByUser = new Map(usage.map((entry) => [entry.userId, entry.usedTrafficGb]));
 
   return {
     id: row.id,
@@ -2979,14 +3799,104 @@ function toAdminTeamRecord(row: {
           usedTrafficGb: currentSubscription.usedTrafficGb,
           remainingTrafficGb: currentSubscription.remainingTrafficGb,
           expireAt: currentSubscription.expireAt.toISOString(),
-          state: currentSubscription.state
+          state: readEffectiveSubscriptionState(currentSubscription)
         }
       : null,
     members: row.members.map((member) => toAdminTeamMemberRecord(member, usageByUser.get(member.userId) ?? 0)),
-    usage: row.trafficLedgerEntries.map(toAdminTeamUsageRecord),
+    usage,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
+}
+
+function summarizeTeamUsageRecords(
+  rows: Array<{
+    id: string;
+    teamId: string;
+    userId: string;
+    subscriptionId: string;
+    nodeId: string | null;
+    usedTrafficGb: number;
+    recordedAt: Date;
+    user: { displayName: string; email: string };
+    node: { id: string; name: string; region: string } | null;
+  }>
+): AdminTeamUsageRecordDto[] {
+  const grouped = new Map<
+    string,
+    {
+      id: string;
+      teamId: string;
+      userId: string;
+      userDisplayName: string;
+      userEmail: string;
+      subscriptionId: string;
+      usedTrafficGb: number;
+      recordedAt: Date;
+      recordCount: number;
+      nodeBreakdown: Map<string, AdminTeamUsageNodeSummaryDto>;
+    }
+  >();
+
+  for (const row of rows) {
+    const current =
+      grouped.get(row.userId) ??
+      {
+        id: row.id,
+        teamId: row.teamId,
+        userId: row.userId,
+        userDisplayName: row.user.displayName,
+        userEmail: row.user.email,
+        subscriptionId: row.subscriptionId,
+        usedTrafficGb: 0,
+        recordedAt: row.recordedAt,
+        recordCount: 0,
+        nodeBreakdown: new Map<string, AdminTeamUsageNodeSummaryDto>()
+      };
+
+    current.usedTrafficGb += row.usedTrafficGb;
+    current.recordCount += 1;
+    if (row.recordedAt.getTime() > current.recordedAt.getTime()) {
+      current.recordedAt = row.recordedAt;
+      current.id = row.id;
+    }
+
+    const currentNode =
+      current.nodeBreakdown.get(row.nodeId ?? "unknown") ??
+      {
+        nodeId: row.node?.id ?? row.nodeId ?? "unknown",
+        nodeName: row.node?.name ?? "未知节点",
+        nodeRegion: row.node?.region ?? "未知",
+        usedTrafficGb: 0,
+        recordCount: 0,
+        lastRecordedAt: row.recordedAt.toISOString()
+      };
+    currentNode.usedTrafficGb += row.usedTrafficGb;
+    currentNode.recordCount += 1;
+    if (new Date(currentNode.lastRecordedAt).getTime() < row.recordedAt.getTime()) {
+      currentNode.lastRecordedAt = row.recordedAt.toISOString();
+    }
+    current.nodeBreakdown.set(row.nodeId ?? "unknown", currentNode);
+    grouped.set(row.userId, current);
+  }
+
+  return Array.from(grouped.values())
+    .map((row) => ({
+      id: row.id,
+      teamId: row.teamId,
+      userId: row.userId,
+      userDisplayName: row.userDisplayName,
+      userEmail: row.userEmail,
+      subscriptionId: row.subscriptionId,
+      usedTrafficGb: roundTrafficGb(row.usedTrafficGb),
+      memberTotalUsedTrafficGb: roundTrafficGb(row.usedTrafficGb),
+      recordedAt: row.recordedAt.toISOString(),
+      recordCount: row.recordCount,
+      nodeBreakdown: Array.from(row.nodeBreakdown.values()).sort(
+        (left, right) => new Date(right.lastRecordedAt).getTime() - new Date(left.lastRecordedAt).getTime()
+      )
+    }))
+    .sort((left, right) => new Date(right.recordedAt).getTime() - new Date(left.recordedAt).getTime());
 }
 
 function createId(prefix: string) {
@@ -2999,10 +3909,58 @@ function buildLeaseEmail(userId: string, leaseId: string) {
 
 function buildPanelClientEmail(userEmail: string, subscriptionId: string, nodeId: string, userId: string) {
   const sanitizedEmail = userEmail.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  const sanitizedNode = nodeId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   const sanitizedSubscription = subscriptionId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   const sanitizedUser = userId.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  return [sanitizedEmail || "user", sanitizedSubscription.slice(-8), sanitizedNode.slice(-8), sanitizedUser.slice(-8)].join("_");
+  const nodeHash = createHash("sha1").update(nodeId).digest("hex").slice(0, 10);
+  return [sanitizedEmail || "user", sanitizedSubscription.slice(-8), `node${nodeHash}`, sanitizedUser.slice(-8)].join("_");
+}
+
+function buildSnapshotKey(nodeId: string, subscriptionId: string, userId: string | null) {
+  const userPart = userId ?? "subscription";
+  return `${nodeId}:${subscriptionId}:${userPart}`;
+}
+
+function pickLedgerNodeCandidate(
+  leases: Array<{
+    nodeId: string;
+    issuedAt: Date;
+    expiresAt: Date;
+    lastHeartbeatAt: Date;
+    revokedAt: Date | null;
+  }>,
+  recordedAt: Date
+) {
+  const recordedMs = recordedAt.getTime();
+  const strict = leases
+    .filter((lease) => {
+      const start = lease.issuedAt.getTime() - 30_000;
+      const end = Math.max(
+        lease.expiresAt.getTime(),
+        lease.lastHeartbeatAt.getTime(),
+        lease.revokedAt?.getTime() ?? 0
+      ) + 90_000;
+      return recordedMs >= start && recordedMs <= end;
+    })
+    .sort((left, right) => right.issuedAt.getTime() - left.issuedAt.getTime());
+
+  if (strict[0]) {
+    return strict[0];
+  }
+
+  const fallback = leases
+    .map((lease) => {
+      const distance = Math.min(
+        Math.abs(recordedMs - lease.issuedAt.getTime()),
+        Math.abs(recordedMs - lease.expiresAt.getTime()),
+        Math.abs(recordedMs - lease.lastHeartbeatAt.getTime()),
+        Math.abs(recordedMs - (lease.revokedAt?.getTime() ?? lease.expiresAt.getTime()))
+      );
+      return { lease, distance };
+    })
+    .filter((item) => item.distance <= 10 * 60 * 1000)
+    .sort((left, right) => left.distance - right.distance);
+
+  return fallback[0]?.lease;
 }
 
 function toNodeId(host: string, port: number) {
@@ -3015,6 +3973,11 @@ function normalizePanelApiBasePath(value: string | null | undefined) {
     return "/";
   }
   return `/${raw.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+}
+
+function normalizeOptionalString(value: string | null | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function normalizeTags(tags: string[] | undefined, name: string) {
@@ -3069,14 +4032,25 @@ function parseVlessLink(link: string) {
   };
 }
 
-function pickCurrentSubscription<T extends { state: string; expireAt: Date }>(rows: T[]) {
-  return rows.find((item) => item.state === "active")
-    ?? rows.find((item) => item.state === "paused")
+function readRuntimeInboundId(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const inboundId = Reflect.get(value, "inboundId");
+  if (typeof inboundId === "number" && Number.isFinite(inboundId) && inboundId > 0) {
+    return inboundId;
+  }
+  return null;
+}
+
+function pickCurrentSubscription<T extends { state: SubscriptionState; expireAt: Date; remainingTrafficGb: number }>(rows: T[]) {
+  return rows.find((item) => readEffectiveSubscriptionState(item) === "active")
+    ?? rows.find((item) => readEffectiveSubscriptionState(item) === "paused")
     ?? rows.sort((a, b) => b.expireAt.getTime() - a.expireAt.getTime())[0]
     ?? null;
 }
 
-function resolveRenewExpireAt(currentExpireAt: Date, explicitExpireAt?: string, extendDays?: number) {
+function resolveRenewExpireAt(currentExpireAt: Date, explicitExpireAt?: string) {
   if (explicitExpireAt) {
     const date = new Date(explicitExpireAt);
     if (Number.isNaN(date.getTime())) {
@@ -3085,14 +4059,7 @@ function resolveRenewExpireAt(currentExpireAt: Date, explicitExpireAt?: string, 
     return date;
   }
 
-  if (!extendDays) {
-    throw new BadRequestException("请设置新的到期时间，或填写顺延天数");
-  }
-
-  const base = currentExpireAt.getTime() > Date.now() ? currentExpireAt : new Date();
-  const next = new Date(base);
-  next.setDate(next.getDate() + extendDays);
-  return next;
+  return currentExpireAt;
 }
 
 function resolveSubscriptionState(preferred: SubscriptionState, remainingTrafficGb: number, expireAt: Date) {
@@ -3105,10 +4072,36 @@ function resolveSubscriptionState(preferred: SubscriptionState, remainingTraffic
 }
 
 function isEffectiveSubscription(subscription: { state: SubscriptionState; expireAt: Date; remainingTrafficGb: number }) {
-  if (subscription.state === "paused") return true;
-  if (subscription.expireAt.getTime() <= Date.now()) return false;
-  if (subscription.remainingTrafficGb <= 0) return false;
-  return subscription.state === "active";
+  const state = readEffectiveSubscriptionState(subscription);
+  return state === "active" || state === "paused";
+}
+
+function shouldProvisionPanelClients(subscription: {
+  state: SubscriptionState;
+  expireAt: Date;
+  remainingTrafficGb: number;
+  team?: { status: TeamStatus } | null;
+  user?: { status: "active" | "disabled" } | null;
+}) {
+  if (readEffectiveSubscriptionState(subscription) !== "active") {
+    return false;
+  }
+  if (subscription.team && subscription.team.status !== "active") {
+    return false;
+  }
+  if (subscription.user && subscription.user.status !== "active") {
+    return false;
+  }
+  return true;
+}
+
+function shouldDeletePanelClients(subscription: {
+  state: SubscriptionState;
+  expireAt: Date;
+  remainingTrafficGb: number;
+}) {
+  const state = readEffectiveSubscriptionState(subscription);
+  return state === "expired" || state === "exhausted";
 }
 
 function assertSubscriptionConnectable(subscription: {
@@ -3116,15 +4109,28 @@ function assertSubscriptionConnectable(subscription: {
   remainingTrafficGb: number;
   expireAt: Date;
 }) {
-  if (subscription.state === "paused") {
+  const state = readEffectiveSubscriptionState(subscription);
+  if (state === "paused") {
     throw new ForbiddenException("当前订阅已暂停");
   }
-  if (subscription.expireAt.getTime() <= Date.now() || subscription.state === "expired") {
+  if (state === "expired") {
     throw new ForbiddenException("当前订阅已到期");
   }
-  if (subscription.remainingTrafficGb <= 0 || subscription.state === "exhausted") {
+  if (state === "exhausted") {
     throw new ForbiddenException("当前订阅流量已用尽");
   }
+}
+
+function readEffectiveSubscriptionState(subscription: {
+  state: SubscriptionState;
+  expireAt: Date;
+  remainingTrafficGb: number;
+}) {
+  return resolveSubscriptionState(subscription.state, subscription.remainingTrafficGb, subscription.expireAt);
+}
+
+function roundTrafficGb(value: number) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {

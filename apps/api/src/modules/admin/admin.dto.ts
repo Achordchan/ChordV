@@ -162,10 +162,6 @@ export class CreateSubscriptionDto {
   @IsOptional()
   @IsIn(["active", "expired", "exhausted", "paused"])
   state?: SubscriptionState;
-
-  @IsOptional()
-  @IsBoolean()
-  renewable?: boolean;
 }
 
 export class RenewSubscriptionDto {
@@ -173,12 +169,6 @@ export class RenewSubscriptionDto {
   @IsString()
   @IsNotEmpty()
   expireAt?: string;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  extendDays?: number;
 
   @IsOptional()
   @IsBoolean()
@@ -206,10 +196,6 @@ export class ChangeSubscriptionPlanDto {
   @IsString()
   @IsNotEmpty()
   expireAt?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  renewable?: boolean;
 }
 
 export class UpdateSubscriptionDto {
@@ -233,10 +219,6 @@ export class UpdateSubscriptionDto {
   @IsOptional()
   @IsIn(["active", "expired", "exhausted", "paused"])
   state?: SubscriptionState;
-
-  @IsOptional()
-  @IsBoolean()
-  renewable?: boolean;
 }
 
 export class UpdateSubscriptionNodeAccessDto {
@@ -291,6 +273,12 @@ export class UpdateTeamMemberDto {
   role?: TeamMemberRole;
 }
 
+export class KickTeamMemberDto {
+  @IsOptional()
+  @IsBoolean()
+  disableAccount?: boolean;
+}
+
 export class CreateTeamSubscriptionDto {
   @IsString()
   @IsNotEmpty()
@@ -312,9 +300,6 @@ export class CreateTeamSubscriptionDto {
   @Min(0)
   usedTrafficGb?: number;
 
-  @IsOptional()
-  @IsBoolean()
-  renewable?: boolean;
 }
 
 export class ImportNodeDto {

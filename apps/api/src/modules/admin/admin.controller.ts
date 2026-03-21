@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from "@nestjs/common";
+import type { ResetSubscriptionTrafficInputDto } from "@chordv/shared";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
 import {
@@ -11,6 +12,7 @@ import {
   CreateTeamSubscriptionDto,
   CreateUserDto,
   ImportNodeDto,
+  KickTeamMemberDto,
   ReadNodePanelInboundsDto,
   RenewSubscriptionDto,
   UpdateAnnouncementDto,
@@ -111,6 +113,11 @@ export class AdminController {
     return this.devDataService.updateSubscriptionNodeAccess(subscriptionId, body);
   }
 
+  @Post("subscriptions/:subscriptionId/reset-traffic")
+  resetSubscriptionTraffic(@Param("subscriptionId") subscriptionId: string, @Body() body: ResetSubscriptionTrafficInputDto) {
+    return this.devDataService.resetSubscriptionTraffic(subscriptionId, body ?? {});
+  }
+
   @Get("teams")
   getTeams() {
     return this.devDataService.listAdminTeams();
@@ -139,6 +146,11 @@ export class AdminController {
   @Delete("teams/:teamId/members/:memberId")
   deleteTeamMember(@Param("memberId") memberId: string) {
     return this.devDataService.deleteTeamMember(memberId);
+  }
+
+  @Post("teams/:teamId/members/:memberId/kick")
+  kickTeamMember(@Param("teamId") teamId: string, @Param("memberId") memberId: string, @Body() body: KickTeamMemberDto) {
+    return this.devDataService.kickTeamMember(teamId, memberId, body);
   }
 
   @Post("teams/:teamId/subscriptions")

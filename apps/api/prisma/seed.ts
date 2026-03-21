@@ -125,7 +125,7 @@ async function main() {
       scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
       renewable: mockSubscription.renewable,
-      maxConcurrentSessions: 1,
+      maxConcurrentSessions: 3,
       isActive: true
     },
     create: {
@@ -134,7 +134,7 @@ async function main() {
       scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
       renewable: mockSubscription.renewable,
-      maxConcurrentSessions: 1,
+      maxConcurrentSessions: 3,
       isActive: true
     }
   });
@@ -146,7 +146,7 @@ async function main() {
       scope: "team",
       totalTrafficGb: 500,
       renewable: true,
-      maxConcurrentSessions: 1,
+      maxConcurrentSessions: 3,
       isActive: true
     },
     create: {
@@ -155,7 +155,7 @@ async function main() {
       scope: "team",
       totalTrafficGb: 500,
       renewable: true,
-      maxConcurrentSessions: 1,
+      maxConcurrentSessions: 3,
       isActive: true
     }
   });
@@ -269,44 +269,6 @@ async function main() {
     }
   });
 
-  await prisma.trafficLedger.upsert({
-    where: { id: "ledger_001" },
-    update: {
-      teamId: "team_demo_001",
-      userId: "user_team_owner_001",
-      subscriptionId: "subscription_team_001",
-      usedTrafficGb: 42,
-      recordedAt: new Date()
-    },
-    create: {
-      id: "ledger_001",
-      teamId: "team_demo_001",
-      userId: "user_team_owner_001",
-      subscriptionId: "subscription_team_001",
-      usedTrafficGb: 42,
-      recordedAt: new Date()
-    }
-  });
-
-  await prisma.trafficLedger.upsert({
-    where: { id: "ledger_002" },
-    update: {
-      teamId: "team_demo_001",
-      userId: "user_team_member_001",
-      subscriptionId: "subscription_team_001",
-      usedTrafficGb: 78,
-      recordedAt: new Date()
-    },
-    create: {
-      id: "ledger_002",
-      teamId: "team_demo_001",
-      userId: "user_team_member_001",
-      subscriptionId: "subscription_team_001",
-      usedTrafficGb: 78,
-      recordedAt: new Date()
-    }
-  });
-
   for (const node of mockNodes) {
     await prisma.node.upsert({
       where: { id: node.id },
@@ -364,6 +326,48 @@ async function main() {
       }
     });
   }
+
+  await prisma.trafficLedger.upsert({
+    where: { id: "ledger_001" },
+    update: {
+      teamId: "team_demo_001",
+      userId: "user_team_owner_001",
+      subscriptionId: "subscription_team_001",
+      nodeId: mockNodes[0]?.id ?? "node_hk_01",
+      usedTrafficGb: 42,
+      recordedAt: new Date()
+    },
+    create: {
+      id: "ledger_001",
+      teamId: "team_demo_001",
+      userId: "user_team_owner_001",
+      subscriptionId: "subscription_team_001",
+      nodeId: mockNodes[0]?.id ?? "node_hk_01",
+      usedTrafficGb: 42,
+      recordedAt: new Date()
+    }
+  });
+
+  await prisma.trafficLedger.upsert({
+    where: { id: "ledger_002" },
+    update: {
+      teamId: "team_demo_001",
+      userId: "user_team_member_001",
+      subscriptionId: "subscription_team_001",
+      nodeId: mockNodes[1]?.id ?? "node_sg_01",
+      usedTrafficGb: 78,
+      recordedAt: new Date()
+    },
+    create: {
+      id: "ledger_002",
+      teamId: "team_demo_001",
+      userId: "user_team_member_001",
+      subscriptionId: "subscription_team_001",
+      nodeId: mockNodes[1]?.id ?? "node_sg_01",
+      usedTrafficGb: 78,
+      recordedAt: new Date()
+    }
+  });
 
   const nodeAccessSeeds = [
     {
