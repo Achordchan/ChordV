@@ -1,12 +1,12 @@
 import { Badge, Button, Group, Paper, ScrollArea, Stack, Text, Title } from "@mantine/core";
 import type { NodeSummaryDto } from "@chordv/shared";
 import { IconBolt, IconRefresh, IconRosetteDiscountCheck } from "@tabler/icons-react";
-import type { DesktopNodeProbeResult } from "../lib/runtime";
+import type { RuntimeNodeProbeResult } from "../lib/runtime";
 
 type NodeListPanelProps = {
   nodes: NodeSummaryDto[];
   selectedNodeId: string | null;
-  probeResults: Record<string, DesktopNodeProbeResult>;
+  probeResults: Record<string, RuntimeNodeProbeResult>;
   probeBusy: boolean;
   probeCooldownLeft: number;
   onSelect: (nodeId: string) => void;

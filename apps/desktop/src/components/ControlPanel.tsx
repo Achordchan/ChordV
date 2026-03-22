@@ -1,7 +1,7 @@
 import { Badge, Button, Group, Paper, SegmentedControl, Stack, Text, Title } from "@mantine/core";
 import type { ConnectionMode, GeneratedRuntimeConfigDto } from "@chordv/shared";
 import { IconChartBar, IconPlugConnected } from "@tabler/icons-react";
-import type { DesktopRuntimeStatus } from "../lib/runtime";
+import type { RuntimeStatus } from "../lib/runtime";
 
 type ControlPanelProps = {
   modes: ConnectionMode[];
@@ -10,7 +10,7 @@ type ControlPanelProps = {
   modeLocked: boolean;
   primaryBusy: boolean;
   primaryLabel: string;
-  desktopStatus: DesktopRuntimeStatus;
+  desktopStatus: RuntimeStatus;
   runtime: GeneratedRuntimeConfigDto | null;
   error: string | null;
   onModeChange: (mode: ConnectionMode) => void;
@@ -120,6 +120,7 @@ function translateMode(mode: ConnectionMode) {
 
 function translateRuntimeStatus(status: string) {
   if (status === "idle") return "空闲";
+  if (status === "starting") return "启动中";
   if (status === "connecting") return "连接中";
   if (status === "connected") return "已连接";
   if (status === "disconnecting") return "断开中";
@@ -129,7 +130,7 @@ function translateRuntimeStatus(status: string) {
 
 function runtimeColor(status: string) {
   if (status === "connected") return "green";
-  if (status === "connecting" || status === "disconnecting") return "yellow";
+  if (status === "starting" || status === "connecting" || status === "disconnecting") return "yellow";
   if (status === "error") return "red";
   return "gray";
 }

@@ -17,6 +17,10 @@ export class ClientService {
     return this.devDataService.getNodes(token);
   }
 
+  probeNodes(nodeIds: string[], token?: string) {
+    return this.devDataService.probeClientNodes(nodeIds, token);
+  }
+
   getPolicies() {
     return this.devDataService.getPolicies();
   }
@@ -37,7 +41,11 @@ export class ClientService {
     return this.devDataService.disconnect(sessionId, token);
   }
 
-  getRuntime() {
-    return this.devDataService.getActiveRuntime();
+  streamEvents(token?: string) {
+    return this.devDataService.streamRuntimeEvents(token);
+  }
+
+  getRuntime(token?: string) {
+    return this.devDataService.getActiveRuntime(token);
   }
 }

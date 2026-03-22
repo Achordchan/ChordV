@@ -5,16 +5,23 @@ description = "ChordV desktop shell"
 authors = ["achordchan"]
 edition = "2021"
 
+[lib]
+name = "chordv_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 hex = "0.4"
-native-tls = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
 url = "2"
+windows-sys = { version = "0.59", features = ["Win32_Networking_WinInet"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+native-tls = "0.2"

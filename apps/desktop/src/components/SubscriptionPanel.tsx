@@ -33,7 +33,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
       <div className="subscription-shell">
         <div className="subscription-head">
           <div className="subscription-copy">
-            <Group gap="xs" mb={10}>
+            <Group gap="xs" mb={10} className="subscription-status-row">
               <Text className="desktop-eyebrow">{isTeam ? "Team" : "订阅"}</Text>
               {isTeam ? (
                 <Badge variant="light" color="amber">

@@ -66,10 +66,7 @@ export const mockNodes: NodeSummaryDto[] = [
     recommended: true,
     latencyMs: 32,
     protocol: "vless",
-    security: "reality",
-    serverHost: "hk.edge.chordv.app",
-    serverPort: 443,
-    serverName: "cdn.cloudflare.com"
+    security: "reality"
   },
   {
     id: "node_sg_01",
@@ -80,10 +77,7 @@ export const mockNodes: NodeSummaryDto[] = [
     recommended: false,
     latencyMs: 68,
     protocol: "vless",
-    security: "reality",
-    serverHost: "sg.edge.chordv.app",
-    serverPort: 443,
-    serverName: "cdn.cloudflare.com"
+    security: "reality"
   },
   {
     id: "node_jp_01",
@@ -94,10 +88,7 @@ export const mockNodes: NodeSummaryDto[] = [
     recommended: false,
     latencyMs: 83,
     protocol: "vless",
-    security: "reality",
-    serverHost: "jp.edge.chordv.app",
-    serverPort: 443,
-    serverName: "cdn.cloudflare.com"
+    security: "reality"
   }
 ];
 

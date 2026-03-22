@@ -95,7 +95,14 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                   </Table.Td>
                   <Table.Td>{formatDateTime(item.expireAt)}</Table.Td>
                   <Table.Td>
-                    <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
+                    <Stack gap={4}>
+                      <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
+                      {item.stateReasonMessage ? (
+                        <Text size="xs" c="dimmed">
+                          {item.stateReasonMessage}
+                        </Text>
+                      ) : null}
+                    </Stack>
                   </Table.Td>
                   <Table.Td>{translateSourceAction(item.sourceAction)}</Table.Td>
                   <Table.Td>
@@ -160,6 +167,11 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             ? `${currentSubscription.planName} · 剩余 ${formatTrafficGb(currentSubscription.remainingTrafficGb)} GB · 到期 ${formatDateTime(currentSubscription.expireAt)}`
                             : "未分配共享订阅"}
                         </Text>
+                        {currentSubscription?.stateReasonMessage ? (
+                          <Text size="sm" c="orange.7">
+                            {currentSubscription.stateReasonMessage}
+                          </Text>
+                        ) : null}
                       </Stack>
                       <StatusBadge
                         color={subscriptionStateColor(currentSubscription?.state ?? "paused")}
@@ -213,21 +225,28 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                           </Group>
                         </Group>
                         {currentSubscription ? (
-                          <SimpleGrid cols={{ base: 1, sm: 2, xl: 4 }} spacing="sm" verticalSpacing="sm" mt="md">
-                            <MiniMetric label="共享套餐" value={currentSubscription.planName} />
-                            <MiniMetric
-                              label="流量情况"
-                              value={`总量 ${formatTrafficGb(currentSubscription.totalTrafficGb)} GB · 剩余 ${formatTrafficGb(currentSubscription.remainingTrafficGb)} GB`}
-                            />
-                            <MiniMetric
-                              label="节点授权"
-                              value={teamSubscriptionRecord?.hasNodeAccess ? `${teamSubscriptionRecord.nodeCount} 个节点` : "未分配节点"}
-                            />
-                            <MiniMetric
-                              label="续期规则"
-                              value={translateRenewableState(renewable)}
-                            />
-                          </SimpleGrid>
+                          <>
+                            <SimpleGrid cols={{ base: 1, sm: 2, xl: 4 }} spacing="sm" verticalSpacing="sm" mt="md">
+                              <MiniMetric label="共享套餐" value={currentSubscription.planName} />
+                              <MiniMetric
+                                label="流量情况"
+                                value={`总量 ${formatTrafficGb(currentSubscription.totalTrafficGb)} GB · 剩余 ${formatTrafficGb(currentSubscription.remainingTrafficGb)} GB`}
+                              />
+                              <MiniMetric
+                                label="节点授权"
+                                value={teamSubscriptionRecord?.hasNodeAccess ? `${teamSubscriptionRecord.nodeCount} 个节点` : "未分配节点"}
+                              />
+                              <MiniMetric
+                                label="续期规则"
+                                value={translateRenewableState(renewable)}
+                              />
+                            </SimpleGrid>
+                            {currentSubscription.stateReasonMessage ? (
+                              <Alert color={subscriptionStateColor(currentSubscription.state)} variant="light" mt="md">
+                                {currentSubscription.stateReasonMessage}
+                              </Alert>
+                            ) : null}
+                          </>
                         ) : (
                           <Alert color="blue" variant="light" mt="md">
                             当前团队还没有共享订阅，请先分配 Team 套餐，再进行节点授权和会话管理。

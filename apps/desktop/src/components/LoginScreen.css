@@ -264,6 +264,39 @@
   line-height: 1.4;
 }
 
+.auth-screen__runtime-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(248, 113, 113, 0.24);
+  border-radius: 18px;
+  background: rgba(254, 242, 242, 0.86);
+}
+
+.auth-screen__runtime-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.auth-screen__runtime-title {
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.auth-screen__runtime-desc {
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-screen__runtime-action {
+  flex-shrink: 0;
+}
+
 .auth-screen__submit {
   height: 54px;
   border-radius: 18px;
@@ -306,5 +339,10 @@
   .auth-screen__panel {
     height: auto;
     padding: 24px;
+  }
+
+  .auth-screen__runtime-alert {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

@@ -103,8 +103,16 @@ body {
   min-width: 0;
 }
 
+.subscription-status-row {
+  flex-wrap: wrap;
+}
+
 .subscription-subtitle {
   max-width: 100%;
+}
+
+.subscription-state-banner {
+  margin-top: 12px;
 }
 
 .subscription-metrics {
@@ -206,6 +214,41 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
+.desktop-state-banner {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.desktop-state-banner__icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.desktop-state-banner--neutral {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.desktop-state-banner--info {
+  border-color: rgba(8, 145, 178, 0.28);
+  background: rgba(236, 254, 255, 0.9);
+}
+
+.desktop-state-banner--warning {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(255, 251, 235, 0.94);
+}
+
+.desktop-state-banner--danger {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: rgba(254, 242, 242, 0.94);
+}
+
+.desktop-state-banner--success {
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(236, 253, 245, 0.94);
+}
+
 .primary-action {
   min-height: 48px;
   font-size: 15px;
@@ -225,6 +268,11 @@ body {
 
 .control-metrics {
   min-height: 0;
+}
+
+.control-reason-card,
+.node-list-notice {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 1040px) {

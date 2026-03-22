@@ -526,11 +526,12 @@ export function App() {
   async function runAction(action: () => Promise<unknown>, successText: string) {
     try {
       setError(null);
-      await action();
+      const result = await action();
+      const resolvedMessage = extractActionMessage(result, successText);
       notifications.show({
         color: "green",
         title: "操作成功",
-        message: successText
+        message: resolvedMessage
       });
       await loadSnapshot();
       return true;
@@ -1014,6 +1015,22 @@ export function App() {
     await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除");
   }
 
+  async function handleToggleTeamUserStatus(userId: string, nextStatus: "active" | "disabled", displayName: string) {
+    const confirmed = window.confirm(
+      nextStatus === "disabled"
+        ? `确认禁用 ${displayName} 的账号吗？这会立刻停止该账号的订阅连接。`
+        : `确认启用 ${displayName} 的账号吗？启用后该账号可以重新登录和连接。`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await runAction(
+      () => updateUser(userId, { status: nextStatus }),
+      nextStatus === "disabled" ? "账号已禁用" : "账号已启用"
+    );
+  }
+
   function openKickMemberModal(teamId: string, memberId: string, memberName: string) {
     setKickMemberTarget({ teamId, memberId, memberName });
     setKickDisableAccount(false);
@@ -1397,6 +1414,9 @@ export function App() {
                 onCloseTeamMemberInlineEditor={closeTeamMemberInlineEditor}
                 onSaveTeamMemberInlineEditor={() => void saveTeamMemberInlineEditor()}
                 onDeleteTeamMember={(teamId, memberId) => void handleDeleteTeamMember(teamId, memberId)}
+                onToggleTeamUserStatus={(userId, nextStatus, displayName) =>
+                  void handleToggleTeamUserStatus(userId, nextStatus, displayName)
+                }
               />
             ) : null}
 
@@ -1558,6 +1578,16 @@ export function App() {
       />
     </>
   );
+}
+
+function extractActionMessage(result: unknown, fallback: string) {
+  if (result && typeof result === "object" && "message" in result) {
+    const message = (result as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message;
+    }
+  }
+  return fallback;
 }
 
 function isAccessTokenError(message: string) {

@@ -40,7 +40,7 @@ pnpm dev:mac
 - `DATABASE_URL`: Prisma 使用的 PostgreSQL 连接串
 - `CHORDV_XRAY_BIN`: 可选，自定义本地 `xray` 可执行文件路径
 - `CHORDV_SESSION_LEASE_TTL_SECONDS`: 节点会话租约时长，默认 `600`
-- `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS`: 客户端续租心跳间隔，默认 `20`
+- `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS`: 客户端续租心跳间隔，默认 `5`，后续作为服务端推送断开时的低频兜底
 - `CHORDV_SESSION_GRACE_SECONDS`: 续租失败断线宽限，默认 `60`
 - `CHORDV_DESKTOP_FORCE_HTTPS`: 桌面端是否强制 HTTPS API，默认生产开启
 - `CHORDV_API_CERT_SHA256`: 桌面端 API 证书 SHA256 指纹（可选，启用证书钉扎）
@@ -55,3 +55,20 @@ pnpm dev:mac
 - `pnpm dev:mac` 只拉起 Tauri 原生 macOS 桌面窗口，默认依赖已经运行中的后台服务。
 - 只有单独调试中心中转时，才需要手动执行 `pnpm dev:edge`。
 - 桌面端现在会真正拉起 `xray` 进程，并显示 PID、配置路径和运行日志。
+- 桌面端协议层已预留 `/api/client/events` 事件通道客户端，后端接好后可用于后台断网、撤权、到期、耗尽等场景的即时推送。
+
+## Android 调试
+
+```bash
+pnpm --filter @chordv/desktop android:doctor
+pnpm --filter @chordv/desktop android:build
+pnpm --filter @chordv/desktop android:install -- --launch
+pnpm --filter @chordv/desktop android:logcat -- --clear
+pnpm --filter @chordv/desktop android:smoke
+```
+
+- `android:doctor`：检查 JDK、Android SDK、NDK、adb 和已连接设备。
+- `android:build`：构建 arm64 调试包，并同步到 `output/release/android`。
+- `android:install`：把最新 APK 安装到真机，`--launch` 会顺手拉起应用。
+- `android:logcat`：过滤 Android 运行时、VPN、`libv2ray` 相关日志。
+- `android:smoke`：输出真机联调清单，方便按步骤排查联网、断开和后台强制事件。

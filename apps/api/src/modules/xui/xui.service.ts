@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { BadGatewayException, BadRequestException, Injectable } from "@nestjs/common";
 import { fetch as undiciFetch, Headers, FormData, type Dispatcher, Agent } from "undici";
 
@@ -352,11 +353,19 @@ export class XuiService {
     };
   }
 
-  async listInbounds(node: XuiNodeConfig): Promise<XuiInboundSummary[]> {
+  async listInbounds(
+    node: XuiNodeConfig,
+    options?: {
+      forceRelogin?: boolean;
+      strictCredentialCheck?: boolean;
+    }
+  ): Promise<XuiInboundSummary[]> {
     const payload = await this.request({
       node,
       path: "/panel/api/inbounds/list",
-      method: "GET"
+      method: "GET",
+      forceRelogin: options?.forceRelogin,
+      strictCredentialCheck: options?.strictCredentialCheck
     });
     const inbounds = readObj(payload);
     if (!Array.isArray(inbounds)) {
@@ -423,16 +432,34 @@ export class XuiService {
     throw new BadGatewayException("更新 3x-ui 客户端失败");
   }
 
-  private async request({ node, path, method = "GET", body, contentType, useJson = true }: XuiRequestOptions) {
+  private async request({
+    node,
+    path,
+    method = "GET",
+    body,
+    contentType,
+    useJson = true,
+    forceRelogin = false,
+    strictCredentialCheck = false
+  }: XuiRequestOptions & {
+    forceRelogin?: boolean;
+    strictCredentialCheck?: boolean;
+  }) {
     const normalized = normalizeNodeConfig(node);
-    if (!this.sessions.has(this.sessionKey(normalized))) {
-      await this.login(normalized);
+    const key = this.sessionKey(normalized);
+
+    if (forceRelogin) {
+      this.sessions.delete(key);
+    }
+
+    if (!this.sessions.has(key)) {
+      await this.login(normalized, { strictCredentialCheck });
     }
 
     let response = await this.performRequest(normalized, path, method, body, contentType);
     if (response.status === 401 || response.status === 403 || response.status === 404) {
-      this.sessions.delete(this.sessionKey(normalized));
-      await this.login(normalized);
+      this.sessions.delete(key);
+      await this.login(normalized, { strictCredentialCheck });
       response = await this.performRequest(normalized, path, method, body, contentType);
     }
 
@@ -482,7 +509,10 @@ export class XuiService {
   }
 
   private async login(
-    node: NormalizedXuiNodeConfig
+    node: NormalizedXuiNodeConfig,
+    options?: {
+      strictCredentialCheck?: boolean;
+    }
   ) {
     const form = new FormData();
     form.set("username", node.panelUsername);
@@ -503,6 +533,7 @@ export class XuiService {
     const payload = parseJsonRecord(responseText);
     const loginMessage = readString(payload?.msg);
     const loginSuccess = typeof payload?.success === "boolean" ? payload.success : null;
+    const strictCredentialCheck = options?.strictCredentialCheck ?? false;
 
     if (response.status === 404) {
       throw new BadGatewayException("3x-ui 登录接口不存在，请检查面板地址或 API 基础路径");
@@ -531,6 +562,9 @@ export class XuiService {
         return;
       }
       if (isCredentialError(loginMessage)) {
+        throw new BadRequestException("3x-ui 账号或密码错误");
+      }
+      if (strictCredentialCheck) {
         throw new BadRequestException("3x-ui 账号或密码错误");
       }
       throw new BadGatewayException("3x-ui 登录失败：未获取到会话 Cookie，请检查面板地址或登录接口路径");
@@ -612,8 +646,17 @@ export class XuiService {
   }
 
   private sessionKey(node: XuiNodeConfig) {
-    return `${node.panelBaseUrl}|${node.panelApiBasePath}|${node.panelUsername}`;
+    return [
+      node.panelBaseUrl ?? "",
+      node.panelApiBasePath ?? "",
+      node.panelUsername ?? "",
+      hashCredential(node.panelPassword ?? "")
+    ].join("|");
   }
+}
+
+function hashCredential(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function normalizeNodeConfig(node: XuiNodeConfig) {

@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -39,6 +40,8 @@ import type {
   AuthSessionDto,
   ChangeSubscriptionPlanInputDto,
   ClientBootstrapDto,
+  ClientNodeProbeResultDto,
+  ClientRuntimeEventDto,
   ClientTeamSummaryDto,
   ClientVersionDto,
   ConnectRequestDto,
@@ -59,6 +62,8 @@ import type {
   NodeSummaryDto,
   PolicyBundleDto,
   RenewSubscriptionInputDto,
+  SessionEvictedReason,
+  SessionReasonCode,
   SubscriptionNodeAccessDto,
   SubscriptionSourceAction,
   SubscriptionState,
@@ -81,19 +86,34 @@ import type {
 } from "@chordv/shared";
 import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { AuthSessionService } from "./auth-session.service";
+import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
 import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
 import { XuiService } from "../xui/xui.service";
 
 const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ?? 600);
-const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 20);
+const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 30);
 const LEASE_GRACE_SECONDS = Number(process.env.CHORDV_SESSION_GRACE_SECONDS ?? 60);
 const SECURITY_REASON_CONCURRENCY = "concurrency_limit";
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
 const BUILTIN_ADMIN_PASSWORD = "woshichen123";
+
+type PanelBindingFailure = {
+  bindingId: string;
+  nodeId: string;
+  nodeName: string;
+  panelClientEmail: string;
+  error: string;
+};
+
+type PanelBindingMutationResult = {
+  requested: number;
+  updated: number;
+  failed: PanelBindingFailure[];
+};
 
 @Injectable()
 export class DevDataService implements OnModuleInit {
@@ -110,12 +130,14 @@ export class DevDataService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly authSessionService: AuthSessionService,
+    private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly edgeGatewayService: EdgeGatewayService,
     private readonly xuiService: XuiService
   ) {}
 
   async onModuleInit() {
     await this.seedIfEmpty();
+    await this.migrateLegacyDefaultConcurrentSessions();
     await this.ensureBuiltinAdminAccount();
     await this.backfillTrafficLedgerNodeIds();
   }
@@ -146,6 +168,11 @@ export class DevDataService implements OnModuleInit {
   async logout(token?: string) {
     await this.authSessionService.revokeByAccessToken(token);
     return { ok: true };
+  }
+
+  async streamRuntimeEvents(token?: string) {
+    const user = await this.resolveActiveUserFromToken(token);
+    return this.clientRuntimeEventsService.streamForUser(user.id);
   }
 
   async getBootstrap(token?: string): Promise<ClientBootstrapDto> {
@@ -208,6 +235,54 @@ export class DevDataService implements OnModuleInit {
       }
     }
     return Array.from(nodeMap.values());
+  }
+
+  async probeClientNodes(nodeIds: string[], token?: string): Promise<ClientNodeProbeResultDto[]> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const access = await this.resolveSubscriptionAccessForUser(user.id);
+    if (!access.subscription) {
+      return [];
+    }
+
+    const requestedNodeIds = Array.from(new Set(nodeIds.filter((item) => typeof item === "string" && item.trim().length > 0)));
+    if (requestedNodeIds.length === 0) {
+      return [];
+    }
+
+    const rows = await this.prisma.subscriptionNodeAccess.findMany({
+      where: {
+        subscriptionId: access.subscription.id,
+        nodeId: { in: requestedNodeIds }
+      },
+      include: { node: true }
+    });
+
+    const rowMap = new Map(rows.map((row) => [row.nodeId, row.node]));
+    const results = await Promise.all(
+      requestedNodeIds.map(async (nodeId) => {
+        const node = rowMap.get(nodeId);
+        if (!node) {
+          return {
+            nodeId,
+            status: "offline" as const,
+            latencyMs: null,
+            checkedAt: new Date().toISOString(),
+            error: "当前订阅未开通该节点"
+          };
+        }
+
+        const probe = await probeNodeConnectivity(node.serverHost, node.serverPort, node.serverName, node.subscriptionUrl);
+        return {
+          nodeId,
+          status: probe.status === "healthy" ? "healthy" as const : "offline" as const,
+          latencyMs: probe.latencyMs,
+          checkedAt: new Date().toISOString(),
+          error: probe.error
+        };
+      })
+    );
+
+    return results;
   }
 
   async getPolicies(): Promise<PolicyBundleDto> {
@@ -291,7 +366,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     if (allowedRows.length === 0) {
-      throw new ForbiddenException("当前订阅未开通该节点");
+      throw new ForbiddenException("当前节点已被取消授权");
     }
 
     const userSecurity = await this.prisma.user.findUnique({
@@ -437,10 +512,10 @@ export class DevDataService implements OnModuleInit {
     });
 
     if (!lease || lease.userId !== user.id) {
-      throw new NotFoundException("会话不存在");
+      throw new NotFoundException("当前连接已失效，请重新连接");
     }
     if (lease.status !== "active") {
-      throw new ForbiddenException("会话已失效");
+      throw new ForbiddenException(getLeaseFailureDetails(lease.status, lease.revokedReason).reasonMessage);
     }
 
     const now = new Date();
@@ -474,7 +549,10 @@ export class DevDataService implements OnModuleInit {
         sessionId,
         status: "active" as const,
         leaseExpiresAt: nextExpiresAt.toISOString(),
-        evictedReason: null
+        evictedReason: null,
+        reasonCode: null,
+        reasonMessage: null,
+        detailReason: null
       };
     }
 
@@ -520,7 +598,10 @@ export class DevDataService implements OnModuleInit {
       sessionId,
       status: "active" as const,
       leaseExpiresAt: nextExpiresAt.toISOString(),
-      evictedReason: null
+      evictedReason: null,
+      reasonCode: null,
+      reasonMessage: null,
+      detailReason: null
     };
   }
 
@@ -656,8 +737,30 @@ export class DevDataService implements OnModuleInit {
     return { ok: true, previousSessionId: previous?.sessionId ?? null };
   }
 
-  getActiveRuntime() {
-    return this.activeRuntime ?? null;
+  async getActiveRuntime(token?: string) {
+    const runtime = this.activeRuntime;
+    const usageContext = this.activeRuntimeUsageContext;
+    if (!runtime || !usageContext) {
+      return null;
+    }
+
+    const user = await this.resolveActiveUserFromToken(token);
+    if (usageContext.userId !== user.id) {
+      return null;
+    }
+
+    const activeLease = await this.prisma.nodeSessionLease.findUnique({
+      where: { sessionId: runtime.sessionId },
+      select: {
+        userId: true,
+        status: true
+      }
+    });
+    if (!activeLease || activeLease.userId !== user.id || activeLease.status !== "active") {
+      return null;
+    }
+
+    return runtime;
   }
 
   getActiveRuntimeUsageContext() {
@@ -828,6 +931,8 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    const failed: PanelBindingFailure[] = [];
+
     for (const binding of bindings) {
       try {
         await this.xuiService.setClientEnabled(
@@ -851,6 +956,14 @@ export class DevDataService implements OnModuleInit {
             panelError: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
           }
         });
+        failed.push({
+          bindingId: binding.id,
+          nodeId: binding.nodeId,
+          nodeName: binding.node.name,
+          panelClientEmail: binding.panelClientEmail,
+          error: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
+        });
+        continue;
       }
 
       await this.prisma.panelClientBinding.update({
@@ -860,6 +973,12 @@ export class DevDataService implements OnModuleInit {
         }
       });
     }
+
+    return {
+      requested: bindings.length,
+      updated: bindings.length - failed.length,
+      failed
+    } satisfies PanelBindingMutationResult;
   }
 
   private async removePanelBindingsForSubscription(subscriptionId: string, filter?: { userId?: string; nodeIds?: string[] }) {
@@ -874,6 +993,8 @@ export class DevDataService implements OnModuleInit {
         node: true
       }
     });
+
+    const failed: PanelBindingFailure[] = [];
 
     for (const binding of bindings) {
       try {
@@ -897,6 +1018,14 @@ export class DevDataService implements OnModuleInit {
             panelError: error instanceof Error ? error.message : "删除 3x-ui 客户端失败"
           }
         });
+        failed.push({
+          bindingId: binding.id,
+          nodeId: binding.nodeId,
+          nodeName: binding.node.name,
+          panelClientEmail: binding.panelClientEmail,
+          error: error instanceof Error ? error.message : "删除 3x-ui 客户端失败"
+        });
+        continue;
       }
 
       await this.prisma.trafficSnapshot.deleteMany({
@@ -912,6 +1041,12 @@ export class DevDataService implements OnModuleInit {
         }
       });
     }
+
+    return {
+      requested: bindings.length,
+      updated: bindings.length - failed.length,
+      failed
+    } satisfies PanelBindingMutationResult;
   }
 
   private async ensureTrafficSnapshotBaseline(input: {
@@ -947,6 +1082,17 @@ export class DevDataService implements OnModuleInit {
         sampledAt
       }
     });
+  }
+
+  private assertPanelBindingMutation(action: string, result: PanelBindingMutationResult) {
+    if (result.failed.length === 0) {
+      return;
+    }
+
+    const detail = result.failed
+      .map((item) => `${item.nodeName} / ${item.panelClientEmail}: ${item.error}`)
+      .join("；");
+    throw new BadGatewayException(`${action}。以下节点未完成同步：${detail}`);
   }
 
   private async syncSubscriptionPanelAccess(subscriptionId: string) {
@@ -993,7 +1139,8 @@ export class DevDataService implements OnModuleInit {
     const shouldDeleteAll = shouldDeletePanelClients(subscription);
 
     if (shouldDeleteAll) {
-      await this.removePanelBindingsForSubscription(subscriptionId);
+      const removeResult = await this.removePanelBindingsForSubscription(subscriptionId);
+      this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
       return;
     }
 
@@ -1005,10 +1152,11 @@ export class DevDataService implements OnModuleInit {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
-        await this.removePanelBindingsForSubscription(subscriptionId, {
+        const removeResult = await this.removePanelBindingsForSubscription(subscriptionId, {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
+        this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
         continue;
       }
       if (invalidByNode || !shouldProvision) {
@@ -1020,10 +1168,11 @@ export class DevDataService implements OnModuleInit {
             nodeIds: [binding.nodeId]
           }
         );
-        await this.disablePanelBindingsForSubscription(subscriptionId, {
+        const disableResult = await this.disablePanelBindingsForSubscription(subscriptionId, {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
+        this.assertPanelBindingMutation("禁用 3x-ui 客户端失败", disableResult);
       }
     }
 
@@ -1342,6 +1491,16 @@ export class DevDataService implements OnModuleInit {
         detail: reason
       }
     });
+    const details = getLeaseFailureDetails(reason === SECURITY_REASON_CONCURRENCY ? "evicted" : "revoked", reason);
+    this.clientRuntimeEventsService.publishToUser(lease.userId, {
+      type: toClientRuntimeEventType(details.reasonCode),
+      occurredAt: new Date().toISOString(),
+      sessionId: lease.sessionId,
+      subscriptionId: lease.subscriptionId,
+      nodeId: lease.nodeId,
+      reasonCode: details.reasonCode,
+      reasonMessage: details.reasonMessage
+    });
     if (lease.accessMode === "relay") {
       try {
         await this.edgeGatewayService.closeSession({
@@ -1490,7 +1649,8 @@ export class DevDataService implements OnModuleInit {
       if (personalSubscription) {
         if (input.status === "disabled") {
           await this.revokeUserLeases(userId, "user_disabled", { subscriptionId: personalSubscription.id });
-          await this.removePanelBindingsForSubscription(personalSubscription.id, { userId });
+          const removeResult = await this.removePanelBindingsForSubscription(personalSubscription.id, { userId });
+          this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
         } else if (input.status === "active") {
           await this.syncSubscriptionPanelAccess(personalSubscription.id);
         }
@@ -1507,7 +1667,8 @@ export class DevDataService implements OnModuleInit {
         }
         if (input.status === "disabled") {
           await this.revokeUserLeases(userId, "user_disabled", { subscriptionId: teamSubscription.id });
-          await this.removePanelBindingsForSubscription(teamSubscription.id, { userId });
+          const removeResult = await this.removePanelBindingsForSubscription(teamSubscription.id, { userId });
+          this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
         } else if (input.status === "active") {
           await this.syncSubscriptionPanelAccess(teamSubscription.id);
         }
@@ -2145,7 +2306,8 @@ export class DevDataService implements OnModuleInit {
       await this.revokeSubscriptionLeases(subscription.id, "team_member_removed", {
         userId: member.userId
       });
-      await this.removePanelBindingsForSubscription(subscription.id, { userId: member.userId });
+      const removeResult = await this.removePanelBindingsForSubscription(subscription.id, { userId: member.userId });
+      this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
     }
 
     await this.prisma.teamMember.delete({
@@ -2164,10 +2326,14 @@ export class DevDataService implements OnModuleInit {
     let disconnectedSessionCount = 0;
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
-      await this.disablePanelBindingsForSubscription(subscription.id, { userId: member.userId });
+      const disableResult = await this.disablePanelBindingsForSubscription(subscription.id, { userId: member.userId });
       disconnectedSessionCount = await this.revokeSubscriptionLeases(subscription.id, "team_member_disconnected", {
         userId: member.userId
       });
+      this.assertPanelBindingMutation(
+        disconnectedSessionCount > 0 ? "会话已断开，但禁用 3x-ui 客户端失败" : "禁用 3x-ui 客户端失败",
+        disableResult
+      );
     }
 
     let user: AdminUserRecordDto | null = null;
@@ -2188,6 +2354,8 @@ export class DevDataService implements OnModuleInit {
       disconnectedSessionCount,
       accountDisabled,
       message,
+      reasonCode: input.disableAccount ? "account_disabled" : "admin_paused_connection",
+      reasonMessage: input.disableAccount ? "当前账号已禁用，会话已失效。" : "管理员已暂停当前连接，可稍后恢复使用。",
       team: await this.requireTeamRecord(teamId),
       user
     };
@@ -2277,21 +2445,36 @@ export class DevDataService implements OnModuleInit {
       select: { id: true, nodeId: true }
     });
     const existingNodeIds = new Set(existingRows.map((item) => item.nodeId));
+    let revokedSessionCount = 0;
+    let reasonCode: SessionReasonCode | null = null;
+    let reasonMessage: string | null = null;
+    let message: string | null = null;
 
     if (uniqueNodeIds.length === 0) {
       if (existingRows.length > 0) {
+        const disableResult = await this.disablePanelBindingsForSubscription(subscriptionId);
+        this.assertPanelBindingMutation("禁用 3x-ui 客户端失败，节点授权未清空", disableResult);
         await this.prisma.subscriptionNodeAccess.deleteMany({
           where: { subscriptionId }
         });
-        await this.disablePanelBindingsForSubscription(subscriptionId);
-        await this.revokeSubscriptionLeases(subscriptionId, "node_access_revoked");
+        revokedSessionCount = await this.revokeSubscriptionLeases(subscriptionId, "node_access_revoked");
+        reasonCode = "node_access_revoked";
+        reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
+        message =
+          revokedSessionCount > 0
+            ? `节点授权已清空，已断开 ${revokedSessionCount} 条现有连接。`
+            : "节点授权已清空，当前没有活跃连接。";
       }
 
       await this.syncSubscriptionPanelAccess(subscriptionId);
       return {
         subscriptionId,
         nodeIds: [],
-        nodes: []
+        nodes: [],
+        revokedSessionCount,
+        reasonCode,
+        reasonMessage,
+        message
       };
     }
 
@@ -2309,14 +2492,21 @@ export class DevDataService implements OnModuleInit {
     const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
 
     if (removedNodeIds.length > 0) {
+      const disableResult = await this.disablePanelBindingsForSubscription(subscriptionId, { nodeIds: removedNodeIds });
+      this.assertPanelBindingMutation("禁用 3x-ui 客户端失败，节点授权未保存", disableResult);
       await this.prisma.subscriptionNodeAccess.deleteMany({
         where: {
           subscriptionId,
           nodeId: { in: removedNodeIds }
         }
       });
-      await this.disablePanelBindingsForSubscription(subscriptionId, { nodeIds: removedNodeIds });
-      await this.revokeSubscriptionLeases(subscriptionId, "node_access_revoked", { nodeIds: removedNodeIds });
+      revokedSessionCount = await this.revokeSubscriptionLeases(subscriptionId, "node_access_revoked", { nodeIds: removedNodeIds });
+      reasonCode = "node_access_revoked";
+      reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
+      message =
+        revokedSessionCount > 0
+          ? `节点授权已保存，已断开 ${revokedSessionCount} 条受影响连接。`
+          : "节点授权已保存。";
     }
 
     if (addedNodeIds.length > 0) {
@@ -2341,7 +2531,11 @@ export class DevDataService implements OnModuleInit {
     return {
       subscriptionId,
       nodeIds: deduped.map((item) => item.nodeId),
-      nodes: deduped.map((item) => toNodeSummary(item.node))
+      nodes: deduped.map((item) => toNodeSummary(item.node)),
+      revokedSessionCount,
+      reasonCode,
+      reasonMessage,
+      message: message ?? "节点授权已保存。"
     };
   }
 
@@ -2467,6 +2661,9 @@ export class DevDataService implements OnModuleInit {
       panelUsername: input.panelUsername,
       panelPassword: input.panelPassword,
       panelInboundId: null
+    }, {
+      forceRelogin: true,
+      strictCredentialCheck: true
     });
 
     return inbounds;
@@ -3215,6 +3412,45 @@ export class DevDataService implements OnModuleInit {
     });
   }
 
+  private async migrateLegacyDefaultConcurrentSessions() {
+    const plans = await this.prisma.plan.findMany({
+      select: {
+        id: true,
+        name: true,
+        maxConcurrentSessions: true
+      }
+    });
+
+    if (plans.length === 0) {
+      return;
+    }
+
+    const legacyPlans = plans.filter((plan) => plan.maxConcurrentSessions < DEFAULT_MAX_CONCURRENT_SESSIONS);
+    if (legacyPlans.length === 0) {
+      return;
+    }
+
+    const isPureLegacyDataset = legacyPlans.length === plans.length;
+    if (!isPureLegacyDataset) {
+      return;
+    }
+
+    await this.prisma.plan.updateMany({
+      where: {
+        id: {
+          in: legacyPlans.map((plan) => plan.id)
+        }
+      },
+      data: {
+        maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS
+      }
+    });
+
+    this.logger.log(
+      `已将 ${legacyPlans.length} 个历史套餐的默认并发从旧值迁移为 ${DEFAULT_MAX_CONCURRENT_SESSIONS}`
+    );
+  }
+
   private async resolveUserForLogin(account: string) {
     if (account === BUILTIN_ADMIN_ACCOUNT) {
       const adminByAccount = await this.prisma.user.findUnique({
@@ -3416,6 +3652,7 @@ function toUserSubscriptionSummary(
   team: { id: string; name: string } | null
 ): UserSubscriptionSummaryDto {
   const state = readEffectiveSubscriptionState(row);
+  const stateReason = getSubscriptionStateReason(state);
   return {
     id: row.id,
     ownerType: team ? "team" : "user",
@@ -3424,6 +3661,8 @@ function toUserSubscriptionSummary(
     remainingTrafficGb: row.remainingTrafficGb,
     expireAt: row.expireAt.toISOString(),
     state,
+    stateReasonCode: stateReason.reasonCode,
+    stateReasonMessage: stateReason.reasonMessage,
     teamId: team?.id ?? null,
     teamName: team?.name ?? null
   };
@@ -3440,9 +3679,6 @@ function toNodeSummary(row: {
   probeLatencyMs?: number | null;
   protocol: string;
   security: string;
-  serverHost: string;
-  serverPort: number;
-  serverName: string;
 }): NodeSummaryDto {
   return {
     id: row.id,
@@ -3453,10 +3689,7 @@ function toNodeSummary(row: {
     recommended: row.recommended,
     latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
-    security: row.security as "reality",
-    serverHost: row.serverHost,
-    serverPort: row.serverPort,
-    serverName: row.serverName
+    security: row.security as "reality"
   };
 }
 
@@ -3481,6 +3714,7 @@ function toAdminSubscriptionRecord(row: {
   const ownerType = row.teamId ? "team" : "user";
   const nodeCount = row.nodeAccesses ? new Set(row.nodeAccesses.map((item) => item.nodeId)).size : 0;
   const state = readEffectiveSubscriptionState(row);
+  const stateReason = getSubscriptionStateReason(state);
   return {
     id: row.id,
     ownerType,
@@ -3500,7 +3734,9 @@ function toAdminSubscriptionRecord(row: {
     sourceAction: row.sourceAction,
     lastSyncedAt: row.lastSyncedAt.toISOString(),
     nodeCount,
-    hasNodeAccess: nodeCount > 0
+    hasNodeAccess: nodeCount > 0,
+    stateReasonCode: stateReason.reasonCode,
+    stateReasonMessage: stateReason.reasonMessage
   };
 }
 
@@ -3697,6 +3933,7 @@ function toSubscriptionStatusDto(
   metering: { meteringStatus: "ok" | "degraded"; meteringMessage: string | null }
 ): SubscriptionStatusDto {
   const state = readEffectiveSubscriptionState(row);
+  const stateReason = getSubscriptionStateReason(state);
   return {
     id: row.id,
     ownerType: team ? "team" : "user",
@@ -3713,7 +3950,9 @@ function toSubscriptionStatusDto(
     teamName: team?.name ?? null,
     memberUsedTrafficGb,
     meteringStatus: metering.meteringStatus,
-    meteringMessage: metering.meteringMessage
+    meteringMessage: metering.meteringMessage,
+    stateReasonCode: stateReason.reasonCode,
+    stateReasonMessage: stateReason.reasonMessage
   };
 }
 
@@ -3791,7 +4030,10 @@ function toAdminTeamRecord(row: {
     status: row.status,
     memberCount: row.members.length,
     currentSubscription: currentSubscription
-      ? {
+      ? (() => {
+          const state = readEffectiveSubscriptionState(currentSubscription);
+          const stateReason = getSubscriptionStateReason(state);
+          return {
           id: currentSubscription.id,
           planId: currentSubscription.planId,
           planName: currentSubscription.plan.name,
@@ -3799,8 +4041,11 @@ function toAdminTeamRecord(row: {
           usedTrafficGb: currentSubscription.usedTrafficGb,
           remainingTrafficGb: currentSubscription.remainingTrafficGb,
           expireAt: currentSubscription.expireAt.toISOString(),
-          state: readEffectiveSubscriptionState(currentSubscription)
-        }
+          state,
+          stateReasonCode: stateReason.reasonCode,
+          stateReasonMessage: stateReason.reasonMessage
+        };
+        })()
       : null,
     members: row.members.map((member) => toAdminTeamMemberRecord(member, usageByUser.get(member.userId) ?? 0)),
     usage,
@@ -4119,6 +4364,175 @@ function assertSubscriptionConnectable(subscription: {
   if (state === "exhausted") {
     throw new ForbiddenException("当前订阅流量已用尽");
   }
+}
+
+function getSubscriptionStateReason(state: SubscriptionState): {
+  reasonCode: SessionReasonCode | null;
+  reasonMessage: string | null;
+} {
+  if (state === "expired") {
+    return {
+      reasonCode: "subscription_expired",
+      reasonMessage: "当前订阅已到期"
+    };
+  }
+  if (state === "exhausted") {
+    return {
+      reasonCode: "subscription_exhausted",
+      reasonMessage: "当前订阅流量已用尽"
+    };
+  }
+  if (state === "paused") {
+    return {
+      reasonCode: "subscription_paused",
+      reasonMessage: "当前订阅已暂停"
+    };
+  }
+  return {
+    reasonCode: null,
+    reasonMessage: null
+  };
+}
+
+function getLeaseFailureDetails(
+  status: "expired" | "revoked" | "evicted",
+  revokedReason?: string | null
+): {
+  reasonCode: SessionReasonCode;
+  reasonMessage: string;
+  detailReason: string | null;
+  evictedReason: SessionEvictedReason | null;
+} {
+  switch (revokedReason) {
+    case SECURITY_REASON_CONCURRENCY:
+      return {
+        reasonCode: "connection_taken_over",
+        reasonMessage: "当前连接已被其他设备接管",
+        detailReason: revokedReason,
+        evictedReason: "concurrency_limit"
+      };
+    case "team_member_disconnected":
+      return {
+        reasonCode: "admin_paused_connection",
+        reasonMessage: "管理员已暂停当前连接",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "node_access_revoked":
+      return {
+        reasonCode: "node_access_revoked",
+        reasonMessage: "当前节点已被取消授权",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "subscription_expired":
+      return {
+        reasonCode: "subscription_expired",
+        reasonMessage: "当前订阅已到期",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "subscription_exhausted":
+      return {
+        reasonCode: "subscription_exhausted",
+        reasonMessage: "当前订阅流量已用尽",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "subscription_paused":
+      return {
+        reasonCode: "subscription_paused",
+        reasonMessage: "当前订阅已暂停",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "user_disabled":
+    case "subscription_user_disabled":
+      return {
+        reasonCode: "account_disabled",
+        reasonMessage: "当前账号已禁用，会话已失效",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "team_membership_missing":
+    case "team_member_removed":
+    case "team_disabled":
+      return {
+        reasonCode: "team_access_revoked",
+        reasonMessage: "当前成员已失去团队访问权限，会话已失效",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "panel_client_rotated":
+      return {
+        reasonCode: "runtime_credentials_rotated",
+        reasonMessage: "当前连接凭据已更新，请重新连接",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "lease_expired":
+      return {
+        reasonCode: "session_expired",
+        reasonMessage: "当前连接已过期，请重新连接",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "revoked_by_client":
+      return {
+        reasonCode: "session_invalid",
+        reasonMessage: "当前连接已断开",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    case "subscription_missing":
+    case "subscription_owner_missing":
+    case "subscription_owner_mismatch":
+    case "lease_renew_failed":
+    case "edge_open_failed":
+    case "panel_client_disabled":
+      return {
+        reasonCode: "session_invalid",
+        reasonMessage: "当前连接已失效，请重新连接",
+        detailReason: revokedReason,
+        evictedReason: null
+      };
+    default:
+      if (status === "expired") {
+        return {
+          reasonCode: "session_expired",
+          reasonMessage: "当前连接已过期，请重新连接",
+          detailReason: revokedReason ?? null,
+          evictedReason: null
+        };
+      }
+      if (status === "evicted") {
+        return {
+          reasonCode: "connection_taken_over",
+          reasonMessage: "当前连接已被其他设备接管",
+          detailReason: revokedReason ?? null,
+          evictedReason: "concurrency_limit"
+        };
+      }
+      return {
+        reasonCode: "session_invalid",
+        reasonMessage: "当前连接已失效，请重新连接",
+        detailReason: revokedReason ?? null,
+        evictedReason: null
+      };
+  }
+}
+
+function toClientRuntimeEventType(reasonCode: SessionReasonCode) {
+  if (reasonCode === "subscription_expired" || reasonCode === "subscription_exhausted" || reasonCode === "subscription_paused") {
+    return "subscription_updated" as const;
+  }
+  if (reasonCode === "node_access_revoked") {
+    return "node_access_updated" as const;
+  }
+  if (reasonCode === "account_disabled" || reasonCode === "team_access_revoked") {
+    return "account_updated" as const;
+  }
+  return "session_revoked" as const;
 }
 
 function readEffectiveSubscriptionState(subscription: {

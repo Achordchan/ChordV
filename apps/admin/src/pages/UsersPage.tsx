@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
 import type { AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
-import { IconPencil, IconTrash, IconUsers } from "@tabler/icons-react";
+import { IconLock, IconLockOpen2, IconPencil, IconTrash, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -33,6 +33,7 @@ type UsersPageProps = {
   onCloseTeamMemberInlineEditor: () => void;
   onSaveTeamMemberInlineEditor: () => void;
   onDeleteTeamMember: (teamId: string, memberId: string) => void;
+  onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
 };
 
 export function UsersPage(props: UsersPageProps) {
@@ -226,6 +227,20 @@ export function UsersPage(props: UsersPageProps) {
                                 </Table.Td>
                                 <Table.Td>
                                   <RowActions>
+                                    <ActionIcon
+                                      variant="subtle"
+                                      color={userRecord?.status === "active" ? "red" : "green"}
+                                      onClick={() =>
+                                        props.onToggleTeamUserStatus(
+                                          member.userId,
+                                          userRecord?.status === "active" ? "disabled" : "active",
+                                          member.displayName
+                                        )
+                                      }
+                                      title={userRecord?.status === "active" ? "禁用账号" : "启用账号"}
+                                    >
+                                      {userRecord?.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
+                                    </ActionIcon>
                                     <ActionIcon variant="subtle" onClick={() => props.onOpenTeamMemberInlineEditor(item.id, member.id)}>
                                       <IconUsers size={16} />
                                     </ActionIcon>

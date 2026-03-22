@@ -1,4 +1,8 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+const RAW_API_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE =
+  typeof RAW_API_BASE === "string" && RAW_API_BASE.trim().length > 0
+    ? RAW_API_BASE.trim().replace(/\/+$/, "")
+    : window.location.origin;
 export const ADMIN_ACCESS_TOKEN_KEY = "chordv_admin_access_token";
 export const ADMIN_REFRESH_TOKEN_KEY = "chordv_admin_refresh_token";
 

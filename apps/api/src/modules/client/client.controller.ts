@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Headers, Post, UseGuards } from "@nestjs/common";
-import { IsIn, IsNotEmpty, IsOptional, IsString } from "class-validator";
+import { Body, Controller, Get, Headers, Post, Sse, UseGuards } from "@nestjs/common";
+import { IsArray, IsIn, IsNotEmpty, IsOptional, IsString } from "class-validator";
 import type { ConnectionMode } from "@chordv/shared";
 import { ClientAuthGuard } from "../common/client-auth.guard";
 import { ClientService } from "./client.service";
@@ -24,6 +24,12 @@ class SessionLeaseDto {
   sessionId!: string;
 }
 
+class ProbeNodesDto {
+  @IsArray()
+  @IsString({ each: true })
+  nodeIds!: string[];
+}
+
 @Controller("client")
 @UseGuards(ClientAuthGuard)
 export class ClientController {
@@ -44,6 +50,11 @@ export class ClientController {
     return this.clientService.getNodes(authorization);
   }
 
+  @Post("nodes/probe")
+  probeNodes(@Body() body: ProbeNodesDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.probeNodes(body.nodeIds ?? [], authorization);
+  }
+
   @Get("policies")
   getPolicies() {
     return this.clientService.getPolicies();
@@ -60,8 +71,8 @@ export class ClientController {
   }
 
   @Get("runtime")
-  getRuntime() {
-    return this.clientService.getRuntime();
+  getRuntime(@Headers("authorization") authorization?: string) {
+    return this.clientService.getRuntime(authorization);
   }
 
   @Post("session/connect")
@@ -77,5 +88,15 @@ export class ClientController {
   @Post("session/disconnect")
   disconnect(@Body() body: SessionLeaseDto, @Headers("authorization") authorization?: string) {
     return this.clientService.disconnect(body.sessionId, authorization);
+  }
+
+  @Sse("events/stream")
+  streamEvents(@Headers("authorization") authorization?: string) {
+    return this.clientService.streamEvents(authorization);
+  }
+
+  @Sse("events")
+  streamEventsAlias(@Headers("authorization") authorization?: string) {
+    return this.clientService.streamEvents(authorization);
   }
 }

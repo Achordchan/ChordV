@@ -14,6 +14,7 @@ const prisma = new PrismaClient();
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
 const BUILTIN_ADMIN_PASSWORD = "woshichen123";
+const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 
 async function main() {
   const demoPasswordHash = await bcrypt.hash("demo123456", 10);
@@ -125,7 +126,7 @@ async function main() {
       scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
       renewable: mockSubscription.renewable,
-      maxConcurrentSessions: 3,
+      maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
       isActive: true
     },
     create: {
@@ -134,7 +135,7 @@ async function main() {
       scope: "personal",
       totalTrafficGb: mockSubscription.totalTrafficGb,
       renewable: mockSubscription.renewable,
-      maxConcurrentSessions: 3,
+      maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
       isActive: true
     }
   });
@@ -146,7 +147,7 @@ async function main() {
       scope: "team",
       totalTrafficGb: 500,
       renewable: true,
-      maxConcurrentSessions: 3,
+      maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
       isActive: true
     },
     create: {
@@ -155,10 +156,30 @@ async function main() {
       scope: "team",
       totalTrafficGb: 500,
       renewable: true,
-      maxConcurrentSessions: 3,
+      maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS,
       isActive: true
     }
   });
+
+  const plans = await prisma.plan.findMany({
+    select: {
+      id: true,
+      maxConcurrentSessions: true
+    }
+  });
+  const legacyPlans = plans.filter((plan) => plan.maxConcurrentSessions < DEFAULT_MAX_CONCURRENT_SESSIONS);
+  if (legacyPlans.length === plans.length && legacyPlans.length > 0) {
+    await prisma.plan.updateMany({
+      where: {
+        id: {
+          in: legacyPlans.map((plan) => plan.id)
+        }
+      },
+      data: {
+        maxConcurrentSessions: DEFAULT_MAX_CONCURRENT_SESSIONS
+      }
+    });
+  }
 
   await prisma.subscription.upsert({
     where: { id: "subscription_demo_001" },

@@ -580,8 +580,16 @@ export class UsageSyncService {
           binding.panelClientEmail,
           false
         );
-      } catch {
+      } catch (error) {
+        await this.prisma.node.update({
+          where: { id: binding.nodeId },
+          data: {
+            panelStatus: "degraded",
+            panelError: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
+          }
+        });
         // 这里不抛错，避免计量主链被节点面板异常打断，后续轮询会继续尝试修复。
+        continue;
       }
 
       await this.prisma.panelClientBinding.update({

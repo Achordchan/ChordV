@@ -15,6 +15,25 @@ export type SubscriptionOwnerType = "user" | "team";
 export type MeteringStatus = "ok" | "degraded";
 export type SessionLeaseStatus = "active" | "expired" | "revoked" | "evicted";
 export type SessionEvictedReason = "concurrency_limit";
+export type SessionReasonCode =
+  | "admin_paused_connection"
+  | "node_access_revoked"
+  | "subscription_expired"
+  | "subscription_exhausted"
+  | "subscription_paused"
+  | "connection_taken_over"
+  | "auth_invalid"
+  | "session_invalid"
+  | "session_expired"
+  | "account_disabled"
+  | "team_access_revoked"
+  | "runtime_credentials_rotated";
+export type ClientRuntimeEventType =
+  | "session_revoked"
+  | "subscription_updated"
+  | "node_access_updated"
+  | "account_updated"
+  | "keepalive";
 export type EdgeGatewayStatus = "online" | "offline" | "degraded";
 export type XuiPanelStatus = "online" | "offline" | "degraded";
 export type AccessMode = "relay" | "xui";
@@ -45,6 +64,8 @@ export interface SubscriptionStatusDto {
   memberUsedTrafficGb?: number | null;
   meteringStatus: MeteringStatus;
   meteringMessage?: string | null;
+  stateReasonCode?: SessionReasonCode | null;
+  stateReasonMessage?: string | null;
 }
 
 export interface NodeSummaryDto {
@@ -57,9 +78,14 @@ export interface NodeSummaryDto {
   latencyMs: number;
   protocol: "vless";
   security: "reality";
-  serverHost: string;
-  serverPort: number;
-  serverName: string;
+}
+
+export interface ClientNodeProbeResultDto {
+  nodeId: string;
+  status: "healthy" | "offline";
+  latencyMs: number | null;
+  checkedAt: string;
+  error: string | null;
 }
 
 export interface StrategyGroupDto {
@@ -153,6 +179,8 @@ export interface UserSubscriptionSummaryDto {
   remainingTrafficGb: number;
   expireAt: string;
   state: SubscriptionState;
+  stateReasonCode?: SessionReasonCode | null;
+  stateReasonMessage?: string | null;
   teamId?: string | null;
   teamName?: string | null;
 }
@@ -200,12 +228,18 @@ export interface AdminSubscriptionRecordDto {
   lastSyncedAt: string;
   nodeCount: number;
   hasNodeAccess: boolean;
+  stateReasonCode?: SessionReasonCode | null;
+  stateReasonMessage?: string | null;
 }
 
 export interface SubscriptionNodeAccessDto {
   subscriptionId: string;
   nodeIds: string[];
   nodes: NodeSummaryDto[];
+  revokedSessionCount?: number;
+  reasonCode?: SessionReasonCode | null;
+  reasonMessage?: string | null;
+  message?: string | null;
 }
 
 export interface UpdateSubscriptionNodeAccessInputDto {
@@ -284,6 +318,8 @@ export interface AdminTeamSubscriptionSummaryDto {
   remainingTrafficGb: number;
   expireAt: string;
   state: SubscriptionState;
+  stateReasonCode?: SessionReasonCode | null;
+  stateReasonMessage?: string | null;
 }
 
 export interface AdminTeamMemberRecordDto {
@@ -416,6 +452,22 @@ export interface SessionLeaseStatusDto {
   status: SessionLeaseStatus;
   leaseExpiresAt: string;
   evictedReason?: SessionEvictedReason | null;
+  reasonCode?: SessionReasonCode | null;
+  reasonMessage?: string | null;
+  detailReason?: string | null;
+}
+
+export interface ClientRuntimeEventDto {
+  type: ClientRuntimeEventType;
+  occurredAt: string;
+  sessionId?: string | null;
+  subscriptionId?: string | null;
+  nodeId?: string | null;
+  reasonCode?: SessionReasonCode | null;
+  reasonMessage?: string | null;
+  subscriptionState?: SubscriptionState | null;
+  state?: SubscriptionState | null;
+  reconnectRecommended?: boolean | null;
 }
 
 export interface CreateSubscriptionInputDto {
@@ -580,6 +632,8 @@ export interface KickTeamMemberResultDto {
   disconnectedSessionCount: number;
   accountDisabled: boolean;
   message: string;
+  reasonCode: SessionReasonCode;
+  reasonMessage: string;
   team: AdminTeamRecordDto;
   user: AdminUserRecordDto | null;
 }

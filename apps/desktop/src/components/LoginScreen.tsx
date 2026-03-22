@@ -8,10 +8,14 @@ type LoginScreenProps = {
   rememberPassword: boolean;
   loading: boolean;
   error: string | null;
+  emergencyRuntimeActive: boolean;
+  emergencyRuntimeBusy: boolean;
+  emergencyRuntimeMessage: string | null;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onRememberPasswordChange: (checked: boolean) => void;
   onSubmit: () => void;
+  onEmergencyDisconnect: () => void;
 };
 
 export function LoginScreen(props: LoginScreenProps) {
@@ -114,6 +118,27 @@ export function LoginScreen(props: LoginScreenProps) {
             </div>
 
             {props.error ? <div className="auth-screen__error">{props.error}</div> : null}
+
+            {props.emergencyRuntimeActive ? (
+              <div className="auth-screen__runtime-alert">
+                <div className="auth-screen__runtime-copy">
+                  <strong className="auth-screen__runtime-title">检测到本地连接仍在运行</strong>
+                  <span className="auth-screen__runtime-desc">
+                    {props.emergencyRuntimeMessage ?? "登录态已失效时，仍可先手动停止本地内核，避免继续占用代理。"}
+                  </span>
+                </div>
+                <Button
+                  variant="light"
+                  color="red"
+                  radius="xl"
+                  loading={props.emergencyRuntimeBusy}
+                  className="auth-screen__runtime-action"
+                  onClick={props.onEmergencyDisconnect}
+                >
+                  紧急断开内核
+                </Button>
+              </div>
+            ) : null}
 
             <Button
               size="lg"

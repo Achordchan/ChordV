@@ -12,15 +12,32 @@ const binDir = path.join(tauriRoot, "bin");
 const targetMap = {
   "darwin-arm64": {
     asset: "Xray-macos-arm64-v8a.zip",
-    binaryName: "xray-aarch64-apple-darwin"
+    binaryName: "xray-aarch64-apple-darwin",
+    extractedBinaryName: "xray",
+    executable: true
   },
   "darwin-x64": {
     asset: "Xray-macos-64.zip",
-    binaryName: "xray-x86_64-apple-darwin"
+    binaryName: "xray-x86_64-apple-darwin",
+    extractedBinaryName: "xray",
+    executable: true
+  },
+  "win32-x64": {
+    asset: "Xray-windows-64.zip",
+    binaryName: "xray-x86_64-pc-windows-msvc.exe",
+    extractedBinaryName: "xray.exe",
+    executable: false
+  },
+  "android-arm64": {
+    asset: "Xray-android-arm64-v8a.zip",
+    binaryName: "xray-aarch64-linux-android",
+    extractedBinaryName: "xray",
+    executable: true
   }
 };
 
-const key = `${process.platform}-${process.arch}`;
+const targetOverride = process.env.CHORDV_XRAY_TARGET?.trim();
+const key = targetOverride || `${process.platform}-${process.arch}`;
 const target = targetMap[key];
 
 if (!target) {
@@ -53,7 +70,8 @@ mkdirSync(extractDir, { recursive: true });
 
 try {
   const downloadUrl = `https://github.com/XTLS/Xray-core/releases/latest/download/${target.asset}`;
-  if (hasGh()) {
+  const preferCurl = key.startsWith("android-");
+  if (!preferCurl && hasGh()) {
     console.log(`使用 gh 下载 xray：${target.asset}`);
     execFileSync("gh", ["release", "download", "--repo", "XTLS/Xray-core", "--pattern", target.asset, "--dir", tempRoot], {
       stdio: "inherit"
@@ -69,7 +87,7 @@ try {
     stdio: "inherit"
   });
 
-  const extractedBinary = path.join(extractDir, "xray");
+  const extractedBinary = path.join(extractDir, target.extractedBinaryName);
   const extractedGeoIp = path.join(extractDir, "geoip.dat");
   const extractedGeoSite = path.join(extractDir, "geosite.dat");
   if (!existsSync(extractedBinary)) {
@@ -85,7 +103,9 @@ try {
   renameSync(extractedBinary, outputBinary);
   renameSync(extractedGeoIp, outputGeoIp);
   renameSync(extractedGeoSite, outputGeoSite);
-  chmodSync(outputBinary, 0o755);
+  if (target.executable) {
+    chmodSync(outputBinary, 0o755);
+  }
 
   console.log(`xray 已安装：${outputBinary}`);
 } finally {
