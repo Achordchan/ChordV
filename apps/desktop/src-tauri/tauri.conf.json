@@ -35,6 +35,13 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
+    "windows": {
+      "nsis": {
+        "languages": [
+          "SimpChinese"
+        ]
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "13.0"
     }

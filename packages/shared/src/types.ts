@@ -152,6 +152,7 @@ export interface AdminReleaseArtifactDto {
   type: ReleaseArtifactType;
   deliveryMode: UpdateDeliveryMode;
   downloadUrl: string;
+  originDownloadUrl?: string | null;
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;
   fileName: string | null;

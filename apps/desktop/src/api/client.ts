@@ -28,6 +28,7 @@ export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "apk" | 
 export type ClientUpdateArtifact = {
   fileType: ReleaseArtifactType;
   downloadUrl: string;
+  originDownloadUrl: string | null;
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;
   fileName: string | null;
@@ -485,6 +486,7 @@ function normalizeUpdateCheckResult(
         return {
           fileType: readArtifactType(artifactSource.fileType) ?? fallback.artifactType,
           downloadUrl: artifactUrl,
+          originDownloadUrl: resolvePublicUrl(readString(artifactSource.originDownloadUrl) ?? readString(artifactSource.downloadUrl)),
           defaultMirrorPrefix: readString(artifactSource.defaultMirrorPrefix),
           allowClientMirror: readBoolean(artifactSource.allowClientMirror) ?? true,
           fileName: readString(artifactSource.fileName),

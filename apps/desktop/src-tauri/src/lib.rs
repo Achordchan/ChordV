@@ -479,7 +479,7 @@ async fn download_desktop_installer(
         );
 
         let download_dir = ensure_installer_download_dir(&app)?;
-        let final_path = unique_download_path(&download_dir, &file_name);
+        let final_path = download_dir.join(&file_name);
         let temp_path = final_path.with_extension(format!(
             "{}part",
             final_path
@@ -488,6 +488,32 @@ async fn download_desktop_installer(
                 .map(|value| format!("{value}."))
                 .unwrap_or_default()
         ));
+        if final_path.exists() {
+            let metadata = fs::metadata(&final_path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
+            if metadata.len() > 0 {
+                let local_path = final_path.to_string_lossy().into_owned();
+                emit_update_download_progress(
+                    &app,
+                    DesktopInstallerDownloadProgress {
+                        phase: "completed".into(),
+                        file_name: Some(file_name.clone()),
+                        downloaded_bytes: metadata.len(),
+                        total_bytes: Some(metadata.len()),
+                        local_path: Some(local_path.clone()),
+                        message: Some("已复用本地安装器，正在打开安装程序…".into()),
+                    },
+                );
+                return Ok(DesktopInstallerDownloadResult {
+                    file_name,
+                    local_path,
+                    total_bytes: Some(metadata.len()),
+                });
+            }
+            let _ = fs::remove_file(&final_path);
+        }
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
 
         let client = Client::builder()
             .timeout(Duration::from_secs(600))
@@ -564,10 +590,10 @@ async fn download_desktop_installer(
 }
 
 #[tauri::command]
-fn open_desktop_installer(path: String) -> Result<CommandResult, String> {
+fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult, String> {
     #[cfg(target_os = "android")]
     {
-        let _ = path;
+        let _ = (app, path);
         return Err("安卓端不支持桌面安装器打开".into());
     }
 
@@ -577,28 +603,12 @@ fn open_desktop_installer(path: String) -> Result<CommandResult, String> {
         if !installer_path.exists() {
             return Err("安装器文件不存在".into());
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            let status = Command::new("open")
-                .arg(&installer_path)
-                .status()
-                .map_err(|error| format!("打开安装器失败：{error}"))?;
-            if !status.success() {
-                return Err("打开安装器失败".into());
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            let mut command = Command::new("cmd");
-            command.creation_flags(CREATE_NO_WINDOW);
-            command.args(["/C", "start", "", &installer_path.to_string_lossy()]);
-            let status = command.status().map_err(|error| format!("打开安装器失败：{error}"))?;
-            if !status.success() {
-                return Err("打开安装器失败".into());
-            }
-        }
+        spawn_deferred_installer_open(&installer_path)?;
+        let exit_handle = app.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(250));
+            exit_handle.exit(0);
+        });
 
         Ok(CommandResult {
             ok: true,
@@ -1429,31 +1439,79 @@ fn ensure_installer_download_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(fallback)
 }
 
-fn unique_download_path(dir: &Path, file_name: &str) -> PathBuf {
-    let candidate = dir.join(file_name);
-    if !candidate.exists() {
-        return candidate;
-    }
+fn cleanup_outdated_installer_packages(app: &AppHandle) -> Result<(), String> {
+    let download_dir = ensure_installer_download_dir(app)?;
+    let current_version = app.package_info().version.to_string();
+    let current_version = parse_installer_version(&current_version).ok_or_else(|| "当前应用版本号无效".to_string())?;
+    let entries = fs::read_dir(&download_dir).map_err(|error| format!("读取安装包目录失败：{error}"))?;
 
-    let stem = Path::new(file_name)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("ChordV");
-    let extension = Path::new(file_name)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| format!(".{value}"))
-        .unwrap_or_default();
-
-    for index in 1..=999 {
-        let next = dir.join(format!("{stem}-{index}{extension}"));
-        if !next.exists() {
-            return next;
+    for entry in entries {
+        let entry = match entry {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some(version) = installer_package_version(file_name) else {
+            continue;
+        };
+        if compare_version_parts(&version, &current_version).is_lt() {
+            let _ = fs::remove_file(&path);
         }
     }
 
-    dir.join(format!("{stem}-{}{}", chrono::Utc::now().timestamp(), extension))
+    Ok(())
+}
+
+fn installer_package_version(file_name: &str) -> Option<Vec<u32>> {
+    let prefix = "ChordV_";
+    let rest = file_name.strip_prefix(prefix)?;
+
+    if let Some(version) = rest.strip_suffix(".dmg") {
+        return parse_installer_version(version);
+    }
+
+    if let Some(version) = rest.strip_suffix(".exe") {
+        let version = version.split('_').next().unwrap_or(version);
+        return parse_installer_version(version);
+    }
+
+    None
+}
+
+fn parse_installer_version(raw: &str) -> Option<Vec<u32>> {
+    let trimmed = raw.trim().trim_start_matches('v');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    trimmed
+        .split('.')
+        .map(|part| {
+            if part.is_empty() {
+                return None;
+            }
+            part.parse::<u32>().ok()
+        })
+        .collect()
+}
+
+fn compare_version_parts(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let left_part = *left.get(index).unwrap_or(&0);
+        let right_part = *right.get(index).unwrap_or(&0);
+        match left_part.cmp(&right_part) {
+            std::cmp::Ordering::Equal => continue,
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 fn resolve_installer_file_name(url: &Url, preferred: Option<&str>) -> String {
@@ -1506,6 +1564,62 @@ fn sanitize_desktop_download_file_name(file_name: &str) -> String {
     } else {
         normalized
     }
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+#[cfg(windows)]
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
+    let script = format!(
+        "sleep 1; open {}",
+        shell_quote(installer_path.to_string_lossy().as_ref())
+    );
+    Command::new("sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("准备打开安装器失败：{error}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
+    let script = format!(
+        "Start-Sleep -Milliseconds 1200; Start-Process -FilePath {}",
+        powershell_quote(installer_path.to_string_lossy().as_ref())
+    );
+    let mut command = Command::new("powershell");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("准备打开安装器失败：{error}"))?;
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
+fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(installer_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("准备打开安装器失败：{error}"))?;
+    Ok(())
 }
 
 fn emit_update_download_progress(app: &AppHandle, progress: DesktopInstallerDownloadProgress) {
@@ -3120,6 +3234,7 @@ pub fn run() {
             #[cfg(not(target_os = "android"))]
             {
                 let _ = ensure_runtime_bin_dir(&app.handle());
+                let _ = cleanup_outdated_installer_packages(&app.handle());
             }
             #[cfg(not(target_os = "android"))]
             {

@@ -357,7 +357,7 @@ export function App() {
       if (disposed) {
         return;
       }
-      setUpdateDownload(normalizeUpdateDownloadProgress(progress));
+      setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
     }).then((cleanup) => {
       if (disposed) {
         cleanup();
@@ -808,6 +808,23 @@ export function App() {
     showErrorToast(desktopStatus.lastError);
   }, [actionBusy, desktopStatus.lastError, desktopStatus.status]);
 
+  useEffect(() => {
+    if (booting) {
+      return;
+    }
+    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
+      return;
+    }
+    if (runtimeAssets.phase !== "idle") {
+      return;
+    }
+    void ensureRuntimeAssetsReady({
+      source: "startup",
+      interactive: false,
+      blockConnection: false
+    });
+  }, [booting, desktopStatus.platformTarget, runtimeAssets.phase]);
+
   async function initializeApp() {
     try {
       const rememberedCredentials = loadRememberedCredentials();
@@ -815,7 +832,8 @@ export function App() {
         setCredentials(rememberedCredentials);
         setRememberPassword(true);
       }
-      if (desktopStatus.platformTarget !== "android" && desktopStatus.platformTarget !== "web") {
+      const startupPlatform = detectRuntimePlatform();
+      if (startupPlatform !== "android" && startupPlatform !== "web") {
         void ensureRuntimeAssetsReady({ source: "startup", interactive: false, blockConnection: false });
       }
       await refreshRuntime();
@@ -1655,6 +1673,7 @@ export function App() {
 
   async function handleUpdateDownload() {
     const resolvedDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.downloadUrl ?? null);
+    const originDownloadUrl = resolveUpdateDownloadUrl(effectiveUpdate?.artifact?.originDownloadUrl ?? null);
     if (!resolvedDownloadUrl || !effectiveUpdate) {
       notifications.show({
         color: "yellow",
@@ -1678,6 +1697,24 @@ export function App() {
     if (updateDownload.phase === "preparing" || updateDownload.phase === "downloading") {
       return;
     }
+    if (updateDownload.phase === "completed" && updateDownload.localPath) {
+      try {
+        await openDesktopInstaller(updateDownload.localPath);
+        notifications.show({
+          color: "green",
+          title: "安装器已打开",
+          message: "已复用本地安装器，请按安装向导完成升级。"
+        });
+        return;
+      } catch (reason) {
+        setUpdateDownload(createIdleUpdateDownloadState());
+        notifications.show({
+          color: "yellow",
+          title: "本地安装器不可用",
+          message: reason instanceof Error ? readError(reason.message) : "已切换为重新下载安装器。"
+        });
+      }
+    }
 
     const preferredFileName =
       effectiveUpdate.artifact?.fileName ??
@@ -1693,10 +1730,28 @@ export function App() {
     });
 
     try {
-      const result = await downloadDesktopInstaller({
-        url: resolvedDownloadUrl,
-        fileName: preferredFileName
-      });
+      let usedFallback = false;
+      let result;
+      try {
+        result = await downloadDesktopInstaller({
+          url: resolvedDownloadUrl,
+          fileName: preferredFileName
+        });
+      } catch (reason) {
+        if (!originDownloadUrl || originDownloadUrl === resolvedDownloadUrl) {
+          throw reason;
+        }
+        usedFallback = true;
+        setUpdateDownload((current) => ({
+          ...current,
+          phase: "preparing",
+          message: "加速下载失败，正在回退到原始下载地址…"
+        }));
+        result = await downloadDesktopInstaller({
+          url: originDownloadUrl,
+          fileName: preferredFileName
+        });
+      }
       if (!result?.localPath) {
         throw new Error("安装器下载失败");
       }
@@ -1714,7 +1769,9 @@ export function App() {
       notifications.show({
         color: "green",
         title: "安装器已打开",
-        message: "请按安装向导完成升级，安装完成后重新打开 ChordV。"
+        message: usedFallback
+          ? "已自动回退到原始下载地址，并成功打开安装器。请按安装向导完成升级。"
+          : "请按安装向导完成升级，安装完成后重新打开 ChordV。"
       });
     } catch (reason) {
       const message = reason instanceof Error ? readError(reason.message) : "安装器下载失败";
@@ -2085,7 +2142,7 @@ export function App() {
           <Text size="sm" c="dimmed">
             发布渠道：正式版
           </Text>
-          {effectiveUpdate?.deliveryMode === "desktop_installer_download" ? (
+          {effectiveUpdate?.deliveryMode === "desktop_installer_download" && updateDownload.phase !== "idle" ? (
             <Stack gap={6}>
               <Text fw={600}>安装器下载</Text>
               <Text size="sm" c="dimmed">
@@ -2401,6 +2458,7 @@ function createLegacyUpdateResult(
         ? {
           fileType,
           downloadUrl,
+          originDownloadUrl: downloadUrl,
           defaultMirrorPrefix: null,
           allowClientMirror: true,
           fileName: inferInstallerFileName(downloadUrl, fileType),
@@ -2443,14 +2501,17 @@ function createIdleUpdateDownloadState(): UpdateDownloadState {
   };
 }
 
-function normalizeUpdateDownloadProgress(progress: DesktopUpdateDownloadProgress): UpdateDownloadState {
+function normalizeUpdateDownloadProgress(
+  current: UpdateDownloadState,
+  progress: DesktopUpdateDownloadProgress
+): UpdateDownloadState {
   return {
     phase: progress.phase,
-    fileName: progress.fileName,
+    fileName: progress.fileName ?? current.fileName,
     downloadedBytes: progress.downloadedBytes,
-    totalBytes: progress.totalBytes,
-    localPath: progress.localPath,
-    message: progress.message
+    totalBytes: progress.totalBytes ?? current.totalBytes,
+    localPath: progress.localPath ?? current.localPath,
+    message: progress.message ?? current.message
   };
 }
 

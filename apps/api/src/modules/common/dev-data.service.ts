@@ -4593,6 +4593,7 @@ function toAdminReleaseArtifactRecord(row: {
   type: string;
   deliveryMode: string;
   downloadUrl: string;
+  originDownloadUrl?: string | null;
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;
   fileName: string | null;
@@ -4610,6 +4611,7 @@ function toAdminReleaseArtifactRecord(row: {
     type: fromPrismaReleaseArtifactType(row.type),
     deliveryMode: row.deliveryMode as UpdateDeliveryMode,
     downloadUrl: row.downloadUrl,
+    originDownloadUrl: row.originDownloadUrl ?? row.downloadUrl,
     defaultMirrorPrefix: row.defaultMirrorPrefix,
     allowClientMirror: row.allowClientMirror,
     fileName: row.fileName,
@@ -5147,7 +5149,8 @@ function resolveReleaseArtifactForClient(
   );
   return {
     ...artifact,
-    downloadUrl: resolvedUrl
+    downloadUrl: resolvedUrl,
+    originDownloadUrl: artifact.downloadUrl
   };
 }
 
