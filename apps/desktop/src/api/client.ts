@@ -2,15 +2,57 @@ import type {
   AuthSessionDto,
   ClientNodeProbeResultDto,
   ClientBootstrapDto,
+  ClientRuntimeComponentsPlanDto,
   ClientRuntimeEventDto,
+  ClientRuntimeComponentFailureReportInputDto,
   ConnectionMode,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
+  PlatformTarget,
   SessionLeaseStatusDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
+import type {
+  ClientRuntimeComponentsPlan,
+  RuntimeComponentFailureReportInput
+} from "../lib/runtimeComponents";
+import { loadDesktopRuntimeEnvironment } from "../lib/runtime";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com";
+const DEFAULT_RELEASE_CHANNEL = "stable";
+
+export type ReleaseChannel = "stable";
+export type UpdateDeliveryMode = "desktop_installer_download" | "apk_download" | "external_download" | "none";
+export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "apk" | "ipa" | "external";
+
+export type ClientUpdateArtifact = {
+  fileType: ReleaseArtifactType;
+  downloadUrl: string;
+  defaultMirrorPrefix: string | null;
+  allowClientMirror: boolean;
+  fileName: string | null;
+  fileSizeBytes: number | null;
+  fileHash: string | null;
+  isPrimary: boolean;
+  isFullPackage: boolean;
+};
+
+export type ClientUpdateCheckResult = {
+  platform: PlatformTarget | "ios";
+  channel: ReleaseChannel;
+  currentVersion: string;
+  latestVersion: string;
+  minimumVersion: string;
+  hasUpdate: boolean;
+  forceUpgrade: boolean;
+  title: string;
+  changelog: string[];
+  publishedAt: string | null;
+  deliveryMode: UpdateDeliveryMode;
+  downloadUrl: string | null;
+  artifact: ClientUpdateArtifact | null;
+};
+
 type NativeInvoke = (command: string, payload?: unknown) => Promise<{ status: number; body: string }>;
 async function request<T>(path: string, init?: RequestInit) {
   const nativeInvoke = await loadNativeInvoke();
@@ -87,6 +129,10 @@ export function login(email: string, password: string) {
   });
 }
 
+export function probeServerConnectivity() {
+  return request<unknown>("/announcements");
+}
+
 export function refreshSession(refreshToken: string) {
   return request<AuthSessionDto>("/auth/refresh", {
     method: "POST",
@@ -109,6 +155,47 @@ export function fetchBootstrap(accessToken: string) {
       Authorization: `Bearer ${accessToken}`
     }
   });
+}
+
+export async function checkClientUpdate(input: {
+  currentVersion: string;
+  platform?: PlatformTarget | "ios";
+  channel?: ReleaseChannel;
+  artifactType?: ReleaseArtifactType;
+  clientMirrorPrefix?: string;
+  accessToken?: string;
+}) {
+  const platform = input.platform ?? detectUpdatePlatform();
+  const channel = input.channel ?? DEFAULT_RELEASE_CHANNEL;
+  const artifactType = input.artifactType ?? inferPreferredArtifact(platform);
+
+  try {
+    const result = await request<ClientUpdateCheckResult | Record<string, unknown>>("/client/update/check", {
+      method: "POST",
+      headers: {
+        ...(input.accessToken ? { Authorization: `Bearer ${input.accessToken}` } : {})
+      },
+      body: JSON.stringify({
+        currentVersion: input.currentVersion,
+        platform,
+        channel,
+        artifactType,
+        clientMirrorPrefix: input.clientMirrorPrefix?.trim() || null
+      })
+    });
+    return normalizeUpdateCheckResult(result, {
+      currentVersion: input.currentVersion,
+      platform,
+      channel,
+      artifactType
+    });
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (message.includes("HTTP 404") || message.includes("HTTP 405")) {
+      return null;
+    }
+    throw reason;
+  }
 }
 
 export function fetchNodes(accessToken: string) {
@@ -182,6 +269,68 @@ export function heartbeatSession(accessToken: string, sessionId: string) {
     },
     body: JSON.stringify({ sessionId })
   });
+}
+
+export async function fetchRuntimeComponentsPlan(input?: {
+  accessToken?: string | null;
+  clientMirrorPrefix?: string | null;
+}) {
+  const environment = await loadDesktopRuntimeEnvironment();
+  if (!environment) {
+    return null;
+  }
+  try {
+    const query = new URLSearchParams({
+      platform: environment.platform,
+      architecture: environment.architecture
+    });
+    const mirrorPrefix = input?.clientMirrorPrefix?.trim();
+    if (mirrorPrefix) {
+      query.set("clientMirrorPrefix", mirrorPrefix);
+    }
+    const result = await request<ClientRuntimeComponentsPlanDto>(`/client/runtime-components/plan?${query.toString()}`, {
+      headers: {
+        ...(input?.accessToken ? { Authorization: `Bearer ${input.accessToken}` } : {})
+      }
+    });
+    return normalizeRuntimeComponentsPlan(result, environment);
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (message.includes("HTTP 404") || message.includes("HTTP 405")) {
+      return null;
+    }
+    throw reason;
+  }
+}
+
+export async function reportRuntimeComponentFailure(
+  input: RuntimeComponentFailureReportInput & { accessToken?: string | null }
+) {
+  const payload: ClientRuntimeComponentFailureReportInputDto = {
+    componentId: input.componentId,
+    platform: input.platform,
+    architecture: input.architecture,
+    kind: input.component,
+    reason: input.failureReason,
+    message: input.message,
+    effectiveUrl: input.effectiveUrl,
+    appVersion: input.appVersion
+  };
+  try {
+    return await request<{ ok: boolean }>("/client/runtime-components/report-failure", {
+      method: "POST",
+      headers: {
+        ...(input.accessToken ? { Authorization: `Bearer ${input.accessToken}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (message.includes("HTTP 404") || message.includes("HTTP 405")) {
+      return null;
+    }
+    throw reason;
+  }
 }
 
 
@@ -288,4 +437,206 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       window.clearTimeout(reconnectTimer);
     }
   };
+}
+
+function detectUpdatePlatform(): PlatformTarget | "ios" {
+  if (/android/i.test(window.navigator.userAgent)) {
+    return "android";
+  }
+  if (/iphone|ipad|ipod/i.test(window.navigator.userAgent)) {
+    return "ios";
+  }
+  if (/windows/i.test(window.navigator.userAgent)) {
+    return "windows";
+  }
+  return "macos";
+}
+
+function inferPreferredArtifact(platform: PlatformTarget | "ios"): ReleaseArtifactType {
+  switch (platform) {
+    case "windows":
+      return "setup.exe";
+    case "android":
+      return "apk";
+    case "ios":
+      return "ipa";
+    default:
+      return "dmg";
+  }
+}
+
+function normalizeUpdateCheckResult(
+  raw: ClientUpdateCheckResult | Record<string, unknown>,
+  fallback: {
+    currentVersion: string;
+    platform: PlatformTarget | "ios";
+    channel: ReleaseChannel;
+    artifactType: ReleaseArtifactType;
+  }
+): ClientUpdateCheckResult {
+  const record = raw as Record<string, unknown>;
+  const artifactSource = asRecord(record.artifact) ?? asRecord(record.recommendedArtifact);
+  const artifact = artifactSource
+    ? (() => {
+        const artifactUrl = resolvePublicUrl(readString(artifactSource.downloadUrl) ?? readString(record.downloadUrl) ?? "");
+        if (!artifactUrl) {
+          return null;
+        }
+        return {
+          fileType: readArtifactType(artifactSource.fileType) ?? fallback.artifactType,
+          downloadUrl: artifactUrl,
+          defaultMirrorPrefix: readString(artifactSource.defaultMirrorPrefix),
+          allowClientMirror: readBoolean(artifactSource.allowClientMirror) ?? true,
+          fileName: readString(artifactSource.fileName),
+          fileSizeBytes: readNumber(artifactSource.fileSizeBytes),
+          fileHash: readString(artifactSource.fileHash),
+          isPrimary: readBoolean(artifactSource.isPrimary) ?? true,
+          isFullPackage: readBoolean(artifactSource.isFullPackage) ?? true
+        };
+      })()
+    : null;
+  const downloadUrl = resolvePublicUrl(readString(record.downloadUrl)) ?? artifact?.downloadUrl ?? null;
+  const latestVersion = readString(record.latestVersion) ?? readString(record.currentVersion) ?? fallback.currentVersion;
+  const minimumVersion = readString(record.minimumVersion) ?? fallback.currentVersion;
+  const forceUpgrade = readBoolean(record.forceUpgrade) ?? false;
+  const hasUpdate = readBoolean(record.hasUpdate) ?? latestVersion !== fallback.currentVersion;
+
+  return {
+    platform: readPlatform(record.platform) ?? fallback.platform,
+    channel: readChannel(record.channel) ?? fallback.channel,
+    currentVersion: fallback.currentVersion,
+    latestVersion,
+    minimumVersion,
+    hasUpdate,
+    forceUpgrade,
+    title: readString(record.title) ?? formatUpdateTitle(latestVersion),
+    changelog: readStringArray(record.changelog),
+    publishedAt: readString(record.publishedAt),
+    deliveryMode: readDeliveryMode(record.deliveryMode) ?? inferDeliveryMode(fallback.platform),
+    downloadUrl,
+    artifact: artifact && artifact.downloadUrl ? artifact : null
+  };
+}
+
+function normalizeRuntimeComponentsPlan(
+  raw: ClientRuntimeComponentsPlanDto,
+  environment: Awaited<ReturnType<typeof loadDesktopRuntimeEnvironment>>
+): ClientRuntimeComponentsPlan {
+  return {
+    platform: raw.platform as Extract<PlatformTarget, "macos" | "windows">,
+    architecture: raw.architecture,
+    allowClientMirrorOverride: raw.components.some((item) => item.allowClientMirror),
+    defaultMirrorPrefix:
+      raw.components.find((item) => item.defaultMirrorPrefix)?.defaultMirrorPrefix ?? null,
+    components: raw.components.map((item) => ({
+      id: item.id,
+      component: item.kind,
+      fileName: item.fileName,
+      sourceFormat: item.archiveEntryName ? "zip_entry" : "direct",
+      archiveEntryName: item.archiveEntryName ?? null,
+      checksumSha256: item.expectedHash ?? null,
+      candidates: item.candidates.map((candidate) => ({
+        label: candidate.label,
+        url: candidate.url,
+        source:
+          candidate.label === "client_mirror"
+            ? "client_override"
+            : candidate.label === "default_mirror"
+              ? "server_mirror"
+              : "origin"
+      })),
+      selectedUrl: item.resolvedUrl,
+      displayName: runtimeComponentDisplayName(item.kind, environment?.platform ?? raw.platform)
+    }))
+  };
+}
+
+function runtimeComponentDisplayName(
+  kind: "xray" | "geoip" | "geosite",
+  platform: PlatformTarget | "ios"
+) {
+  if (kind === "xray") {
+    return platform === "macos" ? "macOS Xray 内核" : "Windows Xray 内核";
+  }
+  if (kind === "geoip") {
+    return "GeoIP 数据";
+  }
+  return "GeoSite 数据";
+}
+
+function inferDeliveryMode(platform: PlatformTarget | "ios"): UpdateDeliveryMode {
+  if (platform === "android") {
+    return "apk_download";
+  }
+  if (platform === "ios") {
+    return "external_download";
+  }
+  return "desktop_installer_download";
+}
+
+function formatUpdateTitle(version: string) {
+  return `发现新版本 ${version}`;
+}
+
+function resolvePublicUrl(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+  return new URL(normalized, API_BASE).toString();
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readBoolean(value: unknown) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readStringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function readChannel(value: unknown): ReleaseChannel | null {
+  return value === "stable" ? "stable" : null;
+}
+
+function readPlatform(value: unknown): PlatformTarget | "ios" | null {
+  return value === "macos" || value === "windows" || value === "android" || value === "ios" ? value : null;
+}
+
+function readDeliveryMode(value: unknown): UpdateDeliveryMode | null {
+  return value === "desktop_installer_download" ||
+    value === "apk_download" ||
+    value === "external_download" ||
+    value === "none"
+    ? value
+    : null;
+}
+
+function readArtifactType(value: unknown): ReleaseArtifactType | null {
+  return value === "dmg" ||
+    value === "app" ||
+    value === "exe" ||
+    value === "setup.exe" ||
+    value === "apk" ||
+    value === "ipa" ||
+    value === "external"
+    ? value
+    : null;
 }

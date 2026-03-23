@@ -1,7 +1,29 @@
 export type ConnectionMode = "global" | "rule" | "direct";
 export type SubscriptionState = "active" | "expired" | "exhausted" | "paused";
 export type RuntimeStatus = "idle" | "connecting" | "connected" | "disconnecting" | "error";
-export type PlatformTarget = "macos" | "windows" | "android";
+export type PlatformTarget = "macos" | "windows" | "android" | "ios";
+export type ReleaseChannel = "stable";
+export type ReleaseStatus = "draft" | "published" | "archived";
+export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "apk" | "ipa" | "external";
+export type UpdateDeliveryMode = "desktop_installer_download" | "apk_download" | "external_download" | "none";
+export type RuntimeComponentArchitecture = "x64" | "arm64";
+export type RuntimeComponentKind = "xray" | "geoip" | "geosite";
+export type RuntimeComponentSource = "uploaded" | "github_remote" | "custom_remote";
+export type RuntimeComponentValidationStatus =
+  | "ready"
+  | "disabled"
+  | "invalid_url"
+  | "unreachable"
+  | "missing_file"
+  | "metadata_mismatch";
+export type RuntimeDownloadFailureReason =
+  | "download_failed"
+  | "http_error"
+  | "hash_mismatch"
+  | "archive_entry_missing"
+  | "filesystem_write_failed"
+  | "permission_denied"
+  | "unknown";
 export type UserRole = "user" | "admin";
 export type UserStatus = "active" | "disabled";
 export type PlanScope = "personal" | "team";
@@ -121,6 +143,148 @@ export interface ClientVersionDto {
   forceUpgrade: boolean;
   changelog: string[];
   downloadUrl?: string | null;
+}
+
+export interface AdminReleaseArtifactDto {
+  id: string;
+  releaseId: string;
+  source: "uploaded" | "external";
+  type: ReleaseArtifactType;
+  deliveryMode: UpdateDeliveryMode;
+  downloadUrl: string;
+  defaultMirrorPrefix: string | null;
+  allowClientMirror: boolean;
+  fileName: string | null;
+  fileSizeBytes: string | null;
+  fileHash: string | null;
+  isPrimary: boolean;
+  isFullPackage: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminReleaseArtifactValidationDto {
+  artifactId: string;
+  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
+  message: string;
+  actualFileSizeBytes?: string | null;
+  actualFileHash?: string | null;
+}
+
+export interface AdminReleaseRecordDto {
+  id: string;
+  platform: PlatformTarget;
+  channel: ReleaseChannel;
+  version: string;
+  displayTitle: string;
+  releaseNotes: string | null;
+  changelog: string[];
+  minimumVersion: string;
+  forceUpgrade: boolean;
+  status: ReleaseStatus;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  artifacts: AdminReleaseArtifactDto[];
+}
+
+export interface AdminRuntimeComponentRecordDto {
+  id: string;
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  source: RuntimeComponentSource;
+  originUrl: string;
+  defaultMirrorPrefix: string | null;
+  allowClientMirror: boolean;
+  fileName: string;
+  archiveEntryName: string | null;
+  expectedHash: string | null;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
+  enabled: boolean;
+  finalUrlPreview: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminRuntimeComponentValidationDto {
+  componentId: string;
+  status: RuntimeComponentValidationStatus;
+  message: string;
+  finalUrlPreview: string;
+  httpStatus?: number | null;
+}
+
+export interface AdminRuntimeComponentFailureReportDto {
+  id: string;
+  componentId: string | null;
+  componentLabel: string;
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  reason: RuntimeDownloadFailureReason | string;
+  message: string | null;
+  effectiveUrl: string | null;
+  appVersion: string | null;
+  userId: string | null;
+  createdAt: string;
+}
+
+export interface ClientRuntimeComponentDownloadCandidateDto {
+  label: "client_mirror" | "default_mirror" | "origin";
+  url: string;
+}
+
+export interface ClientRuntimeComponentPlanItemDto {
+  id: string;
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  fileName: string;
+  archiveEntryName?: string | null;
+  expectedHash?: string | null;
+  allowClientMirror: boolean;
+  originUrl: string;
+  defaultMirrorPrefix?: string | null;
+  resolvedUrl: string;
+  candidates: ClientRuntimeComponentDownloadCandidateDto[];
+}
+
+export interface ClientRuntimeComponentsPlanDto {
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  components: ClientRuntimeComponentPlanItemDto[];
+}
+
+export interface ClientUpdateCheckDto {
+  currentVersion: string;
+  platform: PlatformTarget;
+  channel: ReleaseChannel;
+  artifactType?: ReleaseArtifactType | null;
+  clientMirrorPrefix?: string | null;
+}
+
+export interface ClientUpdateCheckResultDto {
+  hasUpdate: boolean;
+  forceUpgrade: boolean;
+  blockedByMinimumVersion?: boolean;
+  forcedByRelease?: boolean;
+  updateRequirement?: "optional" | "required_minimum" | "required_release";
+  currentVersion: string;
+  latestVersion: string;
+  minimumVersion: string;
+  platform: PlatformTarget;
+  channel: ReleaseChannel;
+  changelog: string[];
+  releaseNotes?: string | null;
+  deliveryMode: UpdateDeliveryMode;
+  downloadUrl?: string | null;
+  fileName?: string | null;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
+  recommendedArtifact?: AdminReleaseArtifactDto | null;
+  publishedAt?: string | null;
 }
 
 export interface ClientBootstrapDto {
@@ -295,11 +459,6 @@ export interface AdminAnnouncementRecordDto {
 
 export interface AdminPolicyRecordDto extends PolicyBundleDto {
   accessMode: AccessMode;
-  currentVersion: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
-  changelog: string[];
-  downloadUrl?: string | null;
 }
 
 export interface ClientTeamSummaryDto {
@@ -391,6 +550,7 @@ export interface AdminSnapshotDto {
   nodes: AdminNodeRecordDto[];
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
+  releases: AdminReleaseRecordDto[];
 }
 
 export interface AuthSessionDto {
@@ -661,6 +821,119 @@ export interface CreateTeamSubscriptionInputDto {
   usedTrafficGb?: number;
 }
 
+export interface CreateReleaseInputDto {
+  platform: PlatformTarget;
+  channel: ReleaseChannel;
+  version: string;
+  displayTitle: string;
+  releaseNotes?: string | null;
+  changelog?: string[];
+  minimumVersion: string;
+  forceUpgrade?: boolean;
+  status?: ReleaseStatus;
+  publishedAt?: string | null;
+}
+
+export interface UpdateReleaseInputDto {
+  displayTitle?: string;
+  releaseNotes?: string | null;
+  changelog?: string[];
+  minimumVersion?: string;
+  forceUpgrade?: boolean;
+  status?: ReleaseStatus;
+  publishedAt?: string | null;
+}
+
+export interface CreateReleaseArtifactInputDto {
+  source?: "uploaded" | "external";
+  type: ReleaseArtifactType;
+  deliveryMode?: UpdateDeliveryMode;
+  downloadUrl: string;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
+  fileName?: string | null;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
+  isPrimary?: boolean;
+  isFullPackage?: boolean;
+}
+
+export interface CreateRuntimeComponentInputDto {
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  source?: RuntimeComponentSource;
+  originUrl?: string;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
+  fileName: string;
+  archiveEntryName?: string | null;
+  expectedHash?: string | null;
+  enabled?: boolean;
+}
+
+export interface UploadRuntimeComponentInputDto {
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  fileName?: string | null;
+  expectedHash?: string | null;
+  enabled?: boolean;
+}
+
+export interface UpdateRuntimeComponentInputDto {
+  source?: RuntimeComponentSource;
+  originUrl?: string;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
+  fileName?: string;
+  archiveEntryName?: string | null;
+  expectedHash?: string | null;
+  enabled?: boolean;
+}
+
+export interface ClientRuntimeComponentsPlanInputDto {
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  clientMirrorPrefix?: string | null;
+}
+
+export interface ClientRuntimeComponentFailureReportInputDto {
+  componentId?: string | null;
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  reason: RuntimeDownloadFailureReason | string;
+  message?: string | null;
+  effectiveUrl?: string | null;
+  appVersion?: string | null;
+}
+
+export interface UpdateReleaseArtifactInputDto {
+  source?: "uploaded" | "external";
+  type?: ReleaseArtifactType;
+  deliveryMode?: UpdateDeliveryMode;
+  downloadUrl?: string;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
+  fileName?: string | null;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
+  isPrimary?: boolean;
+  isFullPackage?: boolean;
+}
+
+export interface UploadReleaseArtifactInputDto {
+  source?: "uploaded" | "external";
+  type: ReleaseArtifactType;
+  deliveryMode?: UpdateDeliveryMode;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
+  fileName?: string | null;
+  isPrimary?: boolean;
+  isFullPackage?: boolean;
+}
+
 export interface UpdatePolicyInputDto {
   accessMode?: AccessMode;
   defaultMode?: ConnectionMode;
@@ -668,9 +941,4 @@ export interface UpdatePolicyInputDto {
   blockAds?: boolean;
   chinaDirect?: boolean;
   aiServicesProxy?: boolean;
-  currentVersion?: string;
-  minimumVersion?: string;
-  forceUpgrade?: boolean;
-  changelog?: string[];
-  downloadUrl?: string | null;
 }

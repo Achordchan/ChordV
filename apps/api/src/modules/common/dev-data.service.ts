@@ -11,12 +11,16 @@ import {
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { promises as fs } from "node:fs";
 import * as net from "node:net";
+import * as path from "node:path";
 import * as tls from "node:tls";
 import { Cron } from "@nestjs/schedule";
 import { Agent, fetch as undiciFetch } from "undici";
 import {
   mockAnnouncements,
+  mockAdminReleases,
   mockNodes,
   mockPolicies,
   mockSubscription,
@@ -29,6 +33,9 @@ import type {
   AdminNodePanelInboundDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
+  AdminReleaseArtifactDto,
+  AdminReleaseArtifactValidationDto,
+  AdminReleaseRecordDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
   AdminTeamMemberRecordDto,
@@ -43,10 +50,14 @@ import type {
   ClientNodeProbeResultDto,
   ClientRuntimeEventDto,
   ClientTeamSummaryDto,
+  ClientUpdateCheckDto,
+  ClientUpdateCheckResultDto,
   ClientVersionDto,
   ConnectRequestDto,
   CreateAnnouncementInputDto,
   CreatePlanInputDto,
+  CreateReleaseArtifactInputDto,
+  CreateReleaseInputDto,
   CreateSubscriptionInputDto,
   CreateTeamInputDto,
   KickTeamMemberInputDto,
@@ -60,7 +71,11 @@ import type {
   ImportNodeInputDto,
   NodeProbeStatus,
   NodeSummaryDto,
+  PlatformTarget,
   PolicyBundleDto,
+  ReleaseArtifactType,
+  ReleaseChannel,
+  ReleaseStatus,
   RenewSubscriptionInputDto,
   SessionEvictedReason,
   SessionReasonCode,
@@ -70,11 +85,15 @@ import type {
   SubscriptionStatusDto,
   TeamMemberRole,
   TeamStatus,
+  UploadReleaseArtifactInputDto,
+  UpdateDeliveryMode,
   UpdateAnnouncementInputDto,
   UpdateNodeInputDto,
   UpdatePlanInputDto,
   UpdatePlanSecurityInputDto,
   UpdatePolicyInputDto,
+  UpdateReleaseArtifactInputDto,
+  UpdateReleaseInputDto,
   UpdateSubscriptionInputDto,
   UpdateSubscriptionNodeAccessInputDto,
   UpdateTeamInputDto,
@@ -100,6 +119,7 @@ const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
 const BUILTIN_ADMIN_PASSWORD = "woshichen123";
+const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 
 type PanelBindingFailure = {
   bindingId: string;
@@ -107,6 +127,12 @@ type PanelBindingFailure = {
   nodeName: string;
   panelClientEmail: string;
   error: string;
+};
+
+type UploadedReleaseFile = {
+  path: string;
+  originalname: string;
+  size: number;
 };
 
 type PanelBindingMutationResult = {
@@ -137,6 +163,7 @@ export class DevDataService implements OnModuleInit {
 
   async onModuleInit() {
     await this.seedIfEmpty();
+    await this.ensureReleaseCenterSeeded();
     await this.migrateLegacyDefaultConcurrentSessions();
     await this.ensureBuiltinAdminAccount();
     await this.backfillTrafficLedgerNodeIds();
@@ -317,20 +344,115 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getClientVersion(): Promise<ClientVersionDto> {
-    const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" }
-    });
+    const latestRelease = await this.findLatestPublishedRelease("stable");
+    if (!latestRelease) {
+      const profile = await this.prisma.policyProfile.findUnique({
+        where: { id: "default" }
+      });
 
-    if (!profile) {
-      throw new NotFoundException("版本配置不存在");
+      if (!profile) {
+        throw new NotFoundException("版本配置不存在");
+      }
+
+      return {
+        currentVersion: profile.currentVersion,
+        minimumVersion: profile.minimumVersion,
+        forceUpgrade: profile.forceUpgrade,
+        changelog: profile.changelog,
+        downloadUrl: profile.downloadUrl
+      };
     }
 
+    const primaryArtifact = pickPrimaryReleaseArtifact(latestRelease.artifacts);
+
     return {
-      currentVersion: profile.currentVersion,
-      minimumVersion: profile.minimumVersion,
-      forceUpgrade: profile.forceUpgrade,
-      changelog: profile.changelog,
-      downloadUrl: profile.downloadUrl
+      currentVersion: latestRelease.version,
+      minimumVersion: latestRelease.minimumVersion,
+      forceUpgrade: latestRelease.forceUpgrade,
+      changelog: latestRelease.changelog,
+      downloadUrl: primaryArtifact?.downloadUrl ?? null
+    };
+  }
+
+  private async findLatestPublishedRelease(channel: ReleaseChannel, platform?: ClientUpdateCheckDto["platform"]) {
+    const rows = await this.prisma.release.findMany({
+      where: {
+        channel,
+        status: "published",
+        ...(platform ? { platform } : {})
+      },
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    return rows.sort((left, right) => {
+      const versionDiff = compareSemver(right.version, left.version);
+      if (versionDiff !== 0) {
+        return versionDiff;
+      }
+      return (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0);
+    })[0];
+  }
+
+  async checkClientUpdate(input: ClientUpdateCheckDto): Promise<ClientUpdateCheckResultDto> {
+    const effectiveChannel = normalizeReleaseChannel(input.channel);
+    const release = await this.findLatestPublishedRelease(effectiveChannel, input.platform);
+    if (!release) {
+      return {
+        hasUpdate: false,
+        forceUpgrade: false,
+        blockedByMinimumVersion: false,
+        forcedByRelease: false,
+        updateRequirement: "optional",
+        currentVersion: input.currentVersion,
+        latestVersion: input.currentVersion,
+        minimumVersion: input.currentVersion,
+        platform: input.platform,
+        channel: effectiveChannel,
+        changelog: [],
+        releaseNotes: null,
+        deliveryMode: "none",
+        recommendedArtifact: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        publishedAt: null
+      };
+    }
+
+    const recommendedArtifact = pickPrimaryReleaseArtifact(release.artifacts, input.artifactType);
+    const resolvedArtifact = recommendedArtifact ? resolveReleaseArtifactForClient(recommendedArtifact, input.clientMirrorPrefix ?? null) : null;
+    const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
+    const forcedByRelease = release.forceUpgrade;
+
+    return {
+      hasUpdate: compareSemver(release.version, input.currentVersion) > 0,
+      forceUpgrade: mustUpgrade || forcedByRelease,
+      blockedByMinimumVersion: mustUpgrade,
+      forcedByRelease,
+      updateRequirement: mustUpgrade ? "required_minimum" : forcedByRelease ? "required_release" : "optional",
+      currentVersion: input.currentVersion,
+      latestVersion: release.version,
+      minimumVersion: release.minimumVersion,
+      platform: input.platform,
+      channel: effectiveChannel,
+      changelog: release.changelog,
+      releaseNotes: release.releaseNotes,
+      deliveryMode: (resolvedArtifact?.deliveryMode as UpdateDeliveryMode | undefined) ?? defaultDeliveryModeForPlatform(input.platform),
+      recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
+      downloadUrl: resolvedArtifact?.downloadUrl ?? null,
+      fileName: resolvedArtifact?.fileName ?? null,
+      fileSizeBytes: resolvedArtifact?.fileSizeBytes?.toString() ?? null,
+      fileHash: resolvedArtifact?.fileHash ?? null,
+      publishedAt: release.publishedAt?.toISOString() ?? null
     };
   }
 
@@ -1519,14 +1641,15 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [users, plans, subscriptions, teams, nodes, announcements, policy] = await Promise.all([
+    const [users, plans, subscriptions, teams, nodes, announcements, policy, releases] = await Promise.all([
       this.listAdminUsers(),
       this.listAdminPlans(),
       this.listAdminSubscriptions(),
       this.listAdminTeams(),
       this.listAdminNodes(),
       this.listAdminAnnouncements(),
-      this.getAdminPolicy()
+      this.getAdminPolicy(),
+      this.listAdminReleases()
     ]);
 
     return {
@@ -1543,8 +1666,500 @@ export class DevDataService implements OnModuleInit {
       teams,
       nodes,
       announcements,
-      policy
+      policy,
+      releases
     };
+  }
+
+  async listAdminReleases(): Promise<AdminReleaseRecordDto[]> {
+    const rows = await this.prisma.release.findMany({
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+    });
+    return rows.map(toAdminReleaseRecord);
+  }
+
+  async createRelease(input: CreateReleaseInputDto): Promise<AdminReleaseRecordDto> {
+    const created = await this.prisma.release.create({
+      data: {
+        id: createId("release"),
+        platform: input.platform,
+        channel: normalizeReleaseChannel(input.channel),
+        version: normalizeVersion(input.version),
+        displayTitle: input.displayTitle.trim(),
+        releaseNotes: normalizeNullableText(input.releaseNotes),
+        changelog: normalizeChangelog(input.changelog),
+        minimumVersion: normalizeVersion(input.minimumVersion),
+        forceUpgrade: input.forceUpgrade ?? false,
+        status: input.status ?? "draft",
+        publishedAt: normalizePublishedAt(input.status ?? "draft", input.publishedAt)
+      },
+      include: {
+        artifacts: true
+      }
+    });
+    return toAdminReleaseRecord(created);
+  }
+
+  async updateRelease(releaseId: string, input: UpdateReleaseInputDto): Promise<AdminReleaseRecordDto> {
+    await this.ensureReleaseExists(releaseId);
+    const updated = await this.prisma.release.update({
+      where: { id: releaseId },
+      data: {
+        ...(input.displayTitle !== undefined ? { displayTitle: input.displayTitle.trim() } : {}),
+        ...(input.releaseNotes !== undefined ? { releaseNotes: normalizeNullableText(input.releaseNotes) } : {}),
+        ...(input.changelog !== undefined ? { changelog: normalizeChangelog(input.changelog) } : {}),
+        ...(input.minimumVersion !== undefined ? { minimumVersion: normalizeVersion(input.minimumVersion) } : {}),
+        ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
+        ...(input.status !== undefined
+          ? {
+              status: input.status,
+              publishedAt: normalizePublishedAt(input.status, input.publishedAt)
+            }
+          : {}),
+        ...(input.status === undefined && input.publishedAt !== undefined
+          ? { publishedAt: input.publishedAt ? new Date(input.publishedAt) : null }
+          : {})
+      },
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    return toAdminReleaseRecord(updated);
+  }
+
+  async publishRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
+    const release = await this.prisma.release.findUnique({
+      where: { id: releaseId },
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    if (!release) {
+      throw new NotFoundException("发布记录不存在");
+    }
+    const primaryArtifact = release.artifacts.find((item) => item.isPrimary) ?? release.artifacts[0];
+    if (!primaryArtifact) {
+      throw new BadRequestException("请先上传或配置至少一个安装产物，再发布版本");
+    }
+    const validation = await this.validateReleaseArtifact(releaseId, primaryArtifact.id);
+    if (validation.status !== "ready") {
+      throw new BadRequestException(`主下载产物当前不可发布：${validation.message}`);
+    }
+    const updated = await this.prisma.release.update({
+      where: { id: releaseId },
+      data: {
+        status: "published",
+        publishedAt: new Date()
+      },
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    return toAdminReleaseRecord(updated);
+  }
+
+  async archiveRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
+    await this.ensureReleaseExists(releaseId);
+    const updated = await this.prisma.release.update({
+      where: { id: releaseId },
+      data: {
+        status: "archived"
+      },
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    return toAdminReleaseRecord(updated);
+  }
+
+  async createReleaseArtifact(releaseId: string, input: CreateReleaseArtifactInputDto): Promise<AdminReleaseRecordDto> {
+    const release = await this.ensureReleaseExists(releaseId);
+    assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    if ((input.source ?? "external") === "external") {
+      assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
+    }
+    const artifactId = createId("artifact");
+    const isPrimary = normalizeOptionalBoolean(input.isPrimary);
+    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
+    await this.prisma.$transaction(async (tx) => {
+      if (isPrimary) {
+        await tx.releaseArtifact.updateMany({
+          where: { releaseId },
+          data: { isPrimary: false }
+        });
+      }
+      await tx.releaseArtifact.create({
+        data: {
+          id: artifactId,
+          releaseId,
+          source: input.source ?? "external",
+          type: toPrismaReleaseArtifactType(input.type),
+          deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+          downloadUrl: input.downloadUrl.trim(),
+          defaultMirrorPrefix: input.source === "external" || (input.source === undefined && input.type === "external") ? normalizeNullableText(input.defaultMirrorPrefix) : null,
+          allowClientMirror: input.allowClientMirror ?? true,
+          fileName: normalizeNullableText(input.fileName),
+          storedFilePath: null,
+          fileSizeBytes: normalizeBigInt(input.fileSizeBytes),
+          fileHash: normalizeNullableText(input.fileHash),
+          isPrimary: isPrimary ?? false,
+          isFullPackage: isFullPackage ?? true
+        }
+      });
+    });
+    return this.getAdminRelease(releaseId);
+  }
+
+  async updateReleaseArtifact(
+    releaseId: string,
+    artifactId: string,
+    input: UpdateReleaseArtifactInputDto
+  ): Promise<AdminReleaseRecordDto> {
+    const current = await this.prisma.releaseArtifact.findFirst({
+      where: { id: artifactId, releaseId }
+    });
+    if (!current) {
+      throw new NotFoundException("发布产物不存在");
+    }
+    const release = await this.ensureReleaseExists(releaseId);
+    if (input.type !== undefined) {
+      assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    }
+    const nextSource = input.source ?? current.source;
+    const nextType = input.type ?? fromPrismaReleaseArtifactType(current.type);
+    const nextDownloadUrl = input.downloadUrl ?? current.downloadUrl;
+    if (nextSource === "external") {
+      assertExternalReleaseArtifactUrlMatchesType(nextType, nextDownloadUrl);
+    }
+    const isPrimary = normalizeOptionalBoolean(input.isPrimary);
+    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
+    await this.prisma.$transaction(async (tx) => {
+      if (isPrimary) {
+        await tx.releaseArtifact.updateMany({
+          where: { releaseId },
+          data: { isPrimary: false }
+        });
+      }
+      await tx.releaseArtifact.update({
+        where: { id: artifactId },
+        data: {
+          ...(input.source !== undefined ? { source: input.source } : {}),
+          ...(input.type !== undefined ? { type: toPrismaReleaseArtifactType(input.type) } : {}),
+          ...(input.deliveryMode !== undefined ? { deliveryMode: input.deliveryMode } : {}),
+          ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
+          ...(input.defaultMirrorPrefix !== undefined ? { defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix) } : {}),
+          ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
+          ...(input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),
+          ...(input.fileSizeBytes !== undefined ? { fileSizeBytes: normalizeBigInt(input.fileSizeBytes) } : {}),
+          ...(input.fileHash !== undefined ? { fileHash: normalizeNullableText(input.fileHash) } : {}),
+          ...(isPrimary !== undefined ? { isPrimary } : {}),
+          ...(isFullPackage !== undefined ? { isFullPackage } : {}),
+          ...(input.source === "external" ? { storedFilePath: null } : {}),
+          ...(input.source === "uploaded" ? { defaultMirrorPrefix: null, allowClientMirror: true } : {})
+        }
+      });
+    });
+    if (current.storedFilePath && input.source === "external") {
+      await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(current.storedFilePath));
+    }
+    return this.getAdminRelease(releaseId);
+  }
+
+  async uploadReleaseArtifact(
+    releaseId: string,
+    input: UploadReleaseArtifactInputDto,
+    file?: UploadedReleaseFile
+  ): Promise<AdminReleaseRecordDto> {
+    const release = await this.ensureReleaseExists(releaseId);
+    assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    if (!file) {
+      throw new BadRequestException("请先选择要上传的安装包文件");
+    }
+    const isPrimary = normalizeOptionalBoolean(input.isPrimary);
+    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
+
+    const artifactId = createId("artifact");
+    const prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        if (isPrimary) {
+          await tx.releaseArtifact.updateMany({
+            where: { releaseId },
+            data: { isPrimary: false }
+          });
+        }
+        await tx.releaseArtifact.create({
+          data: {
+            id: artifactId,
+            releaseId,
+            source: "uploaded",
+            type: toPrismaReleaseArtifactType(input.type),
+            deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+            downloadUrl: prepared.downloadUrl,
+            defaultMirrorPrefix: null,
+            allowClientMirror: true,
+            fileName: prepared.fileName,
+            storedFilePath: prepared.storedFilePath,
+            fileSizeBytes: prepared.fileSizeBytes,
+            fileHash: prepared.fileHash,
+            isPrimary: isPrimary ?? false,
+            isFullPackage: isFullPackage ?? true
+          }
+        });
+      });
+    } catch (error) {
+      await removeReleaseArtifactFile(prepared.absolutePath);
+      throw error;
+    }
+
+    return this.getAdminRelease(releaseId);
+  }
+
+  async replaceReleaseArtifactUpload(
+    releaseId: string,
+    artifactId: string,
+    input: UploadReleaseArtifactInputDto,
+    file?: UploadedReleaseFile
+  ): Promise<AdminReleaseRecordDto> {
+    if (!file) {
+      throw new BadRequestException("请先选择要上传的安装包文件");
+    }
+    const current = await this.prisma.releaseArtifact.findFirst({
+      where: { id: artifactId, releaseId }
+    });
+    if (!current) {
+      throw new NotFoundException("发布产物不存在");
+    }
+    const release = await this.ensureReleaseExists(releaseId);
+    assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+
+    const previousStoredFilePath = current.storedFilePath;
+    const isPrimary = normalizeOptionalBoolean(input.isPrimary);
+    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
+    const prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        if (isPrimary) {
+          await tx.releaseArtifact.updateMany({
+            where: { releaseId },
+            data: { isPrimary: false }
+          });
+        }
+        await tx.releaseArtifact.update({
+          where: { id: artifactId },
+          data: {
+            source: "uploaded",
+            type: toPrismaReleaseArtifactType(input.type),
+            deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+            downloadUrl: prepared.downloadUrl,
+            defaultMirrorPrefix: null,
+            allowClientMirror: true,
+            fileName: prepared.fileName,
+            storedFilePath: prepared.storedFilePath,
+            fileSizeBytes: prepared.fileSizeBytes,
+            fileHash: prepared.fileHash,
+            isPrimary: isPrimary ?? current.isPrimary,
+            isFullPackage: isFullPackage ?? current.isFullPackage
+          }
+        });
+      });
+    } catch (error) {
+      await removeReleaseArtifactFile(prepared.absolutePath);
+      throw error;
+    }
+
+    if (previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
+      await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(previousStoredFilePath));
+    }
+
+    return this.getAdminRelease(releaseId);
+  }
+
+  async deleteReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseRecordDto> {
+    const artifact = await this.prisma.releaseArtifact.findFirst({
+      where: { id: artifactId, releaseId }
+    });
+    if (!artifact) {
+      throw new NotFoundException("发布产物不存在");
+    }
+    await this.prisma.releaseArtifact.delete({
+      where: { id: artifactId }
+    });
+    if (artifact.storedFilePath) {
+      await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(artifact.storedFilePath));
+    }
+    return this.getAdminRelease(releaseId);
+  }
+
+  async validateReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseArtifactValidationDto> {
+    const artifact = await this.prisma.releaseArtifact.findFirst({
+      where: { id: artifactId, releaseId }
+    });
+    if (!artifact) {
+      throw new NotFoundException("发布产物不存在");
+    }
+
+    if (artifact.source === "external") {
+      const url = artifact.downloadUrl.trim();
+      if (!url || !/^https?:\/\//i.test(url)) {
+        return {
+          artifactId,
+          status: "missing_download_url",
+          message: "外部下载地址为空或格式不正确，请填写完整的 http/https 地址。"
+        };
+      }
+      try {
+        assertExternalReleaseArtifactUrlMatchesType(fromPrismaReleaseArtifactType(artifact.type), url);
+      } catch (error) {
+        return {
+          artifactId,
+          status: "invalid_link",
+          message: error instanceof Error ? error.message : "外部下载地址与安装器类型不匹配。"
+        };
+      }
+      return {
+        artifactId,
+        status: "ready",
+        message: "外部下载地址已配置。"
+      };
+    }
+
+    if (!artifact.storedFilePath) {
+      return {
+        artifactId,
+        status: "missing_file",
+        message: "上传文件记录不完整，请重新上传安装包。"
+      };
+    }
+
+    const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
+    try {
+      await fs.access(absolutePath);
+    } catch {
+      return {
+        artifactId,
+        status: "missing_file",
+        message: "服务器上的安装包文件已丢失，请重新上传。"
+      };
+    }
+
+    const stat = await fs.stat(absolutePath);
+    const actualFileHash = await calculateFileSha256(absolutePath);
+    const actualFileSizeBytes = stat.size.toString();
+    const hashMatches = !artifact.fileHash || artifact.fileHash === actualFileHash;
+    const sizeMatches = !artifact.fileSizeBytes || artifact.fileSizeBytes.toString() === actualFileSizeBytes;
+
+    if (!hashMatches || !sizeMatches) {
+      return {
+        artifactId,
+        status: "metadata_mismatch",
+        message: "服务器文件存在，但记录里的大小或 Hash 与真实文件不一致，建议重新上传覆盖。",
+        actualFileSizeBytes,
+        actualFileHash
+      };
+    }
+
+    return {
+      artifactId,
+      status: "ready",
+      message: "服务器文件可用，下载地址和文件元信息已匹配。",
+      actualFileSizeBytes,
+      actualFileHash
+    };
+  }
+
+  async getReleaseArtifactDownloadDescriptor(artifactId: string) {
+    const artifact = await this.prisma.releaseArtifact.findUnique({
+      where: { id: artifactId }
+    });
+    if (!artifact || artifact.source !== "uploaded" || !artifact.storedFilePath) {
+      throw new NotFoundException("安装包不存在");
+    }
+    const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
+    await ensureFileReadable(absolutePath);
+    return {
+      absolutePath,
+      fileName: artifact.fileName ?? path.basename(absolutePath)
+    };
+  }
+
+  private async prepareUploadedReleaseArtifactFile(
+    releaseId: string,
+    artifactId: string,
+    file: UploadedReleaseFile,
+    preferredFileName?: string | null
+  ) {
+    const finalFileName = sanitizeReleaseArtifactFileName(preferredFileName?.trim() || file.originalname || `${artifactId}.bin`);
+    const storedFilePath = path.join(releaseId, artifactId, finalFileName);
+    const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.rm(absolutePath, { force: true });
+    await fs.rename(file.path, absolutePath);
+
+    return {
+      absolutePath,
+      storedFilePath,
+      fileName: finalFileName,
+      fileSizeBytes: BigInt(file.size),
+      fileHash: await calculateFileSha256(absolutePath),
+      downloadUrl: buildReleaseArtifactDownloadUrl(artifactId)
+    };
+  }
+
+  private async getAdminRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
+    const row = await this.prisma.release.findUnique({
+      where: { id: releaseId },
+      include: {
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    if (!row) {
+      throw new NotFoundException("发布记录不存在");
+    }
+    return toAdminReleaseRecord(row);
+  }
+
+  private async ensureReleaseExists(releaseId: string) {
+    const row = await this.prisma.release.findUnique({
+      where: { id: releaseId },
+      select: { id: true, platform: true }
+    });
+    if (!row) {
+      throw new NotFoundException("发布记录不存在");
+    }
+    return row;
+  }
+
+  private async ensureReleaseArtifactExists(releaseId: string, artifactId: string) {
+    const row = await this.prisma.releaseArtifact.findFirst({
+      where: {
+        id: artifactId,
+        releaseId
+      },
+      select: { id: true }
+    });
+    if (!row) {
+      throw new NotFoundException("发布产物不存在");
+    }
+    return row;
   }
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
@@ -2961,7 +3576,7 @@ export class DevDataService implements OnModuleInit {
     return toAdminAnnouncementRecord(row);
   }
 
-  async getAdminPolicy(): Promise<AdminPolicyRecordDto> {
+async getAdminPolicy(): Promise<AdminPolicyRecordDto> {
     const profile = await this.prisma.policyProfile.findUnique({
       where: { id: "default" }
     });
@@ -2980,12 +3595,7 @@ export class DevDataService implements OnModuleInit {
         ...(input.modes !== undefined ? { modes: input.modes } : {}),
         ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
         ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
-        ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {}),
-        ...(input.currentVersion !== undefined ? { currentVersion: input.currentVersion.trim() } : {}),
-        ...(input.minimumVersion !== undefined ? { minimumVersion: input.minimumVersion.trim() } : {}),
-        ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
-        ...(input.changelog !== undefined ? { changelog: input.changelog.map((item) => item.trim()).filter(Boolean) } : {}),
-        ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl || null } : {})
+        ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {})
       }
     });
 
@@ -3398,6 +4008,37 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    for (const release of mockAdminReleases) {
+      await this.prisma.release.create({
+        data: {
+          id: release.id,
+          platform: release.platform,
+          channel: release.channel,
+          version: release.version,
+          displayTitle: release.displayTitle,
+          releaseNotes: release.releaseNotes,
+          changelog: release.changelog,
+          minimumVersion: release.minimumVersion,
+          forceUpgrade: release.forceUpgrade,
+          status: release.status,
+          publishedAt: release.publishedAt ? new Date(release.publishedAt) : null,
+          artifacts: {
+            create: release.artifacts.map((artifact) => ({
+              id: artifact.id,
+              type: toPrismaReleaseArtifactType(artifact.type),
+              deliveryMode: artifact.deliveryMode,
+              downloadUrl: artifact.downloadUrl,
+              fileName: artifact.fileName,
+              fileSizeBytes: artifact.fileSizeBytes ? BigInt(artifact.fileSizeBytes) : null,
+              fileHash: artifact.fileHash,
+              isPrimary: artifact.isPrimary,
+              isFullPackage: artifact.isFullPackage
+            }))
+          }
+        }
+      });
+    }
+
     await this.prisma.announcement.createMany({
       data: mockAnnouncements.map((item) => ({
         id: item.id,
@@ -3449,6 +4090,44 @@ export class DevDataService implements OnModuleInit {
     this.logger.log(
       `已将 ${legacyPlans.length} 个历史套餐的默认并发从旧值迁移为 ${DEFAULT_MAX_CONCURRENT_SESSIONS}`
     );
+  }
+
+  private async ensureReleaseCenterSeeded() {
+    const count = await this.prisma.release.count();
+    if (count > 0) {
+      return;
+    }
+
+    for (const release of mockAdminReleases) {
+      await this.prisma.release.create({
+        data: {
+          id: release.id,
+          platform: release.platform,
+          channel: release.channel,
+          version: release.version,
+          displayTitle: release.displayTitle,
+          releaseNotes: release.releaseNotes,
+          changelog: release.changelog,
+          minimumVersion: release.minimumVersion,
+          forceUpgrade: release.forceUpgrade,
+          status: release.status,
+          publishedAt: release.publishedAt ? new Date(release.publishedAt) : null,
+          artifacts: {
+            create: release.artifacts.map((artifact) => ({
+              id: artifact.id,
+              type: toPrismaReleaseArtifactType(artifact.type),
+              deliveryMode: artifact.deliveryMode,
+              downloadUrl: artifact.downloadUrl,
+              fileName: artifact.fileName,
+              fileSizeBytes: artifact.fileSizeBytes ? BigInt(artifact.fileSizeBytes) : null,
+              fileHash: artifact.fileHash,
+              isPrimary: artifact.isPrimary,
+              isFullPackage: artifact.isFullPackage
+            }))
+          }
+        }
+      });
+    }
   }
 
   private async resolveUserForLogin(account: string) {
@@ -3885,19 +4564,16 @@ function toAnnouncementDto(row: {
   };
 }
 
-function toAdminPolicyRecord(row: {
-  accessMode: string;
-  defaultMode: string;
-  modes: string[];
-  blockAds: boolean;
-  chinaDirect: boolean;
-  aiServicesProxy: boolean;
-  currentVersion: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
-  changelog: string[];
-  downloadUrl: string | null;
-}): AdminPolicyRecordDto {
+function toAdminPolicyRecord(
+  row: {
+    accessMode: string;
+    defaultMode: string;
+    modes: string[];
+    blockAds: boolean;
+    chinaDirect: boolean;
+    aiServicesProxy: boolean;
+  }
+): AdminPolicyRecordDto {
   return {
     accessMode: row.accessMode as AdminPolicyRecordDto["accessMode"],
     defaultMode: row.defaultMode as PolicyBundleDto["defaultMode"],
@@ -3906,12 +4582,93 @@ function toAdminPolicyRecord(row: {
       blockAds: row.blockAds,
       chinaDirect: row.chinaDirect,
       aiServicesProxy: row.aiServicesProxy
-    },
-    currentVersion: row.currentVersion,
+    }
+  };
+}
+
+function toAdminReleaseArtifactRecord(row: {
+  id: string;
+  releaseId: string;
+  source: string;
+  type: string;
+  deliveryMode: string;
+  downloadUrl: string;
+  defaultMirrorPrefix: string | null;
+  allowClientMirror: boolean;
+  fileName: string | null;
+  fileSizeBytes: bigint | null;
+  fileHash: string | null;
+  isPrimary: boolean;
+  isFullPackage: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): AdminReleaseArtifactDto {
+  return {
+    id: row.id,
+    releaseId: row.releaseId,
+    source: row.source as "uploaded" | "external",
+    type: fromPrismaReleaseArtifactType(row.type),
+    deliveryMode: row.deliveryMode as UpdateDeliveryMode,
+    downloadUrl: row.downloadUrl,
+    defaultMirrorPrefix: row.defaultMirrorPrefix,
+    allowClientMirror: row.allowClientMirror,
+    fileName: row.fileName,
+    fileSizeBytes: row.fileSizeBytes?.toString() ?? null,
+    fileHash: row.fileHash,
+    isPrimary: row.isPrimary,
+    isFullPackage: row.isFullPackage,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+}
+
+function toAdminReleaseRecord(row: {
+  id: string;
+  platform: string;
+  channel: string;
+  version: string;
+  displayTitle: string;
+  releaseNotes: string | null;
+  changelog: string[];
+  minimumVersion: string;
+  forceUpgrade: boolean;
+  status: string;
+  publishedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  artifacts: Array<{
+    id: string;
+    releaseId: string;
+    source: string;
+    type: string;
+    deliveryMode: string;
+    downloadUrl: string;
+    defaultMirrorPrefix: string | null;
+    allowClientMirror: boolean;
+    fileName: string | null;
+    fileSizeBytes: bigint | null;
+    fileHash: string | null;
+    isPrimary: boolean;
+    isFullPackage: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+}): AdminReleaseRecordDto {
+  return {
+    id: row.id,
+    platform: row.platform as AdminReleaseRecordDto["platform"],
+    channel: normalizeReleaseChannel(row.channel),
+    version: row.version,
+    displayTitle: row.displayTitle,
+    releaseNotes: row.releaseNotes,
+    changelog: row.changelog,
     minimumVersion: row.minimumVersion,
     forceUpgrade: row.forceUpgrade,
-    changelog: row.changelog,
-    downloadUrl: row.downloadUrl
+    status: row.status as ReleaseStatus,
+    publishedAt: row.publishedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    artifacts: row.artifacts.map(toAdminReleaseArtifactRecord)
   };
 }
 
@@ -4144,8 +4901,318 @@ function summarizeTeamUsageRecords(
     .sort((left, right) => new Date(right.recordedAt).getTime() - new Date(left.recordedAt).getTime());
 }
 
+function normalizeVersion(value: string) {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new BadRequestException("版本号不能为空");
+  }
+  return normalized;
+}
+
+function normalizeChangelog(items?: string[]) {
+  return (items ?? []).map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeNullableText(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const normalized = value === null ? "" : value.trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeBigInt(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value) {
+    return null;
+  }
+  return BigInt(value.trim());
+}
+
+function normalizeOptionalBoolean(value: boolean | string | null | undefined) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  return undefined;
+}
+
+function normalizePublishedAt(status: ReleaseStatus, publishedAt?: string | null) {
+  if (status === "published") {
+    return publishedAt ? new Date(publishedAt) : new Date();
+  }
+  if (publishedAt === undefined) {
+    return undefined;
+  }
+  return publishedAt ? new Date(publishedAt) : null;
+}
+
+function compareSemver(left: string, right: string) {
+  const leftParts = parseSemver(left);
+  const rightParts = parseSemver(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts.core[index] !== rightParts.core[index]) {
+      return leftParts.core[index] - rightParts.core[index];
+    }
+  }
+  if (leftParts.prerelease === rightParts.prerelease) {
+    return 0;
+  }
+  if (!leftParts.prerelease) {
+    return 1;
+  }
+  if (!rightParts.prerelease) {
+    return -1;
+  }
+  return leftParts.prerelease.localeCompare(rightParts.prerelease, undefined, { numeric: true });
+}
+
+function parseSemver(value: string) {
+  const [corePart, prerelease = ""] = value.trim().split("-", 2);
+  const core = corePart.split(".").map((item) => Number.parseInt(item, 10) || 0);
+  while (core.length < 3) {
+    core.push(0);
+  }
+  return { core, prerelease };
+}
+
+function defaultDeliveryModeForArtifact(type: ReleaseArtifactType): UpdateDeliveryMode {
+  if (type === "apk") {
+    return "apk_download";
+  }
+  if (type === "external" || type === "ipa") {
+    return "external_download";
+  }
+  return "desktop_installer_download";
+}
+
+function assertReleaseArtifactTypeAllowed(platform: PlatformTarget, type: ReleaseArtifactType) {
+  const allowed =
+    platform === "macos"
+      ? ["dmg", "external"]
+      : platform === "windows"
+        ? ["setup.exe", "external"]
+        : platform === "android"
+          ? ["apk", "external"]
+          : ["ipa", "external"];
+
+  if (!allowed.includes(type)) {
+    throw new BadRequestException(`当前平台仅支持这些产物类型：${allowed.join("、")}`);
+  }
+}
+
+async function ensureFileReadable(filePath: string) {
+  try {
+    await fs.access(filePath);
+  } catch {
+    throw new NotFoundException("安装包文件不存在或已丢失");
+  }
+}
+
+async function removeReleaseArtifactFile(filePath: string) {
+  try {
+    await fs.rm(filePath, { force: true });
+  } catch {
+    return;
+  }
+}
+
+function releaseArtifactStorageRoot() {
+  const customRoot = (process.env.CHORDV_RELEASE_STORAGE_ROOT ?? "").trim();
+  if (customRoot) {
+    return path.resolve(customRoot);
+  }
+  return path.resolve(process.cwd(), "storage", "releases");
+}
+
+function resolveReleaseArtifactAbsolutePath(storedFilePath: string) {
+  return path.resolve(releaseArtifactStorageRoot(), storedFilePath);
+}
+
+function buildReleaseArtifactDownloadUrl(artifactId: string) {
+  const publicBaseUrl = (process.env.CHORDV_PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  const relativeUrl = `${RELEASE_ARTIFACT_DOWNLOAD_PREFIX}/${artifactId}`;
+  return publicBaseUrl ? `${publicBaseUrl}${relativeUrl}` : relativeUrl;
+}
+
+function sanitizeReleaseArtifactFileName(fileName: string) {
+  const trimmed = fileName.trim();
+  const safe = trimmed.replace(/[^\p{L}\p{N}._-]+/gu, "_").replace(/_+/g, "_");
+  return safe || `artifact_${Date.now()}`;
+}
+
+async function calculateFileSha256(filePath: string) {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve());
+  });
+  return hash.digest("hex");
+}
+
+function defaultDeliveryModeForPlatform(platform: ClientUpdateCheckResultDto["platform"]): UpdateDeliveryMode {
+  if (platform === "android") {
+    return "apk_download";
+  }
+  if (platform === "ios") {
+    return "external_download";
+  }
+  return "desktop_installer_download";
+}
+
+function toPrismaReleaseArtifactType(type: ReleaseArtifactType) {
+  if (type === "setup.exe") {
+    return "setup_exe";
+  }
+  return type;
+}
+
+function fromPrismaReleaseArtifactType(type: string): ReleaseArtifactType {
+  if (type === "setup_exe") {
+    return "setup.exe";
+  }
+  return type as ReleaseArtifactType;
+}
+
+function pickPrimaryReleaseArtifact(
+  artifacts: Array<{
+    id: string;
+    releaseId: string;
+    source: string;
+    type: string;
+    deliveryMode: string;
+    downloadUrl: string;
+    defaultMirrorPrefix: string | null;
+    allowClientMirror: boolean;
+    fileName: string | null;
+    fileSizeBytes: bigint | null;
+    fileHash: string | null;
+    isPrimary: boolean;
+    isFullPackage: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }>,
+  preferredType?: ReleaseArtifactType | null
+) {
+  const normalizedType = preferredType ? toPrismaReleaseArtifactType(preferredType) : null;
+  const typedPrimary = normalizedType ? artifacts.find((item) => item.type === normalizedType && item.isPrimary) : null;
+  if (typedPrimary) {
+    return typedPrimary;
+  }
+  const typedFallback = normalizedType ? artifacts.find((item) => item.type === normalizedType) : null;
+  if (typedFallback) {
+    return typedFallback;
+  }
+  return artifacts.find((item) => item.isPrimary) ?? artifacts[0] ?? null;
+}
+
+function resolveReleaseArtifactForClient(
+  artifact: {
+    id: string;
+    releaseId: string;
+    source: string;
+    type: string;
+    deliveryMode: string;
+    downloadUrl: string;
+    defaultMirrorPrefix: string | null;
+    allowClientMirror: boolean;
+    fileName: string | null;
+    fileSizeBytes: bigint | null;
+    fileHash: string | null;
+    isPrimary: boolean;
+    isFullPackage: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  clientMirrorPrefix: string | null
+) {
+  const resolvedUrl = buildReleaseArtifactDownloadUrlForClient(
+    artifact.downloadUrl,
+    artifact.defaultMirrorPrefix,
+    clientMirrorPrefix,
+    artifact.allowClientMirror
+  );
+  return {
+    ...artifact,
+    downloadUrl: resolvedUrl
+  };
+}
+
+function buildReleaseArtifactDownloadUrlForClient(
+  originUrl: string,
+  defaultMirrorPrefix: string | null,
+  clientMirrorPrefix: string | null,
+  allowClientMirror: boolean
+) {
+  if (allowClientMirror && clientMirrorPrefix?.trim()) {
+    return joinMirrorPrefix(clientMirrorPrefix, originUrl);
+  }
+  if (defaultMirrorPrefix?.trim()) {
+    return joinMirrorPrefix(defaultMirrorPrefix, originUrl);
+  }
+  return originUrl;
+}
+
+function joinMirrorPrefix(prefix: string, originUrl: string) {
+  const trimmedPrefix = prefix.trim();
+  if (!trimmedPrefix) {
+    return originUrl;
+  }
+  if (trimmedPrefix.includes("{url}")) {
+    return trimmedPrefix.replaceAll("{url}", originUrl);
+  }
+  return `${trimmedPrefix}${originUrl}`;
+}
+
+function assertExternalReleaseArtifactUrlMatchesType(type: ReleaseArtifactType, rawUrl: string) {
+  const url = rawUrl.trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    throw new BadRequestException("外部下载地址为空或格式不正确，请填写完整的 http/https 地址。");
+  }
+  if (type === "external") {
+    return;
+  }
+
+  let pathname = "";
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    throw new BadRequestException("外部下载地址格式不正确，请检查链接。");
+  }
+
+  if (type === "dmg" && !pathname.endsWith(".dmg")) {
+    throw new BadRequestException("当前产物类型是 DMG 安装包，下载地址必须指向 .dmg 文件。");
+  }
+  if (type === "setup.exe" && !pathname.endsWith(".exe")) {
+    throw new BadRequestException("当前产物类型是 Setup 安装器，下载地址必须指向 .exe 文件。");
+  }
+  if (type === "apk" && !pathname.endsWith(".apk")) {
+    throw new BadRequestException("当前产物类型是 APK 安装包，下载地址必须指向 .apk 文件。");
+  }
+  if (type === "ipa" && !pathname.endsWith(".ipa")) {
+    throw new BadRequestException("当前产物类型是 IPA 安装包，下载地址必须指向 .ipa 文件。");
+  }
+}
+
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function normalizeReleaseChannel(_channel: string | null | undefined): ReleaseChannel {
+  return "stable";
 }
 
 function buildLeaseEmail(userId: string, leaseId: string) {

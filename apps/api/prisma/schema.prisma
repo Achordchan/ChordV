@@ -95,6 +95,62 @@ enum AnnouncementDisplayMode {
   modal_countdown
 }
 
+enum ReleasePlatform {
+  macos
+  windows
+  android
+  ios
+}
+
+enum ReleaseChannel {
+  stable
+}
+
+enum ReleaseStatus {
+  draft
+  published
+  archived
+}
+
+enum ReleaseArtifactType {
+  dmg
+  app
+  exe
+  setup_exe
+  apk
+  ipa
+  external
+}
+
+enum ReleaseArtifactSource {
+  uploaded
+  external
+}
+
+enum RuntimeComponentArchitecture {
+  x64
+  arm64
+}
+
+enum RuntimeComponentKind {
+  xray
+  geoip
+  geosite
+}
+
+enum RuntimeComponentSource {
+  uploaded
+  github_remote
+  custom_remote
+}
+
+enum UpdateDeliveryMode {
+  desktop_installer_download
+  apk_download
+  external_download
+  none
+}
+
 model User {
   id                   String              @id
   email                String              @unique
@@ -432,4 +488,88 @@ model Announcement {
   countdownSeconds Int                    @default(0)
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
+}
+
+model Release {
+  id             String         @id
+  platform       ReleasePlatform
+  channel        ReleaseChannel
+  version        String
+  displayTitle   String
+  releaseNotes   String?
+  changelog      String[]
+  minimumVersion String
+  forceUpgrade   Boolean        @default(false)
+  status         ReleaseStatus  @default(draft)
+  publishedAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  artifacts      ReleaseArtifact[]
+
+  @@unique([platform, channel, version])
+  @@index([platform, channel, status, publishedAt])
+}
+
+model ReleaseArtifact {
+  id            String             @id
+  releaseId     String
+  source        ReleaseArtifactSource @default(external)
+  type          ReleaseArtifactType
+  deliveryMode  UpdateDeliveryMode @default(external_download)
+  downloadUrl   String
+  defaultMirrorPrefix String?
+  allowClientMirror Boolean        @default(true)
+  fileName      String?
+  storedFilePath String?
+  fileSizeBytes BigInt?
+  fileHash      String?
+  isPrimary     Boolean            @default(false)
+  isFullPackage Boolean            @default(true)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  release       Release            @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+
+  @@index([releaseId, isPrimary])
+}
+
+model RuntimeComponent {
+  id                  String                       @id
+  platform            ReleasePlatform
+  architecture        RuntimeComponentArchitecture
+  kind                RuntimeComponentKind
+  source              RuntimeComponentSource      @default(github_remote)
+  originUrl           String
+  defaultMirrorPrefix String?
+  allowClientMirror   Boolean                     @default(true)
+  fileName            String
+  storedFilePath      String?
+  fileSizeBytes       BigInt?
+  fileHash            String?
+  archiveEntryName    String?
+  expectedHash        String?
+  enabled             Boolean                     @default(true)
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  failureReports      RuntimeComponentFailureReport[]
+
+  @@unique([platform, architecture, kind])
+  @@index([platform, architecture, enabled])
+}
+
+model RuntimeComponentFailureReport {
+  id           String                       @id
+  componentId  String?
+  platform     ReleasePlatform
+  architecture RuntimeComponentArchitecture
+  kind         RuntimeComponentKind
+  reason       String
+  message      String?
+  effectiveUrl String?
+  appVersion   String?
+  userId       String?
+  createdAt    DateTime                     @default(now())
+  component    RuntimeComponent?            @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
+  @@index([platform, architecture, createdAt])
+  @@index([componentId, createdAt])
 }

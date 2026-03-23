@@ -1,11 +1,20 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import type { ResetSubscriptionTrafficInputDto } from "@chordv/shared";
+import { diskStorage } from "multer";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
+import { RuntimeComponentsService } from "../common/runtime-components.service";
 import {
   ChangeSubscriptionPlanDto,
   CreateAnnouncementDto,
   CreatePlanDto,
+  CreateReleaseArtifactDto,
+  CreateReleaseDto,
+  CreateRuntimeComponentDto,
   CreateSubscriptionDto,
   CreateTeamDto,
   CreateTeamMemberDto,
@@ -15,11 +24,16 @@ import {
   KickTeamMemberDto,
   ReadNodePanelInboundsDto,
   RenewSubscriptionDto,
+  UploadReleaseArtifactDto,
+  UpdateReleaseArtifactDto,
+  UpdateReleaseDto,
   UpdateAnnouncementDto,
   UpdateNodeDto,
   UpdatePlanDto,
   UpdatePlanSecurityDto,
   UpdatePolicyDto,
+  UpdateRuntimeComponentDto,
+  UploadRuntimeComponentDto,
   UpdateSubscriptionDto,
   UpdateSubscriptionNodeAccessDto,
   UpdateTeamDto,
@@ -28,10 +42,22 @@ import {
   UpdateUserDto
 } from "./admin.dto";
 
+type UploadedReleaseFile = {
+  path: string;
+  originalname: string;
+  size: number;
+};
+
+type MulterCallback = (error: Error | null, filename: string) => void;
+const RELEASE_ARTIFACT_MAX_UPLOAD_BYTES = Number(process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? 1024 * 1024 * 1024);
+
 @Controller("admin")
 @UseGuards(AdminAuthGuard)
 export class AdminController {
-  constructor(private readonly devDataService: DevDataService) {}
+  constructor(
+    private readonly devDataService: DevDataService,
+    private readonly runtimeComponentsService: RuntimeComponentsService
+  ) {}
 
   @Get("snapshot")
   getSnapshot() {
@@ -226,5 +252,169 @@ export class AdminController {
   @Patch("policies")
   updatePolicy(@Body() body: UpdatePolicyDto) {
     return this.devDataService.updatePolicy(body);
+  }
+
+  @Get("releases")
+  getReleases() {
+    return this.devDataService.listAdminReleases();
+  }
+
+  @Get("runtime-components")
+  getRuntimeComponents() {
+    return this.runtimeComponentsService.listAdminRuntimeComponents();
+  }
+
+  @Get("runtime-components/failures")
+  getRuntimeComponentFailures(@Query("limit") limit?: string) {
+    return this.runtimeComponentsService.listRuntimeComponentFailureReports(limit ? Number(limit) : undefined);
+  }
+
+  @Post("runtime-components")
+  createRuntimeComponent(@Body() body: CreateRuntimeComponentDto) {
+    return this.runtimeComponentsService.createAdminRuntimeComponent(body);
+  }
+
+  @Post("runtime-components/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+      }
+    })
+  )
+  uploadRuntimeComponent(@Body() body: UploadRuntimeComponentDto, @UploadedFile() file?: UploadedReleaseFile) {
+    return this.runtimeComponentsService.uploadAdminRuntimeComponent(body, file);
+  }
+
+  @Patch("runtime-components/:componentId")
+  updateRuntimeComponent(@Param("componentId") componentId: string, @Body() body: UpdateRuntimeComponentDto) {
+    return this.runtimeComponentsService.updateAdminRuntimeComponent(componentId, body);
+  }
+
+  @Post("runtime-components/:componentId/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+      }
+    })
+  )
+  replaceRuntimeComponentUpload(
+    @Param("componentId") componentId: string,
+    @Body() body: UploadRuntimeComponentDto,
+    @UploadedFile() file?: UploadedReleaseFile
+  ) {
+    return this.runtimeComponentsService.replaceAdminRuntimeComponentUpload(componentId, body, file);
+  }
+
+  @Delete("runtime-components/:componentId")
+  deleteRuntimeComponent(@Param("componentId") componentId: string) {
+    return this.runtimeComponentsService.deleteAdminRuntimeComponent(componentId);
+  }
+
+  @Post("runtime-components/:componentId/verify")
+  verifyRuntimeComponent(@Param("componentId") componentId: string) {
+    return this.runtimeComponentsService.validateAdminRuntimeComponent(componentId);
+  }
+
+  @Post("releases")
+  createRelease(@Body() body: CreateReleaseDto) {
+    return this.devDataService.createRelease(body);
+  }
+
+  @Patch("releases/:releaseId")
+  updateRelease(@Param("releaseId") releaseId: string, @Body() body: UpdateReleaseDto) {
+    return this.devDataService.updateRelease(releaseId, body);
+  }
+
+  @Post("releases/:releaseId/publish")
+  publishRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.publishRelease(releaseId);
+  }
+
+  @Post("releases/:releaseId/archive")
+  archiveRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.archiveRelease(releaseId);
+  }
+
+  @Post("releases/:releaseId/artifacts")
+  createReleaseArtifact(@Param("releaseId") releaseId: string, @Body() body: CreateReleaseArtifactDto) {
+    return this.devDataService.createReleaseArtifact(releaseId, body);
+  }
+
+  @Post("releases/:releaseId/artifacts/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+      }
+    })
+  )
+  uploadReleaseArtifact(
+    @Param("releaseId") releaseId: string,
+    @Body() body: UploadReleaseArtifactDto,
+    @UploadedFile() file?: UploadedReleaseFile
+  ) {
+    return this.devDataService.uploadReleaseArtifact(releaseId, body, file);
+  }
+
+  @Patch("releases/:releaseId/artifacts/:artifactId")
+  updateReleaseArtifact(
+    @Param("releaseId") releaseId: string,
+    @Param("artifactId") artifactId: string,
+    @Body() body: UpdateReleaseArtifactDto
+  ) {
+    return this.devDataService.updateReleaseArtifact(releaseId, artifactId, body);
+  }
+
+  @Delete("releases/:releaseId/artifacts/:artifactId")
+  deleteReleaseArtifact(@Param("releaseId") releaseId: string, @Param("artifactId") artifactId: string) {
+    return this.devDataService.deleteReleaseArtifact(releaseId, artifactId);
+  }
+
+  @Post("releases/:releaseId/artifacts/:artifactId/verify")
+  verifyReleaseArtifact(@Param("releaseId") releaseId: string, @Param("artifactId") artifactId: string) {
+    return this.devDataService.validateReleaseArtifact(releaseId, artifactId);
+  }
+
+  @Post("releases/:releaseId/artifacts/:artifactId/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+      }
+    })
+  )
+  replaceReleaseArtifactUpload(
+    @Param("releaseId") releaseId: string,
+    @Param("artifactId") artifactId: string,
+    @Body() body: UploadReleaseArtifactDto,
+    @UploadedFile() file?: UploadedReleaseFile
+  ) {
+    return this.devDataService.replaceReleaseArtifactUpload(releaseId, artifactId, body, file);
   }
 }

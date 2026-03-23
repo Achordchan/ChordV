@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import type { ClientUpdateCheckDto } from "@chordv/shared";
 import { DevDataService } from "../common/dev-data.service";
 
 @Injectable()
@@ -25,8 +26,12 @@ export class ClientService {
     return this.devDataService.getPolicies();
   }
 
-  getVersion(token?: string) {
-    return this.devDataService.getBootstrap(token).then((result) => result.version);
+  getVersion() {
+    return this.devDataService.getClientVersion();
+  }
+
+  checkUpdate(input: ClientUpdateCheckDto) {
+    return this.devDataService.checkClientUpdate(input);
   }
 
   connect(nodeId: string, mode: "global" | "rule" | "direct", strategyGroupId?: string, token?: string) {

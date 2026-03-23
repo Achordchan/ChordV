@@ -1,9 +1,11 @@
 {
   "name": "@chordv/desktop",
-  "version": "0.1.0",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "scripts": {
+    "version:platform": "node ./scripts/platform-version.mjs",
+    "tauri:build:platform": "node ./scripts/build-tauri-platform.mjs",
     "setup:xray": "node ./scripts/setup-xray.mjs",
     "android:doctor": "node ./scripts/android-doctor.mjs",
     "android:install": "node ./scripts/android-install.mjs",

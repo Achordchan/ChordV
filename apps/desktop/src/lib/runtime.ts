@@ -4,6 +4,11 @@ import type {
   GeneratedRuntimeConfigDto,
   PlatformTarget
 } from "@chordv/shared";
+import type {
+  RuntimeComponentDownloadItem,
+  RuntimeComponentDownloadProgress,
+  RuntimeComponentFileStatus
+} from "./runtimeComponents";
 
 export type RuntimeStatus = {
   status: string;
@@ -43,6 +48,52 @@ type AndroidRuntimeStatus = {
   recoveryHint?: string | null;
   vpnActive?: boolean | null;
   connectivityVerified?: boolean | null;
+};
+
+export type ShellAction = "toggle-connection" | "open-logs";
+
+type ShellActionPayload = {
+  action: ShellAction;
+};
+
+export type DesktopUpdateDownloadPhase =
+  | "idle"
+  | "preparing"
+  | "downloading"
+  | "completed"
+  | "failed";
+
+export type DesktopUpdateDownloadProgress = {
+  phase: DesktopUpdateDownloadPhase;
+  fileName: string | null;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  localPath: string | null;
+  message: string | null;
+};
+
+export type DesktopInstallerDownloadResult = {
+  fileName: string;
+  localPath: string;
+  totalBytes: number | null;
+};
+
+export type DesktopRuntimeEnvironment = {
+  platform: Extract<RuntimePlatform, "macos" | "windows">;
+  architecture: "x64" | "arm64";
+  runtimeBinDir: string | null;
+};
+
+export type RuntimeComponentDownloadResult = {
+  component: string;
+  localPath: string | null;
+};
+
+export type DesktopShellSummary = {
+  status: string;
+  signedIn?: boolean;
+  nodeName: string | null;
+  primaryActionLabel: string;
 };
 
 function isTauriApp() {
@@ -223,6 +274,174 @@ export async function appReady() {
   }
 
   return invoke("app_ready");
+}
+
+export async function showDesktopWindow() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: true, mocked: true };
+  }
+  return invoke("show_main_window");
+}
+
+export async function hideDesktopWindow() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: true, mocked: true };
+  }
+  return invoke("hide_main_window");
+}
+
+export async function quitDesktopApplication() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: true, mocked: true };
+  }
+  return invoke("quit_application");
+}
+
+export async function updateDesktopShellSummary(summary: DesktopShellSummary) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: true, mocked: true };
+  }
+  return invoke("update_shell_summary", { summary });
+}
+
+export async function subscribeDesktopShellActions(handler: (action: ShellAction) => void) {
+  if (!isTauriApp() || isAndroidPlatform()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  let lastActionKey: string | null = null;
+  let lastActionAt = 0;
+
+  const handlePayload = (payload?: ShellActionPayload) => {
+    if (!payload?.action) {
+      return;
+    }
+    const nowMs = Date.now();
+    const key = payload.action;
+    if (lastActionKey === key && nowMs - lastActionAt < 200) {
+      return;
+    }
+    lastActionKey = key;
+    lastActionAt = nowMs;
+    handler(payload.action);
+  };
+
+  const unlistenApp = await listen<ShellActionPayload>("chordv://shell-action", (event) => {
+    handlePayload(event.payload);
+  });
+  const currentWindow = getCurrentWindow();
+  const unlistenWindow = await currentWindow.listen<ShellActionPayload>("chordv://shell-action", (event) => {
+    handlePayload(event.payload);
+  });
+  const domListener = (event: Event) => {
+    const customEvent = event as CustomEvent<ShellActionPayload | undefined>;
+    handlePayload(customEvent.detail);
+  };
+  window.addEventListener("chordv-shell-action", domListener as EventListener);
+
+  return () => {
+    unlistenApp();
+    unlistenWindow();
+    window.removeEventListener("chordv-shell-action", domListener as EventListener);
+  };
+}
+
+export async function subscribeDesktopUpdateDownloadProgress(
+  handler: (progress: DesktopUpdateDownloadProgress) => void
+) {
+  if (!isTauriApp() || isAndroidPlatform()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<DesktopUpdateDownloadProgress>("chordv://update-download-progress", (event) => {
+    if (event.payload) {
+      handler(event.payload);
+    }
+  });
+  return () => {
+    unlisten();
+  };
+}
+
+export async function downloadDesktopInstaller(input: { url: string; fileName?: string | null }) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<DesktopInstallerDownloadResult>("download_desktop_installer", { input });
+}
+
+export async function openDesktopInstaller(path: string) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: false as const };
+  }
+  return invoke("open_desktop_installer", { path });
+}
+
+export async function loadDesktopRuntimeEnvironment() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<DesktopRuntimeEnvironment>("desktop_runtime_environment");
+}
+
+export async function checkRuntimeComponentFile(component: RuntimeComponentDownloadItem) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<RuntimeComponentFileStatus>("check_runtime_component_file", { component });
+}
+
+export async function downloadRuntimeComponent(input: {
+  component: RuntimeComponentDownloadItem;
+  url: string;
+}) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<RuntimeComponentDownloadResult>("download_runtime_component", { input });
+}
+
+export async function subscribeRuntimeComponentDownloadProgress(
+  handler: (progress: RuntimeComponentDownloadProgress) => void
+) {
+  if (!isTauriApp() || isAndroidPlatform()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<RuntimeComponentDownloadProgress>(
+    "chordv://runtime-component-download-progress",
+    (event) => {
+      if (event.payload) {
+        handler(event.payload);
+      }
+    }
+  );
+  return () => {
+    unlisten();
+  };
+}
+
+export async function openExternalLink(url: string) {
+  if (!url) {
+    return { ok: false as const };
+  }
+
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.target = "_blank";
+  anchor.rel = "noopener noreferrer";
+  anchor.click();
+  return { ok: true as const, method: "browser" as const };
 }
 
 export async function loadStoredSession(): Promise<AuthSessionDto | null> {

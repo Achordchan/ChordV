@@ -17,15 +17,15 @@ export function NodeListPanel(props: NodeListPanelProps) {
   return (
     <Paper withBorder radius="xl" p="lg" className="desktop-panel">
       <Stack gap="md" h="100%">
-        <Group justify="space-between" align="center">
+        <Group justify="space-between" align="center" className="node-list-head">
           <div>
             <Title order={3}>节点列表</Title>
-            
           </div>
           <Button
             variant="default"
             size="compact-md"
             leftSection={<IconRefresh size={15} />}
+            className="node-list-probe-button"
             onClick={props.onProbe}
             disabled={props.probeBusy || props.probeCooldownLeft > 0 || props.nodes.length === 0}
             loading={props.probeBusy}

@@ -13,6 +13,7 @@ type ControlPanelProps = {
   desktopStatus: RuntimeStatus;
   runtime: GeneratedRuntimeConfigDto | null;
   error: string | null;
+  runtimeAssetsPhase: "idle" | "checking" | "downloading" | "ready" | "failed";
   onModeChange: (mode: ConnectionMode) => void;
   onPrimaryAction: () => void;
   onOpenLogs: () => void;
@@ -23,9 +24,8 @@ export function ControlPanel(props: ControlPanelProps) {
     <Paper withBorder radius="xl" p="md" className="desktop-panel">
       <Stack h="100%" gap="sm" className="control-shell">
         <Stack gap="sm">
-          <div>
+          <div className="control-head">
             <Title order={3}>连接控制</Title>
-           
           </div>
 
           <StatusSurface status={props.desktopStatus.status} nodeName={props.runtime?.node.name ?? "未连接"} />
@@ -44,12 +44,17 @@ export function ControlPanel(props: ControlPanelProps) {
           <Button
             size="lg"
             radius="xl"
-            className="primary-action"
+            className="primary-action control-primary-action"
             leftSection={<IconPlugConnected size={20} />}
             onClick={props.onPrimaryAction}
             loading={props.primaryBusy}
             color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-            disabled={!props.canConnect && props.desktopStatus.status !== "connected" && props.desktopStatus.status !== "error"}
+            disabled={
+              !props.canConnect &&
+              props.runtimeAssetsPhase !== "failed" &&
+              props.desktopStatus.status !== "connected" &&
+              props.desktopStatus.status !== "error"
+            }
           >
             {props.primaryLabel}
           </Button>
@@ -70,8 +75,14 @@ export function ControlPanel(props: ControlPanelProps) {
           <Text size="sm" c="dimmed">
             内核 {props.desktopStatus.xrayBinaryPath ? "已就绪" : "未安装"}
           </Text>
-          <Button size="compact-sm" variant="subtle" leftSection={<IconChartBar size={15} />} onClick={props.onOpenLogs}>
-            运行日志
+          <Button
+            size="compact-sm"
+            variant="subtle"
+            leftSection={<IconChartBar size={15} />}
+            className="control-log-button"
+            onClick={props.onOpenLogs}
+          >
+            连接诊断
           </Button>
         </Group>
       </Stack>

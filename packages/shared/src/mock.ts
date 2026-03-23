@@ -3,6 +3,7 @@ import type {
   AdminNodeRecordDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
+  AdminReleaseRecordDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
   AdminTeamRecordDto,
@@ -124,11 +125,11 @@ export const mockAnnouncements: AnnouncementDto[] = [
 ];
 
 export const mockVersion: ClientVersionDto = {
-  currentVersion: "0.1.0",
-  minimumVersion: "0.1.0",
+  currentVersion: "1.0.2",
+  minimumVersion: "1.0.2",
   forceUpgrade: false,
-  changelog: ["后台工作台已上线", "节点导入改为订阅驱动", "客户端规则模式已更新"],
-  downloadUrl: "https://github.com/Achordchan/ChordV/releases"
+  changelog: ["发布中心已接入多端版本管理", "桌面端支持检查更新和完整包下载", "安卓端支持 APK 更新链路"],
+  downloadUrl: "https://v.baymaxgroup.com/downloads/chordv"
 };
 
 export const mockBootstrap: ClientBootstrapDto = {
@@ -286,13 +287,147 @@ export const mockAdminAnnouncements: AdminAnnouncementRecordDto[] = mockAnnounce
 
 export const mockAdminPolicy: AdminPolicyRecordDto = {
   ...mockPolicies,
-  accessMode: "xui",
-  currentVersion: mockVersion.currentVersion,
-  minimumVersion: mockVersion.minimumVersion,
-  forceUpgrade: mockVersion.forceUpgrade,
-  changelog: mockVersion.changelog,
-  downloadUrl: mockVersion.downloadUrl
+  accessMode: "xui"
 };
+
+export const mockAdminReleases: AdminReleaseRecordDto[] = [
+  {
+    id: "release_macos_stable_001",
+    platform: "macos",
+    channel: "stable",
+    version: "1.0.2",
+    displayTitle: "ChordV 1.0.2 · macOS",
+    releaseNotes: "正式版已支持桌面端完整包更新提示。",
+    changelog: mockVersion.changelog,
+    minimumVersion: "1.0.2",
+    forceUpgrade: false,
+    status: "published",
+    publishedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    artifacts: [
+      {
+        id: "artifact_macos_dmg_001",
+        releaseId: "release_macos_stable_001",
+        source: "external",
+        type: "dmg",
+        deliveryMode: "desktop_installer_download",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/macos/ChordV_1.0.2.dmg",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV_1.0.2.dmg",
+        fileSizeBytes: "94371840",
+        fileHash: "mock-macos-dmg-sha256",
+        isPrimary: true,
+        isFullPackage: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]
+  },
+  {
+    id: "release_windows_stable_001",
+    platform: "windows",
+    channel: "stable",
+    version: "1.0.2",
+    displayTitle: "ChordV 1.0.2 · Windows",
+    releaseNotes: "正式版已支持桌面端完整包更新提示。",
+    changelog: mockVersion.changelog,
+    minimumVersion: "1.0.2",
+    forceUpgrade: false,
+    status: "published",
+    publishedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    artifacts: [
+      {
+        id: "artifact_windows_setup_001",
+        releaseId: "release_windows_stable_001",
+        source: "external",
+        type: "setup.exe",
+        deliveryMode: "desktop_installer_download",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/windows/ChordV_1.0.2_setup.exe",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV_1.0.2_setup.exe",
+        fileSizeBytes: "32666812",
+        fileHash: "mock-windows-setup-sha256",
+        isPrimary: true,
+        isFullPackage: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]
+  },
+  {
+    id: "release_android_stable_001",
+    platform: "android",
+    channel: "stable",
+    version: "1.0.0",
+    displayTitle: "ChordV 1.0.0 · Android",
+    releaseNotes: "正式版支持 APK 下载更新。",
+    changelog: mockVersion.changelog,
+    minimumVersion: "1.0.0",
+    forceUpgrade: false,
+    status: "published",
+    publishedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    artifacts: [
+      {
+        id: "artifact_android_apk_001",
+        releaseId: "release_android_stable_001",
+        source: "external",
+        type: "apk",
+        deliveryMode: "apk_download",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/android/ChordV_1.0.0.apk",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV_1.0.0.apk",
+        fileSizeBytes: "59600000",
+        fileHash: "mock-android-apk-sha256",
+        isPrimary: true,
+        isFullPackage: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]
+  },
+  {
+    id: "release_ios_stable_001",
+    platform: "ios",
+    channel: "stable",
+    version: "1.0.0",
+    displayTitle: "ChordV 1.0.0 · iOS",
+    releaseNotes: "当前仅提供版本提示与侧载说明。",
+    changelog: mockVersion.changelog,
+    minimumVersion: "1.0.0",
+    forceUpgrade: false,
+    status: "published",
+    publishedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    artifacts: [
+      {
+        id: "artifact_ios_external_001",
+        releaseId: "release_ios_stable_001",
+        source: "external",
+        type: "external",
+        deliveryMode: "external_download",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/ios",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV iOS 侧载说明",
+        fileSizeBytes: null,
+        fileHash: null,
+        isPrimary: true,
+        isFullPackage: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }
+    ]
+  }
+];
 
 export const mockAdminSnapshot: AdminSnapshotDto = {
   dashboard: {
@@ -308,7 +443,8 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
   teams: mockAdminTeams,
   nodes: mockAdminNodes,
   announcements: mockAdminAnnouncements,
-  policy: mockAdminPolicy
+  policy: mockAdminPolicy,
+  releases: mockAdminReleases
 };
 
 export const mockAuthSession = (email: string): AuthSessionDto => ({

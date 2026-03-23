@@ -2,9 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { buildAndroidArtifactNames, resolveDesktopPlatformVersion } from './platform-version.mjs';
 
 const desktopRoot = process.cwd();
-const defaultApkPath = path.join(desktopRoot, '..', '..', 'output', 'release', 'android', 'ChordV_android_debug.apk');
+const androidVersion = resolveDesktopPlatformVersion("android");
+const debugArtifactNames = buildAndroidArtifactNames(androidVersion, false);
+const defaultApkPath = path.join(desktopRoot, '..', '..', 'output', 'release', 'android', debugArtifactNames.apk);
 const packageName = 'com.baymaxgroup.chordv';
 
 function parseArgs(rawArgs) {

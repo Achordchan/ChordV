@@ -4,6 +4,7 @@ import { ClientAuthGuard } from "./client-auth.guard";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { Global, Module } from "@nestjs/common";
 import { DevDataService } from "./dev-data.service";
+import { RuntimeComponentsService } from "./runtime-components.service";
 import { EdgeGatewayModule } from "../edge-gateway/edge-gateway.module";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { XuiModule } from "../xui/xui.module";
@@ -13,6 +14,7 @@ import { XuiModule } from "../xui/xui.module";
   imports: [EdgeGatewayModule, XuiModule],
   providers: [
     DevDataService,
+    RuntimeComponentsService,
     MeteringIncidentService,
     AuthSessionService,
     ClientRuntimeEventsService,
@@ -21,6 +23,7 @@ import { XuiModule } from "../xui/xui.module";
   ],
   exports: [
     DevDataService,
+    RuntimeComponentsService,
     MeteringIncidentService,
     AuthSessionService,
     ClientRuntimeEventsService,

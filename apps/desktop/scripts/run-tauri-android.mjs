@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn, spawnSync } from 'node:child_process';
+import { buildAndroidArtifactNames, resolveDesktopPlatformVersion } from './platform-version.mjs';
 
 function resolveJavaHome() {
   if (process.env.JAVA_HOME && fs.existsSync(process.env.JAVA_HOME)) {
@@ -102,6 +103,7 @@ const command = process.argv[2];
 const args = process.argv.slice(3);
 const desktopRoot = process.cwd();
 const androidProjectRoot = path.join(desktopRoot, "src-tauri", "gen", "android");
+const androidVersion = resolveDesktopPlatformVersion("android");
 
 if (!command) {
   console.error('缺少 Android 子命令，例如 init、dev、build。');
@@ -330,6 +332,14 @@ cleanGeneratedAndroidArtifacts();
 syncAndroidLibraries();
 ensureAndroidTauriProperties();
 stageAndroidOnlyBin();
+const generatedAndroidTauriConfigPath = path.join(desktopRoot, 'src-tauri', '.tauri.android.platform.conf.json');
+const androidBaseConfigPath = path.join(desktopRoot, 'src-tauri', 'tauri.android.conf.json');
+const androidBaseConfig = JSON.parse(fs.readFileSync(androidBaseConfigPath, 'utf8'));
+fs.writeFileSync(
+  generatedAndroidTauriConfigPath,
+  JSON.stringify({ ...androidBaseConfig, version: androidVersion }, null, 2),
+  'utf8'
+);
 
 const env = {
   ...process.env,
@@ -350,7 +360,7 @@ if (ndkLlvmStrip) {
   env.CARGO_TARGET_AARCH64_LINUX_ANDROID_STRIP = ndkLlvmStrip;
 }
 
-const child = spawn('pnpm', ['exec', 'tauri', 'android', command, '-c', 'src-tauri/tauri.android.conf.json', ...args], {
+const child = spawn('pnpm', ['exec', 'tauri', 'android', command, '-c', 'src-tauri/.tauri.android.platform.conf.json', ...args], {
   cwd: process.cwd(),
   env,
   stdio: 'inherit'
@@ -358,6 +368,7 @@ const child = spawn('pnpm', ['exec', 'tauri', 'android', command, '-c', 'src-tau
 
 child.on('exit', (code) => {
   restoreDesktopBin();
+  fs.rmSync(generatedAndroidTauriConfigPath, { force: true });
   if ((code ?? 1) === 0 && command === 'build') {
     syncAndroidArtifacts();
     validateAndroidArtifacts();
@@ -374,8 +385,9 @@ function syncAndroidArtifacts() {
   const apkFiles = findFiles(apkDir, (filePath) => filePath.endsWith(".apk"));
   const bundleFiles = findFiles(bundleDir, (filePath) => filePath.endsWith(".aab"));
   const isDebugBuild = args.includes('--debug');
-  const apkOutputName = isDebugBuild ? "ChordV_android_debug.apk" : "ChordV_android_release.apk";
-  const aabOutputName = isDebugBuild ? "ChordV_android_debug.aab" : "ChordV_android_release.aab";
+  const artifactNames = buildAndroidArtifactNames(androidVersion, !isDebugBuild);
+  const apkOutputName = artifactNames.apk;
+  const aabOutputName = artifactNames.aab;
   const apkTargetPath = path.join(releaseDir, apkOutputName);
   const aabTargetPath = path.join(releaseDir, aabOutputName);
 

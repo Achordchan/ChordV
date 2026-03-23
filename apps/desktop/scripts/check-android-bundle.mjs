@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { buildAndroidArtifactNames, resolveDesktopPlatformVersion } from './platform-version.mjs';
 
 const PYTHON_CHECK_SCRIPT = `
 import os, sys, zipfile
@@ -65,7 +66,10 @@ with zipfile.ZipFile(path) as z:
 `;
 
 const inputDir = path.resolve(process.cwd(), process.argv[2] ?? '../../output/release/android');
-const expectedFiles = ['ChordV_android_debug.apk', 'ChordV_android_debug.aab', 'ChordV_android_release.apk', 'ChordV_android_release.aab'];
+const androidVersion = resolveDesktopPlatformVersion("android");
+const debugArtifacts = buildAndroidArtifactNames(androidVersion, false);
+const releaseArtifacts = buildAndroidArtifactNames(androidVersion, true);
+const expectedFiles = [debugArtifacts.apk, debugArtifacts.aab, releaseArtifacts.apk, releaseArtifacts.aab];
 const candidates = expectedFiles
   .map((fileName) => path.join(inputDir, fileName))
   .filter((filePath) => fs.existsSync(filePath));

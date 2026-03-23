@@ -1,0 +1,4 @@
+这个目录用于 1Panel 新服务器部署 ChordV。
+admin-dist 已经是本地构建好的静态文件。
+API 通过 Docker 启动，Postgres 通过 Docker 持久化。
+上线前请写入 .env，并确认 v.baymaxgroup.com 的 DNS 切换时机。

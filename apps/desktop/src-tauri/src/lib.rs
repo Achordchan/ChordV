@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io,
+    io::{self, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -14,13 +14,15 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    AppHandle, Emitter, Manager, RunEvent, State,
+};
 use reqwest::Client;
 use url::Url;
 
 #[cfg(not(target_os = "android"))]
 use native_tls::TlsConnector;
-#[cfg(not(target_os = "android"))]
 use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
@@ -33,7 +35,13 @@ use std::os::windows::process::CommandExt;
 use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
 
 #[cfg(windows)]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use tauri::tray::TrayIconBuilder;
+
+#[cfg(windows)]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -52,6 +60,7 @@ struct RuntimeState {
     status: String,
     active_session_id: Option<String>,
     active_node_id: Option<String>,
+    active_node_name: Option<String>,
     config_path: Option<PathBuf>,
     log_path: Option<PathBuf>,
     xray_binary_path: Option<PathBuf>,
@@ -62,12 +71,49 @@ struct RuntimeState {
     child: Option<Child>,
 }
 
+#[derive(Default)]
+struct ShellState {
+    status: String,
+    signed_in: bool,
+    node_name: Option<String>,
+    primary_action_label: String,
+}
+
+#[derive(Default)]
+struct RuntimeComponentDownloadState {
+    active: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeComponentSourceFormat {
+    Direct,
+    ZipEntry,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum RuntimeComponentKindInput {
+    Xray,
+    Geoip,
+    Geosite,
+}
+
+fn shell_primary_action_label(status: &str) -> String {
+    match status {
+        "connected" | "connecting" | "disconnecting" => "断开连接".to_string(),
+        "error" => "返回主界面重试".to_string(),
+        _ => "打开主界面连接".to_string(),
+    }
+}
+
 impl Default for RuntimeState {
     fn default() -> Self {
         Self {
             status: "idle".into(),
             active_session_id: None,
             active_node_id: None,
+            active_node_name: None,
             config_path: None,
             log_path: None,
             xray_binary_path: None,
@@ -168,6 +214,8 @@ struct NodeProbeResultDto {
 struct RuntimeStatusResponse {
     status: String,
     active_session_id: Option<String>,
+    active_node_id: Option<String>,
+    active_node_name: Option<String>,
     config_path: Option<String>,
     log_path: Option<String>,
     xray_binary_path: Option<String>,
@@ -192,6 +240,15 @@ struct CommandResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ShellSummaryInput {
+    status: String,
+    signed_in: Option<bool>,
+    node_name: Option<String>,
+    primary_action_label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApiRequestInput {
     method: String,
     path: String,
@@ -204,6 +261,86 @@ struct ApiRequestInput {
 struct ApiResponseOutput {
     status: u16,
     body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopInstallerDownloadInput {
+    url: String,
+    file_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopInstallerDownloadResult {
+    file_name: String,
+    local_path: String,
+    total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopInstallerDownloadProgress {
+    phase: String,
+    file_name: Option<String>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    local_path: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopRuntimeEnvironment {
+    platform: String,
+    architecture: String,
+    runtime_bin_dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentDownloadItemInput {
+    id: String,
+    component: RuntimeComponentKindInput,
+    file_name: String,
+    source_format: RuntimeComponentSourceFormat,
+    archive_entry_name: Option<String>,
+    checksum_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentDownloadInput {
+    component: RuntimeComponentDownloadItemInput,
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentDownloadResult {
+    component: String,
+    local_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentFileStatus {
+    ready: bool,
+    exists: bool,
+    path: Option<String>,
+    reason_code: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentDownloadProgress {
+    phase: String,
+    component: String,
+    file_name: Option<String>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    message: Option<String>,
 }
 
 #[tauri::command]
@@ -311,8 +448,522 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
 }
 
 #[tauri::command]
+async fn download_desktop_installer(
+    app: AppHandle,
+    input: DesktopInstallerDownloadInput,
+) -> Result<DesktopInstallerDownloadResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, input);
+        return Err("安卓端不支持桌面安装器下载".into());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let url = Url::parse(input.url.trim()).map_err(|error| format!("下载地址无效：{error}"))?;
+        if !matches!(url.scheme(), "https" | "http") {
+            return Err("下载地址仅支持 HTTP 或 HTTPS".into());
+        }
+
+        let file_name = resolve_installer_file_name(&url, input.file_name.as_deref());
+        emit_update_download_progress(
+            &app,
+            DesktopInstallerDownloadProgress {
+                phase: "preparing".into(),
+                file_name: Some(file_name.clone()),
+                downloaded_bytes: 0,
+                total_bytes: None,
+                local_path: None,
+                message: Some("正在准备下载安装器…".into()),
+            },
+        );
+
+        let download_dir = ensure_installer_download_dir(&app)?;
+        let final_path = unique_download_path(&download_dir, &file_name);
+        let temp_path = final_path.with_extension(format!(
+            "{}part",
+            final_path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| format!("{value}."))
+                .unwrap_or_default()
+        ));
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(600))
+            .build()
+            .map_err(|error| format!("初始化下载器失败：{error}"))?;
+        let mut response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|error| format!("下载安装器失败：{error}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!("下载安装器失败：HTTP {}", response.status().as_u16()));
+        }
+
+        let total_bytes = response.content_length();
+        let mut downloaded_bytes = 0_u64;
+        let mut file = File::create(&temp_path).map_err(|error| format!("创建安装器文件失败：{error}"))?;
+        emit_update_download_progress(
+            &app,
+            DesktopInstallerDownloadProgress {
+                phase: "downloading".into(),
+                file_name: Some(file_name.clone()),
+                downloaded_bytes,
+                total_bytes,
+                local_path: None,
+                message: Some("正在下载安装器…".into()),
+            },
+        );
+
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("下载安装器失败：{error}"))?
+        {
+            file.write_all(&chunk)
+                .map_err(|error| format!("写入安装器文件失败：{error}"))?;
+            downloaded_bytes += chunk.len() as u64;
+            emit_update_download_progress(
+                &app,
+                DesktopInstallerDownloadProgress {
+                    phase: "downloading".into(),
+                    file_name: Some(file_name.clone()),
+                    downloaded_bytes,
+                    total_bytes,
+                    local_path: None,
+                    message: Some("正在下载安装器…".into()),
+                },
+            );
+        }
+
+        file.flush().map_err(|error| format!("写入安装器文件失败：{error}"))?;
+        fs::rename(&temp_path, &final_path).map_err(|error| format!("保存安装器文件失败：{error}"))?;
+
+        let local_path = final_path.to_string_lossy().into_owned();
+        emit_update_download_progress(
+            &app,
+            DesktopInstallerDownloadProgress {
+                phase: "completed".into(),
+                file_name: Some(file_name.clone()),
+                downloaded_bytes,
+                total_bytes,
+                local_path: Some(local_path.clone()),
+                message: Some("安装器下载完成，正在打开安装程序…".into()),
+            },
+        );
+
+        Ok(DesktopInstallerDownloadResult {
+            file_name,
+            local_path,
+            total_bytes: total_bytes.or(Some(downloaded_bytes)),
+        })
+    }
+}
+
+#[tauri::command]
+fn open_desktop_installer(path: String) -> Result<CommandResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = path;
+        return Err("安卓端不支持桌面安装器打开".into());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let installer_path = PathBuf::from(path);
+        if !installer_path.exists() {
+            return Err("安装器文件不存在".into());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("open")
+                .arg(&installer_path)
+                .status()
+                .map_err(|error| format!("打开安装器失败：{error}"))?;
+            if !status.success() {
+                return Err("打开安装器失败".into());
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            let mut command = Command::new("cmd");
+            command.creation_flags(CREATE_NO_WINDOW);
+            command.args(["/C", "start", "", &installer_path.to_string_lossy()]);
+            let status = command.status().map_err(|error| format!("打开安装器失败：{error}"))?;
+            if !status.success() {
+                return Err("打开安装器失败".into());
+            }
+        }
+
+        Ok(CommandResult {
+            ok: true,
+            config_path: Some(installer_path.to_string_lossy().into_owned()),
+            log_path: None,
+            active_pid: None,
+        })
+    }
+}
+
+#[tauri::command]
+fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironment, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        return Err("安卓端不支持桌面运行时环境".into());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let runtime_bin_dir = ensure_runtime_bin_dir(&app)?;
+        Ok(DesktopRuntimeEnvironment {
+            platform: runtime_platform_name().into(),
+            architecture: detect_runtime_component_architecture().into(),
+            runtime_bin_dir: Some(runtime_bin_dir.to_string_lossy().into_owned()),
+        })
+    }
+}
+
+#[tauri::command]
+fn check_runtime_component_file(
+    app: AppHandle,
+    component: RuntimeComponentDownloadItemInput,
+) -> Result<RuntimeComponentFileStatus, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, component);
+        return Err("安卓端不支持桌面内核组件检查".into());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let target_path = runtime_component_target_path(&app, component.component)?;
+        if !target_path.exists() {
+            return Ok(RuntimeComponentFileStatus {
+                ready: false,
+                exists: false,
+                path: None,
+                reason_code: Some("component_missing".into()),
+                message: Some(format!("{} 尚未下载。", runtime_component_display_name(component.component))),
+            });
+        }
+        let metadata = fs::metadata(&target_path)
+            .map_err(|error| runtime_component_error("write_failed", format!("读取组件文件状态失败：{error}")))?;
+        if metadata.len() == 0 {
+            return Ok(RuntimeComponentFileStatus {
+                ready: false,
+                exists: true,
+                path: Some(target_path.to_string_lossy().into_owned()),
+                reason_code: Some("component_empty".into()),
+                message: Some(format!("{} 文件为空，请重新下载。", runtime_component_display_name(component.component))),
+            });
+        }
+
+        if component.component == RuntimeComponentKindInput::Xray {
+            ensure_executable(&target_path)?;
+        }
+
+        if let Some(expected_hash) = component
+            .checksum_sha256
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let actual = sha256_file(&target_path)?;
+            if actual != normalize_sha256(expected_hash) {
+                return Ok(RuntimeComponentFileStatus {
+                    ready: false,
+                    exists: true,
+                    path: Some(target_path.to_string_lossy().into_owned()),
+                    reason_code: Some("hash_mismatch".into()),
+                    message: Some(format!("{} 校验失败，请重新下载。", runtime_component_display_name(component.component))),
+                });
+            }
+        }
+
+        Ok(RuntimeComponentFileStatus {
+            ready: true,
+            exists: true,
+            path: Some(target_path.to_string_lossy().into_owned()),
+            reason_code: None,
+            message: Some(format!("{} 已准备完成。", runtime_component_display_name(component.component))),
+        })
+    }
+}
+
+#[tauri::command]
+async fn download_runtime_component(
+    app: AppHandle,
+    input: RuntimeComponentDownloadInput,
+) -> Result<RuntimeComponentDownloadResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, input);
+        return Err("安卓端不支持桌面内核组件下载".into());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        set_runtime_component_download_active(&app, true)?;
+        let component = input.component.component;
+        let component_name = runtime_component_key(component);
+        let result = async {
+            let download_url =
+                Url::parse(input.url.trim()).map_err(|error| runtime_component_error("download_failed", format!("下载地址无效：{error}")))?;
+            if !matches!(download_url.scheme(), "https" | "http") {
+                return Err(runtime_component_error("download_failed", "下载地址仅支持 HTTP 或 HTTPS".into()));
+            }
+
+            let runtime_dir = ensure_runtime_dir(&app)?;
+            let downloads_dir = runtime_dir.join("downloads");
+            fs::create_dir_all(&downloads_dir)
+                .map_err(|error| runtime_component_error("write_failed", format!("创建组件下载目录失败：{error}")))?;
+
+            let download_name = sanitize_runtime_download_file_name(&input.component.file_name);
+            let archive_path = downloads_dir.join(format!(
+                "{}-{}-{}.download",
+                component_name, input.component.id, download_name
+            ));
+            let target_path = runtime_component_target_path(&app, component)?;
+            let temp_target_path = target_path.with_extension("part");
+
+            emit_runtime_component_progress(
+                &app,
+                RuntimeComponentDownloadProgress {
+                    phase: "preparing".into(),
+                    component: component_name.into(),
+                    file_name: Some(input.component.file_name.clone()),
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                    message: Some(format!("正在准备 {}…", runtime_component_display_name(component))),
+                },
+            );
+
+            let client = Client::builder()
+                .timeout(Duration::from_secs(600))
+                .build()
+                .map_err(|error| runtime_component_error("download_failed", format!("初始化组件下载器失败：{error}")))?;
+            let mut response = client
+                .get(download_url.clone())
+                .send()
+                .await
+                .map_err(|error| runtime_component_error("download_failed", format!("下载 {} 失败：{error}", runtime_component_display_name(component))))?;
+
+            if !response.status().is_success() {
+                return Err(runtime_component_error(
+                    "download_failed",
+                    format!("下载 {} 失败：HTTP {}", runtime_component_display_name(component), response.status().as_u16()),
+                ));
+            }
+
+            let total_bytes = response.content_length();
+            let mut downloaded_bytes = 0_u64;
+            let mut archive_file = File::create(&archive_path)
+                .map_err(|error| runtime_component_error("write_failed", format!("创建组件缓存文件失败：{error}")))?;
+
+            emit_runtime_component_progress(
+                &app,
+                RuntimeComponentDownloadProgress {
+                    phase: "downloading".into(),
+                    component: component_name.into(),
+                    file_name: Some(input.component.file_name.clone()),
+                    downloaded_bytes,
+                    total_bytes,
+                    message: Some(format!("正在下载 {}…", runtime_component_display_name(component))),
+                },
+            );
+
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|error| runtime_component_error("download_failed", format!("下载 {} 失败：{error}", runtime_component_display_name(component))))?
+            {
+                archive_file
+                    .write_all(&chunk)
+                    .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
+                downloaded_bytes += chunk.len() as u64;
+                emit_runtime_component_progress(
+                    &app,
+                    RuntimeComponentDownloadProgress {
+                        phase: "downloading".into(),
+                        component: component_name.into(),
+                        file_name: Some(input.component.file_name.clone()),
+                        downloaded_bytes,
+                        total_bytes,
+                        message: Some(format!("正在下载 {}…", runtime_component_display_name(component))),
+                    },
+                );
+            }
+
+            archive_file
+                .flush()
+                .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
+
+            emit_runtime_component_progress(
+                &app,
+                RuntimeComponentDownloadProgress {
+                    phase: "extracting".into(),
+                    component: component_name.into(),
+                    file_name: Some(input.component.file_name.clone()),
+                    downloaded_bytes,
+                    total_bytes,
+                    message: Some(format!("正在整理 {}…", runtime_component_display_name(component))),
+                },
+            );
+
+            match input.component.source_format {
+                RuntimeComponentSourceFormat::Direct => {
+                    fs::copy(&archive_path, &temp_target_path)
+                        .map_err(|error| runtime_component_error("write_failed", format!("写入 {} 失败：{error}", runtime_component_display_name(component))))?;
+                }
+                RuntimeComponentSourceFormat::ZipEntry => {
+                    let entry_name = input
+                        .component
+                        .archive_entry_name
+                        .clone()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| input.component.file_name.clone());
+                    extract_zip_entry(&archive_path, &temp_target_path, &entry_name)
+                        .map_err(|error| runtime_component_error("extract_failed", error))?;
+                }
+            }
+
+            if let Some(expected_hash) = input
+                .component
+                .checksum_sha256
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                let actual = sha256_file(&temp_target_path)?;
+                if actual != normalize_sha256(expected_hash) {
+                    let _ = fs::remove_file(&temp_target_path);
+                    let _ = fs::remove_file(&archive_path);
+                    return Err(runtime_component_error(
+                        "hash_mismatch",
+                        format!("{} 校验失败，请检查下载源。", runtime_component_display_name(component)),
+                    ));
+                }
+            }
+
+            if component == RuntimeComponentKindInput::Xray {
+                ensure_executable(&temp_target_path)?;
+            }
+
+            if target_path.exists() {
+                let _ = fs::remove_file(&target_path);
+            }
+            fs::rename(&temp_target_path, &target_path)
+                .map_err(|error| runtime_component_error("write_failed", format!("保存 {} 失败：{error}", runtime_component_display_name(component))))?;
+            let _ = fs::remove_file(&archive_path);
+
+            let local_path = target_path.to_string_lossy().into_owned();
+            emit_runtime_component_progress(
+                &app,
+                RuntimeComponentDownloadProgress {
+                    phase: "completed".into(),
+                    component: component_name.into(),
+                    file_name: Some(target_path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(&input.component.file_name)
+                        .to_string()),
+                    downloaded_bytes: total_bytes.unwrap_or(downloaded_bytes),
+                    total_bytes: total_bytes.or(Some(downloaded_bytes)),
+                    message: Some(format!("{} 已准备完成。", runtime_component_display_name(component))),
+                },
+            );
+            Ok(RuntimeComponentDownloadResult {
+                component: component_name.into(),
+                local_path: Some(local_path),
+            })
+        }
+        .await;
+
+        if let Err(error) = &result {
+            emit_runtime_component_failed(
+                &app,
+                component_name,
+                Some(input.component.file_name.clone()),
+                0,
+                None,
+                error,
+            );
+        }
+        let _ = set_runtime_component_download_active(&app, false);
+        result
+    }
+}
+
+#[tauri::command]
 fn probe_nodes(nodes: Vec<NodeSummaryDto>) -> Vec<NodeProbeResultDto> {
     nodes.into_iter().map(probe_single_node).collect()
+}
+
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<CommandResult, String> {
+    show_main_window_internal(&app)?;
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<CommandResult, String> {
+    hide_main_window_internal(&app)?;
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+fn quit_application(app: AppHandle) -> Result<CommandResult, String> {
+    app.exit(0);
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+fn update_shell_summary(
+    app: AppHandle,
+    shell_state: State<'_, Mutex<ShellState>>,
+    summary: ShellSummaryInput,
+) -> Result<CommandResult, String> {
+    {
+        let mut state = shell_state
+            .lock()
+            .map_err(|_| "桌面壳层状态异常".to_string())?;
+        state.status = summary.status;
+        state.signed_in = summary.signed_in.unwrap_or(false);
+        state.node_name = summary.node_name;
+        state.primary_action_label = summary
+            .primary_action_label
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "连接/断开".to_string());
+    }
+
+    refresh_shell_ui(&app)?;
+
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
 }
 
 #[tauri::command]
@@ -322,6 +973,7 @@ fn app_ready(_app: AppHandle) -> Result<CommandResult, String> {
         let _ = window.show();
         let _ = window.set_focus();
         let _ = disable_context_menu(&window);
+        let _ = refresh_shell_ui(&_app);
     }
 
     Ok(CommandResult {
@@ -333,9 +985,11 @@ fn app_ready(_app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn runtime_status(state: State<'_, Mutex<RuntimeState>>) -> RuntimeStatusResponse {
+fn runtime_status(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> RuntimeStatusResponse {
     let mut state = state.lock().expect("runtime state lock");
     refresh_child_state(&mut state);
+    #[cfg(not(target_os = "android"))]
+    sync_shell_from_runtime(&app, &state);
     to_runtime_status_response(&state)
 }
 
@@ -359,21 +1013,65 @@ fn connect_runtime(
     config: GeneratedRuntimeConfigDto,
     state: State<'_, Mutex<RuntimeState>>,
 ) -> Result<CommandResult, String> {
+    {
+        let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+        let had_runtime = state.active_session_id.is_some() || state.active_pid.is_some();
+        stop_runtime_process(&app, &mut state);
+
+        if had_runtime {
+            let _ = clear_system_proxy();
+        }
+
+        if let Err(error) = detect_external_network_conflict(config.local_http_port, config.local_socks_port) {
+            state.status = "error".into();
+            state.active_session_id = None;
+            state.active_node_id = None;
+            state.active_node_name = None;
+            state.last_error = Some(error.clone());
+            #[cfg(not(target_os = "android"))]
+            sync_shell_from_runtime(&app, &state);
+            return Err(error);
+        }
+
+        state.status = "starting".into();
+        state.active_session_id = Some(config.session_id.clone());
+        state.active_node_id = Some(config.node.id.clone());
+        state.active_node_name = Some(config.node.name.clone());
+        state.local_http_port = Some(config.local_http_port);
+        state.local_socks_port = Some(config.local_socks_port);
+        state.last_error = None;
+        #[cfg(not(target_os = "android"))]
+        sync_shell_from_runtime(&app, &state);
+    }
+
+    let runtime_dir = ensure_runtime_dir(&app)?;
+    let xray_binary_path = match tauri::async_runtime::block_on(prepare_desktop_runtime_components(&app, &runtime_dir)) {
+        Ok(path) => path,
+        Err(error) => {
+            let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+            state.status = "error".into();
+            state.active_session_id = None;
+            state.active_node_id = None;
+            state.active_node_name = None;
+            state.local_http_port = None;
+            state.local_socks_port = None;
+            state.last_error = Some(error.clone());
+            #[cfg(not(target_os = "android"))]
+            sync_shell_from_runtime(&app, &state);
+            return Err(error);
+        }
+    };
+
     let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
-    stop_runtime_process(&app, &mut state);
-
-    let _ = clear_system_proxy();
-
     state.status = "connecting".into();
     state.active_session_id = Some(config.session_id.clone());
     state.active_node_id = Some(config.node.id.clone());
+    state.active_node_name = Some(config.node.name.clone());
     state.local_http_port = Some(config.local_http_port);
     state.local_socks_port = Some(config.local_socks_port);
     state.last_error = None;
-
-    let runtime_dir = ensure_runtime_dir(&app)?;
-    let xray_binary_path = ensure_xray_binary(&app, &runtime_dir)?;
-    ensure_geo_data(&app, &runtime_dir)?;
+    #[cfg(not(target_os = "android"))]
+    sync_shell_from_runtime(&app, &state);
     let config_path = runtime_dir.join(format!("{}.json", config.session_id));
     let log_path = runtime_dir.join(format!("{}.log", config.session_id));
 
@@ -410,6 +1108,7 @@ fn connect_runtime(
         state.local_http_port = None;
         state.local_socks_port = None;
         state.last_error = Some(format!("内核已退出：{exit_status}"));
+        sync_shell_from_runtime(&app, &state);
 
         return Err(if log.is_empty() {
             format!("内核启动失败：{exit_status}")
@@ -435,6 +1134,7 @@ fn connect_runtime(
     state.active_pid = Some(child.id());
     persist_runtime_pid(&app, child.id());
     state.child = Some(child);
+    sync_shell_from_runtime(&app, &state);
 
     Ok(CommandResult {
         ok: true,
@@ -446,38 +1146,13 @@ fn connect_runtime(
 
 #[tauri::command]
 fn disconnect_runtime(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Result<CommandResult, String> {
-    let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
-    state.status = "disconnecting".into();
-    let mut proxy_error: Option<String> = None;
-
-    if let Err(error) = clear_system_proxy() {
-        proxy_error = Some(error.to_string());
-    }
-
-    stop_runtime_process(&app, &mut state);
-
-    state.status = "idle".into();
-    state.active_session_id = None;
-    state.active_node_id = None;
-    state.config_path = None;
-    state.active_pid = None;
-    state.log_path = None;
-    state.xray_binary_path = None;
-    state.local_http_port = None;
-    state.local_socks_port = None;
-    state.last_error = None;
-
-    if let Some(error) = proxy_error {
-        state.last_error = Some(format!("已停止内核，但清理系统代理失败：{error}"));
-    }
+    let _ = state;
+    disconnect_runtime_internal(&app)?;
 
     Ok(CommandResult {
         ok: true,
         config_path: None,
-        log_path: state
-            .log_path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
+        log_path: None,
         active_pid: None,
     })
 }
@@ -492,90 +1167,23 @@ fn ensure_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn ensure_xray_binary(app: &AppHandle, runtime_dir: &Path) -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("CHORDV_XRAY_BIN") {
-        let binary = PathBuf::from(path);
-        if binary.exists() {
-            return Ok(binary);
-        }
-    }
-
-    let bin_dir = runtime_dir.join("bin");
+fn ensure_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let bin_dir = ensure_runtime_dir(app)?.join("bin");
     fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
-    let installed_path = bin_dir.join(runtime_binary_name());
-
-    if installed_path.exists() {
-        ensure_executable(&installed_path)?;
-        return Ok(installed_path);
-    }
-
-    let candidates = xray_binary_candidates(app);
-    for candidate in candidates {
-        if candidate.exists() {
-            fs::copy(&candidate, &installed_path).map_err(|error| error.to_string())?;
-            ensure_executable(&installed_path)?;
-            return Ok(installed_path);
-        }
-    }
-
-    Err("未找到 xray 内核，请先执行 pnpm --filter @chordv/desktop setup:xray".into())
+    Ok(bin_dir)
 }
 
-fn xray_binary_candidates(app: &AppHandle) -> Vec<PathBuf> {
-    let binary_name = target_binary_name();
-    let mut candidates = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("bin")
-        .join(binary_name)];
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("bin").join(binary_name));
-        candidates.push(resource_dir.join(binary_name));
+fn ensure_xray_binary(_app: &AppHandle, runtime_dir: &Path) -> Result<PathBuf, String> {
+    let installed_path = runtime_dir.join("bin").join(runtime_binary_name());
+    if !installed_path.exists() {
+        return Err("必要内核组件未就绪，请先等待组件下载完成后再连接。".into());
     }
-
-    candidates
-}
-
-fn xray_resource_dirs(app: &AppHandle) -> Vec<PathBuf> {
-    let mut dirs = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin")];
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        dirs.push(resource_dir.join("bin"));
-        dirs.push(resource_dir);
+    let metadata = fs::metadata(&installed_path).map_err(|error| error.to_string())?;
+    if metadata.len() == 0 {
+        return Err("Xray 内核文件损坏，请重新下载必要内核组件。".into());
     }
-
-    dirs
-}
-
-fn target_binary_name() -> &'static str {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        "xray-aarch64-apple-darwin"
-    }
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        "xray-x86_64-apple-darwin"
-    }
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        "xray-x86_64-pc-windows-msvc.exe"
-    }
-
-    #[cfg(all(target_os = "android", target_arch = "aarch64"))]
-    {
-        "xray-aarch64-linux-android"
-    }
-
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "android", target_arch = "aarch64")
-    )))]
-    {
-        "xray"
-    }
+    ensure_executable(&installed_path)?;
+    Ok(installed_path)
 }
 
 fn runtime_binary_name() -> &'static str {
@@ -617,25 +1225,291 @@ fn set_private_permissions(_path: &Path) -> Result<(), String> {
 }
 
 fn ensure_geo_data(app: &AppHandle, runtime_dir: &Path) -> Result<(), String> {
-    let bin_dir = runtime_dir.join("bin");
-    fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
-
-    for file_name in ["geoip.dat", "geosite.dat"] {
-        let target = bin_dir.join(file_name);
-        if target.exists() {
-            continue;
+    let _ = app;
+    for kind in [RuntimeComponentKindInput::Geoip, RuntimeComponentKindInput::Geosite] {
+        let target = runtime_dir.join("bin").join(runtime_component_file_name(kind));
+        if !target.exists() {
+            return Err(format!(
+                "{} 未就绪，请先等待组件下载完成后再连接。",
+                runtime_component_display_name(kind)
+            ));
         }
+        let metadata = fs::metadata(&target).map_err(|error| error.to_string())?;
+        if metadata.len() == 0 {
+            return Err(format!(
+                "{} 文件损坏，请重新下载必要内核组件。",
+                runtime_component_display_name(kind)
+            ));
+        }
+    }
+    Ok(())
+}
 
-        let source = xray_resource_dirs(app)
-            .into_iter()
-            .map(|dir| dir.join(file_name))
-            .find(|path| path.exists())
-            .ok_or_else(|| format!("未找到 {file_name}，请先执行 pnpm --filter @chordv/desktop setup:xray"))?;
+async fn prepare_desktop_runtime_components(app: &AppHandle, runtime_dir: &Path) -> Result<PathBuf, String> {
+    let xray_path = ensure_xray_binary(app, runtime_dir)?;
+    ensure_geo_data(app, runtime_dir)?;
+    Ok(xray_path)
+}
 
-        fs::copy(source, target).map_err(|error| error.to_string())?;
+fn runtime_component_target_path(app: &AppHandle, component: RuntimeComponentKindInput) -> Result<PathBuf, String> {
+    Ok(ensure_runtime_bin_dir(app)?.join(runtime_component_file_name(component)))
+}
+
+fn runtime_component_file_name(component: RuntimeComponentKindInput) -> &'static str {
+    match component {
+        RuntimeComponentKindInput::Xray => runtime_binary_name(),
+        RuntimeComponentKindInput::Geoip => "geoip.dat",
+        RuntimeComponentKindInput::Geosite => "geosite.dat",
+    }
+}
+
+fn runtime_component_display_name(component: RuntimeComponentKindInput) -> &'static str {
+    match component {
+        RuntimeComponentKindInput::Xray => "Xray 内核",
+        RuntimeComponentKindInput::Geoip => "GeoIP 数据",
+        RuntimeComponentKindInput::Geosite => "GeoSite 数据",
+    }
+}
+
+fn runtime_component_key(component: RuntimeComponentKindInput) -> &'static str {
+    match component {
+        RuntimeComponentKindInput::Xray => "xray",
+        RuntimeComponentKindInput::Geoip => "geoip",
+        RuntimeComponentKindInput::Geosite => "geosite",
+    }
+}
+
+fn runtime_platform_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "unsupported"
+    }
+}
+
+fn detect_runtime_component_architecture() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("uname").arg("-m").output() {
+            let architecture = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+            if architecture.contains("arm") || architecture.contains("aarch64") {
+                return "arm64";
+            }
+            return "x64";
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(value) = std::env::var("PROCESSOR_ARCHITECTURE") {
+            let normalized = value.trim().to_lowercase();
+            if normalized.contains("arm") {
+                return "arm64";
+            }
+        }
+        if let Ok(value) = std::env::var("PROCESSOR_ARCHITEW6432") {
+            let normalized = value.trim().to_lowercase();
+            if normalized.contains("arm") {
+                return "arm64";
+            }
+        }
+        return "x64";
+    }
+
+    #[allow(unreachable_code)]
+    "x64"
+}
+
+fn emit_runtime_component_progress(app: &AppHandle, progress: RuntimeComponentDownloadProgress) {
+    let _ = app.emit("chordv://runtime-component-download-progress", progress);
+}
+
+fn runtime_component_error(code: &str, message: String) -> String {
+    format!("runtime_component_error:{code}:{message}")
+}
+
+fn emit_runtime_component_failed(
+    app: &AppHandle,
+    component: &str,
+    file_name: Option<String>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    message: &str,
+) {
+    emit_runtime_component_progress(
+        app,
+        RuntimeComponentDownloadProgress {
+            phase: "failed".into(),
+            component: component.into(),
+            file_name,
+            downloaded_bytes,
+            total_bytes,
+            message: Some(message.to_string()),
+        },
+    );
+}
+
+fn set_runtime_component_download_active(app: &AppHandle, active: bool) -> Result<(), String> {
+    let state: State<'_, Mutex<RuntimeComponentDownloadState>> = app.state();
+    let mut state = state
+        .lock()
+        .map_err(|_| "运行时组件下载状态异常".to_string())?;
+    if active && state.active {
+        return Err("必要内核组件正在下载，请稍后再试。".into());
+    }
+    state.active = active;
     Ok(())
+}
+
+fn sanitize_runtime_download_file_name(file_name: &str) -> String {
+    sanitize_desktop_download_file_name(file_name)
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| runtime_component_error("write_failed", format!("读取组件文件失败：{error}")))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn normalize_sha256(value: &str) -> String {
+    value.trim().replace(':', "").to_lowercase()
+}
+
+fn extract_zip_entry(archive_path: &Path, target_path: &Path, entry_name: &str) -> Result<(), String> {
+    let file = File::open(archive_path).map_err(|error| format!("打开组件压缩包失败：{error}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| format!("解析组件压缩包失败：{error}"))?;
+    let normalized_entry = entry_name.replace('\\', "/");
+
+    let mut index = None;
+    for idx in 0..archive.len() {
+        let Ok(file) = archive.by_index(idx) else {
+            continue;
+        };
+        let candidate = file.name().replace('\\', "/");
+        if candidate == normalized_entry || candidate.ends_with(&format!("/{normalized_entry}")) {
+            index = Some(idx);
+            break;
+        }
+    }
+
+    let idx = index.ok_or_else(|| format!("压缩包内缺少指定文件：{entry_name}"))?;
+    let mut entry = archive
+        .by_index(idx)
+        .map_err(|error| format!("读取压缩包内容失败：{error}"))?;
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建目标目录失败：{error}"))?;
+    }
+    let mut target = File::create(target_path).map_err(|error| format!("创建目标文件失败：{error}"))?;
+    io::copy(&mut entry, &mut target).map_err(|error| format!("写入解压文件失败：{error}"))?;
+    target.flush().map_err(|error| format!("写入解压文件失败：{error}"))?;
+    Ok(())
+}
+
+fn ensure_installer_download_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(download_dir) = app.path().download_dir() {
+        let target = download_dir.join("ChordV 安装包");
+        fs::create_dir_all(&target).map_err(|error| format!("创建下载目录失败：{error}"))?;
+        return Ok(target);
+    }
+
+    let fallback = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+        .join("downloads");
+    fs::create_dir_all(&fallback).map_err(|error| format!("创建下载目录失败：{error}"))?;
+    Ok(fallback)
+}
+
+fn unique_download_path(dir: &Path, file_name: &str) -> PathBuf {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("ChordV");
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{value}"))
+        .unwrap_or_default();
+
+    for index in 1..=999 {
+        let next = dir.join(format!("{stem}-{index}{extension}"));
+        if !next.exists() {
+            return next;
+        }
+    }
+
+    dir.join(format!("{stem}-{}{}", chrono::Utc::now().timestamp(), extension))
+}
+
+fn resolve_installer_file_name(url: &Url, preferred: Option<&str>) -> String {
+    let preferred_name = preferred
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(sanitize_desktop_download_file_name);
+    if let Some(value) = preferred_name {
+        return value;
+    }
+
+    let from_url = url
+        .path_segments()
+        .and_then(|segments| segments.filter(|value| !value.is_empty()).last())
+        .map(sanitize_desktop_download_file_name)
+        .filter(|value| !value.is_empty());
+    if let Some(value) = from_url {
+        return value;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return "ChordV.dmg".into();
+    }
+
+    #[cfg(windows)]
+    {
+        return "ChordV-setup.exe".into();
+    }
+
+    #[allow(unreachable_code)]
+    "ChordV-installer.bin".into()
+}
+
+fn sanitize_desktop_download_file_name(file_name: &str) -> String {
+    let trimmed = file_name.trim();
+    let safe = trimmed
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let normalized = safe.trim_matches('_').replace("__", "_");
+    if normalized.is_empty() {
+        "ChordV-installer.bin".into()
+    } else {
+        normalized
+    }
+}
+
+fn emit_update_download_progress(app: &AppHandle, progress: DesktopInstallerDownloadProgress) {
+    let _ = app.emit("chordv://update-download-progress", progress);
 }
 
 fn write_xray_config(
@@ -895,6 +1769,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
                 state.config_path = None;
                 state.local_http_port = None;
                 state.local_socks_port = None;
+                state.active_node_name = None;
                 state.last_error = Some(format!("内核已退出：{status}"));
             }
             Ok(None) => {
@@ -910,6 +1785,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
                 state.config_path = None;
                 state.local_http_port = None;
                 state.local_socks_port = None;
+                state.active_node_name = None;
                 state.last_error = Some(format!("读取 xray 状态失败：{error}"));
             }
         }
@@ -926,6 +1802,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
             state.config_path = None;
             state.local_http_port = None;
             state.local_socks_port = None;
+            state.active_node_name = None;
             state.last_error = Some("内核未运行".into());
         }
     }
@@ -1118,6 +1995,7 @@ fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
     state.status = "idle".into();
     state.active_session_id = None;
     state.active_node_id = None;
+    state.active_node_name = None;
     state.config_path = None;
     state.log_path = None;
     state.xray_binary_path = None;
@@ -1151,6 +2029,8 @@ fn to_runtime_status_response(state: &RuntimeState) -> RuntimeStatusResponse {
     RuntimeStatusResponse {
         status: state.status.clone(),
         active_session_id: state.active_session_id.clone(),
+        active_node_id: state.active_node_id.clone(),
+        active_node_name: state.active_node_name.clone(),
         config_path: state
             .config_path
             .as_ref()
@@ -1181,6 +2061,7 @@ fn rollback_connect_failure(
     state.status = "error".into();
     state.active_session_id = None;
     state.active_node_id = None;
+    state.active_node_name = None;
     state.config_path = None;
     state.log_path = None;
     state.xray_binary_path = None;
@@ -1188,6 +2069,8 @@ fn rollback_connect_failure(
     state.local_http_port = None;
     state.local_socks_port = None;
     state.last_error = Some(message);
+    #[cfg(not(target_os = "android"))]
+    sync_shell_from_runtime(app, state);
 }
 
 fn verify_runtime_ready(http_port: u16, socks_port: u16) -> Result<(), String> {
@@ -1298,6 +2181,233 @@ fn clear_system_proxy() -> Result<(), io::Error> {
     {
         Ok(())
     }
+}
+
+fn detect_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        detect_macos_external_network_conflict(http_port, socks_port)
+    }
+
+    #[cfg(windows)]
+    {
+        detect_windows_external_network_conflict(http_port, socks_port)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (http_port, socks_port);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
+    if let Some(vpn_name) = detect_connected_macos_vpn_name() {
+        return Err(format!(
+            "external_vpn_conflict: 检测到系统中已有 VPN 正在运行（{}），请先断开后再连接 ChordV。",
+            vpn_name
+        ));
+    }
+
+    if let Some(proxy_summary) = detect_macos_proxy_conflict(http_port, socks_port) {
+        return Err(format!(
+            "external_proxy_conflict: 检测到系统代理已由其他应用占用（{}），请先关闭后再连接 ChordV。",
+            proxy_summary
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn detect_connected_macos_vpn_name() -> Option<String> {
+    let output = Command::new("scutil").args(["--nc", "list"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.contains("(Connected)") {
+            return None;
+        }
+        let quoted = trimmed
+            .split('"')
+            .nth(1)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        quoted.or_else(|| Some(trimmed.to_string()))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_proxy_conflict(http_port: u16, socks_port: u16) -> Option<String> {
+    let output = Command::new("scutil").arg("--proxy").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let http_enabled = proxy_dict_flag(&text, "HTTPEnable");
+    let https_enabled = proxy_dict_flag(&text, "HTTPSEnable");
+    let socks_enabled = proxy_dict_flag(&text, "SOCKSEnable");
+
+    let http_proxy = proxy_dict_value(&text, "HTTPProxy");
+    let https_proxy = proxy_dict_value(&text, "HTTPSProxy");
+    let socks_proxy = proxy_dict_value(&text, "SOCKSProxy");
+
+    let http_conflict = http_enabled
+        && !matches_our_proxy(http_proxy.as_deref(), proxy_dict_u16(&text, "HTTPPort"), http_port);
+    let https_conflict = https_enabled
+        && !matches_our_proxy(https_proxy.as_deref(), proxy_dict_u16(&text, "HTTPSPort"), http_port);
+    let socks_conflict = socks_enabled
+        && !matches_our_proxy(socks_proxy.as_deref(), proxy_dict_u16(&text, "SOCKSPort"), socks_port);
+
+    if http_conflict {
+        return Some(format!(
+            "HTTP {}:{}",
+            http_proxy.unwrap_or_else(|| "未知地址".to_string()),
+            proxy_dict_u16(&text, "HTTPPort").unwrap_or_default()
+        ));
+    }
+    if https_conflict {
+        return Some(format!(
+            "HTTPS {}:{}",
+            https_proxy.unwrap_or_else(|| "未知地址".to_string()),
+            proxy_dict_u16(&text, "HTTPSPort").unwrap_or_default()
+        ));
+    }
+    if socks_conflict {
+        return Some(format!(
+            "SOCKS {}:{}",
+            socks_proxy.unwrap_or_else(|| "未知地址".to_string()),
+            proxy_dict_u16(&text, "SOCKSPort").unwrap_or_default()
+        ));
+    }
+
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn proxy_dict_flag(text: &str, key: &str) -> bool {
+    proxy_dict_value(text, key)
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(0)
+        == 1
+}
+
+#[cfg(target_os = "macos")]
+fn proxy_dict_u16(text: &str, key: &str) -> Option<u16> {
+    proxy_dict_value(text, key)?.parse::<u16>().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn proxy_dict_value(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let (found_key, value) = trimmed.split_once(':')?;
+        if found_key.trim() == key {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn matches_our_proxy(host: Option<&str>, port: Option<u16>, expected_port: u16) -> bool {
+    matches!(host, Some("127.0.0.1") | Some("localhost")) && port == Some(expected_port)
+}
+
+#[cfg(windows)]
+fn detect_windows_external_network_conflict(http_port: u16, socks_port: u16) -> Result<(), String> {
+    if let Some(vpn_name) = detect_connected_windows_vpn_name() {
+        return Err(format!(
+            "external_vpn_conflict: 检测到系统中已有 VPN 正在运行（{}），请先断开后再连接 ChordV。",
+            vpn_name
+        ));
+    }
+
+    let expected = format!("http=127.0.0.1:{http_port};https=127.0.0.1:{http_port};socks=127.0.0.1:{socks_port}");
+    if let Some(proxy_server) = detect_windows_proxy_conflict(&expected) {
+        return Err(format!(
+            "external_proxy_conflict: 检测到系统代理已由其他应用占用（{}），请先关闭后再连接 ChordV。",
+            proxy_server
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn detect_connected_windows_vpn_name() -> Option<String> {
+    let mut command = Command::new("powershell");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-VpnConnection | Where-Object {$_.ConnectionStatus -eq 'Connected'} | Select-Object -ExpandProperty Name",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+#[cfg(windows)]
+fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> {
+    let mut enable = Command::new("reg");
+    enable.creation_flags(CREATE_NO_WINDOW);
+    let enable_output = enable
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            "ProxyEnable",
+        ])
+        .output()
+        .ok()?;
+    let enable_text = String::from_utf8_lossy(&enable_output.stdout).to_lowercase();
+    if !enable_output.status.success() || !enable_text.contains("0x1") {
+        return None;
+    }
+
+    let mut server = Command::new("reg");
+    server.creation_flags(CREATE_NO_WINDOW);
+    let server_output = server
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            "ProxyServer",
+        ])
+        .output()
+        .ok()?;
+    if !server_output.status.success() {
+        return Some("未知代理".to_string());
+    }
+    let server_text = String::from_utf8_lossy(&server_output.stdout);
+    if server_text.contains(expected_proxy_server) {
+        return None;
+    }
+    server_text
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.contains("ProxyServer") {
+                trimmed.split_whitespace().last().map(|value| value.to_string())
+            } else {
+                None
+            }
+        })
+        .or_else(|| Some("未知代理".to_string()))
 }
 
 #[cfg(target_os = "macos")]
@@ -1573,14 +2683,457 @@ fn disable_context_menu(window: &tauri::WebviewWindow) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(not(target_os = "android"))]
+fn shell_status_text(status: &str) -> &'static str {
+    match status {
+        "signed-out" => "未登录",
+        "connected" => "已连接",
+        "connecting" | "starting" => "连接中",
+        "disconnecting" => "断开中",
+        "error" => "异常",
+        _ => "空闲",
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn window_for_shell(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
+    let window = window_for_shell(app)?;
+    #[cfg(windows)]
+    let _ = window.set_skip_taskbar(false);
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        let _ = refresh_shell_ui(app);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
+    let window = window_for_shell(app)?;
+    #[cfg(windows)]
+    let _ = window.set_skip_taskbar(true);
+    window.hide().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn toggle_main_window_internal(app: &AppHandle) -> Result<(), String> {
+    let window = window_for_shell(app)?;
+    if window.is_visible().map_err(|error| error.to_string())? {
+        let _ = window.set_skip_taskbar(true);
+        window.hide().map_err(|error| error.to_string())?;
+    } else {
+        let _ = window.set_skip_taskbar(false);
+        window.show().map_err(|error| error.to_string())?;
+        window.unminimize().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+fn sync_shell_from_runtime(app: &AppHandle, runtime: &RuntimeState) {
+    if let Ok(mut shell) = app.state::<Mutex<ShellState>>().lock() {
+        shell.status = runtime.status.clone();
+        shell.signed_in = true;
+        shell.node_name = runtime.active_node_name.clone();
+        shell.primary_action_label = shell_primary_action_label(&runtime.status);
+    }
+    let _ = refresh_shell_ui(app);
+}
+
+#[cfg(not(target_os = "android"))]
+fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
+    let window = window_for_shell(app)?;
+    let script = match action {
+        "toggle-connection" => {
+            "(function(){ const bridge = window.__CHORDV_DESKTOP_SHELL__; if (!bridge || typeof bridge.toggleConnection !== 'function') { throw new Error('shell bridge toggleConnection unavailable'); } bridge.toggleConnection(); })();"
+        }
+        "open-logs" => {
+            "(function(){ const bridge = window.__CHORDV_DESKTOP_SHELL__; if (!bridge || typeof bridge.openLogs !== 'function') { throw new Error('shell bridge openLogs unavailable'); } bridge.openLogs(); })();"
+        }
+        _ => return Err(format!("未知壳层动作：{action}")),
+    };
+
+    window.eval(script).map_err(|error| format!("壳层动作派发失败：{error}"))
+}
+
+#[cfg(not(target_os = "android"))]
+fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
+    let runtime_state = app.state::<Mutex<RuntimeState>>();
+    let mut state = runtime_state
+        .lock()
+        .map_err(|_| "运行时状态异常".to_string())?;
+    state.status = "disconnecting".into();
+    let mut proxy_error: Option<String> = None;
+
+    if let Err(error) = clear_system_proxy() {
+        proxy_error = Some(error.to_string());
+    }
+
+    stop_runtime_process(app, &mut state);
+
+    state.status = "idle".into();
+    state.active_session_id = None;
+    state.active_node_id = None;
+    state.active_node_name = None;
+    state.config_path = None;
+    state.active_pid = None;
+    state.log_path = None;
+    state.xray_binary_path = None;
+    state.local_http_port = None;
+    state.local_socks_port = None;
+    state.last_error = proxy_error.map(|error| format!("已停止内核，但清理系统代理失败：{error}"));
+
+    sync_shell_from_runtime(app, &state);
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+fn build_shell_menu(app: &AppHandle, state: &ShellState) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+    let status_text = format!("当前状态：{}", shell_status_text(&state.status));
+    let node_text = format!(
+        "当前节点：{}",
+        if state.signed_in {
+            state.node_name.as_deref().unwrap_or("未选择")
+        } else {
+            "请先登录"
+        }
+    );
+    let primary_action = if state.primary_action_label.trim().is_empty() {
+        "连接/断开".to_string()
+    } else {
+        state.primary_action_label.clone()
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let about = MenuItemBuilder::with_id("shell.about", "关于 ChordV")
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let show_app = MenuItemBuilder::with_id("shell.show", "显示主界面")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let action = MenuItemBuilder::with_id("shell.toggle", primary_action.clone())
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let status = MenuItemBuilder::with_id("shell.status", status_text.clone())
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let node = MenuItemBuilder::with_id("shell.node", node_text.clone())
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let logs_help = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let hide_app = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let show_window = MenuItemBuilder::with_id("shell.show", "显示主界面")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let hide_window = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+
+        let app_menu = SubmenuBuilder::new(app, "ChordV")
+            .item(&about)
+            .separator()
+            .item(&show_app)
+            .item(&hide_app)
+            .separator()
+            .item(&quit)
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        let connection_menu = SubmenuBuilder::new(app, "连接")
+            .item(&status)
+            .item(&node)
+            .separator()
+            .item(&action)
+            .item(&logs)
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        let window_menu = SubmenuBuilder::new(app, "窗口")
+            .item(&show_window)
+            .item(&hide_window)
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        let help_menu = SubmenuBuilder::new(app, "帮助")
+            .item(&logs_help)
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        MenuBuilder::new(app)
+            .item(&app_menu)
+            .item(&connection_menu)
+            .item(&window_menu)
+            .item(&help_menu)
+            .build()
+            .map_err(|error| error.to_string())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let status = MenuItemBuilder::with_id("shell.status", status_text)
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let node = MenuItemBuilder::with_id("shell.node", node_text)
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let action = MenuItemBuilder::with_id("shell.toggle", primary_action)
+            .enabled(state.signed_in)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
+            .enabled(state.signed_in)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+
+        MenuBuilder::new(app)
+            .item(&show)
+            .item(&status)
+            .item(&node)
+            .separator()
+            .item(&action)
+            .item(&logs)
+            .separator()
+            .item(&quit)
+            .build()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn build_shell_tray_menu(app: &AppHandle, state: &ShellState) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+    #[cfg(target_os = "macos")]
+    let _ = state;
+
+    #[cfg(target_os = "macos")]
+    {
+        let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let action = MenuItemBuilder::with_id("shell.toggle", "连接/断开")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let hide = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+
+        return MenuBuilder::new(app)
+            .item(&show)
+            .item(&action)
+            .item(&logs)
+            .item(&hide)
+            .separator()
+            .item(&quit)
+            .build()
+            .map_err(|error| error.to_string());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+    let status_text = format!("当前状态：{}", shell_status_text(&state.status));
+    let node_text = format!(
+        "当前节点：{}",
+        state.node_name.as_deref().unwrap_or("未选择")
+    );
+    let primary_action = if state.primary_action_label.trim().is_empty() {
+        "连接/断开".to_string()
+    } else {
+        state.primary_action_label.clone()
+    };
+
+    let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    let status = MenuItemBuilder::with_id("shell.status", status_text)
+        .enabled(false)
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    let node = MenuItemBuilder::with_id("shell.node", node_text)
+        .enabled(false)
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    let action = MenuItemBuilder::with_id("shell.toggle", primary_action)
+        .enabled(state.signed_in)
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
+        .enabled(state.signed_in)
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    let hide = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+        .build(app)
+        .map_err(|error| error.to_string())?;
+    let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
+        .build(app)
+        .map_err(|error| error.to_string())?;
+
+    MenuBuilder::new(app)
+        .item(&show)
+        .item(&status)
+        .item(&node)
+        .separator()
+        .item(&action)
+        .item(&logs)
+        .item(&hide)
+        .separator()
+        .item(&quit)
+        .build()
+        .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn refresh_shell_ui(app: &AppHandle) -> Result<(), String> {
+    let shell_binding = app
+        .state::<Mutex<ShellState>>();
+    let shell = shell_binding
+        .lock()
+        .map_err(|_| "桌面壳层状态异常".to_string())?;
+    let menu = build_shell_menu(app, &shell)?;
+    #[cfg(target_os = "windows")]
+    let tray_menu = build_shell_tray_menu(app, &shell)?;
+
+    #[cfg(target_os = "macos")]
+    menu.set_as_app_menu().map_err(|error| error.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(tray) = app.tray_by_id("main-tray") {
+            tray.set_menu(Some(tray_menu))
+                .map_err(|error| error.to_string())?;
+            tray.set_tooltip(Some(&format!(
+                "ChordV · {}{}",
+                shell_status_text(&shell.status),
+                shell
+                    .node_name
+                    .as_deref()
+                    .map(|value| format!(" · {value}"))
+                    .unwrap_or_default()
+            )))
+            .map_err(|error| error.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
+    let shell_binding = app
+        .state::<Mutex<ShellState>>();
+    let shell = shell_binding
+        .lock()
+        .map_err(|_| "桌面壳层状态异常".to_string())?;
+    let menu = build_shell_tray_menu(app, &shell)?;
+    let icon = app
+        .default_window_icon()
+        .ok_or_else(|| "缺少默认应用图标".to_string())?
+        .clone();
+
+    let mut builder = TrayIconBuilder::with_id("main-tray");
+    builder = builder
+        .icon(icon)
+        .tooltip("ChordV")
+        .menu(&menu);
+
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let _ = toggle_main_window_internal(&tray.app_handle());
+                }
+            });
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.show_menu_on_left_click(true);
+    }
+
+    builder
+        .build(app)
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(android_mobile_plugin::init())
         .manage(Mutex::new(RuntimeState::default()))
+        .manage(Mutex::new(ShellState {
+            status: "idle".into(),
+            signed_in: false,
+            node_name: None,
+            primary_action_label: "连接/断开".into(),
+        }))
+        .manage(Mutex::new(RuntimeComponentDownloadState::default()))
         .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()))
         .setup(|app| {
             cleanup_stale_runtime(&app.handle());
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = ensure_runtime_bin_dir(&app.handle());
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                refresh_shell_ui(&app.handle())?;
+            }
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            {
+                setup_desktop_tray(&app.handle())?;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = show_main_window_internal(&app.handle());
+                let _ = refresh_shell_ui(&app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1590,6 +3143,15 @@ pub fn run() {
             save_session,
             clear_session,
             probe_nodes,
+            show_main_window,
+            hide_main_window,
+            quit_application,
+            download_desktop_installer,
+            open_desktop_installer,
+            desktop_runtime_environment,
+            check_runtime_component_file,
+            download_runtime_component,
+            update_shell_summary,
             runtime_status,
             runtime_logs,
             connect_runtime,
@@ -1602,6 +3164,47 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {
+        #[cfg(not(target_os = "android"))]
+        RunEvent::MenuEvent(event) => match event.id.as_ref() {
+            "shell.show" => {
+                let _ = show_main_window_internal(app_handle);
+            }
+            "shell.hide" => {
+                let _ = hide_main_window_internal(app_handle);
+            }
+            "shell.toggle" => {
+                let status = {
+                    let runtime_binding = app_handle.state::<Mutex<RuntimeState>>();
+                    runtime_binding
+                        .lock()
+                        .ok()
+                        .map(|runtime| runtime.status.clone())
+                };
+                if !matches!(status.as_deref(), Some("connected" | "connecting" | "disconnecting")) {
+                    let _ = show_main_window_internal(app_handle);
+                }
+                let _ = emit_shell_action(app_handle, "toggle-connection");
+            }
+            "shell.logs" => {
+                let _ = show_main_window_internal(app_handle);
+                let _ = emit_shell_action(app_handle, "open-logs");
+            }
+            "shell.quit" => {
+                app_handle.exit(0);
+            }
+            _ => {}
+        },
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            let _ = show_main_window_internal(app_handle);
+        }
+        #[cfg(not(target_os = "android"))]
+        RunEvent::WindowEvent { event, .. } => {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = hide_main_window_internal(app_handle);
+            }
+        }
         RunEvent::ExitRequested { .. } | RunEvent::Exit => {
             let state: State<'_, Mutex<RuntimeState>> = app_handle.state();
             if let Ok(mut state) = state.lock() {

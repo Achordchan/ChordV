@@ -26,6 +26,11 @@ pub struct AndroidRuntimeState {
     connectivity_verified: Option<bool>,
 }
 
+struct AndroidBridgeError {
+    code: String,
+    message: String,
+}
+
 impl Default for AndroidRuntimeState {
     fn default() -> Self {
         Self {
@@ -56,6 +61,24 @@ fn build_android_xray_config(
     log_path: &Path,
 ) -> serde_json::Value {
     build_xray_config(config, log_path, true)
+}
+
+fn parse_android_bridge_error(raw: String, fallback_code: &str) -> AndroidBridgeError {
+    if let Some((code, message)) = raw.split_once(": ") {
+        let normalized_code = code.trim();
+        let normalized_message = message.trim();
+        if !normalized_code.is_empty() && !normalized_message.is_empty() {
+            return AndroidBridgeError {
+                code: normalized_code.to_string(),
+                message: normalized_message.to_string(),
+            };
+        }
+    }
+
+    AndroidBridgeError {
+        code: fallback_code.to_string(),
+        message: raw,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -118,7 +141,7 @@ struct AndroidNativeStartResult {
     last_error_code: Option<String>,
     last_started_at: Option<String>,
     vpn_interface_ready: Option<bool>,
-    xray_process_alive: Option<bool>,
+    connectivity_check_passed: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -154,6 +177,7 @@ struct AndroidPluginStatusPayload {
     tun_name: Option<String>,
     vpn_interface_ready: Option<bool>,
     xray_process_alive: Option<bool>,
+    connectivity_check_passed: Option<bool>,
     last_error: Option<String>,
     last_error_code: Option<String>,
     last_started_at: Option<String>,
@@ -165,7 +189,7 @@ const ANDROID_TUN_IPV4_ADDRESS: &str = "172.19.0.2";
 const ANDROID_TUN_IPV4_PREFIX: u8 = 30;
 const ANDROID_TUN_IPV6_ADDRESS: &str = "fd66:6f72:6463::2";
 const ANDROID_TUN_IPV6_PREFIX: u8 = 126;
-const ANDROID_TUN_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+const ANDROID_TUN_TEST_URL: &str = "http://connectivitycheck.gstatic.com/generate_204";
 const ANDROID_TUN_DNS_SERVERS: [&str; 4] = [
     "1.1.1.1",
     "223.5.5.5",
@@ -199,7 +223,7 @@ pub fn android_runtime_status(
                         .as_deref()
                         .and_then(recovery_hint_for_reason);
                     state.vpn_active = snapshot.vpn_interface_ready;
-                    state.connectivity_verified = snapshot.xray_process_alive;
+                    state.connectivity_verified = snapshot.connectivity_check_passed;
                 }
             }
         }
@@ -334,7 +358,7 @@ pub fn start_android_runtime(
                 .as_deref()
                 .and_then(recovery_hint_for_reason);
             state.vpn_active = result.vpn_interface_ready.or(Some(true));
-            state.connectivity_verified = result.xray_process_alive.or(Some(true));
+            state.connectivity_verified = result.connectivity_check_passed.or(Some(true));
             Ok(CommandResult {
                 ok: true,
                 config_path: Some(config_path.to_string_lossy().into_owned()),
@@ -345,13 +369,14 @@ pub fn start_android_runtime(
         Err(error) => {
             let _ = fs::remove_file(&config_path);
             let _ = clear_android_runtime_cache(&app);
+            let bridge_error = parse_android_bridge_error(error, "android_runtime_start_failed");
             state.status = "error".into();
-            state.last_error = Some(error.clone());
-            state.reason_code = Some("android_runtime_start_failed".into());
-            state.recovery_hint = recovery_hint_for_reason("android_runtime_start_failed");
+            state.last_error = Some(bridge_error.message.clone());
+            state.reason_code = Some(bridge_error.code.clone());
+            state.recovery_hint = recovery_hint_for_reason(&bridge_error.code);
             state.vpn_active = Some(false);
             state.connectivity_verified = Some(false);
-            Err(error)
+            Err(format!("{}: {}", bridge_error.code, bridge_error.message))
         }
     }
 }
@@ -384,13 +409,14 @@ pub fn stop_android_runtime(
     state.active_node_id = None;
     state.tun_name = None;
     state.last_started_at = None;
-    state.last_error = native_error.clone();
-    state.reason_code = native_error
+    let parsed_stop_error = native_error
+        .clone()
+        .map(|error| parse_android_bridge_error(error, "android_runtime_stop_failed"));
+    state.last_error = parsed_stop_error.as_ref().map(|error| error.message.clone());
+    state.reason_code = parsed_stop_error.as_ref().map(|error| error.code.clone());
+    state.recovery_hint = parsed_stop_error
         .as_ref()
-        .map(|_| "android_runtime_stop_failed".to_string());
-    state.recovery_hint = native_error
-        .as_ref()
-        .and_then(|_| recovery_hint_for_reason("android_runtime_stop_failed"));
+        .and_then(|error| recovery_hint_for_reason(&error.code));
     state.vpn_active = Some(false);
     state.connectivity_verified = Some(false);
 
@@ -408,9 +434,18 @@ fn recovery_hint_for_reason(reason: &str) -> Option<String> {
     match reason {
         "vpn_permission_denied" => Some("请允许 Android VPN 权限后重新连接。".into()),
         "vpn_permission_lost" => Some("系统回收了 VPN 权限，请重新连接。".into()),
+        "vpn_interface_establish_failed" | "vpn_interface_not_ready" => {
+            Some("系统 VPN 接口没有建立成功，请关闭同类 VPN 应用后重试。".into())
+        }
+        "libv2ray_start_failed" => Some("安卓本地运行时没有正常启动，请重新连接。".into()),
+        "connectivity_check_failed" => Some("本地链路自检失败，请重试或切换节点。".into()),
+        "config_missing" | "geo_resource_missing" | "start_args_missing" => {
+            Some("安卓本地运行资源不完整，请联系管理员重新打包。".into())
+        }
         "service_start_failed" | "android_runtime_start_failed" => Some("请稍后重试，若仍失败请查看日志。".into()),
         "service_stop_failed" | "android_runtime_stop_failed" => Some("请重新打开应用后再次断开连接。".into()),
         "runtime_stopped" | "runtime_mismatch" => Some("运行时已停止，请重新连接。".into()),
+        "service_task_removed" => Some("应用任务被移除后连接已回收，请重新打开应用。".into()),
         _ => None,
     }
 }
@@ -451,31 +486,70 @@ fn start_android_native_bridge(
         let response = plugin
             .0
             .run_mobile_plugin::<AndroidPluginStatusPayload>("start", payload)
-            .map_err(|error| format!("调用 Android VPN/TUN 运行时失败：{error}"))?;
+            .map_err(|error| {
+                let bridge_error =
+                    parse_android_bridge_error(error.to_string(), "android_runtime_start_failed");
+                format!("{}: {}", bridge_error.code, bridge_error.message)
+            })?;
 
         let status = response.status.clone().unwrap_or_else(|| "error".into());
         let vpn_interface_ready = response.vpn_interface_ready.unwrap_or(false);
         let xray_process_alive = response.xray_process_alive.unwrap_or(false);
+        let connectivity_check_passed = response.connectivity_check_passed.unwrap_or(false);
         if status == "error" {
-            return Err(response
+            let error_message = response
                 .last_error
                 .clone()
-                .unwrap_or_else(|| "Android VPN/TUN 启动失败".into()));
+                .unwrap_or_else(|| "Android VPN/TUN 启动失败".into());
+            let error_code = response
+                .last_error_code
+                .clone()
+                .unwrap_or_else(|| "android_runtime_start_failed".into());
+            return Err(format!("{error_code}: {error_message}"));
         }
         if status != "connected" {
-            return Err(format!("Android VPN/TUN 尚未进入已连接状态：{status}"));
+            let error_code = response
+                .last_error_code
+                .clone()
+                .unwrap_or_else(|| "runtime_mismatch".into());
+            let error_message = response
+                .last_error
+                .clone()
+                .unwrap_or_else(|| format!("Android VPN/TUN 尚未进入已连接状态：{status}"));
+            return Err(format!("{error_code}: {error_message}"));
         }
         if !vpn_interface_ready {
-            return Err(response
+            let error_message = response
                 .last_error
                 .clone()
-                .unwrap_or_else(|| "Android VPN 接口未就绪".into()));
+                .unwrap_or_else(|| "Android VPN 接口未就绪".into());
+            let error_code = response
+                .last_error_code
+                .clone()
+                .unwrap_or_else(|| "vpn_interface_not_ready".into());
+            return Err(format!("{error_code}: {error_message}"));
         }
         if !xray_process_alive {
-            return Err(response
+            let error_message = response
                 .last_error
                 .clone()
-                .unwrap_or_else(|| "Android 运行时未进入可用状态".into()));
+                .unwrap_or_else(|| "Android 运行时未进入可用状态".into());
+            let error_code = response
+                .last_error_code
+                .clone()
+                .unwrap_or_else(|| "libv2ray_start_failed".into());
+            return Err(format!("{error_code}: {error_message}"));
+        }
+        if !connectivity_check_passed {
+            let error_message = response
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Android VPN/TUN 连通性自检失败".into());
+            let error_code = response
+                .last_error_code
+                .clone()
+                .unwrap_or_else(|| "connectivity_check_failed".into());
+            return Err(format!("{error_code}: {error_message}"));
         }
 
         Ok(AndroidNativeStartResult {
@@ -488,7 +562,7 @@ fn start_android_native_bridge(
             last_error_code: response.last_error_code,
             last_started_at: response.last_started_at,
             vpn_interface_ready: Some(vpn_interface_ready),
-            xray_process_alive: Some(xray_process_alive),
+            connectivity_check_passed: Some(connectivity_check_passed),
         })
     }
 
@@ -509,7 +583,11 @@ fn stop_android_native_bridge(app: &AppHandle) -> Result<(), String> {
         plugin
             .0
             .run_mobile_plugin::<AndroidPluginStatusPayload>("stop", ())
-            .map_err(|error| format!("停止 Android VPN/TUN 运行时失败：{error}"))?;
+            .map_err(|error| {
+                let bridge_error =
+                    parse_android_bridge_error(error.to_string(), "android_runtime_stop_failed");
+                format!("{}: {}", bridge_error.code, bridge_error.message)
+            })?;
         Ok(())
     }
 

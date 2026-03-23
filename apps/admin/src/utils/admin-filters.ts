@@ -4,6 +4,12 @@ export function readError(reason: unknown, fallback: string) {
   if (!(reason instanceof Error)) {
     return fallback;
   }
+  if (reason.name === "AbortError" || reason.message === "signal is aborted without reason") {
+    return "请求超时，通常是文件较大或服务器处理较慢，请稍后重试。";
+  }
+  if (reason.message === "请求超时") {
+    return "请求超时，通常是文件较大或服务器处理较慢，请稍后重试。";
+  }
   try {
     const parsed = JSON.parse(reason.message) as { message?: string[] | string };
     if (Array.isArray(parsed.message)) return parsed.message.join("，");

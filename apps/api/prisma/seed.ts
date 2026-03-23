@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
 import {
   mockAnnouncements,
+  mockAdminReleases,
   mockNodes,
   mockPolicies,
   mockSubscription,
@@ -465,6 +466,69 @@ async function main() {
     }
   });
 
+  for (const release of mockAdminReleases) {
+    await prisma.release.upsert({
+      where: {
+        platform_channel_version: {
+          platform: release.platform,
+          channel: release.channel,
+          version: release.version
+        }
+      },
+      update: {
+        displayTitle: release.displayTitle,
+        releaseNotes: release.releaseNotes,
+        changelog: release.changelog,
+        minimumVersion: release.minimumVersion,
+        forceUpgrade: release.forceUpgrade,
+        status: release.status,
+        publishedAt: release.publishedAt ? new Date(release.publishedAt) : null
+      },
+      create: {
+        id: release.id,
+        platform: release.platform,
+        channel: release.channel,
+        version: release.version,
+        displayTitle: release.displayTitle,
+        releaseNotes: release.releaseNotes,
+        changelog: release.changelog,
+        minimumVersion: release.minimumVersion,
+        forceUpgrade: release.forceUpgrade,
+        status: release.status,
+        publishedAt: release.publishedAt ? new Date(release.publishedAt) : null
+      }
+    });
+
+    for (const artifact of release.artifacts) {
+      await prisma.releaseArtifact.upsert({
+        where: { id: artifact.id },
+        update: {
+          releaseId: release.id,
+          type: normalizeReleaseArtifactType(artifact.type),
+          deliveryMode: artifact.deliveryMode,
+          downloadUrl: artifact.downloadUrl,
+          fileName: artifact.fileName,
+          fileSizeBytes: artifact.fileSizeBytes ? BigInt(artifact.fileSizeBytes) : null,
+          fileHash: artifact.fileHash,
+          isPrimary: artifact.isPrimary,
+          isFullPackage: artifact.isFullPackage
+        },
+        create: {
+          id: artifact.id,
+          releaseId: release.id,
+          type: normalizeReleaseArtifactType(artifact.type),
+          deliveryMode: artifact.deliveryMode,
+          downloadUrl: artifact.downloadUrl,
+          fileName: artifact.fileName,
+          fileSizeBytes: artifact.fileSizeBytes ? BigInt(artifact.fileSizeBytes) : null,
+          fileHash: artifact.fileHash,
+          isPrimary: artifact.isPrimary,
+          isFullPackage: artifact.isFullPackage
+        }
+      });
+    }
+  }
+
   await prisma.strategyGroup.deleteMany({
     where: { policyId: "default" }
   });
@@ -493,6 +557,13 @@ async function main() {
       }
     });
   }
+}
+
+function normalizeReleaseArtifactType(type: string) {
+  if (type === "setup.exe") {
+    return "setup_exe" as const;
+  }
+  return type as "dmg" | "app" | "exe" | "apk" | "ipa" | "external";
 }
 
 main()

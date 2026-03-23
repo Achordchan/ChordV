@@ -317,6 +317,48 @@
   line-height: 18px;
 }
 
+.desktop-app--android .auth-screen {
+  min-height: 100dvh;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: max(20px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom));
+}
+
+.desktop-app--android .auth-screen__shell {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  grid-template-columns: 1fr;
+  gap: 0;
+  margin: 0 auto;
+}
+
+.desktop-app--android .auth-screen__brand {
+  display: none;
+}
+
+.desktop-app--android .auth-screen__panel {
+  height: auto;
+  min-height: 0;
+  padding: 22px 18px 18px;
+  border-radius: 24px;
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.1);
+}
+
+.desktop-app--android .auth-screen__panel-inner {
+  gap: 16px;
+}
+
+.desktop-app--android .auth-screen__panel-head {
+  min-height: 0;
+  gap: 8px;
+}
+
+.desktop-app--android .auth-screen__runtime-alert {
+  flex-direction: column;
+  align-items: stretch;
+}
+
 @media (max-width: 860px) {
   .auth-screen {
     padding: 18px;

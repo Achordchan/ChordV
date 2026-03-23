@@ -3,11 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { buildAndroidArtifactNames, resolveDesktopPlatformVersion } from './platform-version.mjs';
 
 const projectRoot = path.resolve(import.meta.dirname, '../../..');
 const outputRoot = path.join(projectRoot, 'output', 'release', 'android');
-const defaultApkPath = path.join(outputRoot, 'ChordV_android_debug.apk');
-const defaultAabPath = path.join(outputRoot, 'ChordV_android_debug.aab');
+const androidVersion = resolveDesktopPlatformVersion("android");
+const debugArtifactNames = buildAndroidArtifactNames(androidVersion, false);
+const defaultApkPath = path.join(outputRoot, debugArtifactNames.apk);
+const defaultAabPath = path.join(outputRoot, debugArtifactNames.aab);
 
 function commandExists(command) {
   const result = spawnSync('bash', ['-lc', `command -v ${command}`], { encoding: 'utf8' });

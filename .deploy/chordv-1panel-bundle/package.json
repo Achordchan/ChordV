@@ -1,0 +1,26 @@
+{
+  "name": "chordv",
+  "private": true,
+  "version": "1.0.0-beta.1",
+  "packageManager": "pnpm@9.15.3",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "check": "turbo check",
+    "lint": "turbo lint",
+    "prepare:1panel-bundle": "node ./scripts/prepare-1panel-chordv-bundle.mjs",
+    "setup:mac": "docker compose up -d postgres && pnpm install && pnpm --filter @chordv/api db:generate && pnpm --filter @chordv/api db:push && pnpm --filter @chordv/api db:seed",
+    "dev:mac": "pnpm --filter @chordv/desktop tauri:dev",
+    "dev:ops": "concurrently -k -n api,edge,admin -c blue,magenta,green \"pnpm --filter @chordv/api dev\" \"./scripts/start-edge-dev.sh\" \"pnpm --filter @chordv/admin dev -- --host 127.0.0.1\"",
+    "dev:edge": "./scripts/start-edge-dev.sh",
+    "dev:api": "pnpm --filter @chordv/api dev",
+    "dev:admin": "pnpm --filter @chordv/admin dev",
+    "dev:desktop": "pnpm --filter @chordv/desktop dev",
+    "prepare:release-storage": "node ./scripts/prepare-release-storage.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "turbo": "^2.4.2",
+    "typescript": "^5.7.3"
+  }
+}

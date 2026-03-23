@@ -8,10 +8,10 @@ type LogDrawerProps = {
 
 export function LogDrawer(props: LogDrawerProps) {
   return (
-    <Drawer opened={props.opened} onClose={props.onClose} position="right" size={420} title="运行日志">
+    <Drawer opened={props.opened} onClose={props.onClose} position="right" size={420} title="连接诊断">
       <Stack gap="md" h="100%">
         <div>
-          <Title order={4}>Xray 日志</Title>
+          <Title order={4}>连接诊断日志</Title>
           <Text size="sm" c="dimmed" mt={4}>
             如遇连接问题，请复制日志联系管理员
           </Text>

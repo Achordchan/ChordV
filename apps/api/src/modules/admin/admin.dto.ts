@@ -1,17 +1,46 @@
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength, ValidateNested } from "class-validator";
 import type {
   AccessMode,
+  ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
   ConnectionMode,
   PlanScope,
+  PlatformTarget,
+  ReleaseArtifactType,
+  ReleaseChannel,
+  ReleaseStatus,
+  RuntimeComponentArchitecture,
+  RuntimeComponentKind,
+  RuntimeComponentSource,
+  RuntimeDownloadFailureReason,
   SubscriptionState,
   TeamMemberRole,
   TeamStatus,
+  UpdateDeliveryMode,
   UserRole,
   UserStatus
 } from "@chordv/shared";
+
+function transformOptionalBoolean(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return value;
+}
 
 export class CreateUserDto {
   @IsEmail()
@@ -510,6 +539,397 @@ export class UpdateAnnouncementDto {
   countdownSeconds?: number;
 }
 
+export class CreateReleaseDto {
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsIn(["stable"])
+  channel!: ReleaseChannel;
+
+  @IsString()
+  @IsNotEmpty()
+  version!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  displayTitle!: string;
+
+  @IsOptional()
+  @IsString()
+  releaseNotes?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  changelog?: string[];
+
+  @IsString()
+  @IsNotEmpty()
+  minimumVersion!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  forceUpgrade?: boolean;
+
+  @IsOptional()
+  @IsIn(["draft", "published", "archived"])
+  status?: ReleaseStatus;
+
+  @IsOptional()
+  @IsString()
+  publishedAt?: string | null;
+}
+
+export class UpdateReleaseDto {
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  displayTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  releaseNotes?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  changelog?: string[];
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  minimumVersion?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  forceUpgrade?: boolean;
+
+  @IsOptional()
+  @IsIn(["draft", "published", "archived"])
+  status?: ReleaseStatus;
+
+  @IsOptional()
+  @IsString()
+  publishedAt?: string | null;
+}
+
+export class CreateReleaseArtifactDto {
+  @IsOptional()
+  @IsIn(["uploaded", "external"])
+  source?: "uploaded" | "external";
+
+  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  type!: ReleaseArtifactType;
+
+  @IsOptional()
+  @IsIn(["desktop_installer_download", "apk_download", "external_download", "none"])
+  deliveryMode?: UpdateDeliveryMode;
+
+  @IsUrl({
+    require_tld: false
+  })
+  downloadUrl!: string;
+
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  fileSizeBytes?: string | null;
+
+  @IsOptional()
+  @IsString()
+  fileHash?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "isPrimary must be a boolean value"
+  })
+  isPrimary?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "isFullPackage must be a boolean value"
+  })
+  isFullPackage?: boolean;
+}
+
+export class UpdateReleaseArtifactDto {
+  @IsOptional()
+  @IsIn(["uploaded", "external"])
+  source?: "uploaded" | "external";
+
+  @IsOptional()
+  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  type?: ReleaseArtifactType;
+
+  @IsOptional()
+  @IsIn(["desktop_installer_download", "apk_download", "external_download", "none"])
+  deliveryMode?: UpdateDeliveryMode;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  downloadUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  fileSizeBytes?: string | null;
+
+  @IsOptional()
+  @IsString()
+  fileHash?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "isPrimary must be a boolean value"
+  })
+  isPrimary?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "isFullPackage must be a boolean value"
+  })
+  isFullPackage?: boolean;
+}
+
+export class UploadReleaseArtifactDto {
+  @IsOptional()
+  @IsIn(["uploaded", "external"])
+  source?: "uploaded" | "external";
+
+  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  type!: ReleaseArtifactType;
+
+  @IsOptional()
+  @IsIn(["desktop_installer_download", "apk_download", "external_download", "none"])
+  deliveryMode?: UpdateDeliveryMode;
+
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "isPrimary must be a boolean value"
+  })
+  isPrimary?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "isFullPackage must be a boolean value"
+  })
+  isFullPackage?: boolean;
+}
+
+export class CreateRuntimeComponentDto {
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsIn(["x64", "arm64"])
+  architecture!: RuntimeComponentArchitecture;
+
+  @IsIn(["xray", "geoip", "geosite"])
+  kind!: RuntimeComponentKind;
+
+  @IsOptional()
+  @IsIn(["uploaded", "github_remote", "custom_remote"])
+  source?: RuntimeComponentSource;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  originUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsString()
+  @IsNotEmpty()
+  fileName!: string;
+
+  @IsOptional()
+  @IsString()
+  archiveEntryName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  expectedHash?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "enabled must be a boolean value"
+  })
+  enabled?: boolean;
+}
+
+export class UpdateRuntimeComponentDto {
+  @IsOptional()
+  @IsIn(["uploaded", "github_remote", "custom_remote"])
+  source?: RuntimeComponentSource;
+
+  @IsOptional()
+  @IsUrl({
+    require_tld: false
+  })
+  originUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  fileName?: string;
+
+  @IsOptional()
+  @IsString()
+  archiveEntryName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  expectedHash?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "enabled must be a boolean value"
+  })
+  enabled?: boolean;
+}
+
+export class UploadRuntimeComponentDto {
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsIn(["x64", "arm64"])
+  architecture!: RuntimeComponentArchitecture;
+
+  @IsIn(["xray", "geoip", "geosite"])
+  kind!: RuntimeComponentKind;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  expectedHash?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "enabled must be a boolean value"
+  })
+  enabled?: boolean;
+}
+
+export class RuntimeComponentsPlanQueryDto {
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsIn(["x64", "arm64"])
+  architecture!: RuntimeComponentArchitecture;
+
+  @IsOptional()
+  @IsString()
+  clientMirrorPrefix?: string | null;
+}
+
+export class ReportRuntimeComponentFailureDto implements ClientRuntimeComponentFailureReportInputDto {
+  @IsOptional()
+  @IsString()
+  componentId?: string | null;
+
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsIn(["x64", "arm64"])
+  architecture!: RuntimeComponentArchitecture;
+
+  @IsIn(["xray", "geoip", "geosite"])
+  kind!: RuntimeComponentKind;
+
+  @IsString()
+  @IsNotEmpty()
+  reason!: RuntimeDownloadFailureReason | string;
+
+  @IsOptional()
+  @IsString()
+  message?: string | null;
+
+  @IsOptional()
+  @IsString()
+  effectiveUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  appVersion?: string | null;
+}
+
 export class UpdatePolicyDto {
   @IsOptional()
   @IsIn(["relay", "xui"])
@@ -536,27 +956,4 @@ export class UpdatePolicyDto {
   @IsOptional()
   @IsBoolean()
   aiServicesProxy?: boolean;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  currentVersion?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  minimumVersion?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  forceUpgrade?: boolean;
-
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  changelog?: string[];
-
-  @IsOptional()
-  @IsString()
-  downloadUrl?: string;
 }

@@ -6,8 +6,11 @@ type SubscriptionPanelProps = {
   bootstrap: ClientBootstrapDto;
   hasUnreadAnnouncements: boolean;
   refreshing: boolean;
+  updateBusy: boolean;
+  hasUpdate: boolean;
   onOpenAnnouncements: () => void;
   onRefresh: () => void;
+  onCheckUpdate: () => void;
   onLogout: () => void;
 };
 
@@ -47,7 +50,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Text>
           </div>
 
-          <Group gap="xs" align="center" wrap="nowrap">
+          <Group gap="xs" align="center" className="subscription-actions subscription-actions--toolbar">
             {isTeam ? <IconSparkles size={18} className="team-icon" /> : null}
             <Indicator
               inline
@@ -56,13 +59,14 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               size={9}
               offset={6}
               position="top-end"
+              className="subscription-announcement-indicator"
             >
               <Button
                 variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}
                 size="sm"
                 leftSection={<IconBell size={15} />}
-                className="subscription-secondary-button"
+                className="subscription-secondary-button subscription-toolbar-button"
                 onClick={props.onOpenAnnouncements}
               >
                 公告
@@ -70,25 +74,35 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Indicator>
             <Button
               variant={isTeam ? "white" : "default"}
-              color={isTeam ? "dark" : "gray"}
-              size="sm"
-              leftSection={<IconRefresh size={15} />}
-              className="subscription-secondary-button"
-              loading={props.refreshing}
-              onClick={props.onRefresh}
-            >
-              刷新
-            </Button>
+                color={isTeam ? "dark" : "gray"}
+                size="sm"
+                leftSection={<IconRefresh size={15} />}
+                className="subscription-secondary-button subscription-toolbar-button"
+                loading={props.refreshing}
+                onClick={props.onRefresh}
+              >
+                刷新
+              </Button>
+            <Button
+              variant={props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
+                color={props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
+                size="sm"
+                className="subscription-secondary-button subscription-toolbar-button"
+                loading={props.updateBusy}
+                onClick={props.onCheckUpdate}
+              >
+                {props.hasUpdate ? "查看更新" : "检查更新"}
+              </Button>
             <Button
               variant={isTeam ? "white" : "default"}
-              color={isTeam ? "dark" : "gray"}
-              size="sm"
-              leftSection={<IconLogout size={15} />}
-              className="subscription-secondary-button subscription-logout"
-              onClick={props.onLogout}
-            >
-              退出登录
-            </Button>
+                color={isTeam ? "dark" : "gray"}
+                size="sm"
+                leftSection={<IconLogout size={15} />}
+                className="subscription-secondary-button subscription-logout subscription-toolbar-button"
+                onClick={props.onLogout}
+              >
+                退出登录
+              </Button>
           </Group>
         </div>
 

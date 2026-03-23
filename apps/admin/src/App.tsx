@@ -51,6 +51,7 @@ import type {
 import {
   IconBell,
   IconBolt,
+  IconCloudDownload,
   IconLayoutDashboard,
   IconListDetails,
   IconMapPin,
@@ -105,14 +106,12 @@ import {
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
-import { DataTable } from "./features/shared/DataTable";
-import { SectionCard } from "./features/shared/SectionCard";
-import { StatusBadge } from "./features/shared/StatusBadge";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { NodesPage } from "./pages/NodesPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
+import { ReleasesPage } from "./pages/ReleasesPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { UsersPage } from "./pages/UsersPage";
 import {
@@ -130,7 +129,6 @@ import {
   emptyTeamMemberForm,
   emptyTeamSubscriptionForm,
   emptyUserForm,
-  modeOptions,
   toPolicyForm,
   type AnnouncementFormState,
   type NodeFormState,
@@ -153,7 +151,7 @@ import {
   translateSubscriptionState
 } from "./utils/admin-translate";
 
-type SectionKey = "overview" | "users" | "plans" | "subscriptions" | "nodes" | "announcements" | "policies";
+type SectionKey = "overview" | "users" | "plans" | "subscriptions" | "nodes" | "announcements" | "policies" | "releases";
 type EditorState = {
   type: DrawerType;
   recordId: string | null;
@@ -203,8 +201,13 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
   },
   policies: {
     label: "策略",
-    description: "默认模式、版本和规则配置",
+    description: "接入与连接策略",
     icon: <IconRoute size={18} />
+  },
+  releases: {
+    label: "发布中心",
+    description: "版本发布、渠道与安装产物",
+    icon: <IconCloudDownload size={18} />
   }
 };
 
@@ -229,7 +232,7 @@ export function App() {
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "policies">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "policies" | "releases">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
@@ -1223,12 +1226,7 @@ export function App() {
             modes: policyForm.modes,
             blockAds: policyForm.blockAds,
             chinaDirect: policyForm.chinaDirect,
-            aiServicesProxy: policyForm.aiServicesProxy,
-            currentVersion: policyForm.currentVersion,
-            minimumVersion: policyForm.minimumVersion,
-            forceUpgrade: policyForm.forceUpgrade,
-            changelog: splitLines(policyForm.changelog),
-            downloadUrl: policyForm.downloadUrl || null
+            aiServicesProxy: policyForm.aiServicesProxy
           } satisfies UpdatePolicyInputDto),
         "策略已更新"
       );
@@ -1307,13 +1305,13 @@ export function App() {
             <Paper withBorder radius="xl" p="md" className="admin-side-card">
               <Stack gap={4}>
                 <Text size="sm" fw={600}>
-                  远程版本
+                  当前接入
                 </Text>
                 <Text size="xl" fw={700}>
-                  {snapshot.policy.currentVersion}
+                  {snapshot.policy.accessMode === "xui" ? "3x-ui 直连" : "中心中转"}
                 </Text>
                 <Text size="sm" c="dimmed">
-                  最低版本 {snapshot.policy.minimumVersion}
+                  默认模式 {snapshot.policy.defaultMode === "rule" ? "规则模式" : snapshot.policy.defaultMode === "global" ? "全局代理" : "直连模式"}
                 </Text>
               </Stack>
             </Paper>
@@ -1493,6 +1491,8 @@ export function App() {
                 onSave={() => void handleSavePolicy()}
               />
             ) : null}
+
+            {section === "releases" ? <ReleasesPage /> : null}
           </Stack>
         </AppShell.Main>
       </AppShell>
@@ -1597,13 +1597,6 @@ function isAccessTokenError(message: string) {
 function splitCsv(value: string) {
   return value
     .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function splitLines(value: string) {
-  return value
-    .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
 }

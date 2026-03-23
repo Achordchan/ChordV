@@ -24,6 +24,37 @@ body {
   overflow: hidden;
 }
 
+.desktop-runtime-overlay {
+  position: fixed;
+  top: 12px;
+  left: 0;
+  right: 0;
+  z-index: 120;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.desktop-runtime-overlay__inner {
+  width: min(760px, calc(100vw - 28px));
+  pointer-events: auto;
+}
+
+.desktop-app--android {
+  min-height: 100%;
+  height: auto;
+  overflow: auto;
+  padding: max(10px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom));
+}
+
+.desktop-app--android .desktop-runtime-overlay {
+  top: max(8px, env(safe-area-inset-top));
+}
+
+.desktop-app--android .desktop-runtime-overlay__inner {
+  width: calc(100vw - 20px);
+}
+
 .desktop-main {
   height: 100%;
   display: grid;
@@ -97,6 +128,11 @@ body {
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+}
+
+.subscription-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .subscription-copy {
@@ -275,6 +311,127 @@ body {
   flex: 0 0 auto;
 }
 
+.desktop-app--android .desktop-main {
+  height: auto;
+  gap: 12px;
+  align-content: flex-start;
+}
+
+.desktop-app--android .desktop-content {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.desktop-app--android .desktop-panel,
+.desktop-app--android .subscription-card {
+  height: auto;
+  overflow: visible;
+  border-radius: 22px;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+}
+
+.desktop-app--android .subscription-card {
+  padding: 14px;
+}
+
+.desktop-app--android .subscription-shell {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.desktop-app--android .subscription-head {
+  gap: 12px;
+}
+
+.desktop-app--android .subscription-actions--toolbar {
+  width: 100%;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.desktop-app--android .subscription-actions--toolbar > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.desktop-app--android .subscription-toolbar-button {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding-inline: 10px;
+}
+
+.desktop-app--android .subscription-announcement-indicator {
+  display: flex;
+  width: 100%;
+}
+
+.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-root,
+.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-indicator {
+  z-index: 2;
+}
+
+.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-root {
+  width: 100%;
+}
+
+.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-indicator {
+  top: 8px;
+  right: 10px;
+  transform: none;
+}
+
+.desktop-app--android .team-icon {
+  display: none;
+}
+
+.desktop-app--android .subscription-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.desktop-app--android .node-list-head,
+.desktop-app--android .control-head {
+  min-height: 0;
+}
+
+.desktop-app--android .node-list-probe-button,
+.desktop-app--android .control-log-button {
+  height: 36px;
+}
+
+.desktop-app--android .node-item {
+  padding: 14px;
+}
+
+.desktop-app--android .control-shell {
+  gap: 12px;
+}
+
+.desktop-app--android .control-primary-action {
+  min-height: 50px;
+}
+
+.desktop-app--android .control-footer {
+  gap: 8px;
+}
+
+.desktop-app--android .mantine-Modal-content,
+.desktop-app--android .mantine-Drawer-content {
+  margin-top: max(10px, env(safe-area-inset-top));
+}
+
+.desktop-app--android .mantine-Modal-header,
+.desktop-app--android .mantine-Drawer-header {
+  padding-top: 18px;
+}
+
+.desktop-app--android .mantine-Modal-close,
+.desktop-app--android .mantine-Drawer-close {
+  margin-top: 0;
+  align-self: center;
+}
+
 @media (max-width: 1040px) {
   .subscription-shell {
     grid-template-columns: 1fr;
@@ -287,6 +444,96 @@ body {
 
   .subscription-metrics {
     grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  html,
+  body,
+  #root {
+    height: auto;
+    min-height: 100%;
+    overflow: auto;
+  }
+
+  .desktop-app,
+  .desktop-app--android {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+    padding: 10px;
+  }
+
+  .desktop-main {
+    height: auto;
+    grid-template-rows: auto;
+    gap: 10px;
+  }
+
+  .desktop-content {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .desktop-panel {
+    height: auto;
+    overflow: visible;
+  }
+
+  .subscription-shell {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .subscription-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .subscription-actions {
+    justify-content: stretch;
+  }
+
+  .subscription-actions > * {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+
+  .subscription-secondary-button,
+  .subscription-logout {
+    min-width: 0;
+  }
+
+  .subscription-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-item {
+    min-height: 58px;
+  }
+
+  .metric-label,
+  .metric-value {
+    white-space: normal;
+  }
+
+  .node-scroll {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .control-metrics {
+    flex-wrap: wrap;
+  }
+
+  .control-metrics > * {
+    flex: 1 1 calc(50% - 6px);
+  }
+
+  .control-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
 }
 

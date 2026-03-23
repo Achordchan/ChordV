@@ -111,11 +111,6 @@ export type PolicyFormState = {
   blockAds: boolean;
   chinaDirect: boolean;
   aiServicesProxy: boolean;
-  currentVersion: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
-  changelog: string;
-  downloadUrl: string;
 };
 
 export const modeOptions = [
@@ -271,12 +266,7 @@ export function toPolicyForm(policy: AdminPolicyRecordDto): PolicyFormState {
     modes: policy.modes,
     blockAds: policy.features.blockAds,
     chinaDirect: policy.features.chinaDirect,
-    aiServicesProxy: policy.features.aiServicesProxy,
-    currentVersion: policy.currentVersion,
-    minimumVersion: policy.minimumVersion,
-    forceUpgrade: policy.forceUpgrade,
-    changelog: policy.changelog.join("\n"),
-    downloadUrl: policy.downloadUrl ?? ""
+    aiServicesProxy: policy.features.aiServicesProxy
   };
 }
 
