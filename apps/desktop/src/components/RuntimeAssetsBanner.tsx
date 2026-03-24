@@ -19,10 +19,6 @@ export function RuntimeAssetsBanner(props: RuntimeAssetsBannerProps) {
   }
 
   const tone = resolveRuntimeAssetsTone(props.state.phase);
-  const progressValue =
-    props.state.totalBytes && props.state.totalBytes > 0
-      ? Math.max(0, Math.min(100, (props.state.downloadedBytes / props.state.totalBytes) * 100))
-      : 0;
 
   return (
     <Alert
@@ -40,13 +36,19 @@ export function RuntimeAssetsBanner(props: RuntimeAssetsBannerProps) {
           </Text>
         </div>
 
-        {props.state.phase === "downloading" || props.state.phase === "checking" ? (
+        {props.state.phase === "downloading" ? (
           <Stack gap={6}>
-            <Progress value={progressValue} animated={props.state.phase === "downloading"} />
+            <Progress value={downloadProgressValue(props.state)} animated />
             <Text size="xs" c="dimmed">
               {describeRuntimeAssetsProgress(props.state)}
             </Text>
           </Stack>
+        ) : null}
+
+        {props.state.phase === "checking" ? (
+          <Text size="xs" c="dimmed">
+            {describeRuntimeAssetsProgress(props.state)}
+          </Text>
         ) : null}
 
         {props.state.phase === "failed" ? (
@@ -93,9 +95,19 @@ function describeRuntimeAssetsProgress(state: RuntimeAssetsUiState) {
     state.totalBytes ? ` / ${formatByteSize(state.totalBytes)}` : ""
   }`;
   if (state.phase === "checking") {
+    if (state.message) {
+      return state.message;
+    }
     return fileName ? `正在检查 ${fileName}` : "正在检查连接所需组件";
   }
   return fileName ? `${fileName} · ${amount}` : amount;
+}
+
+function downloadProgressValue(state: RuntimeAssetsUiState) {
+  if (!state.totalBytes || state.totalBytes <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, (state.downloadedBytes / state.totalBytes) * 100));
 }
 
 function componentLabel(component: RuntimeAssetsUiState["currentComponent"]) {

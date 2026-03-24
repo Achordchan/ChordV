@@ -188,6 +188,10 @@ export function App() {
   const lastServerConnectivityToastRef = useRef<{ scope: "login" | "main"; at: number } | null>(null);
   const runtimeAssetsTaskRef = useRef<Promise<boolean> | null>(null);
   const deferredUpdatePromptKeyRef = useRef<string | null>(null);
+  const lastShellSummaryRef = useRef("");
+  const pendingShellSummaryRef = useRef("");
+  const shellSummaryRequestSeqRef = useRef(0);
+  const runtimeRefreshRequestSeqRef = useRef(0);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -520,16 +524,45 @@ export function App() {
         ? "断开连接"
         : "连接";
 
+    const summaryKey = JSON.stringify({
+      status: session ? desktopStatus.status : "signed-out",
+      signedIn: Boolean(session),
+      nodeName,
+      primaryActionLabel: summaryLabel
+    });
+    if (lastShellSummaryRef.current === summaryKey || pendingShellSummaryRef.current === summaryKey) {
+      return;
+    }
+    const requestId = shellSummaryRequestSeqRef.current + 1;
+    shellSummaryRequestSeqRef.current = requestId;
+    pendingShellSummaryRef.current = summaryKey;
+
     void updateDesktopShellSummary({
       status: session ? desktopStatus.status : "signed-out",
       signedIn: Boolean(session),
       nodeName,
       primaryActionLabel: summaryLabel
-    }).catch(() => null);
+    })
+      .then(() => {
+        if (shellSummaryRequestSeqRef.current !== requestId) {
+          return;
+        }
+        lastShellSummaryRef.current = summaryKey;
+        pendingShellSummaryRef.current = "";
+      })
+      .catch(() => {
+        if (shellSummaryRequestSeqRef.current !== requestId) {
+          return;
+        }
+        pendingShellSummaryRef.current = "";
+      });
   }, [
     bootstrap?.subscription,
     connectionGuidance,
-    desktopStatus,
+    desktopStatus.platformTarget,
+    desktopStatus.status,
+    desktopStatus.activeSessionId,
+    desktopStatus.activePid,
     session,
     runtime?.node.name,
     selectedNode?.name,
@@ -856,14 +889,23 @@ export function App() {
   }
 
   async function refreshRuntime() {
+    const requestId = runtimeRefreshRequestSeqRef.current + 1;
+    runtimeRefreshRequestSeqRef.current = requestId;
+
     try {
       const [status, logs] = await Promise.all([loadRuntimeStatus(), loadRuntimeLogs()]);
+      if (runtimeRefreshRequestSeqRef.current !== requestId) {
+        return;
+      }
       setDesktopStatus(status);
       if (!status.activeSessionId && status.status !== "connecting" && status.status !== "disconnecting") {
         setRuntime(null);
       }
       setRuntimeLog(logs.log);
     } catch {
+      if (runtimeRefreshRequestSeqRef.current !== requestId) {
+        return;
+      }
       setDesktopStatus(createIdleRuntimeStatus());
       setRuntime(null);
       setRuntimeLog("");
@@ -1735,7 +1777,9 @@ export function App() {
       try {
         result = await downloadDesktopInstaller({
           url: resolvedDownloadUrl,
-          fileName: preferredFileName
+          fileName: preferredFileName,
+          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
         });
       } catch (reason) {
         if (!originDownloadUrl || originDownloadUrl === resolvedDownloadUrl) {
@@ -1749,7 +1793,9 @@ export function App() {
         }));
         result = await downloadDesktopInstaller({
           url: originDownloadUrl,
-          fileName: preferredFileName
+          fileName: preferredFileName,
+          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
         });
       }
       if (!result?.localPath) {
@@ -2509,7 +2555,7 @@ function normalizeUpdateDownloadProgress(
     phase: progress.phase,
     fileName: progress.fileName ?? current.fileName,
     downloadedBytes: progress.downloadedBytes,
-    totalBytes: progress.totalBytes ?? current.totalBytes,
+    totalBytes: mergeKnownTotalBytes(current.totalBytes, progress.totalBytes),
     localPath: progress.localPath ?? current.localPath,
     message: progress.message ?? current.message
   };
@@ -2616,16 +2662,38 @@ function normalizeRuntimeAssetsProgress(
   progress: RuntimeComponentDownloadProgress
 ): RuntimeAssetsUiState {
   return {
-    phase: progress.phase === "failed" ? "failed" : progress.phase === "completed" ? "ready" : "downloading",
+    phase: normalizeRuntimeAssetsPhase(progress.phase),
     currentComponent: progress.component,
     fileName: progress.fileName ?? current.fileName,
     downloadedBytes: progress.downloadedBytes,
-    totalBytes: progress.totalBytes ?? current.totalBytes,
+    totalBytes: mergeKnownTotalBytes(current.totalBytes, progress.totalBytes),
     message: progress.message ?? current.message,
     errorCode: progress.phase === "failed" ? current.errorCode : null,
     errorMessage: progress.phase === "failed" ? progress.message ?? current.errorMessage : null,
     blocking: progress.phase !== "completed"
   };
+}
+
+function mergeKnownTotalBytes(currentTotalBytes: number | null, nextTotalBytes: number | null) {
+  if (typeof nextTotalBytes === "number" && Number.isFinite(nextTotalBytes) && nextTotalBytes > 0) {
+    return nextTotalBytes;
+  }
+  return currentTotalBytes;
+}
+
+function normalizeRuntimeAssetsPhase(
+  phase: RuntimeComponentDownloadProgress["phase"]
+): RuntimeAssetsUiState["phase"] {
+  if (phase === "failed") {
+    return "failed";
+  }
+  if (phase === "completed") {
+    return "ready";
+  }
+  if (phase === "downloading") {
+    return "downloading";
+  }
+  return "checking";
 }
 
 function extractRuntimeAssetsErrorCode(message: string): RuntimeDownloadFailureReason {

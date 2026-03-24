@@ -79,8 +79,27 @@ struct ShellState {
     primary_action_label: String,
 }
 
+#[cfg(not(target_os = "android"))]
+fn shell_state_matches(
+    state: &ShellState,
+    status: &str,
+    signed_in: bool,
+    node_name: Option<&str>,
+    primary_action_label: &str,
+) -> bool {
+    state.status == status
+        && state.signed_in == signed_in
+        && state.node_name.as_deref() == node_name
+        && state.primary_action_label == primary_action_label
+}
+
 #[derive(Default)]
 struct RuntimeComponentDownloadState {
+    active: bool,
+}
+
+#[derive(Default)]
+struct InstallerOperationState {
     active: bool,
 }
 
@@ -105,6 +124,19 @@ fn shell_primary_action_label(status: &str) -> String {
         "error" => "返回主界面重试".to_string(),
         _ => "打开主界面连接".to_string(),
     }
+}
+
+#[cfg(not(target_os = "android"))]
+fn set_installer_operation_active(app: &AppHandle, active: bool) -> Result<(), String> {
+    let state: State<'_, Mutex<InstallerOperationState>> = app.state();
+    let mut state = state
+        .lock()
+        .map_err(|_| "安装器任务状态异常".to_string())?;
+    if active && state.active {
+        return Err("安装器任务正在处理中，请稍后再试。".into());
+    }
+    state.active = active;
+    Ok(())
 }
 
 impl Default for RuntimeState {
@@ -268,6 +300,8 @@ struct ApiResponseOutput {
 struct DesktopInstallerDownloadInput {
     url: String,
     file_name: Option<String>,
+    expected_total_bytes: Option<u64>,
+    expected_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -303,6 +337,7 @@ struct RuntimeComponentDownloadItemInput {
     id: String,
     component: RuntimeComponentKindInput,
     file_name: String,
+    file_size_bytes: Option<u64>,
     source_format: RuntimeComponentSourceFormat,
     archive_entry_name: Option<String>,
     checksum_sha256: Option<String>,
@@ -460,98 +495,79 @@ async fn download_desktop_installer(
 
     #[cfg(not(target_os = "android"))]
     {
-        let url = Url::parse(input.url.trim()).map_err(|error| format!("下载地址无效：{error}"))?;
-        if !matches!(url.scheme(), "https" | "http") {
-            return Err("下载地址仅支持 HTTP 或 HTTPS".into());
-        }
-
-        let file_name = resolve_installer_file_name(&url, input.file_name.as_deref());
-        emit_update_download_progress(
-            &app,
-            DesktopInstallerDownloadProgress {
-                phase: "preparing".into(),
-                file_name: Some(file_name.clone()),
-                downloaded_bytes: 0,
-                total_bytes: None,
-                local_path: None,
-                message: Some("正在准备下载安装器…".into()),
-            },
-        );
-
-        let download_dir = ensure_installer_download_dir(&app)?;
-        let final_path = download_dir.join(&file_name);
-        let temp_path = final_path.with_extension(format!(
-            "{}part",
-            final_path
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(|value| format!("{value}."))
-                .unwrap_or_default()
-        ));
-        if final_path.exists() {
-            let metadata = fs::metadata(&final_path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
-            if metadata.len() > 0 {
-                let local_path = final_path.to_string_lossy().into_owned();
-                emit_update_download_progress(
-                    &app,
-                    DesktopInstallerDownloadProgress {
-                        phase: "completed".into(),
-                        file_name: Some(file_name.clone()),
-                        downloaded_bytes: metadata.len(),
-                        total_bytes: Some(metadata.len()),
-                        local_path: Some(local_path.clone()),
-                        message: Some("已复用本地安装器，正在打开安装程序…".into()),
-                    },
-                );
-                return Ok(DesktopInstallerDownloadResult {
-                    file_name,
-                    local_path,
-                    total_bytes: Some(metadata.len()),
-                });
+        set_installer_operation_active(&app, true)?;
+        let result = async {
+            let url = Url::parse(input.url.trim()).map_err(|error| format!("下载地址无效：{error}"))?;
+            if !installer_download_url_allowed(&url) {
+                return Err("安装器下载地址仅支持 HTTPS，开发环境仅允许 localhost/127.0.0.1".into());
             }
-            let _ = fs::remove_file(&final_path);
-        }
-        if temp_path.exists() {
-            let _ = fs::remove_file(&temp_path);
-        }
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()
-            .map_err(|error| format!("初始化下载器失败：{error}"))?;
-        let mut response = client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(|error| format!("下载安装器失败：{error}"))?;
+            let file_name = resolve_installer_file_name(&url, input.file_name.as_deref());
+            let expected_hash = normalize_optional_sha256(input.expected_hash.as_deref());
+            emit_update_download_progress(
+                &app,
+                DesktopInstallerDownloadProgress {
+                    phase: "preparing".into(),
+                    file_name: Some(file_name.clone()),
+                    downloaded_bytes: 0,
+                    total_bytes: input.expected_total_bytes,
+                    local_path: None,
+                    message: Some("正在准备下载安装器…".into()),
+                },
+            );
 
-        if !response.status().is_success() {
-            return Err(format!("下载安装器失败：HTTP {}", response.status().as_u16()));
-        }
+            let download_dir = ensure_installer_download_dir(&app)?;
+            let final_path = download_dir.join(&file_name);
+            let temp_path = installer_temp_path(&final_path);
+            if final_path.exists() {
+                if installer_file_matches_expectation(
+                    &final_path,
+                    input.expected_total_bytes,
+                    expected_hash.as_deref(),
+                )? {
+                    let metadata = fs::metadata(&final_path)
+                        .map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
+                    let local_path = final_path.to_string_lossy().into_owned();
+                    emit_update_download_progress(
+                        &app,
+                        DesktopInstallerDownloadProgress {
+                            phase: "completed".into(),
+                            file_name: Some(file_name.clone()),
+                            downloaded_bytes: metadata.len(),
+                            total_bytes: input.expected_total_bytes.or(Some(metadata.len())),
+                            local_path: Some(local_path.clone()),
+                            message: Some("已复用本地安装器，正在打开安装程序…".into()),
+                        },
+                    );
+                    return Ok(DesktopInstallerDownloadResult {
+                        file_name,
+                        local_path,
+                        total_bytes: input.expected_total_bytes.or(Some(metadata.len())),
+                    });
+                }
+                let _ = fs::remove_file(&final_path);
+            }
+            if temp_path.exists() {
+                let _ = fs::remove_file(&temp_path);
+            }
 
-        let total_bytes = response.content_length();
-        let mut downloaded_bytes = 0_u64;
-        let mut file = File::create(&temp_path).map_err(|error| format!("创建安装器文件失败：{error}"))?;
-        emit_update_download_progress(
-            &app,
-            DesktopInstallerDownloadProgress {
-                phase: "downloading".into(),
-                file_name: Some(file_name.clone()),
-                downloaded_bytes,
-                total_bytes,
-                local_path: None,
-                message: Some("正在下载安装器…".into()),
-            },
-        );
+            let client = Client::builder()
+                .timeout(Duration::from_secs(600))
+                .build()
+                .map_err(|error| format!("初始化下载器失败：{error}"))?;
+            let mut response = client
+                .get(url.clone())
+                .send()
+                .await
+                .map_err(|error| format!("下载安装器失败：{error}"))?;
 
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| format!("下载安装器失败：{error}"))?
-        {
-            file.write_all(&chunk)
-                .map_err(|error| format!("写入安装器文件失败：{error}"))?;
-            downloaded_bytes += chunk.len() as u64;
+            if !response.status().is_success() {
+                return Err(format!("下载安装器失败：HTTP {}", response.status().as_u16()));
+            }
+
+            let total_bytes = response.content_length().or(input.expected_total_bytes);
+            let mut downloaded_bytes = 0_u64;
+            let mut file = File::create(&temp_path).map_err(|error| format!("创建安装器文件失败：{error}"))?;
             emit_update_download_progress(
                 &app,
                 DesktopInstallerDownloadProgress {
@@ -563,29 +579,76 @@ async fn download_desktop_installer(
                     message: Some("正在下载安装器…".into()),
                 },
             );
-        }
 
-        file.flush().map_err(|error| format!("写入安装器文件失败：{error}"))?;
-        fs::rename(&temp_path, &final_path).map_err(|error| format!("保存安装器文件失败：{error}"))?;
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|error| format!("下载安装器失败：{error}"))?
+            {
+                file.write_all(&chunk)
+                    .map_err(|error| format!("写入安装器文件失败：{error}"))?;
+                downloaded_bytes += chunk.len() as u64;
+                emit_update_download_progress(
+                    &app,
+                    DesktopInstallerDownloadProgress {
+                        phase: "downloading".into(),
+                        file_name: Some(file_name.clone()),
+                        downloaded_bytes,
+                        total_bytes,
+                        local_path: None,
+                        message: Some("正在下载安装器…".into()),
+                    },
+                );
+            }
 
-        let local_path = final_path.to_string_lossy().into_owned();
-        emit_update_download_progress(
-            &app,
-            DesktopInstallerDownloadProgress {
-                phase: "completed".into(),
-                file_name: Some(file_name.clone()),
+            file.flush().map_err(|error| format!("写入安装器文件失败：{error}"))?;
+            validate_installer_file(
+                &temp_path,
                 downloaded_bytes,
-                total_bytes,
-                local_path: Some(local_path.clone()),
-                message: Some("安装器下载完成，正在打开安装程序…".into()),
-            },
-        );
+                input.expected_total_bytes,
+                expected_hash.as_deref(),
+            )?;
+            fs::rename(&temp_path, &final_path).map_err(|error| format!("保存安装器文件失败：{error}"))?;
 
-        Ok(DesktopInstallerDownloadResult {
-            file_name,
-            local_path,
-            total_bytes: total_bytes.or(Some(downloaded_bytes)),
-        })
+            let local_path = final_path.to_string_lossy().into_owned();
+            emit_update_download_progress(
+                &app,
+                DesktopInstallerDownloadProgress {
+                    phase: "completed".into(),
+                    file_name: Some(file_name.clone()),
+                    downloaded_bytes,
+                    total_bytes: input.expected_total_bytes.or(total_bytes).or(Some(downloaded_bytes)),
+                    local_path: Some(local_path.clone()),
+                    message: Some("安装器下载完成，正在打开安装程序…".into()),
+                },
+            );
+
+            Ok(DesktopInstallerDownloadResult {
+                file_name,
+                local_path,
+                total_bytes: input.expected_total_bytes.or(total_bytes).or(Some(downloaded_bytes)),
+            })
+        }
+        .await;
+        let _ = set_installer_operation_active(&app, false);
+        if result.is_err() {
+            if let Ok(download_dir) = ensure_installer_download_dir(&app) {
+                if let Ok(entries) = fs::read_dir(&download_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path
+                            .extension()
+                            .and_then(|value| value.to_str())
+                            .map(|value| value.ends_with("part"))
+                            .unwrap_or(false)
+                        {
+                            let _ = fs::remove_file(path);
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 }
 
@@ -599,14 +662,20 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
 
     #[cfg(not(target_os = "android"))]
     {
+        set_installer_operation_active(&app, true)?;
         let installer_path = PathBuf::from(path);
         if !installer_path.exists() {
+            let _ = set_installer_operation_active(&app, false);
             return Err("安装器文件不存在".into());
         }
-        spawn_deferred_installer_open(&installer_path)?;
+        let current_pid = std::process::id();
+        if let Err(error) = spawn_deferred_installer_open(&installer_path, current_pid) {
+            let _ = set_installer_operation_active(&app, false);
+            return Err(error);
+        }
         let exit_handle = app.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(150));
             exit_handle.exit(0);
         });
 
@@ -748,7 +817,7 @@ async fn download_runtime_component(
                     component: component_name.into(),
                     file_name: Some(input.component.file_name.clone()),
                     downloaded_bytes: 0,
-                    total_bytes: None,
+                    total_bytes: input.component.file_size_bytes,
                     message: Some(format!("正在准备 {}…", runtime_component_display_name(component))),
                 },
             );
@@ -770,7 +839,7 @@ async fn download_runtime_component(
                 ));
             }
 
-            let total_bytes = response.content_length();
+            let total_bytes = response.content_length().or(input.component.file_size_bytes);
             let mut downloaded_bytes = 0_u64;
             let mut archive_file = File::create(&archive_path)
                 .map_err(|error| runtime_component_error("write_failed", format!("创建组件缓存文件失败：{error}")))?;
@@ -953,20 +1022,36 @@ fn update_shell_summary(
     shell_state: State<'_, Mutex<ShellState>>,
     summary: ShellSummaryInput,
 ) -> Result<CommandResult, String> {
+    let next_primary_action_label = summary
+        .primary_action_label
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "连接/断开".to_string());
+    let next_signed_in = summary.signed_in.unwrap_or(false);
+    let next_node_name = summary.node_name;
+    let next_status = summary.status;
+    let mut should_refresh = false;
     {
         let mut state = shell_state
             .lock()
             .map_err(|_| "桌面壳层状态异常".to_string())?;
-        state.status = summary.status;
-        state.signed_in = summary.signed_in.unwrap_or(false);
-        state.node_name = summary.node_name;
-        state.primary_action_label = summary
-            .primary_action_label
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "连接/断开".to_string());
+        if !shell_state_matches(
+            &state,
+            &next_status,
+            next_signed_in,
+            next_node_name.as_deref(),
+            &next_primary_action_label,
+        ) {
+            state.status = next_status;
+            state.signed_in = next_signed_in;
+            state.node_name = next_node_name;
+            state.primary_action_label = next_primary_action_label;
+            should_refresh = true;
+        }
     }
 
-    refresh_shell_ui(&app)?;
+    if should_refresh {
+        refresh_shell_ui(&app)?;
+    }
 
     Ok(CommandResult {
         ok: true,
@@ -1389,8 +1474,20 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+fn sha256_file_plain(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| format!("读取安装器文件失败：{error}"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
 fn normalize_sha256(value: &str) -> String {
     value.trim().replace(':', "").to_lowercase()
+}
+
+fn normalize_optional_sha256(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_sha256)
 }
 
 fn extract_zip_entry(archive_path: &Path, target_path: &Path, entry_name: &str) -> Result<(), String> {
@@ -1424,19 +1521,89 @@ fn extract_zip_entry(archive_path: &Path, target_path: &Path, entry_name: &str) 
 }
 
 fn ensure_installer_download_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(download_dir) = app.path().download_dir() {
-        let target = download_dir.join("ChordV 安装包");
-        fs::create_dir_all(&target).map_err(|error| format!("创建下载目录失败：{error}"))?;
-        return Ok(target);
-    }
-
     let fallback = app
         .path()
         .app_local_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
-        .join("downloads");
-    fs::create_dir_all(&fallback).map_err(|error| format!("创建下载目录失败：{error}"))?;
+        .join("installer-cache");
+    fs::create_dir_all(&fallback).map_err(|error| format!("创建安装器缓存目录失败：{error}"))?;
     Ok(fallback)
+}
+
+fn installer_download_url_allowed(url: &Url) -> bool {
+    if url.scheme() == "https" {
+        return true;
+    }
+    if url.scheme() != "http" {
+        return false;
+    }
+
+    matches!(
+        url.host_str().map(|value| value.to_ascii_lowercase()).as_deref(),
+        Some("localhost") | Some("127.0.0.1") | Some("::1")
+    )
+}
+
+fn installer_file_matches_expectation(
+    path: &Path,
+    expected_total_bytes: Option<u64>,
+    expected_hash: Option<&str>,
+) -> Result<bool, String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
+    if metadata.len() == 0 {
+        return Ok(false);
+    }
+    if let Some(expected_total_bytes) = expected_total_bytes {
+        if metadata.len() != expected_total_bytes {
+            return Ok(false);
+        }
+    }
+    if let Some(expected_hash) = expected_hash {
+        let actual_hash = sha256_file_plain(path)?;
+        if actual_hash != expected_hash {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn validate_installer_file(
+    path: &Path,
+    downloaded_bytes: u64,
+    expected_total_bytes: Option<u64>,
+    expected_hash: Option<&str>,
+) -> Result<(), String> {
+    if downloaded_bytes == 0 {
+        let _ = fs::remove_file(path);
+        return Err("下载安装器失败：下载结果为空文件".into());
+    }
+    if let Some(expected_total_bytes) = expected_total_bytes {
+        if downloaded_bytes != expected_total_bytes {
+            let _ = fs::remove_file(path);
+            return Err(format!(
+                "下载安装器失败：文件大小与预期不一致（预期 {} 字节，实际 {} 字节）",
+                expected_total_bytes, downloaded_bytes
+            ));
+        }
+    }
+    if let Some(expected_hash) = expected_hash {
+        let actual_hash = sha256_file_plain(path)?;
+        if actual_hash != expected_hash {
+            let _ = fs::remove_file(path);
+            return Err("下载安装器失败：文件校验未通过，请重新获取安装包。".into());
+        }
+    }
+    Ok(())
+}
+
+fn installer_temp_path(path: &Path) -> PathBuf {
+    path.with_extension(format!(
+        "{}part",
+        path.extension()
+            .and_then(|value| value.to_str())
+            .map(|value| format!("{value}."))
+            .unwrap_or_default()
+    ))
 }
 
 fn cleanup_outdated_installer_packages(app: &AppHandle) -> Result<(), String> {
@@ -1577,9 +1744,9 @@ fn powershell_quote(value: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
+fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Result<(), String> {
     let script = format!(
-        "sleep 1; open {}",
+        "pid={current_pid}; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done; open {}",
         shell_quote(installer_path.to_string_lossy().as_ref())
     );
     Command::new("sh")
@@ -1593,9 +1760,9 @@ fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
+fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Result<(), String> {
     let script = format!(
-        "Start-Sleep -Milliseconds 1200; Start-Process -FilePath {}",
+        "$pidToWait = {current_pid}; while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; Start-Sleep -Milliseconds 200; Start-Process -FilePath {} -ArgumentList '/UPDATE'",
         powershell_quote(installer_path.to_string_lossy().as_ref())
     );
     let mut command = Command::new("powershell");
@@ -1611,9 +1778,13 @@ fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
 }
 
 #[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
-fn spawn_deferred_installer_open(installer_path: &Path) -> Result<(), String> {
-    Command::new("xdg-open")
-        .arg(installer_path)
+fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Result<(), String> {
+    let script = format!(
+        "pid={current_pid}; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done; xdg-open {}",
+        shell_quote(installer_path.to_string_lossy().as_ref())
+    );
+    Command::new("sh")
+        .args(["-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -2856,13 +3027,26 @@ fn toggle_main_window_internal(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(not(target_os = "android"))]
 fn sync_shell_from_runtime(app: &AppHandle, runtime: &RuntimeState) {
+    let next_primary_action_label = shell_primary_action_label(&runtime.status);
+    let mut should_refresh = false;
     if let Ok(mut shell) = app.state::<Mutex<ShellState>>().lock() {
-        shell.status = runtime.status.clone();
-        shell.signed_in = true;
-        shell.node_name = runtime.active_node_name.clone();
-        shell.primary_action_label = shell_primary_action_label(&runtime.status);
+        let next_signed_in = shell.signed_in;
+        if !shell_state_matches(
+            &shell,
+            &runtime.status,
+            next_signed_in,
+            runtime.active_node_name.as_deref(),
+            &next_primary_action_label,
+        ) {
+            shell.status = runtime.status.clone();
+            shell.node_name = runtime.active_node_name.clone();
+            shell.primary_action_label = next_primary_action_label;
+            should_refresh = true;
+        }
     }
-    let _ = refresh_shell_ui(app);
+    if should_refresh {
+        let _ = refresh_shell_ui(app);
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -3227,6 +3411,7 @@ pub fn run() {
             node_name: None,
             primary_action_label: "连接/断开".into(),
         }))
+        .manage(Mutex::new(InstallerOperationState::default()))
         .manage(Mutex::new(RuntimeComponentDownloadState::default()))
         .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()))
         .setup(|app| {

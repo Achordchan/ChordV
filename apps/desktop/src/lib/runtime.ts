@@ -368,7 +368,12 @@ export async function subscribeDesktopUpdateDownloadProgress(
   };
 }
 
-export async function downloadDesktopInstaller(input: { url: string; fileName?: string | null }) {
+export async function downloadDesktopInstaller(input: {
+  url: string;
+  fileName?: string | null;
+  expectedTotalBytes?: number | null;
+  expectedHash?: string | null;
+}) {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {
     return null;
