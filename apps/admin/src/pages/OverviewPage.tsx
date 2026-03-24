@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Button, Card, Group, Paper, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import type { AdminNodeRecordDto, AdminSnapshotDto, AdminSubscriptionRecordDto } from "@chordv/shared";
-import { IconBell, IconListDetails, IconMapPin, IconUser, IconUsers } from "@tabler/icons-react";
+import { IconBell, IconListDetails, IconMapPin, IconMessageCircle, IconUser, IconUsers } from "@tabler/icons-react";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
 import { nodeProbeColor, subscriptionStateColor, translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
@@ -22,6 +22,9 @@ export function OverviewPage(props: OverviewPageProps) {
         <MetricCard label="有效订阅" value={props.snapshot.dashboard.activeSubscriptions} icon={<IconUser size={18} />} />
         <MetricCard label="节点数" value={props.snapshot.dashboard.activeNodes} icon={<IconMapPin size={18} />} />
         <MetricCard label="在线公告" value={props.snapshot.dashboard.announcements} icon={<IconBell size={18} />} />
+        <MetricCard label="待处理工单" value={props.snapshot.dashboard.waitingAdminTickets ?? 0} icon={<IconMessageCircle size={18} />} />
+        <MetricCard label="处理中工单" value={props.snapshot.dashboard.openTickets ?? 0} icon={<IconMessageCircle size={18} />} />
+        <MetricCard label="已关闭工单" value={props.snapshot.dashboard.closedTickets ?? 0} icon={<IconMessageCircle size={18} />} />
       </SimpleGrid>
 
       <SimpleGrid cols={{ base: 1, xl: 2 }}>

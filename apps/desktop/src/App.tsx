@@ -5,6 +5,8 @@ import type {
   AnnouncementDto,
   AuthSessionDto,
   ClientBootstrapDto,
+  ClientSupportTicketDetailDto,
+  ClientSupportTicketSummaryDto,
   ClientVersionDto,
   ClientRuntimeEventDto,
   ConnectionMode,
@@ -14,6 +16,7 @@ import type {
 } from "@chordv/shared";
 import {
   checkClientUpdate,
+  type ClientUpdateArtifact,
   type ClientUpdateCheckResult,
   connectSession,
   disconnectSession,
@@ -22,13 +25,17 @@ import {
   fetchNodeProbes,
   fetchNodes,
   fetchRuntimeComponentsPlan,
-  probeServerConnectivity,
+  fetchSupportTicketDetail,
+  fetchSupportTickets,
+  probeClientServerLatency,
   reportRuntimeComponentFailure,
   fetchSubscription,
   heartbeatSession,
   login,
   logoutSession,
+  createSupportTicket,
   refreshSession,
+  replySupportTicket,
   subscribeClientEvents
 } from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
@@ -37,7 +44,8 @@ import { LogDrawer } from "./components/LogDrawer";
 import { LoginScreen } from "./components/LoginScreen";
 import { NodeListPanel } from "./components/NodeListPanel";
 import { RuntimeAssetsBanner } from "./components/RuntimeAssetsBanner";
-import { SubscriptionPanel } from "./components/SubscriptionPanel";
+import { SubscriptionPanel, type SubscriptionServerProbe } from "./components/SubscriptionPanel";
+import { TicketCenterModal } from "./components/TicketCenterModal";
 import {
   appReady,
   clearStoredSession,
@@ -123,6 +131,13 @@ type UpdateDownloadState = {
   message: string | null;
 };
 
+type ServerProbeState = {
+  status: "idle" | "checking" | "healthy" | "slow" | "failed";
+  elapsedMs: number | null;
+  checkedAt: number | null;
+  errorMessage: string | null;
+};
+
 declare global {
   interface Window {
     __CHORDV_DESKTOP_SHELL__?: {
@@ -166,15 +181,29 @@ export function App() {
   const [updateCheckResult, setUpdateCheckResult] = useState<ClientUpdateCheckResult | null>(null);
   const [updateDialogOpened, setUpdateDialogOpened] = useState(false);
   const [updateDownload, setUpdateDownload] = useState<UpdateDownloadState>(createIdleUpdateDownloadState());
+  const [indeterminateUpdateProgress, setIndeterminateUpdateProgress] = useState(18);
+  const [serverProbe, setServerProbe] = useState<ServerProbeState>(createIdleServerProbeState());
   const [runtimeAssets, setRuntimeAssets] = useState<RuntimeAssetsUiState>(createIdleRuntimeAssetsState());
   const [runtimeAssetsDialogOpened, setRuntimeAssetsDialogOpened] = useState(false);
   const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState("");
+  const [ticketCenterOpened, setTicketCenterOpened] = useState(false);
+  const [ticketCreateMode, setTicketCreateMode] = useState(false);
+  const [ticketList, setTicketList] = useState<ClientSupportTicketSummaryDto[]>([]);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [ticketDetail, setTicketDetail] = useState<ClientSupportTicketDetailDto | null>(null);
+  const [ticketListBusy, setTicketListBusy] = useState(false);
+  const [ticketDetailBusy, setTicketDetailBusy] = useState(false);
+  const [ticketSubmitting, setTicketSubmitting] = useState(false);
+  const [ticketCenterError, setTicketCenterError] = useState<string | null>(null);
+  const [ticketDraft, setTicketDraft] = useState({ title: "", body: "" });
+  const [ticketReplyDraft, setTicketReplyDraft] = useState("");
   const leaseHeartbeatFailedAtRef = useRef<number | null>(null);
   const lastMeteringToastRef = useRef<string | null>(null);
   const lastGuidanceToastRef = useRef<string | null>(null);
   const lastRuntimeSignalKeyRef = useRef<string | null>(null);
   const lastForegroundSyncErrorRef = useRef<string | null>(null);
   const lastForegroundSyncAtRef = useRef(0);
+  const lastServerProbeForegroundAtRef = useRef(0);
   const localStopInFlightRef = useRef<Promise<void> | null>(null);
   const runtimeRescueTriggeredRef = useRef(false);
   const runtimeRef = useRef<GeneratedRuntimeConfigDto | null>(null);
@@ -185,13 +214,14 @@ export function App() {
   const openLogsActionRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<AuthSessionDto | null>(null);
   const lastUpdatePromptVersionRef = useRef<string | null>(null);
-  const lastServerConnectivityToastRef = useRef<{ scope: "login" | "main"; at: number } | null>(null);
   const runtimeAssetsTaskRef = useRef<Promise<boolean> | null>(null);
   const deferredUpdatePromptKeyRef = useRef<string | null>(null);
   const lastShellSummaryRef = useRef("");
   const pendingShellSummaryRef = useRef("");
   const shellSummaryRequestSeqRef = useRef(0);
   const runtimeRefreshRequestSeqRef = useRef(0);
+  const serverProbeRequestSeqRef = useRef(0);
+  const lastKnownUpdateArtifactRef = useRef<ClientUpdateArtifact | null>(null);
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -206,8 +236,16 @@ export function App() {
   const updatePlatform = resolveUpdatePlatform(desktopStatus.platformTarget);
   const appVersion = resolveDesktopPlatformVersion(desktopStatus.platformTarget);
   const effectiveUpdate = useMemo(
-    () => updateCheckResult ?? createLegacyUpdateResult(bootstrap?.version ?? null, updatePlatform, appVersion),
-    [appVersion, bootstrap?.version, updateCheckResult, updatePlatform]
+    () =>
+      updateCheckResult ??
+      createLegacyUpdateResult(
+        bootstrap?.version ?? null,
+        updatePlatform,
+        appVersion,
+        runtimeMirrorPrefix,
+        lastKnownUpdateArtifactRef.current
+      ),
+    [appVersion, bootstrap?.version, runtimeMirrorPrefix, updateCheckResult, updatePlatform]
   );
   const forceUpdateRequired = Boolean(
     effectiveUpdate &&
@@ -257,6 +295,10 @@ export function App() {
       passiveAnnouncements.some((item) => localStorage.getItem(passiveAnnouncementStorageKey(item.id)) !== "seen"),
     [announcementSeenRevision, forcedAnnouncement, passiveAnnouncements]
   );
+  const subscriptionServerProbe = useMemo<SubscriptionServerProbe>(
+    () => toSubscriptionServerProbe(serverProbe),
+    [serverProbe]
+  );
 
   useEffect(() => {
     runtimeRef.current = runtime;
@@ -294,6 +336,79 @@ export function App() {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    if (session) {
+      return;
+    }
+    setServerProbe(createIdleServerProbeState());
+    setTicketCenterOpened(false);
+    setTicketCreateMode(false);
+    setTicketList([]);
+    setSelectedTicketId(null);
+    setTicketDetail(null);
+    setTicketCenterError(null);
+    setTicketDraft({ title: "", body: "" });
+    setTicketReplyDraft("");
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    void runServerLatencyProbe(session.accessToken);
+  }, [session?.accessToken]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void runServerLatencyProbe(session.accessToken);
+    }, 20_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [session?.accessToken]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const probeOnForeground = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      const nowMs = Date.now();
+      if (nowMs - lastServerProbeForegroundAtRef.current < 3000) {
+        return;
+      }
+      lastServerProbeForegroundAtRef.current = nowMs;
+      void runServerLatencyProbe(session.accessToken);
+    };
+
+    document.addEventListener("visibilitychange", probeOnForeground);
+    window.addEventListener("focus", probeOnForeground);
+    return () => {
+      document.removeEventListener("visibilitychange", probeOnForeground);
+      window.removeEventListener("focus", probeOnForeground);
+    };
+  }, [session?.accessToken]);
+
+  useEffect(() => {
+    if (!ticketCenterOpened || !session) {
+      return;
+    }
+    void loadTicketList();
+  }, [ticketCenterOpened, session?.accessToken]);
+
+  useEffect(() => {
+    if (!ticketCenterOpened || !session || !selectedTicketId || ticketCreateMode) {
+      return;
+    }
+    void loadTicketDetail(selectedTicketId);
+  }, [selectedTicketId, session?.accessToken, ticketCenterOpened, ticketCreateMode]);
 
   useEffect(() => {
     shellActionRef.current = async () => {
@@ -406,6 +521,35 @@ export function App() {
   useEffect(() => {
     setUpdateDownload(createIdleUpdateDownloadState());
   }, [effectiveUpdate?.latestVersion, effectiveUpdate?.downloadUrl]);
+
+  useEffect(() => {
+    if (updateCheckResult?.artifact) {
+      lastKnownUpdateArtifactRef.current = updateCheckResult.artifact;
+    }
+  }, [updateCheckResult?.artifact]);
+
+  useEffect(() => {
+    if (updateDownload.phase !== "downloading" || hasKnownTotalBytes(updateDownload.totalBytes)) {
+      setIndeterminateUpdateProgress(18);
+      return;
+    }
+
+    let currentValue = 18;
+    let direction = 1;
+    const timer = window.setInterval(() => {
+      currentValue += direction * 9;
+      if (currentValue >= 78) {
+        currentValue = 78;
+        direction = -1;
+      } else if (currentValue <= 18) {
+        currentValue = 18;
+        direction = 1;
+      }
+      setIndeterminateUpdateProgress(currentValue);
+    }, 180);
+
+    return () => window.clearInterval(timer);
+  }, [updateDownload.phase, updateDownload.totalBytes]);
 
   useEffect(() => {
     const preventContextMenu = (event: MouseEvent) => {
@@ -858,6 +1002,154 @@ export function App() {
     });
   }, [booting, desktopStatus.platformTarget, runtimeAssets.phase]);
 
+  async function runServerLatencyProbe(accessToken: string) {
+    const requestId = serverProbeRequestSeqRef.current + 1;
+    serverProbeRequestSeqRef.current = requestId;
+    setServerProbe((current) => ({
+      status: "checking",
+      elapsedMs: current.elapsedMs,
+      checkedAt: current.checkedAt,
+      errorMessage: null
+    }));
+
+    try {
+      const result = await probeClientServerLatency(accessToken);
+      if (serverProbeRequestSeqRef.current !== requestId) {
+        return;
+      }
+      setServerProbe({
+        status: result.elapsedMs !== null && result.elapsedMs >= 200 ? "slow" : "healthy",
+        elapsedMs: result.elapsedMs ?? null,
+        checkedAt: Date.now(),
+        errorMessage: null
+      });
+    } catch (reason) {
+      if (serverProbeRequestSeqRef.current !== requestId) {
+        return;
+      }
+      setServerProbe({
+        status: "failed",
+        elapsedMs: null,
+        checkedAt: Date.now(),
+        errorMessage: reason instanceof Error ? readError(reason.message) : "当前无法连接服务端"
+      });
+    }
+  }
+
+  async function loadTicketList(preferredTicketId?: string | null) {
+    const accessToken = sessionRef.current?.accessToken;
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      setTicketListBusy(true);
+      setTicketCenterError(null);
+      const nextTickets = await fetchSupportTickets(accessToken);
+      setTicketList(nextTickets);
+      setSelectedTicketId((current) => pickTicketId(nextTickets, preferredTicketId ?? current));
+      if (nextTickets.length === 0) {
+        setTicketDetail(null);
+      }
+    } catch (reason) {
+      setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单列表加载失败");
+    } finally {
+      setTicketListBusy(false);
+    }
+  }
+
+  async function loadTicketDetail(ticketId: string) {
+    const accessToken = sessionRef.current?.accessToken;
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      setTicketDetailBusy(true);
+      setTicketCenterError(null);
+      const detail = await fetchSupportTicketDetail(accessToken, ticketId);
+      setTicketDetail(detail);
+    } catch (reason) {
+      setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单详情加载失败");
+    } finally {
+      setTicketDetailBusy(false);
+    }
+  }
+
+  function openTicketCenter() {
+    setTicketCenterOpened(true);
+    setTicketCreateMode(false);
+  }
+
+  function openTicketComposer() {
+    setTicketCreateMode(true);
+    setTicketCenterError(null);
+    setTicketReplyDraft("");
+  }
+
+  function closeTicketComposer() {
+    setTicketCreateMode(false);
+    setTicketCenterError(null);
+  }
+
+  async function handleCreateTicket() {
+    const accessToken = sessionRef.current?.accessToken;
+    if (!accessToken || ticketSubmitting) {
+      return;
+    }
+
+    try {
+      setTicketSubmitting(true);
+      setTicketCenterError(null);
+      const detail = await createSupportTicket(accessToken, {
+        title: ticketDraft.title.trim(),
+        body: ticketDraft.body.trim()
+      });
+      setTicketDraft({ title: "", body: "" });
+      setTicketReplyDraft("");
+      setTicketCreateMode(false);
+      setTicketDetail(detail);
+      setSelectedTicketId(detail.id);
+      await loadTicketList(detail.id);
+      notifications.show({
+        color: "green",
+        title: "工单已提交",
+        message: "你的问题已经提交成功，可以在这里继续补充信息。"
+      });
+    } catch (reason) {
+      setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单提交失败");
+    } finally {
+      setTicketSubmitting(false);
+    }
+  }
+
+  async function handleReplyTicket() {
+    const accessToken = sessionRef.current?.accessToken;
+    if (!accessToken || !selectedTicketId || ticketSubmitting || !ticketReplyDraft.trim()) {
+      return;
+    }
+
+    try {
+      setTicketSubmitting(true);
+      setTicketCenterError(null);
+      const detail = await replySupportTicket(accessToken, selectedTicketId, {
+        body: ticketReplyDraft.trim()
+      });
+      setTicketDetail(detail);
+      setTicketReplyDraft("");
+      await loadTicketList(detail.id);
+      notifications.show({
+        color: "green",
+        title: "回复已发送",
+        message: "客服看到后会继续在这条工单里回复你。"
+      });
+    } catch (reason) {
+      setTicketCenterError(reason instanceof Error ? readError(reason.message) : "发送回复失败");
+    } finally {
+      setTicketSubmitting(false);
+    }
+  }
+
   async function initializeApp() {
     try {
       const rememberedCredentials = loadRememberedCredentials();
@@ -874,7 +1166,6 @@ export function App() {
       if (storedSession) {
         await bootstrapSession(storedSession, true, false, true);
       } else {
-        await announceServerConnectivity("login");
         await runUpdateCheck({ source: "startup", silent: true });
       }
     } finally {
@@ -1067,7 +1358,6 @@ export function App() {
     preserveMode: boolean,
     autoProbe: boolean
   ) {
-    const hadSession = Boolean(session);
     try {
       const [nextBootstrap, nextNodes] = await Promise.all([
         fetchBootstrap(nextSession.accessToken),
@@ -1111,10 +1401,6 @@ export function App() {
         source: allowRefresh ? "refresh" : "login",
         silent: true
       });
-
-      if (!hadSession) {
-        await announceServerConnectivity("main");
-      }
 
       return true;
     } catch (reason) {
@@ -1170,6 +1456,8 @@ export function App() {
       const ok = await bootstrapSession(session, true, modeLocked, false);
       if (!ok) {
         await forceStopLocalRuntime();
+      } else {
+        await runServerLatencyProbe(sessionRef.current?.accessToken ?? session.accessToken);
       }
     } catch (reason) {
       await forceStopLocalRuntime();
@@ -1903,27 +2191,6 @@ export function App() {
     }
   }
 
-  async function announceServerConnectivity(scope: "login" | "main") {
-    try {
-      await probeServerConnectivity();
-    } catch {
-      return;
-    }
-
-    const nowMs = Date.now();
-    const lastToast = lastServerConnectivityToastRef.current;
-    if (lastToast && lastToast.scope === scope && nowMs - lastToast.at < 8000) {
-      return;
-    }
-
-    lastServerConnectivityToastRef.current = { scope, at: nowMs };
-    notifications.show({
-      color: "green",
-      title: "服务器连接正常",
-      message: scope === "login" ? "提示" : "当前与服务端通信正常。"
-    });
-  }
-
   return (
     <div className={desktopStatus.platformTarget === "android" ? "desktop-app desktop-app--android" : "desktop-app"}>
       <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ blur: 1 }} />
@@ -1972,7 +2239,9 @@ export function App() {
               refreshing={refreshing}
               updateBusy={updateCheckBusy}
               hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
+              serverProbe={subscriptionServerProbe}
               onOpenAnnouncements={openAnnouncementDrawer}
+              onOpenTickets={openTicketCenter}
               onRefresh={() => void handleRefresh()}
               onCheckUpdate={() => void handleManualUpdateCheck()}
               onLogout={() => void handleLogout()}
@@ -2057,6 +2326,35 @@ export function App() {
         onClose={() => setAnnouncementDrawerOpened(false)}
       />
       <LogDrawer opened={logDrawerOpened} log={runtimeLog} onClose={() => setLogDrawerOpened(false)} />
+      <TicketCenterModal
+        opened={ticketCenterOpened}
+        email={bootstrap?.user.email ?? ""}
+        tickets={ticketList}
+        selectedTicketId={selectedTicketId}
+        ticketDetail={ticketDetail}
+        listBusy={ticketListBusy}
+        detailBusy={ticketDetailBusy}
+        submitting={ticketSubmitting}
+        createMode={ticketCreateMode}
+        error={ticketCenterError}
+        createTitle={ticketDraft.title}
+        createBody={ticketDraft.body}
+        replyBody={ticketReplyDraft}
+        onClose={() => setTicketCenterOpened(false)}
+        onRefresh={() => void loadTicketList(selectedTicketId)}
+        onOpenCreate={openTicketComposer}
+        onCancelCreate={closeTicketComposer}
+        onSelectTicket={(ticketId) => {
+          setTicketCreateMode(false);
+          setSelectedTicketId(ticketId);
+          setTicketReplyDraft("");
+        }}
+        onCreateTitleChange={(value) => setTicketDraft((current) => ({ ...current, title: value }))}
+        onCreateBodyChange={(value) => setTicketDraft((current) => ({ ...current, body: value }))}
+        onReplyBodyChange={setTicketReplyDraft}
+        onSubmitCreate={() => void handleCreateTicket()}
+        onSubmitReply={() => void handleReplyTicket()}
+      />
 
       <Modal
         opened={closeHintOpened}
@@ -2194,7 +2492,11 @@ export function App() {
               <Text size="sm" c="dimmed">
                 新版本会先在应用内下载完整安装器，下载完成后自动打开 {updatePlatform === "windows" ? "Setup 安装程序" : "DMG 安装包"}，再由你手动完成安装。
               </Text>
-              <Progress value={downloadProgressPercent(updateDownload)} animated={updateDownload.phase === "downloading"} />
+              <Progress
+                value={displayUpdateDownloadProgress(updateDownload, indeterminateUpdateProgress)}
+                animated={updateDownload.phase === "downloading"}
+                striped={updateDownload.phase === "downloading"}
+              />
               <Text size="sm" c="dimmed">
                 {describeUpdateDownload(updateDownload)}
               </Text>
@@ -2466,10 +2768,28 @@ function resolveUpdateDownloadUrl(downloadUrl: string | null) {
   return new URL(downloadUrl, import.meta.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com").toString();
 }
 
+function applyUpdateMirrorPrefix(originUrl: string, mirrorPrefix?: string | null) {
+  const normalizedPrefix = normalizeMirrorPrefix(mirrorPrefix);
+  if (!normalizedPrefix) {
+    return originUrl;
+  }
+  if (normalizedPrefix.includes("{url}")) {
+    return normalizedPrefix.replaceAll("{url}", originUrl);
+  }
+  return `${normalizedPrefix}${originUrl}`;
+}
+
+function normalizeMirrorPrefix(mirrorPrefix?: string | null) {
+  const normalized = mirrorPrefix?.trim();
+  return normalized ? normalized : null;
+}
+
 function createLegacyUpdateResult(
   version: ClientVersionDto | null,
   platformTarget: ReturnType<typeof resolveUpdatePlatform>,
-  currentVersion: string
+  currentVersion: string,
+  clientMirrorPrefix?: string | null,
+  fallbackArtifact?: ClientUpdateArtifact | null
 ): ClientUpdateCheckResult | null {
   if (!version) {
     return null;
@@ -2484,8 +2804,15 @@ function createLegacyUpdateResult(
     return null;
   }
 
-  const downloadUrl = resolveUpdateDownloadUrl(version.downloadUrl ?? null);
+  const originDownloadUrl = resolveUpdateDownloadUrl(version.downloadUrl ?? null);
+  const downloadUrl = originDownloadUrl ? applyUpdateMirrorPrefix(originDownloadUrl, clientMirrorPrefix) : null;
   const fileType = preferredArtifactType(platformTarget);
+  const compatibleFallbackArtifact =
+    fallbackArtifact &&
+    fallbackArtifact.fileType === fileType &&
+    (fallbackArtifact.originDownloadUrl === originDownloadUrl || fallbackArtifact.downloadUrl === downloadUrl)
+      ? fallbackArtifact
+      : null;
 
   return {
     platform: platformTarget,
@@ -2504,12 +2831,12 @@ function createLegacyUpdateResult(
         ? {
           fileType,
           downloadUrl,
-          originDownloadUrl: downloadUrl,
-          defaultMirrorPrefix: null,
-          allowClientMirror: true,
-          fileName: inferInstallerFileName(downloadUrl, fileType),
-          fileSizeBytes: null,
-          fileHash: null,
+          originDownloadUrl,
+          defaultMirrorPrefix: normalizeMirrorPrefix(clientMirrorPrefix) ?? compatibleFallbackArtifact?.defaultMirrorPrefix ?? null,
+          allowClientMirror: compatibleFallbackArtifact?.allowClientMirror ?? true,
+          fileName: compatibleFallbackArtifact?.fileName ?? inferInstallerFileName(downloadUrl, fileType),
+          fileSizeBytes: compatibleFallbackArtifact?.fileSizeBytes ?? null,
+          fileHash: compatibleFallbackArtifact?.fileHash ?? null,
           isPrimary: true,
           isFullPackage: true
         }
@@ -2547,37 +2874,109 @@ function createIdleUpdateDownloadState(): UpdateDownloadState {
   };
 }
 
+function createIdleServerProbeState(): ServerProbeState {
+  return {
+    status: "idle",
+    elapsedMs: null,
+    checkedAt: null,
+    errorMessage: null
+  };
+}
+
+function toSubscriptionServerProbe(serverProbe: ServerProbeState): SubscriptionServerProbe {
+  switch (serverProbe.status) {
+    case "healthy":
+      return {
+        status: "healthy",
+        label: "服务端正常",
+        detail: serverProbe.elapsedMs !== null ? `应用层延迟 ${serverProbe.elapsedMs} ms` : "应用层心跳正常"
+      };
+    case "slow":
+      return {
+        status: "slow",
+        label: "服务端延迟偏高",
+        detail: serverProbe.elapsedMs !== null ? `应用层延迟 ${serverProbe.elapsedMs} ms` : "服务端有响应，但速度较慢"
+      };
+    case "failed":
+      return {
+        status: "failed",
+        label: "服务端不可达",
+        detail: serverProbe.errorMessage ?? "当前应用层心跳失败，请检查网络或服务端状态"
+      };
+    default:
+      return {
+        status: "checking",
+        label: "正在检查服务端",
+        detail: "首次打开后会自动测一次应用层心跳"
+      };
+  }
+}
+
+function pickTicketId(
+  tickets: ClientSupportTicketSummaryDto[],
+  preferredId: string | null | undefined
+) {
+  if (preferredId && tickets.some((ticket) => ticket.id === preferredId)) {
+    return preferredId;
+  }
+  return tickets[0]?.id ?? null;
+}
+
 function normalizeUpdateDownloadProgress(
   current: UpdateDownloadState,
   progress: DesktopUpdateDownloadProgress
 ): UpdateDownloadState {
+  const totalBytes = mergeKnownTotalBytes(current.totalBytes, progress.totalBytes);
   return {
     phase: progress.phase,
     fileName: progress.fileName ?? current.fileName,
-    downloadedBytes: progress.downloadedBytes,
-    totalBytes: mergeKnownTotalBytes(current.totalBytes, progress.totalBytes),
+    downloadedBytes: mergeKnownDownloadedBytes(current.downloadedBytes, progress.downloadedBytes, totalBytes, progress.phase),
+    totalBytes,
     localPath: progress.localPath ?? current.localPath,
     message: progress.message ?? current.message
   };
 }
 
 function downloadProgressPercent(downloadState: UpdateDownloadState) {
-  if (!downloadState.totalBytes || downloadState.totalBytes <= 0) {
+  if (!hasKnownTotalBytes(downloadState.totalBytes)) {
     return downloadState.phase === "completed" ? 100 : 0;
   }
   return Math.max(0, Math.min(100, (downloadState.downloadedBytes / downloadState.totalBytes) * 100));
+}
+
+function displayUpdateDownloadProgress(downloadState: UpdateDownloadState, indeterminateValue: number) {
+  if (downloadState.phase === "completed") {
+    return 100;
+  }
+  if (downloadState.phase === "failed") {
+    return hasKnownTotalBytes(downloadState.totalBytes) ? downloadProgressPercent(downloadState) : 0;
+  }
+  if (!hasKnownTotalBytes(downloadState.totalBytes)) {
+    if (downloadState.phase === "preparing") {
+      return 12;
+    }
+    if (downloadState.phase === "downloading") {
+      return indeterminateValue;
+    }
+    return 0;
+  }
+  return downloadProgressPercent(downloadState);
 }
 
 function describeUpdateDownload(downloadState: UpdateDownloadState) {
   if (downloadState.phase === "idle") {
     return "点击下方按钮后，系统会先下载完整安装器。";
   }
-  const amount = `${formatByteSize(downloadState.downloadedBytes)}${
-    downloadState.totalBytes ? ` / ${formatByteSize(downloadState.totalBytes)}` : ""
-  }`;
+  const amount = hasKnownTotalBytes(downloadState.totalBytes)
+    ? `${formatByteSize(downloadState.downloadedBytes)} / ${formatByteSize(downloadState.totalBytes)}`
+    : downloadState.downloadedBytes > 0
+      ? `已下载 ${formatByteSize(downloadState.downloadedBytes)}`
+      : null;
   const prefix = downloadState.fileName ? `${downloadState.fileName} · ` : "";
   const message = downloadState.message ?? phaseMessage(downloadState.phase);
-  return `${prefix}${message}${downloadState.phase === "downloading" || downloadState.phase === "completed" ? `（${amount}）` : ""}`;
+  return `${prefix}${message}${
+    amount && (downloadState.phase === "downloading" || downloadState.phase === "completed") ? `（${amount}）` : ""
+  }`;
 }
 
 function phaseMessage(phase: UpdateDownloadState["phase"]) {
@@ -2661,13 +3060,16 @@ function normalizeRuntimeAssetsProgress(
   current: RuntimeAssetsUiState,
   progress: RuntimeComponentDownloadProgress
 ): RuntimeAssetsUiState {
+  const phase = normalizeRuntimeAssetsPhase(progress.phase, current);
+  const downloadedBytes = normalizeRuntimeAssetsDownloadedBytes(current.downloadedBytes, progress.downloadedBytes, phase);
+  const totalBytes = mergeKnownTotalBytes(current.totalBytes, progress.totalBytes);
   return {
-    phase: normalizeRuntimeAssetsPhase(progress.phase),
+    phase,
     currentComponent: progress.component,
     fileName: progress.fileName ?? current.fileName,
-    downloadedBytes: progress.downloadedBytes,
-    totalBytes: mergeKnownTotalBytes(current.totalBytes, progress.totalBytes),
-    message: progress.message ?? current.message,
+    downloadedBytes,
+    totalBytes,
+    message: resolveRuntimeAssetsProgressMessage(progress, phase, downloadedBytes, totalBytes, current.message),
     errorCode: progress.phase === "failed" ? current.errorCode : null,
     errorMessage: progress.phase === "failed" ? progress.message ?? current.errorMessage : null,
     blocking: progress.phase !== "completed"
@@ -2675,14 +3077,60 @@ function normalizeRuntimeAssetsProgress(
 }
 
 function mergeKnownTotalBytes(currentTotalBytes: number | null, nextTotalBytes: number | null) {
-  if (typeof nextTotalBytes === "number" && Number.isFinite(nextTotalBytes) && nextTotalBytes > 0) {
+  if (hasKnownTotalBytes(nextTotalBytes)) {
     return nextTotalBytes;
   }
   return currentTotalBytes;
 }
 
+function mergeKnownDownloadedBytes(
+  currentDownloadedBytes: number,
+  nextDownloadedBytes: number,
+  totalBytes: number | null,
+  phase: UpdateDownloadState["phase"]
+) {
+  const currentValue = normalizeDownloadedBytes(currentDownloadedBytes);
+  const nextValue = normalizeDownloadedBytes(nextDownloadedBytes);
+  if (phase === "completed") {
+    if (hasKnownTotalBytes(totalBytes)) {
+      return totalBytes;
+    }
+    return Math.max(currentValue, nextValue);
+  }
+  if (nextValue > 0) {
+    return hasKnownTotalBytes(totalBytes) ? Math.min(nextValue, totalBytes) : nextValue;
+  }
+  if (phase === "downloading" && currentValue > 0) {
+    return currentValue;
+  }
+  return nextValue;
+}
+
+function normalizeDownloadedBytes(value: number) {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function hasKnownTotalBytes(totalBytes: number | null): totalBytes is number {
+  return typeof totalBytes === "number" && Number.isFinite(totalBytes) && totalBytes > 0;
+}
+
+function normalizeRuntimeAssetsDownloadedBytes(
+  currentDownloadedBytes: number,
+  nextDownloadedBytes: number,
+  phase: RuntimeAssetsUiState["phase"]
+) {
+  if (phase === "failed") {
+    return currentDownloadedBytes;
+  }
+  if (!Number.isFinite(nextDownloadedBytes) || nextDownloadedBytes < 0) {
+    return currentDownloadedBytes;
+  }
+  return Math.max(currentDownloadedBytes, nextDownloadedBytes);
+}
+
 function normalizeRuntimeAssetsPhase(
-  phase: RuntimeComponentDownloadProgress["phase"]
+  phase: RuntimeComponentDownloadProgress["phase"],
+  current: RuntimeAssetsUiState
 ): RuntimeAssetsUiState["phase"] {
   if (phase === "failed") {
     return "failed";
@@ -2690,10 +3138,37 @@ function normalizeRuntimeAssetsPhase(
   if (phase === "completed") {
     return "ready";
   }
-  if (phase === "downloading") {
+  if (phase === "downloading" || phase === "extracting") {
+    return "downloading";
+  }
+  if (phase === "preparing" && current.phase === "downloading") {
     return "downloading";
   }
   return "checking";
+}
+
+function resolveRuntimeAssetsProgressMessage(
+  progress: RuntimeComponentDownloadProgress,
+  phase: RuntimeAssetsUiState["phase"],
+  downloadedBytes: number,
+  totalBytes: number | null,
+  fallbackMessage: string | null
+) {
+  if (progress.message?.trim()) {
+    return progress.message;
+  }
+  if (phase === "downloading") {
+    if (progress.phase === "extracting") {
+      return "正在写入并校验组件文件…";
+    }
+    if (!totalBytes || totalBytes <= 0) {
+      if (downloadedBytes > 0) {
+        return "已连接下载源，正在持续接收数据…";
+      }
+      return "正在建立下载连接…";
+    }
+  }
+  return fallbackMessage;
 }
 
 function extractRuntimeAssetsErrorCode(message: string): RuntimeDownloadFailureReason {

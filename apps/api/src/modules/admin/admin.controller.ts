@@ -24,6 +24,7 @@ import {
   ImportNodeDto,
   KickTeamMemberDto,
   ReadNodePanelInboundsDto,
+  ReplySupportTicketDto,
   RenewSubscriptionDto,
   UploadReleaseArtifactDto,
   UpdateReleaseArtifactDto,
@@ -258,6 +259,31 @@ export class AdminController {
   @Patch("policies")
   updatePolicy(@Body() body: UpdatePolicyDto) {
     return this.devDataService.updatePolicy(body);
+  }
+
+  @Get("tickets")
+  getSupportTickets() {
+    return this.devDataService.listAdminSupportTickets();
+  }
+
+  @Get("tickets/:ticketId")
+  getSupportTicket(@Param("ticketId") ticketId: string) {
+    return this.devDataService.getAdminSupportTicketDetail(ticketId);
+  }
+
+  @Post("tickets/:ticketId/replies")
+  replySupportTicket(@Param("ticketId") ticketId: string, @Body() body: ReplySupportTicketDto) {
+    return this.devDataService.replyAdminSupportTicket(ticketId, body);
+  }
+
+  @Post("tickets/:ticketId/close")
+  closeSupportTicket(@Param("ticketId") ticketId: string) {
+    return this.devDataService.closeAdminSupportTicket(ticketId);
+  }
+
+  @Post("tickets/:ticketId/reopen")
+  reopenSupportTicket(@Param("ticketId") ticketId: string) {
+    return this.devDataService.reopenAdminSupportTicket(ticketId);
   }
 
   @Get("releases")

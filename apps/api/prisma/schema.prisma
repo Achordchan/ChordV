@@ -138,6 +138,23 @@ enum RuntimeComponentKind {
   geosite
 }
 
+enum SupportTicketStatus {
+  open
+  waiting_admin
+  waiting_user
+  closed
+}
+
+enum SupportTicketSource {
+  desktop
+}
+
+enum SupportTicketAuthorRole {
+  user
+  admin
+  system
+}
+
 enum RuntimeComponentSource {
   uploaded
   github_remote
@@ -172,6 +189,8 @@ model User {
   sessionLeases        NodeSessionLease[]
   securityEvents       SecurityEvent[]
   panelClientBindings  PanelClientBinding[]
+  supportTickets       SupportTicket[]
+  supportTicketMessages SupportTicketMessage[] @relation("SupportTicketMessageAuthor")
 }
 
 model Plan {
@@ -212,6 +231,7 @@ model Subscription {
   sessionLeases      NodeSessionLease[]
   securityEvents     SecurityEvent[]
   panelClientBindings PanelClientBinding[]
+  supportTickets     SupportTicket[]
 }
 
 model Team {
@@ -227,6 +247,7 @@ model Team {
   trafficLedgerEntries TrafficLedger[]
   trafficSnapshots TrafficSnapshot[]
   panelClientBindings PanelClientBinding[]
+  supportTickets  SupportTicket[]
 }
 
 model TeamMember {
@@ -466,6 +487,43 @@ model PolicyProfile {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   strategyGroups  StrategyGroup[]
+}
+
+model SupportTicket {
+  id               String              @id
+  userId           String
+  subscriptionId   String?
+  teamId           String?
+  title            String
+  status           SupportTicketStatus
+  source           SupportTicketSource @default(desktop)
+  lastMessageAt    DateTime
+  closedAt         DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription     Subscription?       @relation(fields: [subscriptionId], references: [id])
+  team             Team?               @relation(fields: [teamId], references: [id])
+  messages         SupportTicketMessage[]
+
+  @@index([userId, updatedAt])
+  @@index([status, updatedAt])
+  @@index([teamId, updatedAt])
+  @@index([subscriptionId, updatedAt])
+}
+
+model SupportTicketMessage {
+  id            String                  @id
+  ticketId      String
+  authorRole    SupportTicketAuthorRole
+  authorUserId  String?
+  body          String
+  createdAt     DateTime                @default(now())
+  ticket        SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorUser    User?                   @relation("SupportTicketMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([authorUserId, createdAt])
 }
 
 model StrategyGroup {

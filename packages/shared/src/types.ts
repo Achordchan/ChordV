@@ -37,6 +37,9 @@ export type SubscriptionOwnerType = "user" | "team";
 export type MeteringStatus = "ok" | "degraded";
 export type SessionLeaseStatus = "active" | "expired" | "revoked" | "evicted";
 export type SessionEvictedReason = "concurrency_limit";
+export type SupportTicketStatus = "open" | "waiting_admin" | "waiting_user" | "closed";
+export type SupportTicketSource = "desktop";
+export type SupportTicketAuthorRole = "user" | "admin" | "system";
 export type SessionReasonCode =
   | "admin_paused_connection"
   | "node_access_revoked"
@@ -540,6 +543,9 @@ export interface DashboardSnapshotDto {
   activeNodes: number;
   announcements: number;
   activePlans: number;
+  openTickets: number;
+  waitingAdminTickets: number;
+  closedTickets: number;
 }
 
 export interface AdminSnapshotDto {
@@ -552,6 +558,73 @@ export interface AdminSnapshotDto {
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];
+}
+
+export interface ClientPingDto {
+  ok: boolean;
+  serverTime: string;
+}
+
+export interface ClientSupportTicketMessageDto {
+  id: string;
+  ticketId: string;
+  authorRole: SupportTicketAuthorRole;
+  authorDisplayName: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface ClientSupportTicketSummaryDto {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  subscriptionId: string | null;
+  teamId: string | null;
+  teamName: string | null;
+  lastMessageAt: string;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastMessagePreview: string | null;
+}
+
+export interface ClientSupportTicketDetailDto extends ClientSupportTicketSummaryDto {
+  messages: ClientSupportTicketMessageDto[];
+}
+
+export interface AdminSupportTicketMessageDto {
+  id: string;
+  ticketId: string;
+  authorRole: SupportTicketAuthorRole;
+  authorUserId: string | null;
+  authorDisplayName: string | null;
+  authorEmail: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface AdminSupportTicketSummaryDto {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  ownerType: "personal" | "team";
+  userId: string;
+  userEmail: string;
+  userDisplayName: string;
+  subscriptionId: string | null;
+  teamId: string | null;
+  teamName: string | null;
+  lastMessageAt: string;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastMessagePreview: string | null;
+}
+
+export interface AdminSupportTicketDetailDto extends AdminSupportTicketSummaryDto {
+  messages: AdminSupportTicketMessageDto[];
 }
 
 export interface AuthSessionDto {
@@ -606,6 +679,15 @@ export interface UpdateUserSecurityInputDto {
 
 export interface SessionHeartbeatInputDto {
   sessionId: string;
+}
+
+export interface CreateClientSupportTicketInputDto {
+  title: string;
+  body: string;
+}
+
+export interface ReplyClientSupportTicketInputDto {
+  body: string;
 }
 
 export interface SessionLeaseStatusDto {

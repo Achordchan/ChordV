@@ -57,6 +57,7 @@ import {
   IconLayoutDashboard,
   IconListDetails,
   IconMapPin,
+  IconMessageCircle,
   IconPencil,
   IconPlus,
   IconRefresh,
@@ -115,6 +116,7 @@ import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { ReleasesPage } from "./pages/ReleasesPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
+import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
 import {
   applyPlanToChangePlanForm,
@@ -153,7 +155,16 @@ import {
   translateSubscriptionState
 } from "./utils/admin-translate";
 
-type SectionKey = "overview" | "users" | "plans" | "subscriptions" | "nodes" | "announcements" | "policies" | "releases";
+type SectionKey =
+  | "overview"
+  | "users"
+  | "plans"
+  | "subscriptions"
+  | "tickets"
+  | "nodes"
+  | "announcements"
+  | "policies"
+  | "releases";
 type EditorState = {
   type: DrawerType;
   recordId: string | null;
@@ -190,6 +201,11 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
     label: "订阅",
     description: "新建、续期、变更套餐、校正",
     icon: <IconUser size={18} />
+  },
+  tickets: {
+    label: "工单",
+    description: "查看、回复、关闭与重开工单",
+    icon: <IconMessageCircle size={18} />
   },
   nodes: {
     label: "节点",
@@ -234,7 +250,7 @@ export function App() {
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "policies" | "releases">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
@@ -1618,6 +1634,8 @@ export function App() {
                 onOpenTeamUsageDetail={setTeamUsageDetailTarget}
               />
             ) : null}
+
+            {section === "tickets" ? <TicketsPage /> : null}
 
             {section === "nodes" ? (
               <NodesPage

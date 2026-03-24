@@ -38,7 +38,11 @@ export function RuntimeAssetsBanner(props: RuntimeAssetsBannerProps) {
 
         {props.state.phase === "downloading" ? (
           <Stack gap={6}>
-            <Progress value={downloadProgressValue(props.state)} animated />
+            <Progress
+              value={downloadProgressValue(props.state)}
+              animated
+              striped={shouldRenderStageProgress(props.state)}
+            />
             <Text size="xs" c="dimmed">
               {describeRuntimeAssetsProgress(props.state)}
             </Text>
@@ -91,23 +95,58 @@ function BannerIcon(props: { phase: RuntimeAssetsUiState["phase"] }) {
 
 function describeRuntimeAssetsProgress(state: RuntimeAssetsUiState) {
   const fileName = state.fileName ?? componentLabel(state.currentComponent);
-  const amount = `${formatByteSize(state.downloadedBytes)}${
-    state.totalBytes ? ` / ${formatByteSize(state.totalBytes)}` : ""
-  }`;
   if (state.phase === "checking") {
     if (state.message) {
       return state.message;
     }
     return fileName ? `正在检查 ${fileName}` : "正在检查连接所需组件";
   }
+  if (!state.totalBytes || state.totalBytes <= 0) {
+    if (state.downloadedBytes > 0) {
+      const amount = `已下载 ${formatByteSize(state.downloadedBytes)}`;
+      return fileName ? `${fileName} · ${amount}` : amount;
+    }
+    if (state.message) {
+      return fileName ? `${fileName} · ${state.message}` : state.message;
+    }
+    return fileName ? `${fileName} · 正在接收数据` : "正在接收数据";
+  }
+  const amount = `${formatByteSize(state.downloadedBytes)} / ${formatByteSize(state.totalBytes)}`;
   return fileName ? `${fileName} · ${amount}` : amount;
 }
 
 function downloadProgressValue(state: RuntimeAssetsUiState) {
   if (!state.totalBytes || state.totalBytes <= 0) {
-    return 0;
+    return inferStageProgressValue(state);
   }
   return Math.max(0, Math.min(100, (state.downloadedBytes / state.totalBytes) * 100));
+}
+
+function shouldRenderStageProgress(state: RuntimeAssetsUiState) {
+  return !state.totalBytes || state.totalBytes <= 0;
+}
+
+function inferStageProgressValue(state: RuntimeAssetsUiState) {
+  const message = state.message ?? "";
+  if (message.includes("校验") || message.includes("写入") || message.includes("解压")) {
+    return 92;
+  }
+  if (state.downloadedBytes >= 64 * 1024 * 1024) {
+    return 88;
+  }
+  if (state.downloadedBytes >= 16 * 1024 * 1024) {
+    return 76;
+  }
+  if (state.downloadedBytes >= 4 * 1024 * 1024) {
+    return 62;
+  }
+  if (state.downloadedBytes > 0) {
+    return 45;
+  }
+  if (message.includes("准备") || message.includes("连接")) {
+    return 18;
+  }
+  return 28;
 }
 
 function componentLabel(component: RuntimeAssetsUiState["currentComponent"]) {

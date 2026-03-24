@@ -37,6 +37,8 @@ import type {
   AdminReleaseArtifactValidationDto,
   AdminReleaseRecordDto,
   AdminSnapshotDto,
+  AdminSupportTicketDetailDto,
+  AdminSupportTicketSummaryDto,
   AdminSubscriptionRecordDto,
   AdminTeamMemberRecordDto,
   AdminTeamRecordDto,
@@ -48,7 +50,10 @@ import type {
   ChangeSubscriptionPlanInputDto,
   ClientBootstrapDto,
   ClientNodeProbeResultDto,
+  ClientPingDto,
   ClientRuntimeEventDto,
+  ClientSupportTicketDetailDto,
+  ClientSupportTicketSummaryDto,
   ClientTeamSummaryDto,
   ClientUpdateCheckDto,
   ClientUpdateCheckResultDto,
@@ -57,6 +62,7 @@ import type {
   ConvertSubscriptionToTeamInputDto,
   ConvertSubscriptionToTeamResultDto,
   CreateAnnouncementInputDto,
+  CreateClientSupportTicketInputDto,
   CreatePlanInputDto,
   CreateReleaseArtifactInputDto,
   CreateReleaseInputDto,
@@ -78,6 +84,7 @@ import type {
   ReleaseArtifactType,
   ReleaseChannel,
   ReleaseStatus,
+  ReplyClientSupportTicketInputDto,
   RenewSubscriptionInputDto,
   SessionEvictedReason,
   SessionReasonCode,
@@ -103,7 +110,10 @@ import type {
   UpdateUserSecurityInputDto,
   UpdateUserInputDto,
   UserProfileDto,
-  UserSubscriptionSummaryDto
+  UserSubscriptionSummaryDto,
+  SupportTicketAuthorRole,
+  SupportTicketSource,
+  SupportTicketStatus
 } from "@chordv/shared";
 import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { AuthSessionService } from "./auth-session.service";
@@ -374,6 +384,126 @@ export class DevDataService implements OnModuleInit {
       changelog: latestRelease.changelog,
       downloadUrl: primaryArtifact?.downloadUrl ?? null
     };
+  }
+
+  async pingClient(token?: string): Promise<ClientPingDto> {
+    await this.resolveActiveUserFromToken(token);
+    return {
+      ok: true,
+      serverTime: new Date().toISOString()
+    };
+  }
+
+  async listClientSupportTickets(token?: string): Promise<ClientSupportTicketSummaryDto[]> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const rows = await this.prisma.supportTicket.findMany({
+      where: { userId: user.id },
+      include: {
+        team: {
+          select: { id: true, name: true }
+        },
+        messages: {
+          select: { body: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+    });
+    return rows.map(toClientSupportTicketSummary);
+  }
+
+  async getClientSupportTicketDetail(ticketId: string, token?: string): Promise<ClientSupportTicketDetailDto> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const row = await this.requireClientSupportTicketDetail(ticketId, user.id);
+    return toClientSupportTicketDetail(row);
+  }
+
+  async createClientSupportTicket(
+    input: CreateClientSupportTicketInputDto,
+    token?: string
+  ): Promise<ClientSupportTicketDetailDto> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const access = await this.resolveSubscriptionAccessForUser(user.id);
+    const title = input.title.trim();
+    const body = input.body.trim();
+    if (!title) {
+      throw new BadRequestException("工单标题不能为空");
+    }
+    if (!body) {
+      throw new BadRequestException("工单内容不能为空");
+    }
+
+    const now = new Date();
+    const ticketId = createId("ticket");
+    await this.prisma.supportTicket.create({
+      data: {
+        id: ticketId,
+        userId: user.id,
+        subscriptionId: access.subscription?.id ?? null,
+        teamId: access.team?.id ?? null,
+        title,
+        status: "waiting_admin",
+        source: "desktop",
+        lastMessageAt: now,
+        messages: {
+          create: {
+            id: createId("ticket_msg"),
+            authorRole: "user",
+            authorUserId: user.id,
+            body
+          }
+        }
+      }
+    });
+
+    return this.getClientSupportTicketDetail(ticketId, token);
+  }
+
+  async replyClientSupportTicket(
+    ticketId: string,
+    input: ReplyClientSupportTicketInputDto,
+    token?: string
+  ): Promise<ClientSupportTicketDetailDto> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const body = input.body.trim();
+    if (!body) {
+      throw new BadRequestException("回复内容不能为空");
+    }
+
+    const current = await this.prisma.supportTicket.findFirst({
+      where: { id: ticketId, userId: user.id },
+      select: { id: true, status: true }
+    });
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status === "closed") {
+      throw new BadRequestException("当前工单已关闭，请等待管理员重新打开。");
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.supportTicketMessage.create({
+        data: {
+          id: createId("ticket_msg"),
+          ticketId,
+          authorRole: "user",
+          authorUserId: user.id,
+          body
+        }
+      }),
+      this.prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "waiting_admin",
+          lastMessageAt: now,
+          closedAt: null
+        }
+      })
+    ]);
+
+    return this.getClientSupportTicketDetail(ticketId, token);
   }
 
   private async findLatestPublishedRelease(channel: ReleaseChannel, platform?: ClientUpdateCheckDto["platform"]) {
@@ -1641,7 +1771,7 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [users, plans, subscriptions, teams, nodes, announcements, policy, releases] = await Promise.all([
+    const [users, plans, subscriptions, teams, nodes, announcements, policy, releases, ticketCounts] = await Promise.all([
       this.listAdminUsers(),
       this.listAdminPlans(),
       this.listAdminSubscriptions(),
@@ -1649,7 +1779,8 @@ export class DevDataService implements OnModuleInit {
       this.listAdminNodes(),
       this.listAdminAnnouncements(),
       this.getAdminPolicy(),
-      this.listAdminReleases()
+      this.listAdminReleases(),
+      this.getSupportTicketDashboardCounts()
     ]);
 
     return {
@@ -1658,7 +1789,10 @@ export class DevDataService implements OnModuleInit {
         activeSubscriptions: subscriptions.filter((item) => item.state === "active").length,
         activeNodes: nodes.length,
         announcements: announcements.filter((item) => item.isActive).length,
-        activePlans: plans.filter((item) => item.isActive).length
+        activePlans: plans.filter((item) => item.isActive).length,
+        openTickets: ticketCounts.openTickets,
+        waitingAdminTickets: ticketCounts.waitingAdminTickets,
+        closedTickets: ticketCounts.closedTickets
       },
       users,
       plans,
@@ -1669,6 +1803,114 @@ export class DevDataService implements OnModuleInit {
       policy,
       releases
     };
+  }
+
+  async listAdminSupportTickets(): Promise<AdminSupportTicketSummaryDto[]> {
+    const rows = await this.prisma.supportTicket.findMany({
+      include: {
+        user: {
+          select: { id: true, email: true, displayName: true }
+        },
+        team: {
+          select: { id: true, name: true }
+        },
+        messages: {
+          select: { body: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+    });
+    return rows.map(toAdminSupportTicketSummary);
+  }
+
+  async getAdminSupportTicketDetail(ticketId: string): Promise<AdminSupportTicketDetailDto> {
+    const row = await this.requireAdminSupportTicketDetail(ticketId);
+    return toAdminSupportTicketDetail(row);
+  }
+
+  async replyAdminSupportTicket(
+    ticketId: string,
+    input: ReplyClientSupportTicketInputDto
+  ): Promise<AdminSupportTicketDetailDto> {
+    const body = input.body.trim();
+    if (!body) {
+      throw new BadRequestException("回复内容不能为空");
+    }
+
+    const current = await this.prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, status: true }
+    });
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status === "closed") {
+      throw new BadRequestException("当前工单已关闭，请先重新打开。");
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.supportTicketMessage.create({
+        data: {
+          id: createId("ticket_msg"),
+          ticketId,
+          authorRole: "admin",
+          body
+        }
+      }),
+      this.prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "waiting_user",
+          lastMessageAt: now,
+          closedAt: null
+        }
+      })
+    ]);
+
+    return this.getAdminSupportTicketDetail(ticketId);
+  }
+
+  async closeAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
+    const current = await this.prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, status: true, closedAt: true }
+    });
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status !== "closed") {
+      await this.prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "closed",
+          closedAt: new Date()
+        }
+      });
+    }
+    return this.getAdminSupportTicketDetail(ticketId);
+  }
+
+  async reopenAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
+    const current = await this.prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, status: true }
+    });
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status === "closed") {
+      await this.prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "open",
+          closedAt: null
+        }
+      });
+    }
+    return this.getAdminSupportTicketDetail(ticketId);
   }
 
   async listAdminReleases(): Promise<AdminReleaseRecordDto[]> {
@@ -1868,8 +2110,13 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("创建上传产物时请使用上传接口。");
     }
 
+    const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
-    const externalMetadata = await this.resolveExternalReleaseArtifactMetadata(input.type, input.downloadUrl);
+    const externalMetadata = await this.resolveExternalReleaseArtifactMetadata(
+      input.type,
+      input.downloadUrl,
+      defaultMirrorPrefix
+    );
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
@@ -1888,7 +2135,7 @@ export class DevDataService implements OnModuleInit {
           type: toPrismaReleaseArtifactType(input.type),
           deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
           downloadUrl: input.downloadUrl.trim(),
-          defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix),
+          defaultMirrorPrefix,
           allowClientMirror: input.allowClientMirror ?? true,
           fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName),
           storedFilePath: null,
@@ -1921,13 +2168,15 @@ export class DevDataService implements OnModuleInit {
     const nextSource = input.source ?? current.source;
     const nextType = input.type ?? fromPrismaReleaseArtifactType(current.type);
     const nextDownloadUrl = input.downloadUrl ?? current.downloadUrl;
+    const nextDefaultMirrorPrefix =
+      input.defaultMirrorPrefix !== undefined ? normalizeNullableText(input.defaultMirrorPrefix) : current.defaultMirrorPrefix;
     if (input.source === "uploaded" && current.source !== "uploaded") {
       throw new BadRequestException("切换为上传产物时请使用上传接口。");
     }
 
     const externalMetadata =
       nextSource === "external"
-        ? await this.resolveExternalReleaseArtifactMetadata(nextType, nextDownloadUrl)
+        ? await this.resolveExternalReleaseArtifactMetadata(nextType, nextDownloadUrl, nextDefaultMirrorPrefix)
         : null;
     if (nextSource === "external") {
       assertExternalReleaseArtifactUrlMatchesType(nextType, nextDownloadUrl);
@@ -1948,7 +2197,7 @@ export class DevDataService implements OnModuleInit {
           ...(input.type !== undefined ? { type: toPrismaReleaseArtifactType(input.type) } : {}),
           ...(input.deliveryMode !== undefined ? { deliveryMode: input.deliveryMode } : {}),
           ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
-          ...(input.defaultMirrorPrefix !== undefined ? { defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix) } : {}),
+          ...(input.defaultMirrorPrefix !== undefined ? { defaultMirrorPrefix: nextDefaultMirrorPrefix } : {}),
           ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
           ...(nextSource === "external"
             ? {
@@ -2137,7 +2386,11 @@ export class DevDataService implements OnModuleInit {
       }
       try {
         assertExternalReleaseArtifactUrlMatchesType(fromPrismaReleaseArtifactType(artifact.type), url);
-        const metadata = await this.resolveExternalReleaseArtifactMetadata(fromPrismaReleaseArtifactType(artifact.type), url);
+        const metadata = await this.resolveExternalReleaseArtifactMetadata(
+          fromPrismaReleaseArtifactType(artifact.type),
+          url,
+          artifact.defaultMirrorPrefix
+        );
         const actualFileSizeBytes = metadata?.fileSizeBytes?.toString() ?? null;
         const actualFileHash = metadata?.fileHash ?? null;
         const nextFileName = metadata?.fileName ?? artifact.fileName ?? null;
@@ -2222,9 +2475,13 @@ export class DevDataService implements OnModuleInit {
     };
   }
 
-  private async resolveExternalReleaseArtifactMetadata(type: ReleaseArtifactType, rawUrl: string) {
+  private async resolveExternalReleaseArtifactMetadata(
+    type: ReleaseArtifactType,
+    rawUrl: string,
+    defaultMirrorPrefix?: string | null
+  ) {
     assertExternalReleaseArtifactUrlMatchesType(type, rawUrl);
-    return fetchExternalReleaseArtifactMetadata(rawUrl);
+    return fetchExternalReleaseArtifactMetadata(rawUrl, defaultMirrorPrefix);
   }
 
   async getReleaseArtifactDownloadDescriptor(artifactId: string) {
@@ -2304,6 +2561,82 @@ export class DevDataService implements OnModuleInit {
       throw new NotFoundException("发布产物不存在");
     }
     return row;
+  }
+
+  private async requireClientSupportTicketDetail(ticketId: string, userId: string) {
+    const row = await this.prisma.supportTicket.findFirst({
+      where: {
+        id: ticketId,
+        userId
+      },
+      include: {
+        team: {
+          select: { id: true, name: true }
+        },
+        messages: {
+          include: {
+            authorUser: {
+              select: { id: true, email: true, displayName: true }
+            }
+          },
+          orderBy: { createdAt: "asc" }
+        }
+      }
+    });
+    if (!row) {
+      throw new NotFoundException("工单不存在");
+    }
+    return row;
+  }
+
+  private async requireAdminSupportTicketDetail(ticketId: string) {
+    const row = await this.prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      include: {
+        user: {
+          select: { id: true, email: true, displayName: true }
+        },
+        team: {
+          select: { id: true, name: true }
+        },
+        messages: {
+          include: {
+            authorUser: {
+              select: { id: true, email: true, displayName: true }
+            }
+          },
+          orderBy: { createdAt: "asc" }
+        }
+      }
+    });
+    if (!row) {
+      throw new NotFoundException("工单不存在");
+    }
+    return row;
+  }
+
+  private async getSupportTicketDashboardCounts() {
+    const [openTickets, waitingAdminTickets, closedTickets] = await Promise.all([
+      this.prisma.supportTicket.count({
+        where: {
+          status: {
+            in: ["open", "waiting_admin", "waiting_user"]
+          }
+        }
+      }),
+      this.prisma.supportTicket.count({
+        where: { status: "waiting_admin" }
+      }),
+      this.prisma.supportTicket.count({
+        where: { status: "closed" }
+      })
+    ]);
+
+    return {
+      openTickets,
+      waitingAdminTickets,
+      closedTickets
+    };
   }
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
@@ -3030,7 +3363,12 @@ export class DevDataService implements OnModuleInit {
     assertReleaseArtifactTypeAllowed(platform, input.type);
     assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
 
-    const externalMetadata = await this.resolveExternalReleaseArtifactMetadata(input.type, input.downloadUrl);
+    const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
+    const externalMetadata = await this.resolveExternalReleaseArtifactMetadata(
+      input.type,
+      input.downloadUrl,
+      defaultMirrorPrefix
+    );
     const artifactId = createId("artifact");
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
 
@@ -3041,7 +3379,7 @@ export class DevDataService implements OnModuleInit {
       type: toPrismaReleaseArtifactType(input.type),
       deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
       downloadUrl: input.downloadUrl.trim(),
-      defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix),
+      defaultMirrorPrefix,
       allowClientMirror: input.allowClientMirror ?? true,
       fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName),
       storedFilePath: null,
@@ -4969,6 +5307,173 @@ function toAdminReleaseRecord(row: {
   };
 }
 
+function toClientSupportTicketSummary(row: {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  subscriptionId: string | null;
+  teamId: string | null;
+  team?: { id: string; name: string } | null;
+  lastMessageAt: Date;
+  closedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  messages?: Array<{ body: string; createdAt: Date }>;
+}): ClientSupportTicketSummaryDto {
+  const latestMessage = row.messages?.[0] ?? null;
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    source: row.source,
+    subscriptionId: row.subscriptionId,
+    teamId: row.teamId,
+    teamName: row.team?.name ?? null,
+    lastMessageAt: row.lastMessageAt.toISOString(),
+    closedAt: row.closedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    lastMessagePreview: latestMessage ? summarizeSupportTicketMessage(latestMessage.body) : null
+  };
+}
+
+function toClientSupportTicketDetail(row: {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  subscriptionId: string | null;
+  teamId: string | null;
+  team?: { id: string; name: string } | null;
+  lastMessageAt: Date;
+  closedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  messages: Array<{
+    id: string;
+    ticketId: string;
+    authorRole: SupportTicketAuthorRole;
+    body: string;
+    createdAt: Date;
+    authorUser?: { displayName: string } | null;
+  }>;
+}): ClientSupportTicketDetailDto {
+  const base = toClientSupportTicketSummary(row);
+  return {
+    ...base,
+    messages: row.messages.map((message) => ({
+      id: message.id,
+      ticketId: message.ticketId,
+      authorRole: message.authorRole,
+      authorDisplayName: readSupportTicketAuthorDisplayName(message.authorRole, message.authorUser?.displayName ?? null),
+      body: message.body,
+      createdAt: message.createdAt.toISOString()
+    }))
+  };
+}
+
+function toAdminSupportTicketSummary(row: {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  userId: string;
+  subscriptionId: string | null;
+  teamId: string | null;
+  lastMessageAt: Date;
+  closedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  user: { id: string; email: string; displayName: string };
+  team?: { id: string; name: string } | null;
+  messages?: Array<{ body: string; createdAt: Date }>;
+}): AdminSupportTicketSummaryDto {
+  const latestMessage = row.messages?.[0] ?? null;
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    source: row.source,
+    ownerType: row.teamId ? "team" : "personal",
+    userId: row.userId,
+    userEmail: row.user.email,
+    userDisplayName: row.user.displayName,
+    subscriptionId: row.subscriptionId,
+    teamId: row.teamId,
+    teamName: row.team?.name ?? null,
+    lastMessageAt: row.lastMessageAt.toISOString(),
+    closedAt: row.closedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    lastMessagePreview: latestMessage ? summarizeSupportTicketMessage(latestMessage.body) : null
+  };
+}
+
+function toAdminSupportTicketDetail(row: {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  userId: string;
+  subscriptionId: string | null;
+  teamId: string | null;
+  lastMessageAt: Date;
+  closedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  user: { id: string; email: string; displayName: string };
+  team?: { id: string; name: string } | null;
+  messages: Array<{
+    id: string;
+    ticketId: string;
+    authorRole: SupportTicketAuthorRole;
+    authorUserId: string | null;
+    body: string;
+    createdAt: Date;
+    authorUser?: { id: string; email: string; displayName: string } | null;
+  }>;
+}): AdminSupportTicketDetailDto {
+  const base = toAdminSupportTicketSummary(row);
+  return {
+    ...base,
+    messages: row.messages.map((message) => ({
+      id: message.id,
+      ticketId: message.ticketId,
+      authorRole: message.authorRole,
+      authorUserId: message.authorUserId,
+      authorDisplayName: readSupportTicketAuthorDisplayName(message.authorRole, message.authorUser?.displayName ?? null),
+      authorEmail: message.authorUser?.email ?? null,
+      body: message.body,
+      createdAt: message.createdAt.toISOString()
+    }))
+  };
+}
+
+function summarizeSupportTicketMessage(body: string) {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 60) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 60)}…`;
+}
+
+function readSupportTicketAuthorDisplayName(
+  role: SupportTicketAuthorRole,
+  displayName: string | null
+) {
+  if (displayName) {
+    return displayName;
+  }
+  if (role === "admin") {
+    return "客服";
+  }
+  if (role === "system") {
+    return "系统";
+  }
+  return "用户";
+}
+
 function toSubscriptionStatusDto(
   row: {
     id: string;
@@ -5485,15 +5990,26 @@ function joinMirrorPrefix(prefix: string, originUrl: string) {
   return `${trimmedPrefix}${originUrl}`;
 }
 
-async function fetchExternalReleaseArtifactMetadata(rawUrl: string) {
-  const headResult = await requestExternalReleaseArtifactMetadata(rawUrl, "HEAD");
+async function fetchExternalReleaseArtifactMetadata(rawUrl: string, defaultMirrorPrefix?: string | null) {
+  const preferredUrl = buildExternalReleaseArtifactProbeUrl(rawUrl, defaultMirrorPrefix);
+  if (preferredUrl !== rawUrl) {
+    try {
+      return await fetchExternalReleaseArtifactMetadataWithFallback(preferredUrl, rawUrl);
+    } catch {
+    }
+  }
+  return fetchExternalReleaseArtifactMetadataWithFallback(rawUrl, rawUrl);
+}
+
+async function fetchExternalReleaseArtifactMetadataWithFallback(requestUrl: string, fallbackUrl: string) {
+  const headResult = await requestExternalReleaseArtifactMetadata(requestUrl, "HEAD", fallbackUrl);
   if (headResult) {
     return headResult;
   }
-  return requestExternalReleaseArtifactMetadata(rawUrl, "GET");
+  return requestExternalReleaseArtifactMetadata(requestUrl, "GET", fallbackUrl);
 }
 
-async function requestExternalReleaseArtifactMetadata(rawUrl: string, method: "HEAD" | "GET") {
+async function requestExternalReleaseArtifactMetadata(rawUrl: string, method: "HEAD" | "GET", fallbackUrl: string) {
   const dispatcher = createDispatcher(10_000, false);
   const headers: Record<string, string> = {
     "user-agent": "ChordV-Admin/1.0"
@@ -5520,7 +6036,7 @@ async function requestExternalReleaseArtifactMetadata(rawUrl: string, method: "H
 
     return {
       resolvedUrl: response.url || rawUrl,
-      fileName: inferFileNameFromResponse(response, rawUrl),
+      fileName: inferFileNameFromResponse(response, fallbackUrl),
       fileSizeBytes: readExternalFileSize(response.headers),
       fileHash: null
     };
@@ -5536,6 +6052,14 @@ async function requestExternalReleaseArtifactMetadata(rawUrl: string, method: "H
       // ignore
     }
   }
+}
+
+function buildExternalReleaseArtifactProbeUrl(originUrl: string, defaultMirrorPrefix?: string | null) {
+  const prefix = defaultMirrorPrefix?.trim();
+  if (!prefix) {
+    return originUrl;
+  }
+  return joinMirrorPrefix(prefix, originUrl);
 }
 
 function readExternalFileSize(headers: { get(name: string): string | null }) {

@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Headers, Post, Query, Sse, UseGuards } from "@nestjs/common";
-import { IsArray, IsIn, IsNotEmpty, IsOptional, IsString } from "class-validator";
+import { Body, Controller, Get, Headers, Param, Post, Query, Sse, UseGuards } from "@nestjs/common";
+import { IsArray, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
 import type {
   ConnectionMode,
   PlatformTarget,
@@ -110,6 +110,25 @@ class RuntimeComponentFailureDto {
   appVersion?: string | null;
 }
 
+class CreateSupportTicketDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  title!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4000)
+  body!: string;
+}
+
+class ReplySupportTicketDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4000)
+  body!: string;
+}
+
 @Controller("client")
 export class ClientController {
   constructor(
@@ -157,6 +176,12 @@ export class ClientController {
     return this.clientService.getVersion();
   }
 
+  @Get("ping")
+  @UseGuards(ClientAuthGuard)
+  ping(@Headers("authorization") authorization?: string) {
+    return this.clientService.ping(authorization);
+  }
+
   @Post("update/check")
   checkUpdate(@Body() body: UpdateCheckDto) {
     return this.clientService.checkUpdate(body);
@@ -180,6 +205,34 @@ export class ClientController {
   @UseGuards(ClientAuthGuard)
   getRuntime(@Headers("authorization") authorization?: string) {
     return this.clientService.getRuntime(authorization);
+  }
+
+  @Get("tickets")
+  @UseGuards(ClientAuthGuard)
+  getTickets(@Headers("authorization") authorization?: string) {
+    return this.clientService.listSupportTickets(authorization);
+  }
+
+  @Get("tickets/:ticketId")
+  @UseGuards(ClientAuthGuard)
+  getTicket(@Param("ticketId") ticketId: string, @Headers("authorization") authorization?: string) {
+    return this.clientService.getSupportTicket(ticketId, authorization);
+  }
+
+  @Post("tickets")
+  @UseGuards(ClientAuthGuard)
+  createTicket(@Body() body: CreateSupportTicketDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.createSupportTicket(body, authorization);
+  }
+
+  @Post("tickets/:ticketId/replies")
+  @UseGuards(ClientAuthGuard)
+  replyTicket(
+    @Param("ticketId") ticketId: string,
+    @Body() body: ReplySupportTicketDto,
+    @Headers("authorization") authorization?: string
+  ) {
+    return this.clientService.replySupportTicket(ticketId, body, authorization);
   }
 
   @Post("session/connect")

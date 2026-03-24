@@ -431,7 +431,10 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
     activeSubscriptions: mockAdminSubscriptions.filter((item) => item.state === "active").length,
     activeNodes: mockAdminNodes.length,
     announcements: mockAdminAnnouncements.filter((item) => item.isActive).length,
-    activePlans: mockAdminPlans.filter((item) => item.isActive).length
+    activePlans: mockAdminPlans.filter((item) => item.isActive).length,
+    openTickets: 0,
+    waitingAdminTickets: 0,
+    closedTickets: 0
   },
   users: mockAdminUsers,
   plans: mockAdminPlans,

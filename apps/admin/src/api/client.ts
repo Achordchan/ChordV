@@ -1,4 +1,6 @@
 import type {
+  AdminSupportTicketDetailDto as SharedAdminSupportTicketDetailDto,
+  AdminSupportTicketSummaryDto as SharedAdminSupportTicketSummaryDto,
   AdminReleaseArtifactDto as SharedAdminReleaseArtifactDto,
   AdminRuntimeComponentFailureReportDto as SharedAdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto as SharedAdminRuntimeComponentRecordDto,
@@ -7,11 +9,13 @@ import type {
   CreateReleaseArtifactInputDto,
   CreateReleaseInputDto,
   CreateRuntimeComponentInputDto,
+  ReplyClientSupportTicketInputDto,
   ReleaseArtifactType,
   ReleaseStatus,
   RuntimeComponentArchitecture,
   RuntimeComponentKind,
   RuntimeComponentSource,
+  SupportTicketStatus,
   UpdateDeliveryMode,
   UpdateReleaseArtifactInputDto,
   UpdateReleaseInputDto,
@@ -80,8 +84,11 @@ export type AdminReleaseRecordDto = {
 export type AdminRuntimeComponentRecordDto = SharedAdminRuntimeComponentRecordDto;
 export type AdminRuntimeComponentValidationDto = SharedAdminRuntimeComponentValidationDto;
 export type AdminRuntimeComponentFailureReportDto = SharedAdminRuntimeComponentFailureReportDto;
+export type AdminSupportTicketSummaryDto = SharedAdminSupportTicketSummaryDto;
+export type AdminSupportTicketDetailDto = SharedAdminSupportTicketDetailDto;
 export type CreateAdminReleaseArtifactInputDto = CreateReleaseArtifactInputDto;
 export type UpdateAdminReleaseArtifactInputDto = UpdateReleaseArtifactInputDto;
+export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 
 export type CreateAdminReleaseInputDto = {
   platform: AdminReleasePlatform;
@@ -403,6 +410,40 @@ export async function deleteAdminRuntimeComponent(componentId: string) {
 
 export async function verifyAdminRuntimeComponent(componentId: string) {
   return request<SharedAdminRuntimeComponentValidationDto>(`/admin/runtime-components/${componentId}/verify`, {
+    method: "POST"
+  });
+}
+
+export type FetchAdminSupportTicketsFilters = {
+  status?: SupportTicketStatus;
+  ownerType?: "personal" | "team";
+  userEmail?: string;
+  keyword?: string;
+};
+
+export async function fetchAdminSupportTickets() {
+  return request<SharedAdminSupportTicketSummaryDto[]>("/admin/tickets");
+}
+
+export async function fetchAdminSupportTicketDetail(ticketId: string) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}`);
+}
+
+export async function replyAdminSupportTicket(ticketId: string, input: ReplyAdminSupportTicketInputDto) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/replies`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function closeAdminSupportTicket(ticketId: string) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/close`, {
+    method: "POST"
+  });
+}
+
+export async function reopenAdminSupportTicket(ticketId: string) {
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/reopen`, {
     method: "POST"
   });
 }

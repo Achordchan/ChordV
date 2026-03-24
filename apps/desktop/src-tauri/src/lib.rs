@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{self, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -55,6 +55,9 @@ const ANDROID_TUN_IPV4_ADDRESS: &str = "172.19.0.2";
 const ANDROID_TUN_IPV4_PREFIX: u8 = 30;
 const ANDROID_TUN_IPV6_ADDRESS: &str = "fd66:6f72:6463::2";
 const ANDROID_TUN_IPV6_PREFIX: u8 = 126;
+const DOWNLOAD_PROGRESS_SLICE_BYTES: usize = 64 * 1024;
+const DOWNLOAD_DIAGNOSTIC_CHECKPOINT_BYTES: u64 = 512 * 1024;
+const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
 
 struct RuntimeState {
     status: String,
@@ -293,6 +296,7 @@ struct ApiRequestInput {
 struct ApiResponseOutput {
     status: u16,
     body: String,
+    elapsed_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -476,10 +480,16 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
         req = req.body(body);
     }
 
+    let started_at = Instant::now();
     let response = req.send().await.map_err(|error| format!("请求 API 失败：{error}"))?;
     let status = response.status().as_u16();
     let body = response.text().await.map_err(|error| format!("读取响应失败：{error}"))?;
-    Ok(ApiResponseOutput { status, body })
+    let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    Ok(ApiResponseOutput {
+        status,
+        body,
+        elapsed_ms,
+    })
 }
 
 #[tauri::command]
@@ -504,6 +514,17 @@ async fn download_desktop_installer(
 
             let file_name = resolve_installer_file_name(&url, input.file_name.as_deref());
             let expected_hash = normalize_optional_sha256(input.expected_hash.as_deref());
+            append_download_diagnostic_log(
+                &app,
+                "update-download",
+                format!(
+                    "start url={} file_name={} expected_total_bytes={:?} expected_hash={}",
+                    url,
+                    file_name,
+                    input.expected_total_bytes,
+                    expected_hash.as_deref().unwrap_or("none")
+                ),
+            );
             emit_update_download_progress(
                 &app,
                 DesktopInstallerDownloadProgress {
@@ -528,6 +549,16 @@ async fn download_desktop_installer(
                     let metadata = fs::metadata(&final_path)
                         .map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
                     let local_path = final_path.to_string_lossy().into_owned();
+                    append_download_diagnostic_log(
+                        &app,
+                        "update-download",
+                        format!(
+                            "reuse-cache path={} size={} expected_total_bytes={:?}",
+                            local_path,
+                            metadata.len(),
+                            input.expected_total_bytes
+                        ),
+                    );
                     emit_update_download_progress(
                         &app,
                         DesktopInstallerDownloadProgress {
@@ -545,6 +576,11 @@ async fn download_desktop_installer(
                         total_bytes: input.expected_total_bytes.or(Some(metadata.len())),
                     });
                 }
+                append_download_diagnostic_log(
+                    &app,
+                    "update-download",
+                    format!("discard-stale-cache path={}", final_path.to_string_lossy()),
+                );
                 let _ = fs::remove_file(&final_path);
             }
             if temp_path.exists() {
@@ -560,13 +596,24 @@ async fn download_desktop_installer(
                 .send()
                 .await
                 .map_err(|error| format!("下载安装器失败：{error}"))?;
+            let response_status = response.status().as_u16();
+            let response_content_length = response.content_length();
+            append_download_diagnostic_log(
+                &app,
+                "update-download",
+                format!(
+                    "response status={} content_length={:?} expected_total_bytes={:?}",
+                    response_status, response_content_length, input.expected_total_bytes
+                ),
+            );
 
             if !response.status().is_success() {
                 return Err(format!("下载安装器失败：HTTP {}", response.status().as_u16()));
             }
 
-            let total_bytes = response.content_length().or(input.expected_total_bytes);
+            let total_bytes = response_content_length.or(input.expected_total_bytes);
             let mut downloaded_bytes = 0_u64;
+            let mut last_logged_bytes = 0_u64;
             let mut file = File::create(&temp_path).map_err(|error| format!("创建安装器文件失败：{error}"))?;
             emit_update_download_progress(
                 &app,
@@ -585,20 +632,29 @@ async fn download_desktop_installer(
                 .await
                 .map_err(|error| format!("下载安装器失败：{error}"))?
             {
-                file.write_all(&chunk)
-                    .map_err(|error| format!("写入安装器文件失败：{error}"))?;
-                downloaded_bytes += chunk.len() as u64;
-                emit_update_download_progress(
-                    &app,
-                    DesktopInstallerDownloadProgress {
-                        phase: "downloading".into(),
-                        file_name: Some(file_name.clone()),
+                for slice in chunk.chunks(DOWNLOAD_PROGRESS_SLICE_BYTES) {
+                    file.write_all(slice)
+                        .map_err(|error| format!("写入安装器文件失败：{error}"))?;
+                    downloaded_bytes += slice.len() as u64;
+                    emit_update_download_progress(
+                        &app,
+                        DesktopInstallerDownloadProgress {
+                            phase: "downloading".into(),
+                            file_name: Some(file_name.clone()),
+                            downloaded_bytes,
+                            total_bytes,
+                            local_path: None,
+                            message: Some("正在下载安装器…".into()),
+                        },
+                    );
+                    maybe_log_download_checkpoint(
+                        &app,
+                        "update-download",
                         downloaded_bytes,
                         total_bytes,
-                        local_path: None,
-                        message: Some("正在下载安装器…".into()),
-                    },
-                );
+                        &mut last_logged_bytes,
+                    );
+                }
             }
 
             file.flush().map_err(|error| format!("写入安装器文件失败：{error}"))?;
@@ -611,6 +667,14 @@ async fn download_desktop_installer(
             fs::rename(&temp_path, &final_path).map_err(|error| format!("保存安装器文件失败：{error}"))?;
 
             let local_path = final_path.to_string_lossy().into_owned();
+            append_download_diagnostic_log(
+                &app,
+                "update-download",
+                format!(
+                    "completed path={} downloaded_bytes={} total_bytes={:?}",
+                    local_path, downloaded_bytes, total_bytes
+                ),
+            );
             emit_update_download_progress(
                 &app,
                 DesktopInstallerDownloadProgress {
@@ -631,6 +695,13 @@ async fn download_desktop_installer(
         }
         .await;
         let _ = set_installer_operation_active(&app, false);
+        if let Err(error) = &result {
+            append_download_diagnostic_log(
+                &app,
+                "update-download",
+                format!("failed error={error}"),
+            );
+        }
         if result.is_err() {
             if let Ok(download_dir) = ensure_installer_download_dir(&app) {
                 if let Ok(entries) = fs::read_dir(&download_dir) {
@@ -790,12 +861,27 @@ async fn download_runtime_component(
         set_runtime_component_download_active(&app, true)?;
         let component = input.component.component;
         let component_name = runtime_component_key(component);
+        let mut last_downloaded_bytes = 0_u64;
+        let mut last_total_bytes = input.component.file_size_bytes;
         let result = async {
             let download_url =
                 Url::parse(input.url.trim()).map_err(|error| runtime_component_error("download_failed", format!("下载地址无效：{error}")))?;
             if !matches!(download_url.scheme(), "https" | "http") {
                 return Err(runtime_component_error("download_failed", "下载地址仅支持 HTTP 或 HTTPS".into()));
             }
+            append_download_diagnostic_log(
+                &app,
+                "runtime-download",
+                format!(
+                    "start component={} id={} url={} file_name={} expected_total_bytes={:?} expected_hash={}",
+                    component_name,
+                    input.component.id,
+                    download_url,
+                    input.component.file_name,
+                    input.component.file_size_bytes,
+                    input.component.checksum_sha256.as_deref().unwrap_or("none")
+                ),
+            );
 
             let runtime_dir = ensure_runtime_dir(&app)?;
             let downloads_dir = runtime_dir.join("downloads");
@@ -831,6 +917,16 @@ async fn download_runtime_component(
                 .send()
                 .await
                 .map_err(|error| runtime_component_error("download_failed", format!("下载 {} 失败：{error}", runtime_component_display_name(component))))?;
+            let response_status = response.status().as_u16();
+            let response_content_length = response.content_length();
+            append_download_diagnostic_log(
+                &app,
+                "runtime-download",
+                format!(
+                    "response component={} status={} content_length={:?} expected_total_bytes={:?}",
+                    component_name, response_status, response_content_length, input.component.file_size_bytes
+                ),
+            );
 
             if !response.status().is_success() {
                 return Err(runtime_component_error(
@@ -839,8 +935,10 @@ async fn download_runtime_component(
                 ));
             }
 
-            let total_bytes = response.content_length().or(input.component.file_size_bytes);
+            let total_bytes = response_content_length.or(input.component.file_size_bytes);
             let mut downloaded_bytes = 0_u64;
+            last_total_bytes = total_bytes;
+            let mut last_logged_bytes = 0_u64;
             let mut archive_file = File::create(&archive_path)
                 .map_err(|error| runtime_component_error("write_failed", format!("创建组件缓存文件失败：{error}")))?;
 
@@ -855,32 +953,54 @@ async fn download_runtime_component(
                     message: Some(format!("正在下载 {}…", runtime_component_display_name(component))),
                 },
             );
+            last_downloaded_bytes = downloaded_bytes;
 
             while let Some(chunk) = response
                 .chunk()
                 .await
                 .map_err(|error| runtime_component_error("download_failed", format!("下载 {} 失败：{error}", runtime_component_display_name(component))))?
             {
-                archive_file
-                    .write_all(&chunk)
-                    .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
-                downloaded_bytes += chunk.len() as u64;
-                emit_runtime_component_progress(
-                    &app,
-                    RuntimeComponentDownloadProgress {
-                        phase: "downloading".into(),
-                        component: component_name.into(),
-                        file_name: Some(input.component.file_name.clone()),
+                for slice in chunk.chunks(DOWNLOAD_PROGRESS_SLICE_BYTES) {
+                    archive_file
+                        .write_all(slice)
+                        .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
+                    downloaded_bytes += slice.len() as u64;
+                    last_downloaded_bytes = downloaded_bytes;
+                    emit_runtime_component_progress(
+                        &app,
+                        RuntimeComponentDownloadProgress {
+                            phase: "downloading".into(),
+                            component: component_name.into(),
+                            file_name: Some(input.component.file_name.clone()),
+                            downloaded_bytes,
+                            total_bytes,
+                            message: Some(format!("正在下载 {}…", runtime_component_display_name(component))),
+                        },
+                    );
+                    maybe_log_download_checkpoint(
+                        &app,
+                        "runtime-download",
                         downloaded_bytes,
                         total_bytes,
-                        message: Some(format!("正在下载 {}…", runtime_component_display_name(component))),
-                    },
-                );
+                        &mut last_logged_bytes,
+                    );
+                }
             }
 
             archive_file
                 .flush()
                 .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
+            append_download_diagnostic_log(
+                &app,
+                "runtime-download",
+                format!(
+                    "extracting component={} archive_path={} downloaded_bytes={} total_bytes={:?}",
+                    component_name,
+                    archive_path.to_string_lossy(),
+                    downloaded_bytes,
+                    total_bytes
+                ),
+            );
 
             emit_runtime_component_progress(
                 &app,
@@ -941,6 +1061,14 @@ async fn download_runtime_component(
             let _ = fs::remove_file(&archive_path);
 
             let local_path = target_path.to_string_lossy().into_owned();
+            append_download_diagnostic_log(
+                &app,
+                "runtime-download",
+                format!(
+                    "completed component={} path={} downloaded_bytes={} total_bytes={:?}",
+                    component_name, local_path, downloaded_bytes, total_bytes
+                ),
+            );
             emit_runtime_component_progress(
                 &app,
                 RuntimeComponentDownloadProgress {
@@ -951,7 +1079,7 @@ async fn download_runtime_component(
                         .and_then(|value| value.to_str())
                         .unwrap_or(&input.component.file_name)
                         .to_string()),
-                    downloaded_bytes: total_bytes.unwrap_or(downloaded_bytes),
+                    downloaded_bytes,
                     total_bytes: total_bytes.or(Some(downloaded_bytes)),
                     message: Some(format!("{} 已准备完成。", runtime_component_display_name(component))),
                 },
@@ -964,12 +1092,20 @@ async fn download_runtime_component(
         .await;
 
         if let Err(error) = &result {
+            append_download_diagnostic_log(
+                &app,
+                "runtime-download",
+                format!(
+                    "failed component={} downloaded_bytes={} total_bytes={:?} error={}",
+                    component_name, last_downloaded_bytes, last_total_bytes, error
+                ),
+            );
             emit_runtime_component_failed(
                 &app,
                 component_name,
                 Some(input.component.file_name.clone()),
-                0,
-                None,
+                last_downloaded_bytes,
+                last_total_bytes,
                 error,
             );
         }
@@ -1089,15 +1225,27 @@ fn runtime_status(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Runt
 }
 
 #[tauri::command]
-fn runtime_logs(state: State<'_, Mutex<RuntimeState>>) -> RuntimeLogResponse {
+fn runtime_logs(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> RuntimeLogResponse {
     let mut state = state.lock().expect("runtime state lock");
     refresh_child_state(&mut state);
 
-    let log = state
+    let runtime_log = state
         .log_path
         .as_ref()
         .map(|path| tail_log(path, 80))
         .unwrap_or_default();
+    let download_log = download_diagnostics_log_path(&app)
+        .ok()
+        .map(|path| tail_log(&path, 120))
+        .unwrap_or_default();
+    let log = match (download_log.trim().is_empty(), runtime_log.trim().is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("=== 下载诊断日志 ===\n{download_log}"),
+        (true, false) => runtime_log,
+        (false, false) => format!(
+            "=== 下载诊断日志 ===\n{download_log}\n\n=== 运行时日志 ===\n{runtime_log}"
+        ),
+    };
 
     RuntimeLogResponse { log }
 }
@@ -1260,6 +1408,20 @@ fn ensure_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
     path.push("runtime");
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     Ok(path)
+}
+
+fn download_diagnostics_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(ensure_runtime_dir(app)?.join(DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME))
+}
+
+fn append_download_diagnostic_log(app: &AppHandle, category: &str, message: impl AsRef<str>) {
+    let Ok(path) = download_diagnostics_log_path(app) else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "[{}] [{}] {}", chrono_like_now(), category, message.as_ref());
 }
 
 fn ensure_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1488,6 +1650,42 @@ fn normalize_optional_sha256(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(normalize_sha256)
+}
+
+fn maybe_log_download_checkpoint(
+    app: &AppHandle,
+    category: &str,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    last_logged_bytes: &mut u64,
+) {
+    if downloaded_bytes == 0 {
+        return;
+    }
+
+    let should_log = *last_logged_bytes == 0
+        || downloaded_bytes.saturating_sub(*last_logged_bytes) >= DOWNLOAD_DIAGNOSTIC_CHECKPOINT_BYTES
+        || total_bytes.map(|value| downloaded_bytes >= value).unwrap_or(false);
+    if !should_log {
+        return;
+    }
+
+    let total_label = total_bytes
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let percent_label = total_bytes
+        .filter(|value| *value > 0)
+        .map(|value| format!(" ({:.1}%)", downloaded_bytes as f64 * 100.0 / value as f64))
+        .unwrap_or_default();
+    append_download_diagnostic_log(
+        app,
+        category,
+        format!(
+            "checkpoint downloaded={} total={}{}",
+            downloaded_bytes, total_label, percent_label
+        ),
+    );
+    *last_logged_bytes = downloaded_bytes;
 }
 
 fn extract_zip_entry(archive_path: &Path, target_path: &Path, entry_name: &str) -> Result<(), String> {

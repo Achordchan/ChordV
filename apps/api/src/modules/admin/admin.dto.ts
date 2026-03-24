@@ -545,6 +545,13 @@ export class UpdateAnnouncementDto {
   countdownSeconds?: number;
 }
 
+export class ReplySupportTicketDto {
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(1)
+  body!: string;
+}
+
 export class CreateReleaseDto {
   @IsIn(["macos", "windows", "android", "ios"])
   platform!: PlatformTarget;

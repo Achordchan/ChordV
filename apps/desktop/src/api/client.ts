@@ -2,13 +2,18 @@ import type {
   AuthSessionDto,
   ClientNodeProbeResultDto,
   ClientBootstrapDto,
+  ClientPingDto,
   ClientRuntimeComponentsPlanDto,
   ClientRuntimeEventDto,
   ClientRuntimeComponentFailureReportInputDto,
+  ClientSupportTicketDetailDto,
+  ClientSupportTicketSummaryDto,
   ConnectionMode,
+  CreateClientSupportTicketInputDto,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
   PlatformTarget,
+  ReplyClientSupportTicketInputDto,
   SessionLeaseStatusDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
@@ -54,8 +59,21 @@ export type ClientUpdateCheckResult = {
   artifact: ClientUpdateArtifact | null;
 };
 
-type NativeInvoke = (command: string, payload?: unknown) => Promise<{ status: number; body: string }>;
-async function request<T>(path: string, init?: RequestInit) {
+type NativeApiResponse = {
+  status: number;
+  body: string;
+  elapsedMs?: number | null;
+};
+
+type RequestResult<T> = {
+  data: T;
+  status: number;
+  elapsedMs: number | null;
+};
+
+type NativeInvoke = (command: string, payload?: unknown) => Promise<NativeApiResponse>;
+
+async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<RequestResult<T>> {
   const nativeInvoke = await loadNativeInvoke();
   if (nativeInvoke) {
     const headers = normalizeHeaders(init?.headers);
@@ -73,12 +91,14 @@ async function request<T>(path: string, init?: RequestInit) {
     if (response.status < 200 || response.status >= 300) {
       throw new Error(response.body || `HTTP ${response.status}`);
     }
-    if (!response.body) {
-      return {} as T;
-    }
-    return JSON.parse(response.body) as T;
+    return {
+      data: response.body ? (JSON.parse(response.body) as T) : ({} as T),
+      status: response.status,
+      elapsedMs: normalizeElapsedMs(response.elapsedMs)
+    };
   }
 
+  const startedAt = performance.now();
   const response = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: {
@@ -92,7 +112,17 @@ async function request<T>(path: string, init?: RequestInit) {
     throw new Error(text || `HTTP ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  const body = await response.text();
+  return {
+    data: body ? (JSON.parse(body) as T) : ({} as T),
+    status: response.status,
+    elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
+  };
+}
+
+async function request<T>(path: string, init?: RequestInit) {
+  const result = await requestWithMeta<T>(path, init);
+  return result.data;
 }
 
 async function loadNativeInvoke(): Promise<NativeInvoke | null> {
@@ -130,8 +160,16 @@ export function login(email: string, password: string) {
   });
 }
 
-export function probeServerConnectivity() {
-  return request<unknown>("/announcements");
+export async function probeClientServerLatency(accessToken: string) {
+  const result = await requestWithMeta<ClientPingDto>("/client/ping", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  return {
+    ...result.data,
+    elapsedMs: result.elapsedMs
+  };
 }
 
 export function refreshSession(refreshToken: string) {
@@ -222,6 +260,42 @@ export function fetchSubscription(accessToken: string) {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
+  });
+}
+
+export function fetchSupportTickets(accessToken: string) {
+  return request<ClientSupportTicketSummaryDto[]>("/client/tickets", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+}
+
+export function fetchSupportTicketDetail(accessToken: string, ticketId: string) {
+  return request<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+}
+
+export function createSupportTicket(accessToken: string, input: CreateClientSupportTicketInputDto) {
+  return request<ClientSupportTicketDetailDto>("/client/tickets", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify(input)
+  });
+}
+
+export function replySupportTicket(accessToken: string, ticketId: string, input: ReplyClientSupportTicketInputDto) {
+  return request<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}/replies`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify(input)
   });
 }
 
@@ -477,26 +551,33 @@ function normalizeUpdateCheckResult(
 ): ClientUpdateCheckResult {
   const record = raw as Record<string, unknown>;
   const artifactSource = asRecord(record.artifact) ?? asRecord(record.recommendedArtifact);
-  const artifact = artifactSource
+  const artifactRecord = artifactSource ?? record;
+  const artifact = artifactRecord
     ? (() => {
-        const artifactUrl = resolvePublicUrl(readString(artifactSource.downloadUrl) ?? readString(record.downloadUrl) ?? "");
+        const artifactUrl = resolvePublicUrl(
+          readString(artifactRecord.downloadUrl) ?? readString(record.downloadUrl) ?? ""
+        );
         if (!artifactUrl) {
           return null;
         }
         return {
           fileType:
-            readArtifactType(artifactSource.fileType) ??
-            readArtifactType(artifactSource.type) ??
+            readArtifactType(artifactRecord.fileType) ??
+            readArtifactType(artifactRecord.type) ??
             fallback.artifactType,
           downloadUrl: artifactUrl,
-          originDownloadUrl: resolvePublicUrl(readString(artifactSource.originDownloadUrl) ?? readString(artifactSource.downloadUrl)),
-          defaultMirrorPrefix: readString(artifactSource.defaultMirrorPrefix),
-          allowClientMirror: readBoolean(artifactSource.allowClientMirror) ?? true,
-          fileName: readString(artifactSource.fileName),
-          fileSizeBytes: readNumber(artifactSource.fileSizeBytes),
-          fileHash: readString(artifactSource.fileHash),
-          isPrimary: readBoolean(artifactSource.isPrimary) ?? true,
-          isFullPackage: readBoolean(artifactSource.isFullPackage) ?? true
+          originDownloadUrl: resolvePublicUrl(
+            readString(artifactRecord.originDownloadUrl) ??
+              readString(artifactRecord.downloadUrl) ??
+              readString(record.downloadUrl)
+          ),
+          defaultMirrorPrefix: readString(artifactRecord.defaultMirrorPrefix) ?? readString(record.defaultMirrorPrefix),
+          allowClientMirror: readBoolean(artifactRecord.allowClientMirror) ?? readBoolean(record.allowClientMirror) ?? true,
+          fileName: readString(artifactRecord.fileName) ?? readString(record.fileName),
+          fileSizeBytes: readNumber(artifactRecord.fileSizeBytes) ?? readNumber(record.fileSizeBytes),
+          fileHash: readString(artifactRecord.fileHash) ?? readString(record.fileHash),
+          isPrimary: readBoolean(artifactRecord.isPrimary) ?? readBoolean(record.isPrimary) ?? true,
+          isFullPackage: readBoolean(artifactRecord.isFullPackage) ?? readBoolean(record.isFullPackage) ?? true
         };
       })()
     : null;
@@ -612,6 +693,13 @@ function readNumber(value: unknown) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function normalizeElapsedMs(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return Math.round(value);
 }
 
 function readBoolean(value: unknown) {

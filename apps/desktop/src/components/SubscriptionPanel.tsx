@@ -1,6 +1,12 @@
 import { Badge, Button, Group, Indicator, Paper, Text, Title } from "@mantine/core";
 import type { ClientBootstrapDto } from "@chordv/shared";
-import { IconBell, IconLogout, IconRefresh, IconSparkles } from "@tabler/icons-react";
+import { IconBell, IconLifebuoy, IconLogout, IconRefresh, IconSparkles } from "@tabler/icons-react";
+
+export type SubscriptionServerProbe = {
+  status: "checking" | "healthy" | "slow" | "failed";
+  label: string;
+  detail: string;
+};
 
 type SubscriptionPanelProps = {
   bootstrap: ClientBootstrapDto;
@@ -8,7 +14,9 @@ type SubscriptionPanelProps = {
   refreshing: boolean;
   updateBusy: boolean;
   hasUpdate: boolean;
+  serverProbe: SubscriptionServerProbe;
   onOpenAnnouncements: () => void;
+  onOpenTickets: () => void;
   onRefresh: () => void;
   onCheckUpdate: () => void;
   onLogout: () => void;
@@ -44,10 +52,32 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 </Badge>
               ) : null}
             </Group>
-            <Title order={2}>{title}</Title>
+            <Group gap="sm" align="baseline" wrap="wrap" className="subscription-title-row">
+              <Title order={2}>{title}</Title>
+              <Text c={isTeam ? "rgba(255,255,255,0.82)" : "dimmed"} size="sm" className="subscription-email">
+                {props.bootstrap.user.email}
+              </Text>
+            </Group>
             <Text c={isTeam ? "white" : "dimmed"} className="subscription-subtitle">
               {subtitle}
             </Text>
+            <div
+              className={
+                isTeam
+                  ? `subscription-server-pill subscription-server-pill--team subscription-server-pill--${props.serverProbe.status}`
+                  : `subscription-server-pill subscription-server-pill--${props.serverProbe.status}`
+              }
+            >
+              <span className="subscription-server-pill__dot" aria-hidden="true" />
+              <div className="subscription-server-pill__copy">
+                <Text size="sm" fw={600}>
+                  {props.serverProbe.label}
+                </Text>
+                <Text size="xs" c={isTeam ? "rgba(255,255,255,0.74)" : "dimmed"}>
+                  {props.serverProbe.detail}
+                </Text>
+              </div>
+            </div>
           </div>
 
           <Group gap="xs" align="center" className="subscription-actions subscription-actions--toolbar">
@@ -72,6 +102,16 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 公告
               </Button>
             </Indicator>
+            <Button
+              variant={isTeam ? "white" : "default"}
+              color={isTeam ? "dark" : "gray"}
+              size="sm"
+              leftSection={<IconLifebuoy size={15} />}
+              className="subscription-secondary-button subscription-toolbar-button"
+              onClick={props.onOpenTickets}
+            >
+              工单
+            </Button>
             <Button
               variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}
