@@ -484,7 +484,10 @@ function normalizeUpdateCheckResult(
           return null;
         }
         return {
-          fileType: readArtifactType(artifactSource.fileType) ?? fallback.artifactType,
+          fileType:
+            readArtifactType(artifactSource.fileType) ??
+            readArtifactType(artifactSource.type) ??
+            fallback.artifactType,
           downloadUrl: artifactUrl,
           originDownloadUrl: resolvePublicUrl(readString(artifactSource.originDownloadUrl) ?? readString(artifactSource.downloadUrl)),
           defaultMirrorPrefix: readString(artifactSource.defaultMirrorPrefix),
@@ -601,7 +604,14 @@ function readString(value: unknown) {
 }
 
 function readNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function readBoolean(value: unknown) {
