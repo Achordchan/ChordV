@@ -1,97 +1,70 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  ActionIcon,
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Group,
-  List,
-  Select,
-  SegmentedControl,
-  SimpleGrid,
-  Stack,
-  Table,
-  Text,
-  ThemeIcon,
-  Title
-} from "@mantine/core";
+import { Accordion, Alert, Badge, Button, Card, Group, SegmentedControl, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconArchive, IconCheck, IconCopy, IconEdit, IconExternalLink, IconPlus, IconShieldCheck, IconTrash } from "@tabler/icons-react";
+import { IconPlus, IconRefresh } from "@tabler/icons-react";
 import type {
   AdminReleaseArtifactRecordDto,
-  AdminReleaseChannel,
   AdminReleaseArtifactValidationDto,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
-  AdminReleaseStatus,
   AdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto,
-  AdminRuntimeComponentValidationDto
+  AdminRuntimeComponentValidationDto,
+  CreateAdminReleaseInputDto
 } from "../api/client";
 import {
   createAdminRelease,
   createAdminReleaseArtifact,
+  deleteAdminRelease,
   deleteAdminReleaseArtifact,
+  fetchAdminReleases,
   fetchAdminRuntimeComponentFailures,
   fetchAdminRuntimeComponents,
-  fetchAdminReleases,
+  publishAdminRelease,
   replaceAdminReleaseArtifactUpload,
-  uploadAdminReleaseArtifact,
+  unpublishAdminRelease,
   updateAdminRelease,
   updateAdminReleaseArtifact,
+  uploadAdminReleaseArtifact,
   verifyAdminReleaseArtifact
 } from "../api/client";
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
+import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
 import { RuntimeComponentsPanel } from "../features/runtime-components/RuntimeComponentsPanel";
 import {
   emptyArtifactEditorForm,
   emptyReleaseEditorForm,
-  releaseChannelOptions,
   releasePlatformOptions,
-  releaseStatusOptions,
   toArtifactEditorForm,
   toReleaseEditorForm,
   type ArtifactEditorFormState,
   type ReleaseEditorFormState
 } from "../features/releases/types";
-import { DataTable } from "../features/shared/DataTable";
 import { SectionCard } from "../features/shared/SectionCard";
-import { StatusBadge } from "../features/shared/StatusBadge";
 import { readError } from "../utils/admin-filters";
-import { formatDateTime } from "../utils/admin-format";
 
 type PlatformFilter = AdminReleasePlatform | "all";
-type ChannelFilter = AdminReleaseChannel | "all";
-type StatusFilter = AdminReleaseStatus | "all";
+type StatusFilter = "all" | "draft" | "published";
 
 type ArtifactEditorState = {
-  releaseId: string;
+  releaseId: string | null;
   artifactId: string | null;
   platform: AdminReleasePlatform;
 };
 
-const platformFilterOptions = [
-  { value: "all", label: "全部平台" },
-  ...releasePlatformOptions
-];
-
-const channelFilterOptions = [
-  { value: "all", label: "全部渠道" },
-  ...releaseChannelOptions
-];
+const platformFilterOptions = [{ value: "all", label: "全部平台" }, ...releasePlatformOptions];
 
 const statusFilterOptions = [
   { value: "all", label: "全部状态" },
-  ...releaseStatusOptions
-];
+  { value: "draft", label: "草稿" },
+  { value: "published", label: "已发布" }
+] as const;
 
 export function ReleasesPage() {
   const [activeView, setActiveView] = useState<"app_releases" | "runtime_components">("app_releases");
   const [searchValue, setSearchValue] = useState("");
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
-  const [channelFilter, setChannelFilter] = useState<ChannelFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [releases, setReleases] = useState<AdminReleaseRecordDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,6 +73,7 @@ export function ReleasesPage() {
   const [releaseEditorId, setReleaseEditorId] = useState<string | null>(null);
   const [releaseEditorOpened, setReleaseEditorOpened] = useState(false);
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
+  const [pendingCreateRelease, setPendingCreateRelease] = useState<CreateAdminReleaseInputDto | null>(null);
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
   const [artifactValidation, setArtifactValidation] = useState<Record<string, AdminReleaseArtifactValidationDto>>({});
@@ -112,20 +86,33 @@ export function ReleasesPage() {
     void loadRuntimeComponents();
   }, []);
 
-  const filteredReleases = useMemo(
+  const visibleReleases = useMemo(
     () =>
-      releases.filter((item) => {
-        if (platformFilter !== "all" && item.platform !== platformFilter) return false;
-        if (channelFilter !== "all" && item.channel !== channelFilter) return false;
-        if (statusFilter !== "all" && item.status !== statusFilter) return false;
-        if (!searchValue.trim()) return true;
-        const normalized = searchValue.trim().toLowerCase();
-        return [item.version, item.title, item.releaseNotes ?? "", item.minimumVersion, item.changelog.join(" ")]
-          .join(" ")
-          .toLowerCase()
-          .includes(normalized);
-      }),
-    [channelFilter, platformFilter, releases, searchValue, statusFilter]
+      releases
+        .filter((item) => {
+          if (platformFilter !== "all" && item.platform !== platformFilter) return false;
+          if (statusFilter !== "all" && item.status !== statusFilter) return false;
+          if (!searchValue.trim()) return true;
+          const normalized = searchValue.trim().toLowerCase();
+          return [item.version, item.title, item.minimumVersion, item.changelog.join(" ")]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalized);
+        })
+        .sort(compareReleaseRecord),
+    [platformFilter, releases, searchValue, statusFilter]
+  );
+
+  const groupedReleases = useMemo(
+    () =>
+      releasePlatformOptions
+        .map((option) => ({
+          platform: option.value,
+          label: option.label,
+          records: visibleReleases.filter((item) => item.platform === option.value)
+        }))
+        .filter((group) => group.records.length > 0),
+    [visibleReleases]
   );
 
   async function loadReleases() {
@@ -156,14 +143,14 @@ export function ReleasesPage() {
   }
 
   function openCreateRelease() {
+    setPendingCreateRelease(null);
     setReleaseEditorId(null);
-    setReleaseForm(
-      emptyReleaseEditorForm(platformFilter === "all" ? "macos" : platformFilter, channelFilter === "all" ? "stable" : channelFilter)
-    );
+    setReleaseForm(emptyReleaseEditorForm(platformFilter === "all" ? "macos" : platformFilter));
     setReleaseEditorOpened(true);
   }
 
   function openEditRelease(record: AdminReleaseRecordDto) {
+    setPendingCreateRelease(null);
     setReleaseEditorId(record.id);
     setReleaseForm(toReleaseEditorForm(record));
     setReleaseEditorOpened(true);
@@ -178,29 +165,45 @@ export function ReleasesPage() {
   async function saveRelease() {
     try {
       setSaving(true);
-      const payload = {
+      const payload: CreateAdminReleaseInputDto = {
         platform: releaseForm.platform,
-        channel: releaseForm.channel,
-        status: releaseForm.status,
+        status: "draft",
         version: releaseForm.version.trim(),
         minimumVersion: releaseForm.minimumVersion.trim(),
         forceUpgrade: releaseForm.forceUpgrade,
         title: releaseForm.title.trim(),
-        releaseNotes: releaseForm.releaseNotes.trim() || null,
         changelog: splitLines(releaseForm.changelog)
       };
 
-      const isCreating = !releaseEditorId;
-      const record = releaseEditorId ? await updateAdminRelease(releaseEditorId, payload) : await createAdminRelease(payload);
+      if (!releaseEditorId) {
+        setPendingCreateRelease(payload);
+        setReleaseEditorOpened(false);
+        setArtifactEditor({
+          releaseId: null,
+          artifactId: null,
+          platform: payload.platform
+        });
+        setArtifactForm(emptyArtifactEditorForm(defaultArtifactTypeForPlatform(payload.platform)));
+        notifications.show({
+          color: "blue",
+          title: "发布中心",
+          message: "继续补充首个安装产物。只有产物保存成功，这条发布记录才会真正创建。"
+        });
+        return;
+      }
+
+      const record = await updateAdminRelease(releaseEditorId, {
+        title: payload.title,
+        changelog: payload.changelog,
+        minimumVersion: payload.minimumVersion,
+        forceUpgrade: payload.forceUpgrade
+      });
       setReleases((current) => upsertRelease(current, record));
       closeReleaseEditor();
-      if (isCreating) {
-        openCreateArtifact(record.id, record.platform);
-      }
       notifications.show({
         color: "green",
         title: "发布中心",
-        message: releaseEditorId ? "发布记录已更新" : "发布记录已创建，请继续补充安装产物"
+        message: "发布记录已更新"
       });
     } catch (reason) {
       notifications.show({
@@ -213,18 +216,32 @@ export function ReleasesPage() {
     }
   }
 
-  async function updateReleaseStatus(record: AdminReleaseRecordDto, nextStatus: AdminReleaseStatus) {
+  async function publishRelease(record: AdminReleaseRecordDto) {
+    if (record.artifacts.length === 0) {
+      notifications.show({
+        color: "yellow",
+        title: "发布中心",
+        message: "请先补充至少一个安装产物，再发布这个版本。"
+      });
+      return;
+    }
+
+    await updateReleaseStatus(record, "published");
+  }
+
+  async function withdrawRelease(record: AdminReleaseRecordDto) {
+    await updateReleaseStatus(record, "draft");
+  }
+
+  async function updateReleaseStatus(record: AdminReleaseRecordDto, nextStatus: "draft" | "published") {
     try {
       setSaving(true);
-      const nextRecord = await updateAdminRelease(record.id, {
-        status: nextStatus,
-        publishedAt: nextStatus === "published" ? new Date().toISOString() : nextStatus === "draft" ? null : record.publishedAt ?? null
-      });
+      const nextRecord = nextStatus === "published" ? await publishAdminRelease(record.id) : await unpublishAdminRelease(record.id);
       setReleases((current) => upsertRelease(current, nextRecord));
       notifications.show({
         color: "green",
         title: "发布中心",
-        message: `已切换为${translateReleaseStatus(nextStatus)}`
+        message: nextStatus === "published" ? "版本已发布" : "已撤回到草稿"
       });
     } catch (reason) {
       notifications.show({
@@ -237,7 +254,34 @@ export function ReleasesPage() {
     }
   }
 
+  async function deleteRelease(record: AdminReleaseRecordDto) {
+    const confirmed = window.confirm(`确认删除 ${record.version} 这条发布记录吗？已上传的安装产物也会一起删除。`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setSaving(true);
+      await deleteAdminRelease(record.id);
+      setReleases((current) => current.filter((item) => item.id !== record.id));
+      notifications.show({
+        color: "green",
+        title: "发布中心",
+        message: "发布记录已删除"
+      });
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "发布中心",
+        message: readError(reason, "删除发布记录失败")
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function openCreateArtifact(releaseId: string, releasePlatform?: AdminReleasePlatform) {
+    setPendingCreateRelease(null);
     const release = releases.find((item) => item.id === releaseId);
     const platform = releasePlatform ?? release?.platform ?? "macos";
     setArtifactEditor({ releaseId, artifactId: null, platform });
@@ -245,39 +289,75 @@ export function ReleasesPage() {
   }
 
   function openEditArtifact(releaseId: string, artifact: AdminReleaseArtifactRecordDto) {
+    setPendingCreateRelease(null);
     const release = releases.find((item) => item.id === releaseId);
     setArtifactEditor({ releaseId, artifactId: artifact.id, platform: release?.platform ?? "macos" });
     setArtifactForm(toArtifactEditorForm(artifact));
   }
 
-  function closeArtifactEditor() {
+  function closeArtifactEditor(options?: { silent?: boolean }) {
+    const shouldNotifyDiscard = Boolean(pendingCreateRelease) && !options?.silent;
+    setPendingCreateRelease(null);
     setArtifactEditor(null);
     setArtifactForm(emptyArtifactEditorForm());
+    if (shouldNotifyDiscard) {
+      notifications.show({
+        color: "blue",
+        title: "发布中心",
+        message: "你已取消这次新建发布，系统不会保留空白发布记录。"
+      });
+    }
   }
 
   async function saveArtifact() {
     if (!artifactEditor) return;
+
+    let createdReleaseId: string | null = null;
+    let createdViaAtomicFlow = false;
     try {
       setSaving(true);
+      let releaseId = artifactEditor.releaseId;
       const isExternal = artifactForm.source === "external" || artifactForm.type === "external";
+      const externalPayload = isExternal
+        ? {
+            source: "external" as const,
+            type: artifactForm.type,
+            downloadUrl: artifactForm.downloadUrl.trim(),
+            defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
+            allowClientMirror: artifactForm.allowClientMirror,
+            fileName: artifactForm.fileName.trim() || null,
+            isPrimary: artifactForm.isPrimary,
+            isFullPackage: artifactForm.isFullPackage
+          }
+        : null;
       let record;
-      if (isExternal) {
-        const payload = {
-          source: "external" as const,
-          type: artifactForm.type,
-          downloadUrl: artifactForm.downloadUrl.trim(),
-          defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
-          allowClientMirror: artifactForm.allowClientMirror,
-          fileName: artifactForm.fileName.trim() || null,
-          fileSizeBytes: artifactForm.fileSizeBytes === "" ? null : String(artifactForm.fileSizeBytes),
-          fileHash: artifactForm.fileHash.trim() || null,
-          isPrimary: artifactForm.isPrimary,
-          isFullPackage: artifactForm.isFullPackage
-        };
+
+      if (!releaseId) {
+        if (!pendingCreateRelease) {
+          throw new Error("缺少发布信息，无法保存安装产物");
+        }
+
+        if (externalPayload) {
+          record = await createAdminRelease({
+            ...pendingCreateRelease,
+            initialArtifact: externalPayload
+          });
+          createdReleaseId = record.id;
+          createdViaAtomicFlow = true;
+        } else {
+          const createdRelease = await createAdminRelease(pendingCreateRelease);
+          createdReleaseId = createdRelease.id;
+          releaseId = createdRelease.id;
+        }
+      }
+
+      if (!record && externalPayload) {
         record = artifactEditor.artifactId
-          ? await updateAdminReleaseArtifact(artifactEditor.releaseId, artifactEditor.artifactId, payload)
-          : await createAdminReleaseArtifact(artifactEditor.releaseId, payload);
-      } else {
+          ? await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId, externalPayload)
+          : await createAdminReleaseArtifact(releaseId!, externalPayload);
+      }
+
+      if (!record) {
         if (!artifactForm.selectedFile && !artifactEditor.artifactId) {
           throw new Error("请先选择要上传的安装包文件");
         }
@@ -292,13 +372,8 @@ export function ReleasesPage() {
             isFullPackage: artifactForm.isFullPackage
           };
           record = artifactEditor.artifactId
-            ? await replaceAdminReleaseArtifactUpload(
-                artifactEditor.releaseId,
-                artifactEditor.artifactId,
-                uploadPayload,
-                artifactForm.selectedFile
-              )
-            : await uploadAdminReleaseArtifact(artifactEditor.releaseId, uploadPayload, artifactForm.selectedFile);
+            ? await replaceAdminReleaseArtifactUpload(releaseId!, artifactEditor.artifactId, uploadPayload, artifactForm.selectedFile)
+            : await uploadAdminReleaseArtifact(releaseId!, uploadPayload, artifactForm.selectedFile);
         } else {
           const payload = {
             source: "uploaded" as const,
@@ -309,17 +384,34 @@ export function ReleasesPage() {
             isPrimary: artifactForm.isPrimary,
             isFullPackage: artifactForm.isFullPackage
           };
-          record = await updateAdminReleaseArtifact(artifactEditor.releaseId, artifactEditor.artifactId!, payload);
+          record = await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId!, payload);
         }
       }
+
       setReleases((current) => upsertRelease(current, record));
-      closeArtifactEditor();
+      closeArtifactEditor({ silent: true });
       notifications.show({
         color: "green",
         title: "发布中心",
-        message: artifactEditor.artifactId ? "产物已更新" : "产物已新增"
+        message:
+          artifactEditor.artifactId
+            ? "产物已更新"
+            : createdReleaseId
+              ? "发布记录和首个产物已创建"
+              : "产物已新增"
       });
     } catch (reason) {
+      if (createdReleaseId && !createdViaAtomicFlow) {
+        try {
+          await deleteAdminRelease(createdReleaseId);
+        } catch (cleanupReason) {
+          notifications.show({
+            color: "yellow",
+            title: "发布中心",
+            message: `首个产物保存失败，而且自动清理草稿也失败了：${readError(cleanupReason, "请手动检查是否残留空白草稿")}`
+          });
+        }
+      }
       notifications.show({
         color: "red",
         title: "发布中心",
@@ -356,6 +448,7 @@ export function ReleasesPage() {
     try {
       const result = await verifyAdminReleaseArtifact(releaseId, artifact.id);
       setArtifactValidation((current) => ({ ...current, [artifact.id]: result }));
+      await loadReleases();
       notifications.show({
         color: result.status === "ready" ? "green" : "yellow",
         title: "安装产物校验",
@@ -393,16 +486,26 @@ export function ReleasesPage() {
         <Stack gap="lg">
           <Group justify="space-between" align="flex-start" wrap="wrap">
             <Stack gap={4}>
-              <Title order={4}>发布中心 / 版本发布</Title>
+              <Title order={4}>发布中心</Title>
               <Text size="sm" c="dimmed">
-                这里拆成两条线：安装包发布负责应用更新，内核组件负责桌面端运行时依赖下载。
+                安装包发布和内核组件分开管理。发布渠道固定为正式版，页面不再展示多渠道筛选。
               </Text>
             </Stack>
-            {activeView === "app_releases" ? (
-              <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease}>
-                新建发布
+            <Group gap="xs">
+              {activeView === "app_releases" ? (
+                <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease}>
+                  新建发布
+                </Button>
+              ) : null}
+              <Button
+                variant="light"
+                leftSection={<IconRefresh size={16} />}
+                onClick={() => void (activeView === "app_releases" ? loadReleases() : loadRuntimeComponents())}
+                loading={loading && activeView === "app_releases"}
+              >
+                刷新
               </Button>
-            ) : null}
+            </Group>
           </Group>
 
           <SegmentedControl
@@ -417,30 +520,37 @@ export function ReleasesPage() {
 
           {activeView === "app_releases" ? (
             <>
-              <SimpleGrid cols={{ base: 1, lg: 3 }} spacing="sm">
-                <SegmentedControl
-                  value={platformFilter}
-                  onChange={(value) => setPlatformFilter(value as PlatformFilter)}
-                  data={platformFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
-                  fullWidth
-                />
-                <SegmentedControl
-                  value={channelFilter}
-                  onChange={(value) => setChannelFilter(value as ChannelFilter)}
-                  data={channelFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
-                  fullWidth
-                />
-                <Select
-                  label="状态筛选"
-                  value={statusFilter}
-                  data={statusFilterOptions as unknown as { value: string; label: string }[]}
-                  onChange={(value) => setStatusFilter((value as StatusFilter) || "all")}
-                />
-              </SimpleGrid>
+              <Card withBorder radius="xl" p="lg">
+                <Stack gap="md">
+                  <Group justify="space-between" align="flex-start" wrap="wrap">
+                    <Stack gap={4}>
+                      <Title order={5}>安装包发布</Title>
+                      <Text size="sm" c="dimmed">
+                        这里只管理应用安装器。桌面端使用 DMG / Setup，移动端按平台使用 APK / IPA。
+                      </Text>
+                    </Stack>
+                    <Group gap="sm" wrap="wrap">
+                      <Badge variant="light">{visibleReleases.length} 条可见记录</Badge>
+                      <Badge variant="outline">当前仅正式版</Badge>
+                    </Group>
+                  </Group>
 
-              <Alert color="blue" variant="light">
-                这里负责维护平台、渠道、最低可用版本、强制升级和安装产物。桌面端正式发布物只保留安装器。
-              </Alert>
+                  <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="sm">
+                    <SegmentedControl
+                      value={platformFilter}
+                      onChange={(value) => setPlatformFilter(value as PlatformFilter)}
+                      data={platformFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
+                      fullWidth
+                    />
+                    <SegmentedControl
+                      value={statusFilter}
+                      onChange={(value) => setStatusFilter(value as StatusFilter)}
+                      data={statusFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
+                      fullWidth
+                    />
+                  </SimpleGrid>
+                </Stack>
+              </Card>
 
               {error ? (
                 <Alert color="red" variant="light">
@@ -450,170 +560,81 @@ export function ReleasesPage() {
 
               {loading ? (
                 <Text c="dimmed">正在加载发布记录…</Text>
-              ) : filteredReleases.length === 0 ? (
+              ) : groupedReleases.length === 0 ? (
                 <Alert color="gray" variant="light">
-                  当前筛选下还没有发布记录，可以先新建一条正式版发布记录，再补充各平台产物。
+                  当前筛选下还没有可见发布记录，可以先新建一条草稿，再继续补充安装产物。
                 </Alert>
               ) : (
-                <Stack gap="md">
-                  {filteredReleases.map((record) => (
-                    <Card key={record.id} withBorder radius="xl" p="lg">
-                      <Stack gap="md">
-                        <Group justify="space-between" align="flex-start" wrap="wrap">
-                          <Stack gap={6}>
-                            <Group gap="xs">
-                              <Text fw={700} size="lg">
-                                {record.version}
+                <Stack gap="lg">
+                  {groupedReleases.map((group) => {
+                    const latest = group.records[0];
+                    const history = group.records.slice(1);
+
+                    return (
+                      <Card key={group.platform} withBorder radius="xl" p="lg">
+                        <Stack gap="md">
+                          <Group justify="space-between" align="flex-start" wrap="wrap">
+                            <Stack gap={4}>
+                              <Title order={5}>{group.label}</Title>
+                              <Text size="sm" c="dimmed">
+                                最新记录默认展开，过往版本统一折叠，避免页面无限变长。
                               </Text>
-                              <Badge variant="light">{translatePlatform(record.platform)}</Badge>
-                              <Badge variant="outline">{translateChannel(record.channel)}</Badge>
-                              <StatusBadge color={releaseStatusColor(record.status)} label={translateReleaseStatus(record.status)} />
-                            </Group>
-                            <Text fw={600}>{record.title}</Text>
-                            <Text size="sm" c="dimmed">
-                              最低可用版本 {record.minimumVersion} · {translateDeliveryMode(record.deliveryMode)} ·{" "}
-                              {record.forceUpgrade ? "强制升级" : "建议升级"}
-                              {record.publishedAt ? ` · 发布时间 ${formatDateTime(record.publishedAt)}` : ""}
-                            </Text>
-                          </Stack>
-                          <Group gap="xs" wrap="wrap">
-                            <Button size="xs" variant="default" leftSection={<IconEdit size={14} />} onClick={() => openEditRelease(record)}>
-                              编辑发布
-                            </Button>
-                            <Button size="xs" variant="default" leftSection={<IconPlus size={14} />} onClick={() => openCreateArtifact(record.id)}>
-                              新增产物
-                            </Button>
-                            <Button
-                              size="xs"
-                              variant="default"
-                              leftSection={<IconArchive size={14} />}
-                              loading={saving}
-                              onClick={() => updateReleaseStatus(record, nextReleaseStatus(record.status))}
-                            >
-                              {nextReleaseActionText(record.status)}
-                            </Button>
-                          </Group>
-                        </Group>
-
-                        {record.releaseNotes ? (
-                          <Alert color="blue" variant="light">
-                            {record.releaseNotes}
-                          </Alert>
-                        ) : null}
-
-                        {record.changelog.length > 0 ? (
-                          <Stack gap={6}>
-                            <Text fw={600}>更新日志</Text>
-                            <List
-                              spacing="xs"
-                              icon={
-                                <ThemeIcon size={18} radius="xl" color="blue" variant="light">
-                                  <IconCheck size={12} />
-                                </ThemeIcon>
-                              }
-                            >
-                              {record.changelog.map((item) => (
-                                <List.Item key={`${record.id}:${item}`}>{item}</List.Item>
-                              ))}
-                            </List>
-                          </Stack>
-                        ) : null}
-
-                        <Stack gap="sm">
-                          <Group justify="space-between">
-                            <Text fw={600}>产物列表</Text>
-                            <Badge variant="light">{record.artifacts.length} 个产物</Badge>
+                            </Stack>
+                            <Badge variant="light">{group.records.length} 条记录</Badge>
                           </Group>
 
-                          {record.artifacts.length === 0 ? (
-                            <Alert color="yellow" variant="light">
-                              当前版本还没有挂任何安装产物。用户可能会收到更新提示，但无法自动下载安装器。请先补一个主下载产物。
-                            </Alert>
-                          ) : (
-                            <DataTable>
-                              <Table.Thead>
-                                <Table.Tr>
-                                  <Table.Th>来源</Table.Th>
-                                  <Table.Th>类型</Table.Th>
-                                  <Table.Th>文件名</Table.Th>
-                                  <Table.Th>下载地址</Table.Th>
-                                  <Table.Th>加速</Table.Th>
-                                  <Table.Th>大小</Table.Th>
-                                  <Table.Th>Hash</Table.Th>
-                                  <Table.Th>可用性</Table.Th>
-                                  <Table.Th>主入口</Table.Th>
-                                  <Table.Th>完整包</Table.Th>
-                                  <Table.Th>操作</Table.Th>
-                                </Table.Tr>
-                              </Table.Thead>
-                              <Table.Tbody>
-                                {record.artifacts.map((artifact) => (
-                                  <Table.Tr key={artifact.id}>
-                                    <Table.Td>{artifact.source === "uploaded" ? "已上传" : "外链"}</Table.Td>
-                                    <Table.Td>{translateArtifactType(artifact.type)}</Table.Td>
-                                    <Table.Td>{artifact.fileName || <Text c="dimmed">自动生成</Text>}</Table.Td>
-                                    <Table.Td>
-                                      <Text size="sm" maw={320} truncate>
-                                        {artifact.downloadUrl}
-                                      </Text>
-                                    </Table.Td>
-                                    <Table.Td>
-                                      {artifact.source === "external" ? (
-                                        <Stack gap={2}>
-                                          <Text size="sm">{artifact.defaultMirrorPrefix || "未设置"}</Text>
-                                          <Text size="xs" c="dimmed">
-                                            {artifact.allowClientMirror ? "允许客户端覆盖" : "仅后台默认加速"}
-                                          </Text>
-                                        </Stack>
-                                      ) : (
-                                        <Text c="dimmed">上传产物无需加速</Text>
-                                      )}
-                                    </Table.Td>
-                                    <Table.Td>{formatFileSize(artifact.fileSizeBytes)}</Table.Td>
-                                    <Table.Td>{artifact.fileHash ? <Text size="sm">{artifact.fileHash}</Text> : <Text c="dimmed">未填写</Text>}</Table.Td>
-                                    <Table.Td>
-                                      <StatusBadge
-                                        color={artifactValidationColor(artifactValidation[artifact.id]?.status)}
-                                        label={artifactValidationLabel(artifactValidation[artifact.id]?.status)}
+                          <ReleaseRecordCard
+                            record={latest}
+                            saving={saving}
+                            artifactValidation={artifactValidation}
+                            onEditRelease={openEditRelease}
+                            onCreateArtifact={openCreateArtifact}
+                            onPublish={(record) => void publishRelease(record)}
+                            onWithdraw={(record) => void withdrawRelease(record)}
+                            onDeleteRelease={(record) => void deleteRelease(record)}
+                            onVerifyArtifact={(releaseId, artifact) => void verifyArtifact(releaseId, artifact)}
+                            onCopyDownloadUrl={(url) => void copyDownloadUrl(url)}
+                            onEditArtifact={openEditArtifact}
+                            onRemoveArtifact={(releaseId, artifactId) => void removeArtifact(releaseId, artifactId)}
+                          />
+
+                          {history.length > 0 ? (
+                            <Accordion variant="contained" radius="lg">
+                              <Accordion.Item value={`${group.platform}-history`}>
+                                <Accordion.Control>
+                                  <Group justify="space-between" wrap="wrap">
+                                    <Text fw={600}>过往版本</Text>
+                                    <Badge variant="light">{history.length} 条</Badge>
+                                  </Group>
+                                </Accordion.Control>
+                                <Accordion.Panel>
+                                  <Stack gap="md">
+                                    {history.map((record) => (
+                                      <ReleaseRecordCard
+                                        key={record.id}
+                                        record={record}
+                                        saving={saving}
+                                        artifactValidation={artifactValidation}
+                                        onEditRelease={openEditRelease}
+                                        onCreateArtifact={openCreateArtifact}
+                                        onPublish={(item) => void publishRelease(item)}
+                                        onWithdraw={(item) => void withdrawRelease(item)}
+                                        onDeleteRelease={(item) => void deleteRelease(item)}
+                                        onVerifyArtifact={(releaseId, artifact) => void verifyArtifact(releaseId, artifact)}
+                                        onCopyDownloadUrl={(url) => void copyDownloadUrl(url)}
+                                        onEditArtifact={openEditArtifact}
+                                        onRemoveArtifact={(releaseId, artifactId) => void removeArtifact(releaseId, artifactId)}
                                       />
-                                    </Table.Td>
-                                    <Table.Td>{artifact.isPrimary ? "是" : "否"}</Table.Td>
-                                    <Table.Td>{artifact.isFullPackage ? "是" : "否"}</Table.Td>
-                                    <Table.Td>
-                                      <Group gap={4} wrap="nowrap">
-                                        <ActionIcon variant="subtle" onClick={() => void verifyArtifact(record.id, artifact)} title="校验安装包">
-                                          <IconShieldCheck size={16} />
-                                        </ActionIcon>
-                                        <ActionIcon variant="subtle" onClick={() => void copyDownloadUrl(artifact.downloadUrl)} title="复制下载地址">
-                                          <IconCopy size={16} />
-                                        </ActionIcon>
-                                        <ActionIcon
-                                          component="a"
-                                          href={artifact.downloadUrl}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          variant="subtle"
-                                          title="打开下载地址"
-                                        >
-                                          <IconExternalLink size={16} />
-                                        </ActionIcon>
-                                        <ActionIcon variant="subtle" onClick={() => openEditArtifact(record.id, artifact)}>
-                                          <IconEdit size={16} />
-                                        </ActionIcon>
-                                        <ActionIcon color="red" variant="subtle" onClick={() => void removeArtifact(record.id, artifact.id)}>
-                                          <IconTrash size={16} />
-                                        </ActionIcon>
-                                      </Group>
-                                    </Table.Td>
-                                  </Table.Tr>
-                                ))}
-                              </Table.Tbody>
-                            </DataTable>
-                          )}
+                                    ))}
+                                  </Stack>
+                                </Accordion.Panel>
+                              </Accordion.Item>
+                            </Accordion>
+                          ) : null}
                         </Stack>
-                      </Stack>
-                    </Card>
-                  ))}
+                      </Card>
+                    );
+                  })}
                 </Stack>
               )}
             </>
@@ -636,8 +657,10 @@ export function ReleasesPage() {
 
       <ReleaseEditorModal
         opened={releaseEditorOpened}
+        editing={Boolean(releaseEditorId)}
         saving={saving}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
+        submitLabel={releaseEditorId ? "保存发布记录" : "下一步：配置首个产物"}
         form={releaseForm}
         onClose={closeReleaseEditor}
         onChange={setReleaseForm}
@@ -647,8 +670,18 @@ export function ReleasesPage() {
       <ArtifactEditorModal
         opened={artifactEditor !== null}
         saving={saving}
+        creatingRelease={Boolean(pendingCreateRelease)}
         platform={artifactEditor?.platform ?? "macos"}
-        title={artifactEditor?.artifactId ? "编辑安装产物" : "新增安装产物"}
+        title={artifactEditor?.artifactId ? "编辑安装产物" : pendingCreateRelease ? "新建发布：首个安装产物" : "新增安装产物"}
+        submitLabel={
+          artifactEditor?.artifactId
+            ? "保存产物"
+            : pendingCreateRelease
+              ? artifactForm.source === "external" || artifactForm.type === "external"
+                ? "创建发布并保存首个产物"
+                : "创建发布并上传首个产物"
+              : "保存产物"
+        }
         form={artifactForm}
         onClose={closeArtifactEditor}
         onChange={setArtifactForm}
@@ -671,88 +704,38 @@ function splitLines(value: string) {
     .filter(Boolean);
 }
 
-function nextReleaseStatus(status: AdminReleaseStatus): AdminReleaseStatus {
-  if (status === "draft") return "published";
-  if (status === "published") return "archived";
-  return "draft";
-}
-
-function nextReleaseActionText(status: AdminReleaseStatus) {
-  if (status === "draft") return "立即发布";
-  if (status === "published") return "转为归档";
-  return "恢复草稿";
-}
-
-function releaseStatusColor(status: AdminReleaseStatus) {
-  if (status === "published") return "green";
-  if (status === "archived") return "gray";
-  return "blue";
-}
-
-function translateReleaseStatus(status: AdminReleaseStatus) {
-  if (status === "published") return "已发布";
-  if (status === "archived") return "已归档";
-  return "草稿";
-}
-
-function translatePlatform(platform: AdminReleasePlatform) {
-  if (platform === "macos") return "macOS";
-  if (platform === "windows") return "Windows";
-  if (platform === "android") return "Android";
-  return "iOS";
-}
-
-function translateChannel(channel: AdminReleaseChannel) {
-  return "正式版";
-}
-
-function translateDeliveryMode(mode: string) {
-  if (mode === "external_download") return "跳转外部链接";
-  if (mode === "apk_download") return "应用内提示 APK 下载";
-  if (mode === "none") return "不提供下载";
-  return "应用内下载";
-}
-
-function translateArtifactType(type: string) {
-  switch (type) {
-    case "dmg":
-      return "DMG";
-    case "app":
-      return "APP";
-    case "exe":
-      return "EXE";
-    case "setup.exe":
-      return "Setup";
-    case "apk":
-      return "APK";
-    case "ipa":
-      return "IPA";
-    default:
-      return "外部链接";
+function compareReleaseRecord(left: AdminReleaseRecordDto, right: AdminReleaseRecordDto) {
+  const versionDiff = compareSemver(right.version, left.version);
+  if (versionDiff !== 0) {
+    return versionDiff;
   }
+
+  const rightTime = new Date(right.publishedAt ?? right.updatedAt ?? right.createdAt ?? 0).getTime();
+  const leftTime = new Date(left.publishedAt ?? left.updatedAt ?? left.createdAt ?? 0).getTime();
+  return rightTime - leftTime;
 }
 
-function formatFileSize(value?: number | null) {
-  if (!value || value <= 0) return "未填写";
-  if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${value} B`;
+function compareSemver(left: string, right: string) {
+  const leftParts = normalizeVersionParts(left);
+  const rightParts = normalizeVersionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+
+  return 0;
 }
 
-function artifactValidationColor(status?: AdminReleaseArtifactValidationDto["status"]) {
-  if (status === "ready") return "green";
-  if (status === "metadata_mismatch") return "yellow";
-  if (status === "missing_file" || status === "missing_download_url") return "red";
-  return "gray";
-}
-
-function artifactValidationLabel(status?: AdminReleaseArtifactValidationDto["status"]) {
-  if (status === "ready") return "可发布";
-  if (status === "metadata_mismatch") return "元信息不一致";
-  if (status === "missing_file") return "文件丢失";
-  if (status === "missing_download_url") return "链接无效";
-  return "待校验";
+function normalizeVersionParts(version: string) {
+  return version
+    .trim()
+    .split(/[.-]/)
+    .map((item) => Number.parseInt(item, 10))
+    .map((item) => (Number.isFinite(item) ? item : 0));
 }
 
 function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminReleaseArtifactRecordDto["type"] {

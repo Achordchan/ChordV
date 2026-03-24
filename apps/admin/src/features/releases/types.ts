@@ -1,7 +1,6 @@
 import type {
   AdminReleaseArtifactRecordDto,
   AdminReleaseArtifactType,
-  AdminReleaseChannel,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
   AdminReleaseStatus
@@ -9,13 +8,11 @@ import type {
 
 export type ReleaseEditorFormState = {
   platform: AdminReleasePlatform;
-  channel: AdminReleaseChannel;
   status: AdminReleaseStatus;
   version: string;
   minimumVersion: string;
   forceUpgrade: boolean;
   title: string;
-  releaseNotes: string;
   changelog: string;
 };
 
@@ -40,16 +37,6 @@ export const releasePlatformOptions = [
   { value: "ios", label: "iOS" }
 ] as const;
 
-export const releaseChannelOptions = [
-  { value: "stable", label: "正式版" }
-] as const;
-
-export const releaseStatusOptions = [
-  { value: "draft", label: "草稿" },
-  { value: "published", label: "已发布" },
-  { value: "archived", label: "已归档" }
-] as const;
-
 export const releaseArtifactTypeOptions = [
   { value: "dmg", label: "DMG 安装包" },
   { value: "app", label: "APP 应用包" },
@@ -60,7 +47,7 @@ export const releaseArtifactTypeOptions = [
   { value: "external", label: "外部下载页" }
 ] as const;
 
-export const DEFAULT_GITHUB_MIRROR_PREFIX = "";
+export const DEFAULT_GITHUB_MIRROR_PREFIX = "https://ghfast.top/{url}";
 
 export function releaseArtifactTypeOptionsForPlatform(platform: AdminReleasePlatform, currentType?: AdminReleaseArtifactType) {
   const allowed = new Set<AdminReleaseArtifactType>(
@@ -83,16 +70,14 @@ export function releaseArtifactTypeOptionsForPlatform(platform: AdminReleasePlat
   return filtered;
 }
 
-export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos", channel: AdminReleaseChannel = "stable"): ReleaseEditorFormState {
+export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos"): ReleaseEditorFormState {
   return {
     platform,
-    channel,
     status: "draft",
     version: "",
     minimumVersion: "",
     forceUpgrade: false,
     title: "",
-    releaseNotes: "",
     changelog: ""
   };
 }
@@ -100,13 +85,11 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos",
 export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEditorFormState {
   return {
     platform: record.platform,
-    channel: record.channel,
-    status: record.status,
+    status: record.status === "published" ? "published" : "draft",
     version: record.version,
     minimumVersion: record.minimumVersion,
     forceUpgrade: record.forceUpgrade,
     title: record.title,
-    releaseNotes: record.releaseNotes ?? "",
     changelog: record.changelog.join("\n")
   };
 }
@@ -141,4 +124,8 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     isFullPackage: record.isFullPackage,
     selectedFile: null
   };
+}
+
+export function isDesktopReleasePlatform(platform: AdminReleasePlatform) {
+  return platform === "macos" || platform === "windows";
 }

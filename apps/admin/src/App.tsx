@@ -7,8 +7,10 @@ import {
   Card,
   Group,
   Loader,
+  Modal,
   NavLink,
   Paper,
+  Select,
   SimpleGrid,
   Stack,
   Table,
@@ -67,6 +69,7 @@ import {
 } from "@tabler/icons-react";
 import {
   changeSubscriptionPlan,
+  convertPersonalSubscriptionToTeam,
   createAnnouncement,
   createPlan,
   createSubscription,
@@ -93,16 +96,15 @@ import {
   updateSubscription,
   updateSubscriptionNodeAccess,
   clearAdminSession,
-  getAdminRefreshToken,
   hasAdminSession,
   loginAdmin,
   logoutAdminSession,
   persistAdminSession,
-  refreshAdminSession,
   updateTeam,
   updateTeamMember,
   updateUser
 } from "./api/client";
+import { ADMIN_SESSION_EXPIRED_EVENT, isAdminSessionExpiredMessage } from "./api/base";
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
@@ -244,6 +246,14 @@ export function App() {
   const [kickDisableAccount, setKickDisableAccount] = useState(false);
   const [kickSubmitting, setKickSubmitting] = useState(false);
   const [resetTrafficBusyKey, setResetTrafficBusyKey] = useState<string | null>(null);
+  const [convertSubscriptionTarget, setConvertSubscriptionTarget] = useState<{
+    subscriptionId: string;
+    ownerLabel: string;
+    ownerEmail: string;
+    currentPlanName: string;
+  } | null>(null);
+  const [convertTargetTeamId, setConvertTargetTeamId] = useState<string | null>(null);
+  const [convertSubmitting, setConvertSubmitting] = useState(false);
   const [teamUsageDetailTarget, setTeamUsageDetailTarget] = useState<{
     teamName: string;
     userDisplayName: string;
@@ -289,6 +299,17 @@ export function App() {
     }
   }, [snapshot]);
 
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      handleSessionExpiredState();
+    };
+
+    window.addEventListener(ADMIN_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => {
+      window.removeEventListener(ADMIN_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    };
+  }, []);
+
   const users = useMemo(
     () => filterByKeyword(snapshot?.users ?? [], search.users, (item) => [item.email, item.displayName, item.role]),
     [snapshot?.users, search.users]
@@ -332,6 +353,28 @@ export function App() {
         item.status
       ]),
     [teams, search.subscriptions]
+  );
+  const teamsWithCurrentSubscription = useMemo(
+    () =>
+      teams.filter(
+        (item) =>
+          item.status === "active" &&
+          item.currentSubscription !== null &&
+          (item.currentSubscription.state === "active" || item.currentSubscription.state === "paused")
+      ),
+    [teams]
+  );
+  const convertTargetTeamOptions = useMemo(
+    () =>
+      teamsWithCurrentSubscription.map((item) => ({
+        value: item.id,
+        label: `${item.name} · ${item.currentSubscription!.planName} · 到期 ${formatDateTime(item.currentSubscription!.expireAt)}`
+      })),
+    [teamsWithCurrentSubscription]
+  );
+  const selectedConvertTargetTeam = useMemo(
+    () => teamsWithCurrentSubscription.find((item) => item.id === convertTargetTeamId) ?? null,
+    [convertTargetTeamId, teamsWithCurrentSubscription]
   );
   const nodes = useMemo(
     () =>
@@ -392,6 +435,44 @@ export function App() {
     [nodePanelInbounds]
   );
 
+  function handleSessionExpiredState() {
+    clearAdminSession();
+    setSnapshot(null);
+    setAuthenticated(false);
+    setLoading(false);
+    setError(null);
+    setAuthError("登录已失效，请重新登录");
+    setDrawer({ type: null, recordId: null, parentId: null });
+    setDeleteNodeTarget(null);
+    setKickMemberTarget(null);
+    setKickDisableAccount(false);
+    setKickSubmitting(false);
+    setResetTrafficBusyKey(null);
+    setConvertSubscriptionTarget(null);
+    setConvertTargetTeamId(null);
+    setConvertSubmitting(false);
+    setTeamUsageDetailTarget(null);
+    setNodeAccessEditor(null);
+    setNodeAccessSelection([]);
+    setNodeAccessLoading(false);
+    setNodeAccessSaving(false);
+    setNodePanelInbounds([]);
+    setNodePanelInboundsLoading(false);
+    setDrawerBusy(false);
+    setTeamInlineBusy(false);
+    setPolicySaving(false);
+    setProbingNodeId(null);
+    setProbingAll(false);
+  }
+
+  function ensureAuthenticated(message: string) {
+    if (!isAdminSessionExpiredMessage(message)) {
+      return false;
+    }
+    handleSessionExpiredState();
+    return true;
+  }
+
   async function loadSnapshot() {
     try {
       setLoading(true);
@@ -400,24 +481,7 @@ export function App() {
       setSnapshot(data);
     } catch (reason) {
       const message = readError(reason, "加载失败");
-      if (isAccessTokenError(message) && (await tryRefreshAdminToken())) {
-        try {
-          const data = await getAdminSnapshot();
-          setSnapshot(data);
-          setError(null);
-          return;
-        } catch (refreshReason) {
-          clearAdminSession();
-          setAuthenticated(false);
-          setAuthError(readError(refreshReason, "登录已失效，请重新登录"));
-          return;
-        }
-      }
-
-      if (isAccessTokenError(message)) {
-        clearAdminSession();
-        setAuthenticated(false);
-        setAuthError("登录已失效，请重新登录");
+      if (ensureAuthenticated(message)) {
         return;
       }
 
@@ -460,31 +524,18 @@ export function App() {
         color: result.length > 0 ? "green" : "yellow"
       });
     } catch (reason) {
+      const message = readError(reason, "读取 3x-ui 入站失败");
+      if (ensureAuthenticated(message)) {
+        return;
+      }
       notifications.show({
         title: "读取失败",
-        message: readError(reason, "读取 3x-ui 入站失败"),
+        message,
         color: "red"
       });
       setNodePanelInbounds([]);
     } finally {
       setNodePanelInboundsLoading(false);
-    }
-  }
-
-  async function tryRefreshAdminToken() {
-    const refreshToken = getAdminRefreshToken();
-    if (!refreshToken) {
-      return false;
-    }
-    try {
-      const session = await refreshAdminSession(refreshToken);
-      if (session.user.role !== "admin") {
-        return false;
-      }
-      persistAdminSession(session);
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -539,10 +590,14 @@ export function App() {
       await loadSnapshot();
       return true;
     } catch (reason) {
+      const message = readError(reason, "操作失败");
+      if (ensureAuthenticated(message)) {
+        return false;
+      }
       notifications.show({
         color: "red",
         title: "操作失败",
-        message: readError(reason, "操作失败")
+        message
       });
       return false;
     }
@@ -555,10 +610,14 @@ export function App() {
       setNodeAccessSelection(result.nodeIds);
       setNodeAccessEditor({ subscriptionId, ownerLabel });
     } catch (reason) {
+      const message = readError(reason, "加载节点授权失败");
+      if (ensureAuthenticated(message)) {
+        return;
+      }
       notifications.show({
         color: "red",
         title: "操作失败",
-        message: readError(reason, "加载节点授权失败")
+        message
       });
     } finally {
       setNodeAccessLoading(false);
@@ -590,10 +649,14 @@ export function App() {
       await loadSnapshot();
       closeNodeAccessEditor();
     } catch (reason) {
+      const message = readError(reason, "保存节点授权失败");
+      if (ensureAuthenticated(message)) {
+        return;
+      }
       notifications.show({
         color: "red",
         title: "操作失败",
-        message: readError(reason, "保存节点授权失败")
+        message
       });
     } finally {
       setNodeAccessSaving(false);
@@ -1082,6 +1145,100 @@ export function App() {
     }
   }
 
+  function openConvertToTeamModal(record: AdminSubscriptionRecordDto) {
+    if (!record.userId) {
+      notifications.show({
+        color: "yellow",
+        title: "无法转入 Team",
+        message: "当前订阅缺少用户归属信息，请先检查订阅数据。"
+      });
+      return;
+    }
+
+    const owner =
+      record.userId && snapshot
+        ? snapshot.users.find((item) => item.id === record.userId) ?? null
+        : null;
+    if (!owner) {
+      notifications.show({
+        color: "yellow",
+        title: "无法转入 Team",
+        message: "当前用户信息未同步，请刷新后重试。"
+      });
+      return;
+    }
+    if (owner && owner.status !== "active") {
+      notifications.show({
+        color: "yellow",
+        title: "无法转入 Team",
+        message: "该账号已禁用，不能转入 Team 共享订阅。"
+      });
+      return;
+    }
+
+    if (teamsWithCurrentSubscription.length === 0) {
+      notifications.show({
+        color: "yellow",
+        title: "暂无可转入目标",
+        message: "请先保证至少有一个 Team 已分配共享订阅。"
+      });
+      return;
+    }
+
+    setConvertSubscriptionTarget({
+      subscriptionId: record.id,
+      ownerLabel: record.userDisplayName ?? record.userEmail ?? "个人用户",
+      ownerEmail: record.userEmail ?? "-",
+      currentPlanName: record.planName
+    });
+    setConvertTargetTeamId(teamsWithCurrentSubscription[0]?.id ?? null);
+  }
+
+  function closeConvertToTeamModal() {
+    if (convertSubmitting) return;
+    setConvertSubscriptionTarget(null);
+    setConvertTargetTeamId(null);
+  }
+
+  async function handleConvertToTeam() {
+    if (!convertSubscriptionTarget || !convertTargetTeamId) {
+      return;
+    }
+
+    const selectedTeam = teamsWithCurrentSubscription.find((item) => item.id === convertTargetTeamId);
+    if (!selectedTeam?.currentSubscription) {
+      notifications.show({
+        color: "yellow",
+        title: "无法转入 Team",
+        message: "目标团队当前没有可用共享订阅，请刷新后重试。"
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `确认把 ${convertSubscriptionTarget.ownerLabel} 的个人订阅转入 ${selectedTeam?.name ?? "目标团队"} 吗？当前个人订阅会被删除，原订阅剩余流量和历史不会继承到 Team。`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setConvertSubmitting(true);
+      const success = await runAction(
+        () =>
+          convertPersonalSubscriptionToTeam(convertSubscriptionTarget.subscriptionId, {
+            targetTeamId: convertTargetTeamId
+          }),
+        "订阅已转入 Team"
+      );
+      if (success) {
+        closeConvertToTeamModal();
+      }
+    } finally {
+      setConvertSubmitting(false);
+    }
+  }
+
   function openTeamInlineEditor(teamId: string) {
     if (!snapshot) return;
     const team = snapshot.teams.find((item) => item.id === teamId);
@@ -1447,6 +1604,8 @@ export function App() {
                 onOpenChangePlanDrawer={(subscriptionId) => openDrawer("subscription-change-plan", subscriptionId)}
                 onOpenAdjustDrawer={(subscriptionId) => openDrawer("subscription-adjust", subscriptionId)}
                 onOpenNodeAccessEditor={(subscriptionId, ownerLabel) => void openNodeAccessEditor(subscriptionId, ownerLabel)}
+                onOpenConvertToTeamModal={openConvertToTeamModal}
+                hasAvailableTeamTransferTarget={teamsWithCurrentSubscription.length > 0}
                 onOpenTeamSubscriptionInlineEditor={openTeamSubscriptionInlineEditor}
                 onCloseTeamSubscriptionInlineEditor={closeTeamSubscriptionInlineEditor}
                 onSaveTeamSubscriptionInlineEditor={(teamId) => void saveTeamSubscriptionInlineEditor(teamId)}
@@ -1545,6 +1704,65 @@ export function App() {
         onLoadNodePanelInbounds={() => void handleLoadNodePanelInbounds()}
       />
 
+      <Modal opened={convertSubscriptionTarget !== null} onClose={closeConvertToTeamModal} title="转入 Team 订阅" centered size="lg">
+        <Stack gap="md">
+          <Alert color="blue" variant="light">
+            转入后会删除当前个人订阅，用户后续改按目标团队的共享订阅规则使用服务。原个人订阅的剩余流量、到期时间和历史不会继承。
+          </Alert>
+
+          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+            <Card withBorder radius="lg" p="md">
+              <Stack gap={4}>
+                <Text size="sm" c="dimmed">当前个人用户</Text>
+                <Text fw={600}>{convertSubscriptionTarget?.ownerLabel ?? "-"}</Text>
+                <Text size="sm" c="dimmed">{convertSubscriptionTarget?.ownerEmail ?? "-"}</Text>
+              </Stack>
+            </Card>
+            <Card withBorder radius="lg" p="md">
+              <Stack gap={4}>
+                <Text size="sm" c="dimmed">当前个人套餐</Text>
+                <Text fw={600}>{convertSubscriptionTarget?.currentPlanName ?? "-"}</Text>
+              </Stack>
+            </Card>
+          </SimpleGrid>
+
+          <Select
+            label="目标 Team（需已有共享订阅）"
+            placeholder="请选择团队"
+            value={convertTargetTeamId}
+            data={convertTargetTeamOptions}
+            onChange={(value) => setConvertTargetTeamId(value)}
+            searchable
+            nothingFoundMessage="没有可用团队"
+          />
+
+          {selectedConvertTargetTeam?.currentSubscription ? (
+            <Alert color="teal" variant="light">
+              目标团队当前订阅：{selectedConvertTargetTeam.currentSubscription.planName}，到期时间{" "}
+              {formatDateTime(selectedConvertTargetTeam.currentSubscription.expireAt)}。
+            </Alert>
+          ) : (
+            <Alert color="yellow" variant="light">
+              当前没有可用 Team 订阅，请先给团队分配共享订阅。
+            </Alert>
+          )}
+
+          <Group justify="flex-end">
+            <Button variant="default" onClick={closeConvertToTeamModal} disabled={convertSubmitting}>
+              取消
+            </Button>
+            <Button
+              color="blue"
+              onClick={() => void handleConvertToTeam()}
+              loading={convertSubmitting}
+              disabled={!convertTargetTeamId || !selectedConvertTargetTeam?.currentSubscription}
+            >
+              确认转入 Team
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
       <DeleteNodeModal target={deleteNodeTarget} onClose={() => setDeleteNodeTarget(null)} onConfirm={() => void handleDeleteNode()} />
 
       <KickMemberModal
@@ -1588,10 +1806,6 @@ function extractActionMessage(result: unknown, fallback: string) {
     }
   }
   return fallback;
-}
-
-function isAccessTokenError(message: string) {
-  return message.includes("缺少访问令牌") || message.includes("访问令牌无效") || message.includes("登录态已失效");
 }
 
 function splitCsv(value: string) {

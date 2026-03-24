@@ -1,11 +1,13 @@
-import { Alert, Button, Group, Modal, Select, Stack, Switch, TextInput, Textarea } from "@mantine/core";
+import { Alert, Badge, Button, Group, Modal, Select, Stack, Switch, TextInput, Textarea, Text } from "@mantine/core";
 import type { ReleaseEditorFormState } from "./types";
-import { releaseChannelOptions, releasePlatformOptions, releaseStatusOptions } from "./types";
+import { releasePlatformOptions } from "./types";
 
 type ReleaseEditorModalProps = {
   opened: boolean;
+  editing: boolean;
   saving: boolean;
   title: string;
+  submitLabel: string;
   form: ReleaseEditorFormState;
   onClose: () => void;
   onChange: (value: ReleaseEditorFormState) => void;
@@ -22,19 +24,33 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
             data={releasePlatformOptions as unknown as { value: string; label: string }[]}
             value={props.form.platform}
             onChange={(value) => value && props.onChange({ ...props.form, platform: value as ReleaseEditorFormState["platform"] })}
+            disabled={props.editing}
           />
-          <Select
-            label="渠道"
-            data={releaseChannelOptions as unknown as { value: string; label: string }[]}
-            value={props.form.channel}
-            onChange={(value) => value && props.onChange({ ...props.form, channel: value as ReleaseEditorFormState["channel"] })}
-          />
-          <Select
-            label="状态"
-            data={releaseStatusOptions as unknown as { value: string; label: string }[]}
-            value={props.form.status}
-            onChange={(value) => value && props.onChange({ ...props.form, status: value as ReleaseEditorFormState["status"] })}
-          />
+          {props.editing ? (
+            <Stack gap={6}>
+              <Text size="sm" fw={500}>
+                当前状态
+              </Text>
+              <Badge variant="light" size="lg" color={props.form.status === "published" ? "green" : "blue"} style={{ width: "fit-content" }}>
+                {props.form.status === "published" ? "已发布" : "草稿"}
+              </Badge>
+              <Text size="xs" c="dimmed">
+                发布和撤回请直接在列表卡片里操作，避免编辑内容和状态变更混在一起。
+              </Text>
+            </Stack>
+          ) : (
+            <Stack gap={6}>
+              <Text size="sm" fw={500}>
+                发布渠道
+              </Text>
+              <Badge variant="light" size="lg" style={{ width: "fit-content" }}>
+                正式版
+              </Badge>
+              <Text size="xs" c="dimmed">
+                新建记录先保存为草稿，补完安装产物后再发布。
+              </Text>
+            </Stack>
+          )}
         </Group>
 
         <Group grow align="flex-start">
@@ -43,6 +59,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
             placeholder="例如 1.0.3"
             value={props.form.version}
             onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
+            disabled={props.editing}
           />
           <TextInput
             label="最低可用版本"
@@ -69,14 +86,6 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
         </Alert>
 
         <Textarea
-          label="发布说明"
-          minRows={3}
-          placeholder="简要说明这版适合哪些用户、是否建议立即更新。"
-          value={props.form.releaseNotes}
-          onChange={(event) => props.onChange({ ...props.form, releaseNotes: event.currentTarget.value })}
-        />
-
-        <Textarea
           label="更新日志"
           minRows={6}
           placeholder={"每行一条更新说明\n例如：修复 Windows 托盘断开异常"}
@@ -89,7 +98,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
             取消
           </Button>
           <Button onClick={props.onSubmit} loading={props.saving}>
-            保存发布
+            {props.submitLabel}
           </Button>
         </Group>
       </Stack>

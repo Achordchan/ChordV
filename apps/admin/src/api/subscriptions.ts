@@ -1,6 +1,8 @@
 import type {
   AdminSubscriptionRecordDto,
   ChangeSubscriptionPlanInputDto,
+  ConvertSubscriptionToTeamInputDto,
+  ConvertSubscriptionToTeamResultDto,
   CreateSubscriptionInputDto,
   ResetSubscriptionTrafficResultDto,
   RenewSubscriptionInputDto,
@@ -53,5 +55,12 @@ export function resetSubscriptionTraffic(subscriptionId: string, userId?: string
   return request<ResetSubscriptionTrafficResultDto>(`/admin/subscriptions/${subscriptionId}/reset-traffic`, {
     method: "POST",
     body: JSON.stringify(userId ? { userId } : {})
+  });
+}
+
+export function convertPersonalSubscriptionToTeam(subscriptionId: string, input: ConvertSubscriptionToTeamInputDto) {
+  return request<ConvertSubscriptionToTeamResultDto>(`/admin/subscriptions/${subscriptionId}/convert-to-team`, {
+    method: "POST",
+    body: JSON.stringify(input)
   });
 }

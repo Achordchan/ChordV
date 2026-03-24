@@ -8,7 +8,6 @@ import type {
   CreateReleaseInputDto,
   CreateRuntimeComponentInputDto,
   ReleaseArtifactType,
-  ReleaseChannel,
   ReleaseStatus,
   RuntimeComponentArchitecture,
   RuntimeComponentKind,
@@ -30,8 +29,7 @@ export * from "./teams";
 export * from "./users";
 
 export type AdminReleasePlatform = "macos" | "windows" | "android" | "ios";
-export type AdminReleaseChannel = ReleaseChannel;
-export type AdminReleaseStatus = ReleaseStatus;
+export type AdminReleaseStatus = Exclude<ReleaseStatus, "archived">;
 export type AdminReleaseArtifactType = ReleaseArtifactType;
 export type AdminRuntimeComponentArchitecture = RuntimeComponentArchitecture;
 export type AdminRuntimeComponentKind = RuntimeComponentKind;
@@ -42,6 +40,8 @@ export type AdminReleaseArtifactRecordDto = {
   type: AdminReleaseArtifactType;
   deliveryMode: UpdateDeliveryMode;
   downloadUrl: string;
+  originDownloadUrl?: string | null;
+  finalUrlPreview?: string | null;
   defaultMirrorPrefix?: string | null;
   allowClientMirror: boolean;
   fileName?: string | null;
@@ -55,7 +55,7 @@ export type AdminReleaseArtifactRecordDto = {
 
 export type AdminReleaseArtifactValidationDto = {
   artifactId: string;
-  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url";
+  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
   message: string;
   actualFileSizeBytes?: number | null;
   actualFileHash?: string | null;
@@ -64,13 +64,11 @@ export type AdminReleaseArtifactValidationDto = {
 export type AdminReleaseRecordDto = {
   id: string;
   platform: AdminReleasePlatform;
-  channel: AdminReleaseChannel;
   status: AdminReleaseStatus;
   version: string;
   minimumVersion: string;
   forceUpgrade: boolean;
   title: string;
-  releaseNotes?: string | null;
   changelog: string[];
   deliveryMode: UpdateDeliveryMode;
   publishedAt?: string | null;
@@ -82,25 +80,24 @@ export type AdminReleaseRecordDto = {
 export type AdminRuntimeComponentRecordDto = SharedAdminRuntimeComponentRecordDto;
 export type AdminRuntimeComponentValidationDto = SharedAdminRuntimeComponentValidationDto;
 export type AdminRuntimeComponentFailureReportDto = SharedAdminRuntimeComponentFailureReportDto;
+export type CreateAdminReleaseArtifactInputDto = CreateReleaseArtifactInputDto;
+export type UpdateAdminReleaseArtifactInputDto = UpdateReleaseArtifactInputDto;
 
 export type CreateAdminReleaseInputDto = {
   platform: AdminReleasePlatform;
-  channel: AdminReleaseChannel;
   status: AdminReleaseStatus;
   version: string;
   minimumVersion: string;
   forceUpgrade: boolean;
   title: string;
-  releaseNotes?: string | null;
   changelog: string[];
+  initialArtifact?: CreateAdminReleaseArtifactInputDto | null;
 };
 
 export type UpdateAdminReleaseInputDto = Partial<CreateAdminReleaseInputDto> & {
   publishedAt?: string | null;
 };
 
-export type CreateAdminReleaseArtifactInputDto = CreateReleaseArtifactInputDto;
-export type UpdateAdminReleaseArtifactInputDto = UpdateReleaseArtifactInputDto;
 export type UploadAdminReleaseArtifactInputDto = {
   source?: "uploaded" | "external";
   type: AdminReleaseArtifactType;
@@ -124,7 +121,6 @@ export type UploadAdminRuntimeComponentInputDto = {
 
 export type FetchAdminReleasesFilters = {
   platform?: AdminReleasePlatform;
-  channel?: AdminReleaseChannel;
   status?: AdminReleaseStatus;
 };
 
@@ -132,7 +128,6 @@ function buildReleaseQuery(filters?: FetchAdminReleasesFilters) {
   if (!filters) return "";
   const params = new URLSearchParams();
   if (filters.platform) params.set("platform", filters.platform);
-  if (filters.channel) params.set("channel", filters.channel);
   if (filters.status) params.set("status", filters.status);
   const query = params.toString();
   return query ? `?${query}` : "";
@@ -156,6 +151,8 @@ function mapArtifact(record: SharedAdminReleaseArtifactDto): AdminReleaseArtifac
     type: record.type,
     deliveryMode: record.deliveryMode,
     downloadUrl: record.downloadUrl,
+    originDownloadUrl: record.originDownloadUrl ?? record.downloadUrl,
+    finalUrlPreview: record.finalUrlPreview ?? record.downloadUrl,
     defaultMirrorPrefix: record.defaultMirrorPrefix ?? null,
     allowClientMirror: record.allowClientMirror ?? true,
     fileName: record.fileName ?? null,
@@ -173,13 +170,11 @@ function mapRelease(record: SharedAdminReleaseRecordDto): AdminReleaseRecordDto 
   return {
     id: record.id,
     platform: record.platform,
-    channel: record.channel,
-    status: record.status,
+    status: record.status === "published" ? "published" : "draft",
     version: record.version,
     minimumVersion: record.minimumVersion,
     forceUpgrade: record.forceUpgrade,
     title: record.displayTitle,
-    releaseNotes: record.releaseNotes ?? null,
     changelog: record.changelog,
     deliveryMode: inferDeliveryMode(record.artifacts),
     publishedAt: record.publishedAt ?? null,
@@ -197,14 +192,14 @@ export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
 export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
-    channel: input.channel,
+    channel: "stable",
     version: input.version,
     displayTitle: input.title,
-    releaseNotes: input.releaseNotes ?? null,
     changelog: input.changelog,
     minimumVersion: input.minimumVersion,
     forceUpgrade: input.forceUpgrade,
-    status: input.status
+    status: input.status,
+    initialArtifact: input.initialArtifact ?? undefined
   };
   const record = await request<SharedAdminReleaseRecordDto>("/admin/releases", {
     method: "POST",
@@ -216,7 +211,6 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
 export async function updateAdminRelease(releaseId: string, input: UpdateAdminReleaseInputDto) {
   const payload: UpdateReleaseInputDto = {
     ...(input.title !== undefined ? { displayTitle: input.title } : {}),
-    ...(input.releaseNotes !== undefined ? { releaseNotes: input.releaseNotes } : {}),
     ...(input.changelog !== undefined ? { changelog: input.changelog } : {}),
     ...(input.minimumVersion !== undefined ? { minimumVersion: input.minimumVersion } : {}),
     ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
@@ -228,6 +222,26 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
     body: JSON.stringify(payload)
   });
   return mapRelease(record);
+}
+
+export async function publishAdminRelease(releaseId: string) {
+  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/publish`, {
+    method: "POST"
+  });
+  return mapRelease(record);
+}
+
+export async function unpublishAdminRelease(releaseId: string) {
+  const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/unpublish`, {
+    method: "POST"
+  });
+  return mapRelease(record);
+}
+
+export async function deleteAdminRelease(releaseId: string) {
+  return request<{ ok: boolean; releaseId: string }>(`/admin/releases/${releaseId}`, {
+    method: "DELETE"
+  });
 }
 
 export async function createAdminReleaseArtifact(releaseId: string, input: CreateAdminReleaseArtifactInputDto) {
@@ -260,7 +274,7 @@ export async function deleteAdminReleaseArtifact(releaseId: string, artifactId: 
 export async function verifyAdminReleaseArtifact(releaseId: string, artifactId: string) {
   const result = await request<{
     artifactId: string;
-    status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url";
+    status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
     message: string;
     actualFileSizeBytes?: string | null;
     actualFileHash?: string | null;

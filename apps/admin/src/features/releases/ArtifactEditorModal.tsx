@@ -1,12 +1,14 @@
-import { Alert, Button, FileInput, Group, Modal, NumberInput, Select, SegmentedControl, Stack, Switch, Text, TextInput } from "@mantine/core";
+import { Alert, Badge, Button, FileInput, Group, Modal, Select, SegmentedControl, Stack, Switch, Text, TextInput } from "@mantine/core";
 import type { ArtifactEditorFormState } from "./types";
-import { releaseArtifactTypeOptionsForPlatform } from "./types";
+import { isDesktopReleasePlatform, releaseArtifactTypeOptionsForPlatform } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
 
 type ArtifactEditorModalProps = {
   opened: boolean;
   saving: boolean;
+  creatingRelease: boolean;
   title: string;
+  submitLabel: string;
   platform: AdminReleasePlatform;
   form: ArtifactEditorFormState;
   onClose: () => void;
@@ -18,6 +20,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
   const usesExternalLink = props.form.source === "external" || props.form.type === "external";
   const typeOptions = releaseArtifactTypeOptionsForPlatform(props.platform, props.form.type);
   const defaultType = defaultArtifactTypeForPlatform(props.platform);
+  const showFullPackageToggle = !isDesktopReleasePlatform(props.platform);
 
   return (
     <Modal opened={props.opened} onClose={props.onClose} title={props.title} centered size="lg">
@@ -60,8 +63,22 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         {usesExternalLink ? (
           <>
             <Alert color="blue" variant="light">
-              推荐直接填写 GitHub Releases 的安装器直链。下面可以继续设置默认加速前缀，客户端更新时会优先尝试加速地址。
+              {props.creatingRelease
+                ? "保存后会一次性创建发布记录和首个外部安装产物，不会留下空白草稿。文件大小、Hash 这类元信息由后端探测后再回填。"
+                : "这里先只保留外链本身和加速前缀。文件大小、Hash 这类元信息由后端探测后再回填，前端不再摆空字段。"}
             </Alert>
+            {(props.form.fileSizeBytes !== "" || props.form.fileHash.trim() || props.form.fileName.trim()) ? (
+              <Stack gap={6}>
+                <Text size="sm" fw={500}>
+                  已回填的元信息
+                </Text>
+                <Group gap="xs" wrap="wrap">
+                  {props.form.fileName.trim() ? <Badge variant="light">文件名：{props.form.fileName.trim()}</Badge> : null}
+                  {props.form.fileSizeBytes !== "" ? <Badge variant="light">大小：{props.form.fileSizeBytes} 字节</Badge> : null}
+                  {props.form.fileHash.trim() ? <Badge variant="light">Hash：{props.form.fileHash.trim()}</Badge> : null}
+                </Group>
+              </Stack>
+            ) : null}
             <TextInput
               label="下载地址"
               placeholder={
@@ -84,6 +101,12 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               onChange={(event) => props.onChange({ ...props.form, allowClientMirror: event.currentTarget.checked })}
               label="允许客户端自定义加速前缀覆盖默认值"
             />
+            <TextInput
+              label="文件名"
+              placeholder="可选，用于展示安装器名称"
+              value={props.form.fileName}
+              onChange={(event) => props.onChange({ ...props.form, fileName: event.currentTarget.value })}
+            />
           </>
         ) : (
           <>
@@ -95,63 +118,58 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               clearable
             />
             <Alert color="blue" variant="light">
-              上传后会自动生成下载地址、文件大小和 Hash。这里只需要确认主入口和完整包开关。
+              {props.creatingRelease
+                ? "上传模式下会先创建发布记录，再上传首个安装包；如果上传失败，系统会自动清理，不会留下空白草稿。"
+                : "上传后会自动生成下载地址、文件大小和 Hash。这里只需要确认更新入口。"}
             </Alert>
+            {props.form.downloadUrl ? (
+              <Stack gap={4}>
+                <Text size="sm" fw={500}>
+                  系统生成的下载地址
+                </Text>
+                <Text size="sm" c="dimmed">
+                  {props.form.downloadUrl}
+                </Text>
+              </Stack>
+            ) : null}
+            {(props.form.fileSizeBytes !== "" || props.form.fileHash.trim()) ? (
+              <Group grow align="flex-start">
+                {props.form.fileSizeBytes !== "" ? (
+                  <Stack gap={4}>
+                    <Text size="sm" fw={500}>
+                      文件大小
+                    </Text>
+                    <Badge variant="light">{props.form.fileSizeBytes} 字节</Badge>
+                  </Stack>
+                ) : null}
+                {props.form.fileHash.trim() ? (
+                  <Stack gap={4}>
+                    <Text size="sm" fw={500}>
+                      文件 Hash
+                    </Text>
+                    <Text size="sm" c="dimmed">
+                      {props.form.fileHash}
+                    </Text>
+                  </Stack>
+                ) : null}
+              </Group>
+            ) : null}
           </>
         )}
-
-        <Group grow align="flex-start">
-          <NumberInput
-            label="文件大小（字节）"
-            readOnly={!usesExternalLink}
-            min={0}
-            value={props.form.fileSizeBytes}
-            onChange={(value) =>
-              props.onChange({
-                ...props.form,
-                fileSizeBytes: typeof value === "number" ? value : value === "" ? "" : Number(value) || ""
-              })
-            }
-          />
-          <TextInput
-            label="文件 Hash"
-            readOnly={!usesExternalLink}
-            placeholder="SHA256 或其他摘要"
-            value={props.form.fileHash}
-            onChange={(event) => props.onChange({ ...props.form, fileHash: event.currentTarget.value })}
-          />
-        </Group>
-
-        <TextInput
-          label="文件名"
-          readOnly={!usesExternalLink}
-          placeholder={usesExternalLink ? "可选，用于展示下载文件名" : "上传后自动识别"}
-          value={props.form.fileName}
-          onChange={(event) => props.onChange({ ...props.form, fileName: event.currentTarget.value })}
-        />
-
-        {!usesExternalLink && props.form.downloadUrl ? (
-          <Stack gap={4}>
-            <Text size="sm" fw={500}>
-              系统生成的下载地址
-            </Text>
-            <Text size="sm" c="dimmed">
-              {props.form.downloadUrl}
-            </Text>
-          </Stack>
-        ) : null}
 
         <Group grow>
           <Switch
             checked={props.form.isPrimary}
             onChange={(event) => props.onChange({ ...props.form, isPrimary: event.currentTarget.checked })}
-            label="主下载入口"
+            label="客户端更新入口"
           />
-          <Switch
-            checked={props.form.isFullPackage}
-            onChange={(event) => props.onChange({ ...props.form, isFullPackage: event.currentTarget.checked })}
-            label="完整安装包"
-          />
+          {showFullPackageToggle ? (
+            <Switch
+              checked={props.form.isFullPackage}
+              onChange={(event) => props.onChange({ ...props.form, isFullPackage: event.currentTarget.checked })}
+              label="完整安装包"
+            />
+          ) : null}
         </Group>
 
         <Group justify="flex-end">
@@ -159,7 +177,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             取消
           </Button>
           <Button onClick={props.onSubmit} loading={props.saving}>
-            保存产物
+            {props.submitLabel}
           </Button>
         </Group>
       </Stack>

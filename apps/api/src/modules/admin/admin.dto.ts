@@ -250,6 +250,12 @@ export class UpdateSubscriptionDto {
   state?: SubscriptionState;
 }
 
+export class ConvertSubscriptionToTeamDto {
+  @IsString()
+  @IsNotEmpty()
+  targetTeamId!: string;
+}
+
 export class UpdateSubscriptionNodeAccessDto {
   @IsArray()
   @IsString({ each: true })
@@ -555,10 +561,6 @@ export class CreateReleaseDto {
   displayTitle!: string;
 
   @IsOptional()
-  @IsString()
-  releaseNotes?: string | null;
-
-  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   changelog?: string[];
@@ -572,12 +574,17 @@ export class CreateReleaseDto {
   forceUpgrade?: boolean;
 
   @IsOptional()
-  @IsIn(["draft", "published", "archived"])
+  @IsIn(["draft", "published"])
   status?: ReleaseStatus;
 
   @IsOptional()
   @IsString()
   publishedAt?: string | null;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreateReleaseArtifactDto)
+  initialArtifact?: CreateReleaseArtifactDto | null;
 }
 
 export class UpdateReleaseDto {
@@ -585,10 +592,6 @@ export class UpdateReleaseDto {
   @IsString()
   @IsNotEmpty()
   displayTitle?: string;
-
-  @IsOptional()
-  @IsString()
-  releaseNotes?: string | null;
 
   @IsOptional()
   @IsArray()
@@ -605,7 +608,7 @@ export class UpdateReleaseDto {
   forceUpgrade?: boolean;
 
   @IsOptional()
-  @IsIn(["draft", "published", "archived"])
+  @IsIn(["draft", "published"])
   status?: ReleaseStatus;
 
   @IsOptional()

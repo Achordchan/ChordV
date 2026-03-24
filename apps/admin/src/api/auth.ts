@@ -1,5 +1,11 @@
 import type { AuthSessionDto } from "@chordv/shared";
-import { ADMIN_ACCESS_TOKEN_KEY, ADMIN_REFRESH_TOKEN_KEY, request } from "./base";
+import {
+  clearStoredAdminSession,
+  getStoredAdminRefreshToken,
+  hasStoredAdminSession,
+  persistAdminSessionTokens,
+  request
+} from "./base";
 
 export function loginAdmin(account: string, password: string) {
   return request<AuthSessionDto>(
@@ -30,20 +36,17 @@ export function logoutAdminSession() {
 }
 
 export function persistAdminSession(session: AuthSessionDto) {
-  localStorage.setItem(ADMIN_ACCESS_TOKEN_KEY, session.accessToken);
-  localStorage.setItem(ADMIN_REFRESH_TOKEN_KEY, session.refreshToken);
+  persistAdminSessionTokens(session);
 }
 
 export function clearAdminSession() {
-  localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
-  localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
+  clearStoredAdminSession();
 }
 
 export function hasAdminSession() {
-  const adminAccessToken = localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) ?? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "";
-  return Boolean(adminAccessToken);
+  return hasStoredAdminSession();
 }
 
 export function getAdminRefreshToken() {
-  return localStorage.getItem(ADMIN_REFRESH_TOKEN_KEY) ?? "";
+  return getStoredAdminRefreshToken();
 }

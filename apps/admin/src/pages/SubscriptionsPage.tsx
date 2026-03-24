@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Alert, Badge, Button, Card, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Table, Tabs, Text } from "@mantine/core";
 import type { AdminPlanRecordDto, AdminSubscriptionRecordDto, AdminTeamRecordDto, AdminTeamUsageRecordDto } from "@chordv/shared";
-import { IconBolt, IconListDetails, IconMapPin, IconPencil, IconPlus, IconRefresh } from "@tabler/icons-react";
+import { IconBolt, IconListDetails, IconMapPin, IconPencil, IconPlus, IconRefresh, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { ExpireAtController } from "../features/shared/ExpireAtController";
 import { MiniMetric } from "../features/shared/MiniMetric";
@@ -38,6 +38,8 @@ type SubscriptionsPageProps = {
   onOpenChangePlanDrawer: (subscriptionId: string) => void;
   onOpenAdjustDrawer: (subscriptionId: string) => void;
   onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
+  onOpenConvertToTeamModal: (record: AdminSubscriptionRecordDto) => void;
+  hasAvailableTeamTransferTarget: boolean;
   onOpenTeamSubscriptionInlineEditor: (teamId: string) => void;
   onCloseTeamSubscriptionInlineEditor: () => void;
   onSaveTeamSubscriptionInlineEditor: (teamId: string) => void;
@@ -54,6 +56,8 @@ type SubscriptionsPageProps = {
 };
 
 export function SubscriptionsPage(props: SubscriptionsPageProps) {
+  const userStatusById = new Map(props.allUsers.map((item) => [item.id, item.status] as const));
+
   return (
     <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
       <Tabs value={props.subscriptionTab} onChange={(value) => props.onSubscriptionTabChange((value as "personal" | "team") || "personal")}>
@@ -77,7 +81,23 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {props.subscriptions.filter((item) => item.ownerType === "user").map((item) => (
+              {props.subscriptions.filter((item) => item.ownerType === "user").map((item) => {
+                const ownerIdReady = Boolean(item.userId);
+                const ownerStatus = ownerIdReady ? userStatusById.get(item.userId!) : undefined;
+                const ownerReady = ownerIdReady && ownerStatus !== undefined;
+                const ownerActive = ownerReady && ownerStatus === "active";
+                const canConvertToTeam = props.hasAvailableTeamTransferTarget && ownerActive;
+                const convertDisabledReason = !props.hasAvailableTeamTransferTarget
+                  ? "暂无可转入的 Team 订阅"
+                  : !ownerIdReady
+                    ? "当前订阅缺少用户归属信息"
+                    : !ownerReady
+                      ? "当前用户信息未同步，请先刷新重试"
+                      : ownerActive
+                      ? "转入 Team"
+                      : "该账号已禁用，不能转入 Team";
+
+                return (
                 <Table.Tr key={item.id}>
                   <Table.Td>
                     <Stack gap={0}>
@@ -123,6 +143,15 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                       </ActionIcon>
                       <ActionIcon
                         variant="subtle"
+                        color="blue"
+                        title={convertDisabledReason}
+                        onClick={() => canConvertToTeam && props.onOpenConvertToTeamModal(item)}
+                        disabled={!canConvertToTeam}
+                      >
+                        <IconUsers size={16} />
+                      </ActionIcon>
+                      <ActionIcon
+                        variant="subtle"
                         onClick={() => props.onOpenNodeAccessEditor(item.id, `${item.userDisplayName ?? item.userEmail ?? "个人用户"} · ${item.planName}`)}
                       >
                         <IconMapPin size={16} />
@@ -139,7 +168,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                     </RowActions>
                   </Table.Td>
                 </Table.Tr>
-              ))}
+              );
+              })}
             </Table.Tbody>
           </DataTable>
         </Tabs.Panel>

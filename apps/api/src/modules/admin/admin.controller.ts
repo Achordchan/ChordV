@@ -10,6 +10,7 @@ import { DevDataService } from "../common/dev-data.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import {
   ChangeSubscriptionPlanDto,
+  ConvertSubscriptionToTeamDto,
   CreateAnnouncementDto,
   CreatePlanDto,
   CreateReleaseArtifactDto,
@@ -127,6 +128,11 @@ export class AdminController {
   @Patch("subscriptions/:subscriptionId")
   updateSubscription(@Param("subscriptionId") subscriptionId: string, @Body() body: UpdateSubscriptionDto) {
     return this.devDataService.updateSubscription(subscriptionId, body);
+  }
+
+  @Post("subscriptions/:subscriptionId/convert-to-team")
+  convertSubscriptionToTeam(@Param("subscriptionId") subscriptionId: string, @Body() body: ConvertSubscriptionToTeamDto) {
+    return this.devDataService.convertPersonalSubscriptionToTeam(subscriptionId, body);
   }
 
   @Get("subscriptions/:subscriptionId/nodes")
@@ -344,9 +350,14 @@ export class AdminController {
     return this.devDataService.publishRelease(releaseId);
   }
 
-  @Post("releases/:releaseId/archive")
-  archiveRelease(@Param("releaseId") releaseId: string) {
-    return this.devDataService.archiveRelease(releaseId);
+  @Post("releases/:releaseId/unpublish")
+  unpublishRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.unpublishRelease(releaseId);
+  }
+
+  @Delete("releases/:releaseId")
+  deleteRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.deleteRelease(releaseId);
   }
 
   @Post("releases/:releaseId/artifacts")

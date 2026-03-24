@@ -3,7 +3,7 @@ export type SubscriptionState = "active" | "expired" | "exhausted" | "paused";
 export type RuntimeStatus = "idle" | "connecting" | "connected" | "disconnecting" | "error";
 export type PlatformTarget = "macos" | "windows" | "android" | "ios";
 export type ReleaseChannel = "stable";
-export type ReleaseStatus = "draft" | "published" | "archived";
+export type ReleaseStatus = "draft" | "published";
 export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "apk" | "ipa" | "external";
 export type UpdateDeliveryMode = "desktop_installer_download" | "apk_download" | "external_download" | "none";
 export type RuntimeComponentArchitecture = "x64" | "arm64";
@@ -153,6 +153,7 @@ export interface AdminReleaseArtifactDto {
   deliveryMode: UpdateDeliveryMode;
   downloadUrl: string;
   originDownloadUrl?: string | null;
+  finalUrlPreview?: string | null;
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;
   fileName: string | null;
@@ -178,7 +179,6 @@ export interface AdminReleaseRecordDto {
   channel: ReleaseChannel;
   version: string;
   displayTitle: string;
-  releaseNotes: string | null;
   changelog: string[];
   minimumVersion: string;
   forceUpgrade: boolean;
@@ -279,7 +279,6 @@ export interface ClientUpdateCheckResultDto {
   platform: PlatformTarget;
   channel: ReleaseChannel;
   changelog: string[];
-  releaseNotes?: string | null;
   deliveryMode: UpdateDeliveryMode;
   downloadUrl?: string | null;
   fileName?: string | null;
@@ -660,6 +659,19 @@ export interface UpdateSubscriptionInputDto {
   state?: SubscriptionState;
 }
 
+export interface ConvertSubscriptionToTeamInputDto {
+  targetTeamId: string;
+}
+
+export interface ConvertSubscriptionToTeamResultDto {
+  ok: boolean;
+  deletedSubscriptionId: string;
+  teamId: string;
+  teamName: string;
+  teamSubscriptionId: string;
+  message: string;
+}
+
 export interface ImportNodeInputDto {
   subscriptionUrl?: string;
   name?: string;
@@ -828,17 +840,16 @@ export interface CreateReleaseInputDto {
   channel: ReleaseChannel;
   version: string;
   displayTitle: string;
-  releaseNotes?: string | null;
   changelog?: string[];
   minimumVersion: string;
   forceUpgrade?: boolean;
   status?: ReleaseStatus;
   publishedAt?: string | null;
+  initialArtifact?: CreateReleaseArtifactInputDto | null;
 }
 
 export interface UpdateReleaseInputDto {
   displayTitle?: string;
-  releaseNotes?: string | null;
   changelog?: string[];
   minimumVersion?: string;
   forceUpgrade?: boolean;
