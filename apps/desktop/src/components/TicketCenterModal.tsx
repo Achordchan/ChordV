@@ -100,9 +100,16 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         onClick={() => props.onSelectTicket(ticket.id)}
                       >
                         <div className="ticket-center__ticket-head">
-                          <Text fw={600} lineClamp={1}>
-                            {ticket.title}
-                          </Text>
+                          <Group gap={8} wrap="nowrap" align="center">
+                            {isTicketUnread(ticket) ? (
+                              <Badge size="xs" color="red" variant="filled">
+                                新消息
+                              </Badge>
+                            ) : null}
+                            <Text fw={600} lineClamp={1}>
+                              {ticket.title}
+                            </Text>
+                          </Group>
                           <Badge size="sm" color={statusColor(ticket.status)} variant="light">
                             {statusLabel(ticket.status)}
                           </Badge>
@@ -304,4 +311,23 @@ function formatDateTime(value: string) {
   const hour = `${date.getHours()}`.padStart(2, "0");
   const minute = `${date.getMinutes()}`.padStart(2, "0");
   return `${year}/${month}/${day} ${hour}:${minute}`;
+}
+
+function isTicketUnread(ticket: ClientSupportTicketSummaryDto) {
+  const current = ticket as ClientSupportTicketSummaryDto & {
+    unread?: boolean;
+    hasUnread?: boolean;
+    unreadMessageCount?: number | null;
+    unreadAt?: string | null;
+  };
+  if (typeof current.unread === "boolean") {
+    return current.unread;
+  }
+  if (typeof current.hasUnread === "boolean") {
+    return current.hasUnread;
+  }
+  if (typeof current.unreadMessageCount === "number") {
+    return current.unreadMessageCount > 0;
+  }
+  return Boolean(current.unreadAt);
 }

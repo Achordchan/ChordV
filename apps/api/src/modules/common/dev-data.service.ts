@@ -77,6 +77,7 @@ import type {
   CreateUserInputDto,
   GeneratedRuntimeConfigDto,
   ImportNodeInputDto,
+  MarkClientAnnouncementsReadInputDto,
   NodeProbeStatus,
   NodeSummaryDto,
   PlatformTarget,
@@ -222,10 +223,11 @@ export class DevDataService implements OnModuleInit {
     }
     const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
 
-    const [policies, announcements, version] = await Promise.all([
+    const [policies, announcements, version, supportTickets] = await Promise.all([
       this.getPolicies(),
-      this.getAnnouncements(),
-      this.getClientVersion()
+      this.getAnnouncements(token),
+      this.getClientVersion(),
+      this.getClientSupportTicketInbox(user.id)
     ]);
 
     return {
@@ -233,6 +235,7 @@ export class DevDataService implements OnModuleInit {
       subscription: toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb, metering),
       policies,
       announcements,
+      supportTickets,
       version,
       team: access.team
         ? {
@@ -344,15 +347,93 @@ export class DevDataService implements OnModuleInit {
     };
   }
 
-  async getAnnouncements(): Promise<AnnouncementDto[]> {
+  async getAnnouncements(token?: string): Promise<AnnouncementDto[]> {
+    const user = token ? await this.resolveActiveUserFromToken(token) : null;
+    if (!user) {
+      const rows = await this.prisma.announcement.findMany({
+        where: {
+          isActive: true,
+          publishedAt: { lte: new Date() }
+        },
+        orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
+      });
+      return rows.map((row) => toAnnouncementDto(row, null));
+    }
     const rows = await this.prisma.announcement.findMany({
       where: {
         isActive: true,
         publishedAt: { lte: new Date() }
       },
+      include: {
+        readStates: {
+          where: { userId: user.id },
+          take: 1,
+          select: {
+            passiveSeenAt: true,
+            acknowledgedAt: true
+          }
+        }
+      },
       orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
     });
-    return rows.map(toAnnouncementDto);
+    return rows.map((row) => toAnnouncementDto(row, row.readStates[0] ?? null));
+  }
+
+  async markClientAnnouncementsRead(
+    input: MarkClientAnnouncementsReadInputDto,
+    token?: string
+  ): Promise<{ ok: boolean; updatedIds: string[] }> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const announcementIds = Array.from(
+      new Set((input.announcementIds ?? []).filter((item) => typeof item === "string" && item.trim().length > 0))
+    );
+    if (announcementIds.length === 0) {
+      return { ok: true, updatedIds: [] };
+    }
+
+    const rows = await this.prisma.announcement.findMany({
+      where: {
+        id: { in: announcementIds },
+        isActive: true,
+        publishedAt: { lte: new Date() }
+      },
+      select: {
+        id: true,
+        displayMode: true
+      }
+    });
+    const targetRows =
+      input.action === "seen" ? rows.filter((item) => item.displayMode === "passive") : rows;
+    if (targetRows.length === 0) {
+      return { ok: true, updatedIds: [] };
+    }
+
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of targetRows) {
+        await tx.announcementReadState.upsert({
+          where: {
+            announcementId_userId: {
+              announcementId: item.id,
+              userId: user.id
+            }
+          },
+          create: {
+            id: createId("announcement_state"),
+            announcementId: item.id,
+            userId: user.id,
+            passiveSeenAt: input.action === "seen" ? now : null,
+            acknowledgedAt: input.action === "ack" ? now : null
+          },
+          update: input.action === "seen" ? { passiveSeenAt: now } : { acknowledgedAt: now }
+        });
+      }
+    });
+
+    return {
+      ok: true,
+      updatedIds: targetRows.map((item) => item.id)
+    };
   }
 
   async getClientVersion(): Promise<ClientVersionDto> {
@@ -406,17 +487,75 @@ export class DevDataService implements OnModuleInit {
           select: { body: true, createdAt: true },
           orderBy: { createdAt: "desc" },
           take: 1
+        },
+        readStates: {
+          where: { userId: user.id },
+          select: { lastReadAt: true, lastReadMessageAt: true },
+          take: 1
         }
       },
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
     });
-    return rows.map(toClientSupportTicketSummary);
+    const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
+    return rows.map((row) => toClientSupportTicketSummary(row, latestAdminMessageMap.get(row.id) ?? null));
   }
 
   async getClientSupportTicketDetail(ticketId: string, token?: string): Promise<ClientSupportTicketDetailDto> {
     const user = await this.resolveActiveUserFromToken(token);
     const row = await this.requireClientSupportTicketDetail(ticketId, user.id);
     return toClientSupportTicketDetail(row);
+  }
+
+  async markClientSupportTicketRead(
+    ticketId: string,
+    token?: string
+  ): Promise<{ ok: boolean; ticketId: string; lastReadAt: string }> {
+    const user = await this.resolveActiveUserFromToken(token);
+    const row = await this.prisma.supportTicket.findFirst({
+      where: {
+        id: ticketId,
+        userId: user.id
+      },
+      select: {
+        id: true,
+        messages: {
+          where: { authorRole: "admin" },
+          select: { createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      }
+    });
+    if (!row) {
+      throw new NotFoundException("工单不存在");
+    }
+
+    const now = new Date();
+    await this.prisma.supportTicketReadState.upsert({
+      where: {
+        ticketId_userId: {
+          ticketId: row.id,
+          userId: user.id
+        }
+      },
+      create: {
+        id: createId("ticket_read"),
+        ticketId: row.id,
+        userId: user.id,
+        lastReadMessageAt: row.messages[0]?.createdAt ?? null,
+        lastReadAt: now
+      },
+      update: {
+        lastReadMessageAt: row.messages[0]?.createdAt ?? null,
+        lastReadAt: now
+      }
+    });
+
+    return {
+      ok: true,
+      ticketId: row.id,
+      lastReadAt: now.toISOString()
+    };
   }
 
   async createClientSupportTicket(
@@ -446,6 +585,14 @@ export class DevDataService implements OnModuleInit {
         status: "waiting_admin",
         source: "desktop",
         lastMessageAt: now,
+        readStates: {
+          create: {
+            id: createId("ticket_read"),
+            userId: user.id,
+            lastReadMessageAt: now,
+            lastReadAt: now
+          }
+        },
         messages: {
           create: {
             id: createId("ticket_msg"),
@@ -483,8 +630,8 @@ export class DevDataService implements OnModuleInit {
     }
 
     const now = new Date();
-    await this.prisma.$transaction([
-      this.prisma.supportTicketMessage.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.supportTicketMessage.create({
         data: {
           id: createId("ticket_msg"),
           ticketId,
@@ -492,16 +639,35 @@ export class DevDataService implements OnModuleInit {
           authorUserId: user.id,
           body
         }
-      }),
-      this.prisma.supportTicket.update({
+      });
+      await tx.supportTicket.update({
         where: { id: ticketId },
         data: {
           status: "waiting_admin",
           lastMessageAt: now,
           closedAt: null
         }
-      })
-    ]);
+      });
+      await tx.supportTicketReadState.upsert({
+        where: {
+          ticketId_userId: {
+            ticketId,
+            userId: user.id
+          }
+        },
+        create: {
+          id: createId("ticket_read"),
+          ticketId,
+          userId: user.id,
+          lastReadMessageAt: now,
+          lastReadAt: now
+        },
+        update: {
+          lastReadMessageAt: now,
+          lastReadAt: now
+        }
+      });
+    });
 
     return this.getClientSupportTicketDetail(ticketId, token);
   }
@@ -2563,6 +2729,53 @@ export class DevDataService implements OnModuleInit {
     return row;
   }
 
+  private async getClientSupportTicketInbox(userId: string) {
+    const rows = await this.prisma.supportTicket.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        readStates: {
+          where: { userId },
+          select: { lastReadAt: true, lastReadMessageAt: true },
+          take: 1
+        }
+      }
+    });
+    const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
+    const unreadCount = rows.filter((row) =>
+      hasUnreadTicketMessages(latestAdminMessageMap.get(row.id) ?? null, row.readStates[0] ?? null)
+    ).length;
+    return {
+      totalCount: rows.length,
+      unreadCount
+    };
+  }
+
+  private async loadLatestAdminTicketMessageMap(ticketIds: string[]) {
+    const uniqueTicketIds = Array.from(new Set(ticketIds.filter((item) => item.trim().length > 0)));
+    const result = new Map<string, Date>();
+    if (uniqueTicketIds.length === 0) {
+      return result;
+    }
+    const rows = await this.prisma.supportTicketMessage.findMany({
+      where: {
+        ticketId: { in: uniqueTicketIds },
+        authorRole: "admin"
+      },
+      select: {
+        ticketId: true,
+        createdAt: true
+      },
+      orderBy: [{ createdAt: "desc" }]
+    });
+    for (const row of rows) {
+      if (!result.has(row.ticketId)) {
+        result.set(row.ticketId, row.createdAt);
+      }
+    }
+    return result;
+  }
+
   private async requireClientSupportTicketDetail(ticketId: string, userId: string) {
     const row = await this.prisma.supportTicket.findFirst({
       where: {
@@ -2580,6 +2793,11 @@ export class DevDataService implements OnModuleInit {
             }
           },
           orderBy: { createdAt: "asc" }
+        },
+        readStates: {
+          where: { userId },
+          select: { lastReadAt: true, lastReadMessageAt: true },
+          take: 1
         }
       }
     });
@@ -5180,7 +5398,12 @@ function toAnnouncementDto(row: {
   publishedAt: Date;
   displayMode: "passive" | "modal_confirm" | "modal_countdown";
   countdownSeconds: number;
-}): AnnouncementDto {
+}, readState?: {
+  passiveSeenAt: Date | null;
+  acknowledgedAt: Date | null;
+} | null): AnnouncementDto {
+  const passiveSeenAt = readState?.passiveSeenAt ?? null;
+  const acknowledgedAt = readState?.acknowledgedAt ?? null;
   return {
     id: row.id,
     title: row.title,
@@ -5188,7 +5411,10 @@ function toAnnouncementDto(row: {
     level: row.level,
     publishedAt: row.publishedAt.toISOString(),
     displayMode: row.displayMode,
-    countdownSeconds: row.countdownSeconds
+    countdownSeconds: row.countdownSeconds,
+    passiveSeenAt: passiveSeenAt?.toISOString() ?? null,
+    acknowledgedAt: acknowledgedAt?.toISOString() ?? null,
+    isUnread: row.displayMode === "passive" ? passiveSeenAt === null : acknowledgedAt === null
   };
 }
 
@@ -5320,8 +5546,10 @@ function toClientSupportTicketSummary(row: {
   createdAt: Date;
   updatedAt: Date;
   messages?: Array<{ body: string; createdAt: Date }>;
-}): ClientSupportTicketSummaryDto {
+  readStates?: Array<{ lastReadAt: Date | null; lastReadMessageAt: Date | null }>;
+}, latestAdminMessageAt?: Date | null): ClientSupportTicketSummaryDto {
   const latestMessage = row.messages?.[0] ?? null;
+  const readState = row.readStates?.[0] ?? null;
   return {
     id: row.id,
     title: row.title,
@@ -5334,7 +5562,10 @@ function toClientSupportTicketSummary(row: {
     closedAt: row.closedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    lastMessagePreview: latestMessage ? summarizeSupportTicketMessage(latestMessage.body) : null
+    lastMessagePreview: latestMessage ? summarizeSupportTicketMessage(latestMessage.body) : null,
+    hasUnreadMessages: hasUnreadTicketMessages(latestAdminMessageAt ?? null, readState),
+    unreadCount: hasUnreadTicketMessages(latestAdminMessageAt ?? null, readState) ? 1 : 0,
+    lastReadAt: readState?.lastReadAt?.toISOString() ?? null
   };
 }
 
@@ -5358,8 +5589,13 @@ function toClientSupportTicketDetail(row: {
     createdAt: Date;
     authorUser?: { displayName: string } | null;
   }>;
+  readStates?: Array<{ lastReadAt: Date | null; lastReadMessageAt: Date | null }>;
 }): ClientSupportTicketDetailDto {
-  const base = toClientSupportTicketSummary(row);
+  const latestAdminMessageAt =
+    row.messages
+      .filter((message) => message.authorRole === "admin")
+      .slice(-1)[0]?.createdAt ?? null;
+  const base = toClientSupportTicketSummary(row, latestAdminMessageAt);
   return {
     ...base,
     messages: row.messages.map((message) => ({
@@ -5456,6 +5692,19 @@ function summarizeSupportTicketMessage(body: string) {
     return normalized;
   }
   return `${normalized.slice(0, 60)}…`;
+}
+
+function hasUnreadTicketMessages(
+  latestAdminMessageAt: Date | null,
+  readState?: { lastReadMessageAt: Date | null } | null
+) {
+  if (!latestAdminMessageAt) {
+    return false;
+  }
+  if (!readState?.lastReadMessageAt) {
+    return true;
+  }
+  return latestAdminMessageAt.getTime() > readState.lastReadMessageAt.getTime();
 }
 
 function readSupportTicketAuthorDisplayName(

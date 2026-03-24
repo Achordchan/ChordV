@@ -196,6 +196,22 @@ export function fetchBootstrap(accessToken: string) {
   });
 }
 
+export function markAnnouncementsRead(
+  accessToken: string,
+  input: {
+    announcementIds: string[];
+    action: "seen" | "ack";
+  }
+) {
+  return request<{ ok: boolean }>("/client/announcements/read", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify(input)
+  });
+}
+
 export async function checkClientUpdate(input: {
   currentVersion: string;
   platform?: PlatformTarget | "ios";
@@ -273,6 +289,15 @@ export function fetchSupportTickets(accessToken: string) {
 
 export function fetchSupportTicketDetail(accessToken: string, ticketId: string) {
   return request<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+}
+
+export function markSupportTicketRead(accessToken: string, ticketId: string) {
+  return request<{ ok: boolean }>(`/client/tickets/${encodeURIComponent(ticketId)}/read`, {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`
     }

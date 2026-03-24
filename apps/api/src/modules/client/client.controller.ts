@@ -129,6 +129,16 @@ class ReplySupportTicketDto {
   body!: string;
 }
 
+class MarkAnnouncementsReadDto {
+  @IsArray()
+  @IsString({ each: true })
+  announcementIds!: string[];
+
+  @IsString()
+  @IsIn(["seen", "ack"])
+  action!: "seen" | "ack";
+}
+
 @Controller("client")
 export class ClientController {
   constructor(
@@ -168,7 +178,13 @@ export class ClientController {
   @Get("announcements")
   @UseGuards(ClientAuthGuard)
   getAnnouncements(@Headers("authorization") authorization?: string) {
-    return this.clientService.getBootstrap(authorization).then((result) => result.announcements);
+    return this.clientService.getAnnouncements(authorization);
+  }
+
+  @Post("announcements/read")
+  @UseGuards(ClientAuthGuard)
+  markAnnouncementsRead(@Body() body: MarkAnnouncementsReadDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.markAnnouncementsRead(body, authorization);
   }
 
   @Get("version")
@@ -217,6 +233,12 @@ export class ClientController {
   @UseGuards(ClientAuthGuard)
   getTicket(@Param("ticketId") ticketId: string, @Headers("authorization") authorization?: string) {
     return this.clientService.getSupportTicket(ticketId, authorization);
+  }
+
+  @Post("tickets/:ticketId/read")
+  @UseGuards(ClientAuthGuard)
+  markTicketRead(@Param("ticketId") ticketId: string, @Headers("authorization") authorization?: string) {
+    return this.clientService.markSupportTicketRead(ticketId, authorization);
   }
 
   @Post("tickets")

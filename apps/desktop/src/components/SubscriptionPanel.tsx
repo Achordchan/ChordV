@@ -1,4 +1,4 @@
-import { Badge, Button, Group, Indicator, Paper, Text, Title } from "@mantine/core";
+import { Badge, Button, Group, Indicator, Paper, Text, Title, Tooltip, UnstyledButton } from "@mantine/core";
 import type { ClientBootstrapDto } from "@chordv/shared";
 import { IconBell, IconLifebuoy, IconLogout, IconRefresh, IconSparkles } from "@tabler/icons-react";
 
@@ -11,6 +11,7 @@ export type SubscriptionServerProbe = {
 type SubscriptionPanelProps = {
   bootstrap: ClientBootstrapDto;
   hasUnreadAnnouncements: boolean;
+  hasUnreadTickets: boolean;
   refreshing: boolean;
   updateBusy: boolean;
   hasUpdate: boolean;
@@ -61,27 +62,33 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             <Text c={isTeam ? "white" : "dimmed"} className="subscription-subtitle">
               {subtitle}
             </Text>
-            <div
-              className={
-                isTeam
-                  ? `subscription-server-pill subscription-server-pill--team subscription-server-pill--${props.serverProbe.status}`
-                  : `subscription-server-pill subscription-server-pill--${props.serverProbe.status}`
-              }
-            >
-              <span className="subscription-server-pill__dot" aria-hidden="true" />
-              <div className="subscription-server-pill__copy">
-                <Text size="sm" fw={600}>
-                  {props.serverProbe.label}
-                </Text>
-                <Text size="xs" c={isTeam ? "rgba(255,255,255,0.74)" : "dimmed"}>
-                  {props.serverProbe.detail}
-                </Text>
-              </div>
-            </div>
           </div>
 
           <Group gap="xs" align="center" className="subscription-actions subscription-actions--toolbar">
             {isTeam ? <IconSparkles size={18} className="team-icon" /> : null}
+            <Tooltip
+              withArrow
+              multiline
+              w={260}
+              position="bottom-end"
+              classNames={{ tooltip: "subscription-server-tooltip-surface" }}
+              label={
+                <div className="subscription-server-tooltip">
+                  <Text size="sm" fw={700}>
+                    {props.serverProbe.label}
+                  </Text>
+                  <Text size="xs">{props.serverProbe.detail}</Text>
+                </div>
+              }
+            >
+              <UnstyledButton
+                type="button"
+                className={`subscription-server-indicator subscription-server-indicator--${props.serverProbe.status}`}
+                aria-label={props.serverProbe.label}
+              >
+                <span className="subscription-server-indicator__dot" aria-hidden="true" />
+              </UnstyledButton>
+            </Tooltip>
             <Indicator
               inline
               disabled={!props.hasUnreadAnnouncements}
@@ -102,16 +109,26 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 公告
               </Button>
             </Indicator>
-            <Button
-              variant={isTeam ? "white" : "default"}
-              color={isTeam ? "dark" : "gray"}
-              size="sm"
-              leftSection={<IconLifebuoy size={15} />}
-              className="subscription-secondary-button subscription-toolbar-button"
-              onClick={props.onOpenTickets}
+            <Indicator
+              inline
+              disabled={!props.hasUnreadTickets}
+              color="red"
+              size={9}
+              offset={6}
+              position="top-end"
+              className="subscription-announcement-indicator"
             >
-              工单
-            </Button>
+              <Button
+                variant={isTeam ? "white" : "default"}
+                color={isTeam ? "dark" : "gray"}
+                size="sm"
+                leftSection={<IconLifebuoy size={15} />}
+                className="subscription-secondary-button subscription-toolbar-button"
+                onClick={props.onOpenTickets}
+              >
+                工单
+              </Button>
+            </Indicator>
             <Button
               variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}

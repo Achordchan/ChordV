@@ -3602,6 +3602,9 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(android_mobile_plugin::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main_window_internal(app);
+        }))
         .manage(Mutex::new(RuntimeState::default()))
         .manage(Mutex::new(ShellState {
             status: "idle".into(),

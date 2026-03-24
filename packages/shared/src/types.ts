@@ -138,6 +138,9 @@ export interface AnnouncementDto {
   publishedAt: string;
   displayMode: AnnouncementDisplayMode;
   countdownSeconds: number;
+  passiveSeenAt: string | null;
+  acknowledgedAt: string | null;
+  isUnread: boolean;
 }
 
 export interface ClientVersionDto {
@@ -296,6 +299,10 @@ export interface ClientBootstrapDto {
   subscription: SubscriptionStatusDto;
   policies: PolicyBundleDto;
   announcements: AnnouncementDto[];
+  supportTickets: {
+    totalCount: number;
+    unreadCount: number;
+  };
   version: ClientVersionDto;
   team?: ClientTeamSummaryDto | null;
 }
@@ -587,6 +594,9 @@ export interface ClientSupportTicketSummaryDto {
   createdAt: string;
   updatedAt: string;
   lastMessagePreview: string | null;
+  hasUnreadMessages: boolean;
+  unreadCount: number;
+  lastReadAt: string | null;
 }
 
 export interface ClientSupportTicketDetailDto extends ClientSupportTicketSummaryDto {
@@ -688,6 +698,11 @@ export interface CreateClientSupportTicketInputDto {
 
 export interface ReplyClientSupportTicketInputDto {
   body: string;
+}
+
+export interface MarkClientAnnouncementsReadInputDto {
+  announcementIds: string[];
+  action: "seen" | "ack";
 }
 
 export interface SessionLeaseStatusDto {

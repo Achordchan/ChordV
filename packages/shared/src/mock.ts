@@ -111,7 +111,10 @@ export const mockAnnouncements: AnnouncementDto[] = [
     level: "success",
     publishedAt: new Date().toISOString(),
     displayMode: "passive",
-    countdownSeconds: 0
+    countdownSeconds: 0,
+    passiveSeenAt: null,
+    acknowledgedAt: null,
+    isUnread: true
   },
   {
     id: "ann_002",
@@ -120,7 +123,10 @@ export const mockAnnouncements: AnnouncementDto[] = [
     level: "warning",
     publishedAt: new Date().toISOString(),
     displayMode: "modal_confirm",
-    countdownSeconds: 0
+    countdownSeconds: 0,
+    passiveSeenAt: null,
+    acknowledgedAt: null,
+    isUnread: true
   }
 ];
 
@@ -137,6 +143,10 @@ export const mockBootstrap: ClientBootstrapDto = {
   subscription: mockSubscription,
   policies: mockPolicies,
   announcements: mockAnnouncements,
+  supportTickets: {
+    totalCount: 1,
+    unreadCount: 1
+  },
   version: mockVersion,
   team: null
 };

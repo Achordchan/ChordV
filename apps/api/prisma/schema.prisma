@@ -191,6 +191,8 @@ model User {
   panelClientBindings  PanelClientBinding[]
   supportTickets       SupportTicket[]
   supportTicketMessages SupportTicketMessage[] @relation("SupportTicketMessageAuthor")
+  announcementReadStates AnnouncementReadState[]
+  supportTicketReadStates SupportTicketReadState[]
 }
 
 model Plan {
@@ -505,6 +507,7 @@ model SupportTicket {
   subscription     Subscription?       @relation(fields: [subscriptionId], references: [id])
   team             Team?               @relation(fields: [teamId], references: [id])
   messages         SupportTicketMessage[]
+  readStates       SupportTicketReadState[]
 
   @@index([userId, updatedAt])
   @@index([status, updatedAt])
@@ -524,6 +527,22 @@ model SupportTicketMessage {
 
   @@index([ticketId, createdAt])
   @@index([authorUserId, createdAt])
+}
+
+model SupportTicketReadState {
+  id                String        @id
+  ticketId          String
+  userId            String
+  lastReadMessageAt DateTime?
+  lastReadAt        DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  ticket            SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ticketId, userId])
+  @@index([userId, updatedAt])
+  @@index([ticketId, updatedAt])
 }
 
 model StrategyGroup {
@@ -546,6 +565,23 @@ model Announcement {
   countdownSeconds Int                    @default(0)
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
+  readStates      AnnouncementReadState[]
+}
+
+model AnnouncementReadState {
+  id             String       @id
+  announcementId String
+  userId         String
+  passiveSeenAt  DateTime?
+  acknowledgedAt DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, userId])
+  @@index([userId, updatedAt])
+  @@index([announcementId, updatedAt])
 }
 
 model Release {

@@ -27,6 +27,8 @@ import {
   fetchRuntimeComponentsPlan,
   fetchSupportTicketDetail,
   fetchSupportTickets,
+  markAnnouncementsRead,
+  markSupportTicketRead,
   probeClientServerLatency,
   reportRuntimeComponentFailure,
   fetchSubscription,
@@ -172,7 +174,7 @@ export function App() {
   const [forcedAnnouncement, setForcedAnnouncement] = useState<AnnouncementDto | null>(null);
   const [countdown, setCountdown] = useState(0);
   const [now, setNow] = useState(Date.now());
-  const [announcementSeenRevision, setAnnouncementSeenRevision] = useState(0);
+  const [announcementReadRevision, setAnnouncementReadRevision] = useState(0);
   const [connectionGuidance, setConnectionGuidance] = useState<ConnectionGuidance | null>(null);
   const [guidanceDialog, setGuidanceDialog] = useState<ConnectionGuidance | null>(null);
   const [closeHintOpened, setCloseHintOpened] = useState(false);
@@ -292,9 +294,10 @@ export function App() {
   const hasUnreadAnnouncements = useMemo(
     () =>
       !forcedAnnouncement &&
-      passiveAnnouncements.some((item) => localStorage.getItem(passiveAnnouncementStorageKey(item.id)) !== "seen"),
-    [announcementSeenRevision, forcedAnnouncement, passiveAnnouncements]
+      passiveAnnouncements.some((item) => isPassiveAnnouncementUnread(item)),
+    [announcementReadRevision, forcedAnnouncement, passiveAnnouncements]
   );
+  const hasUnreadTickets = useMemo(() => ticketList.some((ticket) => isTicketUnread(ticket)), [ticketList]);
   const subscriptionServerProbe = useMemo<SubscriptionServerProbe>(
     () => toSubscriptionServerProbe(serverProbe),
     [serverProbe]
@@ -402,6 +405,19 @@ export function App() {
     }
     void loadTicketList();
   }, [ticketCenterOpened, session?.accessToken]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    void loadTicketList();
+    const timer = window.setInterval(() => {
+      void loadTicketList();
+    }, 30_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [session?.accessToken]);
 
   useEffect(() => {
     if (!ticketCenterOpened || !session || !selectedTicketId || ticketCreateMode) {
@@ -587,7 +603,7 @@ export function App() {
       if (item.displayMode === "passive") {
         return false;
       }
-      return localStorage.getItem(announcementStorageKey(item.id)) !== "ack";
+      return isForcedAnnouncementPending(item);
     });
 
     setForcedAnnouncement(pending ?? null);
@@ -1069,6 +1085,9 @@ export function App() {
       setTicketCenterError(null);
       const detail = await fetchSupportTicketDetail(accessToken, ticketId);
       setTicketDetail(detail);
+      if (isTicketUnread(detail)) {
+        void markTicketAsRead(ticketId, accessToken);
+      }
     } catch (reason) {
       setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单详情加载失败");
     } finally {
@@ -1076,9 +1095,59 @@ export function App() {
     }
   }
 
+  async function markTicketAsRead(ticketId: string, accessToken: string) {
+    try {
+      await markSupportTicketRead(accessToken, ticketId);
+      setTicketList((current) => current.map((ticket) => markTicketRecordAsRead(ticket, ticketId)));
+      setTicketDetail((current) => (current ? markTicketRecordAsRead(current, ticketId) : current));
+    } catch {
+      return;
+    }
+  }
+
   function openTicketCenter() {
     setTicketCenterOpened(true);
     setTicketCreateMode(false);
+  }
+
+  async function markPassiveAnnouncementsSeen() {
+    const accessToken = sessionRef.current?.accessToken;
+    if (!accessToken) {
+      return;
+    }
+    const unreadIds = passiveAnnouncements.filter((item) => isPassiveAnnouncementUnread(item)).map((item) => item.id);
+    if (unreadIds.length === 0) {
+      return;
+    }
+
+    try {
+      await markAnnouncementsRead(accessToken, {
+        announcementIds: unreadIds,
+        action: "seen"
+      });
+      patchAnnouncementReadState(unreadIds, "seen");
+    } catch {
+      return;
+    }
+  }
+
+  function patchAnnouncementReadState(announcementIds: string[], action: "seen" | "ack") {
+    const touchedAt = new Date().toISOString();
+    setBootstrap((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        announcements: current.announcements.map((item) => {
+          if (!announcementIds.includes(item.id)) {
+            return item;
+          }
+          return patchAnnouncementRecord(item, action, touchedAt);
+        })
+      };
+    });
+    setAnnouncementReadRevision((current) => current + 1);
   }
 
   function openTicketComposer() {
@@ -1969,21 +2038,35 @@ export function App() {
   }
 
   function openAnnouncementDrawer() {
-    for (const item of passiveAnnouncements) {
-      localStorage.setItem(passiveAnnouncementStorageKey(item.id), "seen");
-    }
-    setAnnouncementSeenRevision((current) => current + 1);
     setAnnouncementDrawerOpened(true);
+    void markPassiveAnnouncementsSeen();
   }
 
-  function acknowledgeAnnouncement() {
+  async function acknowledgeAnnouncement() {
     if (!forcedAnnouncement) {
       return;
     }
 
-    localStorage.setItem(announcementStorageKey(forcedAnnouncement.id), "ack");
-    setForcedAnnouncement(null);
-    setCountdown(0);
+    const accessToken = sessionRef.current?.accessToken;
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await markAnnouncementsRead(accessToken, {
+        announcementIds: [forcedAnnouncement.id],
+        action: "ack"
+      });
+      patchAnnouncementReadState([forcedAnnouncement.id], "ack");
+      setForcedAnnouncement(null);
+      setCountdown(0);
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "公告状态同步失败",
+        message: reason instanceof Error ? readError(reason.message) : "当前无法保存公告已读状态"
+      });
+    }
   }
 
   async function acknowledgeCloseHint() {
@@ -2236,6 +2319,7 @@ export function App() {
             <SubscriptionPanel
               bootstrap={bootstrap}
               hasUnreadAnnouncements={hasUnreadAnnouncements}
+              hasUnreadTickets={hasUnreadTickets}
               refreshing={refreshing}
               updateBusy={updateCheckBusy}
               hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
@@ -2621,14 +2705,6 @@ function resolveDefaultMode(bootstrap: ClientBootstrapDto) {
     : (bootstrap.policies.modes[0] ?? "rule");
 }
 
-function announcementStorageKey(id: string) {
-  return `chordv_announcement_ack_${id}`;
-}
-
-function passiveAnnouncementStorageKey(id: string) {
-  return `chordv_announcement_seen_${id}`;
-}
-
 function loadRememberedCredentials() {
   const raw = localStorage.getItem(REMEMBER_CREDENTIALS_KEY);
   if (!raw) {
@@ -2888,26 +2964,26 @@ function toSubscriptionServerProbe(serverProbe: ServerProbeState): SubscriptionS
     case "healthy":
       return {
         status: "healthy",
-        label: "服务端正常",
-        detail: serverProbe.elapsedMs !== null ? `应用层延迟 ${serverProbe.elapsedMs} ms` : "应用层心跳正常"
+        label: "连接服务器正常",
+        detail: serverProbe.elapsedMs !== null ? `连接服务器延迟 ${serverProbe.elapsedMs} ms` : "服务器连接正常"
       };
     case "slow":
       return {
         status: "slow",
-        label: "服务端延迟偏高",
-        detail: serverProbe.elapsedMs !== null ? `应用层延迟 ${serverProbe.elapsedMs} ms` : "服务端有响应，但速度较慢"
+        label: "连接服务器较慢",
+        detail: serverProbe.elapsedMs !== null ? `连接服务器延迟 ${serverProbe.elapsedMs} ms` : "服务器有响应，但速度偏慢"
       };
     case "failed":
       return {
         status: "failed",
-        label: "服务端不可达",
-        detail: serverProbe.errorMessage ?? "当前应用层心跳失败，请检查网络或服务端状态"
+        label: "无法连接服务器",
+        detail: serverProbe.errorMessage ?? "当前无法连接服务器，请检查网络或服务端状态"
       };
     default:
       return {
         status: "checking",
-        label: "正在检查服务端",
-        detail: "首次打开后会自动测一次应用层心跳"
+        label: "正在检查服务器连接",
+        detail: "首次打开后会自动检查一次服务器连接"
       };
   }
 }
@@ -2920,6 +2996,110 @@ function pickTicketId(
     return preferredId;
   }
   return tickets[0]?.id ?? null;
+}
+
+function patchAnnouncementRecord(item: AnnouncementDto, action: "seen" | "ack", touchedAt: string) {
+  const current = item as AnnouncementDto & {
+    seenAt?: string | null;
+    acknowledgedAt?: string | null;
+    isSeen?: boolean;
+    isAcknowledged?: boolean;
+    readState?: {
+      seenAt?: string | null;
+      acknowledgedAt?: string | null;
+      isSeen?: boolean;
+      isAcknowledged?: boolean;
+    } | null;
+  };
+  const nextReadState = {
+    ...(current.readState ?? {}),
+    seenAt: action === "seen" ? touchedAt : (current.readState?.seenAt ?? current.seenAt ?? touchedAt),
+    acknowledgedAt:
+      action === "ack" ? touchedAt : (current.readState?.acknowledgedAt ?? current.acknowledgedAt ?? null),
+    isSeen: true,
+    isAcknowledged: action === "ack" ? true : (current.readState?.isAcknowledged ?? current.isAcknowledged ?? false)
+  };
+  return {
+    ...current,
+    seenAt: nextReadState.seenAt,
+    acknowledgedAt: nextReadState.acknowledgedAt,
+    isSeen: nextReadState.isSeen,
+    isAcknowledged: nextReadState.isAcknowledged,
+    readState: nextReadState
+  };
+}
+
+function isPassiveAnnouncementUnread(item: AnnouncementDto) {
+  const current = item as AnnouncementDto & {
+    seenAt?: string | null;
+    isSeen?: boolean;
+    readState?: {
+      seenAt?: string | null;
+      isSeen?: boolean;
+    } | null;
+  };
+  if (current.readState?.isSeen === true || Boolean(current.readState?.seenAt)) {
+    return false;
+  }
+  if (current.isSeen === true || Boolean(current.seenAt)) {
+    return false;
+  }
+  return true;
+}
+
+function isForcedAnnouncementPending(item: AnnouncementDto) {
+  const current = item as AnnouncementDto & {
+    acknowledgedAt?: string | null;
+    isAcknowledged?: boolean;
+    readState?: {
+      acknowledgedAt?: string | null;
+      isAcknowledged?: boolean;
+    } | null;
+  };
+  if (current.readState?.isAcknowledged === true || Boolean(current.readState?.acknowledgedAt)) {
+    return false;
+  }
+  if (current.isAcknowledged === true || Boolean(current.acknowledgedAt)) {
+    return false;
+  }
+  return true;
+}
+
+function isTicketUnread(ticket: ClientSupportTicketSummaryDto | ClientSupportTicketDetailDto) {
+  const current = ticket as ClientSupportTicketSummaryDto & {
+    unread?: boolean;
+    hasUnread?: boolean;
+    unreadMessageCount?: number | null;
+    lastReadAt?: string | null;
+    unreadAt?: string | null;
+  };
+  if (typeof current.unread === "boolean") {
+    return current.unread;
+  }
+  if (typeof current.hasUnread === "boolean") {
+    return current.hasUnread;
+  }
+  if (typeof current.unreadMessageCount === "number") {
+    return current.unreadMessageCount > 0;
+  }
+  if (current.unreadAt) {
+    return true;
+  }
+  return false;
+}
+
+function markTicketRecordAsRead<T extends ClientSupportTicketSummaryDto | ClientSupportTicketDetailDto>(ticket: T, ticketId: string): T {
+  if (ticket.id !== ticketId) {
+    return ticket;
+  }
+  return {
+    ...ticket,
+    unread: false,
+    hasUnread: false,
+    unreadMessageCount: 0,
+    unreadAt: null,
+    lastReadAt: new Date().toISOString()
+  } as T;
 }
 
 function normalizeUpdateDownloadProgress(

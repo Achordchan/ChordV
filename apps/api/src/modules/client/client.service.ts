@@ -3,6 +3,7 @@ import type {
   ClientPingDto,
   ClientUpdateCheckDto,
   CreateClientSupportTicketInputDto,
+  MarkClientAnnouncementsReadInputDto,
   ReplyClientSupportTicketInputDto
 } from "@chordv/shared";
 import { DevDataService } from "../common/dev-data.service";
@@ -29,6 +30,14 @@ export class ClientService {
 
   getPolicies() {
     return this.devDataService.getPolicies();
+  }
+
+  getAnnouncements(token?: string) {
+    return this.devDataService.getAnnouncements(token);
+  }
+
+  markAnnouncementsRead(input: MarkClientAnnouncementsReadInputDto, token?: string) {
+    return this.devDataService.markClientAnnouncementsRead(input, token);
   }
 
   getVersion() {
@@ -69,6 +78,10 @@ export class ClientService {
 
   getSupportTicket(ticketId: string, token?: string) {
     return this.devDataService.getClientSupportTicketDetail(ticketId, token);
+  }
+
+  markSupportTicketRead(ticketId: string, token?: string) {
+    return this.devDataService.markClientSupportTicketRead(ticketId, token);
   }
 
   createSupportTicket(input: CreateClientSupportTicketInputDto, token?: string) {
