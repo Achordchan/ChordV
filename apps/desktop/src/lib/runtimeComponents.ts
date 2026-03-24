@@ -14,6 +14,7 @@ export type RuntimeComponentDownloadItem = {
   id: string;
   component: RuntimeComponentKind;
   fileName: string;
+  fileSizeBytes: number | null;
   sourceFormat: RuntimeComponentSourceFormat;
   archiveEntryName: string | null;
   checksumSha256: string | null;

@@ -377,6 +377,7 @@ export class RuntimeComponentsService {
           architecture: row.architecture as RuntimeComponentArchitecture,
           kind: row.kind as RuntimeComponentKind,
           fileName: row.fileName,
+          fileSizeBytes: row.fileSizeBytes ? row.fileSizeBytes.toString() : null,
           archiveEntryName: row.archiveEntryName,
           expectedHash: row.expectedHash,
           allowClientMirror,

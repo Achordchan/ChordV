@@ -1275,7 +1275,7 @@ export function App() {
             currentComponent: component.component,
             fileName: component.fileName,
             downloadedBytes: 0,
-            totalBytes: null,
+            totalBytes: component.fileSizeBytes,
             message: `正在准备 ${component.displayName}，完成后即可继续连接。`,
             errorCode: null,
             errorMessage: null,
@@ -2618,10 +2618,10 @@ function normalizeRuntimeAssetsProgress(
   return {
     phase: progress.phase === "failed" ? "failed" : progress.phase === "completed" ? "ready" : "downloading",
     currentComponent: progress.component,
-    fileName: progress.fileName,
+    fileName: progress.fileName ?? current.fileName,
     downloadedBytes: progress.downloadedBytes,
-    totalBytes: progress.totalBytes,
-    message: progress.message,
+    totalBytes: progress.totalBytes ?? current.totalBytes,
+    message: progress.message ?? current.message,
     errorCode: progress.phase === "failed" ? current.errorCode : null,
     errorMessage: progress.phase === "failed" ? progress.message ?? current.errorMessage : null,
     blocking: progress.phase !== "completed"

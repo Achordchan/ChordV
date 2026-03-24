@@ -243,6 +243,7 @@ export interface ClientRuntimeComponentPlanItemDto {
   architecture: RuntimeComponentArchitecture;
   kind: RuntimeComponentKind;
   fileName: string;
+  fileSizeBytes?: string | null;
   archiveEntryName?: string | null;
   expectedHash?: string | null;
   allowClientMirror: boolean;

@@ -534,6 +534,7 @@ function normalizeRuntimeComponentsPlan(
       id: item.id,
       component: item.kind,
       fileName: item.fileName,
+      fileSizeBytes: readNumber(item.fileSizeBytes),
       sourceFormat: item.archiveEntryName ? "zip_entry" : "direct",
       archiveEntryName: item.archiveEntryName ?? null,
       checksumSha256: item.expectedHash ?? null,
