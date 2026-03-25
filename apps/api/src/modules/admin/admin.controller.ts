@@ -251,6 +251,11 @@ export class AdminController {
     return this.devDataService.updateAnnouncement(announcementId, body);
   }
 
+  @Delete("announcements/:announcementId")
+  deleteAnnouncement(@Param("announcementId") announcementId: string) {
+    return this.devDataService.deleteAnnouncement(announcementId);
+  }
+
   @Get("policies")
   getPolicies() {
     return this.devDataService.getAdminPolicy();

@@ -78,6 +78,7 @@ import {
   createTeamMember,
   createTeamSubscription,
   createUser,
+  deleteAnnouncement,
   deleteNode,
   deleteTeamMember,
   fetchNodePanelInbounds,
@@ -1087,6 +1088,14 @@ export function App() {
     await runAction(() => refreshNode(nodeId), "节点已刷新");
   }
 
+  async function handleDeleteAnnouncement(announcementId: string) {
+    const confirmed = window.confirm("确认删除这条公告吗？删除后软件端会立即同步移除。");
+    if (!confirmed) {
+      return;
+    }
+    await runAction(() => deleteAnnouncement(announcementId), "公告已删除");
+  }
+
   async function handleDeleteNode() {
     if (!deleteNodeTarget) return;
     const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已删除");
@@ -1657,6 +1666,7 @@ export function App() {
                 onSearchChange={(value) => setSearch((current) => ({ ...current, announcements: value }))}
                 announcements={announcements}
                 onOpenAnnouncementDrawer={(announcementId) => openDrawer("announcement", announcementId)}
+                onDeleteAnnouncement={(announcementId) => void handleDeleteAnnouncement(announcementId)}
               />
             ) : null}
 

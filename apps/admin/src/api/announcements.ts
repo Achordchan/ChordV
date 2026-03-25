@@ -14,3 +14,9 @@ export function updateAnnouncement(announcementId: string, input: UpdateAnnounce
     body: JSON.stringify(input)
   });
 }
+
+export function deleteAnnouncement(announcementId: string) {
+  return request<{ ok: boolean; announcementId: string }>(`/admin/announcements/${announcementId}`, {
+    method: "DELETE"
+  });
+}

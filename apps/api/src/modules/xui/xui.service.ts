@@ -131,14 +131,32 @@ export class XuiService {
     payload: XuiClientPayload
   ): Promise<{ email: string; uuid: string; inboundId: number }> {
     const inbound = await this.getInbound(node);
-    const existing = this.findInboundClient(inbound, payload.email);
+    const matches = this.findInboundClients(inbound, payload.email);
+    const exactMatch = matches.find((item) => item.id === payload.id) ?? null;
+    const existing = exactMatch ?? matches.find((item) => item.enable !== false) ?? matches[0] ?? null;
+    if (matches.length > 1) {
+      await this.removeInboundClients(node, inbound.id, matches.filter((item) => item !== existing));
+    }
     if (existing) {
-      if (existing.id !== payload.id || existing.enable === false || (existing.expiryTime ?? 0) !== payload.expiryTime) {
-        await this.updateClient(node, payload);
+      const resolvedId = existing.id || payload.id;
+      if (
+        existing.enable === false ||
+        (existing.expiryTime ?? 0) !== payload.expiryTime ||
+        (existing.flow ?? "") !== payload.flow ||
+        (existing.comment ?? "") !== payload.comment
+      ) {
+        await this.updateClient(
+          node,
+          {
+            ...payload,
+            id: resolvedId
+          },
+          resolvedId
+        );
       }
       return {
-        email: existing.email,
-        uuid: existing.id,
+        email: existing.email || payload.email,
+        uuid: resolvedId,
         inboundId: inbound.id
       };
     }
@@ -153,83 +171,54 @@ export class XuiService {
 
   async setClientEnabled(node: XuiNodeConfig, clientId: string, email: string, enabled: boolean) {
     const inbound = await this.getInbound(node);
-    const existing = this.findInboundClient(inbound, email);
-    if (!existing) {
+    const matches = this.findInboundClients(inbound, email);
+    if (matches.length === 0) {
       if (enabled) {
         throw new BadGatewayException(`3x-ui 未找到客户端 ${email}`);
       }
       return;
     }
 
-    if (existing.enable === enabled) {
-      return;
+    for (const existing of matches) {
+      if (existing.enable === enabled) {
+        continue;
+      }
+      await this.updateClient(
+        node,
+        {
+          id: existing.id || clientId,
+          email: existing.email || email,
+          enable: enabled,
+          flow: existing.flow ?? "",
+          expiryTime: existing.expiryTime ?? 0,
+          limitIp: existing.limitIp ?? 0,
+          totalGB: existing.totalGB ?? 0,
+          subId: existing.subId ?? "",
+          reset: existing.reset ?? 0,
+          tgId: existing.tgId ?? "",
+          comment: existing.comment ?? ""
+        },
+        existing.id || clientId
+      );
     }
-
-    await this.updateClient(node, {
-      id: existing.id || clientId,
-      email: existing.email || email,
-      enable: enabled,
-      flow: existing.flow ?? "",
-      expiryTime: existing.expiryTime ?? 0,
-      limitIp: existing.limitIp ?? 0,
-      totalGB: existing.totalGB ?? 0,
-      subId: existing.subId ?? "",
-      reset: existing.reset ?? 0,
-      tgId: existing.tgId ?? "",
-      comment: existing.comment ?? ""
-    });
   }
 
   async removeClient(node: XuiNodeConfig, clientId: string, email: string) {
     const inboundId = await this.resolveInboundId(node);
-    const attempts = [
-      { path: `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(clientId)}` },
-      { path: `/panel/api/inbounds/delClient/${encodeURIComponent(clientId)}`, body: JSON.stringify({ id: inboundId }), contentType: "application/json" },
-      { path: `/panel/api/inbounds/delClient/${inboundId}/${encodeURIComponent(clientId)}` },
-      { path: `/panel/api/inbounds/delClientByEmail/${encodeURIComponent(email)}` },
-      { path: `/panel/api/inbounds/delClient/${encodeURIComponent(email)}` }
-    ];
-
-    for (const attempt of attempts) {
-      try {
-        await this.request({
-          node,
-          path: attempt.path,
-          method: "POST",
-          body: attempt.body,
-          contentType: attempt.contentType,
-          useJson: true
-        });
-        return;
-      } catch {
-        continue;
-      }
-    }
-
     const inbound = await this.getInbound(node);
-    const existing = this.findInboundClient(inbound, email);
-    if (existing) {
-      await this.updateClient(node, {
-        id: existing.id,
-        email: existing.email,
-        enable: false,
-        flow: existing.flow ?? "",
-        expiryTime: existing.expiryTime ?? 0,
-        limitIp: existing.limitIp ?? 0,
-        totalGB: existing.totalGB ?? 0,
-        subId: existing.subId ?? "",
-        reset: existing.reset ?? 0,
-        tgId: existing.tgId ?? "",
-        comment: existing.comment ?? ""
-      });
+    const matches = this.findInboundClients(inbound, email);
+    if (matches.length === 0) {
       return;
     }
-
-    throw new BadGatewayException("删除 3x-ui 客户端失败");
+    await this.removeInboundClients(node, inboundId, matches, clientId);
   }
 
-  async resetClientTraffic(node: XuiNodeConfig, email: string) {
+  async resetClientTraffic(node: XuiNodeConfig, email: string): Promise<boolean> {
     const inboundId = await this.resolveInboundId(node);
+    const inbound = await this.getInbound(node);
+    if (this.findInboundClients(inbound, email).length === 0) {
+      return false;
+    }
     const attempts = [
       { path: `/panel/api/inbounds/resetClientTraffic/${inboundId}/${encodeURIComponent(email)}` },
       { path: `/panel/api/inbounds/${inboundId}/resetClientTraffic/${encodeURIComponent(email)}` },
@@ -250,10 +239,15 @@ export class XuiService {
           contentType: attempt.contentType,
           useJson: true
         });
-        return;
+        return true;
       } catch {
         continue;
       }
+    }
+
+    const refreshedInbound = await this.getInbound(node);
+    if (this.findInboundClients(refreshedInbound, email).length === 0) {
+      return false;
     }
 
     throw new BadGatewayException(`重置 3x-ui 客户端流量失败：${email}`);
@@ -401,11 +395,11 @@ export class XuiService {
     });
   }
 
-  private async updateClient(node: XuiNodeConfig, client: XuiClientPayload) {
+  private async updateClient(node: XuiNodeConfig, client: XuiClientPayload, targetClientId?: string) {
     const inboundId = await this.resolveInboundId(node);
     const attempts = [
-      `/panel/api/inbounds/updateClient/${encodeURIComponent(client.id)}`,
-      `/panel/api/inbounds/updateClient/${inboundId}/${encodeURIComponent(client.id)}`
+      `/panel/api/inbounds/updateClient/${encodeURIComponent(targetClientId ?? client.id)}`,
+      `/panel/api/inbounds/updateClient/${inboundId}/${encodeURIComponent(targetClientId ?? client.id)}`
     ];
 
     for (const path of attempts) {
@@ -580,7 +574,12 @@ export class XuiService {
   }
 
   private findInboundClient(inbound: XuiInbound, email: string) {
-    return this.extractInboundClients(inbound).find((item) => item.email?.trim().toLowerCase() === email.trim().toLowerCase()) ?? null;
+    return this.findInboundClients(inbound, email)[0] ?? null;
+  }
+
+  private findInboundClients(inbound: XuiInbound, email: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+    return this.extractInboundClients(inbound).filter((item) => item.email?.trim().toLowerCase() === normalizedEmail);
   }
 
   private extractClientStats(inbound: XuiInbound) {
@@ -593,7 +592,19 @@ export class XuiService {
       if (!email) {
         continue;
       }
-      statsByEmail.set(email, item);
+      const current = statsByEmail.get(email);
+      if (!current) {
+        statsByEmail.set(email, item);
+        continue;
+      }
+      statsByEmail.set(email, {
+        ...current,
+        email: current.email || item.email,
+        uuid: current.uuid || item.uuid,
+        up: (toBigInt(current.up) + toBigInt(item.up)).toString(),
+        down: (toBigInt(current.down) + toBigInt(item.down)).toString(),
+        total: (toBigInt(current.total) + toBigInt(item.total)).toString()
+      });
     }
 
     for (const client of clients) {
@@ -652,6 +663,80 @@ export class XuiService {
       node.panelUsername ?? "",
       hashCredential(node.panelPassword ?? "")
     ].join("|");
+  }
+
+  private async removeInboundClients(
+    node: XuiNodeConfig,
+    inboundId: number,
+    clients: XuiInboundClient[],
+    fallbackClientId?: string
+  ) {
+    for (const client of clients) {
+      const email = client.email?.trim();
+      if (!email) {
+        continue;
+      }
+      const resolvedClientId = client.id || fallbackClientId || email;
+      const attempts = [
+        { path: `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(resolvedClientId)}` },
+        {
+          path: `/panel/api/inbounds/delClient/${encodeURIComponent(resolvedClientId)}`,
+          body: JSON.stringify({ id: inboundId }),
+          contentType: "application/json"
+        },
+        { path: `/panel/api/inbounds/delClient/${inboundId}/${encodeURIComponent(resolvedClientId)}` },
+        { path: `/panel/api/inbounds/delClientByEmail/${encodeURIComponent(email)}` },
+        { path: `/panel/api/inbounds/delClient/${encodeURIComponent(email)}` }
+      ];
+
+      let removed = false;
+      for (const attempt of attempts) {
+        try {
+          await this.request({
+            node,
+            path: attempt.path,
+            method: "POST",
+            body: attempt.body,
+            contentType: attempt.contentType,
+            useJson: true
+          });
+          removed = true;
+          break;
+        } catch {
+          continue;
+        }
+      }
+
+      if (removed) {
+        continue;
+      }
+
+      const refreshedInbound = await this.getInbound(node);
+      const remaining = this.findInboundClients(refreshedInbound, email);
+      if (remaining.length === 0) {
+        continue;
+      }
+
+      for (const stale of remaining) {
+        await this.updateClient(
+          node,
+          {
+            id: stale.id || resolvedClientId,
+            email: stale.email || email,
+            enable: false,
+            flow: stale.flow ?? "",
+            expiryTime: stale.expiryTime ?? 0,
+            limitIp: stale.limitIp ?? 0,
+            totalGB: stale.totalGB ?? 0,
+            subId: stale.subId ?? "",
+            reset: stale.reset ?? 0,
+            tgId: stale.tgId ?? "",
+            comment: stale.comment ?? ""
+          },
+          stale.id || resolvedClientId
+        );
+      }
+    }
   }
 }
 

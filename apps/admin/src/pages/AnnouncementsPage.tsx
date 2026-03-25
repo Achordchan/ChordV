@@ -1,6 +1,6 @@
 import { ActionIcon, Badge, Stack, Table, Text } from "@mantine/core";
 import type { AdminAnnouncementRecordDto } from "@chordv/shared";
-import { IconPencil } from "@tabler/icons-react";
+import { IconPencil, IconTrash } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
@@ -12,6 +12,7 @@ type AnnouncementsPageProps = {
   onSearchChange: (value: string) => void;
   announcements: AdminAnnouncementRecordDto[];
   onOpenAnnouncementDrawer: (announcementId: string) => void;
+  onDeleteAnnouncement: (announcementId: string) => void;
 };
 
 export function AnnouncementsPage(props: AnnouncementsPageProps) {
@@ -50,9 +51,14 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
                 <StatusBadge color={item.isActive ? "green" : "gray"} label={item.isActive ? "上线" : "下线"} />
               </Table.Td>
               <Table.Td>
-                <ActionIcon variant="subtle" onClick={() => props.onOpenAnnouncementDrawer(item.id)}>
-                  <IconPencil size={16} />
-                </ActionIcon>
+                <Stack gap={6}>
+                  <ActionIcon variant="subtle" onClick={() => props.onOpenAnnouncementDrawer(item.id)}>
+                    <IconPencil size={16} />
+                  </ActionIcon>
+                  <ActionIcon variant="subtle" color="red" onClick={() => props.onDeleteAnnouncement(item.id)}>
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Stack>
               </Table.Td>
             </Table.Tr>
           ))}

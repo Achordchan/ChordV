@@ -16,8 +16,10 @@ type SubscriptionPanelProps = {
   updateBusy: boolean;
   hasUpdate: boolean;
   serverProbe: SubscriptionServerProbe;
+  serverProbeBusy?: boolean;
   onOpenAnnouncements: () => void;
   onOpenTickets: () => void;
+  onRefreshServerProbe?: () => void;
   onRefresh: () => void;
   onCheckUpdate: () => void;
   onLogout: () => void;
@@ -84,6 +86,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 type="button"
                 className={`subscription-server-indicator subscription-server-indicator--${props.serverProbe.status}`}
                 aria-label={props.serverProbe.label}
+                onClick={props.onRefreshServerProbe}
+                disabled={props.serverProbeBusy}
               >
                 <span className="subscription-server-indicator__dot" aria-hidden="true" />
               </UnstyledButton>
