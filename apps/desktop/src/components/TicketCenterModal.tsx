@@ -1,6 +1,7 @@
-import { Alert, Badge, Button, Group, Loader, Modal, Paper, ScrollArea, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { Alert, Badge, Button, Group, Loader, Modal, Paper, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
 import { IconMessageCirclePlus, IconRefresh, IconSend } from "@tabler/icons-react";
+import { isSupportTicketUnread } from "../lib/supportTickets";
 
 type TicketCenterModalProps = {
   opened: boolean;
@@ -38,9 +39,11 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
       opened={props.opened}
       onClose={props.onClose}
       title="工单中心"
-      size="92%"
+      size="94%"
       centered
       classNames={{
+        content: "ticket-center__modal-content",
+        header: "ticket-center__modal-header",
         body: "ticket-center__modal-body"
       }}
     >
@@ -54,33 +57,40 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
           </div>
           <Group gap="xs">
             <Button
+              size="xs"
               variant="default"
               leftSection={<IconRefresh size={15} />}
+              className="ticket-center__toolbar-button"
               onClick={props.onRefresh}
               loading={props.listBusy || props.detailBusy}
             >
               刷新列表
             </Button>
             {props.createMode ? (
-              <Button variant="default" onClick={props.onCancelCreate}>
+              <Button size="xs" variant="default" className="ticket-center__toolbar-button" onClick={props.onCancelCreate}>
                 返回详情
               </Button>
             ) : null}
-            <Button leftSection={<IconMessageCirclePlus size={15} />} onClick={props.onOpenCreate}>
+            <Button
+              size="xs"
+              leftSection={<IconMessageCirclePlus size={15} />}
+              className="ticket-center__toolbar-button"
+              onClick={props.onOpenCreate}
+            >
               新建工单
             </Button>
           </Group>
         </div>
 
         <div className="ticket-center__layout">
-          <Paper withBorder radius="lg" p="sm" className="ticket-center__sidebar">
+          <Paper withBorder radius="md" p="sm" className="ticket-center__sidebar">
             <div className="ticket-center__sidebar-head">
               <Text fw={700}>工单列表</Text>
               <Badge variant="light" color="gray">
                 {props.tickets.length} 条
               </Badge>
             </div>
-            <ScrollArea className="ticket-center__sidebar-scroll" type="auto">
+            <div className="ticket-center__sidebar-scroll">
               <Stack gap="xs">
                 {props.listBusy ? (
                   <div className="ticket-center__empty">
@@ -101,7 +111,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                       >
                         <div className="ticket-center__ticket-head">
                           <Group gap={8} wrap="nowrap" align="center">
-                            {isTicketUnread(ticket) ? (
+                            {isSupportTicketUnread(ticket) ? (
                               <Badge size="xs" color="red" variant="filled">
                                 新消息
                               </Badge>
@@ -132,10 +142,10 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   </div>
                 )}
               </Stack>
-            </ScrollArea>
+            </div>
           </Paper>
 
-          <Paper withBorder radius="lg" p="lg" className="ticket-center__detail">
+          <Paper withBorder radius="md" p="md" className="ticket-center__detail">
             {props.error ? (
               <Alert color="red" variant="light">
                 {props.error}
@@ -153,6 +163,8 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                 <TextInput
                   label="工单标题"
                   placeholder="例如：Windows 连接后无法打开网页"
+                  size="sm"
+                  className="ticket-center__field"
                   value={props.createTitle}
                   onChange={(event) => props.onCreateTitleChange(event.currentTarget.value)}
                   maxLength={120}
@@ -160,16 +172,24 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                 <Textarea
                   label="问题描述"
                   placeholder="请把你做了什么、看到什么提示、希望怎么解决写清楚。"
+                  size="sm"
+                  className="ticket-center__field"
                   minRows={10}
                   autosize
                   value={props.createBody}
                   onChange={(event) => props.onCreateBodyChange(event.currentTarget.value)}
                 />
                 <Group justify="flex-end">
-                  <Button variant="default" onClick={props.onCancelCreate}>
+                  <Button size="sm" variant="default" className="ticket-center__action-button" onClick={props.onCancelCreate}>
                     取消
                   </Button>
-                  <Button onClick={props.onSubmitCreate} loading={props.submitting} disabled={creatingDisabled}>
+                  <Button
+                    size="sm"
+                    className="ticket-center__action-button"
+                    onClick={props.onSubmitCreate}
+                    loading={props.submitting}
+                    disabled={creatingDisabled}
+                  >
                     提交工单
                   </Button>
                 </Group>
@@ -199,7 +219,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   </div>
                 </div>
 
-                <ScrollArea className="ticket-center__messages" type="auto">
+                <div className="ticket-center__messages">
                   <Stack gap="sm">
                     {props.ticketDetail.messages.map((message) => (
                       <div
@@ -222,7 +242,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                       </div>
                     ))}
                   </Stack>
-                </ScrollArea>
+                </div>
 
                 <Stack gap="sm">
                   {props.ticketDetail.status === "closed" ? (
@@ -233,6 +253,8 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   <Textarea
                     label="继续补充"
                     placeholder={props.ticketDetail.status === "closed" ? "当前工单已关闭" : "继续描述新的现象或补充截图说明。"}
+                    size="sm"
+                    className="ticket-center__field"
                     minRows={5}
                     autosize
                     disabled={props.ticketDetail.status === "closed"}
@@ -241,7 +263,9 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   />
                   <Group justify="flex-end">
                     <Button
+                      size="sm"
                       leftSection={<IconSend size={15} />}
+                      className="ticket-center__action-button"
                       onClick={props.onSubmitReply}
                       loading={props.submitting}
                       disabled={replyingDisabled}
@@ -311,23 +335,4 @@ function formatDateTime(value: string) {
   const hour = `${date.getHours()}`.padStart(2, "0");
   const minute = `${date.getMinutes()}`.padStart(2, "0");
   return `${year}/${month}/${day} ${hour}:${minute}`;
-}
-
-function isTicketUnread(ticket: ClientSupportTicketSummaryDto) {
-  const current = ticket as ClientSupportTicketSummaryDto & {
-    unread?: boolean;
-    hasUnread?: boolean;
-    unreadMessageCount?: number | null;
-    unreadAt?: string | null;
-  };
-  if (typeof current.unread === "boolean") {
-    return current.unread;
-  }
-  if (typeof current.hasUnread === "boolean") {
-    return current.hasUnread;
-  }
-  if (typeof current.unreadMessageCount === "number") {
-    return current.unreadMessageCount > 0;
-  }
-  return Boolean(current.unreadAt);
 }

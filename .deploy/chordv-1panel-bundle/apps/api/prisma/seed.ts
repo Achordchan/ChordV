@@ -477,7 +477,6 @@ async function main() {
       },
       update: {
         displayTitle: release.displayTitle,
-        releaseNotes: release.releaseNotes,
         changelog: release.changelog,
         minimumVersion: release.minimumVersion,
         forceUpgrade: release.forceUpgrade,
@@ -490,7 +489,6 @@ async function main() {
         channel: release.channel,
         version: release.version,
         displayTitle: release.displayTitle,
-        releaseNotes: release.releaseNotes,
         changelog: release.changelog,
         minimumVersion: release.minimumVersion,
         forceUpgrade: release.forceUpgrade,

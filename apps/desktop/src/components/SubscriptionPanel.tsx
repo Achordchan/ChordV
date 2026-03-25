@@ -38,30 +38,29 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   return (
     <Paper
       withBorder
-      radius="lg"
-      p="lg"
+      radius="md"
+      p="md"
       className={isTeam ? "subscription-card subscription-card--team" : "subscription-card"}
     >
       <div className="subscription-shell">
         <div className="subscription-head">
           <div className="subscription-copy">
-            <Group gap="xs" mb={10} className="subscription-status-row">
-              <Text className="desktop-eyebrow">{isTeam ? "Team" : "订阅"}</Text>
-              {isTeam ? (
-                <Badge variant="light" color="amber">
-                  高级订阅
-                </Badge>
-              ) : null}
-            </Group>
             <Group gap="sm" align="baseline" wrap="wrap" className="subscription-title-row">
               <Title order={2}>{title}</Title>
               <Text c={isTeam ? "rgba(255,255,255,0.82)" : "dimmed"} size="sm" className="subscription-email">
                 {props.bootstrap.user.email}
               </Text>
             </Group>
-            <Text c={isTeam ? "white" : "dimmed"} className="subscription-subtitle">
-              {subtitle}
-            </Text>
+            <Group gap="xs" wrap="wrap" className="subscription-subtitle-row">
+              <Text c={isTeam ? "white" : "dimmed"} className="subscription-subtitle">
+                {subtitle}
+              </Text>
+              {isTeam ? (
+                <Badge variant="light" color="amber">
+                  高级订阅
+                </Badge>
+              ) : null}
+            </Group>
           </div>
 
           <Group gap="xs" align="center" className="subscription-actions subscription-actions--toolbar">
@@ -101,8 +100,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               <Button
                 variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}
-                size="sm"
-                leftSection={<IconBell size={15} />}
+                size="xs"
+                leftSection={<IconBell size={14} />}
                 className="subscription-secondary-button subscription-toolbar-button"
                 onClick={props.onOpenAnnouncements}
               >
@@ -121,8 +120,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               <Button
                 variant={isTeam ? "white" : "default"}
                 color={isTeam ? "dark" : "gray"}
-                size="sm"
-                leftSection={<IconLifebuoy size={15} />}
+                size="xs"
+                leftSection={<IconLifebuoy size={14} />}
                 className="subscription-secondary-button subscription-toolbar-button"
                 onClick={props.onOpenTickets}
               >
@@ -131,35 +130,35 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             </Indicator>
             <Button
               variant={isTeam ? "white" : "default"}
-                color={isTeam ? "dark" : "gray"}
-                size="sm"
-                leftSection={<IconRefresh size={15} />}
-                className="subscription-secondary-button subscription-toolbar-button"
-                loading={props.refreshing}
-                onClick={props.onRefresh}
-              >
-                刷新
-              </Button>
+              color={isTeam ? "dark" : "gray"}
+              size="xs"
+              leftSection={<IconRefresh size={14} />}
+              className="subscription-secondary-button subscription-toolbar-button"
+              loading={props.refreshing}
+              onClick={props.onRefresh}
+            >
+              刷新
+            </Button>
             <Button
               variant={props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
-                color={props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
-                size="sm"
-                className="subscription-secondary-button subscription-toolbar-button"
-                loading={props.updateBusy}
-                onClick={props.onCheckUpdate}
-              >
-                {props.hasUpdate ? "查看更新" : "检查更新"}
-              </Button>
+              color={props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
+              size="xs"
+              className="subscription-secondary-button subscription-toolbar-button"
+              loading={props.updateBusy}
+              onClick={props.onCheckUpdate}
+            >
+              {props.hasUpdate ? "查看更新" : "检查更新"}
+            </Button>
             <Button
               variant={isTeam ? "white" : "default"}
-                color={isTeam ? "dark" : "gray"}
-                size="sm"
-                leftSection={<IconLogout size={15} />}
-                className="subscription-secondary-button subscription-logout subscription-toolbar-button"
-                onClick={props.onLogout}
-              >
-                退出登录
-              </Button>
+              color={isTeam ? "dark" : "gray"}
+              size="xs"
+              leftSection={<IconLogout size={14} />}
+              className="subscription-secondary-button subscription-logout subscription-toolbar-button"
+              onClick={props.onLogout}
+            >
+              退出登录
+            </Button>
           </Group>
         </div>
 
@@ -181,7 +180,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
 
 function MetricItem(props: { label: string; value: string; inverse?: boolean; compactValue?: boolean }) {
   return (
-    <Paper withBorder radius="lg" p="md" className={props.inverse ? "metric-item metric-item--inverse" : "metric-item"}>
+    <Paper withBorder radius="md" p="md" className={props.inverse ? "metric-item metric-item--inverse" : "metric-item"}>
       <Text size="sm" c={props.inverse ? "rgba(255,255,255,0.72)" : "dimmed"} className="metric-label">
         {props.label}
       </Text>

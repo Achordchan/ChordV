@@ -111,7 +111,10 @@ export const mockAnnouncements: AnnouncementDto[] = [
     level: "success",
     publishedAt: new Date().toISOString(),
     displayMode: "passive",
-    countdownSeconds: 0
+    countdownSeconds: 0,
+    passiveSeenAt: null,
+    acknowledgedAt: null,
+    isUnread: true
   },
   {
     id: "ann_002",
@@ -120,13 +123,16 @@ export const mockAnnouncements: AnnouncementDto[] = [
     level: "warning",
     publishedAt: new Date().toISOString(),
     displayMode: "modal_confirm",
-    countdownSeconds: 0
+    countdownSeconds: 0,
+    passiveSeenAt: null,
+    acknowledgedAt: null,
+    isUnread: true
   }
 ];
 
 export const mockVersion: ClientVersionDto = {
-  currentVersion: "1.0.0-beta.1",
-  minimumVersion: "1.0.0-beta.1",
+  currentVersion: "1.0.2",
+  minimumVersion: "1.0.2",
   forceUpgrade: false,
   changelog: ["发布中心已接入多端版本管理", "桌面端支持检查更新和完整包下载", "安卓端支持 APK 更新链路"],
   downloadUrl: "https://v.baymaxgroup.com/downloads/chordv"
@@ -137,6 +143,10 @@ export const mockBootstrap: ClientBootstrapDto = {
   subscription: mockSubscription,
   policies: mockPolicies,
   announcements: mockAnnouncements,
+  supportTickets: {
+    totalCount: 1,
+    unreadCount: 1
+  },
   version: mockVersion,
   team: null
 };
@@ -292,14 +302,13 @@ export const mockAdminPolicy: AdminPolicyRecordDto = {
 
 export const mockAdminReleases: AdminReleaseRecordDto[] = [
   {
-    id: "release_macos_beta_001",
+    id: "release_macos_stable_001",
     platform: "macos",
-    channel: "beta",
-    version: "1.0.0-beta.1",
-    displayTitle: "ChordV 1.0.0 Beta 1 · macOS",
-    releaseNotes: "首个 Beta 版，支持桌面端完整包更新提示。",
+    channel: "stable",
+    version: "1.0.2",
+    displayTitle: "ChordV 1.0.2 · macOS",
     changelog: mockVersion.changelog,
-    minimumVersion: "1.0.0-beta.1",
+    minimumVersion: "1.0.2",
     forceUpgrade: false,
     status: "published",
     publishedAt: new Date().toISOString(),
@@ -308,12 +317,14 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     artifacts: [
       {
         id: "artifact_macos_dmg_001",
-        releaseId: "release_macos_beta_001",
+        releaseId: "release_macos_stable_001",
         source: "external",
         type: "dmg",
         deliveryMode: "desktop_installer_download",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/macos/ChordV_1.0.0_beta_1.dmg",
-        fileName: "ChordV_1.0.0_beta_1.dmg",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/macos/ChordV_1.0.2.dmg",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV_1.0.2.dmg",
         fileSizeBytes: "94371840",
         fileHash: "mock-macos-dmg-sha256",
         isPrimary: true,
@@ -324,14 +335,13 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     ]
   },
   {
-    id: "release_windows_beta_001",
+    id: "release_windows_stable_001",
     platform: "windows",
-    channel: "beta",
-    version: "1.0.0-beta.1",
-    displayTitle: "ChordV 1.0.0 Beta 1 · Windows",
-    releaseNotes: "首个 Beta 版，支持桌面端完整包更新提示。",
+    channel: "stable",
+    version: "1.0.2",
+    displayTitle: "ChordV 1.0.2 · Windows",
     changelog: mockVersion.changelog,
-    minimumVersion: "1.0.0-beta.1",
+    minimumVersion: "1.0.2",
     forceUpgrade: false,
     status: "published",
     publishedAt: new Date().toISOString(),
@@ -340,12 +350,14 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     artifacts: [
       {
         id: "artifact_windows_setup_001",
-        releaseId: "release_windows_beta_001",
+        releaseId: "release_windows_stable_001",
         source: "external",
         type: "setup.exe",
         deliveryMode: "desktop_installer_download",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/windows/ChordV_1.0.0_beta_1_setup.exe",
-        fileName: "ChordV_1.0.0_beta_1_setup.exe",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/windows/ChordV_1.0.2_setup.exe",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV_1.0.2_setup.exe",
         fileSizeBytes: "32666812",
         fileHash: "mock-windows-setup-sha256",
         isPrimary: true,
@@ -356,14 +368,13 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     ]
   },
   {
-    id: "release_android_beta_001",
+    id: "release_android_stable_001",
     platform: "android",
-    channel: "beta",
-    version: "1.0.0-beta.1",
-    displayTitle: "ChordV 1.0.0 Beta 1 · Android",
-    releaseNotes: "首个 Beta 版，支持 APK 下载更新。",
+    channel: "stable",
+    version: "1.0.0",
+    displayTitle: "ChordV 1.0.0 · Android",
     changelog: mockVersion.changelog,
-    minimumVersion: "1.0.0-beta.1",
+    minimumVersion: "1.0.0",
     forceUpgrade: false,
     status: "published",
     publishedAt: new Date().toISOString(),
@@ -372,12 +383,14 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     artifacts: [
       {
         id: "artifact_android_apk_001",
-        releaseId: "release_android_beta_001",
+        releaseId: "release_android_stable_001",
         source: "external",
         type: "apk",
         deliveryMode: "apk_download",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/android/ChordV_1.0.0_beta_1.apk",
-        fileName: "ChordV_1.0.0_beta_1.apk",
+        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/android/ChordV_1.0.0.apk",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: "ChordV_1.0.0.apk",
         fileSizeBytes: "59600000",
         fileHash: "mock-android-apk-sha256",
         isPrimary: true,
@@ -388,14 +401,13 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     ]
   },
   {
-    id: "release_ios_beta_001",
+    id: "release_ios_stable_001",
     platform: "ios",
-    channel: "beta",
-    version: "1.0.0-beta.1",
-    displayTitle: "ChordV 1.0.0 Beta 1 · iOS",
-    releaseNotes: "当前仅提供版本提示与侧载说明。",
+    channel: "stable",
+    version: "1.0.0",
+    displayTitle: "ChordV 1.0.0 · iOS",
     changelog: mockVersion.changelog,
-    minimumVersion: "1.0.0-beta.1",
+    minimumVersion: "1.0.0",
     forceUpgrade: false,
     status: "published",
     publishedAt: new Date().toISOString(),
@@ -404,11 +416,13 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
     artifacts: [
       {
         id: "artifact_ios_external_001",
-        releaseId: "release_ios_beta_001",
+        releaseId: "release_ios_stable_001",
         source: "external",
         type: "external",
         deliveryMode: "external_download",
         downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/ios",
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
         fileName: "ChordV iOS 侧载说明",
         fileSizeBytes: null,
         fileHash: null,
@@ -427,7 +441,10 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
     activeSubscriptions: mockAdminSubscriptions.filter((item) => item.state === "active").length,
     activeNodes: mockAdminNodes.length,
     announcements: mockAdminAnnouncements.filter((item) => item.isActive).length,
-    activePlans: mockAdminPlans.filter((item) => item.isActive).length
+    activePlans: mockAdminPlans.filter((item) => item.isActive).length,
+    openTickets: 0,
+    waitingAdminTickets: 0,
+    closedTickets: 0
   },
   users: mockAdminUsers,
   plans: mockAdminPlans,

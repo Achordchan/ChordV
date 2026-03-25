@@ -15,7 +15,7 @@ type NodeListPanelProps = {
 
 export function NodeListPanel(props: NodeListPanelProps) {
   return (
-    <Paper withBorder radius="xl" p="lg" className="desktop-panel">
+    <Paper withBorder radius="lg" p="lg" className="desktop-panel">
       <Stack gap="md" h="100%">
         <Group justify="space-between" align="center" className="node-list-head">
           <div>
@@ -35,7 +35,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
         </Group>
 
         {props.nodes.length === 0 ? (
-          <Paper withBorder radius="lg" p="lg" className="empty-state">
+          <Paper withBorder radius="md" p="lg" className="empty-state">
             <Stack gap="xs" align="center">
               <IconBolt size={18} />
               <Text fw={600}>暂无可用节点</Text>
@@ -54,7 +54,7 @@ export function NodeListPanel(props: NodeListPanelProps) {
                   <Paper
                     key={node.id}
                     withBorder
-                    radius="lg"
+                    radius="md"
                     p="md"
                     className={isSelected ? "node-item node-item--selected" : "node-item"}
                     onClick={() => props.onSelect(node.id)}

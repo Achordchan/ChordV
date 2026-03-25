@@ -24,7 +24,7 @@ export function RuntimeAssetsBanner(props: RuntimeAssetsBannerProps) {
     <Alert
       color={toneToMantineColor(tone)}
       variant="light"
-      radius="lg"
+      radius="md"
       className={`desktop-state-banner desktop-state-banner--${tone}`}
       icon={<BannerIcon phase={props.state.phase} />}
     >

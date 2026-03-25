@@ -1,4 +1,4 @@
-import { Badge, Drawer, Group, Paper, ScrollArea, Stack, Text, Title } from "@mantine/core";
+import { Badge, Group, Modal, Paper, Stack, Text, Title } from "@mantine/core";
 import type { AnnouncementDto } from "@chordv/shared";
 
 type AnnouncementDrawerProps = {
@@ -9,26 +9,37 @@ type AnnouncementDrawerProps = {
 
 export function AnnouncementDrawer(props: AnnouncementDrawerProps) {
   return (
-    <Drawer opened={props.opened} onClose={props.onClose} position="right" size={420} title="公告">
-      <Stack gap="md" h="100%">
-        <div>
+    <Modal
+      opened={props.opened}
+      onClose={props.onClose}
+      title="公告中心"
+      size="86%"
+      centered
+      classNames={{
+        content: "announcement-center__modal-content",
+        header: "announcement-center__modal-header",
+        body: "announcement-center__modal-body"
+      }}
+    >
+      <Stack gap="md" className="announcement-center">
+        <div className="announcement-center__headline">
           <Title order={4}>历史公告</Title>
-          <Text size="sm" c="dimmed" mt={4}>
-            查看最近的通知、维护提醒和升级信息
+          <Text size="sm" c="dimmed">
+            查看最近的通知、维护提醒和升级信息。
           </Text>
         </div>
 
-        <ScrollArea h="100%">
+        <div className="announcement-center__list">
           <Stack gap="sm">
             {props.announcements.length === 0 ? (
-              <Paper withBorder radius="lg" p="lg">
+              <Paper withBorder radius="md" p="md" className="announcement-center__card announcement-center__card--empty">
                 <Text c="dimmed">当前没有公告</Text>
               </Paper>
             ) : (
               props.announcements.map((item) => (
-                <Paper key={item.id} withBorder radius="lg" p="md">
+                <Paper key={item.id} withBorder radius="md" p="md" className="announcement-center__card">
                   <Stack gap="xs">
-                    <Group justify="space-between" align="start">
+                    <Group justify="space-between" align="start" wrap="nowrap">
                       <Text fw={700}>{item.title}</Text>
                       <Badge variant="light" color={levelColor(item.level)}>
                         {translateLevel(item.level)}
@@ -37,15 +48,17 @@ export function AnnouncementDrawer(props: AnnouncementDrawerProps) {
                     <Text size="sm" c="dimmed">
                       {formatDate(item.publishedAt)}
                     </Text>
-                    <Text size="sm">{item.body}</Text>
+                    <Text size="sm" className="announcement-center__body">
+                      {item.body}
+                    </Text>
                   </Stack>
                 </Paper>
               ))
             )}
           </Stack>
-        </ScrollArea>
+        </div>
       </Stack>
-    </Drawer>
+    </Modal>
   );
 }
 

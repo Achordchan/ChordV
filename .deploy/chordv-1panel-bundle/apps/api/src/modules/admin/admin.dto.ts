@@ -250,6 +250,12 @@ export class UpdateSubscriptionDto {
   state?: SubscriptionState;
 }
 
+export class ConvertSubscriptionToTeamDto {
+  @IsString()
+  @IsNotEmpty()
+  targetTeamId!: string;
+}
+
 export class UpdateSubscriptionNodeAccessDto {
   @IsArray()
   @IsString({ each: true })
@@ -539,11 +545,18 @@ export class UpdateAnnouncementDto {
   countdownSeconds?: number;
 }
 
+export class ReplySupportTicketDto {
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(1)
+  body!: string;
+}
+
 export class CreateReleaseDto {
   @IsIn(["macos", "windows", "android", "ios"])
   platform!: PlatformTarget;
 
-  @IsIn(["beta", "stable"])
+  @IsIn(["stable"])
   channel!: ReleaseChannel;
 
   @IsString()
@@ -553,10 +566,6 @@ export class CreateReleaseDto {
   @IsString()
   @IsNotEmpty()
   displayTitle!: string;
-
-  @IsOptional()
-  @IsString()
-  releaseNotes?: string | null;
 
   @IsOptional()
   @IsArray()
@@ -572,12 +581,17 @@ export class CreateReleaseDto {
   forceUpgrade?: boolean;
 
   @IsOptional()
-  @IsIn(["draft", "published", "archived"])
+  @IsIn(["draft", "published"])
   status?: ReleaseStatus;
 
   @IsOptional()
   @IsString()
   publishedAt?: string | null;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreateReleaseArtifactDto)
+  initialArtifact?: CreateReleaseArtifactDto | null;
 }
 
 export class UpdateReleaseDto {
@@ -585,10 +599,6 @@ export class UpdateReleaseDto {
   @IsString()
   @IsNotEmpty()
   displayTitle?: string;
-
-  @IsOptional()
-  @IsString()
-  releaseNotes?: string | null;
 
   @IsOptional()
   @IsArray()
@@ -605,7 +615,7 @@ export class UpdateReleaseDto {
   forceUpgrade?: boolean;
 
   @IsOptional()
-  @IsIn(["draft", "published", "archived"])
+  @IsIn(["draft", "published"])
   status?: ReleaseStatus;
 
   @IsOptional()
@@ -629,6 +639,17 @@ export class CreateReleaseArtifactDto {
     require_tld: false
   })
   downloadUrl!: string;
+
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
 
   @IsOptional()
   @IsString()
@@ -678,6 +699,17 @@ export class UpdateReleaseArtifactDto {
 
   @IsOptional()
   @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsOptional()
+  @IsString()
   fileName?: string | null;
 
   @IsOptional()
@@ -717,6 +749,17 @@ export class UploadReleaseArtifactDto {
 
   @IsOptional()
   @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+
+  @IsOptional()
+  @IsString()
   fileName?: string | null;
 
   @IsOptional()
@@ -745,13 +788,14 @@ export class CreateRuntimeComponentDto {
   kind!: RuntimeComponentKind;
 
   @IsOptional()
-  @IsIn(["github_remote", "custom_remote"])
+  @IsIn(["uploaded", "github_remote", "custom_remote"])
   source?: RuntimeComponentSource;
 
+  @IsOptional()
   @IsUrl({
     require_tld: false
   })
-  originUrl!: string;
+  originUrl?: string;
 
   @IsOptional()
   @IsString()
@@ -786,7 +830,7 @@ export class CreateRuntimeComponentDto {
 
 export class UpdateRuntimeComponentDto {
   @IsOptional()
-  @IsIn(["github_remote", "custom_remote"])
+  @IsIn(["uploaded", "github_remote", "custom_remote"])
   source?: RuntimeComponentSource;
 
   @IsOptional()
@@ -814,6 +858,32 @@ export class UpdateRuntimeComponentDto {
   @IsOptional()
   @IsString()
   archiveEntryName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  expectedHash?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "enabled must be a boolean value"
+  })
+  enabled?: boolean;
+}
+
+export class UploadRuntimeComponentDto {
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform!: PlatformTarget;
+
+  @IsIn(["x64", "arm64"])
+  architecture!: RuntimeComponentArchitecture;
+
+  @IsIn(["xray", "geoip", "geosite"])
+  kind!: RuntimeComponentKind;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string | null;
 
   @IsOptional()
   @IsString()

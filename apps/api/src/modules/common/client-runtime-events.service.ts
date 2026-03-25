@@ -54,6 +54,16 @@ export class ClientRuntimeEventsService {
     }
   }
 
+  publishToUsers(userIds: Iterable<string>, event: ClientRuntimeEventDto) {
+    const uniqueUserIds = Array.from(new Set(userIds));
+    if (uniqueUserIds.length === 0) {
+      return;
+    }
+    for (const userId of uniqueUserIds) {
+      this.publishToUser(userId, event);
+    }
+  }
+
   private toMessageEvent(event: ClientRuntimeEventDto): MessageEvent {
     return {
       type: event.type,

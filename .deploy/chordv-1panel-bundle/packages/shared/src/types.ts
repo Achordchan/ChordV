@@ -2,14 +2,20 @@ export type ConnectionMode = "global" | "rule" | "direct";
 export type SubscriptionState = "active" | "expired" | "exhausted" | "paused";
 export type RuntimeStatus = "idle" | "connecting" | "connected" | "disconnecting" | "error";
 export type PlatformTarget = "macos" | "windows" | "android" | "ios";
-export type ReleaseChannel = "beta" | "stable";
-export type ReleaseStatus = "draft" | "published" | "archived";
+export type ReleaseChannel = "stable";
+export type ReleaseStatus = "draft" | "published";
 export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "apk" | "ipa" | "external";
 export type UpdateDeliveryMode = "desktop_installer_download" | "apk_download" | "external_download" | "none";
 export type RuntimeComponentArchitecture = "x64" | "arm64";
 export type RuntimeComponentKind = "xray" | "geoip" | "geosite";
-export type RuntimeComponentSource = "github_remote" | "custom_remote";
-export type RuntimeComponentValidationStatus = "ready" | "disabled" | "invalid_url" | "unreachable";
+export type RuntimeComponentSource = "uploaded" | "github_remote" | "custom_remote";
+export type RuntimeComponentValidationStatus =
+  | "ready"
+  | "disabled"
+  | "invalid_url"
+  | "unreachable"
+  | "missing_file"
+  | "metadata_mismatch";
 export type RuntimeDownloadFailureReason =
   | "download_failed"
   | "http_error"
@@ -31,6 +37,9 @@ export type SubscriptionOwnerType = "user" | "team";
 export type MeteringStatus = "ok" | "degraded";
 export type SessionLeaseStatus = "active" | "expired" | "revoked" | "evicted";
 export type SessionEvictedReason = "concurrency_limit";
+export type SupportTicketStatus = "open" | "waiting_admin" | "waiting_user" | "closed";
+export type SupportTicketSource = "desktop";
+export type SupportTicketAuthorRole = "user" | "admin" | "system";
 export type SessionReasonCode =
   | "admin_paused_connection"
   | "node_access_revoked"
@@ -129,6 +138,9 @@ export interface AnnouncementDto {
   publishedAt: string;
   displayMode: AnnouncementDisplayMode;
   countdownSeconds: number;
+  passiveSeenAt: string | null;
+  acknowledgedAt: string | null;
+  isUnread: boolean;
 }
 
 export interface ClientVersionDto {
@@ -146,6 +158,10 @@ export interface AdminReleaseArtifactDto {
   type: ReleaseArtifactType;
   deliveryMode: UpdateDeliveryMode;
   downloadUrl: string;
+  originDownloadUrl?: string | null;
+  finalUrlPreview?: string | null;
+  defaultMirrorPrefix: string | null;
+  allowClientMirror: boolean;
   fileName: string | null;
   fileSizeBytes: string | null;
   fileHash: string | null;
@@ -157,7 +173,7 @@ export interface AdminReleaseArtifactDto {
 
 export interface AdminReleaseArtifactValidationDto {
   artifactId: string;
-  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url";
+  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
   message: string;
   actualFileSizeBytes?: string | null;
   actualFileHash?: string | null;
@@ -169,7 +185,6 @@ export interface AdminReleaseRecordDto {
   channel: ReleaseChannel;
   version: string;
   displayTitle: string;
-  releaseNotes: string | null;
   changelog: string[];
   minimumVersion: string;
   forceUpgrade: boolean;
@@ -192,6 +207,8 @@ export interface AdminRuntimeComponentRecordDto {
   fileName: string;
   archiveEntryName: string | null;
   expectedHash: string | null;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
   enabled: boolean;
   finalUrlPreview: string;
   createdAt: string;
@@ -232,6 +249,7 @@ export interface ClientRuntimeComponentPlanItemDto {
   architecture: RuntimeComponentArchitecture;
   kind: RuntimeComponentKind;
   fileName: string;
+  fileSizeBytes?: string | null;
   archiveEntryName?: string | null;
   expectedHash?: string | null;
   allowClientMirror: boolean;
@@ -252,6 +270,7 @@ export interface ClientUpdateCheckDto {
   platform: PlatformTarget;
   channel: ReleaseChannel;
   artifactType?: ReleaseArtifactType | null;
+  clientMirrorPrefix?: string | null;
 }
 
 export interface ClientUpdateCheckResultDto {
@@ -266,7 +285,6 @@ export interface ClientUpdateCheckResultDto {
   platform: PlatformTarget;
   channel: ReleaseChannel;
   changelog: string[];
-  releaseNotes?: string | null;
   deliveryMode: UpdateDeliveryMode;
   downloadUrl?: string | null;
   fileName?: string | null;
@@ -281,6 +299,10 @@ export interface ClientBootstrapDto {
   subscription: SubscriptionStatusDto;
   policies: PolicyBundleDto;
   announcements: AnnouncementDto[];
+  supportTickets: {
+    totalCount: number;
+    unreadCount: number;
+  };
   version: ClientVersionDto;
   team?: ClientTeamSummaryDto | null;
 }
@@ -528,6 +550,9 @@ export interface DashboardSnapshotDto {
   activeNodes: number;
   announcements: number;
   activePlans: number;
+  openTickets: number;
+  waitingAdminTickets: number;
+  closedTickets: number;
 }
 
 export interface AdminSnapshotDto {
@@ -540,6 +565,76 @@ export interface AdminSnapshotDto {
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];
+}
+
+export interface ClientPingDto {
+  ok: boolean;
+  serverTime: string;
+}
+
+export interface ClientSupportTicketMessageDto {
+  id: string;
+  ticketId: string;
+  authorRole: SupportTicketAuthorRole;
+  authorDisplayName: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface ClientSupportTicketSummaryDto {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  subscriptionId: string | null;
+  teamId: string | null;
+  teamName: string | null;
+  lastMessageAt: string;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastMessagePreview: string | null;
+  hasUnreadMessages: boolean;
+  unreadCount: number;
+  lastReadAt: string | null;
+}
+
+export interface ClientSupportTicketDetailDto extends ClientSupportTicketSummaryDto {
+  messages: ClientSupportTicketMessageDto[];
+}
+
+export interface AdminSupportTicketMessageDto {
+  id: string;
+  ticketId: string;
+  authorRole: SupportTicketAuthorRole;
+  authorUserId: string | null;
+  authorDisplayName: string | null;
+  authorEmail: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export interface AdminSupportTicketSummaryDto {
+  id: string;
+  title: string;
+  status: SupportTicketStatus;
+  source: SupportTicketSource;
+  ownerType: "personal" | "team";
+  userId: string;
+  userEmail: string;
+  userDisplayName: string;
+  subscriptionId: string | null;
+  teamId: string | null;
+  teamName: string | null;
+  lastMessageAt: string;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastMessagePreview: string | null;
+}
+
+export interface AdminSupportTicketDetailDto extends AdminSupportTicketSummaryDto {
+  messages: AdminSupportTicketMessageDto[];
 }
 
 export interface AuthSessionDto {
@@ -596,6 +691,20 @@ export interface SessionHeartbeatInputDto {
   sessionId: string;
 }
 
+export interface CreateClientSupportTicketInputDto {
+  title: string;
+  body: string;
+}
+
+export interface ReplyClientSupportTicketInputDto {
+  body: string;
+}
+
+export interface MarkClientAnnouncementsReadInputDto {
+  announcementIds: string[];
+  action: "seen" | "ack";
+}
+
 export interface SessionLeaseStatusDto {
   sessionId: string;
   status: SessionLeaseStatus;
@@ -645,6 +754,19 @@ export interface UpdateSubscriptionInputDto {
   usedTrafficGb?: number;
   expireAt?: string;
   state?: SubscriptionState;
+}
+
+export interface ConvertSubscriptionToTeamInputDto {
+  targetTeamId: string;
+}
+
+export interface ConvertSubscriptionToTeamResultDto {
+  ok: boolean;
+  deletedSubscriptionId: string;
+  teamId: string;
+  teamName: string;
+  teamSubscriptionId: string;
+  message: string;
 }
 
 export interface ImportNodeInputDto {
@@ -815,17 +937,16 @@ export interface CreateReleaseInputDto {
   channel: ReleaseChannel;
   version: string;
   displayTitle: string;
-  releaseNotes?: string | null;
   changelog?: string[];
   minimumVersion: string;
   forceUpgrade?: boolean;
   status?: ReleaseStatus;
   publishedAt?: string | null;
+  initialArtifact?: CreateReleaseArtifactInputDto | null;
 }
 
 export interface UpdateReleaseInputDto {
   displayTitle?: string;
-  releaseNotes?: string | null;
   changelog?: string[];
   minimumVersion?: string;
   forceUpgrade?: boolean;
@@ -838,6 +959,8 @@ export interface CreateReleaseArtifactInputDto {
   type: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
   downloadUrl: string;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
   fileName?: string | null;
   fileSizeBytes?: string | null;
   fileHash?: string | null;
@@ -850,11 +973,20 @@ export interface CreateRuntimeComponentInputDto {
   architecture: RuntimeComponentArchitecture;
   kind: RuntimeComponentKind;
   source?: RuntimeComponentSource;
-  originUrl: string;
+  originUrl?: string;
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
   fileName: string;
   archiveEntryName?: string | null;
+  expectedHash?: string | null;
+  enabled?: boolean;
+}
+
+export interface UploadRuntimeComponentInputDto {
+  platform: PlatformTarget;
+  architecture: RuntimeComponentArchitecture;
+  kind: RuntimeComponentKind;
+  fileName?: string | null;
   expectedHash?: string | null;
   enabled?: boolean;
 }
@@ -892,6 +1024,8 @@ export interface UpdateReleaseArtifactInputDto {
   type?: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
   downloadUrl?: string;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
   fileName?: string | null;
   fileSizeBytes?: string | null;
   fileHash?: string | null;
@@ -903,6 +1037,8 @@ export interface UploadReleaseArtifactInputDto {
   source?: "uploaded" | "external";
   type: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
   fileName?: string | null;
   isPrimary?: boolean;
   isFullPackage?: boolean;

@@ -21,7 +21,7 @@ type ControlPanelProps = {
 
 export function ControlPanel(props: ControlPanelProps) {
   return (
-    <Paper withBorder radius="xl" p="md" className="desktop-panel">
+    <Paper withBorder radius="lg" p="md" className="desktop-panel">
       <Stack h="100%" gap="sm" className="control-shell">
         <Stack gap="sm">
           <div className="control-head">
@@ -43,7 +43,7 @@ export function ControlPanel(props: ControlPanelProps) {
 
           <Button
             size="lg"
-            radius="xl"
+            radius="md"
             className="primary-action control-primary-action"
             leftSection={<IconPlugConnected size={20} />}
             onClick={props.onPrimaryAction}
@@ -73,7 +73,7 @@ export function ControlPanel(props: ControlPanelProps) {
 
         <Group justify="space-between" className="control-footer">
           <Text size="sm" c="dimmed">
-            内核 {props.desktopStatus.xrayBinaryPath ? "已就绪" : "未安装"}
+            {readRuntimeInstallLabel(props.desktopStatus, props.runtimeAssetsPhase)}
           </Text>
           <Button
             size="compact-sm"
@@ -90,9 +90,28 @@ export function ControlPanel(props: ControlPanelProps) {
   );
 }
 
+function readRuntimeInstallLabel(
+  desktopStatus: RuntimeStatus,
+  runtimeAssetsPhase: ControlPanelProps["runtimeAssetsPhase"]
+) {
+  if (runtimeAssetsPhase === "checking" || runtimeAssetsPhase === "downloading") {
+    return "内核准备中";
+  }
+  if (runtimeAssetsPhase === "failed") {
+    return "内核准备失败";
+  }
+  if (!desktopStatus.xrayBinaryPath) {
+    return "内核待准备";
+  }
+  if (desktopStatus.status === "idle") {
+    return "内核已安装";
+  }
+  return "内核已启动";
+}
+
 function StatusSurface(props: { status: string; nodeName: string }) {
   return (
-    <Paper radius="lg" p="sm" className="status-surface">
+    <Paper radius="md" p="sm" className="status-surface">
       <Stack gap={6}>
         <Group justify="space-between">
           <Text size="sm" c="dimmed">
@@ -112,7 +131,7 @@ function StatusSurface(props: { status: string; nodeName: string }) {
 
 function MetricBlock(props: { label: string; value: string }) {
   return (
-    <Paper withBorder radius="lg" p="sm">
+    <Paper withBorder radius="md" p="sm">
       <Text size="sm" c="dimmed">
         {props.label}
       </Text>

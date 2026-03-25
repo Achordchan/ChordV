@@ -57,6 +57,11 @@ export type ClientRuntimeEventType =
   | "session_revoked"
   | "subscription_updated"
   | "node_access_updated"
+  | "announcement_updated"
+  | "announcement_read_state_updated"
+  | "ticket_updated"
+  | "ticket_read_state_updated"
+  | "version_updated"
   | "account_updated"
   | "keepalive";
 export type EdgeGatewayStatus = "online" | "offline" | "degraded";
@@ -721,6 +726,12 @@ export interface ClientRuntimeEventDto {
   sessionId?: string | null;
   subscriptionId?: string | null;
   nodeId?: string | null;
+  announcementId?: string | null;
+  ticketId?: string | null;
+  ticketStatus?: SupportTicketStatus | null;
+  platform?: PlatformTarget | null;
+  channel?: ReleaseChannel | null;
+  latestVersion?: string | null;
   reasonCode?: SessionReasonCode | null;
   reasonMessage?: string | null;
   subscriptionState?: SubscriptionState | null;

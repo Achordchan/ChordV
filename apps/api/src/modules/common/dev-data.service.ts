@@ -430,6 +430,14 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    for (const item of targetRows) {
+      this.clientRuntimeEventsService.publishToUser(user.id, {
+        type: "announcement_read_state_updated",
+        occurredAt: now.toISOString(),
+        announcementId: item.id
+      });
+    }
+
     return {
       ok: true,
       updatedIds: targetRows.map((item) => item.id)
@@ -465,6 +473,111 @@ export class DevDataService implements OnModuleInit {
       changelog: latestRelease.changelog,
       downloadUrl: primaryArtifact?.downloadUrl ?? null
     };
+  }
+
+  private async listActiveUserIds(): Promise<string[]> {
+    const rows = await this.prisma.user.findMany({
+      where: { status: "active" },
+      select: { id: true }
+    });
+    return rows.map((row) => row.id);
+  }
+
+  private async resolveTargetUserIdsForSubscriptionTarget(target: {
+    userId?: string | null;
+    teamId?: string | null;
+  }): Promise<string[]> {
+    if (target.teamId) {
+      const rows = await this.prisma.teamMember.findMany({
+        where: { teamId: target.teamId },
+        select: { userId: true }
+      });
+      return Array.from(new Set(rows.map((row) => row.userId)));
+    }
+    return target.userId ? [target.userId] : [];
+  }
+
+  private publishClientEventToUsers(userIds: Iterable<string>, event: ClientRuntimeEventDto) {
+    this.clientRuntimeEventsService.publishToUsers(userIds, event);
+  }
+
+  private async publishAnnouncementUpdatedEvent(announcementId: string) {
+    const userIds = await this.listActiveUserIds();
+    this.publishClientEventToUsers(userIds, {
+      type: "announcement_updated",
+      occurredAt: new Date().toISOString(),
+      announcementId
+    });
+  }
+
+  private publishAnnouncementReadStateUpdatedEvent(userId: string, announcementId: string) {
+    this.clientRuntimeEventsService.publishToUser(userId, {
+      type: "announcement_read_state_updated",
+      occurredAt: new Date().toISOString(),
+      announcementId
+    });
+  }
+
+  private publishTicketEvent(
+    userId: string,
+    ticketId: string,
+    ticketStatus: SupportTicketStatus,
+    type: "ticket_updated" | "ticket_read_state_updated" = "ticket_updated"
+  ) {
+    this.clientRuntimeEventsService.publishToUser(userId, {
+      type,
+      occurredAt: new Date().toISOString(),
+      ticketId,
+      ticketStatus
+    });
+  }
+
+  private async publishVersionUpdatedEvent(
+    platform?: PlatformTarget | null,
+    channel: ReleaseChannel = "stable",
+    latestVersion?: string | null
+  ) {
+    const resolvedLatestVersion =
+      latestVersion === undefined && platform
+        ? (await this.findLatestPublishedRelease(channel, platform))?.version ?? null
+        : latestVersion ?? null;
+    const userIds = await this.listActiveUserIds();
+    this.publishClientEventToUsers(userIds, {
+      type: "version_updated",
+      occurredAt: new Date().toISOString(),
+      platform: platform ?? null,
+      channel,
+      latestVersion: resolvedLatestVersion
+    });
+  }
+
+  private async publishSubscriptionUpdatedEvent(target: {
+    subscriptionId?: string | null;
+    userId?: string | null;
+    teamId?: string | null;
+    state?: SubscriptionState | null;
+  }) {
+    const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
+    this.publishClientEventToUsers(userIds, {
+      type: "subscription_updated",
+      occurredAt: new Date().toISOString(),
+      subscriptionId: target.subscriptionId ?? null,
+      subscriptionState: target.state ?? null,
+      state: target.state ?? null
+    });
+  }
+
+  private async publishNodeAccessUpdatedEvent(target: {
+    subscriptionId?: string | null;
+    userId?: string | null;
+    teamId?: string | null;
+  }) {
+    const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
+    this.publishClientEventToUsers(userIds, {
+      type: "node_access_updated",
+      occurredAt: new Date().toISOString(),
+      subscriptionId: target.subscriptionId ?? null
+    });
   }
 
   async pingClient(token?: string): Promise<ClientPingDto> {
@@ -551,6 +664,12 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    this.clientRuntimeEventsService.publishToUser(user.id, {
+      type: "ticket_read_state_updated",
+      occurredAt: now.toISOString(),
+      ticketId: row.id
+    });
+
     return {
       ok: true,
       ticketId: row.id,
@@ -602,6 +721,13 @@ export class DevDataService implements OnModuleInit {
           }
         }
       }
+    });
+
+    this.clientRuntimeEventsService.publishToUser(user.id, {
+      type: "ticket_updated",
+      occurredAt: now.toISOString(),
+      ticketId,
+      ticketStatus: "waiting_admin"
     });
 
     return this.getClientSupportTicketDetail(ticketId, token);
@@ -667,6 +793,13 @@ export class DevDataService implements OnModuleInit {
           lastReadAt: now
         }
       });
+    });
+
+    this.clientRuntimeEventsService.publishToUser(user.id, {
+      type: "ticket_updated",
+      occurredAt: now.toISOString(),
+      ticketId,
+      ticketStatus: "waiting_admin"
     });
 
     return this.getClientSupportTicketDetail(ticketId, token);
@@ -2007,7 +2140,7 @@ export class DevDataService implements OnModuleInit {
 
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true }
+      select: { id: true, status: true, userId: true }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -2036,13 +2169,20 @@ export class DevDataService implements OnModuleInit {
       })
     ]);
 
+    this.clientRuntimeEventsService.publishToUser(current.userId, {
+      type: "ticket_updated",
+      occurredAt: now.toISOString(),
+      ticketId,
+      ticketStatus: "waiting_user"
+    });
+
     return this.getAdminSupportTicketDetail(ticketId);
   }
 
   async closeAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true, closedAt: true }
+      select: { id: true, status: true, closedAt: true, userId: true }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -2056,13 +2196,19 @@ export class DevDataService implements OnModuleInit {
         }
       });
     }
+    this.clientRuntimeEventsService.publishToUser(current.userId, {
+      type: "ticket_updated",
+      occurredAt: new Date().toISOString(),
+      ticketId,
+      ticketStatus: "closed"
+    });
     return this.getAdminSupportTicketDetail(ticketId);
   }
 
   async reopenAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true }
+      select: { id: true, status: true, userId: true }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -2076,6 +2222,12 @@ export class DevDataService implements OnModuleInit {
         }
       });
     }
+    this.clientRuntimeEventsService.publishToUser(current.userId, {
+      type: "ticket_updated",
+      occurredAt: new Date().toISOString(),
+      ticketId,
+      ticketStatus: "open"
+    });
     return this.getAdminSupportTicketDetail(ticketId);
   }
 
@@ -2165,6 +2317,7 @@ export class DevDataService implements OnModuleInit {
           }
         }
       });
+      await this.publishVersionUpdatedEvent(updated.platform as PlatformTarget, updated.channel as ReleaseChannel);
       return toAdminReleaseRecord(updated);
     }
 
@@ -2182,6 +2335,9 @@ export class DevDataService implements OnModuleInit {
           }
         }
       });
+      if (current.status === "published") {
+        await this.publishVersionUpdatedEvent(updated.platform as PlatformTarget, updated.channel as ReleaseChannel);
+      }
       return toAdminReleaseRecord(updated);
     }
 
@@ -2195,6 +2351,9 @@ export class DevDataService implements OnModuleInit {
           }
         }
       });
+      if (current.status === "published") {
+        await this.publishVersionUpdatedEvent(updated.platform as PlatformTarget, updated.channel as ReleaseChannel);
+      }
       return toAdminReleaseRecord(updated);
     }
 
@@ -2215,6 +2374,7 @@ export class DevDataService implements OnModuleInit {
         }
       }
     });
+    await this.publishVersionUpdatedEvent(updated.platform as PlatformTarget, updated.channel as ReleaseChannel);
     return toAdminReleaseRecord(updated);
   }
 
@@ -2232,6 +2392,7 @@ export class DevDataService implements OnModuleInit {
         }
       }
     });
+    await this.publishVersionUpdatedEvent(updated.platform as PlatformTarget, updated.channel as ReleaseChannel);
     return toAdminReleaseRecord(updated);
   }
 
@@ -2260,6 +2421,10 @@ export class DevDataService implements OnModuleInit {
       )
     );
     await removeReleaseArtifactDirectory(path.join(releaseArtifactStorageRoot(), releaseId));
+
+    if (release.status === "published") {
+      await this.publishVersionUpdatedEvent(release.platform as PlatformTarget, release.channel as ReleaseChannel);
+    }
 
     return {
       ok: true,
@@ -3159,6 +3324,12 @@ export class DevDataService implements OnModuleInit {
     if (!updatedSubscription) {
       throw new NotFoundException("订阅不存在");
     }
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: updatedSubscription.id,
+      userId: updatedSubscription.userId,
+      teamId: updatedSubscription.teamId,
+      state: updatedSubscription.state
+    });
     const user = targetUserId ? await this.requireAdminUserRecord(targetUserId) : null;
     return {
       ok: true,
@@ -3346,6 +3517,13 @@ export class DevDataService implements OnModuleInit {
 
     await this.syncSubscriptionPanelAccess(row.id);
 
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: row.id,
+      userId: row.userId,
+      teamId: row.teamId,
+      state: row.state
+    });
+
     return toAdminSubscriptionRecord(row);
   }
 
@@ -3377,6 +3555,13 @@ export class DevDataService implements OnModuleInit {
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
     await this.syncActiveLeasesForSubscription(row);
+
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: row.id,
+      userId: row.userId,
+      teamId: row.teamId,
+      state: row.state
+    });
 
     return toAdminSubscriptionRecord(row);
   }
@@ -3419,6 +3604,13 @@ export class DevDataService implements OnModuleInit {
     await this.syncSubscriptionPanelAccess(subscriptionId);
     await this.syncActiveLeasesForSubscription(row);
 
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: row.id,
+      userId: row.userId,
+      teamId: row.teamId,
+      state: row.state
+    });
+
     return toAdminSubscriptionRecord(row);
   }
 
@@ -3451,6 +3643,13 @@ export class DevDataService implements OnModuleInit {
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
     await this.syncActiveLeasesForSubscription(row);
+
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: row.id,
+      userId: row.userId,
+      teamId: row.teamId,
+      state: row.state
+    });
 
     return toAdminSubscriptionRecord(row);
   }
@@ -3529,6 +3728,17 @@ export class DevDataService implements OnModuleInit {
       }
       throw error;
     }
+
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId,
+      userId: user.id,
+      state: null
+    });
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: teamSubscription.id,
+      teamId: targetTeam.id,
+      state: teamSubscription.state
+    });
 
     const teamRecord = await this.requireTeamRecord(targetTeam.id);
     return {
@@ -3726,6 +3936,11 @@ export class DevDataService implements OnModuleInit {
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
       await this.syncSubscriptionPanelAccess(subscription.id);
+      await this.publishSubscriptionUpdatedEvent({
+        subscriptionId: subscription.id,
+        teamId: subscription.teamId,
+        state: subscription.state
+      });
     }
 
     return this.requireTeamRecord(teamId);
@@ -3776,6 +3991,14 @@ export class DevDataService implements OnModuleInit {
     await this.prisma.teamMember.delete({
       where: { id: memberId }
     });
+
+    if (subscription) {
+      await this.publishSubscriptionUpdatedEvent({
+        subscriptionId: subscription.id,
+        teamId: subscription.teamId,
+        state: subscription.state
+      });
+    }
 
     return { ok: true };
   }
@@ -3877,6 +4100,13 @@ export class DevDataService implements OnModuleInit {
 
     await this.syncSubscriptionPanelAccess(row.id);
 
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: row.id,
+      userId: row.userId,
+      teamId: row.teamId,
+      state: row.state
+    });
+
     return toAdminSubscriptionRecord(row);
   }
 
@@ -3900,7 +4130,7 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     input: UpdateSubscriptionNodeAccessInputDto
   ): Promise<SubscriptionNodeAccessDto> {
-    await this.requireSubscription(subscriptionId);
+    const subscription = await this.requireSubscription(subscriptionId);
 
     const uniqueNodeIds = [...new Set(input.nodeIds)];
     const existingRows = await this.prisma.subscriptionNodeAccess.findMany({
@@ -3930,6 +4160,11 @@ export class DevDataService implements OnModuleInit {
       }
 
       await this.syncSubscriptionPanelAccess(subscriptionId);
+      await this.publishNodeAccessUpdatedEvent({
+        subscriptionId,
+        userId: subscription.userId,
+        teamId: subscription.teamId
+      });
       return {
         subscriptionId,
         nodeIds: [],
@@ -3983,6 +4218,11 @@ export class DevDataService implements OnModuleInit {
     }
 
     await this.syncSubscriptionPanelAccess(subscriptionId);
+    await this.publishNodeAccessUpdatedEvent({
+      subscriptionId,
+      userId: subscription.userId,
+      teamId: subscription.teamId
+    });
 
     const rows = await this.prisma.subscriptionNodeAccess.findMany({
       where: { subscriptionId },
@@ -4393,6 +4633,8 @@ export class DevDataService implements OnModuleInit {
       }
     });
 
+    await this.publishAnnouncementUpdatedEvent(row.id);
+
     return toAdminAnnouncementRecord(row);
   }
 
@@ -4420,6 +4662,8 @@ export class DevDataService implements OnModuleInit {
         ...(input.displayMode !== undefined || input.countdownSeconds !== undefined ? { countdownSeconds } : {})
       }
     });
+
+    await this.publishAnnouncementUpdatedEvent(row.id);
 
     return toAdminAnnouncementRecord(row);
   }

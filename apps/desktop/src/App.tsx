@@ -20,6 +20,7 @@ import {
   type ClientUpdateCheckResult,
   connectSession,
   disconnectSession,
+  fetchAnnouncements,
   fetchBootstrap,
   fetchClientRuntime,
   fetchNodeProbes,
@@ -27,9 +28,9 @@ import {
   fetchRuntimeComponentsPlan,
   fetchSupportTicketDetail,
   fetchSupportTickets,
+  isUnauthorizedApiError,
   markAnnouncementsRead,
   markSupportTicketRead,
-  probeClientServerLatency,
   reportRuntimeComponentFailure,
   fetchSubscription,
   heartbeatSession,
@@ -83,6 +84,7 @@ import {
   type RuntimeComponentDownloadProgress,
   type RuntimeDownloadFailureReason
 } from "./lib/runtimeComponents";
+import { isSupportTicketUnread, markSupportTicketAsRead } from "./lib/supportTickets";
 const PROBE_COOLDOWN_MS = 25000;
 const LAST_NODE_KEY = "chordv_last_node_id";
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
@@ -205,24 +207,27 @@ export function App() {
   const lastRuntimeSignalKeyRef = useRef<string | null>(null);
   const lastForegroundSyncErrorRef = useRef<string | null>(null);
   const lastForegroundSyncAtRef = useRef(0);
-  const lastServerProbeForegroundAtRef = useRef(0);
   const localStopInFlightRef = useRef<Promise<void> | null>(null);
   const runtimeRescueTriggeredRef = useRef(false);
   const runtimeRef = useRef<GeneratedRuntimeConfigDto | null>(null);
+  const bootstrapRef = useRef<ClientBootstrapDto | null>(null);
   const nodesRef = useRef<NodeSummaryDto[]>([]);
   const selectedNodeIdRef = useRef<string | null>(null);
   const probeResultsRef = useRef<Record<string, RuntimeNodeProbeResult>>({});
+  const ticketCenterOpenedRef = useRef(false);
+  const ticketCreateModeRef = useRef(false);
+  const selectedTicketIdRef = useRef<string | null>(null);
   const shellActionRef = useRef<(() => Promise<void>) | null>(null);
   const openLogsActionRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<AuthSessionDto | null>(null);
   const lastUpdatePromptVersionRef = useRef<string | null>(null);
   const runtimeAssetsTaskRef = useRef<Promise<boolean> | null>(null);
+  const unauthorizedRecoveryTaskRef = useRef<Promise<boolean> | null>(null);
   const deferredUpdatePromptKeyRef = useRef<string | null>(null);
   const lastShellSummaryRef = useRef("");
   const pendingShellSummaryRef = useRef("");
   const shellSummaryRequestSeqRef = useRef(0);
   const runtimeRefreshRequestSeqRef = useRef(0);
-  const serverProbeRequestSeqRef = useRef(0);
   const lastKnownUpdateArtifactRef = useRef<ClientUpdateArtifact | null>(null);
 
   const selectedNode = useMemo(
@@ -297,7 +302,7 @@ export function App() {
       passiveAnnouncements.some((item) => isPassiveAnnouncementUnread(item)),
     [announcementReadRevision, forcedAnnouncement, passiveAnnouncements]
   );
-  const hasUnreadTickets = useMemo(() => ticketList.some((ticket) => isTicketUnread(ticket)), [ticketList]);
+  const hasUnreadTickets = useMemo(() => ticketList.some((ticket) => isSupportTicketUnread(ticket)), [ticketList]);
   const subscriptionServerProbe = useMemo<SubscriptionServerProbe>(
     () => toSubscriptionServerProbe(serverProbe),
     [serverProbe]
@@ -306,6 +311,10 @@ export function App() {
   useEffect(() => {
     runtimeRef.current = runtime;
   }, [runtime]);
+
+  useEffect(() => {
+    bootstrapRef.current = bootstrap;
+  }, [bootstrap]);
 
   useEffect(() => {
     if (!session || !bootstrap) {
@@ -331,6 +340,18 @@ export function App() {
   useEffect(() => {
     selectedNodeIdRef.current = selectedNodeId;
   }, [selectedNodeId]);
+
+  useEffect(() => {
+    ticketCenterOpenedRef.current = ticketCenterOpened;
+  }, [ticketCenterOpened]);
+
+  useEffect(() => {
+    ticketCreateModeRef.current = ticketCreateMode;
+  }, [ticketCreateMode]);
+
+  useEffect(() => {
+    selectedTicketIdRef.current = selectedTicketId;
+  }, [selectedTicketId]);
 
   useEffect(() => {
     probeResultsRef.current = probeResults;
@@ -359,44 +380,12 @@ export function App() {
     if (!session) {
       return;
     }
-    void runServerLatencyProbe(session.accessToken);
-  }, [session?.accessToken]);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void runServerLatencyProbe(session.accessToken);
-    }, 20_000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [session?.accessToken]);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-
-    const probeOnForeground = () => {
-      if (document.visibilityState === "hidden") {
-        return;
-      }
-      const nowMs = Date.now();
-      if (nowMs - lastServerProbeForegroundAtRef.current < 3000) {
-        return;
-      }
-      lastServerProbeForegroundAtRef.current = nowMs;
-      void runServerLatencyProbe(session.accessToken);
-    };
-
-    document.addEventListener("visibilitychange", probeOnForeground);
-    window.addEventListener("focus", probeOnForeground);
-    return () => {
-      document.removeEventListener("visibilitychange", probeOnForeground);
-      window.removeEventListener("focus", probeOnForeground);
-    };
+    setServerProbe((current) => ({
+      status: "checking",
+      elapsedMs: current.elapsedMs,
+      checkedAt: current.checkedAt,
+      errorMessage: null
+    }));
   }, [session?.accessToken]);
 
   useEffect(() => {
@@ -411,12 +400,6 @@ export function App() {
       return;
     }
     void loadTicketList();
-    const timer = window.setInterval(() => {
-      void loadTicketList();
-    }, 30_000);
-    return () => {
-      window.clearInterval(timer);
-    };
   }, [session?.accessToken]);
 
   useEffect(() => {
@@ -623,18 +606,6 @@ export function App() {
   }, [forcedAnnouncement, countdown]);
 
   useEffect(() => {
-    if (!session) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void syncSubscriptionState(session.accessToken);
-    }, 30_000);
-
-    return () => window.clearInterval(timer);
-  }, [session]);
-
-  useEffect(() => {
     if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
       return;
     }
@@ -737,6 +708,26 @@ export function App() {
     return subscribeClientEvents(session.accessToken, {
       onEvent: (event) => {
         void handleRuntimeEvent(event, session.accessToken);
+      },
+      onOpen: (meta) => {
+        setServerProbe({
+          status: meta.elapsedMs !== null && meta.elapsedMs >= 200 ? "slow" : "healthy",
+          elapsedMs: meta.elapsedMs,
+          checkedAt: Date.now(),
+          errorMessage: null
+        });
+      },
+      onError: (error, meta) => {
+        if (meta.authError || isUnauthorizedApiError(error)) {
+          void recoverSessionAfterUnauthorized();
+          return;
+        }
+        setServerProbe({
+          status: "failed",
+          elapsedMs: null,
+          checkedAt: Date.now(),
+          errorMessage: error instanceof Error ? readError(error.message) : "当前无法连接服务端"
+        });
       }
     });
   }, [session]);
@@ -1018,40 +1009,6 @@ export function App() {
     });
   }, [booting, desktopStatus.platformTarget, runtimeAssets.phase]);
 
-  async function runServerLatencyProbe(accessToken: string) {
-    const requestId = serverProbeRequestSeqRef.current + 1;
-    serverProbeRequestSeqRef.current = requestId;
-    setServerProbe((current) => ({
-      status: "checking",
-      elapsedMs: current.elapsedMs,
-      checkedAt: current.checkedAt,
-      errorMessage: null
-    }));
-
-    try {
-      const result = await probeClientServerLatency(accessToken);
-      if (serverProbeRequestSeqRef.current !== requestId) {
-        return;
-      }
-      setServerProbe({
-        status: result.elapsedMs !== null && result.elapsedMs >= 200 ? "slow" : "healthy",
-        elapsedMs: result.elapsedMs ?? null,
-        checkedAt: Date.now(),
-        errorMessage: null
-      });
-    } catch (reason) {
-      if (serverProbeRequestSeqRef.current !== requestId) {
-        return;
-      }
-      setServerProbe({
-        status: "failed",
-        elapsedMs: null,
-        checkedAt: Date.now(),
-        errorMessage: reason instanceof Error ? readError(reason.message) : "当前无法连接服务端"
-      });
-    }
-  }
-
   async function loadTicketList(preferredTicketId?: string | null) {
     const accessToken = sessionRef.current?.accessToken;
     if (!accessToken) {
@@ -1068,6 +1025,10 @@ export function App() {
         setTicketDetail(null);
       }
     } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
       setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单列表加载失败");
     } finally {
       setTicketListBusy(false);
@@ -1085,10 +1046,14 @@ export function App() {
       setTicketCenterError(null);
       const detail = await fetchSupportTicketDetail(accessToken, ticketId);
       setTicketDetail(detail);
-      if (isTicketUnread(detail)) {
+      if (isSupportTicketUnread(detail)) {
         void markTicketAsRead(ticketId, accessToken);
       }
     } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
       setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单详情加载失败");
     } finally {
       setTicketDetailBusy(false);
@@ -1098,9 +1063,12 @@ export function App() {
   async function markTicketAsRead(ticketId: string, accessToken: string) {
     try {
       await markSupportTicketRead(accessToken, ticketId);
-      setTicketList((current) => current.map((ticket) => markTicketRecordAsRead(ticket, ticketId)));
-      setTicketDetail((current) => (current ? markTicketRecordAsRead(current, ticketId) : current));
-    } catch {
+      setTicketList((current) => current.map((ticket) => markSupportTicketAsRead(ticket, ticketId)));
+      setTicketDetail((current) => (current ? markSupportTicketAsRead(current, ticketId) : current));
+    } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+      }
       return;
     }
   }
@@ -1126,7 +1094,10 @@ export function App() {
         action: "seen"
       });
       patchAnnouncementReadState(unreadIds, "seen");
-    } catch {
+    } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+      }
       return;
     }
   }
@@ -1186,6 +1157,10 @@ export function App() {
         message: "你的问题已经提交成功，可以在这里继续补充信息。"
       });
     } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
       setTicketCenterError(reason instanceof Error ? readError(reason.message) : "工单提交失败");
     } finally {
       setTicketSubmitting(false);
@@ -1213,6 +1188,10 @@ export function App() {
         message: "客服看到后会继续在这条工单里回复你。"
       });
     } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
       setTicketCenterError(reason instanceof Error ? readError(reason.message) : "发送回复失败");
     } finally {
       setTicketSubmitting(false);
@@ -1305,8 +1284,24 @@ export function App() {
     try {
       const subscription = await fetchSubscription(accessToken);
       mergeSubscriptionState(subscription);
-    } catch {
+    } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
       return;
+    }
+  }
+
+  async function syncAnnouncementsState(accessToken: string) {
+    try {
+      const announcements = await fetchAnnouncements(accessToken);
+      setBootstrap((current) => (current ? { ...current, announcements } : current));
+    } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
     }
   }
 
@@ -1319,6 +1314,15 @@ export function App() {
       fetchNodes(accessToken),
       activeRuntime ? fetchClientRuntime(accessToken) : Promise.resolve(null)
     ]);
+
+    if (
+      (subscriptionResult.status === "rejected" && isUnauthorizedApiError(subscriptionResult.reason)) ||
+      (nodesResult.status === "rejected" && isUnauthorizedApiError(nodesResult.reason)) ||
+      (runtimeResult.status === "rejected" && isUnauthorizedApiError(runtimeResult.reason))
+    ) {
+      await recoverSessionAfterUnauthorized();
+      return;
+    }
 
     let nextSubscription = bootstrap?.subscription ?? null;
     let nextNodes = nodesRef.current;
@@ -1353,6 +1357,9 @@ export function App() {
     }
 
     if (subscriptionResult.status === "rejected" && nodesResult.status === "rejected") {
+      if (isUnauthorizedApiError(subscriptionResult.reason) || isUnauthorizedApiError(nodesResult.reason)) {
+        return;
+      }
       const message = describeForegroundSyncFailure(subscriptionResult.reason);
       if (lastForegroundSyncErrorRef.current === message) {
         return;
@@ -1372,8 +1379,23 @@ export function App() {
       return;
     }
 
+    const eventType = event.type as string;
+    const runtimeEvent = event as ClientRuntimeEventDto & {
+      ticketId?: string | null;
+      announcementId?: string | null;
+    };
+
+    if (eventType === "keepalive") {
+      setServerProbe((current) => ({
+        status: current.status === "idle" || current.status === "checking" ? "healthy" : current.status,
+        elapsedMs: current.elapsedMs,
+        checkedAt: Date.now(),
+        errorMessage: null
+      }));
+    }
+
     if (
-      event.type === "subscription_updated" ||
+      eventType === "subscription_updated" ||
       event.reasonCode === "subscription_expired" ||
       event.reasonCode === "subscription_exhausted" ||
       event.reasonCode === "subscription_paused" ||
@@ -1383,8 +1405,28 @@ export function App() {
       await syncSubscriptionState(accessToken);
     }
 
+    if (eventType === "announcement_updated" || eventType === "announcement_read_state_updated") {
+      await syncAnnouncementsState(accessToken);
+    }
+
+    if (eventType === "version_updated") {
+      await runUpdateCheck({
+        bootstrapVersion: bootstrapRef.current?.version ?? null,
+        source: "refresh",
+        silent: false
+      });
+    }
+
+    if (eventType === "ticket_updated" || eventType === "ticket_read_state_updated") {
+      const preferredTicketId = runtimeEvent.ticketId ?? selectedTicketIdRef.current;
+      await loadTicketList(preferredTicketId);
+      if (ticketCenterOpenedRef.current && !ticketCreateModeRef.current && preferredTicketId) {
+        await loadTicketDetail(preferredTicketId);
+      }
+    }
+
     if (
-      event.type === "node_access_updated" ||
+      eventType === "node_access_updated" ||
       event.reasonCode === "node_access_revoked" ||
       event.reasonCode === "admin_paused_connection"
     ) {
@@ -1490,6 +1532,34 @@ export function App() {
     }
   }
 
+  async function recoverSessionAfterUnauthorized() {
+    if (unauthorizedRecoveryTaskRef.current) {
+      return unauthorizedRecoveryTaskRef.current;
+    }
+
+    const currentSession = sessionRef.current;
+    if (!currentSession?.refreshToken) {
+      await clearSession(true);
+      return false;
+    }
+
+    const task = (async () => {
+      try {
+        const refreshed = await refreshSession(currentSession.refreshToken);
+        await saveStoredSession(refreshed);
+        return await bootstrapSession(refreshed, false, true, false);
+      } catch {
+        await clearSession(true);
+        return false;
+      } finally {
+        unauthorizedRecoveryTaskRef.current = null;
+      }
+    })();
+
+    unauthorizedRecoveryTaskRef.current = task;
+    return task;
+  }
+
   async function handleLogin() {
     if (authBusy) {
       return;
@@ -1525,8 +1595,6 @@ export function App() {
       const ok = await bootstrapSession(session, true, modeLocked, false);
       if (!ok) {
         await forceStopLocalRuntime();
-      } else {
-        await runServerLatencyProbe(sessionRef.current?.accessToken ?? session.accessToken);
       }
     } catch (reason) {
       await forceStopLocalRuntime();
@@ -2061,6 +2129,10 @@ export function App() {
       setForcedAnnouncement(null);
       setCountdown(0);
     } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await recoverSessionAfterUnauthorized();
+        return;
+      }
       notifications.show({
         color: "red",
         title: "公告状态同步失败",
@@ -2222,8 +2294,7 @@ export function App() {
           platform: updatePlatform,
           channel: UPDATE_CHANNEL,
           artifactType: preferredArtifactType(updatePlatform),
-          clientMirrorPrefix: runtimeMirrorPrefix,
-          accessToken: options.accessToken
+          clientMirrorPrefix: runtimeMirrorPrefix
         })) ?? createLegacyUpdateResult(options.bootstrapVersion ?? null, updatePlatform, appVersion);
 
       setUpdateCheckResult(result);
@@ -3000,29 +3071,38 @@ function pickTicketId(
 
 function patchAnnouncementRecord(item: AnnouncementDto, action: "seen" | "ack", touchedAt: string) {
   const current = item as AnnouncementDto & {
+    passiveSeenAt?: string | null;
     seenAt?: string | null;
     acknowledgedAt?: string | null;
+    isUnread?: boolean;
     isSeen?: boolean;
     isAcknowledged?: boolean;
     readState?: {
+      passiveSeenAt?: string | null;
       seenAt?: string | null;
       acknowledgedAt?: string | null;
       isSeen?: boolean;
       isAcknowledged?: boolean;
     } | null;
   };
+  const nextPassiveSeenAt =
+    action === "seen" ? touchedAt : (current.passiveSeenAt ?? current.readState?.passiveSeenAt ?? current.readState?.seenAt ?? current.seenAt ?? null);
+  const nextAcknowledgedAt =
+    action === "ack" ? touchedAt : (current.acknowledgedAt ?? current.readState?.acknowledgedAt ?? null);
   const nextReadState = {
     ...(current.readState ?? {}),
-    seenAt: action === "seen" ? touchedAt : (current.readState?.seenAt ?? current.seenAt ?? touchedAt),
-    acknowledgedAt:
-      action === "ack" ? touchedAt : (current.readState?.acknowledgedAt ?? current.acknowledgedAt ?? null),
-    isSeen: true,
+    passiveSeenAt: nextPassiveSeenAt,
+    seenAt: nextPassiveSeenAt,
+    acknowledgedAt: nextAcknowledgedAt,
+    isSeen: Boolean(nextPassiveSeenAt),
     isAcknowledged: action === "ack" ? true : (current.readState?.isAcknowledged ?? current.isAcknowledged ?? false)
   };
   return {
     ...current,
+    passiveSeenAt: nextPassiveSeenAt,
     seenAt: nextReadState.seenAt,
     acknowledgedAt: nextReadState.acknowledgedAt,
+    isUnread: action === "ack" || current.displayMode === "passive" ? false : current.isUnread,
     isSeen: nextReadState.isSeen,
     isAcknowledged: nextReadState.isAcknowledged,
     readState: nextReadState
@@ -3031,13 +3111,22 @@ function patchAnnouncementRecord(item: AnnouncementDto, action: "seen" | "ack", 
 
 function isPassiveAnnouncementUnread(item: AnnouncementDto) {
   const current = item as AnnouncementDto & {
+    passiveSeenAt?: string | null;
+    isUnread?: boolean;
     seenAt?: string | null;
     isSeen?: boolean;
     readState?: {
+      passiveSeenAt?: string | null;
       seenAt?: string | null;
       isSeen?: boolean;
     } | null;
   };
+  if (typeof current.isUnread === "boolean") {
+    return current.isUnread;
+  }
+  if (Boolean(current.passiveSeenAt ?? current.readState?.passiveSeenAt)) {
+    return false;
+  }
   if (current.readState?.isSeen === true || Boolean(current.readState?.seenAt)) {
     return false;
   }
@@ -3050,12 +3139,16 @@ function isPassiveAnnouncementUnread(item: AnnouncementDto) {
 function isForcedAnnouncementPending(item: AnnouncementDto) {
   const current = item as AnnouncementDto & {
     acknowledgedAt?: string | null;
+    isUnread?: boolean;
     isAcknowledged?: boolean;
     readState?: {
       acknowledgedAt?: string | null;
       isAcknowledged?: boolean;
     } | null;
   };
+  if (typeof current.isUnread === "boolean") {
+    return current.isUnread;
+  }
   if (current.readState?.isAcknowledged === true || Boolean(current.readState?.acknowledgedAt)) {
     return false;
   }
@@ -3063,43 +3156,6 @@ function isForcedAnnouncementPending(item: AnnouncementDto) {
     return false;
   }
   return true;
-}
-
-function isTicketUnread(ticket: ClientSupportTicketSummaryDto | ClientSupportTicketDetailDto) {
-  const current = ticket as ClientSupportTicketSummaryDto & {
-    unread?: boolean;
-    hasUnread?: boolean;
-    unreadMessageCount?: number | null;
-    lastReadAt?: string | null;
-    unreadAt?: string | null;
-  };
-  if (typeof current.unread === "boolean") {
-    return current.unread;
-  }
-  if (typeof current.hasUnread === "boolean") {
-    return current.hasUnread;
-  }
-  if (typeof current.unreadMessageCount === "number") {
-    return current.unreadMessageCount > 0;
-  }
-  if (current.unreadAt) {
-    return true;
-  }
-  return false;
-}
-
-function markTicketRecordAsRead<T extends ClientSupportTicketSummaryDto | ClientSupportTicketDetailDto>(ticket: T, ticketId: string): T {
-  if (ticket.id !== ticketId) {
-    return ticket;
-  }
-  return {
-    ...ticket,
-    unread: false,
-    hasUnread: false,
-    unreadMessageCount: 0,
-    unreadAt: null,
-    lastReadAt: new Date().toISOString()
-  } as T;
 }
 
 function normalizeUpdateDownloadProgress(

@@ -10,6 +10,7 @@ import { DevDataService } from "../common/dev-data.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import {
   ChangeSubscriptionPlanDto,
+  ConvertSubscriptionToTeamDto,
   CreateAnnouncementDto,
   CreatePlanDto,
   CreateReleaseArtifactDto,
@@ -23,6 +24,7 @@ import {
   ImportNodeDto,
   KickTeamMemberDto,
   ReadNodePanelInboundsDto,
+  ReplySupportTicketDto,
   RenewSubscriptionDto,
   UploadReleaseArtifactDto,
   UpdateReleaseArtifactDto,
@@ -33,6 +35,7 @@ import {
   UpdatePlanSecurityDto,
   UpdatePolicyDto,
   UpdateRuntimeComponentDto,
+  UploadRuntimeComponentDto,
   UpdateSubscriptionDto,
   UpdateSubscriptionNodeAccessDto,
   UpdateTeamDto,
@@ -126,6 +129,11 @@ export class AdminController {
   @Patch("subscriptions/:subscriptionId")
   updateSubscription(@Param("subscriptionId") subscriptionId: string, @Body() body: UpdateSubscriptionDto) {
     return this.devDataService.updateSubscription(subscriptionId, body);
+  }
+
+  @Post("subscriptions/:subscriptionId/convert-to-team")
+  convertSubscriptionToTeam(@Param("subscriptionId") subscriptionId: string, @Body() body: ConvertSubscriptionToTeamDto) {
+    return this.devDataService.convertPersonalSubscriptionToTeam(subscriptionId, body);
   }
 
   @Get("subscriptions/:subscriptionId/nodes")
@@ -253,6 +261,31 @@ export class AdminController {
     return this.devDataService.updatePolicy(body);
   }
 
+  @Get("tickets")
+  getSupportTickets() {
+    return this.devDataService.listAdminSupportTickets();
+  }
+
+  @Get("tickets/:ticketId")
+  getSupportTicket(@Param("ticketId") ticketId: string) {
+    return this.devDataService.getAdminSupportTicketDetail(ticketId);
+  }
+
+  @Post("tickets/:ticketId/replies")
+  replySupportTicket(@Param("ticketId") ticketId: string, @Body() body: ReplySupportTicketDto) {
+    return this.devDataService.replyAdminSupportTicket(ticketId, body);
+  }
+
+  @Post("tickets/:ticketId/close")
+  closeSupportTicket(@Param("ticketId") ticketId: string) {
+    return this.devDataService.closeAdminSupportTicket(ticketId);
+  }
+
+  @Post("tickets/:ticketId/reopen")
+  reopenSupportTicket(@Param("ticketId") ticketId: string) {
+    return this.devDataService.reopenAdminSupportTicket(ticketId);
+  }
+
   @Get("releases")
   getReleases() {
     return this.devDataService.listAdminReleases();
@@ -273,9 +306,49 @@ export class AdminController {
     return this.runtimeComponentsService.createAdminRuntimeComponent(body);
   }
 
+  @Post("runtime-components/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+      }
+    })
+  )
+  uploadRuntimeComponent(@Body() body: UploadRuntimeComponentDto, @UploadedFile() file?: UploadedReleaseFile) {
+    return this.runtimeComponentsService.uploadAdminRuntimeComponent(body, file);
+  }
+
   @Patch("runtime-components/:componentId")
   updateRuntimeComponent(@Param("componentId") componentId: string, @Body() body: UpdateRuntimeComponentDto) {
     return this.runtimeComponentsService.updateAdminRuntimeComponent(componentId, body);
+  }
+
+  @Post("runtime-components/:componentId/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+      }
+    })
+  )
+  replaceRuntimeComponentUpload(
+    @Param("componentId") componentId: string,
+    @Body() body: UploadRuntimeComponentDto,
+    @UploadedFile() file?: UploadedReleaseFile
+  ) {
+    return this.runtimeComponentsService.replaceAdminRuntimeComponentUpload(componentId, body, file);
   }
 
   @Delete("runtime-components/:componentId")
@@ -303,9 +376,14 @@ export class AdminController {
     return this.devDataService.publishRelease(releaseId);
   }
 
-  @Post("releases/:releaseId/archive")
-  archiveRelease(@Param("releaseId") releaseId: string) {
-    return this.devDataService.archiveRelease(releaseId);
+  @Post("releases/:releaseId/unpublish")
+  unpublishRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.unpublishRelease(releaseId);
+  }
+
+  @Delete("releases/:releaseId")
+  deleteRelease(@Param("releaseId") releaseId: string) {
+    return this.devDataService.deleteRelease(releaseId);
   }
 
   @Post("releases/:releaseId/artifacts")

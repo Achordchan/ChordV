@@ -1,8 +1,9 @@
 import type {
+  AnnouncementDto,
   AuthSessionDto,
   ClientNodeProbeResultDto,
   ClientBootstrapDto,
-  ClientPingDto,
+  ClientVersionDto,
   ClientRuntimeComponentsPlanDto,
   ClientRuntimeEventDto,
   ClientRuntimeComponentFailureReportInputDto,
@@ -73,6 +74,18 @@ type RequestResult<T> = {
 
 type NativeInvoke = (command: string, payload?: unknown) => Promise<NativeApiResponse>;
 
+export class ApiRequestError extends Error {
+  status: number | null;
+  rawMessage: string;
+
+  constructor(status: number | null, message: string, rawMessage?: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.rawMessage = rawMessage ?? message;
+  }
+}
+
 async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<RequestResult<T>> {
   const nativeInvoke = await loadNativeInvoke();
   if (nativeInvoke) {
@@ -89,7 +102,7 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
       }
     });
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(response.body || `HTTP ${response.status}`);
+      throw createApiRequestError(response.status, response.body);
     }
     return {
       data: response.body ? (JSON.parse(response.body) as T) : ({} as T),
@@ -109,7 +122,7 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
+    throw createApiRequestError(response.status, text);
   }
 
   const body = await response.text();
@@ -153,6 +166,32 @@ function normalizeHeaders(headers?: HeadersInit) {
   return { ...headers };
 }
 
+function createApiRequestError(status: number | null, rawMessage: string | null | undefined) {
+  const normalizedStatus = typeof status === "number" && Number.isFinite(status) ? status : null;
+  const fallbackMessage = rawMessage?.trim() || (normalizedStatus ? `HTTP ${normalizedStatus}` : "请求失败");
+  if (normalizedStatus === 401 || normalizedStatus === 403) {
+    return new ApiRequestError(normalizedStatus, "登录状态已失效，请重新登录。", fallbackMessage);
+  }
+  return new ApiRequestError(normalizedStatus, fallbackMessage, fallbackMessage);
+}
+
+export function getApiErrorStatus(reason: unknown) {
+  if (reason instanceof ApiRequestError) {
+    return reason.status;
+  }
+  return null;
+}
+
+function isApiStatusError(reason: unknown, ...statuses: number[]) {
+  const status = getApiErrorStatus(reason);
+  return status !== null && statuses.includes(status);
+}
+
+export function isUnauthorizedApiError(reason: unknown) {
+  const status = getApiErrorStatus(reason);
+  return status === 401 || status === 403;
+}
+
 export function login(email: string, password: string) {
   return request<AuthSessionDto>("/auth/login", {
     method: "POST",
@@ -160,14 +199,11 @@ export function login(email: string, password: string) {
   });
 }
 
-export async function probeClientServerLatency(accessToken: string) {
-  const result = await requestWithMeta<ClientPingDto>("/client/ping", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  });
+export async function probeClientServerLatency(_accessToken?: string) {
+  const result = await requestWithMeta<ClientVersionDto>("/client/version");
   return {
-    ...result.data,
+    ok: true,
+    serverTime: null,
     elapsedMs: result.elapsedMs
   };
 }
@@ -190,6 +226,14 @@ export function logoutSession(accessToken: string) {
 
 export function fetchBootstrap(accessToken: string) {
   return request<ClientBootstrapDto>("/client/bootstrap", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+}
+
+export function fetchAnnouncements(accessToken: string) {
+  return request<AnnouncementDto[]>("/client/announcements", {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
@@ -245,8 +289,7 @@ export async function checkClientUpdate(input: {
       artifactType
     });
   } catch (reason) {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    if (message.includes("HTTP 404") || message.includes("HTTP 405")) {
+    if (isApiStatusError(reason, 404, 405)) {
       return null;
     }
     throw reason;
@@ -395,8 +438,7 @@ export async function fetchRuntimeComponentsPlan(input?: {
     });
     return normalizeRuntimeComponentsPlan(result, environment);
   } catch (reason) {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    if (message.includes("HTTP 404") || message.includes("HTTP 405")) {
+    if (isApiStatusError(reason, 404, 405)) {
       return null;
     }
     throw reason;
@@ -425,8 +467,7 @@ export async function reportRuntimeComponentFailure(
       body: JSON.stringify(payload)
     });
   } catch (reason) {
-    const message = reason instanceof Error ? reason.message : String(reason);
-    if (message.includes("HTTP 404") || message.includes("HTTP 405")) {
+    if (isApiStatusError(reason, 404, 405)) {
       return null;
     }
     throw reason;
@@ -436,8 +477,8 @@ export async function reportRuntimeComponentFailure(
 
 type ClientEventSubscriber = {
   onEvent: (event: ClientRuntimeEventDto) => void;
-  onError?: (error: Error) => void;
-  onOpen?: () => void;
+  onError?: (error: Error, meta: { authError: boolean; status: number | null }) => void;
+  onOpen?: (meta: { elapsedMs: number | null }) => void;
 };
 
 export function subscribeClientEvents(accessToken: string, subscriber: ClientEventSubscriber) {
@@ -456,6 +497,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
   };
 
   const connect = async () => {
+    const startedAt = performance.now();
     try {
       const response = await fetch(`${API_BASE}/api/client/events/stream`, {
         method: "GET",
@@ -467,14 +509,16 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       });
 
       if (!response.ok) {
-        throw new Error((await response.text()) || `HTTP ${response.status}`);
+        throw createApiRequestError(response.status, await response.text());
       }
 
       if (!response.body) {
         throw new Error("事件流未返回内容");
       }
 
-      subscriber.onOpen?.();
+      subscriber.onOpen?.({
+        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
+      });
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -513,7 +557,10 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
             const payload = JSON.parse(dataLines.join("\n")) as ClientRuntimeEventDto;
             subscriber.onEvent(payload);
           } catch (error) {
-            subscriber.onError?.(error instanceof Error ? error : new Error("事件解析失败"));
+            subscriber.onError?.(error instanceof Error ? error : new Error("事件解析失败"), {
+              authError: false,
+              status: null
+            });
           }
         }
       }
@@ -523,7 +570,16 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       if (disposed || controller.signal.aborted) {
         return;
       }
-      subscriber.onError?.(error instanceof Error ? error : new Error("事件流连接失败"));
+      const normalizedError = error instanceof Error ? error : new Error("事件流连接失败");
+      const status = getApiErrorStatus(normalizedError);
+      const authError = isUnauthorizedApiError(normalizedError);
+      subscriber.onError?.(normalizedError, {
+        authError,
+        status
+      });
+      if (authError) {
+        return;
+      }
       scheduleReconnect();
     }
   };
