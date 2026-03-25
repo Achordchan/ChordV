@@ -7,6 +7,7 @@ import {
   METERING_REASON_NODE_UNAVAILABLE,
   METERING_REASON_SAMPLE_MISSING
 } from "../common/metering.constants";
+import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
 import { XuiService } from "../xui/xui.service";
@@ -23,6 +24,7 @@ export class UsageSyncService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly meteringIncidentService: MeteringIncidentService,
+    private readonly clientEventsPublisher: ClientEventsPublisher,
     private readonly xuiService: XuiService
   ) {}
 
@@ -410,6 +412,13 @@ export class UsageSyncService {
             : "subscription_paused"
       );
     }
+
+    await this.clientEventsPublisher.publishSubscriptionUpdated({
+      subscriptionId,
+      userId,
+      teamId,
+      state: nextState
+    });
   }
 
   private async touchSubscriptionSyncState(subscriptionId: string, sampledAt: Date) {

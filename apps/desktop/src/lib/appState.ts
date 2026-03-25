@@ -2,7 +2,7 @@ import type { ClientBootstrapDto, NodeSummaryDto, SubscriptionStatusDto } from "
 import { notifications } from "@mantine/notifications";
 import type { SubscriptionServerProbe } from "../components/SubscriptionPanel";
 import type { GuidanceTone, ConnectionGuidance } from "./connectionGuidance";
-import type { RuntimeNodeProbeResult } from "./runtime";
+import type { RuntimeNodeProbeResult, RuntimePlatform } from "./runtime";
 import type { RuntimeAssetsUiState } from "./runtimeComponents";
 import type { ServerProbeState } from "../hooks/useClientEvents";
 
@@ -11,11 +11,18 @@ export function primaryButtonLabel(
   subscription: SubscriptionStatusDto,
   guidance: ConnectionGuidance | null,
   selectedNodeOffline: boolean,
-  runtimeAssets: RuntimeAssetsUiState
+  runtimeAssets: RuntimeAssetsUiState,
+  platformTarget: RuntimePlatform
 ) {
   if (status === "connecting") return "连接中";
   if (status === "disconnecting") return "断开中";
-  if (status === "connected" || status === "error") return "断开连接";
+  if (status === "connected") return "断开连接";
+  if (status === "error") {
+    if (platformTarget === "android") {
+      return guidance?.actionLabel ?? "重新连接";
+    }
+    return "断开连接";
+  }
   if (subscription.state === "expired") return "订阅已到期";
   if (subscription.state === "exhausted" || subscription.remainingTrafficGb <= 0) return "流量已用尽";
   if (subscription.state === "paused") return "订阅已暂停";

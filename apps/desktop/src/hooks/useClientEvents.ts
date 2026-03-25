@@ -50,7 +50,7 @@ export type UseClientEventsOptions = {
   session: AuthSessionDto | null;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   handleRuntimeEvent: (event: ClientRuntimeEventDto, accessToken: string) => Promise<void> | void;
-  recoverSessionAfterUnauthorized: () => Promise<boolean> | boolean;
+  recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   readError: (message: string) => string;
   subscribeClientEvents?: typeof subscribeClientEventsRequest;
   isUnauthorizedError?: (reason: unknown) => boolean;

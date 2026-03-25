@@ -1,6 +1,7 @@
-import { Badge, Button, Group, Paper, SegmentedControl, Stack, Text, Title } from "@mantine/core";
+import { Badge, Button, Divider, Group, Paper, SegmentedControl, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import type { ConnectionMode, GeneratedRuntimeConfigDto } from "@chordv/shared";
-import { IconChartBar, IconPlugConnected } from "@tabler/icons-react";
+import { IconChartBar, IconPlugConnected, IconShieldCheckered } from "@tabler/icons-react";
 import type { RuntimeStatus } from "../lib/runtime";
 
 type ControlPanelProps = {
@@ -20,6 +21,104 @@ type ControlPanelProps = {
 };
 
 export function ControlPanel(props: ControlPanelProps) {
+  const isMobile = useMediaQuery("(max-width: 760px)");
+
+  if (isMobile) {
+    return (
+      <Paper withBorder radius={30} p="lg" className="desktop-panel control-panel control-panel--mobile">
+        <Stack gap="md">
+          <Group justify="space-between" align="flex-start">
+            <Stack gap={4}>
+              <Text size="sm" fw={700} c="cyan.8" className="control-panel__eyebrow">
+                连接控制
+              </Text>
+              <Title order={1} className="control-panel__title">
+                快速连接
+              </Title>
+            </Stack>
+            <ThemeIcon
+              size={48}
+              radius="xl"
+              variant={props.desktopStatus.status === "connected" ? "filled" : "light"}
+              color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+              className="control-panel__badge"
+            >
+              <IconShieldCheckered size={22} />
+            </ThemeIcon>
+          </Group>
+
+          <StatusSurface
+            status={props.desktopStatus.status}
+            nodeName={props.runtime?.node.name ?? "未连接"}
+            compact
+          />
+
+          <SegmentedControl
+            fullWidth
+            radius="xl"
+            size="md"
+            className="control-panel__mode-switch"
+            value={props.mode}
+            onChange={(value) => props.onModeChange(value as ConnectionMode)}
+            disabled={props.modeLocked}
+            data={props.modes.map((mode) => ({
+              value: mode,
+              label: translateMode(mode)
+            }))}
+          />
+
+          <Button
+            size="xl"
+            radius="xl"
+            className="primary-action control-primary-action"
+            leftSection={<IconPlugConnected size={20} />}
+            onClick={props.onPrimaryAction}
+            loading={props.primaryBusy}
+            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+            disabled={
+              !props.canConnect &&
+              props.runtimeAssetsPhase !== "failed" &&
+              props.desktopStatus.status !== "connected" &&
+              props.desktopStatus.status !== "error"
+            }
+          >
+            {props.primaryLabel}
+          </Button>
+
+          <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="control-panel__ports">
+            <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} compact />
+            <MetricBlock label="SOCKS 端口" value={props.runtime ? `${props.runtime.localSocksPort}` : "--"} compact />
+          </SimpleGrid>
+
+          {props.error ? (
+            <Paper withBorder radius="md" p="sm" style={{ borderColor: "rgba(239, 68, 68, 0.24)", background: "rgba(254, 242, 242, 0.9)" }}>
+              <Text c="red.6" size="sm">
+                {props.error}
+              </Text>
+            </Paper>
+          ) : null}
+
+          <Divider />
+
+          <Group justify="space-between" align="center">
+            <Text size="sm" c="dimmed">
+              {readRuntimeInstallLabel(props.desktopStatus, props.runtimeAssetsPhase)}
+            </Text>
+            <Button
+              size="sm"
+              variant="subtle"
+              leftSection={<IconChartBar size={15} />}
+              className="control-log-button"
+              onClick={props.onOpenLogs}
+            >
+              连接诊断
+            </Button>
+          </Group>
+        </Stack>
+      </Paper>
+    );
+  }
+
   return (
     <Paper withBorder radius="lg" p="md" className="desktop-panel">
       <Stack h="100%" gap="sm" className="control-shell">
@@ -109,10 +208,15 @@ function readRuntimeInstallLabel(
   return "内核已启动";
 }
 
-function StatusSurface(props: { status: string; nodeName: string }) {
+function StatusSurface(props: { status: string; nodeName: string; compact?: boolean }) {
   return (
-    <Paper radius="md" p="sm" className="status-surface">
-      <Stack gap={6}>
+    <Paper
+      radius="md"
+      p={props.compact ? "md" : "sm"}
+      className={props.compact ? "status-surface status-surface--compact" : "status-surface"}
+      style={props.compact ? { borderRadius: 22 } : undefined}
+    >
+      <Stack gap={props.compact ? 8 : 6}>
         <Group justify="space-between">
           <Text size="sm" c="dimmed">
             当前状态
@@ -121,7 +225,7 @@ function StatusSurface(props: { status: string; nodeName: string }) {
             {translateRuntimeStatus(props.status)}
           </Badge>
         </Group>
-        <Text fw={700} c={props.status === "connected" ? "green.7" : undefined}>
+        <Text fw={700} size={props.compact ? "lg" : undefined} c={props.status === "connected" ? "green.7" : undefined}>
           {props.nodeName}
         </Text>
       </Stack>
@@ -129,13 +233,13 @@ function StatusSurface(props: { status: string; nodeName: string }) {
   );
 }
 
-function MetricBlock(props: { label: string; value: string }) {
+function MetricBlock(props: { label: string; value: string; compact?: boolean }) {
   return (
-    <Paper withBorder radius="md" p="sm">
+    <Paper withBorder radius="md" p={props.compact ? "md" : "sm"}>
       <Text size="sm" c="dimmed">
         {props.label}
       </Text>
-      <Text fw={700} mt="xs">
+      <Text fw={700} mt="xs" size={props.compact ? "lg" : undefined}>
         {props.value}
       </Text>
     </Paper>

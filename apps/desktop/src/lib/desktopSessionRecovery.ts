@@ -3,7 +3,7 @@ import { refreshSession as refreshSessionRequest } from "../api/client";
 import { saveStoredSession as saveStoredSessionRuntime } from "./runtime";
 
 export type UnauthorizedRecoveryTaskRef = {
-  current: Promise<boolean> | null;
+  current: Promise<AuthSessionDto | null> | null;
 };
 
 export type DesktopUnauthorizedRecoveryRunner = (session: AuthSessionDto) => Promise<boolean>;
@@ -36,17 +36,18 @@ export async function recoverDesktopSessionAfterUnauthorized(
 
   if (!currentSession?.refreshToken) {
     await clearSession(true);
-    return false;
+    return null;
   }
 
   const task = (async () => {
     try {
       const refreshed = await refreshSession(currentSession.refreshToken);
       await saveStoredSession(refreshed);
-      return await bootstrapSession(refreshed);
+      const bootstrapped = await bootstrapSession(refreshed);
+      return bootstrapped ? refreshed : null;
     } catch {
       await clearSession(true);
-      return false;
+      return null;
     } finally {
       taskRef.current = null;
     }

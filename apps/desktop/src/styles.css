@@ -40,19 +40,25 @@ body {
   pointer-events: auto;
 }
 
-.desktop-app--android {
-  min-height: 100%;
-  height: auto;
-  overflow: auto;
-  padding: max(10px, env(safe-area-inset-top)) 10px max(12px, env(safe-area-inset-bottom));
+.desktop-app--mobile {
+  min-height: 100dvh;
+  height: 100dvh;
+  overflow: hidden;
+  padding: max(24px, calc(env(safe-area-inset-top) + 18px)) 8px max(14px, calc(env(safe-area-inset-bottom) + 4px));
 }
 
-.desktop-app--android .desktop-runtime-overlay {
+.desktop-app--mobile-login {
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.desktop-app--mobile .desktop-runtime-overlay {
   top: max(8px, env(safe-area-inset-top));
 }
 
-.desktop-app--android .desktop-runtime-overlay__inner {
-  width: calc(100vw - 20px);
+.desktop-app--mobile .desktop-runtime-overlay__inner {
+  width: calc(100vw - 16px);
 }
 
 .desktop-main {
@@ -338,6 +344,13 @@ body {
   background:
     linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(241, 245, 249, 0.88));
   border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.status-surface--compact {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 249, 255, 0.92));
+  border-color: rgba(125, 211, 252, 0.24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
 }
 
 .desktop-state-banner {
@@ -653,129 +666,360 @@ body {
   flex: 0 0 auto;
 }
 
-.desktop-app--android .desktop-main {
+.desktop-app--mobile .desktop-main {
   height: auto;
-  gap: 12px;
+  gap: 14px;
   align-content: flex-start;
 }
 
-.desktop-app--android .desktop-content {
+.desktop-app--mobile .desktop-content {
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
-.desktop-app--android .desktop-panel,
-.desktop-app--android .subscription-card {
+.desktop-app--mobile .desktop-panel,
+.desktop-app--mobile .subscription-card {
   height: auto;
   overflow: visible;
-  border-radius: 22px;
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+  border-radius: 26px;
+  border-color: rgba(226, 232, 240, 0.92);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.08);
 }
 
-.desktop-app--android .subscription-card {
-  padding: 14px;
+.desktop-app--mobile .subscription-card {
+  padding: 16px;
 }
 
-.desktop-app--android .subscription-shell {
+.desktop-app--mobile .subscription-shell {
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
-.desktop-app--android .subscription-head {
+.desktop-app--mobile .subscription-head {
   gap: 12px;
 }
 
-.desktop-app--android .subscription-actions--toolbar {
+.desktop-app--mobile .subscription-actions--toolbar {
   width: 100%;
   flex-wrap: wrap;
   align-items: stretch;
   gap: 8px;
 }
 
-.desktop-app--android .subscription-actions--toolbar > * {
+.desktop-app--mobile .subscription-actions--toolbar > * {
   flex: 1 1 calc(50% - 4px);
   min-width: 0;
 }
 
-.desktop-app--android .subscription-toolbar-button {
+.desktop-app--mobile .subscription-toolbar-button {
   width: 100%;
   min-width: 0;
   height: 38px;
   padding-inline: 10px;
 }
 
-.desktop-app--android .subscription-announcement-indicator {
+.desktop-app--mobile .subscription-announcement-indicator {
   display: flex;
   width: 100%;
 }
 
-.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-root,
-.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-indicator {
+.desktop-app--mobile .subscription-announcement-indicator .mantine-Indicator-root,
+.desktop-app--mobile .subscription-announcement-indicator .mantine-Indicator-indicator {
   z-index: 2;
 }
 
-.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-root {
+.desktop-app--mobile .subscription-announcement-indicator .mantine-Indicator-root {
   width: 100%;
 }
 
-.desktop-app--android .subscription-announcement-indicator .mantine-Indicator-indicator {
+.desktop-app--mobile .subscription-announcement-indicator .mantine-Indicator-indicator {
   top: 8px;
   right: 10px;
   transform: none;
 }
 
-.desktop-app--android .team-icon {
+.desktop-app--mobile .team-icon {
   display: none;
 }
 
-.desktop-app--android .subscription-metrics {
+.desktop-app--mobile .subscription-metrics {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.desktop-app--android .ticket-center__layout {
+.desktop-app--mobile .ticket-center__layout {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.desktop-app--android .node-list-head,
-.desktop-app--android .control-head {
+.desktop-app--mobile .node-list-head,
+.desktop-app--mobile .control-head {
   min-height: 0;
 }
 
-.desktop-app--android .node-list-probe-button,
-.desktop-app--android .control-log-button {
+.desktop-app--mobile .node-list-probe-button,
+.desktop-app--mobile .control-log-button {
   height: 36px;
 }
 
-.desktop-app--android .node-item {
+.desktop-app--mobile .node-item {
   padding: 14px;
 }
 
-.desktop-app--android .control-shell {
+.desktop-app--mobile .control-shell {
   gap: 12px;
 }
 
-.desktop-app--android .control-primary-action {
-  min-height: 50px;
+.desktop-app--mobile .control-primary-action {
+  min-height: 54px;
 }
 
-.desktop-app--android .control-footer {
+.desktop-app--mobile .control-footer {
   gap: 8px;
 }
 
-.desktop-app--android .mantine-Modal-content,
-.desktop-app--android .mantine-Drawer-content {
+.desktop-app--mobile .mantine-Modal-content,
+.desktop-app--mobile .mantine-Drawer-content {
   margin-top: max(10px, env(safe-area-inset-top));
 }
 
-.desktop-app--android .mantine-Modal-header,
-.desktop-app--android .mantine-Drawer-header {
+.desktop-app--mobile .mantine-Modal-header,
+.desktop-app--mobile .mantine-Drawer-header {
   padding-top: 18px;
 }
 
-.desktop-app--android .mantine-Modal-close,
-.desktop-app--android .mantine-Drawer-close {
+.desktop-app--mobile .mantine-Modal-close,
+.desktop-app--mobile .mantine-Drawer-close {
   margin-top: 0;
   align-self: center;
+}
+
+.desktop-main--mobile-home {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.desktop-mobile-home__primary {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.desktop-mobile-home__scroll {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+}
+
+.desktop-mobile-home__notice {
+  min-height: 0;
+}
+
+.desktop-mobile-home__screen {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 2px;
+}
+
+.desktop-mobile-home__stack {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-top: clamp(20px, 4vh, 34px);
+  padding-bottom: calc(112px + env(safe-area-inset-bottom));
+}
+
+.desktop-mobile-profile__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 0;
+}
+
+.desktop-mobile-profile__eyebrow {
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #0891b2;
+}
+
+.desktop-mobile-profile__title {
+  display: block;
+  margin-top: 4px;
+  font-size: 28px;
+  line-height: 1.02;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  color: #0f172a;
+}
+
+.desktop-mobile-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  position: fixed;
+  left: 6px;
+  right: 6px;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  z-index: 20;
+  border-radius: 26px;
+  border: 1px solid rgba(186, 230, 253, 0.68);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 249, 255, 0.95)),
+    rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.1),
+    0 1px 0 rgba(255, 255, 255, 0.88) inset;
+  backdrop-filter: blur(18px);
+}
+
+.desktop-mobile-nav__item {
+  min-width: 0;
+  min-height: 60px;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 8px 6px;
+  border-radius: 20px;
+  color: #64748b;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.desktop-mobile-nav__item--active {
+  color: #0891b2;
+  background: rgba(236, 254, 255, 0.92);
+  box-shadow: 0 8px 18px rgba(6, 182, 212, 0.14);
+}
+
+.desktop-mobile-nav__label {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.desktop-app--mobile .desktop-main--mobile-home .desktop-panel,
+.desktop-app--mobile .desktop-main--mobile-home .subscription-card {
+  backdrop-filter: blur(18px);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.desktop-app--mobile .desktop-main--mobile-home .subscription-card {
+  order: 1;
+}
+
+.desktop-app--mobile .desktop-main--mobile-home .desktop-panel {
+  order: 1;
+}
+
+.desktop-app--mobile .desktop-mobile-home__scroll .node-list-panel--mobile {
+  order: 2;
+}
+
+.desktop-app--mobile .desktop-mobile-home__primary .control-panel--mobile {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(239, 248, 255, 0.95)),
+    rgba(255, 255, 255, 0.96);
+  border-color: rgba(186, 230, 253, 0.72);
+  box-shadow:
+    0 18px 36px rgba(14, 116, 144, 0.08),
+    0 2px 0 rgba(255, 255, 255, 0.65) inset;
+}
+
+.desktop-app--mobile .control-panel__eyebrow {
+  letter-spacing: 0.02em;
+}
+
+.desktop-app--mobile .control-panel__title {
+  font-size: clamp(32px, 8vw, 40px);
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+}
+
+.desktop-app--mobile .control-panel__badge {
+  box-shadow: 0 10px 24px rgba(6, 182, 212, 0.18);
+}
+
+.desktop-app--mobile .control-panel__mode-switch {
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.desktop-app--mobile .control-panel__ports .mantine-Paper-root {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(191, 219, 254, 0.42);
+}
+
+.desktop-app--mobile .subscription-card--mobile {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94)),
+    rgba(255, 255, 255, 0.96);
+}
+
+.desktop-app--mobile .subscription-mobile__head {
+  align-items: center;
+}
+
+.desktop-app--mobile .subscription-mobile__title {
+  font-size: clamp(30px, 8vw, 36px);
+  letter-spacing: -0.04em;
+}
+
+.desktop-app--mobile .subscription-mobile__meta {
+  row-gap: 6px;
+}
+
+.desktop-app--mobile .subscription-mobile__network {
+  border-radius: 22px;
+}
+
+.desktop-app--mobile .subscription-mobile__actions .mantine-Button-root {
+  min-height: 46px;
+}
+
+.desktop-app--mobile .subscription-mobile__metrics .metric-item {
+  min-height: 70px;
+  border-radius: 20px;
+}
+
+.desktop-app--mobile .node-list-panel--mobile {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.94)),
+    rgba(255, 255, 255, 0.95);
+}
+
+.desktop-app--mobile .node-list-panel--mobile .node-list-head {
+  align-items: flex-start;
+}
+
+.desktop-app--mobile .node-list-panel--mobile .node-list-probe-button {
+  min-width: 76px;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.desktop-app--mobile .node-list-panel--mobile .node-item {
+  border-radius: 20px;
+  border-color: rgba(191, 219, 254, 0.48);
 }
 
 @media (max-width: 1040px) {
@@ -802,18 +1046,32 @@ body {
     overflow: auto;
   }
 
-  .desktop-app,
-  .desktop-app--android {
+  .desktop-app:not(.desktop-app--mobile-login):not(.desktop-app--mobile),
+  .desktop-app--android:not(.desktop-app--mobile-login):not(.desktop-app--mobile) {
     height: auto;
     min-height: 100%;
     overflow: visible;
     padding: 10px;
   }
 
+  .desktop-app.desktop-app--mobile-login {
+    height: 100dvh;
+    min-height: 100dvh;
+    overflow: hidden;
+    padding: max(10px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+  }
+
   .desktop-main {
     height: auto;
     grid-template-rows: auto;
     gap: 10px;
+  }
+
+  .desktop-main--mobile-home {
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 8px;
   }
 
   .desktop-content {
@@ -880,6 +1138,23 @@ body {
     flex-direction: column;
     align-items: stretch;
     gap: 8px;
+  }
+
+  .desktop-mobile-home__scroll,
+  .desktop-mobile-home__stack {
+    gap: 10px;
+  }
+
+  .desktop-app--mobile {
+    padding: max(22px, calc(env(safe-area-inset-top) + 14px)) 6px max(12px, calc(env(safe-area-inset-bottom) + 2px));
+  }
+
+  .desktop-app--mobile .desktop-runtime-overlay__inner {
+    width: calc(100vw - 12px);
+  }
+
+  .desktop-mobile-nav {
+    border-radius: 24px;
   }
 }
 

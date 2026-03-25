@@ -23,6 +23,7 @@ import {
 } from "../api/client";
 import {
   connectRuntime,
+  createIdleRuntimeStatus,
   focusDesktopWindow,
   type RuntimeNodeProbeResult,
   type RuntimeStatus
@@ -111,7 +112,8 @@ type UseRuntimeActionsOptions = {
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
   loadTicketList: (preferredTicketId?: string | null) => Promise<void>;
   loadTicketDetail: (ticketId: string) => Promise<void>;
-  recoverSessionAfterUnauthorized: () => Promise<boolean> | boolean;
+  recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
+  getCurrentAccessToken: () => string | null;
   clearSession: (stopRuntime?: boolean) => Promise<void>;
   runUpdateCheck: (input: RunUpdateCheckInput) => Promise<void>;
   refreshRuntime: () => Promise<void>;
@@ -126,6 +128,16 @@ type UseRuntimeActionsOptions = {
 
 export function useRuntimeActions(options: UseRuntimeActionsOptions) {
   const [actionBusy, setActionBusy] = useState<"connect" | "disconnect" | null>(null);
+
+  const debugAndroidConnect = useCallback(
+    (stage: string, detail?: unknown) => {
+      if (options.desktopStatus.platformTarget !== "android") {
+        return;
+      }
+      console.info("[ChordV AndroidConnect]", stage, detail ?? null);
+    },
+    [options.desktopStatus.platformTarget]
+  );
 
   const showGuidanceToast = useCallback(
     (guidance: ConnectionGuidance) => {
@@ -414,8 +426,15 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
   const handleConnect = useCallback(async () => {
     if (!options.session || !options.selectedNode || actionBusy || !options.canAttemptConnect) {
+      debugAndroidConnect("handleConnect:skip", {
+        hasSession: Boolean(options.session),
+        selectedNodeId: options.selectedNode?.id ?? null,
+        actionBusy,
+        canAttemptConnect: options.canAttemptConnect
+      });
       return;
     }
+    const selectedNode = options.selectedNode;
     if (!options.runtimeAssetsReady) {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
@@ -427,19 +446,70 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
     }
     if (!options.canConnect) {
+      debugAndroidConnect("handleConnect:blocked", {
+        canConnect: options.canConnect,
+        nodeId: selectedNode.id
+      });
       return;
     }
 
     try {
       setActionBusy("connect");
-      options.setDesktopStatus((current) => ({ ...current, status: "connecting", lastError: null }));
-      const config = await connectSession({
-        accessToken: options.session.accessToken,
-        nodeId: options.selectedNode.id,
+      debugAndroidConnect("handleConnect:start", {
+        status: options.desktopStatus.status,
+        nodeId: selectedNode.id,
         mode: options.mode
       });
+      if (options.desktopStatus.platformTarget === "android" && options.desktopStatus.status === "error") {
+        const staleSessionId = options.runtime?.sessionId ?? options.desktopStatus.activeSessionId;
+        debugAndroidConnect("handleConnect:clear-stale-runtime", { staleSessionId });
+        await options.forceStopLocalRuntime();
+        if (staleSessionId) {
+          await disconnectSession(options.session.accessToken, staleSessionId).catch(() => null);
+        }
+        options.setDesktopStatus(createIdleRuntimeStatus(options.desktopStatus.platformTarget));
+      }
+      options.setDesktopStatus((current) => ({ ...current, status: "connecting", lastError: null }));
+      const connectWithAccessToken = async (accessToken: string) =>
+        connectSession({
+          accessToken,
+          nodeId: selectedNode.id,
+          mode: options.mode
+        });
+      let config: GeneratedRuntimeConfigDto;
+      try {
+        debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
+        config = await connectWithAccessToken(options.session.accessToken);
+        debugAndroidConnect("handleConnect:connect-session:success", {
+          sessionId: config.sessionId,
+          nodeId: config.node.id
+        });
+      } catch (reason) {
+        debugAndroidConnect("handleConnect:connect-session:error", reason instanceof Error ? reason.message : reason);
+        if (!isUnauthorizedApiError(reason)) {
+          throw reason;
+        }
+        const recoveredSession = await options.recoverSessionAfterUnauthorized();
+        const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
+        if (!recoveredAccessToken) {
+          throw reason;
+        }
+        config = await connectWithAccessToken(recoveredAccessToken);
+        debugAndroidConnect("handleConnect:connect-session:recovered", {
+          sessionId: config.sessionId,
+          nodeId: config.node.id
+        });
+      }
+      debugAndroidConnect("handleConnect:runtime:start", {
+        sessionId: config.sessionId,
+        nodeId: config.node.id
+      });
       await connectRuntime(config);
-      localStorage.setItem("chordv_last_node_id", options.selectedNode.id);
+      debugAndroidConnect("handleConnect:runtime:success", {
+        sessionId: config.sessionId,
+        nodeId: config.node.id
+      });
+      localStorage.setItem("chordv_last_node_id", selectedNode.id);
       options.setRuntime(config);
       options.setConnectionGuidance(null);
       options.setGuidanceDialog(null);
@@ -447,30 +517,41 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       await options.refreshRuntime();
     } catch (reason) {
       const runtimeStatus = await loadConnectFailureRuntimeStatus().catch(() => null);
+      debugAndroidConnect("handleConnect:failed", {
+        reason: reason instanceof Error ? reason.message : reason,
+        runtimeStatus: runtimeStatus
+          ? {
+              status: runtimeStatus.status,
+              reasonCode: runtimeStatus.reasonCode,
+              lastError: runtimeStatus.lastError
+            }
+          : null
+      });
       if (runtimeStatus) {
         options.setDesktopStatus(runtimeStatus);
       }
+      await options.forceStopLocalRuntime();
+      const message = reason instanceof Error ? options.readError(reason.message) : "连接失败";
       const runtimeGuidance = runtimeStatus
         ? deriveGuidanceFromRuntimeFailure(composeRuntimeFailureText(runtimeStatus), options.fallbackNodeId)
         : null;
-      await options.forceStopLocalRuntime();
-      const message = reason instanceof Error ? options.readError(reason.message) : "连接失败";
       const connectGuidance =
-        runtimeGuidance ??
         deriveGuidanceFromConnectFailure(
           message,
           options.fallbackNodeId,
           runtimeStatus?.platformTarget ?? options.desktopStatus.platformTarget
-        );
+        ) ??
+        runtimeGuidance;
       if (connectGuidance) {
         applyGuidance(connectGuidance, true, true);
       } else {
         options.showErrorToast(message);
       }
     } finally {
+      debugAndroidConnect("handleConnect:finish");
       setActionBusy(null);
     }
-  }, [actionBusy, applyGuidance, options]);
+  }, [actionBusy, applyGuidance, debugAndroidConnect, options]);
 
   const handleDisconnect = useCallback(async () => {
     if (
@@ -511,11 +592,20 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
   }, [actionBusy, options]);
 
   const handlePrimaryAction = useCallback(async () => {
+    debugAndroidConnect("handlePrimaryAction", {
+      status: options.desktopStatus.status,
+      canConnect: options.canConnect,
+      canAttemptConnect: options.canAttemptConnect,
+      runtimeAssetsReady: options.runtimeAssetsReady
+    });
     if (options.forceUpdateRequired && options.desktopStatus.status !== "connected" && options.desktopStatus.status !== "error") {
       options.setUpdateDialogOpened(true);
       return;
     }
-    if (options.desktopStatus.status === "connected" || options.desktopStatus.status === "error") {
+    if (
+      options.desktopStatus.status === "connected" ||
+      (options.desktopStatus.status === "error" && options.desktopStatus.platformTarget !== "android")
+    ) {
       await handleDisconnect();
       return;
     }
@@ -532,7 +622,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     }
 
     await handleConnect();
-  }, [handleConnect, handleDisconnect, options]);
+  }, [debugAndroidConnect, handleConnect, handleDisconnect, options]);
 
   return {
     actionBusy,

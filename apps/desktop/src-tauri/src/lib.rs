@@ -14,10 +14,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    AppHandle, Emitter, Manager, RunEvent, State,
-};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+#[cfg(not(target_os = "android"))]
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use reqwest::Client;
 use url::Url;
 
@@ -82,7 +81,6 @@ struct ShellState {
     primary_action_label: String,
 }
 
-#[cfg(not(target_os = "android"))]
 fn shell_state_matches(
     state: &ShellState,
     status: &str,
@@ -1216,11 +1214,11 @@ fn app_ready(_app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn runtime_status(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> RuntimeStatusResponse {
+fn runtime_status(_app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> RuntimeStatusResponse {
     let mut state = state.lock().expect("runtime state lock");
     refresh_child_state(&mut state);
     #[cfg(not(target_os = "android"))]
-    sync_shell_from_runtime(&app, &state);
+    sync_shell_from_runtime(&_app, &state);
     to_runtime_status_response(&state)
 }
 
@@ -2054,20 +2052,33 @@ fn build_inbounds(config: &GeneratedRuntimeConfigDto, android_runtime: bool) -> 
     if android_runtime {
         json!([
           {
+            "tag": "socks-in",
+            "listen": "127.0.0.1",
+            "port": config.local_socks_port,
+            "protocol": "socks",
+            "sniffing": {
+              "enabled": true,
+              "destOverride": ["http", "tls"]
+            },
+            "settings": {
+              "auth": "noauth",
+              "udp": true,
+              "userLevel": 8
+            }
+          },
+          {
             "tag": "tun-in",
             "protocol": "tun",
             "port": 0,
             "sniffing": {
               "enabled": true,
               "routeOnly": false,
-              "destOverride": ["http", "tls", "quic"]
+              "destOverride": ["http", "tls"]
             },
             "settings": {
               "name": ANDROID_TUN_NAME,
               "MTU": ANDROID_TUN_MTU,
-              "inet4_address": [format!("{}/{}", ANDROID_TUN_IPV4_ADDRESS, ANDROID_TUN_IPV4_PREFIX)],
-              "inet6_address": [format!("{}/{}", ANDROID_TUN_IPV6_ADDRESS, ANDROID_TUN_IPV6_PREFIX)],
-              "stack": "system"
+              "userLevel": 8
             }
           }
         ])
@@ -3199,12 +3210,22 @@ fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "android")]
+fn show_main_window_internal(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(not(target_os = "android"))]
 fn hide_main_window_internal(app: &AppHandle) -> Result<(), String> {
     let window = window_for_shell(app)?;
     #[cfg(windows)]
     let _ = window.set_skip_taskbar(true);
     window.hide().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn hide_main_window_internal(_app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
@@ -3246,6 +3267,9 @@ fn sync_shell_from_runtime(app: &AppHandle, runtime: &RuntimeState) {
         let _ = refresh_shell_ui(app);
     }
 }
+
+#[cfg(target_os = "android")]
+fn sync_shell_from_runtime(_app: &AppHandle, _runtime: &RuntimeState) {}
 
 #[cfg(not(target_os = "android"))]
 fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
@@ -3291,6 +3315,28 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
     state.last_error = proxy_error.map(|error| format!("已停止内核，但清理系统代理失败：{error}"));
 
     sync_shell_from_runtime(app, &state);
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
+    let runtime_state = app.state::<Mutex<RuntimeState>>();
+    let mut state = runtime_state
+        .lock()
+        .map_err(|_| "运行时状态异常".to_string())?;
+
+    stop_runtime_process(app, &mut state);
+    state.status = "idle".into();
+    state.active_session_id = None;
+    state.active_node_id = None;
+    state.active_node_name = None;
+    state.config_path = None;
+    state.active_pid = None;
+    state.log_path = None;
+    state.xray_binary_path = None;
+    state.local_http_port = None;
+    state.local_socks_port = None;
+    state.last_error = None;
     Ok(())
 }
 
@@ -3551,6 +3597,11 @@ fn refresh_shell_ui(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "android")]
+fn refresh_shell_ui(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
     let shell_binding = app
@@ -3600,11 +3651,9 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(android_mobile_plugin::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = show_main_window_internal(app);
-        }))
         .manage(Mutex::new(RuntimeState::default()))
         .manage(Mutex::new(ShellState {
             status: "idle".into(),
@@ -3614,7 +3663,16 @@ pub fn run() {
         }))
         .manage(Mutex::new(InstallerOperationState::default()))
         .manage(Mutex::new(RuntimeComponentDownloadState::default()))
-        .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()))
+        .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()));
+
+    #[cfg(not(target_os = "android"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main_window_internal(app);
+        }));
+    }
+
+    let app = builder
         .setup(|app| {
             cleanup_stale_runtime(&app.handle());
             #[cfg(not(target_os = "android"))]

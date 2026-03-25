@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Alert, Button, Checkbox, LoadingOverlay, Modal, Progress, Stack, Text, TextInput } from "@mantine/core";
+import { Alert, Button, Checkbox, LoadingOverlay, Modal, Progress, Stack, Text, TextInput, ThemeIcon, UnstyledButton } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
+import { IconHome2, IconStack2, IconUserCircle } from "@tabler/icons-react";
 import type {
   AuthSessionDto,
   ClientBootstrapDto,
@@ -10,7 +11,7 @@ import type {
   NodeSummaryDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
-import { heartbeatSession, probeClientServerLatency } from "./api/client";
+import { heartbeatSession, isUnauthorizedApiError, probeClientServerLatency } from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogDrawer } from "./components/LogDrawer";
@@ -107,6 +108,7 @@ export function App() {
   const [guidanceDialog, setGuidanceDialog] = useState<ConnectionGuidance | null>(null);
   const [closeHintOpened, setCloseHintOpened] = useState(false);
   const [rememberCloseHint, setRememberCloseHint] = useState(true);
+  const [mobileTab, setMobileTab] = useState<"home" | "nodes" | "profile">("home");
   const [serverProbe, setServerProbe] = useState<ServerProbeState>(createIdleServerProbeState());
   const [serverProbeBusy, setServerProbeBusy] = useState(false);
   const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState("");
@@ -128,7 +130,7 @@ export function App() {
   const shellActionRef = useRef<(() => Promise<void>) | null>(null);
   const openLogsActionRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<AuthSessionDto | null>(null);
-  const unauthorizedRecoveryTaskRef = useRef<Promise<boolean> | null>(null);
+  const unauthorizedRecoveryTaskRef = useRef<Promise<AuthSessionDto | null> | null>(null);
   const lastShellSummaryRef = useRef("");
   const pendingShellSummaryRef = useRef("");
   const shellSummaryRequestSeqRef = useRef(0);
@@ -432,6 +434,7 @@ export function App() {
     loadTicketList: loadTicketListForActions,
     loadTicketDetail: loadTicketDetailForActions,
     recoverSessionAfterUnauthorized,
+    getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
     clearSession,
     runUpdateCheck: runUpdateCheckForActions,
     refreshRuntime,
@@ -497,9 +500,7 @@ export function App() {
     probeResultsRef.current = probeResults;
   }, [probeResults]);
 
-  useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
+  sessionRef.current = session;
 
   useEffect(() => {
     if (session) {
@@ -801,24 +802,40 @@ export function App() {
       return;
     }
 
+    const applyLeaseHeartbeatSuccess = (lease: Awaited<ReturnType<typeof heartbeatSession>>) => {
+      leaseHeartbeatFailedAtRef.current = null;
+      setConnectionGuidance((current) =>
+        current &&
+        (current.code === "session_replaced" ||
+          current.code === "session_expired" ||
+          current.code === "session_invalid" ||
+          current.code === "admin_paused" ||
+          current.code === "client_rotated")
+          ? null
+          : current
+      );
+      setRuntime((current) =>
+        current && current.sessionId === runtime.sessionId ? { ...current, leaseExpiresAt: lease.leaseExpiresAt } : current
+      );
+    };
+
     const tick = async () => {
       try {
         const lease = await heartbeatSession(session.accessToken, runtime.sessionId);
-        leaseHeartbeatFailedAtRef.current = null;
-        setConnectionGuidance((current) =>
-          current &&
-          (current.code === "session_replaced" ||
-            current.code === "session_expired" ||
-            current.code === "session_invalid" ||
-            current.code === "admin_paused" ||
-            current.code === "client_rotated")
-            ? null
-            : current
-        );
-        setRuntime((current) =>
-          current && current.sessionId === runtime.sessionId ? { ...current, leaseExpiresAt: lease.leaseExpiresAt } : current
-        );
+        applyLeaseHeartbeatSuccess(lease);
       } catch (reason) {
+        if (isUnauthorizedApiError(reason)) {
+          const recoveredSession = await recoverSessionAfterUnauthorized();
+          if (recoveredSession?.accessToken) {
+            try {
+              const recoveredLease = await heartbeatSession(recoveredSession.accessToken, runtime.sessionId);
+              applyLeaseHeartbeatSuccess(recoveredLease);
+              return;
+            } catch (retryReason) {
+              reason = retryReason;
+            }
+          }
+        }
         const message = reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接";
         const immediateGuidance = deriveGuidanceFromMessage(message, {
           fallbackNodeId: fallbackNode?.id ?? null
@@ -1107,8 +1124,46 @@ export function App() {
     setCloseHintOpened(false);
   }
 
+  const mobilePlatformClassName =
+    desktopStatus.platformTarget === "android"
+      ? "desktop-app--mobile desktop-app--android"
+      : desktopStatus.platformTarget === "ios"
+        ? "desktop-app--mobile desktop-app--ios"
+        : "";
+  const loginMobileClassName =
+    mobilePlatformClassName && (!session || !bootstrap) ? " desktop-app--mobile-login" : "";
+  const appClassName = `desktop-app${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
+  const mobileHomeMode = Boolean(session && bootstrap && mobilePlatformClassName);
+  const forceUpdateBanner =
+    forceUpdateRequired && effectiveUpdate?.hasUpdate ? (
+      <Alert color={forceUpdateRequired ? "red" : "blue"}>
+        <Stack gap={8}>
+          <Text size="sm">
+            {`当前版本 ${formatVersionLabel(appVersion)} 已低于最低支持版本，请先升级到 ${formatVersionLabel(
+              effectiveUpdate.latestVersion
+            )} 后再继续使用。`}
+          </Text>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button size="xs" variant="white" onClick={() => setUpdateDialogOpened(true)}>
+              查看更新说明
+            </Button>
+            {effectiveUpdate.downloadUrl ? (
+              <Button
+                size="xs"
+                variant={forceUpdateRequired ? "filled" : "light"}
+                loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
+                onClick={() => void handleUpdateDownload()}
+              >
+                {updateActionLabel(effectiveUpdate, updateDownload)}
+              </Button>
+            ) : null}
+          </div>
+        </Stack>
+      </Alert>
+    ) : null;
+
   return (
-    <div className={desktopStatus.platformTarget === "android" ? "desktop-app desktop-app--android" : "desktop-app"}>
+    <div className={appClassName}>
       <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ blur: 1 }} />
       {runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready" ? (
         <div className="desktop-runtime-overlay">
@@ -1146,6 +1201,137 @@ export function App() {
           onSubmit={() => void handleLogin()}
           onEmergencyDisconnect={() => void handleEmergencyDisconnect()}
         />
+      ) : mobileHomeMode ? (
+        <div className="desktop-main desktop-main--mobile-home">
+          {forceUpdateBanner ? <div className="desktop-mobile-home__notice">{forceUpdateBanner}</div> : null}
+
+          <div className="desktop-mobile-home__screen">
+            {mobileTab === "home" ? (
+              <div className="desktop-mobile-home__stack">
+                <ControlPanel
+                  modes={bootstrap.policies.modes}
+                  mode={mode}
+                  canConnect={canConnect}
+                  modeLocked={modeLocked}
+                  primaryBusy={actionBusy !== null}
+                  primaryLabel={primaryButtonLabel(
+                    desktopStatus.status,
+                    bootstrap.subscription,
+                    connectionGuidance,
+                    selectedNodeOffline,
+                    runtimeAssets,
+                    desktopStatus.platformTarget
+                  )}
+                  desktopStatus={desktopStatus}
+                  runtime={runtime}
+                  error={runtimeDisplayError}
+                  runtimeAssetsPhase={runtimeAssets.phase}
+                  onModeChange={setMode}
+                  onPrimaryAction={() => void handlePrimaryAction()}
+                  onOpenLogs={() => setLogDrawerOpened(true)}
+                />
+              </div>
+            ) : mobileTab === "nodes" ? (
+              <div className="desktop-mobile-home__stack">
+                <NodeListPanel
+                  nodes={nodes}
+                  selectedNodeId={selectedNodeId}
+                  probeResults={probeResults}
+                  probeBusy={probeBusy}
+                  probeCooldownLeft={probeCooldownLeft}
+                  onSelect={(nodeId) => {
+                    setSelectedNodeId(nodeId);
+                    setConnectionGuidance((current) => {
+                      const nextGuidance =
+                        current && (current.code === "node_access_revoked" || current.code === "node_unavailable") ? null : current;
+                      if (!nextGuidance) {
+                        setGuidanceDialog(null);
+                      }
+                      return nextGuidance;
+                    });
+                  }}
+                  onProbe={() => void runProbe(nodes, false)}
+                />
+              </div>
+            ) : (
+              <div className="desktop-mobile-home__stack">
+                <div className="desktop-mobile-profile__header">
+                  <div>
+                    <Text className="desktop-mobile-profile__eyebrow">个人中心</Text>
+                    <Text className="desktop-mobile-profile__title">账号与流量</Text>
+                  </div>
+                </div>
+
+                <SubscriptionPanel
+                  bootstrap={bootstrap}
+                  hasUnreadAnnouncements={hasUnreadAnnouncements}
+                  hasUnreadTickets={hasUnreadTickets}
+                  refreshing={refreshing}
+                  updateBusy={updateCheckBusy}
+                  hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
+                  serverProbe={subscriptionServerProbe}
+                  serverProbeBusy={serverProbeBusy}
+                  onRefreshServerProbe={() => void handleManualServerProbe()}
+                  onOpenAnnouncements={openAnnouncementDrawer}
+                  onOpenTickets={openTicketCenter}
+                  onRefresh={() => void handleRefresh()}
+                  onCheckUpdate={() => void handleManualUpdateCheck()}
+                  onLogout={() => void handleLogout()}
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="desktop-mobile-nav" role="tablist" aria-label="移动端主导航">
+            <UnstyledButton
+              type="button"
+              className={`desktop-mobile-nav__item${mobileTab === "home" ? " desktop-mobile-nav__item--active" : ""}`}
+              onClick={() => setMobileTab("home")}
+            >
+              <ThemeIcon
+                size={34}
+                radius="xl"
+                variant={mobileTab === "home" ? "filled" : "light"}
+                color={mobileTab === "home" ? "cyan" : "gray"}
+              >
+                <IconHome2 size={18} />
+              </ThemeIcon>
+              <span className="desktop-mobile-nav__label">首页</span>
+            </UnstyledButton>
+
+            <UnstyledButton
+              type="button"
+              className={`desktop-mobile-nav__item${mobileTab === "nodes" ? " desktop-mobile-nav__item--active" : ""}`}
+              onClick={() => setMobileTab("nodes")}
+            >
+              <ThemeIcon
+                size={34}
+                radius="xl"
+                variant={mobileTab === "nodes" ? "filled" : "light"}
+                color={mobileTab === "nodes" ? "cyan" : "gray"}
+              >
+                <IconStack2 size={18} />
+              </ThemeIcon>
+              <span className="desktop-mobile-nav__label">节点</span>
+            </UnstyledButton>
+
+            <UnstyledButton
+              type="button"
+              className={`desktop-mobile-nav__item${mobileTab === "profile" ? " desktop-mobile-nav__item--active" : ""}`}
+              onClick={() => setMobileTab("profile")}
+            >
+              <ThemeIcon
+                size={34}
+                radius="xl"
+                variant={mobileTab === "profile" ? "filled" : "light"}
+                color={mobileTab === "profile" ? "cyan" : "gray"}
+              >
+                <IconUserCircle size={18} />
+              </ThemeIcon>
+              <span className="desktop-mobile-nav__label">个人</span>
+            </UnstyledButton>
+          </div>
+        </div>
       ) : (
         <div className="desktop-main">
           <Stack gap="sm">
@@ -1165,32 +1351,7 @@ export function App() {
               onCheckUpdate={() => void handleManualUpdateCheck()}
               onLogout={() => void handleLogout()}
             />
-            {forceUpdateRequired && effectiveUpdate?.hasUpdate ? (
-              <Alert color={forceUpdateRequired ? "red" : "blue"}>
-                <Stack gap={8}>
-                  <Text size="sm">
-                    {`当前版本 ${formatVersionLabel(appVersion)} 已低于最低支持版本，请先升级到 ${formatVersionLabel(
-                      effectiveUpdate.latestVersion
-                    )} 后再继续使用。`}
-                  </Text>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <Button size="xs" variant="white" onClick={() => setUpdateDialogOpened(true)}>
-                      查看更新说明
-                    </Button>
-                    {effectiveUpdate.downloadUrl ? (
-                      <Button
-                        size="xs"
-                        variant={forceUpdateRequired ? "filled" : "light"}
-                        loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
-                        onClick={() => void handleUpdateDownload()}
-                      >
-                        {updateActionLabel(effectiveUpdate, updateDownload)}
-                      </Button>
-                    ) : null}
-                  </div>
-                </Stack>
-              </Alert>
-            ) : null}
+            {forceUpdateBanner}
           </Stack>
 
           <div className="desktop-content">
@@ -1225,7 +1386,8 @@ export function App() {
                 bootstrap.subscription,
                 connectionGuidance,
                 selectedNodeOffline,
-                runtimeAssets
+                runtimeAssets,
+                desktopStatus.platformTarget
               )}
               desktopStatus={desktopStatus}
               runtime={runtime}

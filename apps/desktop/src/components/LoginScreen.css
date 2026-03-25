@@ -317,46 +317,67 @@
   line-height: 18px;
 }
 
-.desktop-app--android .auth-screen {
-  min-height: 100dvh;
-  align-items: flex-start;
-  justify-content: flex-start;
-  padding: max(20px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom));
+.desktop-app--mobile-login .auth-screen {
+  position: fixed;
+  inset: max(10px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)) 12px;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  z-index: 1;
 }
 
-.desktop-app--android .auth-screen__shell {
+.desktop-app--mobile-login .auth-screen__shell {
   width: 100%;
-  max-width: 420px;
-  height: auto;
+  max-width: 520px;
+  max-height: 100%;
   grid-template-columns: 1fr;
   gap: 0;
-  margin: 0 auto;
+  align-items: stretch;
 }
 
-.desktop-app--android .auth-screen__brand {
+.desktop-app--mobile-login .auth-screen__brand {
   display: none;
 }
 
-.desktop-app--android .auth-screen__panel {
-  height: auto;
+.desktop-app--mobile-login .auth-screen__panel {
+  width: 100%;
+  max-height: min(640px, 100%);
   min-height: 0;
-  padding: 22px 18px 18px;
-  border-radius: 24px;
-  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.1);
+  padding: 28px 22px 24px;
+  border-radius: 28px;
+  box-shadow: 0 22px 40px rgba(15, 23, 42, 0.12);
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
-.desktop-app--android .auth-screen__panel-inner {
+.desktop-app--mobile-login .auth-screen__panel-inner {
+  min-height: 100%;
   gap: 16px;
 }
 
-.desktop-app--android .auth-screen__panel-head {
+.desktop-app--mobile-login .auth-screen__panel-head {
   min-height: 0;
   gap: 8px;
 }
 
-.desktop-app--android .auth-screen__runtime-alert {
+.desktop-app--mobile-login .auth-screen__runtime-alert {
   flex-direction: column;
   align-items: stretch;
+}
+
+@media (max-height: 720px) {
+  .desktop-app--mobile-login .auth-screen {
+    padding: 0 2px;
+  }
+
+  .desktop-app--mobile-login .auth-screen__panel {
+    max-height: 100%;
+    padding: 22px 18px 20px;
+  }
 }
 
 @media (max-width: 860px) {

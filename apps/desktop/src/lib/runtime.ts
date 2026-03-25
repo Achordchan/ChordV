@@ -104,12 +104,19 @@ function isAndroidPlatform() {
   return /android/i.test(window.navigator.userAgent);
 }
 
+function isIosPlatform() {
+  return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+}
+
 export function detectRuntimePlatform(): RuntimePlatform {
   if (!isTauriApp()) {
     return "web";
   }
   if (isAndroidPlatform()) {
     return "android";
+  }
+  if (isIosPlatform()) {
+    return "ios";
   }
   if (/windows/i.test(window.navigator.userAgent)) {
     return "windows";

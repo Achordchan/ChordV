@@ -8,7 +8,7 @@ use tauri::Manager;
 #[cfg(target_os = "android")]
 use crate::android_mobile_plugin::AndroidRuntimePluginHandle;
 use crate::{
-    build_xray_config, chrono_like_now, ensure_geo_data, ensure_runtime_dir,
+    build_xray_config, chrono_like_now, ensure_runtime_dir,
     CommandResult, GeneratedRuntimeConfigDto,
 };
 
@@ -167,7 +167,7 @@ struct AndroidPluginStartPayload {
 }
 
 #[cfg(target_os = "android")]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AndroidPluginStatusPayload {
     status: Option<String>,
@@ -259,7 +259,6 @@ pub fn start_android_runtime(
         .map_err(|_| "Android 运行时状态异常".to_string())?;
 
     let runtime_dir = ensure_runtime_dir(&app)?;
-    ensure_geo_data(&app, &runtime_dir)?;
     let geoip_path = runtime_dir.join("bin").join("geoip.dat");
     let geosite_path = runtime_dir.join("bin").join("geosite.dat");
     let config_path = runtime_dir.join(format!("{}-android.json", config.session_id));
@@ -483,7 +482,7 @@ fn start_android_native_bridge(
         let plugin = app
             .try_state::<AndroidRuntimePluginHandle>()
             .ok_or_else(|| "Android 运行时插件未注册".to_string())?;
-        let response = plugin
+        let _ = plugin
             .0
             .run_mobile_plugin::<AndroidPluginStatusPayload>("start", payload)
             .map_err(|error| {
@@ -492,10 +491,14 @@ fn start_android_native_bridge(
                 format!("{}: {}", bridge_error.code, bridge_error.message)
             })?;
 
+        let response = wait_for_android_plugin_status(app, 15_000, |status| {
+            matches!(status.status.as_deref(), Some("connected") | Some("error"))
+        })?;
+
         let status = response.status.clone().unwrap_or_else(|| "error".into());
         let vpn_interface_ready = response.vpn_interface_ready.unwrap_or(false);
         let xray_process_alive = response.xray_process_alive.unwrap_or(false);
-        let connectivity_check_passed = response.connectivity_check_passed.unwrap_or(false);
+        let connectivity_check_passed = response.connectivity_check_passed.unwrap_or(true);
         if status == "error" {
             let error_message = response
                 .last_error
@@ -540,18 +543,6 @@ fn start_android_native_bridge(
                 .unwrap_or_else(|| "libv2ray_start_failed".into());
             return Err(format!("{error_code}: {error_message}"));
         }
-        if !connectivity_check_passed {
-            let error_message = response
-                .last_error
-                .clone()
-                .unwrap_or_else(|| "Android VPN/TUN 连通性自检失败".into());
-            let error_code = response
-                .last_error_code
-                .clone()
-                .unwrap_or_else(|| "connectivity_check_failed".into());
-            return Err(format!("{error_code}: {error_message}"));
-        }
-
         Ok(AndroidNativeStartResult {
             status: response.status,
             active_session_id: response.active_session_id,
@@ -588,6 +579,21 @@ fn stop_android_native_bridge(app: &AppHandle) -> Result<(), String> {
                     parse_android_bridge_error(error.to_string(), "android_runtime_stop_failed");
                 format!("{}: {}", bridge_error.code, bridge_error.message)
             })?;
+
+        let response = wait_for_android_plugin_status(app, 5_000, |status| {
+            matches!(status.status.as_deref(), Some("idle") | Some("error"))
+        })?;
+        if matches!(response.status.as_deref(), Some("error")) {
+            let error_message = response
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "Android VPN/TUN 停止失败".into());
+            let error_code = response
+                .last_error_code
+                .clone()
+                .unwrap_or_else(|| "android_runtime_stop_failed".into());
+            return Err(format!("{error_code}: {error_message}"));
+        }
         Ok(())
     }
 
@@ -595,4 +601,52 @@ fn stop_android_native_bridge(app: &AppHandle) -> Result<(), String> {
     {
         Err("当前平台不是 Android，无法停止 Android 运行时".into())
     }
+}
+
+#[cfg(target_os = "android")]
+fn wait_for_android_plugin_status(
+    app: &AppHandle,
+    timeout_ms: u64,
+    matcher: impl Fn(&AndroidPluginStatusPayload) -> bool,
+) -> Result<AndroidPluginStatusPayload, String> {
+    let plugin = app
+        .try_state::<AndroidRuntimePluginHandle>()
+        .ok_or_else(|| "Android 运行时插件未注册".to_string())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let mut last_status: Option<AndroidPluginStatusPayload> = None;
+
+    loop {
+        let snapshot = plugin
+            .0
+            .run_mobile_plugin::<AndroidPluginStatusPayload>("status", ())
+            .map_err(|error| {
+                let bridge_error =
+                    parse_android_bridge_error(error.to_string(), "android_runtime_status_failed");
+                format!("{}: {}", bridge_error.code, bridge_error.message)
+            })?;
+
+        if matcher(&snapshot) {
+            return Ok(snapshot);
+        }
+
+        last_status = Some(snapshot);
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    let snapshot = last_status.unwrap_or_default();
+    let error_code = snapshot
+        .last_error_code
+        .clone()
+        .unwrap_or_else(|| "start_timeout".into());
+    let error_message = snapshot
+        .last_error
+        .clone()
+        .unwrap_or_else(|| match snapshot.status.as_deref() {
+            Some("disconnecting") => "Android VPN/TUN 未能在预期时间内停止".into(),
+            _ => "Android VPN/TUN 未能在预期时间内完成连接".into(),
+        });
+    Err(format!("{error_code}: {error_message}"))
 }
