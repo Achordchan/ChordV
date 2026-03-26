@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
 import {
@@ -10,6 +11,7 @@ import {
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
+import { RuntimeSessionService } from "../common/runtime-session.service";
 import { XuiService } from "../xui/xui.service";
 
 const GB_IN_BYTES = 1024 ** 3;
@@ -25,8 +27,19 @@ export class UsageSyncService {
     private readonly prisma: PrismaService,
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly clientEventsPublisher: ClientEventsPublisher,
+    private readonly moduleRef: ModuleRef,
     private readonly xuiService: XuiService
   ) {}
+
+  private getRuntimeSessionService() {
+    const directRuntimeSessionService = (this as UsageSyncService & {
+      runtimeSessionService?: RuntimeSessionService;
+    }).runtimeSessionService;
+    if (directRuntimeSessionService) {
+      return directRuntimeSessionService;
+    }
+    return this.moduleRef.get(RuntimeSessionService, { strict: false });
+  }
 
   async ingestUsageReport(nodeId: string, records: unknown, reportedAt: string) {
     const context = await this.loadNodeSyncContext(nodeId);
@@ -611,17 +624,7 @@ export class UsageSyncService {
   }
 
   private async revokeActiveLeases(subscriptionId: string, reason: string) {
-    await this.prisma.nodeSessionLease.updateMany({
-      where: {
-        subscriptionId,
-        status: "active"
-      },
-      data: {
-        status: "revoked",
-        revokedReason: reason,
-        revokedAt: new Date()
-      }
-    });
+    await this.getRuntimeSessionService().revokeSubscriptionLeases(subscriptionId, reason);
   }
 }
 

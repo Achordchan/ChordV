@@ -9,11 +9,20 @@ import type {
 } from "@chordv/shared";
 import { getSubscriptionStateReason, readEffectiveSubscriptionState } from "./subscription.utils";
 
-export const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ?? 600);
+export const LEASE_TTL_SECONDS = Number(process.env.CHORDV_SESSION_LEASE_TTL_SECONDS ?? 1800);
 export const LEASE_HEARTBEAT_INTERVAL_SECONDS = Number(process.env.CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS ?? 30);
-export const LEASE_GRACE_SECONDS = Number(process.env.CHORDV_SESSION_GRACE_SECONDS ?? 60);
+export const LEASE_GRACE_SECONDS = Number(process.env.CHORDV_SESSION_GRACE_SECONDS ?? 300);
 export const SECURITY_REASON_CONCURRENCY = "concurrency_limit";
 export const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
+
+export type LeaseDiagnosticFields = {
+  sessionId: string;
+  status: string;
+  lastHeartbeatAt: string;
+  expiresAt: string;
+  graceDeadline: string;
+  revokedReason: string | null;
+};
 
 export type PanelBindingFailure = {
   bindingId: string;
@@ -44,6 +53,38 @@ export function buildPanelClientEmail(userEmail: string, subscriptionId: string,
 export function buildSnapshotKey(nodeId: string, subscriptionId: string, userId: string | null) {
   const userPart = userId ?? "subscription";
   return `${nodeId}:${subscriptionId}:${userPart}`;
+}
+
+export function getLeaseGraceDeadline(expiresAt: Date, graceSeconds = LEASE_GRACE_SECONDS) {
+  return new Date(expiresAt.getTime() + graceSeconds * 1000);
+}
+
+export function isLeaseHardExpired(expiresAt: Date, now: Date, graceSeconds = LEASE_GRACE_SECONDS) {
+  return now.getTime() > getLeaseGraceDeadline(expiresAt, graceSeconds).getTime();
+}
+
+export function getLeaseHardExpireCutoff(now: Date, graceSeconds = LEASE_GRACE_SECONDS) {
+  return new Date(now.getTime() - graceSeconds * 1000);
+}
+
+export function buildLeaseDiagnosticFields(
+  lease: {
+    sessionId: string;
+    status: string;
+    lastHeartbeatAt: Date;
+    expiresAt: Date;
+    revokedReason?: string | null;
+  },
+  graceSeconds = LEASE_GRACE_SECONDS
+): LeaseDiagnosticFields {
+  return {
+    sessionId: lease.sessionId,
+    status: lease.status,
+    lastHeartbeatAt: lease.lastHeartbeatAt.toISOString(),
+    expiresAt: lease.expiresAt.toISOString(),
+    graceDeadline: getLeaseGraceDeadline(lease.expiresAt, graceSeconds).toISOString(),
+    revokedReason: lease.revokedReason ?? null
+  };
 }
 
 export function shouldProvisionPanelClients(subscription: {

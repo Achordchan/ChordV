@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Alert, Button, Checkbox, LoadingOverlay, Modal, Progress, Stack, Text, TextInput, ThemeIcon, UnstyledButton } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -11,7 +11,14 @@ import type {
   NodeSummaryDto,
   SubscriptionStatusDto
 } from "@chordv/shared";
-import { heartbeatSession, isUnauthorizedApiError, probeClientServerLatency } from "./api/client";
+import {
+  getApiErrorRawMessage,
+  heartbeatSession,
+  isAccessTokenExpiredApiError,
+  isForbiddenApiError,
+  isUnauthorizedApiError,
+  probeClientServerLatency
+} from "./api/client";
 import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogDrawer } from "./components/LogDrawer";
@@ -58,6 +65,7 @@ import {
   toSubscriptionServerProbe
 } from "./lib/appState";
 import { recoverDesktopSessionAfterUnauthorized } from "./lib/desktopSessionRecovery";
+import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "./lib/sessionLeaseState";
 import {
   formatVersionLabel,
   updateActionLabel
@@ -118,6 +126,7 @@ export function App() {
   const lastRuntimeSignalKeyRef = useRef<string | null>(null);
   const lastForegroundSyncErrorRef = useRef<string | null>(null);
   const lastForegroundSyncAtRef = useRef(0);
+  const lastLeaseResumeCheckAtRef = useRef(0);
   const runtimeRescueTriggeredRef = useRef(false);
   const runtimeRef = useRef<GeneratedRuntimeConfigDto | null>(null);
   const bootstrapRef = useRef<ClientBootstrapDto | null>(null);
@@ -450,6 +459,94 @@ export function App() {
     recoverSessionAfterUnauthorized,
     readError
   });
+
+  const applyLeaseHeartbeatSuccess = useCallback(
+    (lease: Awaited<ReturnType<typeof heartbeatSession>>, sessionId: string) => {
+      leaseHeartbeatFailedAtRef.current = null;
+      setConnectionGuidance((current) =>
+        current &&
+        (current.code === "session_replaced" ||
+          current.code === "session_expired" ||
+          current.code === "session_invalid" ||
+          current.code === "admin_paused" ||
+          current.code === "client_rotated")
+          ? null
+          : current
+      );
+      setRuntime((current) =>
+        current && current.sessionId === sessionId ? { ...current, leaseExpiresAt: lease.leaseExpiresAt } : current
+      );
+    },
+    []
+  );
+
+  const handleProtectedLeaseAccessRevoked = useCallback(
+    async (reason: unknown) => {
+      const accessReason = resolveProtectedAccessReason(getApiErrorRawMessage(reason));
+      if (!accessReason) {
+        return false;
+      }
+      const notice = buildProtectedAccessNotice(accessReason);
+      await clearSession(true);
+      notifications.show({
+        color: "yellow",
+        title: notice.title,
+        message: notice.message,
+        autoClose: 4000
+      });
+      return true;
+    },
+    [clearSession]
+  );
+
+  const attemptLeaseHeartbeat = useCallback(
+    async (accessToken: string, sessionId: string) => {
+      try {
+        const lease = await heartbeatSession(accessToken, sessionId);
+        applyLeaseHeartbeatSuccess(lease, sessionId);
+        return "ok" as const;
+      } catch (reason) {
+        if (isAccessTokenExpiredApiError(reason)) {
+          const recoveredSession = await recoverSessionAfterUnauthorized();
+          const recoveredAccessToken = recoveredSession?.accessToken ?? sessionRef.current?.accessToken ?? null;
+          if (!recoveredAccessToken) {
+            throw reason;
+          }
+          const recoveredLease = await heartbeatSession(recoveredAccessToken, sessionId);
+          applyLeaseHeartbeatSuccess(recoveredLease, sessionId);
+          return "ok" as const;
+        }
+        if (isForbiddenApiError(reason)) {
+          if (await handleProtectedLeaseAccessRevoked(reason)) {
+            return "handled" as const;
+          }
+          const guidance =
+            deriveGuidanceFromMessage(
+              reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接",
+              {
+                fallbackNodeId: fallbackNode?.id ?? null
+              }
+            ) ??
+            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
+              fallbackNodeId: fallbackNode?.id ?? null
+            });
+          if (guidance) {
+            leaseHeartbeatFailedAtRef.current = null;
+            await handleForcedGuidance(guidance);
+            return "handled" as const;
+          }
+        }
+        throw reason;
+      }
+    },
+    [
+      applyLeaseHeartbeatSuccess,
+      fallbackNode?.id,
+      handleForcedGuidance,
+      handleProtectedLeaseAccessRevoked,
+      recoverSessionAfterUnauthorized
+    ]
+  );
 
   useEffect(() => {
     runtimeRef.current = runtime;
@@ -802,40 +899,13 @@ export function App() {
       return;
     }
 
-    const applyLeaseHeartbeatSuccess = (lease: Awaited<ReturnType<typeof heartbeatSession>>) => {
-      leaseHeartbeatFailedAtRef.current = null;
-      setConnectionGuidance((current) =>
-        current &&
-        (current.code === "session_replaced" ||
-          current.code === "session_expired" ||
-          current.code === "session_invalid" ||
-          current.code === "admin_paused" ||
-          current.code === "client_rotated")
-          ? null
-          : current
-      );
-      setRuntime((current) =>
-        current && current.sessionId === runtime.sessionId ? { ...current, leaseExpiresAt: lease.leaseExpiresAt } : current
-      );
-    };
-
     const tick = async () => {
       try {
-        const lease = await heartbeatSession(session.accessToken, runtime.sessionId);
-        applyLeaseHeartbeatSuccess(lease);
-      } catch (reason) {
-        if (isUnauthorizedApiError(reason)) {
-          const recoveredSession = await recoverSessionAfterUnauthorized();
-          if (recoveredSession?.accessToken) {
-            try {
-              const recoveredLease = await heartbeatSession(recoveredSession.accessToken, runtime.sessionId);
-              applyLeaseHeartbeatSuccess(recoveredLease);
-              return;
-            } catch (retryReason) {
-              reason = retryReason;
-            }
-          }
+        const result = await attemptLeaseHeartbeat(session.accessToken, runtime.sessionId);
+        if (result === "handled") {
+          return;
         }
+      } catch (reason) {
         const message = reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接";
         const immediateGuidance = deriveGuidanceFromMessage(message, {
           fallbackNodeId: fallbackNode?.id ?? null
@@ -873,12 +943,92 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [
+    attemptLeaseHeartbeat,
     desktopStatus.status,
     runtime?.sessionId,
     runtime?.leaseHeartbeatIntervalSeconds,
     runtime?.leaseGraceSeconds,
     session?.accessToken,
     fallbackNode?.id
+  ]);
+
+  useEffect(() => {
+    if (!session || !runtime || desktopStatus.status !== "connected") {
+      return;
+    }
+    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
+      return;
+    }
+
+    let disposed = false;
+    let unlistenWindowFocus: (() => void) | null = null;
+
+    const syncLeaseOnResume = () => {
+      if (disposed || document.visibilityState === "hidden" || booting || authBusy || logoutBusy || refreshing || actionBusy) {
+        return;
+      }
+      const nowMs = Date.now();
+      if (nowMs - lastLeaseResumeCheckAtRef.current < 3000) {
+        return;
+      }
+      lastLeaseResumeCheckAtRef.current = nowMs;
+
+      void (async () => {
+        const activeSession = sessionRef.current;
+        const activeRuntime = runtimeRef.current;
+        if (!activeSession?.accessToken || !activeRuntime || desktopStatus.status !== "connected") {
+          return;
+        }
+        try {
+          await attemptLeaseHeartbeat(activeSession.accessToken, activeRuntime.sessionId);
+        } catch (reason) {
+          const guidance = deriveGuidanceFromMessage(
+            reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接",
+            {
+              fallbackNodeId: fallbackNode?.id ?? null
+            }
+          );
+          if (guidance) {
+            leaseHeartbeatFailedAtRef.current = null;
+            await handleForcedGuidance(guidance);
+          }
+        }
+      })();
+    };
+
+    document.addEventListener("visibilitychange", syncLeaseOnResume);
+    window.addEventListener("focus", syncLeaseOnResume);
+
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().onFocusChanged(({ payload }) => {
+        if (payload) {
+          syncLeaseOnResume();
+        }
+      }))
+      .then((unlisten) => {
+        unlistenWindowFocus = unlisten;
+      })
+      .catch(() => null);
+
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", syncLeaseOnResume);
+      window.removeEventListener("focus", syncLeaseOnResume);
+      unlistenWindowFocus?.();
+    };
+  }, [
+    actionBusy,
+    attemptLeaseHeartbeat,
+    authBusy,
+    booting,
+    desktopStatus.platformTarget,
+    desktopStatus.status,
+    fallbackNode?.id,
+    handleForcedGuidance,
+    logoutBusy,
+    refreshing,
+    runtime?.sessionId,
+    session?.accessToken
   ]);
 
   useEffect(() => {

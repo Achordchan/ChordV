@@ -18,7 +18,10 @@ import {
   fetchClientRuntime,
   fetchNodes,
   fetchSubscription,
+  getApiErrorRawMessage,
   heartbeatSession,
+  isAccessTokenExpiredApiError,
+  isForbiddenApiError,
   isUnauthorizedApiError
 } from "../api/client";
 import {
@@ -30,6 +33,7 @@ import {
 } from "../lib/runtime";
 import type { RuntimeAssetsUiState } from "../lib/runtimeComponents";
 import { toneToToastColor } from "../lib/appState";
+import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../lib/sessionLeaseState";
 import {
   composeRuntimeFailureText,
   deriveGuidanceFromConnectFailure,
@@ -128,6 +132,24 @@ type UseRuntimeActionsOptions = {
 
 export function useRuntimeActions(options: UseRuntimeActionsOptions) {
   const [actionBusy, setActionBusy] = useState<"connect" | "disconnect" | null>(null);
+
+  const handleProtectedAccessRevoked = useCallback(
+    async (reason: unknown) => {
+      const accessReason = resolveProtectedAccessReason(getApiErrorRawMessage(reason));
+      if (!accessReason) {
+        return false;
+      }
+      const notice = buildProtectedAccessNotice(accessReason);
+      await options.clearSession(true);
+      options.notify({
+        color: "yellow",
+        title: notice.title,
+        message: notice.message
+      });
+      return true;
+    },
+    [options]
+  );
 
   const debugAndroidConnect = useCallback(
     (stage: string, detail?: unknown) => {
@@ -476,7 +498,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           nodeId: selectedNode.id,
           mode: options.mode
         });
-      let config: GeneratedRuntimeConfigDto;
+      let config: GeneratedRuntimeConfigDto | null = null;
       try {
         debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
         config = await connectWithAccessToken(options.session.accessToken);
@@ -486,19 +508,28 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         });
       } catch (reason) {
         debugAndroidConnect("handleConnect:connect-session:error", reason instanceof Error ? reason.message : reason);
-        if (!isUnauthorizedApiError(reason)) {
+        if (isAccessTokenExpiredApiError(reason)) {
+          const recoveredSession = await options.recoverSessionAfterUnauthorized();
+          const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
+          if (!recoveredAccessToken) {
+            throw reason;
+          }
+          config = await connectWithAccessToken(recoveredAccessToken);
+          debugAndroidConnect("handleConnect:connect-session:recovered", {
+            sessionId: config.sessionId,
+            nodeId: config.node.id
+          });
+        } else if (isForbiddenApiError(reason)) {
+          if (await handleProtectedAccessRevoked(reason)) {
+            return;
+          }
+          throw reason;
+        } else if (!isUnauthorizedApiError(reason)) {
           throw reason;
         }
-        const recoveredSession = await options.recoverSessionAfterUnauthorized();
-        const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
-        if (!recoveredAccessToken) {
-          throw reason;
-        }
-        config = await connectWithAccessToken(recoveredAccessToken);
-        debugAndroidConnect("handleConnect:connect-session:recovered", {
-          sessionId: config.sessionId,
-          nodeId: config.node.id
-        });
+      }
+      if (!config) {
+        throw new Error("连接配置生成失败");
       }
       debugAndroidConnect("handleConnect:runtime:start", {
         sessionId: config.sessionId,

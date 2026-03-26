@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
 import type {
@@ -22,11 +23,14 @@ import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
 import {
   assertSubscriptionConnectable,
+  buildLeaseDiagnosticFields,
   buildLeaseEmail,
   buildPanelClientEmail,
   buildSnapshotKey,
   DEFAULT_MAX_CONCURRENT_SESSIONS,
+  getLeaseHardExpireCutoff,
   getLeaseFailureDetails,
+  isLeaseHardExpired,
   LEASE_GRACE_SECONDS,
   LEASE_HEARTBEAT_INTERVAL_SECONDS,
   LEASE_TTL_SECONDS,
@@ -82,9 +86,32 @@ export class RuntimeSessionService {
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly authSessionService: AuthSessionService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
-    private readonly edgeGatewayService: EdgeGatewayService,
+    private readonly moduleRef: ModuleRef,
     private readonly xuiService: XuiService
   ) {}
+
+  private getEdgeGatewayService() {
+    return this.moduleRef.get(EdgeGatewayService, { strict: false });
+  }
+
+  private logLeaseWarning(
+    message: string,
+    lease: {
+      sessionId: string;
+      status: string;
+      lastHeartbeatAt: Date;
+      expiresAt: Date;
+      revokedReason?: string | null;
+    },
+    extra?: Record<string, string | null>
+  ) {
+    this.logger.warn(
+      `${message} ${JSON.stringify({
+        ...buildLeaseDiagnosticFields(lease),
+        ...extra
+      })}`
+    );
+  }
 
   async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {
     const node = await this.prisma.node.findUnique({
@@ -164,7 +191,7 @@ export class RuntimeSessionService {
     });
 
     try {
-      await this.edgeGatewayService.openSession({
+      await this.getEdgeGatewayService().openSession({
         sessionId,
         leaseId,
         subscriptionId: access.subscription.id,
@@ -206,11 +233,11 @@ export class RuntimeSessionService {
           detail
         }
       });
-      await this.edgeGatewayService.markNodeUnavailable(node.id, detail);
+      await this.getEdgeGatewayService().markNodeUnavailable(node.id, detail);
       throw new BadRequestException(`中心中转会话创建失败：${detail}`);
     }
 
-    const edgeConfig = this.edgeGatewayService.getPublicRuntimeConfig();
+    const edgeConfig = this.getEdgeGatewayService().getPublicRuntimeConfig();
     this.activeRuntime = {
       sessionId,
       leaseId,
@@ -262,14 +289,22 @@ export class RuntimeSessionService {
     });
 
     if (!lease || lease.userId !== user.id) {
+      if (lease) {
+        this.logLeaseWarning("会话心跳失败：会话归属不匹配", lease, {
+          reason: "subscription_owner_mismatch"
+        });
+      }
       throw new NotFoundException("当前连接已失效，请重新连接");
     }
     if (lease.status !== "active") {
+      this.logLeaseWarning("会话心跳失败：租约状态不可续租", lease, {
+        reason: lease.revokedReason ?? "lease_not_active"
+      });
       throw new ForbiddenException(getLeaseFailureDetails(lease.status, lease.revokedReason).reasonMessage);
     }
 
     const now = new Date();
-    if (lease.expiresAt.getTime() <= now.getTime()) {
+    if (isLeaseHardExpired(lease.expiresAt, now)) {
       await this.prisma.nodeSessionLease.update({
         where: { id: lease.id },
         data: {
@@ -278,6 +313,17 @@ export class RuntimeSessionService {
           revokedReason: "lease_expired"
         }
       });
+      this.logLeaseWarning(
+        "会话心跳失败：租约已超过宽限期",
+        {
+          ...lease,
+          status: "expired",
+          revokedReason: "lease_expired"
+        },
+        {
+          reason: "lease_expired"
+        }
+      );
       throw new ForbiddenException("会话已过期");
     }
 
@@ -307,7 +353,7 @@ export class RuntimeSessionService {
     }
 
     try {
-      await this.edgeGatewayService.openSession({
+      await this.getEdgeGatewayService().openSession({
         sessionId: lease.sessionId,
         leaseId: lease.id,
         subscriptionId: lease.subscriptionId,
@@ -340,7 +386,19 @@ export class RuntimeSessionService {
       });
     } catch (error) {
       await this.revokeLease(lease.id, lease.node, "lease_renew_failed");
-      await this.edgeGatewayService.markNodeUnavailable(
+      this.logLeaseWarning(
+        "会话心跳失败：续租下发失败",
+        {
+          ...lease,
+          status: "revoked",
+          revokedReason: "lease_renew_failed"
+        },
+        {
+          reason: "lease_renew_failed",
+          error: error instanceof Error ? error.message : "未知错误"
+        }
+      );
+      await this.getEdgeGatewayService().markNodeUnavailable(
         lease.nodeId,
         error instanceof Error ? error.message : "未知错误"
       );
@@ -772,7 +830,7 @@ export class RuntimeSessionService {
     const expired = await this.prisma.nodeSessionLease.findMany({
       where: {
         status: "active",
-        expiresAt: { lte: now }
+        expiresAt: { lt: getLeaseHardExpireCutoff(now) }
       },
       include: { node: true },
       take: 100
@@ -780,9 +838,15 @@ export class RuntimeSessionService {
 
     for (const lease of expired) {
       try {
+        this.logLeaseWarning("会话过期回收：租约已超过宽限期，准备回收", lease, {
+          reason: "lease_expired"
+        });
         await this.revokeLease(lease.id, lease.node, "lease_expired");
       } catch (error) {
-        this.logger.warn(`会话 ${lease.sessionId} 过期回收失败：${error instanceof Error ? error.message : "未知错误"}`);
+        this.logLeaseWarning("会话过期回收失败", lease, {
+          reason: "lease_expired",
+          error: error instanceof Error ? error.message : "未知错误"
+        });
       }
     }
   }
@@ -1123,6 +1187,10 @@ export class RuntimeSessionService {
       nodeId: string;
       xrayUserEmail: string;
       xrayUserUuid: string;
+      status: string;
+      lastHeartbeatAt: Date;
+      expiresAt: Date;
+      revokedReason: string | null;
       node: {
         id: string;
         flow: string;
@@ -1143,6 +1211,17 @@ export class RuntimeSessionService {
     });
 
     const revokeAndThrow = async (message: string, reason: string) => {
+      this.logLeaseWarning(
+        "会话心跳失败：租约校验未通过",
+        {
+          ...lease,
+          status: reason === SECURITY_REASON_CONCURRENCY ? "evicted" : "revoked",
+          revokedReason: reason
+        },
+        {
+          reason
+        }
+      );
       await this.revokeLease(lease.id, lease.node, reason);
       throw new ForbiddenException(message);
     };
@@ -1267,7 +1346,7 @@ export class RuntimeSessionService {
 
     if (lease.accessMode === "relay") {
       try {
-        await this.edgeGatewayService.closeSession({
+        await this.getEdgeGatewayService().closeSession({
           sessionId: lease.sessionId,
           leaseId: lease.id,
           nodeId: lease.nodeId
@@ -1278,7 +1357,7 @@ export class RuntimeSessionService {
           METERING_REASON_NODE_UNAVAILABLE
         );
       } catch (error) {
-        await this.edgeGatewayService.markNodeUnavailable(
+        await this.getEdgeGatewayService().markNodeUnavailable(
           lease.nodeId,
           error instanceof Error ? error.message : "关闭中心中转会话失败"
         );

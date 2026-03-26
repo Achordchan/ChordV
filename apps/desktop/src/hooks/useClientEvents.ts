@@ -1,7 +1,7 @@
 import type { AuthSessionDto, ClientRuntimeEventDto } from "@chordv/shared";
 import { useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { isUnauthorizedApiError, subscribeClientEvents as subscribeClientEventsRequest } from "../api/client";
+import { isAccessTokenExpiredApiError, subscribeClientEvents as subscribeClientEventsRequest } from "../api/client";
 
 export type ServerProbeState = {
   status: "idle" | "checking" | "healthy" | "slow" | "failed";
@@ -64,7 +64,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
     recoverSessionAfterUnauthorized,
     readError,
     subscribeClientEvents = subscribeClientEventsRequest,
-    isUnauthorizedError = isUnauthorizedApiError
+    isUnauthorizedError = isAccessTokenExpiredApiError
   } = options;
   const handleRuntimeEventRef = useRef(handleRuntimeEvent);
   const recoverSessionAfterUnauthorizedRef = useRef(recoverSessionAfterUnauthorized);

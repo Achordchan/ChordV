@@ -1,6 +1,6 @@
 [package]
 name = "chordv-desktop"
-version = "1.1.0"
+version = "1.1.1"
 description = "ChordV desktop shell"
 authors = ["achordchan"]
 edition = "2021"

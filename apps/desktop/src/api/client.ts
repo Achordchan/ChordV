@@ -169,7 +169,7 @@ function normalizeHeaders(headers?: HeadersInit) {
 function createApiRequestError(status: number | null, rawMessage: string | null | undefined) {
   const normalizedStatus = typeof status === "number" && Number.isFinite(status) ? status : null;
   const fallbackMessage = rawMessage?.trim() || (normalizedStatus ? `HTTP ${normalizedStatus}` : "请求失败");
-  if (normalizedStatus === 401 || normalizedStatus === 403) {
+  if (normalizedStatus === 401) {
     return new ApiRequestError(normalizedStatus, "登录状态已失效，请重新登录。", fallbackMessage);
   }
   return new ApiRequestError(normalizedStatus, fallbackMessage, fallbackMessage);
@@ -182,6 +182,16 @@ export function getApiErrorStatus(reason: unknown) {
   return null;
 }
 
+export function getApiErrorRawMessage(reason: unknown) {
+  if (reason instanceof ApiRequestError) {
+    return reason.rawMessage;
+  }
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return "";
+}
+
 function isApiStatusError(reason: unknown, ...statuses: number[]) {
   const status = getApiErrorStatus(reason);
   return status !== null && statuses.includes(status);
@@ -190,6 +200,14 @@ function isApiStatusError(reason: unknown, ...statuses: number[]) {
 export function isUnauthorizedApiError(reason: unknown) {
   const status = getApiErrorStatus(reason);
   return status === 401 || status === 403;
+}
+
+export function isAccessTokenExpiredApiError(reason: unknown) {
+  return getApiErrorStatus(reason) === 401;
+}
+
+export function isForbiddenApiError(reason: unknown) {
+  return getApiErrorStatus(reason) === 403;
 }
 
 export function login(email: string, password: string) {
@@ -572,7 +590,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       }
       const normalizedError = error instanceof Error ? error : new Error("事件流连接失败");
       const status = getApiErrorStatus(normalizedError);
-      const authError = isUnauthorizedApiError(normalizedError);
+      const authError = isAccessTokenExpiredApiError(normalizedError);
       subscriber.onError?.(normalizedError, {
         authError,
         status
