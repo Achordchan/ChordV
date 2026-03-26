@@ -199,7 +199,7 @@ function isApiStatusError(reason: unknown, ...statuses: number[]) {
 
 export function isUnauthorizedApiError(reason: unknown) {
   const status = getApiErrorStatus(reason);
-  return status === 401 || status === 403;
+  return status === 401;
 }
 
 export function isAccessTokenExpiredApiError(reason: unknown) {
@@ -385,8 +385,9 @@ export function replySupportTicket(accessToken: string, ticketId: string, input:
   });
 }
 
-export function fetchClientRuntime(accessToken: string) {
-  return request<GeneratedRuntimeConfigDto | null>("/client/runtime", {
+export function fetchClientRuntime(accessToken: string, sessionId?: string | null) {
+  const params = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  return request<GeneratedRuntimeConfigDto | null>(`/client/runtime${params}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
@@ -500,6 +501,87 @@ type ClientEventSubscriber = {
 };
 
 export function subscribeClientEvents(accessToken: string, subscriber: ClientEventSubscriber) {
+  if ((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ && !/android/i.test(window.navigator.userAgent)) {
+    let disposed = false;
+    let unlistenEvent: (() => void) | null = null;
+    let unlistenOpen: (() => void) | null = null;
+    let unlistenError: (() => void) | null = null;
+    let startCompleted = false;
+
+    const cleanupNative = () => {
+      unlistenEvent?.();
+      unlistenOpen?.();
+      unlistenError?.();
+      unlistenEvent = null;
+      unlistenOpen = null;
+      unlistenError = null;
+      void loadNativeInvoke()
+        .then((invoke) => invoke?.("stop_client_events_stream"))
+        .catch(() => null);
+    };
+
+    const start = async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const invoke = await loadNativeInvoke();
+      if (!invoke || disposed) {
+        return;
+      }
+
+      unlistenEvent = await listen<ClientRuntimeEventDto>("chordv://native-client-event", (event) => {
+        if (!disposed && event.payload) {
+          subscriber.onEvent(event.payload);
+        }
+      });
+      unlistenOpen = await listen<{ elapsedMs?: number | null }>("chordv://native-client-events-open", (event) => {
+        if (!disposed) {
+          subscriber.onOpen?.({
+            elapsedMs: typeof event.payload?.elapsedMs === "number" ? event.payload.elapsedMs : null
+          });
+        }
+      });
+      unlistenError = await listen<{ status?: number | null; authError?: boolean; message?: string }>(
+        "chordv://native-client-events-error",
+        (event) => {
+          if (disposed) {
+            return;
+          }
+          subscriber.onError?.(
+            new Error(event.payload?.message ?? "事件流连接失败"),
+            {
+              authError: Boolean(event.payload?.authError),
+              status: typeof event.payload?.status === "number" ? event.payload.status : null
+            }
+          );
+        }
+      );
+
+      if (disposed) {
+        cleanupNative();
+        return;
+      }
+
+      await invoke("start_client_events_stream", { accessToken });
+      startCompleted = true;
+      if (disposed) {
+        cleanupNative();
+      }
+    };
+
+    void start().catch((error) => {
+      subscriber.onError?.(error instanceof Error ? error : new Error("事件流连接失败"), {
+        authError: false,
+        status: null
+      });
+    });
+
+    return () => {
+      disposed = true;
+      if (startCompleted || unlistenEvent || unlistenOpen || unlistenError) {
+        cleanupNative();
+      }
+    };
+  }
+
   const controller = new AbortController();
   let disposed = false;
   let reconnectTimer: number | null = null;
@@ -595,7 +677,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
         authError,
         status
       });
-      if (authError) {
+      if (authError || status === 403) {
         return;
       }
       scheduleReconnect();

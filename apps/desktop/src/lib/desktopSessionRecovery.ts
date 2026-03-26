@@ -1,6 +1,14 @@
 import type { AuthSessionDto } from "@chordv/shared";
-import { refreshSession as refreshSessionRequest } from "../api/client";
-import { saveStoredSession as saveStoredSessionRuntime } from "./runtime";
+import {
+  isForbiddenApiError,
+  isUnauthorizedApiError,
+  refreshSession as refreshSessionRequest
+} from "../api/client";
+import {
+  loadStoredSession as loadStoredSessionRuntime,
+  refreshStoredSessionNative as refreshStoredSessionNativeRuntime,
+  saveStoredSession as saveStoredSessionRuntime
+} from "./runtime";
 
 export type UnauthorizedRecoveryTaskRef = {
   current: Promise<AuthSessionDto | null> | null;
@@ -15,8 +23,37 @@ export type RecoverDesktopSessionAfterUnauthorizedOptions = {
   bootstrapSession: DesktopUnauthorizedRecoveryRunner;
   clearSession: DesktopUnauthorizedSessionCleaner;
   refreshSession?: typeof refreshSessionRequest;
+  refreshSessionNative?: typeof refreshStoredSessionNativeRuntime;
   saveStoredSession?: typeof saveStoredSessionRuntime;
+  loadStoredSession?: typeof loadStoredSessionRuntime;
 };
+
+export type RefreshDesktopSessionWithFallbackOptions = {
+  refreshToken: string;
+  refreshSession?: typeof refreshSessionRequest;
+  refreshSessionNative?: typeof refreshStoredSessionNativeRuntime;
+};
+
+export async function refreshDesktopSessionWithFallback(
+  options: RefreshDesktopSessionWithFallbackOptions
+) {
+  const {
+    refreshToken,
+    refreshSession = refreshSessionRequest,
+    refreshSessionNative = refreshStoredSessionNativeRuntime
+  } = options;
+
+  try {
+    const refreshed = await refreshSessionNative(refreshToken);
+    if (refreshed) {
+      return refreshed;
+    }
+  } catch {
+    // 原生刷新失败时回退到 HTTP refresh。
+  }
+
+  return refreshSession(refreshToken);
+}
 
 export async function recoverDesktopSessionAfterUnauthorized(
   options: RecoverDesktopSessionAfterUnauthorizedOptions
@@ -27,7 +64,9 @@ export async function recoverDesktopSessionAfterUnauthorized(
     bootstrapSession,
     clearSession,
     refreshSession = refreshSessionRequest,
-    saveStoredSession = saveStoredSessionRuntime
+    refreshSessionNative = refreshStoredSessionNativeRuntime,
+    saveStoredSession = saveStoredSessionRuntime,
+    loadStoredSession = loadStoredSessionRuntime
   } = options;
 
   if (taskRef.current) {
@@ -41,13 +80,24 @@ export async function recoverDesktopSessionAfterUnauthorized(
 
   const task = (async () => {
     try {
-      const refreshed = await refreshSession(currentSession.refreshToken);
+      const refreshed = await refreshDesktopSessionWithFallback({
+        refreshToken: currentSession.refreshToken,
+        refreshSession,
+        refreshSessionNative
+      });
       await saveStoredSession(refreshed);
       const bootstrapped = await bootstrapSession(refreshed);
-      return bootstrapped ? refreshed : null;
-    } catch {
-      await clearSession(true);
-      return null;
+      if (bootstrapped) {
+        return refreshed;
+      }
+      const persistedSession = await loadStoredSession().catch(() => null);
+      return persistedSession?.accessToken === refreshed.accessToken ? refreshed : null;
+    } catch (reason) {
+      if (isUnauthorizedApiError(reason) || isForbiddenApiError(reason)) {
+        await clearSession(true);
+        return null;
+      }
+      return currentSession;
     } finally {
       taskRef.current = null;
     }

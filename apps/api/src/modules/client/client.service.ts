@@ -68,8 +68,8 @@ export class ClientService {
     return this.devDataService.streamRuntimeEvents(token);
   }
 
-  getRuntime(token?: string) {
-    return this.devDataService.getActiveRuntime(token);
+  getRuntime(sessionId?: string, token?: string) {
+    return this.devDataService.getActiveRuntime(sessionId, token);
   }
 
   listSupportTickets(token?: string) {

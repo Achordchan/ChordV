@@ -80,6 +80,7 @@ export class RuntimeSessionService {
   private readonly logger = new Logger(RuntimeSessionService.name);
   private activeRuntime?: GeneratedRuntimeConfigDto;
   private activeRuntimeUsageContext?: ActiveRuntimeUsageContext;
+  private readonly userLeaseLocks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -89,6 +90,25 @@ export class RuntimeSessionService {
     private readonly moduleRef: ModuleRef,
     private readonly xuiService: XuiService
   ) {}
+
+  private async runWithUserLeaseLock<T>(userId: string, task: () => Promise<T>) {
+    const previous = this.userLeaseLocks.get(userId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slot = previous.finally(() => undefined).then(() => current);
+    this.userLeaseLocks.set(userId, slot);
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.userLeaseLocks.get(userId) === slot) {
+        this.userLeaseLocks.delete(userId);
+      }
+    }
+  }
 
   private getEdgeGatewayService() {
     return this.moduleRef.get(EdgeGatewayService, { strict: false });
@@ -123,160 +143,162 @@ export class RuntimeSessionService {
     }
 
     const user = await this.resolveActiveUserFromToken(token);
-    const access = await this.resolveSubscriptionAccessForUser(user.id);
-    if (!access.subscription) {
-      throw new NotFoundException("当前没有可用订阅");
-    }
-
-    assertSubscriptionConnectable(access.subscription);
-
-    const policy = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" }
-    });
-    if (!policy) {
-      throw new NotFoundException("策略配置不存在");
-    }
-
-    const allowedRows = await this.prisma.subscriptionNodeAccess.findMany({
-      where: {
-        subscriptionId: access.subscription.id,
-        nodeId: request.nodeId
+    return this.runWithUserLeaseLock(user.id, async () => {
+      const access = await this.resolveSubscriptionAccessForUser(user.id);
+      if (!access.subscription) {
+        throw new NotFoundException("当前没有可用订阅");
       }
-    });
-    if (allowedRows.length === 0) {
-      throw new ForbiddenException("当前节点已被取消授权");
-    }
 
-    const userSecurity = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: { maxConcurrentSessionsOverride: true }
-    });
-    const concurrentLimit = Math.max(
-      1,
-      userSecurity?.maxConcurrentSessionsOverride ??
-        access.subscription.plan.maxConcurrentSessions ??
-        DEFAULT_MAX_CONCURRENT_SESSIONS
-    );
-    await this.evictExceededUserLeases(user.id, concurrentLimit);
+      assertSubscriptionConnectable(access.subscription);
 
-    if (policy.accessMode === "xui") {
-      return this.connectWithXui(node, user, access, request, policy);
-    }
-    if (policy.accessMode !== "relay") {
-      throw new BadRequestException("当前接入模式未启用");
-    }
-
-    const now = new Date();
-    const sessionId = `session_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
-    const leaseId = createId("lease");
-    const xrayUserEmail = buildLeaseEmail(user.id, leaseId);
-    const xrayUserUuid = randomUUID();
-    const leaseExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
-
-    await this.prisma.nodeSessionLease.create({
-      data: {
-        id: leaseId,
-        sessionId,
-        accessMode: "relay",
-        userId: user.id,
-        subscriptionId: access.subscription.id,
-        nodeId: node.id,
-        xrayUserEmail,
-        xrayUserUuid,
-        status: "active",
-        issuedAt: now,
-        expiresAt: leaseExpiresAt,
-        lastHeartbeatAt: now
+      const policy = await this.prisma.policyProfile.findUnique({
+        where: { id: "default" }
+      });
+      if (!policy) {
+        throw new NotFoundException("策略配置不存在");
       }
-    });
 
-    try {
-      await this.getEdgeGatewayService().openSession({
-        sessionId,
-        leaseId,
-        subscriptionId: access.subscription.id,
-        userId: user.id,
-        xrayUserEmail,
-        xrayUserUuid,
-        expiresAt: leaseExpiresAt.toISOString(),
-        node: {
-          nodeId: node.id,
-          serverHost: node.serverHost,
-          serverPort: node.serverPort,
-          uuid: node.uuid,
-          flow: node.flow,
-          realityPublicKey: node.realityPublicKey,
-          shortId: node.shortId,
-          serverName: node.serverName,
-          fingerprint: node.fingerprint,
-          spiderX: node.spiderX
+      const allowedRows = await this.prisma.subscriptionNodeAccess.findMany({
+        where: {
+          subscriptionId: access.subscription.id,
+          nodeId: request.nodeId
         }
       });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "下发临时租约失败";
-      await this.prisma.nodeSessionLease.update({
-        where: { id: leaseId },
-        data: {
-          status: "revoked",
-          revokedAt: new Date(),
-          revokedReason: "edge_open_failed"
-        }
+      if (allowedRows.length === 0) {
+        throw new ForbiddenException("当前节点已被取消授权");
+      }
+
+      const userSecurity = await this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { maxConcurrentSessionsOverride: true }
       });
-      await this.prisma.securityEvent.create({
+      const concurrentLimit = Math.max(
+        1,
+        userSecurity?.maxConcurrentSessionsOverride ??
+          access.subscription.plan.maxConcurrentSessions ??
+          DEFAULT_MAX_CONCURRENT_SESSIONS
+      );
+      await this.evictExceededUserLeases(user.id, concurrentLimit);
+
+      if (policy.accessMode === "xui") {
+        return this.connectWithXui(node, user, access, request, policy);
+      }
+      if (policy.accessMode !== "relay") {
+        throw new BadRequestException("当前接入模式未启用");
+      }
+
+      const now = new Date();
+      const sessionId = `session_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+      const leaseId = createId("lease");
+      const xrayUserEmail = buildLeaseEmail(user.id, leaseId);
+      const xrayUserUuid = randomUUID();
+      const leaseExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
+
+      await this.prisma.nodeSessionLease.create({
         data: {
-          id: createId("security"),
-          type: "relay_open_failed",
+          id: leaseId,
+          sessionId,
+          accessMode: "relay",
           userId: user.id,
           subscriptionId: access.subscription.id,
           nodeId: node.id,
-          leaseId,
-          detail
+          xrayUserEmail,
+          xrayUserUuid,
+          status: "active",
+          issuedAt: now,
+          expiresAt: leaseExpiresAt,
+          lastHeartbeatAt: now
         }
       });
-      await this.getEdgeGatewayService().markNodeUnavailable(node.id, detail);
-      throw new BadRequestException(`中心中转会话创建失败：${detail}`);
-    }
 
-    const edgeConfig = this.getEdgeGatewayService().getPublicRuntimeConfig();
-    this.activeRuntime = {
-      sessionId,
-      leaseId,
-      leaseExpiresAt: leaseExpiresAt.toISOString(),
-      leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
-      leaseGraceSeconds: LEASE_GRACE_SECONDS,
-      node: toNodeSummary(node),
-      mode: request.mode,
-      localHttpPort: 17890,
-      localSocksPort: 17891,
-      routingProfile: request.strategyGroupId ?? "managed-rule-default",
-      generatedAt: new Date().toISOString(),
-      features: {
-        blockAds: policy.blockAds,
-        chinaDirect: policy.chinaDirect,
-        aiServicesProxy: policy.aiServicesProxy
-      },
-      outbound: {
-        protocol: "vless",
-        server: edgeConfig.server,
-        port: edgeConfig.port,
-        uuid: xrayUserUuid,
-        flow: edgeConfig.flow,
-        realityPublicKey: edgeConfig.realityPublicKey,
-        shortId: edgeConfig.shortId,
-        serverName: edgeConfig.serverName,
-        fingerprint: edgeConfig.fingerprint,
-        spiderX: edgeConfig.spiderX
+      try {
+        await this.getEdgeGatewayService().openSession({
+          sessionId,
+          leaseId,
+          subscriptionId: access.subscription.id,
+          userId: user.id,
+          xrayUserEmail,
+          xrayUserUuid,
+          expiresAt: leaseExpiresAt.toISOString(),
+          node: {
+            nodeId: node.id,
+            serverHost: node.serverHost,
+            serverPort: node.serverPort,
+            uuid: node.uuid,
+            flow: node.flow,
+            realityPublicKey: node.realityPublicKey,
+            shortId: node.shortId,
+            serverName: node.serverName,
+            fingerprint: node.fingerprint,
+            spiderX: node.spiderX
+          }
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "下发临时租约失败";
+        await this.prisma.nodeSessionLease.update({
+          where: { id: leaseId },
+          data: {
+            status: "revoked",
+            revokedAt: new Date(),
+            revokedReason: "edge_open_failed"
+          }
+        });
+        await this.prisma.securityEvent.create({
+          data: {
+            id: createId("security"),
+            type: "relay_open_failed",
+            userId: user.id,
+            subscriptionId: access.subscription.id,
+            nodeId: node.id,
+            leaseId,
+            detail
+          }
+        });
+        await this.getEdgeGatewayService().markNodeUnavailable(node.id, detail);
+        throw new BadRequestException(`中心中转会话创建失败：${detail}`);
       }
-    };
-    this.activeRuntimeUsageContext = {
-      subscriptionId: access.subscription.id,
-      nodeId: node.id,
-      userId: user.id,
-      teamId: access.subscription.teamId
-    };
 
-    await this.meteringIncidentService.resolve(access.subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
-    return this.activeRuntime;
+      const edgeConfig = this.getEdgeGatewayService().getPublicRuntimeConfig();
+      this.activeRuntime = {
+        sessionId,
+        leaseId,
+        leaseExpiresAt: leaseExpiresAt.toISOString(),
+        leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
+        leaseGraceSeconds: LEASE_GRACE_SECONDS,
+        node: toNodeSummary(node),
+        mode: request.mode,
+        localHttpPort: 17890,
+        localSocksPort: 17891,
+        routingProfile: request.strategyGroupId ?? "managed-rule-default",
+        generatedAt: new Date().toISOString(),
+        features: {
+          blockAds: policy.blockAds,
+          chinaDirect: policy.chinaDirect,
+          aiServicesProxy: policy.aiServicesProxy
+        },
+        outbound: {
+          protocol: "vless",
+          server: edgeConfig.server,
+          port: edgeConfig.port,
+          uuid: xrayUserUuid,
+          flow: edgeConfig.flow,
+          realityPublicKey: edgeConfig.realityPublicKey,
+          shortId: edgeConfig.shortId,
+          serverName: edgeConfig.serverName,
+          fingerprint: edgeConfig.fingerprint,
+          spiderX: edgeConfig.spiderX
+        }
+      };
+      this.activeRuntimeUsageContext = {
+        subscriptionId: access.subscription.id,
+        nodeId: node.id,
+        userId: user.id,
+        teamId: access.subscription.teamId
+      };
+
+      await this.meteringIncidentService.resolve(access.subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
+      return this.activeRuntime;
+    });
   }
 
   async heartbeatSession(sessionId: string, token?: string) {
@@ -305,19 +327,12 @@ export class RuntimeSessionService {
 
     const now = new Date();
     if (isLeaseHardExpired(lease.expiresAt, now)) {
-      await this.prisma.nodeSessionLease.update({
-        where: { id: lease.id },
-        data: {
-          status: "expired",
-          revokedAt: now,
-          revokedReason: "lease_expired"
-        }
-      });
+      await this.revokeLease(lease.id, lease.node, "lease_expired");
       this.logLeaseWarning(
         "会话心跳失败：租约已超过宽限期",
         {
           ...lease,
-          status: "expired",
+          status: "revoked",
           revokedReason: "lease_expired"
         },
         {
@@ -331,8 +346,12 @@ export class RuntimeSessionService {
 
     const nextExpiresAt = new Date(now.getTime() + LEASE_TTL_SECONDS * 1000);
     if (lease.accessMode === "xui") {
-      await this.prisma.nodeSessionLease.update({
-        where: { id: lease.id },
+      const renewed = await this.prisma.nodeSessionLease.updateMany({
+        where: {
+          id: lease.id,
+          userId: user.id,
+          status: "active"
+        },
         data: {
           status: "active",
           expiresAt: nextExpiresAt,
@@ -341,6 +360,10 @@ export class RuntimeSessionService {
           revokedReason: null
         }
       });
+      if (renewed.count === 0) {
+        throw new ForbiddenException("当前连接已失效，请重新连接");
+      }
+      this.refreshActiveRuntimeLease(sessionId, nextExpiresAt);
       return {
         sessionId,
         status: "active" as const,
@@ -374,8 +397,12 @@ export class RuntimeSessionService {
           spiderX: lease.node.spiderX
         }
       });
-      await this.prisma.nodeSessionLease.update({
-        where: { id: lease.id },
+      const renewed = await this.prisma.nodeSessionLease.updateMany({
+        where: {
+          id: lease.id,
+          userId: user.id,
+          status: "active"
+        },
         data: {
           status: "active",
           expiresAt: nextExpiresAt,
@@ -384,6 +411,15 @@ export class RuntimeSessionService {
           revokedReason: null
         }
       });
+      if (renewed.count === 0) {
+        await this.getEdgeGatewayService().closeSession({
+          sessionId: lease.sessionId,
+          leaseId: lease.id,
+          nodeId: lease.nodeId
+        }).catch(() => null);
+        throw new ForbiddenException("当前连接已失效，请重新连接");
+      }
+      this.refreshActiveRuntimeLease(sessionId, nextExpiresAt);
     } catch (error) {
       await this.revokeLease(lease.id, lease.node, "lease_renew_failed");
       this.logLeaseWarning(
@@ -430,41 +466,71 @@ export class RuntimeSessionService {
     }
 
     const previous = this.activeRuntime;
-    if (!sessionId || previous?.sessionId === sessionId) {
-      this.activeRuntime = undefined;
-      this.activeRuntimeUsageContext = undefined;
-    }
+    this.clearActiveRuntime(sessionId);
     return { ok: true, previousSessionId: previous?.sessionId ?? null };
   }
 
-  async getActiveRuntime(token?: string) {
-    const runtime = this.activeRuntime;
-    const usageContext = this.activeRuntimeUsageContext;
-    if (!runtime || !usageContext) {
-      return null;
-    }
-
+  async getActiveRuntime(sessionId?: string, token?: string) {
     const user = await this.resolveActiveUserFromToken(token);
-    if (usageContext.userId !== user.id) {
-      return null;
-    }
-
-    const activeLease = await this.prisma.nodeSessionLease.findUnique({
-      where: { sessionId: runtime.sessionId },
-      select: {
-        userId: true,
-        status: true
+    const lease = await this.prisma.nodeSessionLease.findFirst({
+      where: {
+        userId: user.id,
+        status: "active",
+        ...(sessionId ? { sessionId } : {})
+      },
+      include: {
+        node: true
+      },
+      orderBy: {
+        updatedAt: "desc"
       }
     });
-    if (!activeLease || activeLease.userId !== user.id || activeLease.status !== "active") {
+
+    if (!lease) {
+      return null;
+    }
+    if (isLeaseHardExpired(lease.expiresAt, new Date())) {
+      this.clearActiveRuntime(lease.sessionId);
       return null;
     }
 
-    return runtime;
+    const runtime = this.activeRuntime;
+    const usageContext = this.activeRuntimeUsageContext;
+    if (runtime && usageContext?.userId === user.id && runtime.sessionId === lease.sessionId) {
+      return runtime;
+    }
+
+    if (lease.accessMode !== "xui") {
+      return null;
+    }
+
+    const policy = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" }
+    });
+
+    return buildXuiRuntimeFromLease(lease, policy);
   }
 
   getActiveRuntimeUsageContext() {
     return this.activeRuntimeUsageContext ?? null;
+  }
+
+  private refreshActiveRuntimeLease(sessionId: string, leaseExpiresAt: Date) {
+    if (!this.activeRuntime || this.activeRuntime.sessionId !== sessionId) {
+      return;
+    }
+    this.activeRuntime = {
+      ...this.activeRuntime,
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+      generatedAt: new Date().toISOString()
+    };
+  }
+
+  private clearActiveRuntime(sessionId?: string) {
+    if (!sessionId || this.activeRuntime?.sessionId === sessionId) {
+      this.activeRuntime = undefined;
+      this.activeRuntimeUsageContext = undefined;
+    }
   }
 
   async syncSubscriptionPanelAccess(subscriptionId: string) {
@@ -602,11 +668,12 @@ export class RuntimeSessionService {
     reason: string,
     filter?: { subscriptionId?: string; nodeIds?: string[] }
   ) {
+    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         userId,
         status: "active",
-        expiresAt: { gt: new Date() },
+        expiresAt: { gt: graceWindowStart },
         ...(filter?.subscriptionId ? { subscriptionId: filter.subscriptionId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {})
       },
@@ -632,11 +699,12 @@ export class RuntimeSessionService {
     reason: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
+    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         subscriptionId,
         status: "active",
-        expiresAt: { gt: new Date() },
+        expiresAt: { gt: graceWindowStart },
         ...(filter?.userId ? { userId: filter.userId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {})
       },
@@ -829,7 +897,7 @@ export class RuntimeSessionService {
     const now = new Date();
     const expired = await this.prisma.nodeSessionLease.findMany({
       where: {
-        status: "active",
+        status: { in: ["active", "expired"] },
         expiresAt: { lt: getLeaseHardExpireCutoff(now) }
       },
       include: { node: true },
@@ -1157,11 +1225,12 @@ export class RuntimeSessionService {
   }
 
   private async evictExceededUserLeases(userId: string, maxConcurrentSessions: number) {
+    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         userId,
         status: "active",
-        expiresAt: { gt: new Date() }
+        expiresAt: { gt: graceWindowStart }
       },
       include: { node: true },
       orderBy: [{ lastHeartbeatAt: "asc" }, { issuedAt: "asc" }]
@@ -1312,14 +1381,23 @@ export class RuntimeSessionService {
       return;
     }
 
-    await this.prisma.nodeSessionLease.update({
-      where: { id: lease.id },
+    this.clearActiveRuntime(lease.sessionId);
+
+    const nextStatus = reason === SECURITY_REASON_CONCURRENCY ? "evicted" : "revoked";
+    const revoked = await this.prisma.nodeSessionLease.updateMany({
+      where: {
+        id: lease.id,
+        status: { in: ["active", "expired"] }
+      },
       data: {
-        status: reason === SECURITY_REASON_CONCURRENCY ? "evicted" : "revoked",
+        status: nextStatus,
         revokedAt: new Date(),
         revokedReason: reason
       }
     });
+    if (revoked.count === 0) {
+      return;
+    }
 
     await this.prisma.securityEvent.create({
       data: {
@@ -1333,7 +1411,7 @@ export class RuntimeSessionService {
       }
     });
 
-    const details = getLeaseFailureDetails(reason === SECURITY_REASON_CONCURRENCY ? "evicted" : "revoked", reason);
+    const details = getLeaseFailureDetails(nextStatus, reason);
     this.clientRuntimeEventsService.publishToUser(lease.userId, {
       type: toClientRuntimeEventType(details.reasonCode),
       occurredAt: new Date().toISOString(),
@@ -1452,6 +1530,73 @@ function toNodeSummary(row: {
     latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
     security: row.security as "reality"
+  };
+}
+
+function buildXuiRuntimeFromLease(
+  lease: {
+    id: string;
+    sessionId: string;
+    accessMode: string;
+    expiresAt: Date;
+    updatedAt: Date;
+    xrayUserUuid: string;
+    node: {
+      id: string;
+      name: string;
+      region: string;
+      provider: string;
+      tags: string[];
+      recommended: boolean;
+      latencyMs: number;
+      probeLatencyMs?: number | null;
+      protocol: string;
+      security: string;
+      serverHost: string;
+      serverPort: number;
+      flow: string;
+      realityPublicKey: string;
+      shortId: string;
+      serverName: string;
+      fingerprint: string;
+      spiderX: string;
+    };
+  },
+  policy: {
+    blockAds: boolean;
+    chinaDirect: boolean;
+    aiServicesProxy: boolean;
+  } | null
+): GeneratedRuntimeConfigDto {
+  return {
+    sessionId: lease.sessionId,
+    leaseId: lease.id,
+    leaseExpiresAt: lease.expiresAt.toISOString(),
+    leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
+    leaseGraceSeconds: LEASE_GRACE_SECONDS,
+    node: toNodeSummary(lease.node),
+    mode: "rule",
+    localHttpPort: 17890,
+    localSocksPort: 17891,
+    routingProfile: "managed-rule-default",
+    generatedAt: lease.updatedAt.toISOString(),
+    features: {
+      blockAds: policy?.blockAds ?? true,
+      chinaDirect: policy?.chinaDirect ?? true,
+      aiServicesProxy: policy?.aiServicesProxy ?? true
+    },
+    outbound: {
+      protocol: "vless",
+      server: lease.node.serverHost,
+      port: lease.node.serverPort,
+      uuid: lease.xrayUserUuid,
+      flow: lease.node.flow,
+      realityPublicKey: lease.node.realityPublicKey,
+      shortId: lease.node.shortId,
+      serverName: lease.node.serverName,
+      fingerprint: lease.node.fingerprint,
+      spiderX: lease.node.spiderX
+    }
   };
 }
 

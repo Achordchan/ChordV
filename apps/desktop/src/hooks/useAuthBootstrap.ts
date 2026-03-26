@@ -12,16 +12,27 @@ import type { Dispatch, SetStateAction } from "react";
 import {
   fetchBootstrap as fetchBootstrapRequest,
   fetchNodes as fetchNodesRequest,
+  isAccessTokenExpiredApiError,
+  isForbiddenApiError,
+  isUnauthorizedApiError,
   login as loginRequest,
   logoutSession as logoutSessionRequest,
   refreshSession as refreshSessionRequest
 } from "../api/client";
 import type { RuntimeNodeProbeResult } from "../lib/runtime";
+import type { RuntimeStatus } from "../lib/runtime";
 import {
   clearStoredSession as clearStoredSessionRuntime,
   loadStoredSession as loadStoredSessionRuntime,
+  refreshStoredSessionNative as refreshStoredSessionNativeRuntime,
   saveStoredSession as saveStoredSessionRuntime
 } from "../lib/runtime";
+import {
+  type UnauthorizedRecoveryTaskRef,
+  recoverDesktopSessionAfterUnauthorized,
+  refreshDesktopSessionWithFallback
+} from "../lib/desktopSessionRecovery";
+import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../lib/sessionLeaseState";
 
 export type GuidanceTone = "danger" | "warning" | "info";
 
@@ -81,8 +92,10 @@ export type UseAuthBootstrapOptions = {
   refreshSession?: typeof refreshSessionRequest;
   loadStoredSession?: typeof loadStoredSessionRuntime;
   saveStoredSession?: typeof saveStoredSessionRuntime;
+  refreshStoredSessionNative?: typeof refreshStoredSessionNativeRuntime;
   clearStoredSession?: typeof clearStoredSessionRuntime;
-  refreshRuntime: () => Promise<void>;
+  unauthorizedRecoveryTaskRef: UnauthorizedRecoveryTaskRef;
+  refreshRuntime: () => Promise<RuntimeStatus | null>;
   forceStopLocalRuntime: () => Promise<void>;
   runProbe: (nodes: NodeSummaryDto[], force: boolean, accessToken?: string) => Promise<void>;
   runUpdateCheck: (input: RunUpdateCheckInput) => Promise<void>;
@@ -135,7 +148,9 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     refreshSession = refreshSessionRequest,
     loadStoredSession = loadStoredSessionRuntime,
     saveStoredSession = saveStoredSessionRuntime,
+    refreshStoredSessionNative = refreshStoredSessionNativeRuntime,
     clearStoredSession = clearStoredSessionRuntime,
+    unauthorizedRecoveryTaskRef,
     refreshRuntime,
     forceStopLocalRuntime,
     runProbe,
@@ -216,7 +231,11 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         setSelectedNodeId(preferred?.id ?? null);
 
         if (autoProbe && nextNodes.length > 0) {
-          await runProbe(nextNodes, true, nextSession.accessToken);
+          try {
+            await runProbe(nextNodes, true, nextSession.accessToken);
+          } catch (reason) {
+            showErrorToast(reason instanceof Error ? readError(reason.message) : "节点测速失败");
+          }
         } else if (nextNodes.length > 0) {
           setProbeResults((current) =>
             Object.fromEntries(
@@ -227,28 +246,82 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           setProbeResults({});
         }
 
-        await runUpdateCheck({
-          accessToken: nextSession.accessToken,
-          bootstrapVersion: nextBootstrap.version,
-          source: allowRefresh ? "refresh" : "login",
-          silent: true
-        });
+        try {
+          await runUpdateCheck({
+            accessToken: nextSession.accessToken,
+            bootstrapVersion: nextBootstrap.version,
+            source: allowRefresh ? "refresh" : "login",
+            silent: true
+          });
+        } catch (reason) {
+          showErrorToast(reason instanceof Error ? readError(reason.message) : "更新信息同步失败");
+        }
 
         return true;
       } catch (reason) {
-        if (allowRefresh && nextSession.refreshToken) {
+        if (allowRefresh && nextSession.refreshToken && isAccessTokenExpiredApiError(reason)) {
           try {
-            const refreshed = await refreshSession(nextSession.refreshToken);
-            await saveStoredSession(refreshed);
-            return await bootstrapSession(refreshed, false, preserveMode, autoProbe);
-          } catch {
-            await clearSession(true);
+            const refreshed = await recoverDesktopSessionAfterUnauthorized({
+              taskRef: unauthorizedRecoveryTaskRef,
+              currentSession: nextSession,
+              bootstrapSession: (refreshedSession) =>
+                bootstrapSession(refreshedSession, false, preserveMode, autoProbe),
+              clearSession,
+              refreshSession,
+              refreshSessionNative: refreshStoredSessionNative,
+              saveStoredSession,
+              loadStoredSession
+            });
+            return Boolean(refreshed);
+          } catch (refreshReason) {
+            if (isUnauthorizedApiError(refreshReason) || isForbiddenApiError(refreshReason)) {
+              await clearSession(true);
+              showErrorToast("登录态已失效");
+              return false;
+            }
+            if (session) {
+              setSession(nextSession);
+              await saveStoredSession(nextSession).catch(() => null);
+              showErrorToast("同步账号信息失败，已保留当前登录态");
+              return true;
+            }
+            showErrorToast("登录失败");
+            return false;
           }
-        } else {
-          await clearSession(true);
         }
 
-        showErrorToast(reason instanceof Error ? readError(reason.message) : "登录态已失效");
+        if (isUnauthorizedApiError(reason)) {
+          await clearSession(true);
+          showErrorToast(reason instanceof Error ? readError(reason.message) : "登录态已失效");
+          return false;
+        }
+
+        if (isForbiddenApiError(reason)) {
+          const accessReason = resolveProtectedAccessReason(
+            reason instanceof Error ? reason.message : ""
+          );
+          if (accessReason) {
+            const notice = buildProtectedAccessNotice(accessReason);
+            await clearSession(true);
+            showErrorToast(notice.message);
+            return false;
+          }
+          const message = reason instanceof Error ? readError(reason.message) : "当前账号无法继续使用";
+          if (message.includes("当前没有可用订阅") || message.includes("失去可用订阅")) {
+            await clearSession(true);
+            showErrorToast("当前账号已失去可用订阅，请重新登录或联系管理员。");
+            return false;
+          }
+        }
+
+        if (session) {
+          setSession(nextSession);
+          await saveStoredSession(nextSession).catch(() => null);
+          showErrorToast(reason instanceof Error ? readError(reason.message) : "同步账号信息失败，已保留当前登录态");
+          return true;
+        }
+
+        showErrorToast(reason instanceof Error ? readError(reason.message) : "登录失败");
         return false;
       }
     },
@@ -257,13 +330,20 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       clearSession,
       fetchBootstrap,
       fetchNodes,
+      session,
+      isAccessTokenExpiredApiError,
+      isForbiddenApiError,
+      isUnauthorizedApiError,
       loadLastNodeId,
       pickNode,
       readError,
+      refreshStoredSessionNative,
       refreshSession,
       resolveDefaultMode,
+      resolveProtectedAccessReason,
       runProbe,
       runUpdateCheck,
+      buildProtectedAccessNotice,
       saveStoredSession,
       setBootstrap,
       setConnectionGuidance,
@@ -294,7 +374,10 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
         clearRememberedCredentials();
       }
       setCredentials((current) => ({ ...current, email: normalizedEmail }));
-      await bootstrapSession(nextSession, false, false, true);
+      const ok = await bootstrapSession(nextSession, false, false, true);
+      if (!ok) {
+        await clearStoredSession().catch(() => null);
+      }
     } catch (reason) {
       showErrorToast(reason instanceof Error ? readError(reason.message) : "登录失败");
     } finally {
@@ -393,9 +476,13 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
   const restoreStoredSession = useCallback(async () => {
     const storedSession = await loadStoredSession();
     if (!storedSession) {
-      return false;
+      return null;
     }
-    return bootstrapSession(storedSession, true, false, true);
+    const ok = await bootstrapSession(storedSession, true, false, true);
+    if (!ok) {
+      return null;
+    }
+    return (await loadStoredSession().catch(() => null)) ?? storedSession;
   }, [bootstrapSession, loadStoredSession]);
 
   return {

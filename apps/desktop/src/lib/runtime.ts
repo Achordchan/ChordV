@@ -96,6 +96,14 @@ export type DesktopShellSummary = {
   primaryActionLabel: string;
 };
 
+export type NativeLeaseHeartbeatEvent = {
+  sessionId: string;
+  status: "ok" | "error";
+  leaseExpiresAt: string | null;
+  reasonCode: string | null;
+  message: string | null;
+};
+
 function isTauriApp() {
   return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 }
@@ -225,13 +233,13 @@ export async function loadRuntimeStatus(): Promise<RuntimeStatus> {
   return {
     ...status,
     platformTarget,
-    activeNodeId: null,
-    tunName: null,
-    lastStartedAt: null,
-    reasonCode: null,
-    recoveryHint: null,
-    vpnActive: null,
-    connectivityVerified: null
+    activeNodeId: status.activeNodeId ?? null,
+    tunName: status.tunName ?? null,
+    lastStartedAt: status.lastStartedAt ?? null,
+    reasonCode: status.reasonCode ?? null,
+    recoveryHint: status.recoveryHint ?? null,
+    vpnActive: status.vpnActive ?? null,
+    connectivityVerified: status.connectivityVerified ?? null
   };
 }
 
@@ -251,6 +259,18 @@ export async function loadRuntimeLogs(): Promise<RuntimeLogs> {
 
   return invoke("runtime_logs");
 }
+
+export async function loadRuntimeSnapshot(): Promise<GeneratedRuntimeConfigDto | null> {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+
+  const response = await invoke<{ runtime: GeneratedRuntimeConfigDto | null }>("runtime_snapshot");
+  return response.runtime ?? null;
+}
+
+export const loadActiveRuntimeConfig = loadRuntimeSnapshot;
 
 export async function focusDesktopWindow() {
   if (!isTauriApp()) {
@@ -443,6 +463,36 @@ export async function subscribeRuntimeComponentDownloadProgress(
   };
 }
 
+export async function subscribeNativeLeaseHeartbeat(handler: (event: NativeLeaseHeartbeatEvent) => void) {
+  if (!isTauriApp() || isAndroidPlatform()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<NativeLeaseHeartbeatEvent>("chordv://native-lease-heartbeat", (event) => {
+    if (event.payload) {
+      handler(event.payload);
+    }
+  });
+  return () => {
+    unlisten();
+  };
+}
+
+export async function subscribeNativeSessionRefreshed(handler: (session: AuthSessionDto) => void) {
+  if (!isTauriApp() || isAndroidPlatform()) {
+    return () => {};
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlisten = await listen<AuthSessionDto>("chordv://native-session-refreshed", (event) => {
+    if (event.payload) {
+      handler(event.payload);
+    }
+  });
+  return () => {
+    unlisten();
+  };
+}
+
 export async function openExternalLink(url: string) {
   if (!url) {
     return { ok: false as const };
@@ -472,6 +522,17 @@ export async function saveStoredSession(session: AuthSessionDto) {
   }
 
   return invoke("save_session", { session });
+}
+
+export async function refreshStoredSessionNative(refreshToken?: string | null) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+
+  return invoke<AuthSessionDto>("refresh_session_native", {
+    refreshToken: refreshToken ?? null
+  });
 }
 
 export async function clearStoredSession() {

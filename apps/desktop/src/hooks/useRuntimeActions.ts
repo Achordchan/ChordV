@@ -120,7 +120,7 @@ type UseRuntimeActionsOptions = {
   getCurrentAccessToken: () => string | null;
   clearSession: (stopRuntime?: boolean) => Promise<void>;
   runUpdateCheck: (input: RunUpdateCheckInput) => Promise<void>;
-  refreshRuntime: () => Promise<void>;
+  refreshRuntime: () => Promise<RuntimeStatus | null>;
   forceStopLocalRuntime: () => Promise<void>;
   loadLastNodeId: () => string | null;
   pickNode: (
@@ -240,6 +240,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           await options.recoverSessionAfterUnauthorized();
           return;
         }
+        if (isForbiddenApiError(reason)) {
+          if (await handleProtectedAccessRevoked(reason)) {
+            return;
+          }
+        }
         const message = reason instanceof Error ? reason.message : "";
         if (message.includes("当前没有可用订阅")) {
           await options.clearSession(true);
@@ -273,10 +278,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       await options.refreshRuntime().catch(() => null);
 
       const activeRuntime = options.runtimeRef.current;
+      const activeSessionId = activeRuntime?.sessionId ?? options.desktopStatus.activeSessionId;
       const [subscriptionResult, nodesResult, runtimeResult] = await Promise.allSettled([
         fetchSubscription(accessToken),
         fetchNodes(accessToken),
-        activeRuntime ? fetchClientRuntime(accessToken) : Promise.resolve(null)
+        activeSessionId ? fetchClientRuntime(accessToken, activeSessionId) : Promise.resolve(null)
       ]);
 
       if (
@@ -286,6 +292,28 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       ) {
         await options.recoverSessionAfterUnauthorized();
         return;
+      }
+
+      const forbiddenReasons = [
+        subscriptionResult.status === "rejected" ? subscriptionResult.reason : null,
+        nodesResult.status === "rejected" ? nodesResult.reason : null,
+        runtimeResult.status === "rejected" ? runtimeResult.reason : null
+      ].filter((reason): reason is unknown => Boolean(reason) && isForbiddenApiError(reason));
+
+      for (const forbiddenReason of forbiddenReasons) {
+        if (await handleProtectedAccessRevoked(forbiddenReason)) {
+          return;
+        }
+        const message = forbiddenReason instanceof Error ? forbiddenReason.message : "";
+        if (message.includes("当前没有可用订阅") || message.includes("失去可用订阅")) {
+          await options.clearSession(true);
+          options.notify({
+            color: "yellow",
+            title: "登录已失效",
+            message: "当前账号已失去可用订阅，请重新登录或联系管理员。"
+          });
+          return;
+        }
       }
 
       let nextSubscription = options.bootstrap?.subscription ?? null;
@@ -306,17 +334,54 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.lastForegroundSyncErrorRef.current = null;
       }
 
-      if (activeRuntime && runtimeResult.status === "fulfilled") {
-        const serverRuntime = runtimeResult.value;
-        const fallbackNodeId =
-          pickAlternativeNode(nextNodes, activeRuntime.node.id, options.probeResultsRef.current)?.id ?? null;
+      if (runtimeResult.status === "fulfilled" && runtimeResult.value && activeSessionId) {
+        if (!activeRuntime && (options.desktopStatus.platformTarget === "android" || options.desktopStatus.platformTarget === "web")) {
+          options.setRuntime(runtimeResult.value);
+        }
+      }
 
-        if (!serverRuntime || serverRuntime.sessionId !== activeRuntime.sessionId) {
+      if (activeRuntime && activeSessionId && runtimeResult.status === "fulfilled") {
+        let serverRuntime = runtimeResult.value;
+        const fallbackNodeId =
+          pickAlternativeNode(
+            nextNodes,
+            activeRuntime?.node.id ?? options.desktopStatus.activeNodeId ?? options.selectedNodeIdRef.current,
+            options.probeResultsRef.current
+          )?.id ?? null;
+
+        if (!serverRuntime || serverRuntime.sessionId !== activeSessionId) {
+          try {
+            await new Promise((resolve) => window.setTimeout(resolve, 800));
+            serverRuntime = await fetchClientRuntime(accessToken, activeSessionId);
+          } catch (confirmReason) {
+            if (isUnauthorizedApiError(confirmReason)) {
+              await options.recoverSessionAfterUnauthorized();
+              return;
+            }
+            if (isForbiddenApiError(confirmReason)) {
+              if (await handleProtectedAccessRevoked(confirmReason)) {
+                return;
+              }
+            }
+          }
+        }
+
+        if (!serverRuntime || serverRuntime.sessionId !== activeSessionId) {
           const guidance =
             (nextSubscription ? deriveGuidanceFromSubscription(nextSubscription, fallbackNodeId) : null) ??
             deriveGuidanceFromMessage("当前连接已失效，请重新连接", { fallbackNodeId });
           if (guidance) {
-            await handleForcedGuidance(guidance);
+            if (options.desktopStatus.platformTarget === "android" || options.desktopStatus.platformTarget === "web") {
+              await handleForcedGuidance(guidance);
+            } else {
+              options.setConnectionGuidance(guidance);
+              options.notify({
+                color: "yellow",
+                title: guidance.title,
+                message: "服务端连接状态暂时未同步，本地连接将继续保留，请稍后再试。",
+                autoClose: 4000
+              });
+            }
             return;
           }
         }
@@ -422,17 +487,18 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
 
       const activeRuntime = options.runtimeRef.current;
-      if (!activeRuntime) {
+      const activeSessionId = activeRuntime?.sessionId ?? options.desktopStatus.activeSessionId;
+      if (!activeSessionId) {
         return;
       }
-      if (event.sessionId && event.sessionId !== activeRuntime.sessionId) {
+      if (event.sessionId && event.sessionId !== activeSessionId) {
         return;
       }
 
       const fallbackNodeId =
         pickAlternativeNode(
           options.nodesRef.current,
-          activeRuntime.node.id ?? options.selectedNodeIdRef.current,
+          activeRuntime?.node.id ?? options.desktopStatus.activeNodeId ?? options.selectedNodeIdRef.current,
           options.probeResultsRef.current
         )?.id ?? null;
       const guidance =

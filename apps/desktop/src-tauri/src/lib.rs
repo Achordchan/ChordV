@@ -10,11 +10,13 @@ use std::{
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{mpsc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::watch;
 #[cfg(not(target_os = "android"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use reqwest::Client;
@@ -63,6 +65,7 @@ struct RuntimeState {
     active_session_id: Option<String>,
     active_node_id: Option<String>,
     active_node_name: Option<String>,
+    active_config: Option<GeneratedRuntimeConfigDto>,
     config_path: Option<PathBuf>,
     log_path: Option<PathBuf>,
     xray_binary_path: Option<PathBuf>,
@@ -71,6 +74,42 @@ struct RuntimeState {
     local_socks_port: Option<u16>,
     last_error: Option<String>,
     child: Option<Child>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NativeLeaseHeartbeatEvent {
+    session_id: String,
+    status: String,
+    lease_expires_at: Option<String>,
+    reason_code: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NativeClientEventsOpenEvent {
+    elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NativeClientEventsErrorEvent {
+    status: Option<u16>,
+    auth_error: bool,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionLeaseStatusDto {
+    session_id: String,
+    status: String,
+    lease_expires_at: String,
+    evicted_reason: Option<String>,
+    reason_code: Option<String>,
+    reason_message: Option<String>,
+    detail_reason: Option<String>,
 }
 
 #[derive(Default)]
@@ -102,6 +141,34 @@ struct RuntimeComponentDownloadState {
 #[derive(Default)]
 struct InstallerOperationState {
     active: bool,
+}
+
+#[derive(Default)]
+struct NativeSessionRefreshState;
+
+struct ClientEventsStreamState {
+    generation: u64,
+    stop_tx: Option<watch::Sender<u64>>,
+}
+
+impl Default for ClientEventsStreamState {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            stop_tx: None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct NativeLeaseHeartbeatSignalState {
+    tx: Option<mpsc::Sender<()>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct RuntimePidRecord {
+    pid: u32,
+    binary_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
@@ -147,6 +214,7 @@ impl Default for RuntimeState {
             active_session_id: None,
             active_node_id: None,
             active_node_name: None,
+            active_config: None,
             config_path: None,
             log_path: None,
             xray_binary_path: None,
@@ -195,6 +263,10 @@ struct RuntimeOutboundDto {
 #[serde(rename_all = "camelCase")]
 struct GeneratedRuntimeConfigDto {
     session_id: String,
+    lease_id: String,
+    lease_expires_at: String,
+    lease_heartbeat_interval_seconds: u32,
+    lease_grace_seconds: u32,
     node: NodeSummaryDto,
     mode: String,
     local_http_port: u16,
@@ -260,6 +332,12 @@ struct RuntimeStatusResponse {
 #[serde(rename_all = "camelCase")]
 struct RuntimeLogResponse {
     log: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeSnapshotResponse {
+    runtime: Option<GeneratedRuntimeConfigDto>,
 }
 
 #[derive(Debug, Serialize)]
@@ -382,24 +460,12 @@ struct RuntimeComponentDownloadProgress {
 
 #[tauri::command]
 fn load_session(app: AppHandle) -> Result<Option<AuthSessionDto>, String> {
-    let path = session_path(&app)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let session = serde_json::from_str::<AuthSessionDto>(&content).map_err(|error| error.to_string())?;
-    Ok(Some(session))
+    read_session_from_disk(&app)
 }
 
 #[tauri::command]
 fn save_session(app: AppHandle, session: AuthSessionDto) -> Result<CommandResult, String> {
-    let path = session_path(&app)?;
-    let parent = path.parent().ok_or_else(|| "会话路径无效".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let serialized = serde_json::to_string(&session).map_err(|error| error.to_string())?;
-    fs::write(&path, serialized).map_err(|error| error.to_string())?;
-    set_private_permissions(&path)?;
+    write_session_to_disk(&app, &session)?;
 
     Ok(CommandResult {
         ok: true,
@@ -429,6 +495,27 @@ fn clear_session(app: AppHandle) -> Result<CommandResult, String> {
         log_path: None,
         active_pid: None,
     })
+}
+
+fn read_session_from_disk(app: &AppHandle) -> Result<Option<AuthSessionDto>, String> {
+    let path = session_path(app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let session = serde_json::from_str::<AuthSessionDto>(&content).map_err(|error| error.to_string())?;
+    Ok(Some(session))
+}
+
+fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto) -> Result<(), String> {
+    let path = session_path(app)?;
+    let parent = path.parent().ok_or_else(|| "会话路径无效".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let serialized = serde_json::to_string(session).map_err(|error| error.to_string())?;
+    fs::write(&path, serialized).map_err(|error| error.to_string())?;
+    set_private_permissions(&path)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -464,6 +551,7 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
 
     let mut req = Client::builder()
         .timeout(Duration::from_secs(15))
+        .no_proxy()
         .build()
         .map_err(|error| format!("初始化 API 客户端失败：{error}"))?
         .request(method, url);
@@ -488,6 +576,418 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
         body,
         elapsed_ms,
     })
+}
+
+fn api_base_url() -> String {
+    std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string())
+}
+
+fn api_client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(15))
+        .no_proxy()
+        .build()
+        .map_err(|error| format!("初始化 API 客户端失败：{error}"))
+}
+
+fn api_stream_client() -> Result<Client, String> {
+    Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|error| format!("初始化事件流客户端失败：{error}"))
+}
+
+fn parse_api_error_message(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "请求失败".into();
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(message) = value.get("message").and_then(Value::as_str) {
+            return message.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+async fn refresh_access_session_inner(app: &AppHandle, refresh_token: &str) -> Result<AuthSessionDto, String> {
+    let url = format!("{}/api/auth/refresh", api_base_url().trim_end_matches('/'));
+    let response = api_client()?
+        .post(url)
+        .header("Content-Type", "application/json")
+        .body(json!({ "refreshToken": refresh_token }).to_string())
+        .send()
+        .await
+        .map_err(|error| format!("刷新登录态失败：{error}"))?;
+    let status = response.status().as_u16();
+    let body = response.text().await.map_err(|error| format!("读取响应失败：{error}"))?;
+    if status < 200 || status >= 300 {
+        return Err(parse_api_error_message(&body));
+    }
+    let session = serde_json::from_str::<AuthSessionDto>(&body).map_err(|error| format!("解析登录态失败：{error}"))?;
+    write_session_to_disk(app, &session)?;
+    let _ = app.emit("chordv://native-session-refreshed", &session);
+    Ok(session)
+}
+
+async fn refresh_access_session(app: &AppHandle, refresh_token_hint: Option<&str>) -> Result<AuthSessionDto, String> {
+    let refresh_state = app.state::<AsyncMutex<NativeSessionRefreshState>>();
+    let _guard = refresh_state.lock().await;
+
+    let session = read_session_from_disk(app)?.ok_or_else(|| "当前没有可用登录态".to_string())?;
+    let stored_refresh_token = session.refresh_token.trim().to_string();
+    let hinted_refresh_token = refresh_token_hint.map(str::trim).filter(|value| !value.is_empty());
+
+    if let Some(hint) = hinted_refresh_token {
+        if hint != stored_refresh_token {
+            return Ok(session);
+        }
+    }
+
+    if stored_refresh_token.is_empty() {
+        return Err("当前没有可用刷新令牌".into());
+    }
+
+    refresh_access_session_inner(app, &stored_refresh_token).await
+}
+
+#[tauri::command]
+async fn refresh_session_native(app: AppHandle, refresh_token: Option<String>) -> Result<AuthSessionDto, String> {
+    refresh_access_session(&app, refresh_token.as_deref()).await
+}
+
+async fn native_heartbeat_once(
+    session_id: &str,
+    access_token: &str,
+) -> Result<SessionLeaseStatusDto, (u16, String)> {
+    let url = format!("{}/api/client/session/heartbeat", api_base_url().trim_end_matches('/'));
+    let response = api_client()
+        .map_err(|error| (0, error))?
+        .post(url)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json")
+        .body(json!({ "sessionId": session_id }).to_string())
+        .send()
+        .await
+        .map_err(|error| (0, format!("续租失败：{error}")))?;
+    let status = response.status().as_u16();
+    let body = response.text().await.map_err(|error| (status, format!("读取响应失败：{error}")))?;
+    if status < 200 || status >= 300 {
+        return Err((status, parse_api_error_message(&body)));
+    }
+    serde_json::from_str::<SessionLeaseStatusDto>(&body)
+        .map_err(|error| (status, format!("解析续租响应失败：{error}")))
+}
+
+fn emit_native_lease_event(app: &AppHandle, event: NativeLeaseHeartbeatEvent) {
+    let _ = app.emit("chordv://native-lease-heartbeat", event);
+}
+
+fn emit_native_client_event(app: &AppHandle, event: Value) {
+    let _ = app.emit("chordv://native-client-event", event);
+}
+
+fn emit_native_client_events_open(app: &AppHandle, event: NativeClientEventsOpenEvent) {
+    let _ = app.emit("chordv://native-client-events-open", event);
+}
+
+fn emit_native_client_events_error(app: &AppHandle, event: NativeClientEventsErrorEvent) {
+    let _ = app.emit("chordv://native-client-events-error", event);
+}
+
+fn notify_native_lease_heartbeat(app: &AppHandle) {
+    if let Ok(signal_state) = app.state::<Mutex<NativeLeaseHeartbeatSignalState>>().lock() {
+        if let Some(tx) = signal_state.tx.as_ref() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+fn start_native_lease_heartbeat_loop(app: AppHandle) {
+    let (tx, rx) = mpsc::channel::<()>();
+    if let Ok(mut signal_state) = app.state::<Mutex<NativeLeaseHeartbeatSignalState>>().lock() {
+        signal_state.tx = Some(tx);
+    }
+
+    thread::spawn(move || loop {
+        let (session_id, should_heartbeat, interval_seconds) = {
+            let runtime_state = app.state::<Mutex<RuntimeState>>();
+            let snapshot = match runtime_state.lock() {
+                Ok(guard) => (
+                    guard.active_session_id.clone(),
+                    guard.status == "connected" && guard.active_session_id.is_some(),
+                    guard
+                        .active_config
+                        .as_ref()
+                        .map(|config| config.lease_heartbeat_interval_seconds.max(5))
+                        .unwrap_or(30),
+                ),
+                Err(_) => (None, false, 30),
+            };
+            snapshot
+        };
+
+        if should_heartbeat {
+            if let Some(session_id) = session_id {
+                if let Ok(Some(session)) = read_session_from_disk(&app) {
+                    let result = tauri::async_runtime::block_on(async {
+                        match native_heartbeat_once(&session_id, &session.access_token).await {
+                            Ok(lease) => Ok(lease),
+                            Err((401, _)) => {
+                                let refreshed = refresh_access_session(&app, Some(&session.refresh_token))
+                                    .await
+                                    .map_err(|error| (401, error))?;
+                                native_heartbeat_once(&session_id, &refreshed.access_token).await
+                            }
+                            Err(error) => Err(error),
+                        }
+                    });
+
+                    match result {
+                        Ok(lease) => emit_native_lease_event(
+                            &app,
+                            NativeLeaseHeartbeatEvent {
+                                session_id: lease.session_id,
+                                status: "ok".into(),
+                                lease_expires_at: Some(lease.lease_expires_at),
+                                reason_code: lease.reason_code,
+                                message: lease.reason_message,
+                            },
+                        ),
+                        Err((status, message)) => {
+                            let reason_code = if status == 403 || status == 404 {
+                                Some("session_invalid".to_string())
+                            } else if status == 401 {
+                                Some("auth_invalid".to_string())
+                            } else {
+                                Some("heartbeat_failed".to_string())
+                            };
+                            emit_native_lease_event(
+                                &app,
+                                NativeLeaseHeartbeatEvent {
+                                    session_id,
+                                    status: "error".into(),
+                                    lease_expires_at: None,
+                                    reason_code,
+                                    message: Some(message),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        match rx.recv_timeout(Duration::from_secs(interval_seconds.into())) {
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    });
+}
+
+async fn run_native_client_events_stream_once(
+    app: &AppHandle,
+    access_token: &str,
+    stop_rx: &mut watch::Receiver<u64>,
+) -> Result<bool, NativeClientEventsErrorEvent> {
+    let started_at = Instant::now();
+    let url = format!("{}/api/client/events/stream", api_base_url().trim_end_matches('/'));
+    let response = api_stream_client()
+        .map_err(|error| NativeClientEventsErrorEvent {
+            status: None,
+            auth_error: false,
+            message: error,
+        })?
+        .get(url)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .map_err(|error| NativeClientEventsErrorEvent {
+            status: None,
+            auth_error: false,
+            message: format!("事件流连接失败：{error}"),
+        })?;
+
+    let status = response.status().as_u16();
+    if status < 200 || status >= 300 {
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "事件流连接失败".to_string());
+        return Err(NativeClientEventsErrorEvent {
+            status: Some(status),
+            auth_error: status == 401,
+            message: parse_api_error_message(&body),
+        });
+    }
+
+    emit_native_client_events_open(
+        app,
+        NativeClientEventsOpenEvent {
+            elapsed_ms: Some(started_at.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        },
+    );
+
+    let mut buffer = String::new();
+
+    let mut response = response;
+    loop {
+        let next = tokio::select! {
+            _ = stop_rx.changed() => {
+                return Ok(true);
+            }
+            next = response.chunk() => next.map_err(|error| NativeClientEventsErrorEvent {
+                status: None,
+                auth_error: false,
+                message: format!("读取事件流失败：{error}"),
+            })?
+        };
+        let Some(chunk) = next else {
+            break;
+        };
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        loop {
+            let Some(index) = buffer.find("\n\n") else {
+                break;
+            };
+            let raw_chunk = buffer[..index].to_string();
+            buffer = buffer[index + 2..].to_string();
+            let data_lines = raw_chunk
+                .lines()
+                .map(|line| line.trim_end_matches('\r'))
+                .filter(|line| !line.is_empty() && line.starts_with("data:"))
+                .map(|line| line[5..].trim())
+                .collect::<Vec<_>>();
+
+            if data_lines.is_empty() {
+                continue;
+            }
+
+            let payload = data_lines.join("\n");
+            match serde_json::from_str::<Value>(&payload) {
+                Ok(value) => emit_native_client_event(app, value),
+                Err(error) => emit_native_client_events_error(
+                    app,
+                    NativeClientEventsErrorEvent {
+                        status: None,
+                        auth_error: false,
+                        message: format!("解析事件失败：{error}"),
+                    },
+                ),
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+#[tauri::command]
+async fn start_client_events_stream(app: AppHandle, access_token: String) -> Result<CommandResult, String> {
+    let state = app.state::<AsyncMutex<ClientEventsStreamState>>();
+    let generation = {
+        let mut state = state.lock().await;
+        state.generation = state.generation.saturating_add(1);
+        if let Some(stop_tx) = state.stop_tx.take() {
+            let _ = stop_tx.send(state.generation);
+        }
+        let (stop_tx, _stop_rx) = watch::channel(state.generation);
+        state.stop_tx = Some(stop_tx);
+        state.generation
+    };
+    let mut stop_rx = {
+        let state = app.state::<AsyncMutex<ClientEventsStreamState>>();
+        let state = state.lock().await;
+        state
+            .stop_tx
+            .as_ref()
+            .map(watch::Sender::subscribe)
+            .ok_or_else(|| "事件流控制器初始化失败".to_string())?
+    };
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let current_generation = {
+                let state = app_handle.state::<AsyncMutex<ClientEventsStreamState>>();
+                let state = state.lock().await;
+                state.generation
+            };
+            if current_generation != generation {
+                break;
+            }
+
+            match run_native_client_events_stream_once(&app_handle, &access_token, &mut stop_rx).await {
+                Ok(should_reconnect) => {
+                    if should_reconnect {
+                        break;
+                    }
+                    if current_generation != generation {
+                        break;
+                    }
+                    if *stop_rx.borrow() != generation {
+                        break;
+                    }
+                    if !should_reconnect {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
+                }
+                Err(error) => {
+                    let terminal = matches!(error.status, Some(401 | 403));
+                    let auth_error = error.auth_error;
+                    emit_native_client_events_error(&app_handle, error);
+                    if auth_error || terminal {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
+            }
+        }
+    });
+
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+async fn stop_client_events_stream(app: AppHandle) -> Result<CommandResult, String> {
+    let state = app.state::<AsyncMutex<ClientEventsStreamState>>();
+    let mut state = state.lock().await;
+    state.generation = state.generation.saturating_add(1);
+    if let Some(stop_tx) = state.stop_tx.take() {
+        let _ = stop_tx.send(state.generation);
+    }
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+fn api_proxy_bypass_hosts() -> Vec<String> {
+    let mut hosts = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+
+    let base = std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
+    if let Ok(url) = Url::parse(base.trim()) {
+        if let Some(host) = url.host_str() {
+            let host = host.trim().to_string();
+            if !host.is_empty() && !hosts.iter().any(|candidate| candidate.eq_ignore_ascii_case(&host)) {
+                hosts.push(host);
+            }
+        }
+    }
+
+    hosts
 }
 
 #[tauri::command]
@@ -1249,6 +1749,14 @@ fn runtime_logs(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Runtim
 }
 
 #[tauri::command]
+fn runtime_snapshot(state: State<'_, Mutex<RuntimeState>>) -> Result<RuntimeSnapshotResponse, String> {
+    let state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
+    Ok(RuntimeSnapshotResponse {
+        runtime: state.active_config.clone(),
+    })
+}
+
+#[tauri::command]
 fn connect_runtime(
     app: AppHandle,
     config: GeneratedRuntimeConfigDto,
@@ -1268,6 +1776,7 @@ fn connect_runtime(
             state.active_session_id = None;
             state.active_node_id = None;
             state.active_node_name = None;
+            state.active_config = None;
             state.last_error = Some(error.clone());
             #[cfg(not(target_os = "android"))]
             sync_shell_from_runtime(&app, &state);
@@ -1278,6 +1787,7 @@ fn connect_runtime(
         state.active_session_id = Some(config.session_id.clone());
         state.active_node_id = Some(config.node.id.clone());
         state.active_node_name = Some(config.node.name.clone());
+        state.active_config = Some(config.clone());
         state.local_http_port = Some(config.local_http_port);
         state.local_socks_port = Some(config.local_socks_port);
         state.last_error = None;
@@ -1294,6 +1804,7 @@ fn connect_runtime(
             state.active_session_id = None;
             state.active_node_id = None;
             state.active_node_name = None;
+            state.active_config = None;
             state.local_http_port = None;
             state.local_socks_port = None;
             state.last_error = Some(error.clone());
@@ -1308,6 +1819,7 @@ fn connect_runtime(
     state.active_session_id = Some(config.session_id.clone());
     state.active_node_id = Some(config.node.id.clone());
     state.active_node_name = Some(config.node.name.clone());
+    state.active_config = Some(config.clone());
     state.local_http_port = Some(config.local_http_port);
     state.local_socks_port = Some(config.local_socks_port);
     state.last_error = None;
@@ -1342,6 +1854,7 @@ fn connect_runtime(
         let log = tail_log(&log_path, 40);
         state.status = "error".into();
         state.active_session_id = None;
+        state.active_config = None;
         state.config_path = Some(config_path.clone());
         state.log_path = Some(log_path.clone());
         state.xray_binary_path = Some(xray_binary_path.clone());
@@ -1373,9 +1886,10 @@ fn connect_runtime(
     state.log_path = Some(log_path.clone());
     state.xray_binary_path = Some(xray_binary_path.clone());
     state.active_pid = Some(child.id());
-    persist_runtime_pid(&app, child.id());
+    persist_runtime_pid(&app, child.id(), &xray_binary_path);
     state.child = Some(child);
     sync_shell_from_runtime(&app, &state);
+    notify_native_lease_heartbeat(&app);
 
     Ok(CommandResult {
         ok: true,
@@ -2260,6 +2774,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
                 state.status = "error".into();
                 state.active_pid = None;
                 state.child = None;
+                state.active_config = None;
                 state.config_path = None;
                 state.local_http_port = None;
                 state.local_socks_port = None;
@@ -2276,6 +2791,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
                 state.status = "error".into();
                 state.active_pid = None;
                 state.child = None;
+                state.active_config = None;
                 state.config_path = None;
                 state.local_http_port = None;
                 state.local_socks_port = None;
@@ -2293,6 +2809,7 @@ fn refresh_child_state(state: &mut RuntimeState) {
             state.status = "error".into();
             state.active_pid = None;
             state.child = None;
+            state.active_config = None;
             state.config_path = None;
             state.local_http_port = None;
             state.local_socks_port = None;
@@ -2308,8 +2825,10 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
         let _ = child.wait();
     }
 
-    if let Some(pid) = load_runtime_pid(app) {
-        let _ = kill_pid(pid);
+    if let Some(record) = load_runtime_pid_record(app) {
+        if runtime_pid_belongs_to_chordv(app, &record) {
+            let _ = kill_pid(record.pid);
+        }
     }
 
     if let Some(path) = state.config_path.take() {
@@ -2318,6 +2837,7 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
 
     clear_runtime_pid(app);
     state.active_pid = None;
+    state.active_config = None;
     state.local_http_port = None;
     state.local_socks_port = None;
 }
@@ -2339,18 +2859,130 @@ fn runtime_pid_path(app: &AppHandle) -> PathBuf {
         .join("xray.pid")
 }
 
-fn persist_runtime_pid(app: &AppHandle, pid: u32) {
+fn runtime_binary_path(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+        .join("runtime")
+        .join("bin")
+        .join(runtime_binary_name())
+}
+
+fn persist_runtime_pid(app: &AppHandle, pid: u32, binary_path: &Path) {
     let path = runtime_pid_path(app);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let _ = fs::write(path, pid.to_string());
+    let record = RuntimePidRecord {
+        pid,
+        binary_path: Some(binary_path.to_string_lossy().into_owned()),
+    };
+    let content = serde_json::to_string(&record).unwrap_or_else(|_| pid.to_string());
+    let _ = fs::write(path, content);
 }
 
-fn load_runtime_pid(app: &AppHandle) -> Option<u32> {
+fn load_runtime_pid_record(app: &AppHandle) -> Option<RuntimePidRecord> {
     let path = runtime_pid_path(app);
     let content = fs::read_to_string(path).ok()?;
-    content.trim().parse::<u32>().ok()
+    serde_json::from_str::<RuntimePidRecord>(&content)
+        .ok()
+        .or_else(|| {
+            content.trim().parse::<u32>().ok().map(|pid| RuntimePidRecord {
+                pid,
+                binary_path: None,
+            })
+        })
+}
+
+fn runtime_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("tasklist");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+            .args(["/FI", &format!("PID eq {pid}")])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+}
+
+fn runtime_process_command(pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok()
+            .and_then(|output| {
+                if output.status.success() {
+                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+    }
+
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("powershell");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\"; if ($p) {{ \"$($p.ExecutablePath)`n$($p.CommandLine)\" }}"
+                ),
+            ])
+            .output()
+            .ok()
+            .and_then(|output| {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if text.is_empty() {
+                        None
+                    } else {
+                        Some(text)
+                    }
+                } else {
+                    None
+                }
+            })
+    }
+}
+
+fn runtime_pid_belongs_to_chordv(app: &AppHandle, record: &RuntimePidRecord) -> bool {
+    if !runtime_pid_alive(record.pid) {
+        return false;
+    }
+    let expected_binary = record
+        .binary_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| runtime_binary_path(app));
+    let expected_binary_text = expected_binary.to_string_lossy().to_lowercase();
+    let expected_runtime_dir_text = expected_binary
+        .parent()
+        .map(|path| path.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    runtime_process_command(record.pid)
+        .map(|command| {
+            let normalized = command.to_lowercase();
+            normalized.contains(&expected_binary_text)
+                || (!expected_runtime_dir_text.is_empty()
+                    && normalized.contains(&expected_runtime_dir_text))
+        })
+        .unwrap_or(false)
 }
 
 fn clear_runtime_pid(app: &AppHandle) {
@@ -2490,6 +3122,7 @@ fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
     state.active_session_id = None;
     state.active_node_id = None;
     state.active_node_name = None;
+    state.active_config = None;
     state.config_path = None;
     state.log_path = None;
     state.xray_binary_path = None;
@@ -2556,6 +3189,7 @@ fn rollback_connect_failure(
     state.active_session_id = None;
     state.active_node_id = None;
     state.active_node_name = None;
+    state.active_config = None;
     state.config_path = None;
     state.log_path = None;
     state.xray_binary_path = None;
@@ -2663,11 +3297,17 @@ fn set_system_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
 fn clear_system_proxy() -> Result<(), io::Error> {
     #[cfg(target_os = "macos")]
     {
+        if !macos_proxy_owned_by_chordv()? {
+            return Ok(());
+        }
         clear_proxy()
     }
 
     #[cfg(windows)]
     {
+        if !windows_proxy_owned_by_chordv()? {
+            return Ok(());
+        }
         clear_windows_proxy()
     }
 
@@ -2906,25 +3546,24 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> 
 
 #[cfg(target_os = "macos")]
 fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
+    let bypass_hosts = api_proxy_bypass_hosts();
     for service in network_services() {
-        let _ = Command::new("networksetup")
-            .args(["-setwebproxy", &service, "127.0.0.1", &http_port.to_string()])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setsecurewebproxy", &service, "127.0.0.1", &http_port.to_string()])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setsocksfirewallproxy", &service, "127.0.0.1", &socks_port.to_string()])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setwebproxystate", &service, "on"])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setsecurewebproxystate", &service, "on"])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setsocksfirewallproxystate", &service, "on"])
-            .status();
+        run_networksetup(&["-setwebproxy", &service, "127.0.0.1", &http_port.to_string()])?;
+        run_networksetup(&["-setsecurewebproxy", &service, "127.0.0.1", &http_port.to_string()])?;
+        run_networksetup(&["-setsocksfirewallproxy", &service, "127.0.0.1", &socks_port.to_string()])?;
+        run_networksetup(&["-setwebproxystate", &service, "on"])?;
+        run_networksetup(&["-setsecurewebproxystate", &service, "on"])?;
+        run_networksetup(&["-setsocksfirewallproxystate", &service, "on"])?;
+        let mut bypass_command = Command::new("networksetup");
+        bypass_command.arg("-setproxybypassdomains").arg(&service);
+        for host in &bypass_hosts {
+            bypass_command.arg(host);
+        }
+        let status = bypass_command.status()?;
+        if !status.success() {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("设置代理绕过域名失败：{service}")));
+        }
+        verify_macos_proxy_config(&service, http_port, socks_port, &bypass_hosts)?;
     }
 
     Ok(())
@@ -2933,24 +3572,60 @@ fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
 #[cfg(target_os = "macos")]
 fn clear_proxy() -> Result<(), std::io::Error> {
     for service in network_services() {
-        let _ = Command::new("networksetup")
-            .args(["-setwebproxystate", &service, "off"])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setsecurewebproxystate", &service, "off"])
-            .status();
-        let _ = Command::new("networksetup")
-            .args(["-setsocksfirewallproxystate", &service, "off"])
-            .status();
+        let _ = run_networksetup(&["-setwebproxystate", &service, "off"]);
+        let _ = run_networksetup(&["-setsecurewebproxystate", &service, "off"]);
+        let _ = run_networksetup(&["-setsocksfirewallproxystate", &service, "off"]);
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_proxy_owned_by_chordv() -> Result<bool, io::Error> {
+    let bypass_hosts = api_proxy_bypass_hosts();
+    for service in network_services() {
+        let web_proxy = networksetup_output(&["-getwebproxy", &service])?;
+        let secure_proxy = networksetup_output(&["-getsecurewebproxy", &service])?;
+        let socks_proxy = networksetup_output(&["-getsocksfirewallproxy", &service])?;
+        let bypass_output = networksetup_output(&["-getproxybypassdomains", &service])?;
+        let proxy_owned =
+            macos_proxy_points_to_loopback(&web_proxy)
+                || macos_proxy_points_to_loopback(&secure_proxy)
+                || macos_proxy_points_to_loopback(&socks_proxy);
+        let bypass_owned = bypass_hosts.iter().all(|host| {
+            bypass_output
+                .lines()
+                .any(|line| line.trim().eq_ignore_ascii_case(host))
+        });
+        if proxy_owned && bypass_owned {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_proxy_points_to_loopback(output: &str) -> bool {
+    let enabled = output.lines().any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
+    let server_ok = output
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("Server: 127.0.0.1"));
+    enabled && server_ok
 }
 
 #[cfg(windows)]
 fn set_windows_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
     let proxy_server =
         format!("http=127.0.0.1:{http_port};https=127.0.0.1:{http_port};socks=127.0.0.1:{socks_port}");
+    let proxy_override = {
+        let mut entries = vec!["<local>".to_string()];
+        for host in api_proxy_bypass_hosts() {
+            if !entries.iter().any(|candidate| candidate.eq_ignore_ascii_case(&host)) {
+                entries.push(host);
+            }
+        }
+        entries.join(";")
+    };
     run_windows_reg(&[
         "add",
         r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
@@ -2981,11 +3656,11 @@ fn set_windows_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
         "/t",
         "REG_SZ",
         "/d",
-        "<local>",
+        &proxy_override,
         "/f",
     ])?;
     refresh_windows_proxy_settings()?;
-    verify_windows_proxy_config(&proxy_server)?;
+    verify_windows_proxy_config(&proxy_server, &proxy_override)?;
     Ok(())
 }
 
@@ -3021,6 +3696,67 @@ fn clear_windows_proxy() -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
+fn windows_proxy_owned_by_chordv() -> Result<bool, io::Error> {
+    let mut enable = Command::new("reg");
+    enable.creation_flags(CREATE_NO_WINDOW);
+    let enable_output = enable
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            "ProxyEnable",
+        ])
+        .output()?;
+    let enable_text = String::from_utf8_lossy(&enable_output.stdout).to_lowercase();
+    if !enable_output.status.success() || !enable_text.contains("0x1") {
+        return Ok(false);
+    }
+
+    let mut server = Command::new("reg");
+    server.creation_flags(CREATE_NO_WINDOW);
+    let server_output = server
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            "ProxyServer",
+        ])
+        .output()?;
+    if !server_output.status.success() {
+        return Ok(false);
+    }
+    let server_text = String::from_utf8_lossy(&server_output.stdout).to_lowercase();
+    if !server_text.contains("127.0.0.1:") {
+        return Ok(false);
+    }
+
+    let mut override_query = Command::new("reg");
+    override_query.creation_flags(CREATE_NO_WINDOW);
+    let override_output = override_query
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            "ProxyOverride",
+        ])
+        .output()?;
+    if !override_output.status.success() {
+        return Ok(false);
+    }
+    let override_text = String::from_utf8_lossy(&override_output.stdout).to_lowercase();
+    if !override_text.contains("<local>") {
+        return Ok(false);
+    }
+    for host in api_proxy_bypass_hosts() {
+        if !override_text.contains(&host.to_lowercase()) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+#[cfg(windows)]
 fn run_windows_reg(args: &[&str]) -> Result<(), io::Error> {
     let mut command = Command::new("reg");
     command.args(args);
@@ -3034,7 +3770,7 @@ fn run_windows_reg(args: &[&str]) -> Result<(), io::Error> {
 }
 
 #[cfg(windows)]
-fn verify_windows_proxy_config(expected_proxy_server: &str) -> Result<(), io::Error> {
+fn verify_windows_proxy_config(expected_proxy_server: &str, expected_proxy_override: &str) -> Result<(), io::Error> {
     let mut enable = Command::new("reg");
     enable.creation_flags(CREATE_NO_WINDOW);
     let enable_output = enable
@@ -3065,7 +3801,95 @@ fn verify_windows_proxy_config(expected_proxy_server: &str) -> Result<(), io::Er
         return Err(io::Error::new(io::ErrorKind::Other, "Windows 系统代理地址未成功写入"));
     }
 
+    let mut override_query = Command::new("reg");
+    override_query.creation_flags(CREATE_NO_WINDOW);
+    let override_output = override_query
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v",
+            "ProxyOverride",
+        ])
+        .output()?;
+    let override_text = String::from_utf8_lossy(&override_output.stdout);
+    if !override_output.status.success() || !override_text.contains(expected_proxy_override) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Windows 系统代理绕过地址未成功写入",
+        ));
+    }
+
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run_networksetup(args: &[&str]) -> Result<(), io::Error> {
+    let status = Command::new("networksetup").args(args).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("networksetup 执行失败：{:?}", args),
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn networksetup_output(args: &[&str]) -> Result<String, io::Error> {
+    let output = Command::new("networksetup").args(args).output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("networksetup 查询失败：{:?}", args),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_macos_proxy_config(
+    service: &str,
+    http_port: u16,
+    socks_port: u16,
+    bypass_hosts: &[String],
+) -> Result<(), io::Error> {
+    let web_proxy = networksetup_output(&["-getwebproxy", service])?;
+    verify_macos_named_proxy(&web_proxy, http_port, "网页")?;
+
+    let secure_proxy = networksetup_output(&["-getsecurewebproxy", service])?;
+    verify_macos_named_proxy(&secure_proxy, http_port, "HTTPS")?;
+
+    let socks_proxy = networksetup_output(&["-getsocksfirewallproxy", service])?;
+    verify_macos_named_proxy(&socks_proxy, socks_port, "SOCKS")?;
+
+    let bypass_output = networksetup_output(&["-getproxybypassdomains", service])?;
+    for host in bypass_hosts {
+        if !bypass_output.lines().any(|line| line.trim().eq_ignore_ascii_case(host)) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("代理绕过域名未生效：{service} 缺少 {host}"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_macos_named_proxy(output: &str, expected_port: u16, label: &str) -> Result<(), io::Error> {
+    let enabled = output.lines().any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
+    let server_ok = output
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("Server: 127.0.0.1"));
+    let port_ok = output.lines().any(|line| line.trim() == format!("Port: {expected_port}"));
+    if enabled && server_ok && port_ok {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!("{label} 代理配置未成功生效"),
+    ))
 }
 
 #[cfg(windows)]
@@ -3134,8 +3958,10 @@ fn cleanup_stale_runtime(app: &AppHandle) {
         .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
         .join("runtime");
 
-    if let Some(pid) = load_runtime_pid(app) {
-        let _ = kill_pid(pid);
+    if let Some(record) = load_runtime_pid_record(app) {
+        if runtime_pid_belongs_to_chordv(app, &record) {
+            let _ = kill_pid(record.pid);
+        }
         clear_runtime_pid(app);
     }
 
@@ -3146,6 +3972,37 @@ fn cleanup_stale_runtime(app: &AppHandle) {
             .args(["-f", &stale_binary.to_string_lossy()])
             .status();
     }
+
+    let _ = fs::remove_dir_all(runtime_dir.join("bin").join("cache"));
+
+    if let Ok(entries) = fs::read_dir(&runtime_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                let _ = fs::remove_file(&path);
+            }
+            if path.extension().and_then(|ext| ext.to_str()) == Some("log") {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+
+    let _ = clear_system_proxy();
+}
+
+fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
+    if let Some(record) = load_runtime_pid_record(app) {
+        if runtime_pid_belongs_to_chordv(app, &record) {
+            return;
+        }
+        clear_runtime_pid(app);
+    }
+
+    let runtime_dir = app
+        .path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+        .join("runtime");
 
     let _ = fs::remove_dir_all(runtime_dir.join("bin").join("cache"));
 
@@ -3315,6 +4172,7 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
     state.last_error = proxy_error.map(|error| format!("已停止内核，但清理系统代理失败：{error}"));
 
     sync_shell_from_runtime(app, &state);
+    notify_native_lease_heartbeat(app);
     Ok(())
 }
 
@@ -3337,6 +4195,7 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
     state.local_http_port = None;
     state.local_socks_port = None;
     state.last_error = None;
+    notify_native_lease_heartbeat(app);
     Ok(())
 }
 
@@ -3663,6 +4522,9 @@ pub fn run() {
         }))
         .manage(Mutex::new(InstallerOperationState::default()))
         .manage(Mutex::new(RuntimeComponentDownloadState::default()))
+        .manage(Mutex::new(NativeLeaseHeartbeatSignalState::default()))
+        .manage(AsyncMutex::new(NativeSessionRefreshState::default()))
+        .manage(AsyncMutex::new(ClientEventsStreamState::default()))
         .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()));
 
     #[cfg(not(target_os = "android"))]
@@ -3674,7 +4536,8 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
-            cleanup_stale_runtime(&app.handle());
+            cleanup_runtime_artifacts_on_startup(&app.handle());
+            start_native_lease_heartbeat_loop(app.handle().clone());
             #[cfg(not(target_os = "android"))]
             {
                 let _ = ensure_runtime_bin_dir(&app.handle());
@@ -3698,6 +4561,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_ready,
             api_request,
+            refresh_session_native,
+            start_client_events_stream,
+            stop_client_events_stream,
             load_session,
             save_session,
             clear_session,
@@ -3712,6 +4578,7 @@ pub fn run() {
             download_runtime_component,
             update_shell_summary,
             runtime_status,
+            runtime_snapshot,
             runtime_logs,
             connect_runtime,
             disconnect_runtime,

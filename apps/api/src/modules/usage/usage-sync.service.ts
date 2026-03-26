@@ -12,6 +12,7 @@ import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
 import { RuntimeSessionService } from "../common/runtime-session.service";
+import { LEASE_GRACE_SECONDS } from "../common/runtime-session.utils";
 import { XuiService } from "../xui/xui.service";
 
 const GB_IN_BYTES = 1024 ** 3;
@@ -68,10 +69,11 @@ export class UsageSyncService {
       return;
     }
 
+    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         status: "active",
-        expiresAt: { gt: new Date() }
+        expiresAt: { gt: graceWindowStart }
       },
       select: {
         nodeId: true,
@@ -498,11 +500,12 @@ export class UsageSyncService {
         });
       }
     } else {
+      const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
       const activeLeases = await this.prisma.nodeSessionLease.findMany({
         where: {
           nodeId,
           status: "active",
-          expiresAt: { gt: new Date() }
+          expiresAt: { gt: graceWindowStart }
         },
         select: {
           xrayUserEmail: true,

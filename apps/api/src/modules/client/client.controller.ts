@@ -33,6 +33,12 @@ class SessionLeaseDto {
   sessionId!: string;
 }
 
+class RuntimeQueryDto {
+  @IsString()
+  @IsOptional()
+  sessionId?: string;
+}
+
 class ProbeNodesDto {
   @IsArray()
   @IsString({ each: true })
@@ -219,8 +225,8 @@ export class ClientController {
 
   @Get("runtime")
   @UseGuards(ClientAuthGuard)
-  getRuntime(@Headers("authorization") authorization?: string) {
-    return this.clientService.getRuntime(authorization);
+  getRuntime(@Query() query: RuntimeQueryDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.getRuntime(query.sessionId, authorization);
   }
 
   @Get("tickets")

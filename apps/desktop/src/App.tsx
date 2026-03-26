@@ -12,6 +12,7 @@ import type {
   SubscriptionStatusDto
 } from "@chordv/shared";
 import {
+  fetchClientRuntime,
   getApiErrorRawMessage,
   heartbeatSession,
   isAccessTokenExpiredApiError,
@@ -31,7 +32,10 @@ import {
   appReady,
   focusDesktopWindow,
   hasActivePlatformRuntime,
+  loadActiveRuntimeConfig,
   subscribeDesktopShellActions,
+  subscribeNativeLeaseHeartbeat,
+  subscribeNativeSessionRefreshed,
   updateDesktopShellSummary,
   type RuntimeNodeProbeResult,
   type RuntimeStatus
@@ -375,6 +379,7 @@ export function App() {
     setAuthBusy,
     setRefreshing,
     setLogoutBusy,
+    unauthorizedRecoveryTaskRef,
     refreshRuntime,
     forceStopLocalRuntime,
     runProbe: runProbeForAuth,
@@ -508,9 +513,12 @@ export function App() {
       } catch (reason) {
         if (isAccessTokenExpiredApiError(reason)) {
           const recoveredSession = await recoverSessionAfterUnauthorized();
-          const recoveredAccessToken = recoveredSession?.accessToken ?? sessionRef.current?.accessToken ?? null;
+          const recoveredAccessToken =
+            recoveredSession && recoveredSession.accessToken !== accessToken
+              ? recoveredSession.accessToken
+              : null;
           if (!recoveredAccessToken) {
-            throw reason;
+            return "handled" as const;
           }
           const recoveredLease = await heartbeatSession(recoveredAccessToken, sessionId);
           applyLeaseHeartbeatSuccess(recoveredLease, sessionId);
@@ -894,7 +902,236 @@ export function App() {
   }, [actionBusy, authBusy, booting, desktopStatus.platformTarget, logoutBusy, refreshing, session]);
 
   useEffect(() => {
+    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
+      return;
+    }
+    if (!session?.accessToken || runtime || !desktopStatus.activeSessionId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      const localRuntime = await loadActiveRuntimeConfig().catch(() => null);
+      if (!localRuntime || localRuntime.sessionId !== desktopStatus.activeSessionId || cancelled) {
+        return;
+      }
+
+      setRuntime(localRuntime);
+
+      try {
+        let serverRuntime = await fetchClientRuntime(session.accessToken, desktopStatus.activeSessionId);
+        if (!serverRuntime || serverRuntime.sessionId !== desktopStatus.activeSessionId) {
+          await new Promise((resolve) => window.setTimeout(resolve, 800));
+          if (cancelled) {
+            return;
+          }
+          serverRuntime = await fetchClientRuntime(session.accessToken, desktopStatus.activeSessionId);
+        }
+        if (cancelled) {
+          return;
+        }
+        if (!serverRuntime || serverRuntime.sessionId !== desktopStatus.activeSessionId) {
+          const guidance =
+            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
+              fallbackNodeId: fallbackNode?.id ?? null
+            }) ??
+            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
+              fallbackNodeId: fallbackNode?.id ?? null
+            });
+          if (guidance) {
+            setConnectionGuidance(guidance);
+            notifications.show({
+              color: "yellow",
+              title: guidance.title,
+              message: "服务端连接状态暂时未同步，本地连接将继续保留，请稍后再试。"
+            });
+          }
+          return;
+        }
+        setRuntime((current) =>
+          current && current.sessionId === serverRuntime.sessionId
+            ? {
+                ...current,
+                leaseId: serverRuntime.leaseId,
+                leaseExpiresAt: serverRuntime.leaseExpiresAt,
+                leaseHeartbeatIntervalSeconds: serverRuntime.leaseHeartbeatIntervalSeconds,
+                leaseGraceSeconds: serverRuntime.leaseGraceSeconds
+              }
+            : current
+        );
+      } catch (reason) {
+        if (cancelled) {
+          return;
+        }
+        if (isAccessTokenExpiredApiError(reason)) {
+          await recoverSessionAfterUnauthorized();
+          return;
+        }
+        if (isForbiddenApiError(reason)) {
+          if (await handleProtectedLeaseAccessRevoked(reason)) {
+            return;
+          }
+          const guidance =
+            deriveGuidanceFromMessage(
+              reason instanceof Error ? readError(reason.message) : "当前连接已失效，请重新连接",
+              {
+                fallbackNodeId: fallbackNode?.id ?? null
+              }
+            ) ??
+            deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
+              fallbackNodeId: fallbackNode?.id ?? null
+            });
+          if (guidance) {
+            setConnectionGuidance(guidance);
+            notifications.show({
+              color: "yellow",
+              title: guidance.title,
+              message: "服务端连接状态暂时未同步，本地连接将继续保留，请稍后再试。"
+            });
+          }
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    desktopStatus.activeSessionId,
+    desktopStatus.platformTarget,
+    fallbackNode?.id,
+    handleProtectedLeaseAccessRevoked,
+    notifications,
+    recoverSessionAfterUnauthorized,
+    runtime,
+    setConnectionGuidance,
+    session?.accessToken
+  ]);
+
+  useEffect(() => {
+    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
+      return;
+    }
+
+    let disposed = false;
+    let unlistenLease: (() => void) | null = null;
+    let unlistenSession: (() => void) | null = null;
+
+    void subscribeNativeLeaseHeartbeat((event) => {
+      if (disposed || !event.sessionId) {
+        return;
+      }
+        if (event.status === "ok") {
+          leaseHeartbeatFailedAtRef.current = null;
+          if (event.leaseExpiresAt) {
+            const nextLeaseExpiresAt = event.leaseExpiresAt;
+            setRuntime((current) =>
+              current && current.sessionId === event.sessionId
+              ? { ...current, leaseExpiresAt: nextLeaseExpiresAt }
+              : current
+            );
+          }
+        return;
+      }
+
+      const activeSessionId = runtimeRef.current?.sessionId ?? desktopStatus.activeSessionId;
+      if (!activeSessionId || activeSessionId !== event.sessionId) {
+        return;
+      }
+
+      if (event.reasonCode === "auth_invalid") {
+        void (async () => {
+          const recoveredSession = await recoverSessionAfterUnauthorized();
+          if (recoveredSession) {
+            return;
+          }
+          await clearSession(true);
+          notifications.show({
+            color: "yellow",
+            title: "登录已失效",
+            message: "当前登录态无法继续续租连接，请重新登录。"
+          });
+        })();
+        return;
+      }
+
+      const guidance =
+        deriveGuidanceFromMessage(event.message ?? "当前连接已失效，请重新连接", {
+          fallbackNodeId: fallbackNode?.id ?? null
+        }) ??
+        deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
+          fallbackNodeId: fallbackNode?.id ?? null
+        });
+      if (guidance) {
+        void handleForcedGuidance(guidance);
+      }
+    })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlistenLease = cleanup;
+      })
+      .catch(() => null);
+
+    void subscribeNativeSessionRefreshed((nextSession) => {
+      if (disposed) {
+        return;
+      }
+      setSession(nextSession);
+    })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlistenSession = cleanup;
+      })
+      .catch(() => null);
+
+    return () => {
+      disposed = true;
+      unlistenLease?.();
+      unlistenSession?.();
+    };
+  }, [
+    clearSession,
+    desktopStatus.activeSessionId,
+    desktopStatus.platformTarget,
+    fallbackNode?.id,
+    handleForcedGuidance,
+    recoverSessionAfterUnauthorized,
+    setSession
+  ]);
+
+  useEffect(() => {
+    if (booting || !session || !bootstrap) {
+      return;
+    }
+    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
+      return;
+    }
+    if (!desktopStatus.activeSessionId || runtimeRef.current) {
+      return;
+    }
+    void syncForegroundState(session.accessToken);
+  }, [
+    booting,
+    bootstrap,
+    desktopStatus.activeSessionId,
+    desktopStatus.platformTarget,
+    session,
+    syncForegroundState
+  ]);
+
+  useEffect(() => {
     if (!session || !runtime || desktopStatus.status !== "connected") {
+      leaseHeartbeatFailedAtRef.current = null;
+      return;
+    }
+    if (desktopStatus.platformTarget !== "android" && desktopStatus.platformTarget !== "web") {
       leaseHeartbeatFailedAtRef.current = null;
       return;
     }
@@ -956,7 +1193,7 @@ export function App() {
     if (!session || !runtime || desktopStatus.status !== "connected") {
       return;
     }
-    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
+    if (desktopStatus.platformTarget !== "android" && desktopStatus.platformTarget !== "web") {
       return;
     }
 
@@ -1167,9 +1404,8 @@ export function App() {
     notifications.show({
       color: "yellow",
       title: "本地连接仍在运行",
-      message: "登录态已失效，正在自动停止本地内核。"
+      message: "登录态暂时不可用，请重新登录后继续接管当前连接，或手动断开。"
     });
-    void forceStopLocalRuntime();
   }, [booting, emergencyRuntimeActive, session]);
 
   useEffect(() => {
@@ -1224,8 +1460,15 @@ export function App() {
         setRememberPassword(true);
       }
       await refreshRuntime();
-      const restored = await restoreStoredSession();
-      if (!restored) {
+      const localRuntime = await loadActiveRuntimeConfig().catch(() => null);
+      if (localRuntime?.sessionId) {
+        setRuntime(localRuntime);
+      }
+      const restoredSession = await restoreStoredSession();
+      if (restoredSession?.accessToken && localRuntime?.sessionId) {
+        await syncForegroundState(restoredSession.accessToken).catch(() => null);
+      }
+      if (!restoredSession) {
         await runUpdateCheck({ source: "startup", silent: true });
       }
     } finally {

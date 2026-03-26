@@ -27,20 +27,23 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
     try {
       const [status, logs] = await Promise.all([loadRuntimeStatus(), loadRuntimeLogs()]);
       if (runtimeRefreshRequestSeqRef.current !== requestId) {
-        return;
+        return null;
       }
       setDesktopStatus(status);
       if (!status.activeSessionId && status.status !== "connecting" && status.status !== "disconnecting") {
         options.setRuntime(null);
       }
       setRuntimeLog(logs.log);
+      return status;
     } catch {
       if (runtimeRefreshRequestSeqRef.current !== requestId) {
-        return;
+        return null;
       }
-      setDesktopStatus(createIdleRuntimeStatus());
+      const idleStatus = createIdleRuntimeStatus();
+      setDesktopStatus(idleStatus);
       options.setRuntime(null);
       setRuntimeLog("");
+      return idleStatus;
     }
   }, [options]);
 

@@ -1,7 +1,11 @@
 import type { AuthSessionDto, ClientRuntimeEventDto } from "@chordv/shared";
 import { useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { isAccessTokenExpiredApiError, subscribeClientEvents as subscribeClientEventsRequest } from "../api/client";
+import {
+  isAccessTokenExpiredApiError,
+  probeClientServerLatency,
+  subscribeClientEvents as subscribeClientEventsRequest
+} from "../api/client";
 
 export type ServerProbeState = {
   status: "idle" | "checking" | "healthy" | "slow" | "failed";
@@ -46,6 +50,15 @@ function createFailedServerProbeState(readError: (message: string) => string, re
   };
 }
 
+function createReachableServerProbeState(elapsedMs: number | null): ServerProbeState {
+  return {
+    status: elapsedMs !== null && elapsedMs >= 200 ? "slow" : "healthy",
+    elapsedMs,
+    checkedAt: Date.now(),
+    errorMessage: null
+  };
+}
+
 export type UseClientEventsOptions = {
   session: AuthSessionDto | null;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
@@ -71,6 +84,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
   const readErrorRef = useRef(readError);
   const isUnauthorizedErrorRef = useRef(isUnauthorizedError);
   const setServerProbeRef = useRef(setServerProbe);
+  const probeFallbackBusyRef = useRef(false);
 
   useEffect(() => {
     handleRuntimeEventRef.current = handleRuntimeEvent;
@@ -97,6 +111,21 @@ export function useClientEvents(options: UseClientEventsOptions) {
       return;
     }
 
+    const verifyServerReachability = async (reason: unknown) => {
+      if (probeFallbackBusyRef.current) {
+        return;
+      }
+      probeFallbackBusyRef.current = true;
+      try {
+        const result = await probeClientServerLatency();
+        setServerProbeRef.current(createReachableServerProbeState(result.elapsedMs));
+      } catch (probeReason) {
+        setServerProbeRef.current(createFailedServerProbeState(readErrorRef.current, probeReason ?? reason));
+      } finally {
+        probeFallbackBusyRef.current = false;
+      }
+    };
+
     return subscribeClientEvents(session.accessToken, {
       onEvent: (event) => {
         void handleRuntimeEventRef.current(event, session.accessToken);
@@ -105,11 +134,11 @@ export function useClientEvents(options: UseClientEventsOptions) {
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
       },
       onError: (error, meta) => {
-        if (meta.authError || isUnauthorizedErrorRef.current(error)) {
+        if (meta.status === 401 || meta.authError || isUnauthorizedErrorRef.current(error)) {
           void recoverSessionAfterUnauthorizedRef.current();
           return;
         }
-        setServerProbeRef.current(createFailedServerProbeState(readErrorRef.current, error));
+        void verifyServerReachability(error);
       }
     });
   }, [session?.accessToken, subscribeClientEvents]);

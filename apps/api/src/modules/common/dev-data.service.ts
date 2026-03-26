@@ -373,8 +373,8 @@ export class DevDataService implements OnModuleInit {
     return this.runtimeSessionService.disconnect(sessionId, token);
   }
 
-  async getActiveRuntime(token?: string) {
-    return this.runtimeSessionService.getActiveRuntime(token);
+  async getActiveRuntime(sessionId?: string, token?: string) {
+    return this.runtimeSessionService.getActiveRuntime(sessionId, token);
   }
 
   getActiveRuntimeUsageContext() {

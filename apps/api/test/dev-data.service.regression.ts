@@ -144,9 +144,9 @@ async function testHeartbeatWithinTtlSucceeds() {
           xrayUserUuid: "uuid_1",
           node: { id: "node_1", flow: "" }
         }),
-        update: async (payload: Record<string, unknown>) => {
+        updateMany: async (payload: Record<string, unknown>) => {
           updates.push(payload);
-          return undefined;
+          return { count: 1 };
         }
       }
     }
@@ -186,9 +186,9 @@ async function testHeartbeatWithinGraceStillSucceeds() {
           xrayUserUuid: "uuid_2",
           node: { id: "node_1", flow: "" }
         }),
-        update: async (payload: Record<string, unknown>) => {
+        updateMany: async (payload: Record<string, unknown>) => {
           updates.push(payload);
-          return undefined;
+          return { count: 1 };
         }
       }
     }
@@ -203,11 +203,14 @@ async function testHeartbeatWithinGraceStillSucceeds() {
 }
 
 async function testHeartbeatBeyondGraceFailsWithLeaseExpired() {
-  const updates: Array<Record<string, unknown>> = [];
+  const revoked: Array<{ leaseId: string; reason: string }> = [];
   const service = createRuntimeSessionService({
     resolveActiveUserFromToken: async () => ({ id: "user_1" }),
     assertLeaseCanHeartbeat: async () => undefined,
     logLeaseWarning: () => undefined,
+    revokeLease: async (leaseId: string, _node: unknown, reason: string) => {
+      revoked.push({ leaseId, reason });
+    },
     prisma: {
       nodeSessionLease: {
         findUnique: async () => ({
@@ -223,20 +226,256 @@ async function testHeartbeatBeyondGraceFailsWithLeaseExpired() {
           xrayUserEmail: "demo@example.com",
           xrayUserUuid: "uuid_3",
           node: { id: "node_1", flow: "" }
-        }),
-        update: async (payload: Record<string, unknown>) => {
-          updates.push(payload);
-          return undefined;
-        }
+        })
       }
     }
   });
 
   await assert.rejects(() => service.heartbeatSession("session_3"), /会话已过期/);
 
-  assert.equal(updates.length, 1, "超过 TTL + grace 后，心跳应写回过期状态");
-  assert.equal(updates[0]?.data?.status, "expired");
-  assert.equal(updates[0]?.data?.revokedReason, "lease_expired");
+  assert.deepEqual(revoked, [{ leaseId: "lease_3", reason: "lease_expired" }], "超过 TTL + grace 后，心跳应走统一回收逻辑");
+}
+
+async function testGetActiveRuntimeRebuildsXuiLeaseFromDatabaseTruth() {
+  const service = createRuntimeSessionService({
+    resolveActiveUserFromToken: async () => ({ id: "user_1" }),
+    prisma: {
+      nodeSessionLease: {
+        findFirst: async () => ({
+          id: "lease_xui",
+          sessionId: "session_xui",
+          accessMode: "xui",
+          expiresAt: new Date(Date.now() + 20_000),
+          updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+          xrayUserUuid: "panel_uuid",
+          node: {
+            id: "node_1",
+            name: "节点一",
+            region: "香港",
+            provider: "demo",
+            tags: [],
+            recommended: true,
+            latencyMs: 20,
+            protocol: "vless",
+            security: "reality",
+            serverHost: "xui.example.com",
+            serverPort: 443,
+            flow: "xtls-rprx-vision",
+            realityPublicKey: "pub",
+            shortId: "sid",
+            serverName: "sn",
+            fingerprint: "chrome",
+            spiderX: "/"
+          }
+        })
+      },
+      policyProfile: {
+        findUnique: async () => ({
+          blockAds: true,
+          chinaDirect: false,
+          aiServicesProxy: true
+        })
+      }
+    }
+  });
+
+  const result = await service.getActiveRuntime("session_xui");
+
+  assert.ok(result, "xui 会话应该支持按数据库恢复");
+  assert.equal(result?.sessionId, "session_xui");
+  assert.equal(result?.outbound.server, "xui.example.com");
+  assert.equal(result?.outbound.uuid, "panel_uuid");
+}
+
+async function testGetActiveRuntimeDoesNotRebuildRelayLeaseFromDatabaseTruth() {
+  const service = createRuntimeSessionService({
+    resolveActiveUserFromToken: async () => ({ id: "user_1" }),
+    prisma: {
+      nodeSessionLease: {
+        findFirst: async () => ({
+          id: "lease_relay",
+          sessionId: "session_relay",
+          accessMode: "relay",
+          expiresAt: new Date(Date.now() + 20_000),
+          updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+          xrayUserUuid: "relay_uuid",
+          node: {
+            id: "node_1",
+            name: "节点一",
+            region: "香港",
+            provider: "demo",
+            tags: [],
+            recommended: true,
+            latencyMs: 20,
+            protocol: "vless",
+            security: "reality",
+            serverHost: "origin.example.com",
+            serverPort: 443,
+            flow: "xtls-rprx-vision",
+            realityPublicKey: "pub",
+            shortId: "sid",
+            serverName: "sn",
+            fingerprint: "chrome",
+            spiderX: "/"
+          }
+        })
+      }
+    }
+  });
+
+  const result = await service.getActiveRuntime("session_relay");
+
+  assert.equal(result, null, "relay 会话不应该再按数据库错误重建");
+}
+
+async function testHeartbeatUpdatesCachedRuntimeLeaseExpiry() {
+  const service = createRuntimeSessionService({
+    activeRuntime: {
+      sessionId: "session_cache",
+      leaseId: "lease_cache",
+      leaseExpiresAt: new Date(Date.now() + 5_000).toISOString(),
+      leaseHeartbeatIntervalSeconds: 30,
+      leaseGraceSeconds: 300,
+      node: {
+        id: "node_1",
+        name: "节点一",
+        region: "香港",
+        provider: "demo",
+        tags: [],
+        recommended: true,
+        latencyMs: 20,
+        protocol: "vless",
+        security: "reality"
+      },
+      mode: "rule",
+      localHttpPort: 17890,
+      localSocksPort: 17891,
+      routingProfile: "managed-rule-default",
+      generatedAt: new Date("2026-03-26T10:00:00.000Z").toISOString(),
+      features: {
+        blockAds: true,
+        chinaDirect: true,
+        aiServicesProxy: true
+      },
+      outbound: {
+        protocol: "vless",
+        server: "xui.example.com",
+        port: 443,
+        uuid: "panel_uuid",
+        flow: "xtls-rprx-vision",
+        realityPublicKey: "pub",
+        shortId: "sid",
+        serverName: "sn",
+        fingerprint: "chrome",
+        spiderX: "/"
+      }
+    },
+    resolveActiveUserFromToken: async () => ({ id: "user_1" }),
+    assertLeaseCanHeartbeat: async () => undefined,
+    logLeaseWarning: () => undefined,
+    prisma: {
+      nodeSessionLease: {
+        findUnique: async () => ({
+          id: "lease_cache",
+          sessionId: "session_cache",
+          userId: "user_1",
+          subscriptionId: "sub_1",
+          nodeId: "node_1",
+          accessMode: "xui",
+          status: "active",
+          expiresAt: new Date(Date.now() + 5_000),
+          revokedReason: null,
+          xrayUserEmail: "demo@example.com",
+          xrayUserUuid: "panel_uuid",
+          node: { id: "node_1", flow: "" }
+        }),
+        updateMany: async () => ({ count: 1 })
+      }
+    }
+  });
+
+  const result = await service.heartbeatSession("session_cache");
+  const cached = service["activeRuntime"];
+
+  assert.ok(cached, "成功续租后应该保留缓存运行态");
+  assert.equal(cached?.sessionId, "session_cache");
+  assert.equal(cached?.leaseExpiresAt, result.leaseExpiresAt, "缓存过期时间应该与心跳结果保持一致");
+}
+
+async function testRevokeLeaseClearsCachedRuntime() {
+  const service = createRuntimeSessionService({
+    activeRuntime: {
+      sessionId: "session_revoke",
+      leaseId: "lease_revoke",
+      leaseExpiresAt: new Date(Date.now() + 5_000).toISOString(),
+      leaseHeartbeatIntervalSeconds: 30,
+      leaseGraceSeconds: 300,
+      node: {
+        id: "node_1",
+        name: "节点一",
+        region: "香港",
+        provider: "demo",
+        tags: [],
+        recommended: true,
+        latencyMs: 20,
+        protocol: "vless",
+        security: "reality"
+      },
+      mode: "rule",
+      localHttpPort: 17890,
+      localSocksPort: 17891,
+      routingProfile: "managed-rule-default",
+      generatedAt: new Date("2026-03-26T10:00:00.000Z").toISOString(),
+      features: {
+        blockAds: true,
+        chinaDirect: true,
+        aiServicesProxy: true
+      },
+      outbound: {
+        protocol: "vless",
+        server: "xui.example.com",
+        port: 443,
+        uuid: "panel_uuid",
+        flow: "xtls-rprx-vision",
+        realityPublicKey: "pub",
+        shortId: "sid",
+        serverName: "sn",
+        fingerprint: "chrome",
+        spiderX: "/"
+      }
+    },
+    activeRuntimeUsageContext: {
+      subscriptionId: "sub_1",
+      nodeId: "node_1",
+      userId: "user_1",
+      teamId: null
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    prisma: {
+      nodeSessionLease: {
+        findUnique: async () => ({
+          id: "lease_revoke",
+          sessionId: "session_revoke",
+          accessMode: "xui",
+          userId: "user_1",
+          subscriptionId: "sub_1",
+          nodeId: "node_1",
+          status: "active"
+        }),
+        updateMany: async () => ({ count: 1 })
+      },
+      securityEvent: {
+        create: async () => undefined
+      }
+    }
+  });
+
+  await service["revokeLease"]("lease_revoke", { id: "node_1", flow: "" }, "revoked_by_client");
+
+  assert.equal(service["activeRuntime"], undefined, "revoke 后应该清空缓存运行态");
+  assert.equal(service.getActiveRuntimeUsageContext(), null, "revoke 后应该清空缓存使用上下文");
 }
 
 async function testSweepExpiredLeasesDoesNotRevokeTooEarly() {
@@ -352,6 +591,10 @@ async function main() {
   await testHeartbeatWithinTtlSucceeds();
   await testHeartbeatWithinGraceStillSucceeds();
   await testHeartbeatBeyondGraceFailsWithLeaseExpired();
+  await testGetActiveRuntimeRebuildsXuiLeaseFromDatabaseTruth();
+  await testGetActiveRuntimeDoesNotRebuildRelayLeaseFromDatabaseTruth();
+  await testHeartbeatUpdatesCachedRuntimeLeaseExpiry();
+  await testRevokeLeaseClearsCachedRuntime();
   await testSweepExpiredLeasesDoesNotRevokeTooEarly();
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();
   console.log("dev-data and usage regression checks passed");
