@@ -85,6 +85,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
   const isUnauthorizedErrorRef = useRef(isUnauthorizedError);
   const setServerProbeRef = useRef(setServerProbe);
   const probeFallbackBusyRef = useRef(false);
+  const openedOnceRef = useRef(false);
 
   useEffect(() => {
     handleRuntimeEventRef.current = handleRuntimeEvent;
@@ -108,6 +109,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
 
   useEffect(() => {
     if (!session?.accessToken) {
+      openedOnceRef.current = false;
       return;
     }
 
@@ -131,12 +133,21 @@ export function useClientEvents(options: UseClientEventsOptions) {
         void handleRuntimeEventRef.current(event, session.accessToken);
       },
       onOpen: (meta) => {
+        openedOnceRef.current = true;
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
       },
       onError: (error, meta) => {
         if (meta.status === 401 || meta.authError || isUnauthorizedErrorRef.current(error)) {
           void recoverSessionAfterUnauthorizedRef.current();
           return;
+        }
+        if (!openedOnceRef.current) {
+          setServerProbeRef.current((current) => ({
+            status: "checking",
+            elapsedMs: current.elapsedMs,
+            checkedAt: current.checkedAt,
+            errorMessage: null
+          }));
         }
         void verifyServerReachability(error);
       }

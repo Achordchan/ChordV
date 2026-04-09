@@ -36,12 +36,12 @@ export function RuntimeAssetsBanner(props: RuntimeAssetsBannerProps) {
           </Text>
         </div>
 
-        {props.state.phase === "downloading" ? (
+        {props.state.phase === "downloading" || props.state.phase === "completed" ? (
           <Stack gap={6}>
             <Progress
               value={downloadProgressValue(props.state)}
-              animated
-              striped={shouldRenderStageProgress(props.state)}
+              animated={props.state.phase === "downloading"}
+              striped={props.state.phase === "downloading" && shouldRenderStageProgress(props.state)}
             />
             <Text size="xs" c="dimmed">
               {describeRuntimeAssetsProgress(props.state)}
@@ -87,6 +87,9 @@ function BannerIcon(props: { phase: RuntimeAssetsUiState["phase"] }) {
   if (props.phase === "failed") {
     return <IconAlertTriangle size={18} />;
   }
+  if (props.phase === "completed") {
+    return <IconCheck size={18} />;
+  }
   if (props.phase === "checking") {
     return <IconLoader2 size={18} />;
   }
@@ -100,6 +103,9 @@ function describeRuntimeAssetsProgress(state: RuntimeAssetsUiState) {
       return state.message;
     }
     return fileName ? `正在检查 ${fileName}` : "正在检查连接所需组件";
+  }
+  if (state.phase === "completed") {
+    return "组件已准备完成，正在继续连接…";
   }
   if (!state.totalBytes || state.totalBytes <= 0) {
     if (state.downloadedBytes > 0) {
@@ -116,13 +122,26 @@ function describeRuntimeAssetsProgress(state: RuntimeAssetsUiState) {
 }
 
 function downloadProgressValue(state: RuntimeAssetsUiState) {
+  if (state.phase === "completed") {
+    return 100;
+  }
+  if (state.downloadedBytes <= 0) {
+    return inferStageProgressValue(state);
+  }
   if (!state.totalBytes || state.totalBytes <= 0) {
     return inferStageProgressValue(state);
   }
-  return Math.max(0, Math.min(100, (state.downloadedBytes / state.totalBytes) * 100));
+  const raw = (state.downloadedBytes / state.totalBytes) * 100;
+  if (state.downloadedBytes > 0 && raw < 6) {
+    return 6;
+  }
+  return Math.max(0, Math.min(100, raw));
 }
 
 function shouldRenderStageProgress(state: RuntimeAssetsUiState) {
+  if (state.downloadedBytes <= 0) {
+    return true;
+  }
   return !state.totalBytes || state.totalBytes <= 0;
 }
 

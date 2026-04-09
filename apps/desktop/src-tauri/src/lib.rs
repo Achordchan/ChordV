@@ -36,13 +36,16 @@ use std::os::windows::process::CommandExt;
 use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
 
 #[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
+#[cfg(windows)]
 use std::io::{BufRead, BufReader};
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use tauri::tray::TrayIconBuilder;
 
 #[cfg(windows)]
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::tray::{MouseButton, TrayIconEvent};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -74,6 +77,8 @@ struct RuntimeState {
     local_socks_port: Option<u16>,
     last_error: Option<String>,
     child: Option<Child>,
+    #[cfg(windows)]
+    runtime_component_handles: Vec<File>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -223,6 +228,8 @@ impl Default for RuntimeState {
             local_socks_port: None,
             last_error: None,
             child: None,
+            #[cfg(windows)]
+            runtime_component_handles: Vec::new(),
         }
     }
 }
@@ -428,6 +435,31 @@ struct RuntimeComponentDownloadItemInput {
 struct RuntimeComponentDownloadInput {
     component: RuntimeComponentDownloadItemInput,
     url: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+enum RuntimeComponentPlanFileSizeValue {
+    Number(u64),
+    String(String),
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentPlanItemInput {
+    id: String,
+    kind: RuntimeComponentKindInput,
+    file_name: String,
+    file_size_bytes: Option<RuntimeComponentPlanFileSizeValue>,
+    archive_entry_name: Option<String>,
+    expected_hash: Option<String>,
+    resolved_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentsPlanInput {
+    components: Vec<RuntimeComponentPlanItemInput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -974,7 +1006,6 @@ fn api_proxy_bypass_hosts() -> Vec<String> {
     let mut hosts = vec![
         "localhost".to_string(),
         "127.0.0.1".to_string(),
-        "::1".to_string(),
     ];
 
     let base = std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
@@ -1267,7 +1298,7 @@ fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironme
 
     #[cfg(not(target_os = "android"))]
     {
-        let runtime_bin_dir = ensure_runtime_bin_dir(&app)?;
+        let runtime_bin_dir = installed_runtime_bin_dir(&app)?;
         Ok(DesktopRuntimeEnvironment {
             platform: runtime_platform_name().into(),
             architecture: detect_runtime_component_architecture().into(),
@@ -1290,6 +1321,7 @@ fn check_runtime_component_file(
     #[cfg(not(target_os = "android"))]
     {
         let target_path = runtime_component_target_path(&app, component.component)?;
+        let _ = ensure_runtime_component_from_bundle(&app, component.component, &target_path)?;
         if !target_path.exists() {
             return Ok(RuntimeComponentFileStatus {
                 ready: false,
@@ -1881,6 +1913,21 @@ fn connect_runtime(
         return Err(error);
     }
 
+    #[cfg(windows)]
+    {
+        let runtime_bin_dir = match installed_runtime_bin_dir(&app) {
+            Ok(path) => path,
+            Err(error) => {
+                rollback_connect_failure(&app, &mut state, &mut child, error.clone());
+                return Err(error);
+            }
+        };
+        if let Err(error) = lock_runtime_component_files(&mut state, &runtime_bin_dir) {
+            rollback_connect_failure(&app, &mut state, &mut child, error.clone());
+            return Err(error);
+        }
+    }
+
     state.status = "connected".into();
     state.config_path = Some(config_path.clone());
     state.log_path = Some(log_path.clone());
@@ -1942,8 +1989,29 @@ fn ensure_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(bin_dir)
 }
 
-fn ensure_xray_binary(_app: &AppHandle, runtime_dir: &Path) -> Result<PathBuf, String> {
-    let installed_path = runtime_dir.join("bin").join(runtime_binary_name());
+fn installed_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let bin_dir = exe_dir.join("bin");
+            fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
+            return Ok(bin_dir);
+        }
+    }
+
+    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin");
+    if manifest_bin.exists() {
+        fs::create_dir_all(&manifest_bin).map_err(|error| error.to_string())?;
+        return Ok(manifest_bin);
+    }
+
+    ensure_runtime_bin_dir(app)
+}
+
+fn ensure_xray_binary(app: &AppHandle, _runtime_dir: &Path) -> Result<PathBuf, String> {
+    let installed_path = installed_runtime_bin_dir(app)?.join(runtime_binary_name());
+    if ensure_runtime_component_from_bundle(app, RuntimeComponentKindInput::Xray, &installed_path)? {
+        ensure_executable(&installed_path)?;
+    }
     if !installed_path.exists() {
         return Err("必要内核组件未就绪，请先等待组件下载完成后再连接。".into());
     }
@@ -1993,10 +2061,11 @@ fn set_private_permissions(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_geo_data(app: &AppHandle, runtime_dir: &Path) -> Result<(), String> {
-    let _ = app;
+fn ensure_geo_data(app: &AppHandle, _runtime_dir: &Path) -> Result<(), String> {
+    let runtime_bin_dir = installed_runtime_bin_dir(app)?;
     for kind in [RuntimeComponentKindInput::Geoip, RuntimeComponentKindInput::Geosite] {
-        let target = runtime_dir.join("bin").join(runtime_component_file_name(kind));
+        let target = runtime_bin_dir.join(runtime_component_file_name(kind));
+        let _ = ensure_runtime_component_from_bundle(app, kind, &target)?;
         if !target.exists() {
             return Err(format!(
                 "{} 未就绪，请先等待组件下载完成后再连接。",
@@ -2014,14 +2083,176 @@ fn ensure_geo_data(app: &AppHandle, runtime_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn lock_runtime_component_files(state: &mut RuntimeState, runtime_bin_dir: &Path) -> Result<(), String> {
+    state.runtime_component_handles.clear();
+
+    for file_name in ["geoip.dat", "geosite.dat"] {
+        let path = runtime_bin_dir.join(file_name);
+        let handle = OpenOptions::new()
+            .read(true)
+            .share_mode(0x0000_0001)
+            .open(&path)
+            .map_err(|error| format!("锁定运行时文件失败（{}）：{error}", path.to_string_lossy()))?;
+        state.runtime_component_handles.push(handle);
+    }
+
+    Ok(())
+}
+
+fn normalize_runtime_component_plan_file_size(value: Option<RuntimeComponentPlanFileSizeValue>) -> Option<u64> {
+    match value {
+        Some(RuntimeComponentPlanFileSizeValue::Number(raw)) => Some(raw),
+        Some(RuntimeComponentPlanFileSizeValue::String(raw)) => raw
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|parsed| *parsed > 0),
+        None => None,
+    }
+}
+
+async fn fetch_runtime_components_plan_once(
+    access_token: &str,
+) -> Result<RuntimeComponentsPlanInput, (u16, String)> {
+    let base = api_base_url();
+    let url = format!(
+        "{}/api/client/runtime-components/plan?platform={}&architecture={}",
+        base.trim_end_matches('/'),
+        runtime_platform_name(),
+        detect_runtime_component_architecture()
+    );
+    let response = api_client()
+        .map_err(|error| (0, error))?
+        .get(url)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .send()
+        .await
+        .map_err(|error| (0, format!("获取运行时组件计划失败：{error}")))?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| (status, format!("读取运行时组件计划失败：{error}")))?;
+    if status < 200 || status >= 300 {
+        return Err((status, parse_api_error_message(&body)));
+    }
+    serde_json::from_str::<RuntimeComponentsPlanInput>(&body)
+        .map_err(|error| (status, format!("解析运行时组件计划失败：{error}")))
+}
+
+async fn fetch_runtime_components_plan_for_connect(app: &AppHandle) -> Result<RuntimeComponentsPlanInput, String> {
+    let session = read_session_from_disk(app)?.ok_or_else(|| "当前没有可用登录态".to_string())?;
+    match fetch_runtime_components_plan_once(&session.access_token).await {
+        Ok(plan) => Ok(plan),
+        Err((401, _)) => {
+            let refreshed = refresh_access_session(app, Some(&session.refresh_token)).await?;
+            fetch_runtime_components_plan_once(&refreshed.access_token)
+                .await
+                .map_err(|(_, message)| format!("获取运行时组件计划失败：{message}"))
+        }
+        Err((_, message)) => Err(format!("获取运行时组件计划失败：{message}")),
+    }
+}
+
+async fn auto_repair_runtime_components_for_connect(app: &AppHandle) -> Result<(), String> {
+    let plan = fetch_runtime_components_plan_for_connect(app).await?;
+    if plan.components.is_empty() {
+        return Err("运行时组件计划为空，无法自动修复。".into());
+    }
+
+    for item in plan.components {
+        let component = RuntimeComponentDownloadItemInput {
+            id: item.id.clone(),
+            component: item.kind,
+            file_name: item.file_name.clone(),
+            file_size_bytes: normalize_runtime_component_plan_file_size(item.file_size_bytes.clone()),
+            source_format: if item
+                .archive_entry_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+            {
+                RuntimeComponentSourceFormat::ZipEntry
+            } else {
+                RuntimeComponentSourceFormat::Direct
+            },
+            archive_entry_name: item.archive_entry_name.clone(),
+            checksum_sha256: item.expected_hash.clone(),
+        };
+
+        emit_runtime_component_progress(
+            app,
+            RuntimeComponentDownloadProgress {
+                phase: "checking".into(),
+                component: runtime_component_key(component.component).into(),
+                file_name: Some(component.file_name.clone()),
+                downloaded_bytes: 0,
+                total_bytes: component.file_size_bytes,
+                message: Some(format!(
+                    "连接前正在校验 {}…",
+                    runtime_component_display_name(component.component)
+                )),
+            },
+        );
+
+        let status = check_runtime_component_file(app.clone(), component.clone())?;
+        if status.ready {
+            continue;
+        }
+
+        append_download_diagnostic_log(
+            app,
+            "runtime-download",
+            format!(
+                "connect-auto-repair component={} reason={} message={}",
+                runtime_component_key(component.component),
+                status
+                    .reason_code
+                    .clone()
+                    .unwrap_or_else(|| "unknown".into()),
+                status.message.clone().unwrap_or_else(|| "none".into())
+            ),
+        );
+
+        download_runtime_component(
+            app.clone(),
+            RuntimeComponentDownloadInput {
+                component,
+                url: item.resolved_url.clone(),
+            },
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 async fn prepare_desktop_runtime_components(app: &AppHandle, runtime_dir: &Path) -> Result<PathBuf, String> {
-    let xray_path = ensure_xray_binary(app, runtime_dir)?;
-    ensure_geo_data(app, runtime_dir)?;
-    Ok(xray_path)
+    match ensure_xray_binary(app, runtime_dir).and_then(|xray_path| {
+        ensure_geo_data(app, runtime_dir)?;
+        Ok(xray_path)
+    }) {
+        Ok(xray_path) => Ok(xray_path),
+        Err(initial_error) => {
+            append_download_diagnostic_log(
+                app,
+                "runtime-download",
+                format!("connect-preflight-failed initial_error={initial_error}"),
+            );
+            auto_repair_runtime_components_for_connect(app)
+                .await
+                .map_err(|error| format!("运行时组件自动修复失败：{error}"))?;
+            let xray_path = ensure_xray_binary(app, runtime_dir)?;
+            ensure_geo_data(app, runtime_dir)?;
+            Ok(xray_path)
+        }
+    }
 }
 
 fn runtime_component_target_path(app: &AppHandle, component: RuntimeComponentKindInput) -> Result<PathBuf, String> {
-    Ok(ensure_runtime_bin_dir(app)?.join(runtime_component_file_name(component)))
+    Ok(installed_runtime_bin_dir(app)?.join(runtime_component_file_name(component)))
 }
 
 fn runtime_component_file_name(component: RuntimeComponentKindInput) -> &'static str {
@@ -2046,6 +2277,94 @@ fn runtime_component_key(component: RuntimeComponentKindInput) -> &'static str {
         RuntimeComponentKindInput::Geoip => "geoip",
         RuntimeComponentKindInput::Geosite => "geosite",
     }
+}
+
+fn bundled_runtime_component_resource_name(component: RuntimeComponentKindInput) -> &'static str {
+    match component {
+        RuntimeComponentKindInput::Xray => bundled_runtime_binary_resource_name(),
+        RuntimeComponentKindInput::Geoip => "geoip.dat",
+        RuntimeComponentKindInput::Geosite => "geosite.dat",
+    }
+}
+
+fn bundled_runtime_binary_resource_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        if detect_runtime_component_architecture() == "arm64" {
+            return "xray-aarch64-apple-darwin";
+        }
+        return "xray-x86_64-apple-darwin";
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "xray.exe"
+    }
+
+    #[cfg(not(any(target_os = "macos", all(target_os = "windows", target_arch = "x86_64"))))]
+    {
+        runtime_binary_name()
+    }
+}
+
+fn bundled_runtime_component_source_path(app: &AppHandle, component: RuntimeComponentKindInput) -> Option<PathBuf> {
+    let resource_name = bundled_runtime_component_resource_name(component);
+    let resource_dir = app.path().resource_dir().ok();
+    if let Some(resource_dir) = resource_dir {
+        let direct_path = resource_dir.join(resource_name);
+        if direct_path.exists() {
+            return Some(direct_path);
+        }
+        let nested_path = resource_dir.join("bin").join(resource_name);
+        if nested_path.exists() {
+            return Some(nested_path);
+        }
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let sibling_bin_path = exe_dir.join("bin").join(resource_name);
+            if sibling_bin_path.exists() {
+                return Some(sibling_bin_path);
+            }
+        }
+    }
+
+    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin").join(resource_name);
+    if manifest_bin.exists() {
+        return Some(manifest_bin);
+    }
+    None
+}
+
+fn ensure_runtime_component_from_bundle(
+    app: &AppHandle,
+    component: RuntimeComponentKindInput,
+    target_path: &Path,
+) -> Result<bool, String> {
+    if let Ok(metadata) = fs::metadata(target_path) {
+        if metadata.len() > 0 {
+            return Ok(false);
+        }
+    }
+
+    let Some(source_path) = bundled_runtime_component_source_path(app, component) else {
+        return Ok(false);
+    };
+
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::copy(&source_path, target_path).map_err(|error| {
+        format!(
+            "复制内置{}失败：{error}",
+            runtime_component_display_name(component)
+        )
+    })?;
+    if component == RuntimeComponentKindInput::Xray {
+        ensure_executable(target_path)?;
+    }
+    Ok(true)
 }
 
 fn runtime_platform_name() -> &'static str {
@@ -2771,6 +3090,8 @@ fn refresh_child_state(state: &mut RuntimeState) {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let _ = clear_system_proxy();
+                #[cfg(windows)]
+                state.runtime_component_handles.clear();
                 state.status = "error".into();
                 state.active_pid = None;
                 state.child = None;
@@ -2788,6 +3109,8 @@ fn refresh_child_state(state: &mut RuntimeState) {
             }
             Err(error) => {
                 let _ = clear_system_proxy();
+                #[cfg(windows)]
+                state.runtime_component_handles.clear();
                 state.status = "error".into();
                 state.active_pid = None;
                 state.child = None;
@@ -2806,6 +3129,8 @@ fn refresh_child_state(state: &mut RuntimeState) {
             && (!is_port_open(http_port) && !is_port_open(socks_port))
         {
             let _ = clear_system_proxy();
+            #[cfg(windows)]
+            state.runtime_component_handles.clear();
             state.status = "error".into();
             state.active_pid = None;
             state.child = None;
@@ -2824,6 +3149,9 @@ fn stop_runtime_process(app: &AppHandle, state: &mut RuntimeState) {
         let _ = child.kill();
         let _ = child.wait();
     }
+
+    #[cfg(windows)]
+    state.runtime_component_handles.clear();
 
     if let Some(record) = load_runtime_pid_record(app) {
         if runtime_pid_belongs_to_chordv(app, &record) {
@@ -2860,12 +3188,38 @@ fn runtime_pid_path(app: &AppHandle) -> PathBuf {
 }
 
 fn runtime_binary_path(app: &AppHandle) -> PathBuf {
+    installed_runtime_bin_dir(app)
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop").join("bin"))
+        .join(runtime_binary_name())
+}
+
+fn legacy_runtime_bin_dir(app: &AppHandle) -> PathBuf {
     app.path()
         .app_local_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
         .join("runtime")
         .join("bin")
-        .join(runtime_binary_name())
+}
+
+fn cleanup_legacy_runtime_component_copies(app: &AppHandle) {
+    let legacy_bin_dir = legacy_runtime_bin_dir(app);
+    for file_name in [runtime_binary_name(), "geoip.dat", "geosite.dat"] {
+        let path = legacy_bin_dir.join(file_name);
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn cleanup_legacy_installed_runtime_names(app: &AppHandle) {
+    if let Ok(bin_dir) = installed_runtime_bin_dir(app) {
+        for file_name in ["xray-x86_64-pc-windows-msvc.exe"] {
+            let path = bin_dir.join(file_name);
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 }
 
 fn persist_runtime_pid(app: &AppHandle, pid: u32, binary_path: &Path) {
@@ -3462,7 +3816,8 @@ fn detect_windows_external_network_conflict(http_port: u16, socks_port: u16) -> 
         ));
     }
 
-    let expected = format!("http=127.0.0.1:{http_port};https=127.0.0.1:{http_port};socks=127.0.0.1:{socks_port}");
+    let _ = socks_port;
+    let expected = windows_manual_proxy_server(http_port);
     if let Some(proxy_server) = detect_windows_proxy_conflict(&expected) {
         return Err(format!(
             "external_proxy_conflict: 检测到系统代理已由其他应用占用（{}），请先关闭后再连接 ChordV。",
@@ -3614,9 +3969,14 @@ fn macos_proxy_points_to_loopback(output: &str) -> bool {
 }
 
 #[cfg(windows)]
+fn windows_manual_proxy_server(http_port: u16) -> String {
+    format!("127.0.0.1:{http_port}")
+}
+
+#[cfg(windows)]
 fn set_windows_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
-    let proxy_server =
-        format!("http=127.0.0.1:{http_port};https=127.0.0.1:{http_port};socks=127.0.0.1:{socks_port}");
+    let _ = socks_port;
+    let proxy_server = windows_manual_proxy_server(http_port);
     let proxy_override = {
         let mut entries = vec!["<local>".to_string()];
         for host in api_proxy_bypass_hosts() {
@@ -3988,6 +4348,8 @@ fn cleanup_stale_runtime(app: &AppHandle) {
     }
 
     let _ = clear_system_proxy();
+    cleanup_legacy_runtime_component_copies(app);
+    cleanup_legacy_installed_runtime_names(app);
 }
 
 fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
@@ -4019,6 +4381,8 @@ fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
     }
 
     let _ = clear_system_proxy();
+    cleanup_legacy_runtime_component_copies(app);
+    cleanup_legacy_installed_runtime_names(app);
 }
 
 #[cfg(not(target_os = "android"))]
@@ -4485,13 +4849,12 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
         builder = builder
             .show_menu_on_left_click(false)
             .on_tray_icon_event(|tray, event| {
-                if let TrayIconEvent::Click {
+                if let TrayIconEvent::DoubleClick {
                     button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
                     ..
                 } = event
                 {
-                    let _ = toggle_main_window_internal(&tray.app_handle());
+                    let _ = show_main_window_internal(&tray.app_handle());
                 }
             });
     }

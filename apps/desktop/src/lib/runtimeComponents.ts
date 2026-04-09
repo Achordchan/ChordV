@@ -71,7 +71,7 @@ export type RuntimeComponentFileStatus = {
 };
 
 export type RuntimeAssetsUiState = {
-  phase: "idle" | "checking" | "downloading" | "ready" | "failed";
+  phase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
   currentComponent: RuntimeComponentKind | null;
   fileName: string | null;
   downloadedBytes: number;
@@ -102,6 +102,9 @@ export function resolveRuntimeAssetsTone(
   if (phase === "checking" || phase === "downloading") {
     return "info";
   }
+  if (phase === "completed") {
+    return "success";
+  }
   if (phase === "failed") {
     return "danger";
   }
@@ -121,6 +124,9 @@ export function formatRuntimeAssetsTitle(state: RuntimeAssetsUiState) {
   if (state.phase === "failed") {
     return "必要内核组件暂未就绪";
   }
+  if (state.phase === "completed") {
+    return "必要内核组件已准备完成";
+  }
   if (state.phase === "ready") {
     return "必要内核组件已准备完成";
   }
@@ -136,6 +142,9 @@ export function formatRuntimeAssetsMessage(state: RuntimeAssetsUiState) {
   }
   if (state.phase === "failed") {
     return state.errorMessage ?? "必要内核组件下载失败，当前暂时不能连接。";
+  }
+  if (state.phase === "completed") {
+    return state.message ?? "连接所需组件已准备完成，即将继续。";
   }
   if (state.phase === "ready") {
     return "连接所需组件已准备完成。";

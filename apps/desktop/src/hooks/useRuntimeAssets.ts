@@ -35,6 +35,7 @@ type EnsureRuntimeAssetsOptions = {
   source: "startup" | "connect" | "retry";
   interactive: boolean;
   blockConnection: boolean;
+  forceCheck?: boolean;
 };
 
 type UseRuntimeAssetsOptions = {
@@ -159,7 +160,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
       if (options.platformTarget === "android" || options.platformTarget === "web") {
         return true;
       }
-      if (runtimeAssets.phase === "ready") {
+      if (!ensureOptions.forceCheck && runtimeAssets.phase === "ready") {
         return true;
       }
       if (runtimeAssetsTaskRef.current) {
@@ -277,6 +278,20 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             }
           }
 
+          setRuntimeAssets({
+            phase: "completed",
+            currentComponent: null,
+            fileName: null,
+            downloadedBytes: pendingComponents
+              .reduce((total, component) => total + (component.fileSizeBytes ?? 0), 0),
+            totalBytes: pendingComponents
+              .reduce((total, component) => total + (component.fileSizeBytes ?? 0), 0),
+            message: "连接所需组件已准备完成，即将继续连接。",
+            errorCode: null,
+            errorMessage: null,
+            blocking: false
+          });
+          await new Promise((resolve) => window.setTimeout(resolve, 900));
           setRuntimeAssets({
             phase: "ready",
             currentComponent: null,

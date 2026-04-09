@@ -30,9 +30,12 @@ const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.p
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
 const buildArgs = ["exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
 
+prepareBundledRuntimeResources(platform);
+const bundledResources = buildBundledRuntimeResources(platform);
+
 fs.writeFileSync(
   tempConfigPath,
-  `${JSON.stringify({ ...baseConfig, version }, null, 2)}\n`,
+  `${JSON.stringify({ ...baseConfig, version, bundle: { ...baseConfig.bundle, resources: bundledResources } }, null, 2)}\n`,
   "utf8"
 );
 
@@ -61,6 +64,32 @@ if ((result.status ?? 1) === 0) {
   curateReleaseArtifacts(platform, version, projectRoot);
 }
 process.exit(result.status ?? 1);
+
+function prepareBundledRuntimeResources(platform) {
+  const setupScript = path.join(desktopRoot, "scripts", "setup-xray.mjs");
+  const targets = platform === "macos" ? ["darwin-arm64", "darwin-x64"] : ["win32-x64"];
+  for (const target of targets) {
+    const result = spawnSync("node", [setupScript], {
+      cwd: desktopRoot,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        CHORDV_XRAY_TARGET: target
+      }
+    });
+    if ((result.status ?? 1) !== 0) {
+      throw new Error(`准备内置运行时资源失败：${target}`);
+    }
+  }
+}
+
+function buildBundledRuntimeResources(platform) {
+  const common = ["bin/geoip.dat", "bin/geosite.dat"];
+  if (platform === "macos") {
+    return [...common, "bin/xray-aarch64-apple-darwin", "bin/xray-x86_64-apple-darwin"];
+  }
+  return [...common, "bin/xray.exe"];
+}
 
 function curateReleaseArtifacts(platform, version, projectRoot) {
   const outputDir = path.join(projectRoot, "output", "release", platform === "macos" ? "macos" : "windows");

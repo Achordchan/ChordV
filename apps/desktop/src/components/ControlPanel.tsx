@@ -14,7 +14,7 @@ type ControlPanelProps = {
   desktopStatus: RuntimeStatus;
   runtime: GeneratedRuntimeConfigDto | null;
   error: string | null;
-  runtimeAssetsPhase: "idle" | "checking" | "downloading" | "ready" | "failed";
+  runtimeAssetsPhase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
   onModeChange: (mode: ConnectionMode) => void;
   onPrimaryAction: () => void;
   onOpenLogs: () => void;

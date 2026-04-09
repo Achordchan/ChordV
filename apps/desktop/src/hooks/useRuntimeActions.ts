@@ -63,6 +63,7 @@ type EnsureRuntimeAssetsOptions = {
   source: "startup" | "connect" | "retry";
   interactive: boolean;
   blockConnection: boolean;
+  forceCheck?: boolean;
 };
 
 type RunUpdateCheckInput = {
@@ -417,6 +418,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const runtimeEvent = event as ClientRuntimeEventDto & {
         ticketId?: string | null;
       };
+      const isAdminPausedConnection =
+        event.reasonMessage?.includes("管理员已暂停当前连接") || event.reasonMessage?.includes("连接已被管理员暂停");
 
       if (eventType === "keepalive") {
         options.setServerProbe((current) => ({
@@ -433,13 +436,30 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         event.reasonCode === "subscription_exhausted" ||
         event.reasonCode === "subscription_paused" ||
         event.reasonCode === "account_disabled" ||
-        event.reasonCode === "team_access_revoked"
+        event.reasonCode === "team_access_revoked" ||
+        isAdminPausedConnection
       ) {
-        if (event.reasonCode === "account_disabled" || event.reasonCode === "team_access_revoked") {
+        if (
+          event.reasonCode === "account_disabled" ||
+          event.reasonCode === "team_access_revoked" ||
+          isAdminPausedConnection
+        ) {
+          if (isAdminPausedConnection) {
+            await disconnectCurrentRuntime({ notifyServer: false });
+            options.notify({
+              color: "yellow",
+              title: "当前连接已被管理员暂停",
+              message: "管理员已立即断开你的当前连接，请稍后重试或联系管理员。"
+            });
+            return;
+          }
           await options.clearSession(true);
           options.notify({
             color: "yellow",
-            title: event.reasonCode === "account_disabled" ? "账号已禁用" : "你已被移出团队",
+            title:
+              event.reasonCode === "account_disabled"
+                ? "账号已禁用"
+                : "你已被移出团队",
             message:
               event.reasonCode === "account_disabled"
                 ? "当前账号已被管理员禁用，请联系管理员处理。"
@@ -527,7 +547,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
         interactive: true,
-        blockConnection: true
+        blockConnection: true,
+        forceCheck: true
       });
       if (!ready) {
         return;
@@ -711,7 +732,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
         interactive: true,
-        blockConnection: true
+        blockConnection: true,
+        forceCheck: true
       });
       if (!ready) {
         return;

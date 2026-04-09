@@ -1,7 +1,8 @@
-import { mkdirSync, existsSync, chmodSync, renameSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rename, chmod, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -11,27 +12,27 @@ const binDir = path.join(tauriRoot, "bin");
 
 const targetMap = {
   "darwin-arm64": {
-    asset: "Xray-macos-arm64-v8a.zip",
-    binaryName: "xray-aarch64-apple-darwin",
-    extractedBinaryName: "xray",
+    platform: "macos",
+    architecture: "arm64",
+    binaryOutputName: "xray-aarch64-apple-darwin",
     executable: true
   },
   "darwin-x64": {
-    asset: "Xray-macos-64.zip",
-    binaryName: "xray-x86_64-apple-darwin",
-    extractedBinaryName: "xray",
+    platform: "macos",
+    architecture: "x64",
+    binaryOutputName: "xray-x86_64-apple-darwin",
     executable: true
   },
   "win32-x64": {
-    asset: "Xray-windows-64.zip",
-    binaryName: "xray-x86_64-pc-windows-msvc.exe",
-    extractedBinaryName: "xray.exe",
+    platform: "windows",
+    architecture: "x64",
+    binaryOutputName: "xray.exe",
     executable: false
   },
   "android-arm64": {
-    asset: "Xray-android-arm64-v8a.zip",
-    binaryName: "xray-aarch64-linux-android",
-    extractedBinaryName: "xray",
+    platform: "android",
+    architecture: "arm64",
+    binaryOutputName: "xray-aarch64-linux-android",
     executable: true
   }
 };
@@ -41,81 +42,146 @@ const key = targetOverride || `${process.platform}-${process.arch}`;
 const target = targetMap[key];
 
 if (!target) {
-  console.error(`当前平台不支持自动下载 xray：${key}`);
+  console.error(`当前平台不支持自动准备 xray 资源：${key}`);
+  process.exit(1);
+}
+
+if (target.platform === "android") {
+  console.error("当前脚本暂不负责 Android 运行时资源。");
   process.exit(1);
 }
 
 mkdirSync(binDir, { recursive: true });
+cleanupLegacyBundledBinaryNames(target);
 
-const outputBinary = path.join(binDir, target.binaryName);
-const outputGeoIp = path.join(binDir, "geoip.dat");
-const outputGeoSite = path.join(binDir, "geosite.dat");
-
-if (
-  existsSync(outputBinary) &&
-  existsSync(outputGeoIp) &&
-  existsSync(outputGeoSite) &&
-  process.env.CHORDV_XRAY_FORCE !== "1"
-) {
-  console.log(`xray 资源已存在：${outputBinary}`);
-  process.exit(0);
-}
-
-const tempRoot = path.join(tmpdir(), `chordv-xray-${Date.now()}`);
-const zipPath = path.join(tempRoot, target.asset);
-const extractDir = path.join(tempRoot, "extract");
-
+const apiBaseUrl = resolveApiBaseUrl();
+const tempRoot = path.join(tmpdir(), `chordv-runtime-${Date.now()}`);
 mkdirSync(tempRoot, { recursive: true });
-mkdirSync(extractDir, { recursive: true });
 
 try {
-  const downloadUrl = `https://github.com/XTLS/Xray-core/releases/latest/download/${target.asset}`;
-  const preferCurl = key.startsWith("android-");
-  if (!preferCurl && hasGh()) {
-    console.log(`使用 gh 下载 xray：${target.asset}`);
-    execFileSync("gh", ["release", "download", "--repo", "XTLS/Xray-core", "--pattern", target.asset, "--dir", tempRoot], {
-      stdio: "inherit"
-    });
-  } else {
-    console.log(`下载 xray：${downloadUrl}`);
-    execFileSync("curl", ["--http1.1", "-L", downloadUrl, "-o", zipPath], {
-      stdio: "inherit"
-    });
-  }
+  const plan = await fetchRuntimeComponentsPlan(target.platform, target.architecture);
+  const components = indexPlanComponents(plan.components);
+  const requiredKinds = ["xray", "geoip", "geosite"];
 
-  execFileSync("unzip", ["-o", zipPath, "-d", extractDir], {
-    stdio: "inherit"
-  });
+  for (const kind of requiredKinds) {
+    const component = components.get(kind);
+    if (!component) {
+      throw new Error(`后台运行时计划缺少组件：${kind}`);
+    }
+    const outputPath =
+      kind === "xray"
+        ? path.join(binDir, target.binaryOutputName)
+        : path.join(binDir, `${kind}.dat`);
 
-  const extractedBinary = path.join(extractDir, target.extractedBinaryName);
-  const extractedGeoIp = path.join(extractDir, "geoip.dat");
-  const extractedGeoSite = path.join(extractDir, "geosite.dat");
-  if (!existsSync(extractedBinary)) {
-    throw new Error("压缩包里没有 xray 可执行文件");
-  }
-  if (!existsSync(extractedGeoIp) || !existsSync(extractedGeoSite)) {
-    throw new Error("压缩包里没有完整规则数据");
-  }
+    if (isOutputReady(outputPath, component)) {
+      console.log(`${kind} 资源已匹配后台计划：${outputPath}`);
+      continue;
+    }
 
-  rmSync(outputBinary, { force: true });
-  rmSync(outputGeoIp, { force: true });
-  rmSync(outputGeoSite, { force: true });
-  renameSync(extractedBinary, outputBinary);
-  renameSync(extractedGeoIp, outputGeoIp);
-  renameSync(extractedGeoSite, outputGeoSite);
-  if (target.executable) {
-    chmodSync(outputBinary, 0o755);
-  }
+    const tempDownloadPath = path.join(tempRoot, `${kind}-${Date.now()}.download`);
+    console.log(`下载 ${kind}：${component.resolvedUrl}`);
+    await downloadFile(component.resolvedUrl, tempDownloadPath);
+    await verifyDownloadedFile(tempDownloadPath, component, kind);
 
-  console.log(`xray 已安装：${outputBinary}`);
+    rmSync(outputPath, { force: true });
+    await rename(tempDownloadPath, outputPath);
+    if (kind === "xray" && target.executable) {
+      await chmod(outputPath, 0o755);
+    }
+    console.log(`${kind} 已安装：${outputPath}`);
+  }
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
 }
 
-function hasGh() {
-  const result = spawnSync("gh", ["--version"], {
-    stdio: "ignore"
-  });
+function resolveApiBaseUrl() {
+  const configured =
+    process.env.CHORDV_API_BASE_URL?.trim() ||
+    process.env.VITE_API_BASE_URL?.trim() ||
+    process.env.CHORDV_PUBLIC_BASE_URL?.trim() ||
+    "https://v.baymaxgroup.com";
+  return configured.replace(/\/+$/, "");
+}
 
-  return result.status === 0;
+async function fetchRuntimeComponentsPlan(platform, architecture) {
+  const url = `${apiBaseUrl}/api/client/runtime-components/plan?platform=${encodeURIComponent(platform)}&architecture=${encodeURIComponent(architecture)}`;
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`获取运行时计划失败：HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+function indexPlanComponents(components) {
+  const map = new Map();
+  for (const component of components ?? []) {
+    map.set(component.kind, component);
+  }
+  return map;
+}
+
+function isOutputReady(outputPath, component) {
+  if (!existsSync(outputPath)) {
+    return false;
+  }
+  if (!component.expectedHash && !component.fileSizeBytes) {
+    return true;
+  }
+  const fileStat = statSync(outputPath);
+  if (component.fileSizeBytes && BigInt(fileStat.size) !== BigInt(component.fileSizeBytes)) {
+    return false;
+  }
+  if (component.expectedHash) {
+    return computeSha256(outputPath) === component.expectedHash.toLowerCase();
+  }
+  return true;
+}
+
+async function downloadFile(url, outputPath) {
+  const response = await fetch(url);
+  if (!response.ok || !response.body) {
+    throw new Error(`下载失败：HTTP ${response.status}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  writeFileSync(outputPath, buffer);
+}
+
+async function verifyDownloadedFile(filePath, component, kind) {
+  const fileStat = statSync(filePath);
+  if (component.fileSizeBytes && BigInt(fileStat.size) !== BigInt(component.fileSizeBytes)) {
+    await safeUnlink(filePath);
+    throw new Error(`${kind} 文件大小与后台计划不一致`);
+  }
+  if (component.expectedHash) {
+    const actual = computeSha256(filePath);
+    if (actual !== component.expectedHash.toLowerCase()) {
+      await safeUnlink(filePath);
+      throw new Error(`${kind} 文件哈希与后台计划不一致`);
+    }
+  }
+}
+
+function computeSha256(filePath) {
+  const hash = createHash("sha256");
+  return hash.update(readFileSync(filePath)).digest("hex");
+}
+
+async function safeUnlink(filePath) {
+  try {
+    await unlink(filePath);
+  } catch {}
+}
+
+function cleanupLegacyBundledBinaryNames(currentTarget) {
+  const legacyNames = currentTarget.platform === "windows" ? ["xray-x86_64-pc-windows-msvc.exe"] : [];
+  for (const name of legacyNames) {
+    const filePath = path.join(binDir, name);
+    if (existsSync(filePath)) {
+      rmSync(filePath, { force: true });
+    }
+  }
 }

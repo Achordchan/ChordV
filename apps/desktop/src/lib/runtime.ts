@@ -89,6 +89,18 @@ export type RuntimeComponentDownloadResult = {
   localPath: string | null;
 };
 
+type RuntimeComponentDownloadProgressPayload = {
+  phase?: RuntimeComponentDownloadProgress["phase"] | string | null;
+  component?: RuntimeComponentDownloadProgress["component"] | string | null;
+  fileName?: string | null;
+  file_name?: string | null;
+  downloadedBytes?: number | null;
+  downloaded_bytes?: number | null;
+  totalBytes?: number | null;
+  total_bytes?: number | null;
+  message?: string | null;
+};
+
 export type DesktopShellSummary = {
   status: string;
   signedIn?: boolean;
@@ -450,17 +462,72 @@ export async function subscribeRuntimeComponentDownloadProgress(
     return () => {};
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = await listen<RuntimeComponentDownloadProgress>(
+  const unlisten = await listen<RuntimeComponentDownloadProgressPayload>(
     "chordv://runtime-component-download-progress",
     (event) => {
       if (event.payload) {
-        handler(event.payload);
+        handler(normalizeRuntimeComponentDownloadProgress(event.payload));
       }
     }
   );
   return () => {
     unlisten();
   };
+}
+
+function normalizeRuntimeComponentDownloadProgress(
+  payload: RuntimeComponentDownloadProgressPayload
+): RuntimeComponentDownloadProgress {
+  const phase = readRuntimeProgressPhase(payload.phase);
+  const component = readRuntimeProgressComponent(payload.component);
+  const fileName = readRuntimeProgressString(payload.fileName) ?? readRuntimeProgressString(payload.file_name);
+  const downloadedBytes = readRuntimeProgressNumber(payload.downloadedBytes, payload.downloaded_bytes);
+  const totalBytes = readRuntimeProgressNullableNumber(payload.totalBytes, payload.total_bytes);
+  const message = readRuntimeProgressString(payload.message);
+  return {
+    phase,
+    component,
+    fileName,
+    downloadedBytes,
+    totalBytes,
+    message
+  };
+}
+
+function readRuntimeProgressString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function readRuntimeProgressNumber(primary: unknown, fallback: unknown) {
+  const candidate = Number.isFinite(primary) ? Number(primary) : Number.isFinite(fallback) ? Number(fallback) : 0;
+  if (candidate < 0) {
+    return 0;
+  }
+  return candidate;
+}
+
+function readRuntimeProgressNullableNumber(primary: unknown, fallback: unknown) {
+  const value = Number.isFinite(primary) ? Number(primary) : Number.isFinite(fallback) ? Number(fallback) : null;
+  if (value === null || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function readRuntimeProgressPhase(value: unknown): RuntimeComponentDownloadProgress["phase"] {
+  if (value === "preparing") return "preparing";
+  if (value === "downloading") return "downloading";
+  if (value === "extracting") return "extracting";
+  if (value === "completed") return "completed";
+  if (value === "failed") return "failed";
+  return "preparing";
+}
+
+function readRuntimeProgressComponent(value: unknown): RuntimeComponentDownloadProgress["component"] {
+  if (value === "xray") return "xray";
+  if (value === "geoip") return "geoip";
+  if (value === "geosite") return "geosite";
+  return "xray";
 }
 
 export async function subscribeNativeLeaseHeartbeat(handler: (event: NativeLeaseHeartbeatEvent) => void) {
