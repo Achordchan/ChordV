@@ -7,6 +7,7 @@ import {
 import {
   checkRuntimeComponentFile,
   downloadRuntimeComponent,
+  ensureBundledRuntimeComponents,
   loadDesktopRuntimeEnvironment,
   subscribeRuntimeComponentDownloadProgress,
   type RuntimeStatus
@@ -184,6 +185,25 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
 
         try {
           const environment = await loadDesktopRuntimeEnvironment().catch(() => null);
+          if (environment?.platform === "macos") {
+            const bundled = await ensureBundledRuntimeComponents().catch(() => null);
+            if (bundled?.ready) {
+              setRuntimeAssets({
+                phase: "ready",
+                currentComponent: null,
+                fileName: null,
+                downloadedBytes: 0,
+                totalBytes: null,
+                message: bundled.message ?? "连接所需组件已准备完成。",
+                errorCode: null,
+                errorMessage: null,
+                blocking: false
+              });
+              setRuntimeAssetsDialogOpened(false);
+              return true;
+            }
+          }
+
           const plan = await fetchRuntimeComponentsPlan({
             accessToken: options.accessToken ?? null,
             clientMirrorPrefix: options.runtimeMirrorPrefix

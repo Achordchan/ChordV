@@ -479,6 +479,16 @@ struct RuntimeComponentFileStatus {
     message: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundledRuntimeComponentsStatus {
+    ready: bool,
+    runtime_bin_dir: Option<String>,
+    copied_components: Vec<String>,
+    missing_components: Vec<String>,
+    message: Option<String>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeComponentDownloadProgress {
@@ -1376,6 +1386,66 @@ fn check_runtime_component_file(
 }
 
 #[tauri::command]
+fn ensure_bundled_runtime_components(app: AppHandle) -> Result<BundledRuntimeComponentsStatus, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        return Ok(BundledRuntimeComponentsStatus {
+            ready: true,
+            runtime_bin_dir: None,
+            copied_components: Vec::new(),
+            missing_components: Vec::new(),
+            message: Some("安卓端不使用桌面内置组件。".into()),
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let runtime_bin_dir = installed_runtime_bin_dir(&app)?;
+        let mut copied_components = Vec::new();
+        let mut missing_components = Vec::new();
+
+        for component in [
+            RuntimeComponentKindInput::Xray,
+            RuntimeComponentKindInput::Geoip,
+            RuntimeComponentKindInput::Geosite,
+        ] {
+            let target_path = runtime_bin_dir.join(runtime_component_file_name(component));
+            if ensure_runtime_component_from_bundle(&app, component, &target_path)? {
+                copied_components.push(runtime_component_key(component).to_string());
+            }
+
+            let ready = fs::metadata(&target_path)
+                .map(|metadata| metadata.len() > 0)
+                .unwrap_or(false);
+            if !ready {
+                missing_components.push(runtime_component_key(component).to_string());
+                continue;
+            }
+
+            if component == RuntimeComponentKindInput::Xray {
+                ensure_executable(&target_path)?;
+            }
+        }
+
+        let ready = missing_components.is_empty();
+        let message = if ready {
+            Some("内置内核组件已准备完成。".into())
+        } else {
+            Some(format!("缺少内置组件：{}", missing_components.join("、")))
+        };
+
+        Ok(BundledRuntimeComponentsStatus {
+            ready,
+            runtime_bin_dir: Some(runtime_bin_dir.to_string_lossy().into_owned()),
+            copied_components,
+            missing_components,
+            message,
+        })
+    }
+}
+
+#[tauri::command]
 async fn download_runtime_component(
     app: AppHandle,
     input: RuntimeComponentDownloadInput,
@@ -1990,21 +2060,29 @@ fn ensure_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn installed_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let bin_dir = exe_dir.join("bin");
-            fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
-            return Ok(bin_dir);
+    #[cfg(target_os = "macos")]
+    {
+        ensure_runtime_bin_dir(app)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let bin_dir = exe_dir.join("bin");
+                fs::create_dir_all(&bin_dir).map_err(|error| error.to_string())?;
+                return Ok(bin_dir);
+            }
         }
-    }
 
-    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin");
-    if manifest_bin.exists() {
-        fs::create_dir_all(&manifest_bin).map_err(|error| error.to_string())?;
-        return Ok(manifest_bin);
-    }
+        let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin");
+        if manifest_bin.exists() {
+            fs::create_dir_all(&manifest_bin).map_err(|error| error.to_string())?;
+            return Ok(manifest_bin);
+        }
 
-    ensure_runtime_bin_dir(app)
+        ensure_runtime_bin_dir(app)
+    }
 }
 
 fn ensure_xray_binary(app: &AppHandle, _runtime_dir: &Path) -> Result<PathBuf, String> {
@@ -4937,6 +5015,7 @@ pub fn run() {
             download_desktop_installer,
             open_desktop_installer,
             desktop_runtime_environment,
+            ensure_bundled_runtime_components,
             check_runtime_component_file,
             download_runtime_component,
             update_shell_summary,

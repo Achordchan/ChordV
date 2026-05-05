@@ -84,6 +84,14 @@ export type DesktopRuntimeEnvironment = {
   runtimeBinDir: string | null;
 };
 
+export type BundledRuntimeComponentsStatus = {
+  ready: boolean;
+  runtimeBinDir: string | null;
+  copiedComponents: string[];
+  missingComponents: string[];
+  message: string | null;
+};
+
 export type RuntimeComponentDownloadResult = {
   component: string;
   localPath: string | null;
@@ -442,6 +450,14 @@ export async function checkRuntimeComponentFile(component: RuntimeComponentDownl
     return null;
   }
   return invoke<RuntimeComponentFileStatus>("check_runtime_component_file", { component });
+}
+
+export async function ensureBundledRuntimeComponents() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<BundledRuntimeComponentsStatus>("ensure_bundled_runtime_components");
 }
 
 export async function downloadRuntimeComponent(input: {
