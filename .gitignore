@@ -4,7 +4,6 @@ dist
 build
 .DS_Store
 coverage
-pnpm-lock.yaml
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
 apps/desktop/src-tauri/Cargo.lock
@@ -12,3 +11,8 @@ apps/desktop/src-tauri/.tauri.*.platform.conf.json
 output/
 .env
 .env.local
+_deploy/
+.deploy/
+*.bak-*
+.tmp/
+.ssh/

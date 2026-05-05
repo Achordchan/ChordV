@@ -1,0 +1,65 @@
+name: Deploy Baota
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-baota.yml"
+      - "scripts/deploy-baota.sh"
+      - "apps/api/**"
+      - "apps/admin/**"
+      - "packages/shared/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig.base.json"
+      - "turbo.json"
+  workflow_dispatch:
+
+concurrency:
+  group: chordv-api-baota-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.BAOTA_SSH_KEY }}" > ~/.ssh/baota_deploy
+          chmod 600 ~/.ssh/baota_deploy
+          ssh-keyscan -H "${{ secrets.BAOTA_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.BAOTA_HOST }}
+          DEPLOY_USER: ${{ secrets.BAOTA_USER }}
+          DEPLOY_PATH: /www/wwwroot/v.baymaxgroup.com
+          DEPLOY_ADMIN_PATH: /www/v.baymaxgroup.com
+          DEPLOY_PROJECT: chordv_api
+          DEPLOY_NODE_VERSION: v20.19.0
+          DEPLOY_DOMAIN: v.baymaxgroup.com
+          DEPLOY_PORT: "3001"
+          DEPLOY_HEALTH_PATH: /api/client/version
+          SSH_OPTS: -i ~/.ssh/baota_deploy -o StrictHostKeyChecking=yes
+        run: bash scripts/deploy-baota.sh
