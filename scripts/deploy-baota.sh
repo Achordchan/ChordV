@@ -34,6 +34,7 @@ require_command ssh
 
 echo "构建后端与后台..."
 pnpm --filter @chordv/shared build
+pnpm --filter @chordv/api db:generate
 pnpm --filter @chordv/api build
 pnpm --filter @chordv/admin build
 
