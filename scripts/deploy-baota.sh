@@ -39,7 +39,11 @@ pnpm --filter @chordv/api build
 pnpm --filter @chordv/admin build
 
 rm -rf "${STAGE_DIR}"
-mkdir -p "${API_STAGE}" "${ADMIN_STAGE}"
+mkdir -p "${API_STAGE}/apps/api" "${API_STAGE}/packages/shared" "${ADMIN_STAGE}"
+
+rsync -a \
+  package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json turbo.json \
+  "${API_STAGE}/"
 
 rsync -a \
   --exclude "node_modules/" \
@@ -47,10 +51,14 @@ rsync -a \
   --exclude ".env.*" \
   --exclude ".DS_Store" \
   --exclude "._*" \
-  --exclude "apps/api/prisma/dev.db" \
-  package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json turbo.json \
-  apps/api packages/shared \
-  "${API_STAGE}/"
+  --exclude "prisma/dev.db" \
+  apps/api/ "${API_STAGE}/apps/api/"
+
+rsync -a \
+  --exclude "node_modules/" \
+  --exclude ".DS_Store" \
+  --exclude "._*" \
+  packages/shared/ "${API_STAGE}/packages/shared/"
 
 rsync -a --delete apps/admin/dist/ "${ADMIN_STAGE}/"
 
@@ -99,6 +107,8 @@ NODE_BIN="/www/server/nodejs/${DEPLOY_NODE_VERSION}/bin/node"
 COREPACK_CLI="/www/server/nodejs/${DEPLOY_NODE_VERSION}/bin/corepack"
 PANEL_PY="/www/server/panel/pyenv/bin/python"
 PNPM_VERSION="9.15.3"
+NODE_DIR="$(dirname "${NODE_BIN}")"
+export PATH="${NODE_DIR}:${PATH}"
 
 cd "${DEPLOY_PATH}"
 
