@@ -39,6 +39,21 @@ body {
   border-bottom: 1px solid rgba(19, 34, 56, 0.06);
 }
 
+.admin-header-title {
+  min-width: 0;
+}
+
+.admin-header-title h2,
+.admin-header-title p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-header-actions {
+  flex-shrink: 0;
+}
+
 .admin-brand {
   padding: 8px 8px 16px;
 }
@@ -142,5 +157,58 @@ body {
 
   .admin-auth-form-title {
     font-size: 50px;
+  }
+}
+
+@media (max-width: 48em) {
+  .admin-shell {
+    --app-shell-padding: 12px;
+  }
+
+  .admin-nav {
+    background: rgba(255, 255, 255, 0.97);
+    border-right: 0;
+    box-shadow: 0 18px 42px rgba(17, 35, 59, 0.14);
+  }
+
+  .admin-header {
+    padding-inline: 12px;
+  }
+
+  .admin-header-title {
+    flex: 1;
+  }
+
+  .admin-header-title h2 {
+    font-size: 22px;
+    line-height: 1.15;
+  }
+
+  .admin-header-title p {
+    display: none;
+  }
+
+  .admin-header-actions {
+    align-items: center;
+    gap: 6px;
+    max-width: calc(100vw - 156px);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+
+  .admin-header-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .admin-header-actions > .mantine-Group-root {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
+
+  .admin-header-actions button {
+    flex: 0 0 auto;
+    min-width: 0;
+    padding-inline: 10px;
   }
 }

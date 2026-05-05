@@ -16,3 +16,4 @@ _deploy/
 *.bak-*
 .tmp/
 .ssh/
+.playwright-cli/

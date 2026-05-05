@@ -3,6 +3,7 @@ import {
   ActionIcon,
   Alert,
   AppShell,
+  Burger,
   Button,
   Card,
   Group,
@@ -241,6 +242,7 @@ export function App() {
     password: ""
   });
   const [section, setSection] = useState<SectionKey>("overview");
+  const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
   const [teamInlineEditorId, setTeamInlineEditorId] = useState<string | null>(null);
@@ -300,6 +302,11 @@ export function App() {
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
   const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
   const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
+
+  const selectSection = (nextSection: SectionKey) => {
+    setSection(nextSection);
+    setMobileNavOpened(false);
+  };
 
   useEffect(() => {
     if (!authenticated) {
@@ -1458,7 +1465,7 @@ export function App() {
     <>
       <AppShell
         className="admin-shell"
-        navbar={{ width: 248, breakpoint: "sm" }}
+        navbar={{ width: 248, breakpoint: "sm", collapsed: { mobile: !mobileNavOpened } }}
         header={{ height: 76 }}
         padding="lg"
       >
@@ -1478,7 +1485,7 @@ export function App() {
                   label={item.label}
                   description={item.description}
                   leftSection={item.icon}
-                  onClick={() => setSection(key as SectionKey)}
+                  onClick={() => selectSection(key as SectionKey)}
                   variant="filled"
                 />
               ))}
@@ -1502,14 +1509,23 @@ export function App() {
 
         <AppShell.Header px="lg" className="admin-header">
           <Group justify="space-between" h="100%">
-            <div>
-              <Title order={2}>{sectionMeta[section].label}</Title>
-              <Text size="sm" c="dimmed">
-                {sectionMeta[section].description}
-              </Text>
-            </div>
+            <Group gap="sm" wrap="nowrap" className="admin-header-title">
+              <Burger
+                opened={mobileNavOpened}
+                onClick={() => setMobileNavOpened((opened) => !opened)}
+                hiddenFrom="sm"
+                size="sm"
+                aria-label="切换导航"
+              />
+              <div>
+                <Title order={2}>{sectionMeta[section].label}</Title>
+                <Text size="sm" c="dimmed">
+                  {sectionMeta[section].description}
+                </Text>
+              </div>
+            </Group>
 
-            <Group>
+            <Group className="admin-header-actions">
               <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadSnapshot()} loading={loading}>
                 刷新
               </Button>
@@ -1564,8 +1580,8 @@ export function App() {
             {section === "overview" ? (
               <OverviewPage
                 snapshot={snapshot}
-                onOpenSubscriptions={() => setSection("subscriptions")}
-                onOpenNodes={() => setSection("nodes")}
+                onOpenSubscriptions={() => selectSection("subscriptions")}
+                onOpenNodes={() => selectSection("nodes")}
               />
             ) : null}
 
