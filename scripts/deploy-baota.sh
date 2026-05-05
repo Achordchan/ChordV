@@ -71,8 +71,6 @@ rsync -az --delete \
   --exclude "logs/" \
   --exclude "*.log" \
   --exclude "*.db" \
-  --exclude ".DS_Store" \
-  --exclude "._*" \
   "${API_STAGE}/" "${REMOTE}:${DEPLOY_PATH}/"
 
 echo "同步后台静态文件..."
@@ -98,8 +96,9 @@ ssh ${SSH_OPTS} "${REMOTE}" \
 set -euo pipefail
 
 NODE_BIN="/www/server/nodejs/${DEPLOY_NODE_VERSION}/bin/node"
-PNPM_CLI="/www/server/nodejs/${DEPLOY_NODE_VERSION}/lib/node_modules/pnpm/bin/pnpm.cjs"
+COREPACK_CLI="/www/server/nodejs/${DEPLOY_NODE_VERSION}/bin/corepack"
 PANEL_PY="/www/server/panel/pyenv/bin/python"
+PNPM_VERSION="9.15.3"
 
 cd "${DEPLOY_PATH}"
 
@@ -113,13 +112,13 @@ if [ ! -x "${NODE_BIN}" ]; then
   exit 1
 fi
 
-if [ ! -f "${PNPM_CLI}" ]; then
-  echo "宝塔 pnpm 不存在：${PNPM_CLI}"
+if [ ! -f "${COREPACK_CLI}" ]; then
+  echo "宝塔 corepack 不存在：${COREPACK_CLI}"
   exit 1
 fi
 
-"${NODE_BIN}" "${PNPM_CLI}" install --frozen-lockfile
-"${NODE_BIN}" "${PNPM_CLI}" --filter @chordv/api db:generate
+COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" install --frozen-lockfile
+COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:generate
 
 find "${DEPLOY_PATH}" "${DEPLOY_ADMIN_PATH}" \( -name ".DS_Store" -o -name "._*" \) -type f -print0 | xargs -0 -r rm -f
 
