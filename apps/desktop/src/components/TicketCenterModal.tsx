@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Badge, Button, Group, Loader, Modal, Paper, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
 import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend } from "@tabler/icons-react";
@@ -35,6 +35,7 @@ type TicketStatusFilter = "all" | "waiting_user" | "replied" | "closed";
 export function TicketCenterModal(props: TicketCenterModalProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const replyingDisabled =
     props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || !props.replyBody.trim();
   const creatingDisabled = props.submitting || props.createTitle.trim().length < 2 || props.createBody.trim().length < 5;
@@ -58,6 +59,25 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
         .includes(keyword);
     });
   }, [props.tickets, search, statusFilter]);
+  const orderedMessages = useMemo(() => {
+    if (!props.ticketDetail) {
+      return [];
+    }
+    return [...props.ticketDetail.messages].sort(
+      (previous, next) => new Date(previous.createdAt).getTime() - new Date(next.createdAt).getTime()
+    );
+  }, [props.ticketDetail]);
+  const latestMessageId = orderedMessages[orderedMessages.length - 1]?.id ?? null;
+
+  useEffect(() => {
+    if (!props.opened || props.createMode || !props.ticketDetail) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ block: "end" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.opened, props.createMode, props.ticketDetail, latestMessageId]);
 
   return (
     <Modal
@@ -247,18 +267,15 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
               <Stack gap="md" className="ticket-center__detail-shell">
                 <div className="ticket-center__detail-head">
                   <div>
-                    <Text fw={700} size="xl">
+                    <Text fw={700} size="lg">
                       {props.ticketDetail.title}
                     </Text>
-                    <Group gap="xs" mt={8}>
+                    <Group gap="xs" mt={6}>
                       <Badge color={statusColor(props.ticketDetail.status)} variant="light">
                         {statusLabel(props.ticketDetail.status)}
                       </Badge>
                       <Text size="sm" c="dimmed">
                         创建时间：{formatDateTime(props.ticketDetail.createdAt)}
-                      </Text>
-                      <Text size="sm" c="dimmed">
-                        |
                       </Text>
                       <Text size="sm" c="dimmed">
                         工单编号：{ticketCode(props.ticketDetail)}
@@ -268,8 +285,8 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                 </div>
 
                 <div className="ticket-center__messages">
-                  <Stack gap="sm">
-                    {props.ticketDetail.messages.map((message) => (
+                  <Stack gap="sm" className="ticket-center__messages-stack">
+                    {orderedMessages.map((message) => (
                       <div
                         key={message.id}
                         className={
@@ -297,6 +314,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         </div>
                       </div>
                     ))}
+                    <div ref={messagesEndRef} className="ticket-center__messages-end" />
                   </Stack>
                 </div>
 
@@ -311,7 +329,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     placeholder={props.ticketDetail.status === "closed" ? "当前工单已关闭" : "继续描述新的现象或补充截图说明。"}
                     size="sm"
                     className="ticket-center__field"
-                    minRows={4}
+                    minRows={3}
                     disabled={props.ticketDetail.status === "closed"}
                     value={props.replyBody}
                     onChange={(event) => props.onReplyBodyChange(event.currentTarget.value)}
@@ -324,16 +342,16 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                       <Button size="sm" variant="default" leftSection={<IconPaperclip size={15} />} className="ticket-center__action-button" disabled>
                         添加附件
                       </Button>
-                    <Button
-                      size="sm"
-                      leftSection={<IconSend size={15} />}
-                      className="ticket-center__action-button"
-                      onClick={props.onSubmitReply}
-                      loading={props.submitting}
-                      disabled={replyingDisabled}
-                    >
-                      发送回复
-                    </Button>
+                      <Button
+                        size="sm"
+                        leftSection={<IconSend size={15} />}
+                        className="ticket-center__action-button"
+                        onClick={props.onSubmitReply}
+                        loading={props.submitting}
+                        disabled={replyingDisabled}
+                      >
+                        发送回复
+                      </Button>
                     </Group>
                   </Group>
                 </Stack>
