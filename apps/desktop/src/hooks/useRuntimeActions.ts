@@ -428,6 +428,10 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       };
       const isAdminPausedConnection =
         event.reasonMessage?.includes("管理员已暂停当前连接") || event.reasonMessage?.includes("连接已被管理员暂停");
+      const shouldSyncForegroundState =
+        eventType === "subscription_updated" ||
+        eventType === "node_access_updated" ||
+        eventType === "announcement_updated";
 
       if (eventType === "keepalive") {
         options.setServerProbe((current) => ({
@@ -475,10 +479,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           });
           return;
         }
-        await syncSubscriptionState(accessToken);
       }
 
-      if (eventType === "announcement_updated" || eventType === "announcement_read_state_updated") {
+      if (shouldSyncForegroundState) {
+        await syncForegroundState(accessToken);
+      } else if (eventType === "announcement_read_state_updated") {
         await syncAnnouncementsState(accessToken);
       }
 
@@ -499,7 +504,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
 
       if (
-        eventType === "node_access_updated" ||
         event.reasonCode === "node_access_revoked" ||
         event.reasonCode === "admin_paused_connection"
       ) {
