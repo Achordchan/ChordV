@@ -104,6 +104,7 @@ export interface NodeSummaryDto {
   region: string;
   provider: string;
   tags: string[];
+  isActive?: boolean;
   recommended: boolean;
   latencyMs: number;
   protocol: "vless";
@@ -809,6 +810,7 @@ export interface ImportNodeInputDto {
   region?: string;
   provider?: string;
   tags?: string[];
+  isActive?: boolean;
   recommended?: boolean;
   panelBaseUrl?: string;
   panelApiBasePath?: string;
@@ -823,6 +825,7 @@ export interface UpdateNodeInputDto {
   region?: string;
   provider?: string;
   tags?: string[];
+  isActive?: boolean;
   recommended?: boolean;
   subscriptionUrl?: string;
   panelBaseUrl?: string | null;

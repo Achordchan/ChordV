@@ -294,6 +294,7 @@ model Node {
   region           String
   provider         String
   tags             String[]
+  isActive         Boolean         @default(true)
   recommended      Boolean
   latencyMs        Int
   protocol         String

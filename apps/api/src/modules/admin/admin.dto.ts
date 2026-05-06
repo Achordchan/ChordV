@@ -366,6 +366,10 @@ export class ImportNodeDto {
 
   @IsOptional()
   @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   recommended?: boolean;
 
   @IsOptional()
@@ -419,6 +423,10 @@ export class UpdateNodeDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 
   @IsOptional()
   @IsBoolean()

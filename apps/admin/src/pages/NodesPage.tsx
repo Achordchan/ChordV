@@ -43,6 +43,7 @@ export function NodesPage(props: NodesPageProps) {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>节点</Table.Th>
+                <Table.Th>状态</Table.Th>
                 <Table.Th>地址</Table.Th>
                 <Table.Th>3x-ui</Table.Th>
                 <Table.Th>同步队列</Table.Th>
@@ -64,6 +65,11 @@ export function NodesPage(props: NodesPageProps) {
                         {item.region} · {item.provider}
                       </Text>
                     </div>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge color={item.isActive === false ? "red" : "green"} variant="light">
+                      {item.isActive === false ? "已禁用" : "启用"}
+                    </Badge>
                   </Table.Td>
                   <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
                   <Table.Td>

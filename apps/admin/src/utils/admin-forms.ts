@@ -85,6 +85,7 @@ export type NodeFormState = {
   region: string;
   provider: string;
   tags: string;
+  isActive: boolean;
   recommended: boolean;
   panelBaseUrl: string;
   panelApiBasePath: string;
@@ -237,6 +238,7 @@ export function emptyNodeForm(): NodeFormState {
     region: "",
     provider: "自有节点",
     tags: "",
+    isActive: true,
     recommended: true,
     panelBaseUrl: "",
     panelApiBasePath: "/",

@@ -151,6 +151,9 @@ export class RuntimeSessionService {
     if (!node) {
       throw new NotFoundException("节点不存在");
     }
+    if (!node.isActive) {
+      throw new ForbiddenException("当前节点已禁用");
+    }
 
     const user = await this.resolveActiveUserFromToken(token);
     return this.runWithUserLeaseLock(user.id, async () => {
@@ -171,7 +174,10 @@ export class RuntimeSessionService {
       const allowedRows = await this.prisma.subscriptionNodeAccess.findMany({
         where: {
           subscriptionId: access.subscription.id,
-          nodeId: request.nodeId
+          nodeId: request.nodeId,
+          node: {
+            isActive: true
+          }
         }
       });
       if (allowedRows.length === 0) {
@@ -569,7 +575,9 @@ export class RuntimeSessionService {
       return;
     }
 
-    const allowedNodeIds = new Set(subscription.nodeAccesses.map((item) => item.nodeId));
+    const allowedNodeIds = new Set(
+      subscription.nodeAccesses.filter((item) => item.node.isActive).map((item) => item.nodeId)
+    );
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
         subscriptionId
@@ -650,7 +658,7 @@ export class RuntimeSessionService {
 
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
-        if (!access.node.panelEnabled) {
+        if (!access.node.isActive || !access.node.panelEnabled) {
           continue;
         }
         await this.ensurePanelClientBinding({
@@ -720,6 +728,31 @@ export class RuntimeSessionService {
         expiresAt: { gt: graceWindowStart },
         ...(filter?.userId ? { userId: filter.userId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {})
+      },
+      include: {
+        node: {
+          select: {
+            id: true,
+            flow: true
+          }
+        }
+      }
+    });
+
+    for (const lease of activeLeases) {
+      await this.revokeLease(lease.id, lease.node, reason);
+    }
+
+    return activeLeases.length;
+  }
+
+  async revokeNodeLeases(nodeId: string, reason: string) {
+    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
+      where: {
+        nodeId,
+        status: "active",
+        expiresAt: { gt: graceWindowStart }
       },
       include: {
         node: {
@@ -860,6 +893,44 @@ export class RuntimeSessionService {
     ]);
 
     return bindings.length;
+  }
+
+  async markPanelBindingsDisabledForNode(nodeId: string) {
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: {
+        panelClientBindings: {
+          some: {
+            nodeId,
+            status: "active"
+          }
+        }
+      },
+      select: { id: true }
+    });
+
+    let disabledCount = 0;
+    for (const subscription of subscriptions) {
+      disabledCount += await this.markPanelBindingsDisabledForSubscription(subscription.id, { nodeIds: [nodeId] });
+    }
+    return disabledCount;
+  }
+
+  async clearPendingPanelDisableJobsForNode(nodeId: string) {
+    const result = await this.prisma.panelSyncJob.updateMany({
+      where: {
+        nodeId,
+        action: "disable_client",
+        status: { in: ["pending", "running", "failed"] }
+      },
+      data: {
+        status: "completed",
+        lockedAt: null,
+        lastError: null,
+        completedAt: new Date()
+      }
+    });
+
+    return result.count;
   }
 
   async removePanelBindingsForSubscription(
@@ -1482,7 +1553,12 @@ export class RuntimeSessionService {
         user: true,
         team: true,
         nodeAccesses: {
-          where: { nodeId: lease.nodeId },
+          where: {
+            nodeId: lease.nodeId,
+            node: {
+              isActive: true
+            }
+          },
           select: { nodeId: true }
         }
       }

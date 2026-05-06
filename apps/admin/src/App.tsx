@@ -824,6 +824,7 @@ export function App() {
           region: record.region,
           provider: record.provider,
           tags: record.tags.join(", "),
+          isActive: record.isActive ?? true,
           recommended: record.recommended,
           panelBaseUrl: record.panelBaseUrl ?? "",
           panelApiBasePath: record.panelApiBasePath ?? "/",
@@ -841,6 +842,7 @@ export function App() {
         setNodePanelInbounds([]);
         setNodeForm({
           ...emptyNodeForm(),
+          isActive: true,
           panelEnabled: currentAccessMode === "xui"
         });
       }
@@ -1022,6 +1024,7 @@ export function App() {
           region: nodeForm.region || undefined,
           provider: nodeForm.provider || undefined,
           tags: splitCsv(nodeForm.tags),
+          isActive: nodeForm.isActive,
           recommended: nodeForm.recommended,
           panelBaseUrl: nodeForm.panelBaseUrl || undefined,
           panelApiBasePath: nodeForm.panelApiBasePath || undefined,
@@ -1039,6 +1042,7 @@ export function App() {
                   region: payload.region,
                   provider: payload.provider,
                   tags: payload.tags,
+                  isActive: payload.isActive,
                   recommended: payload.recommended,
                   panelBaseUrl: payload.panelBaseUrl,
                   panelApiBasePath: payload.panelApiBasePath,

@@ -54,6 +54,11 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
         onChange={(event) => props.setNodeForm((current) => ({ ...current, tags: event.currentTarget.value }))}
       />
       <Switch
+        checked={props.nodeForm.isActive}
+        onChange={(event) => props.setNodeForm((current) => ({ ...current, isActive: event.currentTarget.checked }))}
+        label="启用节点"
+      />
+      <Switch
         checked={props.nodeForm.recommended}
         onChange={(event) => props.setNodeForm((current) => ({ ...current, recommended: event.currentTarget.checked }))}
         label="推荐节点"

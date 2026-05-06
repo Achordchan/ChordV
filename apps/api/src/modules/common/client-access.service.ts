@@ -169,7 +169,12 @@ export class ClientAccessService {
     }
 
     const rows = await this.prisma.subscriptionNodeAccess.findMany({
-      where: { subscriptionId: access.subscription.id },
+      where: {
+        subscriptionId: access.subscription.id,
+        node: {
+          isActive: true
+        }
+      },
       include: { node: true },
       orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
     });
@@ -198,7 +203,10 @@ export class ClientAccessService {
     const rows = await this.prisma.subscriptionNodeAccess.findMany({
       where: {
         subscriptionId: access.subscription.id,
-        nodeId: { in: requestedNodeIds }
+        nodeId: { in: requestedNodeIds },
+        node: {
+          isActive: true
+        }
       },
       include: { node: true }
     });

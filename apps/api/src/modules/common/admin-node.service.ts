@@ -9,6 +9,7 @@ import type {
 import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
 import { XuiService } from "../xui/xui.service";
 import { PrismaService } from "./prisma.service";
+import { RuntimeSessionService } from "./runtime-session.service";
 import { createId } from "./release-center.utils";
 import {
   fetchSubscriptionNode,
@@ -27,7 +28,8 @@ export class AdminNodeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly xuiService: XuiService,
-    private readonly edgeGatewayService: EdgeGatewayService
+    private readonly edgeGatewayService: EdgeGatewayService,
+    private readonly runtimeSessionService: RuntimeSessionService
   ) {}
 
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
@@ -125,6 +127,7 @@ export class AdminNodeService {
         region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
         provider: input.provider?.trim() || "自有节点",
         tags: normalizeTags(input.tags, imported.name),
+        isActive: input.isActive ?? true,
         recommended: input.recommended ?? true,
         latencyMs: 0,
         protocol: "vless",
@@ -153,6 +156,7 @@ export class AdminNodeService {
         region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
         provider: input.provider?.trim() || "自有节点",
         tags: normalizeTags(input.tags, imported.name),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         recommended: input.recommended ?? true,
         latencyMs: 0,
         serverHost: imported.serverHost,
@@ -246,6 +250,7 @@ export class AdminNodeService {
         ...(input.region !== undefined ? { region: input.region.trim() } : {}),
         ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
         ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
         ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl?.trim() || null } : {}),
         ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
@@ -277,6 +282,13 @@ export class AdminNodeService {
           : {})
       }
     });
+
+    if (current.isActive && input.isActive === false) {
+      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_disabled");
+      await this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId);
+    } else if (!current.isActive && input.isActive === true) {
+      await this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId);
+    }
 
     return toAdminNodeRecord(row);
   }

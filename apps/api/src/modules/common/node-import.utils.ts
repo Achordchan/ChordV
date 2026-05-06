@@ -128,6 +128,7 @@ export function toNodeSummary(row: {
   region: string;
   provider: string;
   tags: string[];
+  isActive?: boolean;
   recommended: boolean;
   latencyMs: number;
   probeLatencyMs?: number | null;
@@ -140,6 +141,7 @@ export function toNodeSummary(row: {
     region: row.region,
     provider: row.provider,
     tags: row.tags,
+    isActive: row.isActive ?? true,
     recommended: row.recommended,
     latencyMs: row.probeLatencyMs ?? row.latencyMs,
     protocol: row.protocol as "vless",
