@@ -432,7 +432,6 @@ async function main() {
   await prisma.policyProfile.upsert({
     where: { id: "default" },
     update: {
-      accessMode: "xui",
       defaultMode: mockPolicies.defaultMode,
       modes: mockPolicies.modes,
       ruleVersion: "managed",
@@ -449,7 +448,6 @@ async function main() {
     },
     create: {
       id: "default",
-      accessMode: "xui",
       defaultMode: mockPolicies.defaultMode,
       modes: mockPolicies.modes,
       ruleVersion: "managed",

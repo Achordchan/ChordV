@@ -12,7 +12,6 @@ import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
 import { RuntimeSessionService } from "../common/runtime-session.service";
-import { LEASE_GRACE_SECONDS } from "../common/runtime-session.utils";
 import { XuiService } from "../xui/xui.service";
 
 const GB_IN_BYTES = 1024 ** 3;
@@ -42,80 +41,9 @@ export class UsageSyncService {
     return this.moduleRef.get(RuntimeSessionService, { strict: false });
   }
 
-  async ingestUsageReport(nodeId: string, records: unknown, reportedAt: string) {
-    const context = await this.loadNodeSyncContext(nodeId);
-    const samples = normalizeStatsResponse({ records });
-    await this.applyNodeSamples(nodeId, samples, context);
-
-    const reportedAtDate = parseSampledAt(reportedAt);
-    await this.prisma.node.update({
-      where: { id: nodeId },
-      data: {
-        statsLastSyncedAt: reportedAtDate
-      }
-    });
-    await this.resolveIncidentForSubscriptions(context.subscriptionIds, nodeId, METERING_REASON_NODE_UNAVAILABLE);
-  }
-
   @Cron("*/30 * * * * *")
   async syncNodeUsage() {
-    const policy = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" },
-      select: { accessMode: true }
-    });
-
-    if (policy?.accessMode === "xui") {
-      await this.syncXuiUsage();
-      return;
-    }
-
-    const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
-    const activeLeases = await this.prisma.nodeSessionLease.findMany({
-      where: {
-        status: "active",
-        expiresAt: { gt: graceWindowStart }
-      },
-      select: {
-        nodeId: true,
-        subscriptionId: true,
-        node: {
-          select: {
-            statsLastSyncedAt: true
-          }
-        }
-      }
-    });
-
-    const now = Date.now();
-    const perNode = new Map<string, { statsLastSyncedAt: Date | null; subscriptionIds: string[] }>();
-    for (const lease of activeLeases) {
-      const current = perNode.get(lease.nodeId) ?? {
-        statsLastSyncedAt: lease.node.statsLastSyncedAt,
-        subscriptionIds: []
-      };
-      current.statsLastSyncedAt = lease.node.statsLastSyncedAt;
-      current.subscriptionIds.push(lease.subscriptionId);
-      perNode.set(lease.nodeId, current);
-    }
-
-    for (const [nodeId, item] of perNode.entries()) {
-      const subscriptionIds = Array.from(new Set(item.subscriptionIds));
-      const sampleFresh =
-        item.statsLastSyncedAt && now - item.statsLastSyncedAt.getTime() <= NODE_USAGE_STALE_SECONDS * 1000;
-      if (sampleFresh) {
-        await this.resolveIncidentForSubscriptions(subscriptionIds, nodeId, METERING_REASON_NODE_UNAVAILABLE);
-        continue;
-      }
-
-      const reason = "中心转发计费样本上报超时";
-      this.warnThrottled(nodeId, reason);
-      await this.openIncidentForSubscriptions(
-        subscriptionIds,
-        nodeId,
-        METERING_REASON_NODE_UNAVAILABLE,
-        `${reason}，等待节点恢复上报`
-      );
-    }
+    await this.syncXuiUsage();
   }
 
   private async syncXuiUsage() {
@@ -164,7 +92,7 @@ export class UsageSyncService {
           panelPassword: nodeBindings[0].node.panelPassword,
           panelInboundId: nodeBindings[0].node.panelInboundId
         })).filter((item) => allowedEmails.has(item.xrayUserEmail.trim().toLowerCase()));
-        const context = await this.loadNodeSyncContext(nodeId, "xui");
+        const context = await this.loadNodeSyncContext(nodeId);
         await this.applyNodeSamples(nodeId, records, context);
         const now = new Date();
         await this.prisma.node.update({
@@ -462,76 +390,41 @@ export class UsageSyncService {
     });
   }
 
-  private async loadNodeSyncContext(nodeId: string, accessMode: "relay" | "xui" = "relay"): Promise<NodeSyncContext> {
+  private async loadNodeSyncContext(nodeId: string): Promise<NodeSyncContext> {
     const subscriptionIds: string[] = [];
     const mappings = new Map<string, UsageMapping>();
     const leaseMappingsByUuid = new Map<string, UsageMapping>();
-    if (accessMode === "xui") {
-      const bindings = await this.prisma.panelClientBinding.findMany({
-        where: {
-          nodeId,
-          status: "active"
-        },
-        select: {
-          id: true,
-          panelClientEmail: true,
-          panelClientId: true,
-          subscriptionId: true,
-          userId: true,
-          teamId: true,
-          lastSyncedAt: true
-        }
-      });
-      for (const binding of bindings) {
-        subscriptionIds.push(binding.subscriptionId);
-        mappings.set(binding.panelClientEmail.trim().toLowerCase(), {
-          bindingId: binding.id,
-          subscriptionId: binding.subscriptionId,
-          teamId: binding.teamId,
-          userId: binding.userId,
-          bindingLastSyncedAt: binding.lastSyncedAt
-        });
-        leaseMappingsByUuid.set(binding.panelClientId, {
-          bindingId: binding.id,
-          subscriptionId: binding.subscriptionId,
-          teamId: binding.teamId,
-          userId: binding.userId,
-          bindingLastSyncedAt: binding.lastSyncedAt
-        });
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        nodeId,
+        status: "active"
+      },
+      select: {
+        id: true,
+        panelClientEmail: true,
+        panelClientId: true,
+        subscriptionId: true,
+        userId: true,
+        teamId: true,
+        lastSyncedAt: true
       }
-    } else {
-      const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
-      const activeLeases = await this.prisma.nodeSessionLease.findMany({
-        where: {
-          nodeId,
-          status: "active",
-          expiresAt: { gt: graceWindowStart }
-        },
-        select: {
-          xrayUserEmail: true,
-          xrayUserUuid: true,
-          subscriptionId: true,
-          userId: true,
-          subscription: {
-            select: {
-              teamId: true
-            }
-          }
-        }
+    });
+    for (const binding of bindings) {
+      subscriptionIds.push(binding.subscriptionId);
+      mappings.set(binding.panelClientEmail.trim().toLowerCase(), {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        teamId: binding.teamId,
+        userId: binding.userId,
+        bindingLastSyncedAt: binding.lastSyncedAt
       });
-      for (const lease of activeLeases) {
-        subscriptionIds.push(lease.subscriptionId);
-        mappings.set(lease.xrayUserEmail.trim().toLowerCase(), {
-          subscriptionId: lease.subscriptionId,
-          teamId: lease.subscription.teamId,
-          userId: lease.userId
-        });
-        leaseMappingsByUuid.set(lease.xrayUserUuid, {
-          subscriptionId: lease.subscriptionId,
-          teamId: lease.subscription.teamId,
-          userId: lease.userId
-        });
-      }
+      leaseMappingsByUuid.set(binding.panelClientId, {
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        teamId: binding.teamId,
+        userId: binding.userId,
+        bindingLastSyncedAt: binding.lastSyncedAt
+      });
     }
 
     return {
@@ -653,36 +546,6 @@ type NodeSyncContext = {
   leaseMappingsByUuid: Map<string, UsageMapping>;
   invalidMappings: Array<{ subscriptionId: string; detail: string }>;
 };
-
-function normalizeStatsResponse(body: unknown): NodeTrafficSample[] {
-  const payload = Array.isArray(body)
-    ? body
-    : body && typeof body === "object" && "records" in body && Array.isArray(body.records)
-      ? body.records
-      : [];
-
-  return payload.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-
-    const xrayUserEmail =
-      readString(entry, "xrayUserEmail") ?? readString(entry, "userEmail") ?? readString(entry, "email");
-    if (!xrayUserEmail) {
-      return [];
-    }
-
-    return [
-      {
-        xrayUserEmail: xrayUserEmail.toLowerCase(),
-        xrayUserUuid: readString(entry, "xrayUserUuid") ?? undefined,
-        uplinkBytes: readBigInt(entry, "uplinkBytes"),
-        downlinkBytes: readBigInt(entry, "downlinkBytes"),
-        sampledAt: readString(entry, "sampledAt") ?? undefined
-      }
-    ];
-  });
-}
 
 function readString(value: object, key: string) {
   const target = Reflect.get(value, key);

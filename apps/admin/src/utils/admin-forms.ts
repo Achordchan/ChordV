@@ -1,5 +1,4 @@
 import type {
-  AccessMode,
   AdminPolicyRecordDto,
   AdminSnapshotDto,
   AnnouncementDisplayMode,
@@ -106,7 +105,6 @@ export type AnnouncementFormState = {
 };
 
 export type PolicyFormState = {
-  accessMode: AccessMode;
   defaultMode: ConnectionMode;
   modes: ConnectionMode[];
   blockAds: boolean;
@@ -263,7 +261,6 @@ export function emptyAnnouncementForm(): AnnouncementFormState {
 
 export function toPolicyForm(policy: AdminPolicyRecordDto): PolicyFormState {
   return {
-    accessMode: policy.accessMode,
     defaultMode: policy.defaultMode,
     modes: policy.modes,
     blockAds: policy.features.blockAds,

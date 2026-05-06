@@ -251,7 +251,6 @@ export class DevDataBootstrapService {
     await this.prisma.policyProfile.create({
       data: {
         id: "default",
-        accessMode: "xui",
         defaultMode: mockPolicies.defaultMode,
         modes: mockPolicies.modes,
         ruleVersion: "managed",

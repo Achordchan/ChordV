@@ -136,7 +136,6 @@ async function testHeartbeatWithinTtlSucceeds() {
           userId: "user_1",
           subscriptionId: "sub_1",
           nodeId: "node_1",
-          accessMode: "xui",
           status: "active",
           expiresAt: new Date(Date.now() + 20_000),
           revokedReason: null,
@@ -178,7 +177,6 @@ async function testHeartbeatWithinGraceStillSucceeds() {
           userId: "user_1",
           subscriptionId: "sub_1",
           nodeId: "node_1",
-          accessMode: "xui",
           status: "active",
           expiresAt: new Date(Date.now() - 5_000),
           revokedReason: null,
@@ -219,7 +217,6 @@ async function testHeartbeatBeyondGraceFailsWithLeaseExpired() {
           userId: "user_1",
           subscriptionId: "sub_1",
           nodeId: "node_1",
-          accessMode: "xui",
           status: "active",
           expiresAt: new Date(Date.now() - (LEASE_GRACE_SECONDS * 1000 + 5_000)),
           revokedReason: null,
@@ -244,7 +241,6 @@ async function testGetActiveRuntimeRebuildsXuiLeaseFromDatabaseTruth() {
         findFirst: async () => ({
           id: "lease_xui",
           sessionId: "session_xui",
-          accessMode: "xui",
           expiresAt: new Date(Date.now() + 20_000),
           updatedAt: new Date("2026-03-26T10:00:00.000Z"),
           xrayUserUuid: "panel_uuid",
@@ -285,47 +281,6 @@ async function testGetActiveRuntimeRebuildsXuiLeaseFromDatabaseTruth() {
   assert.equal(result?.sessionId, "session_xui");
   assert.equal(result?.outbound.server, "xui.example.com");
   assert.equal(result?.outbound.uuid, "panel_uuid");
-}
-
-async function testGetActiveRuntimeDoesNotRebuildRelayLeaseFromDatabaseTruth() {
-  const service = createRuntimeSessionService({
-    resolveActiveUserFromToken: async () => ({ id: "user_1" }),
-    prisma: {
-      nodeSessionLease: {
-        findFirst: async () => ({
-          id: "lease_relay",
-          sessionId: "session_relay",
-          accessMode: "relay",
-          expiresAt: new Date(Date.now() + 20_000),
-          updatedAt: new Date("2026-03-26T10:00:00.000Z"),
-          xrayUserUuid: "relay_uuid",
-          node: {
-            id: "node_1",
-            name: "节点一",
-            region: "香港",
-            provider: "demo",
-            tags: [],
-            recommended: true,
-            latencyMs: 20,
-            protocol: "vless",
-            security: "reality",
-            serverHost: "origin.example.com",
-            serverPort: 443,
-            flow: "xtls-rprx-vision",
-            realityPublicKey: "pub",
-            shortId: "sid",
-            serverName: "sn",
-            fingerprint: "chrome",
-            spiderX: "/"
-          }
-        })
-      }
-    }
-  });
-
-  const result = await service.getActiveRuntime("session_relay");
-
-  assert.equal(result, null, "relay 会话不应该再按数据库错误重建");
 }
 
 async function testHeartbeatUpdatesCachedRuntimeLeaseExpiry() {
@@ -381,7 +336,6 @@ async function testHeartbeatUpdatesCachedRuntimeLeaseExpiry() {
           userId: "user_1",
           subscriptionId: "sub_1",
           nodeId: "node_1",
-          accessMode: "xui",
           status: "active",
           expiresAt: new Date(Date.now() + 5_000),
           revokedReason: null,
@@ -458,7 +412,6 @@ async function testRevokeLeaseClearsCachedRuntime() {
         findUnique: async () => ({
           id: "lease_revoke",
           sessionId: "session_revoke",
-          accessMode: "xui",
           userId: "user_1",
           subscriptionId: "sub_1",
           nodeId: "node_1",
@@ -592,7 +545,6 @@ async function main() {
   await testHeartbeatWithinGraceStillSucceeds();
   await testHeartbeatBeyondGraceFailsWithLeaseExpired();
   await testGetActiveRuntimeRebuildsXuiLeaseFromDatabaseTruth();
-  await testGetActiveRuntimeDoesNotRebuildRelayLeaseFromDatabaseTruth();
   await testHeartbeatUpdatesCachedRuntimeLeaseExpiry();
   await testRevokeLeaseClearsCachedRuntime();
   await testSweepExpiredLeasesDoesNotRevokeTooEarly();

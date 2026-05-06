@@ -64,9 +64,7 @@ export type ClientRuntimeEventType =
   | "version_updated"
   | "account_updated"
   | "keepalive";
-export type EdgeGatewayStatus = "online" | "offline" | "degraded";
 export type XuiPanelStatus = "online" | "offline" | "degraded";
-export type AccessMode = "relay" | "xui";
 
 export interface UserProfileDto {
   id: string;
@@ -431,7 +429,6 @@ export interface UpdateSubscriptionNodeAccessInputDto {
 
 export interface AdminNodeRecordDto extends NodeSummaryDto {
   subscriptionUrl: string | null;
-  gatewayStatus: EdgeGatewayStatus;
   statsLastSyncedAt: string | null;
   panelBaseUrl: string | null;
   panelApiBasePath: string | null;
@@ -496,9 +493,7 @@ export interface AdminAnnouncementRecordDto {
   updatedAt: string;
 }
 
-export interface AdminPolicyRecordDto extends PolicyBundleDto {
-  accessMode: AccessMode;
-}
+export type AdminPolicyRecordDto = PolicyBundleDto;
 
 export interface ClientTeamSummaryDto {
   id: string;
@@ -837,52 +832,6 @@ export interface UpdateNodeInputDto {
   panelEnabled?: boolean;
 }
 
-export interface EdgeRelayNodeDto {
-  nodeId: string;
-  serverHost: string;
-  serverPort: number;
-  uuid: string;
-  flow: string;
-  realityPublicKey: string;
-  shortId: string;
-  serverName: string;
-  fingerprint: string;
-  spiderX: string;
-}
-
-export interface EdgeSessionOpenInputDto {
-  sessionId: string;
-  leaseId: string;
-  subscriptionId: string;
-  userId: string;
-  node: EdgeRelayNodeDto;
-  xrayUserEmail: string;
-  xrayUserUuid: string;
-  expiresAt: string;
-}
-
-export interface EdgeSessionCloseInputDto {
-  sessionId: string;
-  leaseId: string;
-  nodeId: string;
-}
-
-export interface EdgeTrafficRecordDto {
-  sessionId: string;
-  leaseId: string;
-  xrayUserEmail: string;
-  xrayUserUuid: string;
-  uplinkBytes: string;
-  downlinkBytes: string;
-  sampledAt: string;
-}
-
-export interface EdgeTrafficReportInputDto {
-  nodeId: string;
-  reportedAt: string;
-  records: EdgeTrafficRecordDto[];
-}
-
 export interface CreateAnnouncementInputDto {
   title: string;
   body: string;
@@ -1085,7 +1034,6 @@ export interface UploadReleaseArtifactInputDto {
 }
 
 export interface UpdatePolicyInputDto {
-  accessMode?: AccessMode;
   defaultMode?: ConnectionMode;
   modes?: ConnectionMode[];
   blockAds?: boolean;

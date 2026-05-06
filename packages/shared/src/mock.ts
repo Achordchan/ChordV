@@ -264,7 +264,6 @@ export const mockAdminTeams: AdminTeamRecordDto[] = [];
 export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   ...node,
   subscriptionUrl: null,
-  gatewayStatus: "online",
   statsLastSyncedAt: null,
   panelBaseUrl: null,
   panelApiBasePath: "/",
@@ -296,8 +295,7 @@ export const mockAdminAnnouncements: AdminAnnouncementRecordDto[] = mockAnnounce
 }));
 
 export const mockAdminPolicy: AdminPolicyRecordDto = {
-  ...mockPolicies,
-  accessMode: "xui"
+  ...mockPolicies
 };
 
 export const mockAdminReleases: AdminReleaseRecordDto[] = [

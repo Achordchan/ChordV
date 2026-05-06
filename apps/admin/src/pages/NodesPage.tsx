@@ -1,12 +1,12 @@
 import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
-import type { AccessMode, AdminNodeRecordDto, AdminPanelSyncJobDto } from "@chordv/shared";
+import type { AdminNodeRecordDto, AdminPanelSyncJobDto } from "@chordv/shared";
 import { IconBolt, IconListDetails, IconPencil, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
-import { nodeGatewayColor, nodePanelColor, nodeProbeColor, translateGatewayStatus, translatePanelStatus, translateProbeStatus } from "../utils/admin-translate";
+import { nodePanelColor, nodeProbeColor, translatePanelStatus, translateProbeStatus } from "../utils/admin-translate";
 
 type NodesPageProps = {
   searchValue: string;
@@ -14,7 +14,6 @@ type NodesPageProps = {
   nodes: AdminNodeRecordDto[];
   panelSyncJobs: AdminPanelSyncJobDto[];
   panelSyncQueueOpened: boolean;
-  currentAccessMode: AccessMode;
   probingNodeId: string | null;
   onOpenPanelSyncQueue: () => void;
   onClosePanelSyncQueue: () => void;
@@ -47,7 +46,6 @@ export function NodesPage(props: NodesPageProps) {
                 <Table.Th>地址</Table.Th>
                 <Table.Th>3x-ui</Table.Th>
                 <Table.Th>同步队列</Table.Th>
-                {props.currentAccessMode === "relay" ? <Table.Th>中转</Table.Th> : null}
                 <Table.Th>探测状态</Table.Th>
                 <Table.Th>延迟</Table.Th>
                 <Table.Th>最后检测</Table.Th>
@@ -93,11 +91,6 @@ export function NodesPage(props: NodesPageProps) {
                       </Badge>
                     )}
                   </Table.Td>
-                  {props.currentAccessMode === "relay" ? (
-                    <Table.Td>
-                      <StatusBadge color={nodeGatewayColor(item.gatewayStatus)} label={translateGatewayStatus(item.gatewayStatus)} />
-                    </Table.Td>
-                  ) : null}
                   <Table.Td>
                     <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
                   </Table.Td>

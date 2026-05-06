@@ -262,7 +262,6 @@ export class AnnouncementPolicyService {
     await this.prisma.policyProfile.update({
       where: { id: "default" },
       data: {
-        ...(input.accessMode !== undefined ? { accessMode: input.accessMode } : {}),
         ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
         ...(input.modes !== undefined ? { modes: input.modes } : {}),
         ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
@@ -318,7 +317,6 @@ function toAdminAnnouncementRecord(row: {
 }
 
 function toAdminPolicyRecord(row: {
-  accessMode: string;
   defaultMode: string;
   modes: unknown;
   blockAds: boolean;
@@ -326,7 +324,6 @@ function toAdminPolicyRecord(row: {
   aiServicesProxy: boolean;
 }): AdminPolicyRecordDto {
   return {
-    accessMode: row.accessMode as AdminPolicyRecordDto["accessMode"],
     defaultMode: row.defaultMode as AdminPolicyRecordDto["defaultMode"],
     modes: row.modes as AdminPolicyRecordDto["modes"],
     features: {

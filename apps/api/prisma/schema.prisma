@@ -58,12 +58,6 @@ enum MeteringIncidentStatus {
   resolved
 }
 
-enum EdgeGatewayStatus {
-  online
-  offline
-  degraded
-}
-
 enum XuiPanelStatus {
   online
   offline
@@ -80,7 +74,6 @@ enum NodeSessionLeaseStatus {
 enum SecurityEventType {
   session_evicted
   session_revoked
-  relay_open_failed
 }
 
 enum AnnouncementLevel {
@@ -309,7 +302,6 @@ model Node {
   fingerprint      String
   spiderX          String          @default("/")
   subscriptionUrl  String?
-  gatewayStatus    EdgeGatewayStatus @default(offline)
   statsLastSyncedAt DateTime?
   probeStatus      NodeProbeStatus @default(unknown)
   probeLatencyMs   Int?
@@ -406,7 +398,6 @@ model RefreshToken {
 model NodeSessionLease {
   id             String               @id
   sessionId      String               @unique
-  accessMode     String               @default("relay")
   userId         String
   subscriptionId String
   nodeId         String
@@ -509,7 +500,6 @@ model PanelSyncJob {
 
 model PolicyProfile {
   id              String          @id
-  accessMode      String          @default("xui")
   defaultMode     String
   modes           String[]
   ruleVersion     String

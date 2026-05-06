@@ -20,7 +20,6 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type {
-  AccessMode,
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
   AdminNodePanelInboundDto,
@@ -466,7 +465,6 @@ export function App() {
       })),
     [snapshot?.nodes]
   );
-  const currentAccessMode = policyForm?.accessMode ?? snapshot?.policy.accessMode ?? "xui";
   const renewTargetSubscription =
     drawer.type === "subscription-renew" && drawer.recordId
       ? snapshot?.subscriptions.find((item) => item.id === drawer.recordId) ?? null
@@ -989,7 +987,7 @@ export function App() {
         };
         setNodePanelInbounds([]);
         setNodeForm(nextForm);
-        if (currentAccessMode === "xui" && nextForm.panelBaseUrl && nextForm.panelUsername && nextForm.panelPassword) {
+        if (nextForm.panelBaseUrl && nextForm.panelUsername && nextForm.panelPassword) {
           void handleLoadNodePanelInbounds(nextForm);
         }
       } else {
@@ -997,7 +995,7 @@ export function App() {
         setNodeForm({
           ...emptyNodeForm(),
           isActive: true,
-          panelEnabled: currentAccessMode === "xui"
+          panelEnabled: true
         });
       }
     }
@@ -1171,9 +1169,8 @@ export function App() {
       }
 
       if (drawer.type === "node") {
-        const isXuiMode = currentAccessMode === "xui";
         const payload = {
-          subscriptionUrl: isXuiMode ? undefined : nodeForm.subscriptionUrl,
+          subscriptionUrl: undefined,
           name: nodeForm.name || undefined,
           region: nodeForm.region || undefined,
           provider: nodeForm.provider || undefined,
@@ -1571,7 +1568,6 @@ export function App() {
       const success = await runAction(
         () =>
           updatePolicy({
-            accessMode: policyForm.accessMode,
             defaultMode: policyForm.defaultMode,
             modes: policyForm.modes,
             blockAds: policyForm.blockAds,
@@ -1658,7 +1654,7 @@ export function App() {
                   当前接入
                 </Text>
                 <Text size="xl" fw={700}>
-                  {snapshot.policy.accessMode === "xui" ? "3x-ui 直连" : "中心中转"}
+                  3x-ui 直连
                 </Text>
                 <Text size="sm" c="dimmed">
                   默认模式 {snapshot.policy.defaultMode === "rule" ? "规则模式" : snapshot.policy.defaultMode === "global" ? "全局代理" : "直连模式"}
@@ -1836,7 +1832,6 @@ export function App() {
                 nodes={nodes}
                 panelSyncJobs={snapshot.panelSyncJobs}
                 panelSyncQueueOpened={panelSyncQueueOpened}
-                currentAccessMode={currentAccessMode}
                 probingNodeId={probingNodeId}
                 onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
                 onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
@@ -1877,7 +1872,6 @@ export function App() {
         drawerType={drawer.type}
         drawerRecordId={drawer.recordId}
         snapshot={snapshot}
-        currentAccessMode={currentAccessMode}
         eligiblePersonalUsers={eligiblePersonalUsers}
         nodePanelInbounds={nodePanelInbounds}
         nodePanelInboundsLoading={nodePanelInboundsLoading}

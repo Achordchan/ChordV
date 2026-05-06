@@ -1,9 +1,8 @@
 import { Alert, Button, Group, NumberInput, Select, Switch, TextInput } from "@mantine/core";
-import type { AccessMode, AdminNodePanelInboundDto } from "@chordv/shared";
+import type { AdminNodePanelInboundDto } from "@chordv/shared";
 import type { NodeFormState } from "../../utils/admin-forms";
 
 type NodeEditorSectionProps = {
-  currentAccessMode: AccessMode;
   nodeForm: NodeFormState;
   setNodeForm: React.Dispatch<React.SetStateAction<NodeFormState>>;
   nodePanelInbounds: AdminNodePanelInboundDto[];
@@ -19,17 +18,9 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
 
   return (
     <>
-      {props.currentAccessMode === "relay" ? (
-        <TextInput
-          label="订阅地址"
-          value={props.nodeForm.subscriptionUrl}
-          onChange={(event) => props.setNodeForm((current) => ({ ...current, subscriptionUrl: event.currentTarget.value }))}
-        />
-      ) : (
-        <Alert color="blue" variant="light">
-          当前为 3x-ui 直连模式，节点运行参数会直接从面板入站读取，无需填写订阅地址。
-        </Alert>
-      )}
+      <Alert color="blue" variant="light">
+        当前为 3x-ui 直连模式，节点运行参数会直接从面板入站读取，无需填写订阅地址。
+      </Alert>
       <TextInput
         label="节点名称"
         value={props.nodeForm.name}

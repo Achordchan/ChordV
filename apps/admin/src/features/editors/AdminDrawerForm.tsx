@@ -1,5 +1,5 @@
 import { Button, Drawer, Group, Stack } from "@mantine/core";
-import type { AccessMode, AdminNodePanelInboundDto, AdminSnapshotDto } from "@chordv/shared";
+import type { AdminNodePanelInboundDto, AdminSnapshotDto } from "@chordv/shared";
 import { AnnouncementEditorSection, PlanEditorSection, SubscriptionAdjustEditorSection, SubscriptionChangePlanEditorSection, SubscriptionCreateEditorSection, SubscriptionRenewEditorSection, TeamEditorSection, TeamMemberEditorSection, TeamSubscriptionEditorSection, UserEditorSection } from "./DrawerSections";
 import { NodeEditorSection } from "./NodeEditorSection";
 import type {
@@ -36,7 +36,6 @@ type AdminDrawerFormProps = {
   drawerType: DrawerType;
   drawerRecordId: string | null;
   snapshot: AdminSnapshotDto;
-  currentAccessMode: AccessMode;
   eligiblePersonalUsers: Array<{ id: string; displayName: string; email: string }>;
   nodePanelInbounds: AdminNodePanelInboundDto[];
   nodePanelInboundsLoading: boolean;
@@ -130,7 +129,6 @@ export function AdminDrawerForm(props: AdminDrawerFormProps) {
         ) : null}
         {props.drawerType === "node" ? (
           <NodeEditorSection
-            currentAccessMode={props.currentAccessMode}
             nodeForm={props.nodeForm}
             setNodeForm={props.setNodeForm}
             nodePanelInbounds={props.nodePanelInbounds}

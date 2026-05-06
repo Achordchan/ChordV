@@ -14,13 +14,12 @@ import { DevDataService } from "./dev-data.service";
 import { ReleaseCenterService } from "./release-center.service";
 import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
-import { EdgeGatewayModule } from "../edge-gateway/edge-gateway.module";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { XuiModule } from "../xui/xui.module";
 
 @Global()
 @Module({
-  imports: [EdgeGatewayModule, XuiModule],
+  imports: [XuiModule],
   providers: [
     DevDataService,
     AdminNodeService,

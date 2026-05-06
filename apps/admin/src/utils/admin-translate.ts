@@ -62,18 +62,6 @@ export function nodeProbeColor(status: AdminNodeRecordDto["probeStatus"]) {
   return "gray";
 }
 
-export function translateGatewayStatus(status: AdminNodeRecordDto["gatewayStatus"]) {
-  if (status === "online") return "已就绪";
-  if (status === "degraded") return "异常";
-  return "未启动";
-}
-
-export function nodeGatewayColor(status: AdminNodeRecordDto["gatewayStatus"]) {
-  if (status === "online") return "green";
-  if (status === "degraded") return "yellow";
-  return "red";
-}
-
 export function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"]) {
   if (status === "online") return "在线";
   if (status === "degraded") return "异常";

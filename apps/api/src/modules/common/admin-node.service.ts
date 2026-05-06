@@ -6,7 +6,6 @@ import type {
   ImportNodeInputDto,
   UpdateNodeInputDto
 } from "@chordv/shared";
-import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
 import { XuiService } from "../xui/xui.service";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
@@ -29,7 +28,6 @@ export class AdminNodeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly xuiService: XuiService,
-    private readonly edgeGatewayService: EdgeGatewayService,
     private readonly runtimeSessionService: RuntimeSessionService,
     private readonly clientEventsPublisher: ClientEventsPublisher
   ) {}
@@ -144,7 +142,6 @@ export class AdminNodeService {
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
         subscriptionUrl: input.subscriptionUrl?.trim() || null,
-        gatewayStatus: current?.gatewayStatus ?? "offline",
         panelBaseUrl: nextPanelBaseUrl,
         panelApiBasePath: nextPanelApiBasePath,
         panelUsername: nextPanelUsername,
@@ -343,7 +340,6 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    const gatewayStatus = await this.edgeGatewayService.getGatewayStatus();
     const result = await probeNodeConnectivity(current.serverHost, current.serverPort, current.serverName, current.subscriptionUrl);
     let panelStatus = current.panelStatus;
     let panelError = current.panelError;
@@ -380,10 +376,7 @@ export class AdminNodeService {
       }
     });
 
-    return {
-      ...toAdminNodeRecord(row),
-      gatewayStatus
-    };
+    return toAdminNodeRecord(row);
   }
 
   async probeAllNodes() {
@@ -441,13 +434,6 @@ export class AdminNodeService {
       return input.currentValue ?? false;
     }
 
-    const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" },
-      select: { accessMode: true }
-    });
-    if (profile?.accessMode === "xui") {
-      return true;
-    }
-    return input.currentValue ?? false;
+    return true;
   }
 }

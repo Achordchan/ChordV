@@ -1,5 +1,5 @@
 import { Alert, Button, Card, Checkbox, Group, Select, Stack, Switch, Title } from "@mantine/core";
-import type { AccessMode, ConnectionMode } from "@chordv/shared";
+import type { ConnectionMode } from "@chordv/shared";
 import type { Dispatch, SetStateAction } from "react";
 import type { PolicyFormState } from "../utils/admin-forms";
 import { modeOptions } from "../utils/admin-forms";
@@ -18,26 +18,9 @@ export function PoliciesPage(props: PoliciesPageProps) {
         <Card withBorder radius="xl" p="lg">
           <Stack gap="md">
             <Title order={4}>接入与连接策略</Title>
-            <Select
-              label="接入模式"
-              data={[
-                { value: "xui", label: "3x-ui 直连模式" },
-                { value: "relay", label: "中心中转模式" }
-              ]}
-              value={props.policyForm.accessMode}
-              onChange={(value) =>
-                props.setPolicyForm((current) => (current ? { ...current, accessMode: (value || "xui") as AccessMode } : current))
-              }
-            />
-            {props.policyForm.accessMode === "xui" ? (
-              <Alert color="blue" variant="light">
-                当前使用 3x-ui 直连接入，中心负责开通、删号与汇总计量。版本发布请到“发布中心”单独管理。
-              </Alert>
-            ) : (
-              <Alert color="yellow" variant="light">
-                当前使用中心中转接入，客户端不会直接拿到真实节点参数，但需要额外中转资源。版本发布请到“发布中心”单独管理。
-              </Alert>
-            )}
+            <Alert color="blue" variant="light">
+              当前使用 3x-ui 直连接入，中心负责开通、删号与汇总计量。版本发布请到“发布中心”单独管理。
+            </Alert>
             <Select
               label="默认模式"
               data={modeOptions}

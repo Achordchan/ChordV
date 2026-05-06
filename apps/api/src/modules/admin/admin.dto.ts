@@ -1,7 +1,6 @@
 import { Transform, Type } from "class-transformer";
 import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength, ValidateNested } from "class-validator";
 import type {
-  AccessMode,
   ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
@@ -949,10 +948,6 @@ export class ReportRuntimeComponentFailureDto implements ClientRuntimeComponentF
 }
 
 export class UpdatePolicyDto {
-  @IsOptional()
-  @IsIn(["relay", "xui"])
-  accessMode?: AccessMode;
-
   @IsOptional()
   @IsIn(["global", "rule", "direct"])
   defaultMode?: ConnectionMode;

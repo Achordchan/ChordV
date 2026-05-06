@@ -166,7 +166,6 @@ export function toAdminNodeRecord(row: {
   shortId: string;
   spiderX: string;
   subscriptionUrl: string | null;
-  gatewayStatus: "online" | "offline" | "degraded";
   statsLastSyncedAt: Date | null;
   panelBaseUrl: string | null;
   panelApiBasePath: string | null;
@@ -186,7 +185,6 @@ export function toAdminNodeRecord(row: {
   return {
     ...toNodeSummary(row),
     subscriptionUrl: row.subscriptionUrl,
-    gatewayStatus: row.gatewayStatus,
     statsLastSyncedAt: row.statsLastSyncedAt?.toISOString() ?? null,
     panelBaseUrl: row.panelBaseUrl,
     panelApiBasePath: row.panelApiBasePath,
