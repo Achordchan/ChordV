@@ -280,15 +280,17 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
       const activeRuntime = options.runtimeRef.current;
       const activeSessionId = activeRuntime?.sessionId ?? options.desktopStatus.activeSessionId;
-      const [subscriptionResult, nodesResult, runtimeResult] = await Promise.allSettled([
+      const [subscriptionResult, nodesResult, announcementsResult, runtimeResult] = await Promise.allSettled([
         fetchSubscription(accessToken),
         fetchNodes(accessToken),
+        fetchAnnouncements(accessToken),
         activeSessionId ? fetchClientRuntime(accessToken, activeSessionId) : Promise.resolve(null)
       ]);
 
       if (
         (subscriptionResult.status === "rejected" && isUnauthorizedApiError(subscriptionResult.reason)) ||
         (nodesResult.status === "rejected" && isUnauthorizedApiError(nodesResult.reason)) ||
+        (announcementsResult.status === "rejected" && isUnauthorizedApiError(announcementsResult.reason)) ||
         (runtimeResult.status === "rejected" && isUnauthorizedApiError(runtimeResult.reason))
       ) {
         await options.recoverSessionAfterUnauthorized();
@@ -298,6 +300,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const forbiddenReasons = [
         subscriptionResult.status === "rejected" ? subscriptionResult.reason : null,
         nodesResult.status === "rejected" ? nodesResult.reason : null,
+        announcementsResult.status === "rejected" ? announcementsResult.reason : null,
         runtimeResult.status === "rejected" ? runtimeResult.reason : null
       ].filter((reason): reason is unknown => Boolean(reason) && isForbiddenApiError(reason));
 
@@ -332,6 +335,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.setSelectedNodeId((current) =>
           options.pickNode(nextNodes, current ?? options.loadLastNodeId(), options.probeResultsRef.current)?.id ?? null
         );
+        options.lastForegroundSyncErrorRef.current = null;
+      }
+
+      if (announcementsResult.status === "fulfilled") {
+        options.setBootstrap((current) => (current ? { ...current, announcements: announcementsResult.value } : current));
         options.lastForegroundSyncErrorRef.current = null;
       }
 
@@ -502,7 +510,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
             options.pickNode(nextNodes, current ?? options.loadLastNodeId(), options.probeResultsRef.current)?.id ?? null
           );
         } catch {
-          // 节点列表刷新失败时保留事件流兜底。
+          options.setServerProbe((current) => ({
+            ...current,
+            checkedAt: Date.now(),
+            errorMessage: "节点事件已收到，但节点列表刷新失败"
+          }));
         }
       }
 

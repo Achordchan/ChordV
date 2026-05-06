@@ -63,6 +63,7 @@ export type UseClientEventsOptions = {
   session: AuthSessionDto | null;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   handleRuntimeEvent: (event: ClientRuntimeEventDto, accessToken: string) => Promise<void> | void;
+  syncConnectedState?: (accessToken: string) => Promise<void> | void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   readError: (message: string) => string;
   subscribeClientEvents?: typeof subscribeClientEventsRequest;
@@ -74,6 +75,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
     session,
     setServerProbe,
     handleRuntimeEvent,
+    syncConnectedState,
     recoverSessionAfterUnauthorized,
     readError,
     subscribeClientEvents = subscribeClientEventsRequest,
@@ -81,6 +83,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
   } = options;
   const handleRuntimeEventRef = useRef(handleRuntimeEvent);
   const recoverSessionAfterUnauthorizedRef = useRef(recoverSessionAfterUnauthorized);
+  const syncConnectedStateRef = useRef(syncConnectedState);
   const readErrorRef = useRef(readError);
   const isUnauthorizedErrorRef = useRef(isUnauthorizedError);
   const setServerProbeRef = useRef(setServerProbe);
@@ -94,6 +97,10 @@ export function useClientEvents(options: UseClientEventsOptions) {
   useEffect(() => {
     recoverSessionAfterUnauthorizedRef.current = recoverSessionAfterUnauthorized;
   }, [recoverSessionAfterUnauthorized]);
+
+  useEffect(() => {
+    syncConnectedStateRef.current = syncConnectedState;
+  }, [syncConnectedState]);
 
   useEffect(() => {
     readErrorRef.current = readError;
@@ -135,6 +142,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
       onOpen: (meta) => {
         openedOnceRef.current = true;
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
+        void syncConnectedStateRef.current?.(session.accessToken);
       },
       onError: (error, meta) => {
         if (meta.status === 401 || meta.authError || isUnauthorizedErrorRef.current(error)) {

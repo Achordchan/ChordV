@@ -461,6 +461,7 @@ export function App() {
     session,
     setServerProbe,
     handleRuntimeEvent,
+    syncConnectedState: syncForegroundState,
     recoverSessionAfterUnauthorized,
     readError
   });
