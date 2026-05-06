@@ -1546,9 +1546,9 @@ export function App() {
                 size="xs"
                 variant={forceUpdateRequired ? "filled" : "light"}
                 loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
-                onClick={() => void handleUpdateDownload()}
+                onClick={() => setUpdateDialogOpened(true)}
               >
-                {updateActionLabel(effectiveUpdate, updateDownload)}
+                查看下载进度
               </Button>
             ) : null}
           </div>

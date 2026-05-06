@@ -78,6 +78,19 @@ export type DesktopInstallerDownloadResult = {
   totalBytes: number | null;
 };
 
+type DesktopUpdateDownloadProgressPayload = {
+  phase?: DesktopUpdateDownloadPhase | string | null;
+  fileName?: string | null;
+  file_name?: string | null;
+  downloadedBytes?: number | string | null;
+  downloaded_bytes?: number | string | null;
+  totalBytes?: number | string | null;
+  total_bytes?: number | string | null;
+  localPath?: string | null;
+  local_path?: string | null;
+  message?: string | null;
+};
+
 export type DesktopRuntimeEnvironment = {
   platform: Extract<RuntimePlatform, "macos" | "windows">;
   architecture: "x64" | "arm64";
@@ -102,10 +115,10 @@ type RuntimeComponentDownloadProgressPayload = {
   component?: RuntimeComponentDownloadProgress["component"] | string | null;
   fileName?: string | null;
   file_name?: string | null;
-  downloadedBytes?: number | null;
-  downloaded_bytes?: number | null;
-  totalBytes?: number | null;
-  total_bytes?: number | null;
+  downloadedBytes?: number | string | null;
+  downloaded_bytes?: number | string | null;
+  totalBytes?: number | string | null;
+  total_bytes?: number | string | null;
   message?: string | null;
 };
 
@@ -405,9 +418,9 @@ export async function subscribeDesktopUpdateDownloadProgress(
     return () => {};
   }
   const { listen } = await import("@tauri-apps/api/event");
-  const unlisten = await listen<DesktopUpdateDownloadProgress>("chordv://update-download-progress", (event) => {
+  const unlisten = await listen<DesktopUpdateDownloadProgressPayload>("chordv://update-download-progress", (event) => {
     if (event.payload) {
-      handler(event.payload);
+      handler(normalizeDesktopUpdateDownloadProgress(event.payload));
     }
   });
   return () => {
@@ -426,6 +439,27 @@ export async function downloadDesktopInstaller(input: {
     return null;
   }
   return invoke<DesktopInstallerDownloadResult>("download_desktop_installer", { input });
+}
+
+function normalizeDesktopUpdateDownloadProgress(
+  payload: DesktopUpdateDownloadProgressPayload
+): DesktopUpdateDownloadProgress {
+  return {
+    phase: readDesktopUpdateProgressPhase(payload.phase),
+    fileName: readRuntimeProgressString(payload.fileName) ?? readRuntimeProgressString(payload.file_name),
+    downloadedBytes: readRuntimeProgressNumber(payload.downloadedBytes, payload.downloaded_bytes),
+    totalBytes: readRuntimeProgressNullableNumber(payload.totalBytes, payload.total_bytes),
+    localPath: readRuntimeProgressString(payload.localPath) ?? readRuntimeProgressString(payload.local_path),
+    message: readRuntimeProgressString(payload.message)
+  };
+}
+
+function readDesktopUpdateProgressPhase(value: unknown): DesktopUpdateDownloadPhase {
+  if (value === "preparing") return "preparing";
+  if (value === "downloading") return "downloading";
+  if (value === "completed") return "completed";
+  if (value === "failed") return "failed";
+  return "idle";
 }
 
 export async function openDesktopInstaller(path: string) {
@@ -515,7 +549,7 @@ function readRuntimeProgressString(value: unknown) {
 }
 
 function readRuntimeProgressNumber(primary: unknown, fallback: unknown) {
-  const candidate = Number.isFinite(primary) ? Number(primary) : Number.isFinite(fallback) ? Number(fallback) : 0;
+  const candidate = readFiniteProgressNumber(primary) ?? readFiniteProgressNumber(fallback) ?? 0;
   if (candidate < 0) {
     return 0;
   }
@@ -523,11 +557,22 @@ function readRuntimeProgressNumber(primary: unknown, fallback: unknown) {
 }
 
 function readRuntimeProgressNullableNumber(primary: unknown, fallback: unknown) {
-  const value = Number.isFinite(primary) ? Number(primary) : Number.isFinite(fallback) ? Number(fallback) : null;
+  const value = readFiniteProgressNumber(primary) ?? readFiniteProgressNumber(fallback);
   if (value === null || value <= 0) {
     return null;
   }
   return value;
+}
+
+function readFiniteProgressNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : null;
+  }
+  return null;
 }
 
 function readRuntimeProgressPhase(value: unknown): RuntimeComponentDownloadProgress["phase"] {
