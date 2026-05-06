@@ -116,6 +116,58 @@ export class ClientEventsPublisher {
     });
   }
 
+  async publishNodeAccessUpdatedForNode(nodeId: string) {
+    const userIds = await this.resolveUserIdsForNodeAccess(nodeId);
+    this.publishNodeAccessUpdatedToUsers(userIds, nodeId);
+  }
+
+  publishNodeAccessUpdatedToUsers(userIds: Iterable<string>, nodeId?: string | null) {
+    this.publishClientEventToUsers(userIds, {
+      type: "node_access_updated",
+      occurredAt: new Date().toISOString(),
+      nodeId: nodeId ?? null
+    });
+  }
+
+  async resolveUserIdsForNodeAccess(nodeId: string): Promise<string[]> {
+    const rows = await this.prisma.subscriptionNodeAccess.findMany({
+      where: { nodeId },
+      select: {
+        subscription: {
+          select: {
+            user: { select: { id: true, status: true } },
+            team: {
+              select: {
+                status: true,
+                members: {
+                  select: {
+                    userId: true,
+                    user: { select: { status: true } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+    const userIds = new Set<string>();
+    for (const row of rows) {
+      const { user, team } = row.subscription;
+      if (user?.status === "active") {
+        userIds.add(user.id);
+      }
+      if (team?.status === "active") {
+        for (const member of team.members) {
+          if (member.user.status === "active") {
+            userIds.add(member.userId);
+          }
+        }
+      }
+    }
+    return Array.from(userIds);
+  }
+
   private async findLatestPublishedVersion(channel: ReleaseChannel, platform: PlatformTarget) {
     const rows = await this.prisma.release.findMany({
       where: {

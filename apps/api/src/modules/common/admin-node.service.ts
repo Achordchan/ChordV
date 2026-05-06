@@ -10,6 +10,7 @@ import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
 import { XuiService } from "../xui/xui.service";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
+import { ClientEventsPublisher } from "./client-events.publisher";
 import { createId } from "./release-center.utils";
 import {
   fetchSubscriptionNode,
@@ -29,7 +30,8 @@ export class AdminNodeService {
     private readonly prisma: PrismaService,
     private readonly xuiService: XuiService,
     private readonly edgeGatewayService: EdgeGatewayService,
-    private readonly runtimeSessionService: RuntimeSessionService
+    private readonly runtimeSessionService: RuntimeSessionService,
+    private readonly clientEventsPublisher: ClientEventsPublisher
   ) {}
 
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
@@ -289,6 +291,9 @@ export class AdminNodeService {
     } else if (!current.isActive && input.isActive === true) {
       await this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId);
     }
+    if (input.isActive !== undefined && current.isActive !== input.isActive) {
+      await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId);
+    }
 
     return toAdminNodeRecord(row);
   }
@@ -391,7 +396,9 @@ export class AdminNodeService {
   }
 
   async deleteNode(nodeId: string) {
+    const userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
     await this.prisma.node.delete({ where: { id: nodeId } });
+    this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     return { ok: true };
   }
 

@@ -15,10 +15,9 @@ export class ClientRuntimeEventsService {
       current.add(sink);
       this.subscribers.set(userId, current);
 
-      subscriber.next(this.toMessageEvent({
-        type: "keepalive",
-        occurredAt: new Date().toISOString()
-      }));
+      for (const event of this.createStreamOpenedEvents()) {
+        subscriber.next(this.toMessageEvent(event));
+      }
 
       const timer = setInterval(() => {
         subscriber.next(
@@ -69,5 +68,15 @@ export class ClientRuntimeEventsService {
       type: event.type,
       data: JSON.stringify(event)
     };
+  }
+
+  private createStreamOpenedEvents(): ClientRuntimeEventDto[] {
+    const occurredAt = new Date().toISOString();
+    return [
+      { type: "keepalive", occurredAt },
+      { type: "subscription_updated", occurredAt },
+      { type: "node_access_updated", occurredAt },
+      { type: "announcement_updated", occurredAt }
+    ];
   }
 }
