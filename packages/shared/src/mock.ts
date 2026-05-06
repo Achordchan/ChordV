@@ -451,6 +451,7 @@ export const mockAdminSnapshot: AdminSnapshotDto = {
   subscriptions: mockAdminSubscriptions,
   teams: mockAdminTeams,
   nodes: mockAdminNodes,
+  panelSyncJobs: [],
   announcements: mockAdminAnnouncements,
   policy: mockAdminPolicy,
   releases: mockAdminReleases

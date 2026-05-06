@@ -450,6 +450,26 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   probeLatencyMs: number | null;
   probeCheckedAt: string | null;
   probeError: string | null;
+  panelSyncPendingCount?: number;
+  panelSyncLastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type AdminPanelSyncJobStatus = "pending" | "running" | "failed" | "completed";
+
+export interface AdminPanelSyncJobDto {
+  id: string;
+  action: "disable_client";
+  status: AdminPanelSyncJobStatus;
+  nodeId: string;
+  nodeName: string;
+  panelClientEmail: string;
+  attempts: number;
+  nextRunAt: string;
+  lockedAt: string | null;
+  lastError: string | null;
+  completedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -569,6 +589,7 @@ export interface AdminSnapshotDto {
   subscriptions: AdminSubscriptionRecordDto[];
   teams: AdminTeamRecordDto[];
   nodes: AdminNodeRecordDto[];
+  panelSyncJobs: AdminPanelSyncJobDto[];
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];

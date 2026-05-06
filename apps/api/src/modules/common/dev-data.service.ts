@@ -382,12 +382,13 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [users, plans, subscriptions, teams, nodes, announcements, policy, releases, ticketCounts] = await Promise.all([
+    const [users, plans, subscriptions, teams, nodes, panelSyncJobs, announcements, policy, releases, ticketCounts] = await Promise.all([
       this.listAdminUsers(),
       this.listAdminPlans(),
       this.listAdminSubscriptions(),
       this.listAdminTeams(),
       this.listAdminNodes(),
+      this.listAdminPanelSyncJobs(),
       this.listAdminAnnouncements(),
       this.getAdminPolicy(),
       this.listAdminReleases(),
@@ -410,6 +411,7 @@ export class DevDataService implements OnModuleInit {
       subscriptions,
       teams,
       nodes,
+      panelSyncJobs,
       announcements,
       policy,
       releases
@@ -1121,6 +1123,10 @@ export class DevDataService implements OnModuleInit {
 
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
     return this.adminNodeService.listAdminNodes();
+  }
+
+  async listAdminPanelSyncJobs() {
+    return this.adminNodeService.listPanelSyncJobs();
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {

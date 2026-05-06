@@ -201,6 +201,11 @@ export class AdminController {
     return this.devDataService.listAdminNodes();
   }
 
+  @Get("nodes/panel-sync-jobs")
+  getPanelSyncJobs() {
+    return this.devDataService.listAdminPanelSyncJobs();
+  }
+
   @Post("nodes/import")
   importNode(@Body() body: ImportNodeDto) {
     return this.devDataService.importNodeFromSubscription(body);

@@ -302,6 +302,7 @@ export function App() {
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
   const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
   const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
+  const [panelSyncQueueOpened, setPanelSyncQueueOpened] = useState(false);
 
   const selectSection = (nextSection: SectionKey) => {
     setSection(nextSection);
@@ -482,6 +483,7 @@ export function App() {
     setNodeAccessSaving(false);
     setNodePanelInbounds([]);
     setNodePanelInboundsLoading(false);
+    setPanelSyncQueueOpened(false);
     setDrawerBusy(false);
     setTeamInlineBusy(false);
     setPolicySaving(false);
@@ -1668,8 +1670,12 @@ export function App() {
                 searchValue={search.nodes}
                 onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}
                 nodes={nodes}
+                panelSyncJobs={snapshot.panelSyncJobs}
+                panelSyncQueueOpened={panelSyncQueueOpened}
                 currentAccessMode={currentAccessMode}
                 probingNodeId={probingNodeId}
+                onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
+                onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
                 onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}

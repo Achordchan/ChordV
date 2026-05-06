@@ -1,5 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import type { AdminNodePanelInboundDto, AdminNodeRecordDto, ImportNodeInputDto, UpdateNodeInputDto } from "@chordv/shared";
+import type {
+  AdminNodePanelInboundDto,
+  AdminNodeRecordDto,
+  AdminPanelSyncJobDto,
+  ImportNodeInputDto,
+  UpdateNodeInputDto
+} from "@chordv/shared";
 import { EdgeGatewayService } from "../edge-gateway/edge-gateway.service";
 import { XuiService } from "../xui/xui.service";
 import { PrismaService } from "./prisma.service";
@@ -28,7 +34,57 @@ export class AdminNodeService {
     const rows = await this.prisma.node.findMany({
       orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
     });
-    return rows.map(toAdminNodeRecord);
+    const jobs = await this.listPanelSyncJobs();
+    const summaryByNode = new Map<string, { count: number; lastError: string | null }>();
+    for (const job of jobs) {
+      const summary = summaryByNode.get(job.nodeId) ?? { count: 0, lastError: null };
+      summary.count += 1;
+      summary.lastError = job.lastError ?? summary.lastError;
+      summaryByNode.set(job.nodeId, summary);
+    }
+
+    return rows.map((row) => {
+      const record = toAdminNodeRecord(row);
+      const summary = summaryByNode.get(row.id);
+      return {
+        ...record,
+        panelSyncPendingCount: summary?.count ?? 0,
+        panelSyncLastError: summary?.lastError ?? null
+      };
+    });
+  }
+
+  async listPanelSyncJobs(): Promise<AdminPanelSyncJobDto[]> {
+    const rows = await this.prisma.panelSyncJob.findMany({
+      where: {
+        status: { in: ["pending", "running", "failed"] }
+      },
+      include: {
+        node: {
+          select: {
+            name: true
+          }
+        }
+      },
+      orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
+      take: 200
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      action: "disable_client",
+      status: row.status as AdminPanelSyncJobDto["status"],
+      nodeId: row.nodeId,
+      nodeName: row.node.name,
+      panelClientEmail: row.panelClientEmail,
+      attempts: row.attempts,
+      nextRunAt: row.nextRunAt.toISOString(),
+      lockedAt: row.lockedAt?.toISOString() ?? null,
+      lastError: row.lastError,
+      completedAt: row.completedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString()
+    }));
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
