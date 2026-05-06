@@ -1,121 +1,93 @@
 # ChordV
 
-ChordV 是一个面向自有订阅体系的代理平台单仓工程，当前包含：
-- 运营后台
-- API 服务端
-- mac / Windows / Android 客户端
-- 3x-ui 面板接入
-- 发布中心与版本更新检查
+ChordV 是一套面向团队订阅、节点接入、客户端分发与流量计量的专有网络服务平台。系统以 `3x-ui` 直连为唯一接入模式，由 ChordV 负责账户、套餐、授权、发布与审计，由 3x-ui / Xray 负责真实连接与流量累计。
 
-## 一、项目结构
+本仓库为 ChordV 单仓工程，覆盖运营后台、业务 API、桌面客户端、共享类型与发布中心，适用于自有订阅业务的生产部署、版本发布和持续运维。
 
-- `apps/api`：NestJS 业务 API，负责认证、订阅、节点、团队、计量、发布中心等主业务。
-- `apps/admin`：React 运营后台，负责用户、订阅、节点、策略、发布中心等管理功能。
-- `apps/desktop`：Tauri + React 客户端，当前覆盖 mac、Windows，并包含 Android 工程骨架与调试链。
-- `packages/shared`：共享 DTO、枚举、版本检查类型、运行时类型。
+## 产品能力
 
-## 二、当前接入模式
+- 订阅与团队管理：支持个人订阅、团队成员、套餐额度、到期状态、并发会话与节点授权。
+- 节点与连接控制：通过 3x-ui 面板管理客户端身份，客户端连接配置由服务端按订阅权限实时下发。
+- 流量计量：以 3x-ui / Xray client 累计流量为权威来源，ChordV 负责套餐额度、账本记录与异常追踪。
+- 运营后台：提供用户、团队、套餐、订阅、节点、策略、公告、工单和发布中心管理。
+- 多端客户端：当前覆盖 macOS、Windows，并保留 Android 工程链路；客户端支持登录、节点选择、连接、断开、服务端强制事件和应用内更新。
+- 发布中心：支持按平台维护版本、上传安装包、计算文件大小与 SHA-256、校验产物可用性，并向客户端提供更新检查。
 
-唯一接入模式：
-- `3x-ui 直连`
+## 系统架构
 
-当前计量原则：
-- 字节权威来源：`3x-ui / Xray client 累计流量`
-- 到期、套餐状态、权限控制：`ChordV 中心控制`
+| 模块 | 技术栈 | 职责 |
+| --- | --- | --- |
+| `apps/api` | NestJS、Prisma、PostgreSQL | 认证、订阅、节点、计量、发布中心与客户端 API |
+| `apps/admin` | React、Mantine、Vite | 运营后台与业务管理界面 |
+| `apps/desktop` | Tauri、React、Rust | macOS / Windows 客户端、运行时控制、安装包构建 |
+| `packages/shared` | TypeScript | 前后端共享 DTO、枚举、版本与运行时类型 |
 
-## 三、本地开发启动
+接入模式固定为 `3x-ui 直连`。中心服务负责业务控制、授权下发与计量同步，不承担流量中转职责。
 
-### 1. 初始化
+## 本地开发
+
+### 环境要求
+
+- Node.js 22 LTS
+- pnpm 9.15.3
+- PostgreSQL
+- Rust 与 Tauri 构建依赖
+- macOS 打包需 Xcode Command Line Tools
+
+### 初始化
 
 ```bash
 pnpm setup:mac
 ```
 
-它会完成：
-- 安装依赖
-- 准备数据库
-- 生成 Prisma
-- 下载桌面端所需 `xray`
+该命令会安装依赖、启动本地 PostgreSQL、生成 Prisma Client、同步数据库结构并写入基础数据。初始化完成后即可启动 API、运营后台和桌面客户端。
 
-### 2. 启动后台整套
+### 启动运营后台与 API
 
 ```bash
 pnpm dev:ops
 ```
 
-会启动：
-- API
-- 后台前端
+默认启动：
 
-### 3. 启动桌面端
+- API 服务：`http://localhost:3000`
+- 运营后台：Vite 本地开发服务
 
-mac：
+### 启动桌面客户端
 
 ```bash
 pnpm dev:mac
 ```
 
-桌面前端单独开发：
+仅启动桌面前端：
 
 ```bash
 pnpm dev:desktop
 ```
 
-## 四、环境变量
+## 环境变量
 
-常用环境变量如下：
+| 变量 | 说明 |
+| --- | --- |
+| `CHORDV_API_PORT` | API 服务端口，默认 `3000` |
+| `CHORDV_API_BASE_URL` | 前端和客户端访问 API 的基础地址 |
+| `CHORDV_PUBLIC_BASE_URL` | 对外公开域名，用于生成下载地址 |
+| `DATABASE_URL` | PostgreSQL 连接串 |
+| `CHORDV_JWT_SECRET` | JWT 签名密钥，生产环境必须单独配置 |
+| `CHORDV_RELEASE_STORAGE_ROOT` | 发布中心安装包存储目录 |
+| `CHORDV_RELEASE_MAX_UPLOAD_BYTES` | 发布中心单文件上传上限 |
+| `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS` | 客户端会话心跳周期 |
+| `CHORDV_SESSION_GRACE_SECONDS` | 会话失联宽限时间 |
 
-- `CHORDV_API_PORT`
-  API 端口，默认 `3000`
-- `CHORDV_API_BASE_URL`
-  前端请求的 API 地址
-- `CHORDV_JWT_SECRET`
-  JWT 密钥，生产必须配置
-- `DATABASE_URL`
-  PostgreSQL 连接串
-- `CHORDV_PUBLIC_BASE_URL`
-  对外公开域名，例如 `https://v.baymaxgroup.com`
-- `CHORDV_RELEASE_STORAGE_ROOT`
-  发布中心安装包存储目录，例如 `/www/wwwroot/chordv/releases`
-- `CHORDV_RELEASE_MAX_UPLOAD_BYTES`
-  发布中心单文件最大上传字节数
-- `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS`
-  心跳兜底周期
-- `CHORDV_SESSION_GRACE_SECONDS`
-  会话失联后的宽限时间
+生产环境不得使用仓库示例密钥，数据库、JWT、面板凭据与发布目录必须由部署环境单独提供。
 
-## 五、桌面端版本体系
+## 版本与发布
 
-桌面端版本号现在已经**按平台独立**，不再让 mac / Windows / Android 共用一个字段。
+桌面端版本按平台独立维护，配置文件为：
 
-版本配置文件：
+[`apps/desktop/config/platform-versions.json`](apps/desktop/config/platform-versions.json)
 
-[/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/desktop/config/platform-versions.json](/Users/achordchan/Downloads/不同步的桌面/项目/ChordV/apps/desktop/config/platform-versions.json)
-
-例如：
-- `macos`
-- `windows`
-- `android`
-- `ios`
-
-这意味着：
-- 你可以单独发布 `mac 1.0.2`
-- 同时保持 `windows = 1.0.2`
-- 不会再出现“只改了 mac，Windows 版本判断也被带歪”的问题
-
-### 版本规则
-
-未来版本号，**除非有特殊要求，一律使用第三位递增**，例如：
-
-- `1.0.1`
-- `1.0.2`
-- `1.0.3`
-
-默认只使用正式版版本号，不再保留测试渠道和相关文案。
-
-## 六、桌面端打包
-
-### 1. 按平台读取版本
+查看平台版本：
 
 ```bash
 pnpm --filter @chordv/desktop version:platform macos
@@ -123,33 +95,34 @@ pnpm --filter @chordv/desktop version:platform windows
 pnpm --filter @chordv/desktop version:platform android
 ```
 
-### 2. 按平台打包桌面端
-
-mac：
+构建 macOS 安装包：
 
 ```bash
 pnpm --filter @chordv/desktop tauri:build:platform macos
 ```
 
-Windows：
+构建 Windows 安装包：
 
 ```bash
 pnpm --filter @chordv/desktop tauri:build:platform windows
 ```
 
-说明：
-- 打包脚本会按平台自动读取对应版本号
-- 不会再共用一个桌面版本号
+构建产物默认整理到：
 
-### 3. 产物目录
-
-交付目录：
-
-- mac：`output/release/macos`
+- macOS：`output/release/macos`
 - Windows：`output/release/windows`
 - Android：`output/release/android`
 
-## 七、Android 调试
+发布流程：
+
+1. 更新目标平台版本号。
+2. 执行对应平台构建。
+3. 在发布中心创建草稿版本。
+4. 上传主安装包并完成文件校验。
+5. 确认客户端下载地址、更新日志、最低版本与强制升级策略。
+6. 由运营人员在后台执行发布。
+
+## Android 调试
 
 ```bash
 pnpm --filter @chordv/desktop android:doctor
@@ -159,120 +132,68 @@ pnpm --filter @chordv/desktop android:logcat -- --clear
 pnpm --filter @chordv/desktop android:smoke
 ```
 
-用途：
-- `android:doctor`：检查 JDK、SDK、NDK、adb、真机
-- `android:build`：构建 arm64 调试包
-- `android:install`：安装到手机
-- `android:logcat`：过滤 Android 运行时日志
-- `android:smoke`：输出真机联调步骤
+命令说明：
 
-## 八、发布中心
+- `android:doctor`：检查 JDK、SDK、NDK、adb 与真机连接状态。
+- `android:build`：构建 arm64 调试包。
+- `android:install`：安装到已连接设备并可直接启动。
+- `android:logcat`：过滤客户端运行日志。
+- `android:smoke`：输出真机联调检查步骤。
 
-当前发布中心已经支持：
-- 创建发布记录
-- 按平台和渠道管理版本
-- 上传安装包
-- 自动生成下载地址
-- 自动计算文件大小
-- 自动计算 `SHA-256`
-- 发布前校验主下载产物是否可用
-- 客户端应用内检查更新
+## 发布中心
 
-当前不做：
-- 增量更新
-- 静默自动安装
-- 前端热更新
-- Android AAB 自分发更新
-- iOS 内置更新
+发布中心用于管理客户端版本和安装包交付，核心能力包括：
 
-### 当前更新策略
+- 按平台和稳定渠道维护版本。
+- 上传完整安装包。
+- 自动生成下载地址。
+- 自动记录文件大小与 SHA-256。
+- 发布前校验主安装包是否可读取、大小是否一致、Hash 是否匹配。
+- 为客户端提供应用内更新检查。
 
-#### mac / Windows
-- 应用内检查更新
-- 展示更新日志
-- 下载完整安装包
-- 用户手动安装
+客户端更新策略：
 
-#### Android
-- 应用内检查更新
-- 下载或跳转 APK
-- 用户手动安装
+- macOS / Windows：应用内检查更新，展示更新日志，下载完整安装包，由用户手动安装。
+- Android：应用内检查更新，下载或跳转 APK，由用户手动安装。
+- iOS：保留版本提示与下载说明入口。
 
-#### iOS
-- 只保留版本提示和下载说明占位
-
-## 九、发布中心服务器落地
-
-推荐服务器变量：
+推荐生产变量：
 
 ```bash
 CHORDV_PUBLIC_BASE_URL=https://v.baymaxgroup.com
-CHORDV_RELEASE_STORAGE_ROOT=/www/wwwroot/chordv/releases
+CHORDV_RELEASE_STORAGE_ROOT=/data/releases
 CHORDV_RELEASE_MAX_UPLOAD_BYTES=1073741824
 ```
 
-推荐先准备发布目录：
+准备发布目录：
 
 ```bash
-pnpm prepare:release-storage /你的发布目录
+pnpm prepare:release-storage /data/releases
 ```
 
-例如：
+安装包目录应与代码部署目录分离，避免应用更新或回滚时影响历史发布产物。
+
+## 质量检查
+
+提交前建议执行：
 
 ```bash
-pnpm prepare:release-storage /www/wwwroot/chordv/releases
+pnpm --filter @chordv/shared check
+pnpm --filter @chordv/api check
+pnpm --filter @chordv/admin check
+pnpm --filter @chordv/desktop check
 ```
 
-推荐目录结构：
-- 代码目录：`/www/wwwroot/chordv/current`
-- 发布目录：`/www/wwwroot/chordv/releases`
+客户端发布前至少验证：
 
-不要把安装包放进 `current`，避免发版覆盖时误删。
+- 登录、节点列表、连接、心跳续租、断开。
+- 到期、流量耗尽、取消节点授权、后台强制断开。
+- macOS 关闭窗口后隐藏到后台。
+- Windows 安装后无控制台黑窗，断开后系统代理恢复。
+- 应用内更新能够返回正确版本、下载地址、文件大小与更新日志。
 
-## 十、交付与测试建议
+## 部署说明
 
-正式交付前至少要确认：
+生产部署以宝塔 Node 项目为主，代码目录、环境变量、启动命令和域名绑定应在面板中可见。安装包存储目录由 `CHORDV_RELEASE_STORAGE_ROOT` 指定，建议放在代码目录之外，并纳入服务器备份策略。
 
-### mac
-- 登录
-- 拉节点
-- 连接 / 断开
-- 后台立即断网
-- 取消节点授权
-- 到期
-- 流量耗尽
-- 关闭窗口后隐藏，不直接退出
-
-### Windows
-- 安装
-- 登录
-- 连接 / 断开
-- 不弹黑窗
-- 能真实上网
-- 断开后系统代理恢复
-- 后台强制事件断开
-
-### Android
-- 安装 APK
-- 登录
-- 连接
-- 断开
-- 后台强制事件
-- VPN 回收
-
-## 十一、当前实现边界
-
-当前已经完成的重点能力：
-- 3x-ui 主模式
-- 团队共享计量
-- 节点 client 生命周期控制
-- 桌面端强制事件断开
-- 发布中心
-- 平台独立版本号
-
-当前仍属于后续持续打磨项：
-- Android 真机稳定性继续联调
-- iOS 原生运行时
-- 更完整的下载器
-- 发布中心文件上传体验优化
-- 多平台更细的设置项
+推送 `main` 后如触发自动部署，应同时确认 GitHub Actions、服务器同步、宝塔项目重启与线上健康检查，不能只以 Git 推送成功作为上线完成依据。
