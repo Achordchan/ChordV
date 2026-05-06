@@ -915,6 +915,8 @@ export interface KickTeamMemberResultDto {
   action: "disconnect_session";
   disconnectedSessionCount: number;
   accountDisabled: boolean;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
   message: string;
   reasonCode: SessionReasonCode;
   reasonMessage: string;

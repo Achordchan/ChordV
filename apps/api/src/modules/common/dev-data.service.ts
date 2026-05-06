@@ -1009,8 +1009,7 @@ export class DevDataService implements OnModuleInit {
         revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "node_access_revoked");
         if (pendingPanelSyncCount > 0) {
           panelSyncStatus = "pending";
-          panelSyncMessage = "3x-ui 客户端禁用已转入后台同步，本地授权和当前连接已立即失效。";
-          this.schedulePanelBindingDisable(subscriptionId, undefined, "清空订阅节点授权");
+          panelSyncMessage = "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。";
         }
         reasonCode = "node_access_revoked";
         reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
@@ -1069,8 +1068,7 @@ export class DevDataService implements OnModuleInit {
       });
       if (pendingPanelSyncCount > 0) {
         panelSyncStatus = "pending";
-        panelSyncMessage = "3x-ui 客户端禁用已转入后台同步，本地授权和当前连接已立即失效。";
-        this.schedulePanelBindingDisable(subscriptionId, { nodeIds: removedNodeIds }, "取消订阅节点授权");
+        panelSyncMessage = "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。";
       }
       reasonCode = "node_access_revoked";
       reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
@@ -1115,28 +1113,6 @@ export class DevDataService implements OnModuleInit {
       panelSyncMessage,
       message: message ?? "节点授权已保存。"
     };
-  }
-
-  private schedulePanelBindingDisable(
-    subscriptionId: string,
-    filter: { userId?: string; nodeIds?: string[] } | undefined,
-    action: string
-  ) {
-    void this.runtimeSessionService
-      .disablePanelBindingsForSubscription(subscriptionId, {
-        ...filter,
-        statuses: ["active", "disabled"]
-      })
-      .then((result) => {
-        if (result.failed.length === 0) {
-          return;
-        }
-        const detail = result.failed.map((item) => `${item.nodeName}/${item.panelClientEmail}: ${item.error}`).join("；");
-        this.logger.warn(`${action}后台同步未完成：${detail}`);
-      })
-      .catch((error) => {
-        this.logger.warn(`${action}后台同步异常：${error instanceof Error ? error.message : String(error)}`);
-      });
   }
 
   async getTeamUsage(teamId: string): Promise<AdminTeamUsageRecordDto[]> {

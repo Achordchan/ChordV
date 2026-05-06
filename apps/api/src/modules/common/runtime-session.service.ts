@@ -81,6 +81,10 @@ type PanelBindingFilter = {
   statuses?: string[];
 };
 
+const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ?? 20);
+const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
+const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
+
 @Injectable()
 export class RuntimeSessionService {
   private readonly logger = new Logger(RuntimeSessionService.name);
@@ -803,19 +807,59 @@ export class RuntimeSessionService {
     subscriptionId: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
-    const result = await this.prisma.panelClientBinding.updateMany({
+    const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
         subscriptionId,
         ...(filter?.userId ? { userId: filter.userId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
         status: "active"
-      },
-      data: {
-        status: "disabled"
       }
     });
+    if (bindings.length === 0) {
+      return 0;
+    }
+    const now = new Date();
 
-    return result.count;
+    await this.prisma.$transaction([
+      this.prisma.panelClientBinding.updateMany({
+        where: {
+          id: { in: bindings.map((binding) => binding.id) }
+        },
+        data: {
+          status: "disabled"
+        }
+      }),
+      ...bindings.map((binding) =>
+        this.prisma.panelSyncJob.upsert({
+          where: {
+            dedupeKey: `disable:${binding.id}`
+          },
+          create: {
+            id: randomUUID(),
+            dedupeKey: `disable:${binding.id}`,
+            action: "disable_client",
+            bindingId: binding.id,
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            nodeId: binding.nodeId,
+            panelClientEmail: binding.panelClientEmail,
+            panelClientId: binding.panelClientId,
+            panelInboundId: binding.panelInboundId,
+            status: "pending",
+            nextRunAt: now
+          },
+          update: {
+            status: "pending",
+            nextRunAt: now,
+            lockedAt: null,
+            completedAt: null
+          }
+        })
+      )
+    ]);
+
+    return bindings.length;
   }
 
   async removePanelBindingsForSubscription(
@@ -896,6 +940,143 @@ export class RuntimeSessionService {
       .map((item) => `${item.nodeName} / ${item.panelClientEmail}: ${item.error}`)
       .join("；");
     throw new BadGatewayException(`${action}。以下节点未完成同步：${detail}`);
+  }
+
+  @Cron("*/30 * * * * *")
+  async retryPendingPanelSyncJobs() {
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - 10 * 60 * 1000);
+    const jobs = await this.prisma.panelSyncJob.findMany({
+      where: {
+        OR: [
+          {
+            status: { in: ["pending", "failed"] },
+            nextRunAt: { lte: now },
+            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+          },
+          {
+            status: "running",
+            lockedAt: { lt: staleLockBefore }
+          }
+        ]
+      },
+      include: {
+        node: true
+      },
+      orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
+      take: PANEL_SYNC_BATCH_SIZE
+    });
+
+    for (const job of jobs) {
+      const locked = await this.prisma.panelSyncJob.updateMany({
+        where: {
+          id: job.id,
+          OR: [
+            {
+              status: { in: ["pending", "failed"] },
+              nextRunAt: { lte: now },
+              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+            },
+            {
+              status: "running",
+              lockedAt: { lt: staleLockBefore }
+            }
+          ]
+        },
+        data: {
+          status: "running",
+          lockedAt: new Date()
+        }
+      });
+      if (locked.count === 0) {
+        continue;
+      }
+
+      await this.runPanelSyncJob(job);
+    }
+  }
+
+  private async runPanelSyncJob(job: {
+    id: string;
+    action: string;
+    attempts: number;
+    bindingId: string;
+    nodeId: string;
+    panelClientEmail: string;
+    panelClientId: string;
+    node: {
+      id: string;
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+      panelInboundId: number | null;
+    };
+  }) {
+    try {
+      if (job.action !== "disable_client") {
+        throw new Error(`未知面板同步动作：${job.action}`);
+      }
+
+      await this.xuiService.setClientEnabled(
+        {
+          id: job.node.id,
+          panelBaseUrl: job.node.panelBaseUrl,
+          panelApiBasePath: job.node.panelApiBasePath,
+          panelUsername: job.node.panelUsername,
+          panelPassword: job.node.panelPassword,
+          panelInboundId: job.node.panelInboundId
+        },
+        job.panelClientId,
+        job.panelClientEmail,
+        false
+      );
+
+      await this.prisma.$transaction([
+        this.prisma.panelClientBinding.update({
+          where: { id: job.bindingId },
+          data: {
+            status: "disabled"
+          }
+        }),
+        this.prisma.panelSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: "completed",
+            lockedAt: null,
+            lastError: null,
+            completedAt: new Date()
+          }
+        })
+      ]);
+    } catch (error) {
+      const nextAttempts = job.attempts + 1;
+      const retrySeconds = Math.min(
+        PANEL_SYNC_RETRY_MAX_SECONDS,
+        PANEL_SYNC_RETRY_BASE_SECONDS * 2 ** Math.min(nextAttempts - 1, 6)
+      );
+      const message = error instanceof Error ? error.message : "3x-ui 客户端同步失败";
+      await this.prisma.$transaction([
+        this.prisma.node.update({
+          where: { id: job.nodeId },
+          data: {
+            panelStatus: "degraded",
+            panelError: message
+          }
+        }),
+        this.prisma.panelSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: "failed",
+            attempts: nextAttempts,
+            lockedAt: null,
+            lastError: message,
+            nextRunAt: new Date(Date.now() + retrySeconds * 1000)
+          }
+        })
+      ]);
+      this.logger.warn(`面板同步任务失败，${retrySeconds} 秒后重试：${job.nodeId}/${job.panelClientEmail}: ${message}`);
+    }
   }
 
   async syncActiveLeasesForSubscription(subscription: {

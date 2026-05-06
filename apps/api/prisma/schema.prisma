@@ -189,6 +189,7 @@ model User {
   sessionLeases        NodeSessionLease[]
   securityEvents       SecurityEvent[]
   panelClientBindings  PanelClientBinding[]
+  panelSyncJobs        PanelSyncJob[]
   supportTickets       SupportTicket[]
   supportTicketMessages SupportTicketMessage[] @relation("SupportTicketMessageAuthor")
   announcementReadStates AnnouncementReadState[]
@@ -233,6 +234,7 @@ model Subscription {
   sessionLeases      NodeSessionLease[]
   securityEvents     SecurityEvent[]
   panelClientBindings PanelClientBinding[]
+  panelSyncJobs      PanelSyncJob[]
   supportTickets     SupportTicket[]
 }
 
@@ -249,6 +251,7 @@ model Team {
   trafficLedgerEntries TrafficLedger[]
   trafficSnapshots TrafficSnapshot[]
   panelClientBindings PanelClientBinding[]
+  panelSyncJobs     PanelSyncJob[]
   supportTickets  SupportTicket[]
 }
 
@@ -329,6 +332,7 @@ model Node {
   sessionLeases     NodeSessionLease[]
   securityEvents    SecurityEvent[]
   panelClientBindings PanelClientBinding[]
+  panelSyncJobs     PanelSyncJob[]
 }
 
 model SubscriptionNodeAccess {
@@ -464,10 +468,42 @@ model PanelClientBinding {
   user             User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
   team             Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
   node             Node         @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  panelSyncJobs    PanelSyncJob[]
 
   @@unique([subscriptionId, userId, nodeId])
   @@index([subscriptionId, nodeId, status])
   @@index([nodeId, panelClientEmail])
+}
+
+model PanelSyncJob {
+  id               String             @id
+  dedupeKey        String             @unique
+  action           String
+  bindingId        String
+  subscriptionId   String
+  userId           String?
+  teamId           String?
+  nodeId           String
+  panelClientEmail String
+  panelClientId    String
+  panelInboundId   Int
+  status           String             @default("pending")
+  attempts         Int                @default(0)
+  nextRunAt        DateTime           @default(now())
+  lockedAt         DateTime?
+  lastError        String?
+  completedAt      DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  binding          PanelClientBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+  subscription     Subscription       @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  user             User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team             Team?              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  node             Node               @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextRunAt])
+  @@index([nodeId, status, nextRunAt])
+  @@index([subscriptionId, status])
 }
 
 model PolicyProfile {

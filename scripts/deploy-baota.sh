@@ -129,6 +129,7 @@ fi
 
 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" install --frozen-lockfile
 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:generate
+COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:push
 
 find "${DEPLOY_PATH}" "${DEPLOY_ADMIN_PATH}" \( -name ".DS_Store" -o -name "._*" \) -type f -print0 | xargs -0 -r rm -f
 

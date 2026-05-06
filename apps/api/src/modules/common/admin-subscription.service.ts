@@ -167,11 +167,7 @@ export class AdminSubscriptionService {
           await this.runtimeSessionService.revokeUserLeases(userId, "user_disabled", {
             subscriptionId: personalSubscription.id
           });
-          const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(
-            personalSubscription.id,
-            { userId }
-          );
-          this.runtimeSessionService.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
+          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(personalSubscription.id, { userId });
         } else if (input.status === "active") {
           await this.runtimeSessionService.syncSubscriptionPanelAccess(personalSubscription.id);
         }
@@ -190,11 +186,7 @@ export class AdminSubscriptionService {
           await this.runtimeSessionService.revokeUserLeases(userId, "user_disabled", {
             subscriptionId: teamSubscription.id
           });
-          const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(
-            teamSubscription.id,
-            { userId }
-          );
-          this.runtimeSessionService.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
+          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(teamSubscription.id, { userId });
         } else if (input.status === "active") {
           await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
         }
@@ -1072,11 +1064,16 @@ export class AdminSubscriptionService {
     }
 
     let disconnectedSessionCount = 0;
+    let panelSyncStatus: KickTeamMemberResultDto["panelSyncStatus"] = "synced";
+    let panelSyncMessage: string | null = null;
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
-      const disableResult = await this.runtimeSessionService.disablePanelBindingsForSubscription(subscription.id, {
-        userId: member.userId
-      });
+      const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
+        subscription.id,
+        {
+          userId: member.userId
+        }
+      );
       disconnectedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(
         subscription.id,
         "team_member_disconnected",
@@ -1084,10 +1081,10 @@ export class AdminSubscriptionService {
           userId: member.userId
         }
       );
-      this.runtimeSessionService.assertPanelBindingMutation(
-        disconnectedSessionCount > 0 ? "会话已断开，但禁用 3x-ui 客户端失败" : "禁用 3x-ui 客户端失败",
-        disableResult
-      );
+      if (pendingPanelSyncCount > 0) {
+        panelSyncStatus = "pending";
+        panelSyncMessage = "3x-ui 客户端禁用已加入后台队列。";
+      }
     }
 
     let user: AdminUserRecordDto | null = null;
@@ -1101,12 +1098,17 @@ export class AdminSubscriptionService {
     if (accountDisabled) {
       message = disconnectedSessionCount > 0 ? "已立即断开会话并禁用账号" : "账号已禁用，当前无活跃会话";
     }
+    if (panelSyncMessage) {
+      message = `${message}，${panelSyncMessage}`;
+    }
 
     return {
       ok: true,
       action: "disconnect_session",
       disconnectedSessionCount,
       accountDisabled,
+      panelSyncStatus,
+      panelSyncMessage,
       message,
       reasonCode: input.disableAccount ? "account_disabled" : "admin_paused_connection",
       reasonMessage: input.disableAccount ? "当前账号已禁用，会话已失效。" : "管理员已暂停当前连接，可稍后恢复使用。",
