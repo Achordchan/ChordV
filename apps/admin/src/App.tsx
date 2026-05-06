@@ -662,13 +662,14 @@ export function App() {
 
     try {
       setNodeAccessSaving(true);
-      await updateSubscriptionNodeAccess(nodeAccessEditor.subscriptionId, {
+      const result = await updateSubscriptionNodeAccess(nodeAccessEditor.subscriptionId, {
         nodeIds: nodeAccessSelection
       });
+      const panelSyncPending = result.panelSyncStatus === "pending";
       notifications.show({
-        color: "green",
-        title: "操作成功",
-        message: "节点授权已保存"
+        color: panelSyncPending ? "yellow" : "green",
+        title: panelSyncPending ? "授权已保存" : "操作成功",
+        message: result.message ?? "节点授权已保存"
       });
       await loadSnapshot();
       closeNodeAccessEditor();

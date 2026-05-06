@@ -996,24 +996,30 @@ export class DevDataService implements OnModuleInit {
     let reasonCode: SessionReasonCode | null = null;
     let reasonMessage: string | null = null;
     let message: string | null = null;
+    let panelSyncStatus: SubscriptionNodeAccessDto["panelSyncStatus"] = "synced";
+    let panelSyncMessage: string | null = null;
 
     if (uniqueNodeIds.length === 0) {
       if (existingRows.length > 0) {
-        const disableResult = await this.runtimeSessionService.disablePanelBindingsForSubscription(subscriptionId);
-        this.runtimeSessionService.assertPanelBindingMutation("禁用 3x-ui 客户端失败，节点授权未清空", disableResult);
         await this.prisma.subscriptionNodeAccess.deleteMany({
           where: { subscriptionId }
         });
+        const pendingPanelSyncCount =
+          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscriptionId);
         revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "node_access_revoked");
+        if (pendingPanelSyncCount > 0) {
+          panelSyncStatus = "pending";
+          panelSyncMessage = "3x-ui 客户端禁用已转入后台同步，本地授权和当前连接已立即失效。";
+          this.schedulePanelBindingDisable(subscriptionId, undefined, "清空订阅节点授权");
+        }
         reasonCode = "node_access_revoked";
         reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
         message =
           revokedSessionCount > 0
-            ? `节点授权已清空，已断开 ${revokedSessionCount} 条现有连接。`
-            : "节点授权已清空，当前没有活跃连接。";
+            ? `节点授权已清空，已断开 ${revokedSessionCount} 条现有连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`
+            : `节点授权已清空，当前没有活跃连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
       }
 
-      await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
       await this.publishNodeAccessUpdatedEvent({
         subscriptionId,
         userId: subscription.userId,
@@ -1026,6 +1032,8 @@ export class DevDataService implements OnModuleInit {
         revokedSessionCount,
         reasonCode,
         reasonMessage,
+        panelSyncStatus,
+        panelSyncMessage,
         message
       };
     }
@@ -1044,25 +1052,32 @@ export class DevDataService implements OnModuleInit {
     const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
 
     if (removedNodeIds.length > 0) {
-      const disableResult = await this.runtimeSessionService.disablePanelBindingsForSubscription(subscriptionId, {
-        nodeIds: removedNodeIds
-      });
-      this.runtimeSessionService.assertPanelBindingMutation("禁用 3x-ui 客户端失败，节点授权未保存", disableResult);
       await this.prisma.subscriptionNodeAccess.deleteMany({
         where: {
           subscriptionId,
           nodeId: { in: removedNodeIds }
         }
       });
+      const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
+        subscriptionId,
+        {
+          nodeIds: removedNodeIds
+        }
+      );
       revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "node_access_revoked", {
         nodeIds: removedNodeIds
       });
+      if (pendingPanelSyncCount > 0) {
+        panelSyncStatus = "pending";
+        panelSyncMessage = "3x-ui 客户端禁用已转入后台同步，本地授权和当前连接已立即失效。";
+        this.schedulePanelBindingDisable(subscriptionId, { nodeIds: removedNodeIds }, "取消订阅节点授权");
+      }
       reasonCode = "node_access_revoked";
       reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
       message =
         revokedSessionCount > 0
-          ? `节点授权已保存，已断开 ${revokedSessionCount} 条受影响连接。`
-          : "节点授权已保存。";
+          ? `节点授权已保存，已断开 ${revokedSessionCount} 条受影响连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`
+          : `节点授权已保存。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
     }
 
     if (addedNodeIds.length > 0) {
@@ -1096,8 +1111,32 @@ export class DevDataService implements OnModuleInit {
       revokedSessionCount,
       reasonCode,
       reasonMessage,
+      panelSyncStatus,
+      panelSyncMessage,
       message: message ?? "节点授权已保存。"
     };
+  }
+
+  private schedulePanelBindingDisable(
+    subscriptionId: string,
+    filter: { userId?: string; nodeIds?: string[] } | undefined,
+    action: string
+  ) {
+    void this.runtimeSessionService
+      .disablePanelBindingsForSubscription(subscriptionId, {
+        ...filter,
+        statuses: ["active", "disabled"]
+      })
+      .then((result) => {
+        if (result.failed.length === 0) {
+          return;
+        }
+        const detail = result.failed.map((item) => `${item.nodeName}/${item.panelClientEmail}: ${item.error}`).join("；");
+        this.logger.warn(`${action}后台同步未完成：${detail}`);
+      })
+      .catch((error) => {
+        this.logger.warn(`${action}后台同步异常：${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
   async getTeamUsage(teamId: string): Promise<AdminTeamUsageRecordDto[]> {

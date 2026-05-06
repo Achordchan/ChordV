@@ -419,6 +419,8 @@ export interface SubscriptionNodeAccessDto {
   revokedSessionCount?: number;
   reasonCode?: SessionReasonCode | null;
   reasonMessage?: string | null;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
   message?: string | null;
 }
 

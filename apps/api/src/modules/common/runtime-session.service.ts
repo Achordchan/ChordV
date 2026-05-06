@@ -75,6 +75,12 @@ type ActiveRuntimeUsageContext = {
   teamId: string | null;
 };
 
+type PanelBindingFilter = {
+  userId?: string;
+  nodeIds?: string[];
+  statuses?: string[];
+};
+
 @Injectable()
 export class RuntimeSessionService {
   private readonly logger = new Logger(RuntimeSessionService.name);
@@ -594,6 +600,9 @@ export class RuntimeSessionService {
         continue;
       }
       if (invalidByNode || !shouldProvision) {
+        if (binding.status !== "active") {
+          continue;
+        }
         await this.revokeSubscriptionLeases(
           subscriptionId,
           invalidByNode ? "node_access_revoked" : "subscription_inactive",
@@ -727,14 +736,14 @@ export class RuntimeSessionService {
 
   async disablePanelBindingsForSubscription(
     subscriptionId: string,
-    filter?: { userId?: string; nodeIds?: string[] }
+    filter?: PanelBindingFilter
   ): Promise<PanelBindingMutationResult> {
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
         subscriptionId,
         ...(filter?.userId ? { userId: filter.userId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
-        status: "active"
+        status: filter?.statuses ? { in: filter.statuses } : "active"
       },
       include: {
         node: true
@@ -788,6 +797,25 @@ export class RuntimeSessionService {
       updated: bindings.length - failed.length,
       failed
     };
+  }
+
+  async markPanelBindingsDisabledForSubscription(
+    subscriptionId: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    const result = await this.prisma.panelClientBinding.updateMany({
+      where: {
+        subscriptionId,
+        ...(filter?.userId ? { userId: filter.userId } : {}),
+        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
+        status: "active"
+      },
+      data: {
+        status: "disabled"
+      }
+    });
+
+    return result.count;
   }
 
   async removePanelBindingsForSubscription(
