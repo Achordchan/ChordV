@@ -836,15 +836,82 @@ export class AdminSubscriptionService {
         subscriptions: {
           include: { plan: true },
           orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-        },
-        trafficLedgerEntries: {
-          include: { user: true, node: true },
-          orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
         }
       },
       orderBy: { createdAt: "asc" }
     });
-    return teams.map((team) => toAdminTeamRecord(team));
+    const usageByTeamId = await this.loadTeamUsageSummaries(teams.map((team) => team.id));
+    return teams.map((team) =>
+      toAdminTeamRecord({
+        ...team,
+        trafficLedgerEntries: usageByTeamId.get(team.id) ?? []
+      })
+    );
+  }
+
+  private async loadTeamUsageSummaries(teamIds: string[]) {
+    const result = new Map<
+      string,
+      Array<{
+        id: string;
+        teamId: string;
+        userId: string;
+        subscriptionId: string;
+        nodeId: string | null;
+        usedTrafficGb: number;
+        recordedAt: Date;
+        user: { displayName: string; email: string };
+        node: { id: string; name: string; region: string } | null;
+      }>
+    >();
+    if (teamIds.length === 0) {
+      return result;
+    }
+
+    const rows = await this.prisma.trafficLedger.groupBy({
+      by: ["teamId", "userId", "subscriptionId", "nodeId"],
+      where: { teamId: { in: teamIds } },
+      _sum: { usedTrafficGb: true },
+      _count: { _all: true },
+      _max: { recordedAt: true }
+    });
+    const userIds = Array.from(new Set(rows.map((row) => row.userId)));
+    const nodeIds = Array.from(new Set(rows.map((row) => row.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId))));
+    const [users, nodes] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, displayName: true, email: true }
+      }),
+      this.prisma.node.findMany({
+        where: { id: { in: nodeIds } },
+        select: { id: true, name: true, region: true }
+      })
+    ]);
+    const userById = new Map(users.map((user) => [user.id, user]));
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+    for (const row of rows) {
+      const recordedAt = row._max.recordedAt;
+      const user = userById.get(row.userId);
+      if (!recordedAt || !user) {
+        continue;
+      }
+      const current = result.get(row.teamId) ?? [];
+      current.push({
+        id: `ledger_summary_${row.teamId}_${row.userId}_${row.nodeId ?? "unknown"}`,
+        teamId: row.teamId,
+        userId: row.userId,
+        subscriptionId: row.subscriptionId,
+        nodeId: row.nodeId,
+        usedTrafficGb: row._sum.usedTrafficGb ?? 0,
+        recordedAt,
+        user,
+        node: row.nodeId ? nodeById.get(row.nodeId) ?? null : null
+      });
+      result.set(row.teamId, current);
+    }
+
+    return result;
   }
 
   async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
