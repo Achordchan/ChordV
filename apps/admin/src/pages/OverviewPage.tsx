@@ -17,7 +17,7 @@ export function OverviewPage(props: OverviewPageProps) {
     <>
       <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="md">
         <MetricCard label="用户数" value={props.snapshot.dashboard.users} icon={<IconUsers size={18} />} />
-        <MetricCard label="团队数" value={props.snapshot.teams.length} icon={<IconUsers size={18} />} />
+        <MetricCard label="团队数" value={props.snapshot.dashboard.teams} icon={<IconUsers size={18} />} />
         <MetricCard label="有效套餐" value={props.snapshot.dashboard.activePlans} icon={<IconListDetails size={18} />} />
         <MetricCard label="有效订阅" value={props.snapshot.dashboard.activeSubscriptions} icon={<IconUser size={18} />} />
         <MetricCard label="节点数" value={props.snapshot.dashboard.activeNodes} icon={<IconMapPin size={18} />} />

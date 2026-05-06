@@ -1,6 +1,10 @@
 import type { AdminPlanRecordDto, CreatePlanInputDto, UpdatePlanInputDto, UpdatePlanSecurityInputDto } from "@chordv/shared";
 import { request } from "./base";
 
+export function fetchAdminPlans() {
+  return request<AdminPlanRecordDto[]>("/admin/plans");
+}
+
 export function createPlan(input: CreatePlanInputDto) {
   return request<AdminPlanRecordDto>("/admin/plans", {
     method: "POST",

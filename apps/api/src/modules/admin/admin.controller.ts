@@ -66,6 +66,11 @@ export class AdminController {
     return this.devDataService.getAdminSnapshot();
   }
 
+  @Get("dashboard")
+  getDashboard() {
+    return this.devDataService.getAdminDashboard();
+  }
+
   @Get("users")
   getUsers() {
     return this.devDataService.listAdminUsers();

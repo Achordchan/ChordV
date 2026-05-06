@@ -12,6 +12,10 @@ import type {
 } from "@chordv/shared";
 import { request } from "./base";
 
+export function fetchAdminTeams() {
+  return request<AdminTeamRecordDto[]>("/admin/teams");
+}
+
 export function createTeam(input: CreateTeamInputDto) {
   return request<AdminTeamRecordDto>("/admin/teams", {
     method: "POST",

@@ -574,6 +574,7 @@ export interface AdminTeamRecordDto {
 
 export interface DashboardSnapshotDto {
   users: number;
+  teams: number;
   activeSubscriptions: number;
   activeNodes: number;
   announcements: number;

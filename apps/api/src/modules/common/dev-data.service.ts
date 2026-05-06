@@ -64,6 +64,7 @@ import type {
   MarkClientAnnouncementsReadInputDto,
   NodeProbeStatus,
   NodeSummaryDto,
+  DashboardSnapshotDto,
   PlatformTarget,
   PolicyBundleDto,
   ReleaseArtifactType,
@@ -398,6 +399,7 @@ export class DevDataService implements OnModuleInit {
     return {
       dashboard: {
         users: users.length,
+        teams: teams.length,
         activeSubscriptions: subscriptions.filter((item) => item.state === "active").length,
         activeNodes: nodes.length,
         announcements: announcements.filter((item) => item.isActive).length,
@@ -415,6 +417,30 @@ export class DevDataService implements OnModuleInit {
       announcements,
       policy,
       releases
+    };
+  }
+
+  async getAdminDashboard(): Promise<DashboardSnapshotDto> {
+    const [users, teams, activePlans, activeSubscriptions, activeNodes, announcements, ticketCounts] = await Promise.all([
+      this.prisma.user.count(),
+      this.prisma.team.count(),
+      this.prisma.plan.count({ where: { isActive: true } }),
+      this.prisma.subscription.count({ where: { state: "active" } }),
+      this.prisma.node.count({ where: { isActive: true } }),
+      this.prisma.announcement.count({ where: { isActive: true } }),
+      this.getSupportTicketDashboardCounts()
+    ]);
+
+    return {
+      users,
+      teams,
+      activePlans,
+      activeSubscriptions,
+      activeNodes,
+      announcements,
+      openTickets: ticketCounts.openTickets,
+      waitingAdminTickets: ticketCounts.waitingAdminTickets,
+      closedTickets: ticketCounts.closedTickets
     };
   }
 

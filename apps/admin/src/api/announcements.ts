@@ -1,6 +1,10 @@
 import type { AdminAnnouncementRecordDto, CreateAnnouncementInputDto, UpdateAnnouncementInputDto } from "@chordv/shared";
 import { request } from "./base";
 
+export function fetchAdminAnnouncements() {
+  return request<AdminAnnouncementRecordDto[]>("/admin/announcements");
+}
+
 export function createAnnouncement(input: CreateAnnouncementInputDto) {
   return request<AdminAnnouncementRecordDto>("/admin/announcements", {
     method: "POST",

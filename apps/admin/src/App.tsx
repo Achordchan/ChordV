@@ -24,6 +24,7 @@ import type {
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
   AdminNodePanelInboundDto,
+  AdminPanelSyncJobDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminSnapshotDto,
@@ -82,8 +83,16 @@ import {
   deleteAnnouncement,
   deleteNode,
   deleteTeamMember,
+  fetchAdminAnnouncements,
+  fetchAdminDashboard,
+  fetchAdminNodes,
+  fetchAdminPanelSyncJobs,
+  fetchAdminPlans,
+  fetchAdminPolicy,
+  fetchAdminSubscriptions,
+  fetchAdminTeams,
+  fetchAdminUsers,
   fetchNodePanelInbounds,
-  getAdminSnapshot,
   getSubscriptionNodeAccess,
   importNode,
   kickTeamMember,
@@ -178,6 +187,8 @@ type NodeAccessEditorState = {
   ownerLabel: string;
 };
 
+type SnapshotListKey = Exclude<keyof AdminSnapshotDto, "dashboard" | "policy">;
+
 type AdminAuthFormState = {
   account: string;
   password: string;
@@ -234,6 +245,9 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
 export function App() {
   const [snapshot, setSnapshot] = useState<AdminSnapshotDto | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sectionLoading, setSectionLoading] = useState(false);
+  const [loadedSections, setLoadedSections] = useState<Set<SectionKey>>(() => new Set());
+  const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -315,8 +329,15 @@ export function App() {
       setLoading(false);
       return;
     }
-    void loadSnapshot();
+    void loadInitialAdminData();
   }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated || !snapshot) {
+      return;
+    }
+    void loadSectionData(section);
+  }, [authenticated, section, snapshot]);
 
   useEffect(() => {
     if (snapshot) {
@@ -465,6 +486,9 @@ export function App() {
     setSnapshot(null);
     setAuthenticated(false);
     setLoading(false);
+    setSectionLoading(false);
+    setLoadedSections(new Set());
+    setRefreshingDashboard(false);
     setError(null);
     setAuthError("登录已失效，请重新登录");
     setDrawer({ type: null, recordId: null, parentId: null });
@@ -499,12 +523,41 @@ export function App() {
     return true;
   }
 
-  async function loadSnapshot() {
+  function mergeSnapshot(patch: Partial<AdminSnapshotDto>) {
+    setSnapshot((current) => {
+      const base: AdminSnapshotDto = current ?? {
+        dashboard: {
+          users: 0,
+          teams: 0,
+          activePlans: 0,
+          activeSubscriptions: 0,
+          activeNodes: 0,
+          announcements: 0,
+          openTickets: 0,
+          waitingAdminTickets: 0,
+          closedTickets: 0
+        },
+        users: [],
+        plans: [],
+        subscriptions: [],
+        teams: [],
+        nodes: [],
+        panelSyncJobs: [],
+        announcements: [],
+        policy: patch.policy as AdminPolicyRecordDto,
+        releases: []
+      };
+      return { ...base, ...patch };
+    });
+  }
+
+  async function loadInitialAdminData() {
     try {
       setLoading(true);
       setError(null);
-      const data = await getAdminSnapshot();
-      setSnapshot(data);
+      const [dashboard, policy] = await Promise.all([fetchAdminDashboard(), fetchAdminPolicy()]);
+      mergeSnapshot({ dashboard, policy });
+      setLoadedSections(new Set());
     } catch (reason) {
       const message = readError(reason, "加载失败");
       if (ensureAuthenticated(message)) {
@@ -517,21 +570,105 @@ export function App() {
     }
   }
 
-  async function refreshSnapshotAfterAction() {
+  async function loadFullSnapshot() {
     try {
-      const data = await getAdminSnapshot();
-      setSnapshot(data);
+      setLoading(true);
+      setError(null);
+      const [dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, announcements] = await Promise.all([
+        fetchAdminDashboard(),
+        fetchAdminPolicy(),
+        fetchAdminUsers(),
+        fetchAdminPlans(),
+        fetchAdminSubscriptions(),
+        fetchAdminTeams(),
+        fetchAdminNodes(),
+        fetchAdminPanelSyncJobs(),
+        fetchAdminAnnouncements()
+      ]);
+      mergeSnapshot({ dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, announcements });
+      setLoadedSections(new Set(Object.keys(sectionMeta) as SectionKey[]));
     } catch (reason) {
-      const message = readError(reason, "刷新失败");
+      const message = readError(reason, "加载失败");
       if (ensureAuthenticated(message)) {
         return;
       }
-      notifications.show({
-        color: "yellow",
-        title: "数据刷新失败",
-        message
-      });
+      setError(message);
+    } finally {
+      setLoading(false);
     }
+  }
+
+  async function refreshDashboard() {
+    try {
+      setRefreshingDashboard(true);
+      const dashboard = await fetchAdminDashboard();
+      mergeSnapshot({ dashboard });
+    } catch {
+      // ignore
+    } finally {
+      setRefreshingDashboard(false);
+    }
+  }
+
+  function applyListPatch<K extends SnapshotListKey>(key: K, value: AdminSnapshotDto[K]) {
+    mergeSnapshot({ [key]: value } as Pick<AdminSnapshotDto, K>);
+  }
+
+  async function loadSectionData(targetSection: SectionKey, options?: { force?: boolean; silent?: boolean }) {
+    if (!options?.force && loadedSections.has(targetSection)) {
+      return;
+    }
+    try {
+      if (!options?.silent) {
+        setSectionLoading(true);
+      }
+      if (targetSection === "overview") {
+        const [subscriptions, nodes] = await Promise.all([fetchAdminSubscriptions(), fetchAdminNodes()]);
+        mergeSnapshot({ subscriptions, nodes });
+      } else if (targetSection === "users") {
+        const [users, teams] = await Promise.all([fetchAdminUsers(), fetchAdminTeams()]);
+        mergeSnapshot({ users, teams });
+      } else if (targetSection === "plans") {
+        applyListPatch("plans", await fetchAdminPlans());
+      } else if (targetSection === "subscriptions") {
+        const [users, plans, subscriptions, teams] = await Promise.all([
+          fetchAdminUsers(),
+          fetchAdminPlans(),
+          fetchAdminSubscriptions(),
+          fetchAdminTeams()
+        ]);
+        mergeSnapshot({ users, plans, subscriptions, teams });
+      } else if (targetSection === "nodes") {
+        const [nodes, panelSyncJobs] = await Promise.all([fetchAdminNodes(), fetchAdminPanelSyncJobs()]);
+        mergeSnapshot({ nodes, panelSyncJobs });
+      } else if (targetSection === "announcements") {
+        applyListPatch("announcements", await fetchAdminAnnouncements());
+      }
+      setLoadedSections((current) => new Set(current).add(targetSection));
+    } catch (reason) {
+      const message = readError(reason, "加载失败");
+      if (ensureAuthenticated(message)) {
+        return;
+      }
+      if (!options?.silent) {
+        notifications.show({
+          color: "red",
+          title: "加载失败",
+          message
+        });
+      }
+    } finally {
+      if (!options?.silent) {
+        setSectionLoading(false);
+      }
+    }
+  }
+
+  async function refreshCurrentDataAfterAction() {
+    await Promise.all([
+      refreshDashboard(),
+      loadSectionData(section, { force: true, silent: true })
+    ]);
   }
 
   async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm) {
@@ -630,7 +767,7 @@ export function App() {
         title: "操作成功",
         message: resolvedMessage
       });
-      void refreshSnapshotAfterAction();
+      void refreshCurrentDataAfterAction();
       return true;
     } catch (reason) {
       const message = readError(reason, "操作失败");
@@ -691,7 +828,7 @@ export function App() {
         message: result.message ?? "节点授权已保存"
       });
       closeNodeAccessEditor();
-      void refreshSnapshotAfterAction();
+      void refreshCurrentDataAfterAction();
     } catch (reason) {
       const message = readError(reason, "保存节点授权失败");
       if (ensureAuthenticated(message)) {
@@ -1477,7 +1614,7 @@ export function App() {
         <Stack>
           <Text>后台加载失败</Text>
           {error ? <Alert color="red">{error}</Alert> : null}
-          <Button onClick={() => void loadSnapshot()} loading={loading}>
+          <Button onClick={() => void loadInitialAdminData()} loading={loading}>
             重试
           </Button>
         </Stack>
@@ -1550,7 +1687,7 @@ export function App() {
             </Group>
 
             <Group className="admin-header-actions">
-              <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadSnapshot()} loading={loading}>
+              <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadFullSnapshot()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
               </Button>
               <Button variant="default" onClick={() => void handleAdminLogout()}>
@@ -1601,6 +1738,12 @@ export function App() {
 
         <AppShell.Main>
           <Stack gap="lg">
+            {sectionLoading ? (
+              <Alert color="blue" variant="light">
+                正在加载当前模块数据
+              </Alert>
+            ) : null}
+
             {section === "overview" ? (
               <OverviewPage
                 snapshot={snapshot}

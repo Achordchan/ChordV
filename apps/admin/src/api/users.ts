@@ -1,6 +1,10 @@
 import type { AdminUserRecordDto, CreateUserInputDto, UpdateUserInputDto, UpdateUserSecurityInputDto } from "@chordv/shared";
 import { request } from "./base";
 
+export function fetchAdminUsers() {
+  return request<AdminUserRecordDto[]>("/admin/users");
+}
+
 export function createUser(input: CreateUserInputDto) {
   return request<AdminUserRecordDto>("/admin/users", {
     method: "POST",

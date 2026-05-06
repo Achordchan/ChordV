@@ -12,6 +12,10 @@ import type {
 } from "@chordv/shared";
 import { request } from "./base";
 
+export function fetchAdminSubscriptions() {
+  return request<AdminSubscriptionRecordDto[]>("/admin/subscriptions");
+}
+
 export function createSubscription(input: CreateSubscriptionInputDto) {
   return request<AdminSubscriptionRecordDto>("/admin/subscriptions", {
     method: "POST",

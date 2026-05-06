@@ -438,6 +438,7 @@ export const mockAdminReleases: AdminReleaseRecordDto[] = [
 export const mockAdminSnapshot: AdminSnapshotDto = {
   dashboard: {
     users: mockAdminUsers.length,
+    teams: mockAdminTeams.length,
     activeSubscriptions: mockAdminSubscriptions.filter((item) => item.state === "active").length,
     activeNodes: mockAdminNodes.length,
     announcements: mockAdminAnnouncements.filter((item) => item.isActive).length,

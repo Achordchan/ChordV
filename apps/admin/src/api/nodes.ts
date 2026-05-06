@@ -1,5 +1,13 @@
-import type { AdminNodePanelInboundDto, AdminNodeRecordDto, ImportNodeInputDto, UpdateNodeInputDto } from "@chordv/shared";
+import type { AdminNodePanelInboundDto, AdminNodeRecordDto, AdminPanelSyncJobDto, ImportNodeInputDto, UpdateNodeInputDto } from "@chordv/shared";
 import { request } from "./base";
+
+export function fetchAdminNodes() {
+  return request<AdminNodeRecordDto[]>("/admin/nodes");
+}
+
+export function fetchAdminPanelSyncJobs() {
+  return request<AdminPanelSyncJobDto[]>("/admin/nodes/panel-sync-jobs");
+}
 
 export function importNode(input: ImportNodeInputDto) {
   return request<AdminNodeRecordDto>("/admin/nodes/import", {
