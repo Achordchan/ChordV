@@ -1,6 +1,7 @@
-import { Alert, Badge, Button, Group, Loader, Modal, Paper, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { useMemo, useState } from "react";
+import { Alert, Badge, Button, Group, Loader, Modal, Paper, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
-import { IconMessageCirclePlus, IconRefresh, IconSend } from "@tabler/icons-react";
+import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend } from "@tabler/icons-react";
 import { isSupportTicketUnread } from "../lib/supportTickets";
 
 type TicketCenterModalProps = {
@@ -29,10 +30,34 @@ type TicketCenterModalProps = {
   onSubmitReply: () => void;
 };
 
+type TicketStatusFilter = "all" | "waiting_user" | "replied" | "closed";
+
 export function TicketCenterModal(props: TicketCenterModalProps) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const replyingDisabled =
     props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || !props.replyBody.trim();
   const creatingDisabled = props.submitting || props.createTitle.trim().length < 2 || props.createBody.trim().length < 5;
+  const filteredTickets = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return props.tickets.filter((ticket) => {
+      const matchStatus =
+        statusFilter === "all" ||
+        (statusFilter === "waiting_user" && ticket.status === "waiting_user") ||
+        (statusFilter === "replied" && (ticket.status === "open" || ticket.status === "waiting_admin")) ||
+        (statusFilter === "closed" && ticket.status === "closed");
+      if (!matchStatus) {
+        return false;
+      }
+      if (!keyword) {
+        return true;
+      }
+      return [ticket.title, ticket.lastMessagePreview ?? "", statusLabel(ticket.status), formatDateTime(ticket.lastMessageAt)]
+        .join(" ")
+        .toLowerCase()
+        .includes(keyword);
+    });
+  }, [props.tickets, search, statusFilter]);
 
   return (
     <Modal
@@ -52,7 +77,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
           <div className="ticket-center__headline">
             <Text fw={700}>联系邮箱：{props.email}</Text>
             <Text size="sm" c="dimmed">
-              可以直接查看历史工单、补充信息，或新建新的问题单。
+              您可以在这里查看与客服的沟通记录并继续补充信息。
             </Text>
           </div>
           <Group gap="xs">
@@ -87,9 +112,30 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
             <div className="ticket-center__sidebar-head">
               <Text fw={700}>工单列表</Text>
               <Badge variant="light" color="gray">
-                {props.tickets.length} 条
+                {filteredTickets.length}/{props.tickets.length}
               </Badge>
             </div>
+            <TextInput
+              value={search}
+              onChange={(event) => setSearch(event.currentTarget.value)}
+              placeholder="搜索工单标题或内容"
+              size="xs"
+              leftSection={<IconSearch size={15} />}
+              className="ticket-center__search"
+            />
+            <SegmentedControl
+              value={statusFilter}
+              onChange={(value) => setStatusFilter(value as TicketStatusFilter)}
+              size="xs"
+              fullWidth
+              className="ticket-center__status-filter"
+              data={[
+                { value: "all", label: "全部" },
+                { value: "waiting_user", label: "等待补充" },
+                { value: "replied", label: "已回复" },
+                { value: "closed", label: "已关闭" }
+              ]}
+            />
             <div className="ticket-center__sidebar-scroll">
               <Stack gap="xs">
                 {props.listBusy ? (
@@ -99,8 +145,8 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                       正在加载工单列表…
                     </Text>
                   </div>
-                ) : props.tickets.length > 0 ? (
-                  props.tickets.map((ticket) => {
+                ) : filteredTickets.length > 0 ? (
+                  filteredTickets.map((ticket) => {
                     const active = ticket.id === props.selectedTicketId && !props.createMode;
                     return (
                       <button
@@ -110,16 +156,9 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         onClick={() => props.onSelectTicket(ticket.id)}
                       >
                         <div className="ticket-center__ticket-head">
-                          <Group gap={8} wrap="nowrap" align="center">
-                            {isSupportTicketUnread(ticket) ? (
-                              <Badge size="xs" color="red" variant="filled">
-                                新消息
-                              </Badge>
-                            ) : null}
-                            <Text fw={600} lineClamp={1}>
-                              {ticket.title}
-                            </Text>
-                          </Group>
+                          <Text fw={700} lineClamp={1}>
+                            {ticket.title}
+                          </Text>
                           <Badge size="sm" color={statusColor(ticket.status)} variant="light">
                             {statusLabel(ticket.status)}
                           </Badge>
@@ -127,17 +166,20 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         <Text size="sm" c="dimmed" lineClamp={2}>
                           {ticket.lastMessagePreview || "暂无最新消息"}
                         </Text>
-                        <Text size="xs" c="dimmed">
-                          最后更新：{formatDateTime(ticket.lastMessageAt)}
-                        </Text>
+                        <div className="ticket-center__ticket-foot">
+                          <Text size="xs" c="dimmed">
+                            最后更新：{formatDateTime(ticket.lastMessageAt)}
+                          </Text>
+                          {isSupportTicketUnread(ticket) ? <span className="ticket-center__unread-dot" /> : null}
+                        </div>
                       </button>
                     );
                   })
                 ) : (
                   <div className="ticket-center__empty">
-                    <Text fw={600}>还没有工单</Text>
+                    <Text fw={600}>{props.tickets.length > 0 ? "没有匹配的工单" : "还没有工单"}</Text>
                     <Text size="sm" c="dimmed">
-                      你可以直接点击右上角“新建工单”发起问题。
+                      {props.tickets.length > 0 ? "可以调整搜索内容或状态筛选。" : "你可以直接点击右上角“新建工单”发起问题。"}
                     </Text>
                   </div>
                 )}
@@ -205,15 +247,21 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
               <Stack gap="md" className="ticket-center__detail-shell">
                 <div className="ticket-center__detail-head">
                   <div>
-                    <Text fw={700} size="lg">
+                    <Text fw={700} size="xl">
                       {props.ticketDetail.title}
                     </Text>
-                    <Group gap="xs" mt={6}>
+                    <Group gap="xs" mt={8}>
                       <Badge color={statusColor(props.ticketDetail.status)} variant="light">
                         {statusLabel(props.ticketDetail.status)}
                       </Badge>
                       <Text size="sm" c="dimmed">
-                        创建于 {formatDateTime(props.ticketDetail.createdAt)}
+                        创建时间：{formatDateTime(props.ticketDetail.createdAt)}
+                      </Text>
+                      <Text size="sm" c="dimmed">
+                        |
+                      </Text>
+                      <Text size="sm" c="dimmed">
+                        工单编号：{ticketCode(props.ticketDetail)}
                       </Text>
                     </Group>
                   </div>
@@ -226,25 +274,33 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         key={message.id}
                         className={
                           message.authorRole === "user"
-                            ? "ticket-center__message ticket-center__message--user"
-                            : "ticket-center__message ticket-center__message--admin"
+                            ? "ticket-center__message-row ticket-center__message-row--user"
+                            : "ticket-center__message-row ticket-center__message-row--admin"
                         }
                       >
-                        <div className="ticket-center__message-meta">
-                          <Text fw={600}>{message.authorDisplayName ?? authorLabel(message.authorRole)}</Text>
-                          <Text size="xs" c="dimmed">
-                            {formatDateTime(message.createdAt)}
+                        <div
+                          className={
+                            message.authorRole === "user"
+                              ? "ticket-center__message ticket-center__message--user"
+                              : "ticket-center__message ticket-center__message--admin"
+                          }
+                        >
+                          <div className="ticket-center__message-meta">
+                            <Text fw={700}>{message.authorDisplayName ?? authorLabel(message.authorRole)}</Text>
+                            <Text size="xs" c="dimmed">
+                              {formatDateTime(message.createdAt)}
+                            </Text>
+                          </div>
+                          <Text size="sm" className="ticket-center__message-body">
+                            {message.body}
                           </Text>
                         </div>
-                        <Text size="sm" className="ticket-center__message-body">
-                          {message.body}
-                        </Text>
                       </div>
                     ))}
                   </Stack>
                 </div>
 
-                <Stack gap="sm">
+                <Stack gap="sm" className="ticket-center__reply-panel">
                   {props.ticketDetail.status === "closed" ? (
                     <Alert color="gray" variant="light">
                       当前工单已经关闭，如需继续处理，请新建一条工单说明新情况。
@@ -255,13 +311,19 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     placeholder={props.ticketDetail.status === "closed" ? "当前工单已关闭" : "继续描述新的现象或补充截图说明。"}
                     size="sm"
                     className="ticket-center__field"
-                    minRows={5}
-                    autosize
+                    minRows={4}
                     disabled={props.ticketDetail.status === "closed"}
                     value={props.replyBody}
                     onChange={(event) => props.onReplyBodyChange(event.currentTarget.value)}
                   />
-                  <Group justify="flex-end">
+                  <Group justify="space-between" align="center">
+                    <Text size="xs" c="dimmed">
+                      {props.replyBody.length} 字
+                    </Text>
+                    <Group gap="xs">
+                      <Button size="sm" variant="default" leftSection={<IconPaperclip size={15} />} className="ticket-center__action-button" disabled>
+                        添加附件
+                      </Button>
                     <Button
                       size="sm"
                       leftSection={<IconSend size={15} />}
@@ -272,6 +334,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     >
                       发送回复
                     </Button>
+                    </Group>
                   </Group>
                 </Stack>
               </Stack>
@@ -325,6 +388,21 @@ function authorLabel(role: ClientSupportTicketDetailDto["messages"][number]["aut
     default:
       return "我";
   }
+}
+
+function ticketCode(ticket: ClientSupportTicketSummaryDto) {
+  const shortId = ticket.id.replace(/[^a-zA-Z0-9]/g, "").slice(-4).toUpperCase();
+  return `TK${formatCompactDateTime(ticket.createdAt)}${shortId}`;
+}
+
+function formatCompactDateTime(value: string) {
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hour = `${date.getHours()}`.padStart(2, "0");
+  const minute = `${date.getMinutes()}`.padStart(2, "0");
+  return `${year}${month}${day}${hour}${minute}`;
 }
 
 function formatDateTime(value: string) {

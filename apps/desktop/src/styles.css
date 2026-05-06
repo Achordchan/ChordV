@@ -418,7 +418,7 @@ body {
 }
 
 .ticket-center {
-  min-height: min(78vh, 740px);
+  min-height: min(80vh, 760px);
 }
 
 .announcement-center__modal-body {
@@ -482,10 +482,13 @@ body {
 
 .ticket-center__layout {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
-  gap: 10px;
-  min-height: min(69vh, 660px);
-  height: min(69vh, 660px);
+  grid-template-columns: minmax(320px, 34%) minmax(0, 1fr);
+  gap: 0;
+  min-height: min(70vh, 670px);
+  height: min(70vh, 670px);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .ticket-center__sidebar,
@@ -497,6 +500,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  border: 0;
+  border-right: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0;
+  background: rgba(248, 250, 252, 0.54);
 }
 
 .ticket-center__sidebar-head {
@@ -505,6 +512,24 @@ body {
   justify-content: space-between;
   gap: 12px;
   padding-inline: 4px;
+}
+
+.ticket-center__search :is(.mantine-Input-input) {
+  height: 34px;
+  border-color: rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.ticket-center__status-filter {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.ticket-center__status-filter :is(.mantine-SegmentedControl-label) {
+  min-height: 30px;
+  padding-inline: 6px;
+  font-size: 12px;
 }
 
 .ticket-center__sidebar-scroll,
@@ -525,20 +550,18 @@ body {
 .ticket-center__ticket {
   width: 100%;
   text-align: left;
-  padding: 10px 12px;
+  padding: 9px 10px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(255, 255, 255, 0.88);
-  border-radius: 10px;
+  border-radius: 8px;
   transition:
     border-color 140ms ease,
-    box-shadow 140ms ease,
-    transform 140ms ease;
+    box-shadow 140ms ease;
 }
 
 .ticket-center__ticket:hover {
-  transform: translateY(-1px);
   border-color: rgba(8, 145, 178, 0.3);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.05);
 }
 
 .ticket-center__ticket--active {
@@ -554,10 +577,29 @@ body {
   margin-bottom: 6px;
 }
 
+.ticket-center__ticket-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.ticket-center__unread-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #228be6;
+}
+
 .ticket-center__detail {
   display: flex;
   flex-direction: column;
-  padding: 14px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .ticket-center__detail-shell,
@@ -573,17 +615,37 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.ticket-center__messages {
+  padding: 14px 18px;
+  background: rgba(248, 250, 252, 0.38);
+}
+
+.ticket-center__message-row {
+  display: flex;
+}
+
+.ticket-center__message-row--user {
+  justify-content: flex-end;
+}
+
+.ticket-center__message-row--admin {
+  justify-content: flex-start;
 }
 
 .ticket-center__message {
+  width: min(68%, 560px);
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(248, 250, 252, 0.88);
 }
 
 .ticket-center__message--user {
-  background: linear-gradient(135deg, rgba(8, 145, 178, 0.08), rgba(34, 211, 238, 0.04)), rgba(255, 255, 255, 0.94);
+  background: rgba(239, 246, 255, 0.96);
   border-color: rgba(8, 145, 178, 0.18);
 }
 
@@ -602,6 +664,14 @@ body {
 .ticket-center__message-body {
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.55;
+}
+
+.ticket-center__reply-panel {
+  flex: 0 0 auto;
+  padding: 12px 18px 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(255, 255, 255, 0.98);
 }
 
 .ticket-center__empty {
@@ -748,6 +818,10 @@ body {
 
 .desktop-app--mobile .ticket-center__layout {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.desktop-app--mobile .ticket-center__message {
+  width: 100%;
 }
 
 .desktop-app--mobile .node-list-head,
