@@ -92,11 +92,13 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
         body: "ticket-center__modal-body"
       }}
     >
-      <Stack gap="md" className="ticket-center">
+      <Stack gap="xs" className="ticket-center">
         <div className="ticket-center__topbar">
           <div className="ticket-center__headline">
-            <Text fw={700}>联系邮箱：{props.email}</Text>
-            <Text size="sm" c="dimmed">
+            <Text fw={700} size="sm">
+              联系邮箱：{props.email}
+            </Text>
+            <Text size="xs" c="dimmed">
               您可以在这里查看与客服的沟通记录并继续补充信息。
             </Text>
           </div>
@@ -270,14 +272,14 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     <Text fw={700} size="lg">
                       {props.ticketDetail.title}
                     </Text>
-                    <Group gap="xs" mt={6}>
-                      <Badge color={statusColor(props.ticketDetail.status)} variant="light">
+                    <Group gap="xs" mt={4} wrap="nowrap" className="ticket-center__detail-meta">
+                      <Badge size="sm" color={statusColor(props.ticketDetail.status)} variant="light">
                         {statusLabel(props.ticketDetail.status)}
                       </Badge>
-                      <Text size="sm" c="dimmed">
+                      <Text size="xs" c="dimmed">
                         创建时间：{formatDateTime(props.ticketDetail.createdAt)}
                       </Text>
-                      <Text size="sm" c="dimmed">
+                      <Text size="xs" c="dimmed">
                         工单编号：{ticketCode(props.ticketDetail)}
                       </Text>
                     </Group>

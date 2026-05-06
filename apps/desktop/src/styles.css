@@ -406,7 +406,7 @@ body {
 
 .ticket-center__modal-header,
 .announcement-center__modal-header {
-  padding: 16px 18px 0;
+  padding: 12px 18px 0;
 }
 
 .ticket-center__modal-body {
@@ -414,11 +414,11 @@ body {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  padding: 8px 18px 18px;
+  padding: 4px 18px 14px;
 }
 
 .ticket-center {
-  min-height: min(82vh, 790px);
+  min-height: min(83vh, 800px);
 }
 
 .announcement-center__modal-body {
@@ -470,22 +470,24 @@ body {
 
 .ticket-center__topbar {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
+  min-height: 34px;
 }
 
 .ticket-center__headline {
   min-width: 0;
+  line-height: 1.25;
 }
 
 .ticket-center__layout {
   display: grid;
   grid-template-columns: minmax(320px, 34%) minmax(0, 1fr);
   gap: 0;
-  min-height: min(74vh, 720px);
-  height: min(74vh, 720px);
+  min-height: min(77vh, 750px);
+  height: min(77vh, 750px);
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 10px;
   overflow: hidden;
@@ -615,8 +617,17 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 18px 10px;
+  padding: 10px 18px 8px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.ticket-center__detail-meta {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.ticket-center__detail-meta :is(.mantine-Text-root) {
+  white-space: nowrap;
 }
 
 .ticket-center__messages {
