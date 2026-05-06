@@ -1046,7 +1046,7 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
             return Err("安装器文件不存在".into());
         }
         let current_pid = std::process::id();
-        if let Err(error) = spawn_deferred_installer_open(&installer_path, current_pid) {
+        if let Err(error) = spawn_deferred_installer_open(&app, &installer_path, current_pid) {
             let _ = set_installer_operation_active(&app, false);
             return Err(error);
         }
@@ -2618,10 +2618,131 @@ fn powershell_quote(value: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Result<(), String> {
+fn current_macos_app_bundle_path() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    exe_path
+        .ancestors()
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("app"))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(target_os = "macos")]
+fn should_remove_installer_after_update(app: &AppHandle, installer_path: &Path) -> bool {
+    let Ok(download_dir) = ensure_installer_download_dir(app) else {
+        return false;
+    };
+    let Ok(download_dir) = download_dir.canonicalize() else {
+        return false;
+    };
+    let Ok(installer_path) = installer_path.canonicalize() else {
+        return false;
+    };
+    installer_path.starts_with(download_dir)
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_mounted_installer_volumes(_app: &AppHandle) -> Result<(), String> {
+    let current_app_path = current_macos_app_bundle_path()
+        .map(|path| shell_quote(path.to_string_lossy().as_ref()))
+        .unwrap_or_else(|| "''".into());
     let script = format!(
-        "pid={current_pid}; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done; open {}",
-        shell_quote(installer_path.to_string_lossy().as_ref())
+        r#"current_app={}
+/usr/bin/hdiutil info | /usr/bin/awk '
+  /^image-path[[:space:]]*:/ {{
+    image=$0
+    sub(/^[^:]*:[[:space:]]*/, "", image)
+    next
+  }}
+  /\/Volumes\/ChordV/ && image ~ /\/ChordV([^\/]*).dmg$/ {{
+    mount=substr($0, index($0, "/Volumes/"))
+    print mount
+  }}
+' | while IFS= read -r mount_point; do
+  case "$current_app" in
+    "$mount_point"/*) continue ;;
+  esac
+  /usr/bin/hdiutil detach "$mount_point" -quiet >/dev/null 2>&1 || true
+done
+"#,
+        current_app_path
+    );
+    Command::new("sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("清理已挂载安装卷失败：{error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_deferred_installer_open(app: &AppHandle, installer_path: &Path, current_pid: u32) -> Result<(), String> {
+    let target_app_path = current_macos_app_bundle_path()
+        .filter(|path| !path.starts_with("/Volumes"))
+        .unwrap_or_else(|| PathBuf::from("/Applications/ChordV.app"));
+    let log_path = ensure_runtime_dir(app)
+        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+        .join("update-installer.log");
+    let remove_installer = if should_remove_installer_after_update(app, installer_path) {
+        "1"
+    } else {
+        "0"
+    };
+    let script = format!(
+        r#"pid={current_pid}
+dmg={}
+target_app={}
+log_path={}
+remove_installer={remove_installer}
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+exec >>"$log_path" 2>&1
+detach_chordv_volumes() {{
+  /usr/bin/hdiutil info | /usr/bin/awk '
+    /^image-path[[:space:]]*:/ {{
+      image=$0
+      sub(/^[^:]*:[[:space:]]*/, "", image)
+      next
+    }}
+    /\/Volumes\/ChordV/ && image ~ /\/ChordV([^\/]*).dmg$/ {{
+      mount=substr($0, index($0, "/Volumes/"))
+      print mount
+    }}
+  ' | while IFS= read -r mount_point; do
+    /usr/bin/hdiutil detach "$mount_point" -quiet >/dev/null 2>&1 || true
+  done
+}}
+detach_chordv_volumes
+mount_dir="$(/usr/bin/mktemp -d /tmp/chordv-update.XXXXXX)"
+cleanup_mount() {{
+  /usr/bin/hdiutil detach "$mount_dir" -quiet >/dev/null 2>&1 || true
+  /bin/rmdir "$mount_dir" >/dev/null 2>&1 || true
+}}
+if /usr/bin/hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -readonly -quiet; then
+  source_app="$mount_dir/ChordV.app"
+  if [ ! -d "$source_app" ]; then
+    source_app="$(/usr/bin/find "$mount_dir" -maxdepth 1 -name '*.app' -type d | /usr/bin/head -n 1)"
+  fi
+  if [ -d "$source_app" ]; then
+    tmp_target="${{target_app}}.updating"
+    /bin/rm -rf "$tmp_target"
+    if /usr/bin/ditto "$source_app" "$tmp_target" && /bin/rm -rf "$target_app" && /bin/mv "$tmp_target" "$target_app"; then
+      cleanup_mount
+      if [ "$remove_installer" = "1" ]; then
+        /bin/rm -f "$dmg" >/dev/null 2>&1 || true
+      fi
+      /usr/bin/open "$target_app"
+      exit 0
+    fi
+    /bin/rm -rf "$tmp_target" >/dev/null 2>&1 || true
+  fi
+fi
+cleanup_mount
+/usr/bin/open "$dmg"
+"#,
+        shell_quote(installer_path.to_string_lossy().as_ref()),
+        shell_quote(target_app_path.to_string_lossy().as_ref()),
+        shell_quote(log_path.to_string_lossy().as_ref())
     );
     Command::new("sh")
         .args(["-c", &script])
@@ -2634,7 +2755,7 @@ fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Res
 }
 
 #[cfg(windows)]
-fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Result<(), String> {
+fn spawn_deferred_installer_open(_app: &AppHandle, installer_path: &Path, current_pid: u32) -> Result<(), String> {
     let script = format!(
         "$pidToWait = {current_pid}; while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; Start-Sleep -Milliseconds 200; Start-Process -FilePath {} -ArgumentList '/UPDATE'",
         powershell_quote(installer_path.to_string_lossy().as_ref())
@@ -2652,7 +2773,7 @@ fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Res
 }
 
 #[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
-fn spawn_deferred_installer_open(installer_path: &Path, current_pid: u32) -> Result<(), String> {
+fn spawn_deferred_installer_open(_app: &AppHandle, installer_path: &Path, current_pid: u32) -> Result<(), String> {
     let script = format!(
         "pid={current_pid}; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done; xdg-open {}",
         shell_quote(installer_path.to_string_lossy().as_ref())
@@ -4749,6 +4870,10 @@ pub fn run() {
             {
                 let _ = ensure_runtime_bin_dir(&app.handle());
                 let _ = cleanup_outdated_installer_packages(&app.handle());
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = cleanup_mounted_installer_volumes(&app.handle());
             }
             #[cfg(not(target_os = "android"))]
             {
