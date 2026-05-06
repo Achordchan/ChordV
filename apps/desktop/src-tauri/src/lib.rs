@@ -16,7 +16,6 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::watch;
 #[cfg(not(target_os = "android"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use reqwest::Client;
@@ -91,20 +90,6 @@ struct NativeLeaseHeartbeatEvent {
     message: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct NativeClientEventsOpenEvent {
-    elapsed_ms: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct NativeClientEventsErrorEvent {
-    status: Option<u16>,
-    auth_error: bool,
-    message: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionLeaseStatusDto {
@@ -150,20 +135,6 @@ struct InstallerOperationState {
 
 #[derive(Default)]
 struct NativeSessionRefreshState;
-
-struct ClientEventsStreamState {
-    generation: u64,
-    stop_tx: Option<watch::Sender<u64>>,
-}
-
-impl Default for ClientEventsStreamState {
-    fn default() -> Self {
-        Self {
-            generation: 0,
-            stop_tx: None,
-        }
-    }
-}
 
 #[derive(Default)]
 struct NativeLeaseHeartbeatSignalState {
@@ -632,13 +603,6 @@ fn api_client() -> Result<Client, String> {
         .map_err(|error| format!("初始化 API 客户端失败：{error}"))
 }
 
-fn api_stream_client() -> Result<Client, String> {
-    Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|error| format!("初始化事件流客户端失败：{error}"))
-}
-
 fn parse_api_error_message(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {
@@ -723,18 +687,6 @@ async fn native_heartbeat_once(
 
 fn emit_native_lease_event(app: &AppHandle, event: NativeLeaseHeartbeatEvent) {
     let _ = app.emit("chordv://native-lease-heartbeat", event);
-}
-
-fn emit_native_client_event(app: &AppHandle, event: Value) {
-    let _ = app.emit("chordv://native-client-event", event);
-}
-
-fn emit_native_client_events_open(app: &AppHandle, event: NativeClientEventsOpenEvent) {
-    let _ = app.emit("chordv://native-client-events-open", event);
-}
-
-fn emit_native_client_events_error(app: &AppHandle, event: NativeClientEventsErrorEvent) {
-    let _ = app.emit("chordv://native-client-events-error", event);
 }
 
 fn notify_native_lease_heartbeat(app: &AppHandle) {
@@ -825,191 +777,6 @@ fn start_native_lease_heartbeat_loop(app: AppHandle) {
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     });
-}
-
-async fn run_native_client_events_stream_once(
-    app: &AppHandle,
-    access_token: &str,
-    stop_rx: &mut watch::Receiver<u64>,
-) -> Result<bool, NativeClientEventsErrorEvent> {
-    let started_at = Instant::now();
-    let url = format!("{}/api/client/events/stream", api_base_url().trim_end_matches('/'));
-    let response = api_stream_client()
-        .map_err(|error| NativeClientEventsErrorEvent {
-            status: None,
-            auth_error: false,
-            message: error,
-        })?
-        .get(url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("Accept", "text/event-stream")
-        .send()
-        .await
-        .map_err(|error| NativeClientEventsErrorEvent {
-            status: None,
-            auth_error: false,
-            message: format!("事件流连接失败：{error}"),
-        })?;
-
-    let status = response.status().as_u16();
-    if status < 200 || status >= 300 {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "事件流连接失败".to_string());
-        return Err(NativeClientEventsErrorEvent {
-            status: Some(status),
-            auth_error: status == 401,
-            message: parse_api_error_message(&body),
-        });
-    }
-
-    emit_native_client_events_open(
-        app,
-        NativeClientEventsOpenEvent {
-            elapsed_ms: Some(started_at.elapsed().as_millis().min(u64::MAX as u128) as u64),
-        },
-    );
-
-    let mut buffer = String::new();
-
-    let mut response = response;
-    loop {
-        let next = tokio::select! {
-            _ = stop_rx.changed() => {
-                return Ok(true);
-            }
-            next = response.chunk() => next.map_err(|error| NativeClientEventsErrorEvent {
-                status: None,
-                auth_error: false,
-                message: format!("读取事件流失败：{error}"),
-            })?
-        };
-        let Some(chunk) = next else {
-            break;
-        };
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-        loop {
-            let Some(index) = buffer.find("\n\n") else {
-                break;
-            };
-            let raw_chunk = buffer[..index].to_string();
-            buffer = buffer[index + 2..].to_string();
-            let data_lines = raw_chunk
-                .lines()
-                .map(|line| line.trim_end_matches('\r'))
-                .filter(|line| !line.is_empty() && line.starts_with("data:"))
-                .map(|line| line[5..].trim())
-                .collect::<Vec<_>>();
-
-            if data_lines.is_empty() {
-                continue;
-            }
-
-            let payload = data_lines.join("\n");
-            match serde_json::from_str::<Value>(&payload) {
-                Ok(value) => emit_native_client_event(app, value),
-                Err(error) => emit_native_client_events_error(
-                    app,
-                    NativeClientEventsErrorEvent {
-                        status: None,
-                        auth_error: false,
-                        message: format!("解析事件失败：{error}"),
-                    },
-                ),
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-#[tauri::command]
-async fn start_client_events_stream(app: AppHandle, access_token: String) -> Result<CommandResult, String> {
-    let state = app.state::<AsyncMutex<ClientEventsStreamState>>();
-    let generation = {
-        let mut state = state.lock().await;
-        state.generation = state.generation.saturating_add(1);
-        if let Some(stop_tx) = state.stop_tx.take() {
-            let _ = stop_tx.send(state.generation);
-        }
-        let (stop_tx, _stop_rx) = watch::channel(state.generation);
-        state.stop_tx = Some(stop_tx);
-        state.generation
-    };
-    let mut stop_rx = {
-        let state = app.state::<AsyncMutex<ClientEventsStreamState>>();
-        let state = state.lock().await;
-        state
-            .stop_tx
-            .as_ref()
-            .map(watch::Sender::subscribe)
-            .ok_or_else(|| "事件流控制器初始化失败".to_string())?
-    };
-
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let current_generation = {
-                let state = app_handle.state::<AsyncMutex<ClientEventsStreamState>>();
-                let state = state.lock().await;
-                state.generation
-            };
-            if current_generation != generation {
-                break;
-            }
-
-            match run_native_client_events_stream_once(&app_handle, &access_token, &mut stop_rx).await {
-                Ok(should_reconnect) => {
-                    if should_reconnect {
-                        break;
-                    }
-                    if current_generation != generation {
-                        break;
-                    }
-                    if *stop_rx.borrow() != generation {
-                        break;
-                    }
-                    if !should_reconnect {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                    }
-                }
-                Err(error) => {
-                    let terminal = matches!(error.status, Some(401 | 403));
-                    let auth_error = error.auth_error;
-                    emit_native_client_events_error(&app_handle, error);
-                    if auth_error || terminal {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_secs(3)).await;
-                }
-            }
-        }
-    });
-
-    Ok(CommandResult {
-        ok: true,
-        config_path: None,
-        log_path: None,
-        active_pid: None,
-    })
-}
-
-#[tauri::command]
-async fn stop_client_events_stream(app: AppHandle) -> Result<CommandResult, String> {
-    let state = app.state::<AsyncMutex<ClientEventsStreamState>>();
-    let mut state = state.lock().await;
-    state.generation = state.generation.saturating_add(1);
-    if let Some(stop_tx) = state.stop_tx.take() {
-        let _ = stop_tx.send(state.generation);
-    }
-    Ok(CommandResult {
-        ok: true,
-        config_path: None,
-        log_path: None,
-        active_pid: None,
-    })
 }
 
 fn api_proxy_bypass_hosts() -> Vec<String> {
@@ -4965,7 +4732,6 @@ pub fn run() {
         .manage(Mutex::new(RuntimeComponentDownloadState::default()))
         .manage(Mutex::new(NativeLeaseHeartbeatSignalState::default()))
         .manage(AsyncMutex::new(NativeSessionRefreshState::default()))
-        .manage(AsyncMutex::new(ClientEventsStreamState::default()))
         .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()));
 
     #[cfg(not(target_os = "android"))]
@@ -5003,8 +4769,6 @@ pub fn run() {
             app_ready,
             api_request,
             refresh_session_native,
-            start_client_events_stream,
-            stop_client_events_stream,
             load_session,
             save_session,
             clear_session,
