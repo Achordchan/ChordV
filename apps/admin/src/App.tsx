@@ -517,6 +517,23 @@ export function App() {
     }
   }
 
+  async function refreshSnapshotAfterAction() {
+    try {
+      const data = await getAdminSnapshot();
+      setSnapshot(data);
+    } catch (reason) {
+      const message = readError(reason, "刷新失败");
+      if (ensureAuthenticated(message)) {
+        return;
+      }
+      notifications.show({
+        color: "yellow",
+        title: "数据刷新失败",
+        message
+      });
+    }
+  }
+
   async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm) {
     if (!form.panelBaseUrl || !form.panelUsername || !form.panelPassword) {
       notifications.show({
@@ -613,7 +630,7 @@ export function App() {
         title: "操作成功",
         message: resolvedMessage
       });
-      await loadSnapshot();
+      void refreshSnapshotAfterAction();
       return true;
     } catch (reason) {
       const message = readError(reason, "操作失败");
@@ -673,8 +690,8 @@ export function App() {
         title: panelSyncPending ? "授权已保存" : "操作成功",
         message: result.message ?? "节点授权已保存"
       });
-      await loadSnapshot();
       closeNodeAccessEditor();
+      void refreshSnapshotAfterAction();
     } catch (reason) {
       const message = readError(reason, "保存节点授权失败");
       if (ensureAuthenticated(message)) {
