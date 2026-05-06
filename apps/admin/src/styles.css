@@ -146,6 +146,126 @@ body {
   margin-bottom: 8px;
 }
 
+.admin-tickets-workspace {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.85fr) minmax(620px, 1.35fr);
+  gap: 18px;
+  align-items: stretch;
+  min-height: min(74vh, 760px);
+}
+
+.admin-tickets-list-card,
+.admin-ticket-detail-card {
+  min-height: 0;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.admin-tickets-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.admin-ticket-list-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.72);
+  padding: 13px 14px;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+
+.admin-ticket-list-item:hover {
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.admin-ticket-list-item--active {
+  border-color: rgba(37, 99, 235, 0.46);
+  background: rgba(239, 246, 255, 0.92);
+}
+
+.admin-ticket-list-item__head,
+.admin-ticket-list-item__meta,
+.admin-ticket-list-item__foot,
+.admin-ticket-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-ticket-list-item__meta,
+.admin-ticket-list-item__foot {
+  align-items: center;
+  margin-top: 8px;
+}
+
+.admin-ticket-detail-card > .mantine-Stack-root {
+  min-height: 0;
+}
+
+.admin-ticket-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.admin-ticket-conversation {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.admin-ticket-message-list {
+  flex: 1 1 auto;
+  min-height: 280px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.72), rgba(255, 255, 255, 0.96));
+}
+
+.admin-ticket-message-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.admin-ticket-message-row--admin {
+  justify-content: flex-end;
+}
+
+.admin-ticket-message {
+  width: min(78%, 720px);
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.admin-ticket-message--admin {
+  background: rgba(236, 253, 245, 0.9);
+  border-color: rgba(13, 148, 136, 0.22);
+}
+
+.admin-ticket-message__time {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.admin-ticket-reply {
+  flex: 0 0 auto;
+}
+
 @media (max-width: 1080px) {
   .admin-auth-shell {
     grid-template-columns: 1fr;
@@ -157,6 +277,15 @@ body {
 
   .admin-auth-form-title {
     font-size: 50px;
+  }
+
+  .admin-tickets-workspace,
+  .admin-ticket-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-ticket-message {
+    width: 100%;
   }
 }
 

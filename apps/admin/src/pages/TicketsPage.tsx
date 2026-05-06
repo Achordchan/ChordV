@@ -8,9 +8,7 @@ import {
   Loader,
   Paper,
   Select,
-  SimpleGrid,
   Stack,
-  Table,
   Text,
   TextInput,
   Textarea,
@@ -27,8 +25,6 @@ import {
   type AdminSupportTicketDetailDto,
   type AdminSupportTicketSummaryDto
 } from "../api/client";
-import { DataTable } from "../features/shared/DataTable";
-import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { filterByKeyword, readError } from "../utils/admin-filters";
@@ -245,9 +241,9 @@ export function TicketsPage() {
               <Loader size="sm" />
             </Group>
           ) : (
-            <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="lg" style={{ alignItems: "start" }}>
-              <Card withBorder radius="xl" p="lg">
-                <Stack gap="md">
+            <div className="admin-tickets-workspace">
+              <Card withBorder radius="xl" p="lg" className="admin-tickets-list-card">
+                <Stack gap="sm" h="100%">
                   <Group justify="space-between">
                     <Title order={4}>工单列表</Title>
                     <Text size="sm" c="dimmed">
@@ -255,108 +251,91 @@ export function TicketsPage() {
                     </Text>
                   </Group>
 
-                  <DataTable>
-                    <Table.Thead>
-                      <Table.Tr>
-                        <Table.Th>标题</Table.Th>
-                        <Table.Th>用户</Table.Th>
-                        <Table.Th>账号邮箱</Table.Th>
-                        <Table.Th>归属订阅/团队</Table.Th>
-                        <Table.Th>状态</Table.Th>
-                        <Table.Th>最近更新时间</Table.Th>
-                        <Table.Th>来源</Table.Th>
-                        <Table.Th>操作</Table.Th>
-                      </Table.Tr>
-                    </Table.Thead>
-                    <Table.Tbody>
-                      {visibleTickets.length === 0 ? (
-                        <Table.Tr>
-                          <Table.Td colSpan={8}>
-                            <Text c="dimmed" ta="center" py="lg">
-                              暂无符合条件的工单
-                            </Text>
-                          </Table.Td>
-                        </Table.Tr>
-                      ) : (
-                        visibleTickets.map((item) => (
-                          <Table.Tr
+                  <div className="admin-tickets-list">
+                    {visibleTickets.length === 0 ? (
+                      <Text c="dimmed" ta="center" py="xl">
+                        暂无符合条件的工单
+                      </Text>
+                    ) : (
+                      visibleTickets.map((item) => {
+                        const active = item.id === selectedTicketId;
+                        return (
+                          <button
                             key={item.id}
-                            style={{
-                              backgroundColor: item.id === selectedTicketId ? "var(--mantine-color-blue-light)" : undefined
-                            }}
+                            type="button"
+                            className={active ? "admin-ticket-list-item admin-ticket-list-item--active" : "admin-ticket-list-item"}
+                            onClick={() => setSelectedTicketId(item.id)}
                           >
-                            <Table.Td>
-                              <Stack gap={2}>
-                                <Text fw={600}>{item.title}</Text>
-                                <Text size="sm" c="dimmed" lineClamp={1}>
-                                  {item.lastMessagePreview ?? "暂无内容"}
-                                </Text>
-                              </Stack>
-                            </Table.Td>
-                            <Table.Td>{item.userDisplayName}</Table.Td>
-                            <Table.Td>{item.userEmail}</Table.Td>
-                            <Table.Td>
-                              <Stack gap={2}>
-                                <Text size="sm">{item.teamName ?? "个人订阅"}</Text>
-                                <Text size="xs" c="dimmed">
-                                  {item.subscriptionId ? `订阅 ${item.subscriptionId.slice(0, 8)}` : "无订阅快照"}
-                                </Text>
-                              </Stack>
-                            </Table.Td>
-                            <Table.Td>
+                            <div className="admin-ticket-list-item__head">
+                              <Text fw={700} lineClamp={1}>
+                                {item.title}
+                              </Text>
                               <StatusBadge color={ticketStatusColor(item.status)} label={translateTicketStatus(item.status)} />
-                            </Table.Td>
-                            <Table.Td>{formatDateTime(item.updatedAt)}</Table.Td>
-                            <Table.Td>
+                            </div>
+                            <Text size="sm" c="dimmed" lineClamp={2}>
+                              {item.lastMessagePreview ?? "暂无内容"}
+                            </Text>
+                            <div className="admin-ticket-list-item__meta">
+                              <Text size="xs" c="dimmed" lineClamp={1}>
+                                {item.userDisplayName} · {item.userEmail}
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {formatDateTime(item.updatedAt)}
+                              </Text>
+                            </div>
+                            <div className="admin-ticket-list-item__foot">
                               <Badge variant="light">{translateTicketSource(item.source)}</Badge>
-                            </Table.Td>
-                            <Table.Td>
-                              <RowActions>
-                                <Button variant="subtle" size="compact-sm" onClick={() => setSelectedTicketId(item.id)}>
-                                  查看详情
-                                </Button>
-                                <Button variant="subtle" size="compact-sm" onClick={() => setSelectedTicketId(item.id)}>
-                                  回复
-                                </Button>
-                                {item.status === "closed" ? (
-                                  <Button
-                                    variant="subtle"
-                                    size="compact-sm"
-                                    color="blue"
-                                    loading={statusChanging === item.id}
-                                    onClick={() => void handleStatusAction(item, "reopen")}
-                                  >
-                                    重开
-                                  </Button>
-                                ) : (
-                                  <Button
-                                    variant="subtle"
-                                    size="compact-sm"
-                                    color="red"
-                                    loading={statusChanging === item.id}
-                                    onClick={() => void handleStatusAction(item, "close")}
-                                  >
-                                    关闭
-                                  </Button>
-                                )}
-                              </RowActions>
-                            </Table.Td>
-                          </Table.Tr>
-                        ))
-                      )}
-                    </Table.Tbody>
-                  </DataTable>
+                              <Text size="xs" c="dimmed" lineClamp={1}>
+                                {item.teamName ?? "个人订阅"}
+                              </Text>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
                 </Stack>
               </Card>
 
-              <Card withBorder radius="xl" p="lg">
-                <Stack gap="md">
-                  <Group justify="space-between" align="center">
-                    <Title order={4}>工单详情</Title>
-                    {selectedTicket ? (
-                      <StatusBadge color={ticketStatusColor(selectedTicket.status)} label={translateTicketStatus(selectedTicket.status)} />
-                    ) : null}
-                  </Group>
+              <Card withBorder radius="xl" p="lg" className="admin-ticket-detail-card">
+                <Stack gap="md" h="100%">
+                  <div className="admin-ticket-detail-head">
+                    <div>
+                      <Title order={4}>工单详情</Title>
+                      {selectedTicket ? (
+                        <Text size="sm" c="dimmed">
+                          来源：{translateTicketSource(selectedTicket.source)}
+                        </Text>
+                      ) : null}
+                    </div>
+                    <Group gap="xs">
+                      {selectedTicket ? (
+                        <StatusBadge color={ticketStatusColor(selectedTicket.status)} label={translateTicketStatus(selectedTicket.status)} />
+                      ) : null}
+                      {selectedTicket ? (
+                        selectedTicket.status === "closed" ? (
+                          <Button
+                            variant="default"
+                            size="xs"
+                            loading={statusChanging === selectedTicket.id}
+                            onClick={() => void handleStatusAction(selectedTicket, "reopen")}
+                          >
+                            重开工单
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="default"
+                            color="red"
+                            size="xs"
+                            loading={statusChanging === selectedTicket.id}
+                            onClick={() => void handleStatusAction(selectedTicket, "close")}
+                          >
+                            关闭工单
+                          </Button>
+                        )
+                      ) : null}
+                    </Group>
+                  </div>
 
                   {detailError ? (
                     <Alert color="red" variant="light">
@@ -372,99 +351,69 @@ export function TicketsPage() {
                     <Text c="dimmed">请选择左侧工单查看详情。</Text>
                   ) : (
                     <>
-                      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                      <div className="admin-ticket-summary">
                         <Paper withBorder radius="lg" p="md">
-                          <Stack gap={2}>
-                            <Text size="sm" c="dimmed">
-                              标题
-                            </Text>
-                            <Text fw={600}>{selectedTicket.title}</Text>
-                          </Stack>
+                          <Text size="xs" c="dimmed">标题</Text>
+                          <Text fw={700}>{selectedTicket.title}</Text>
                         </Paper>
                         <Paper withBorder radius="lg" p="md">
-                          <Stack gap={2}>
-                            <Text size="sm" c="dimmed">
-                              用户
-                            </Text>
-                            <Text fw={600}>
-                              {selectedTicket.userDisplayName} · {selectedTicket.userEmail}
-                            </Text>
-                          </Stack>
+                          <Text size="xs" c="dimmed">用户</Text>
+                          <Text fw={700}>{selectedTicket.userDisplayName}</Text>
+                          <Text size="sm" c="dimmed">{selectedTicket.userEmail}</Text>
                         </Paper>
                         <Paper withBorder radius="lg" p="md">
-                          <Stack gap={2}>
-                            <Text size="sm" c="dimmed">
-                              归属
-                            </Text>
-                            <Text fw={600}>{selectedTicket.teamName ?? "个人订阅"}</Text>
-                            <Text size="sm" c="dimmed">
-                              {selectedTicket.ownerType === "team" ? "Team 订阅" : "个人订阅"}
-                            </Text>
-                          </Stack>
+                          <Text size="xs" c="dimmed">归属</Text>
+                          <Text fw={700}>{selectedTicket.teamName ?? "个人订阅"}</Text>
+                          <Text size="sm" c="dimmed">{selectedTicket.ownerType === "team" ? "Team 订阅" : "个人订阅"}</Text>
                         </Paper>
                         <Paper withBorder radius="lg" p="md">
-                          <Stack gap={2}>
-                            <Text size="sm" c="dimmed">
-                              最近更新时间
-                            </Text>
-                            <Text fw={600}>{formatDateTimeWithYear(selectedTicket.updatedAt)}</Text>
-                          </Stack>
+                          <Text size="xs" c="dimmed">最近更新时间</Text>
+                          <Text fw={700}>{formatDateTimeWithYear(selectedTicket.updatedAt)}</Text>
                         </Paper>
-                      </SimpleGrid>
+                      </div>
 
-                      <Stack gap="sm">
+                      <Stack gap="sm" className="admin-ticket-conversation">
                         <Group justify="space-between">
-                          <Title order={5}>会话流</Title>
-                          <Text size="sm" c="dimmed">
-                            来源：{translateTicketSource(selectedTicket.source)}
-                          </Text>
+                          <Title order={5}>会话</Title>
+                          <Text size="sm" c="dimmed">共 {orderedMessages.length} 条消息</Text>
                         </Group>
-                        <Stack gap="sm">
-                          {orderedMessages.map((message) => (
-                            <Paper key={message.id} withBorder radius="lg" p="md">
-                              <Stack gap={6}>
-                                <Group justify="space-between" align="start">
-                                  <Stack gap={2}>
-                                    <Text fw={600}>{readMessageAuthorLabel(message.authorRole, message.authorDisplayName)}</Text>
-                                    <Text size="sm" c="dimmed">
-                                      {message.authorEmail ?? translateMessageRole(message.authorRole)}
+                        <div className="admin-ticket-message-list">
+                          {orderedMessages.map((message) => {
+                            const adminMessage = message.authorRole === "admin";
+                            return (
+                              <div
+                                key={message.id}
+                                className={adminMessage ? "admin-ticket-message-row admin-ticket-message-row--admin" : "admin-ticket-message-row"}
+                              >
+                                <Paper
+                                  withBorder
+                                  radius="lg"
+                                  p="md"
+                                  className={adminMessage ? "admin-ticket-message admin-ticket-message--admin" : "admin-ticket-message"}
+                                >
+                                  <Group justify="space-between" align="start" gap="md" wrap="nowrap">
+                                    <Stack gap={2}>
+                                      <Text fw={700}>{readMessageAuthorLabel(message.authorRole, message.authorDisplayName)}</Text>
+                                      <Text size="xs" c="dimmed">
+                                        {message.authorEmail ?? translateMessageRole(message.authorRole)}
+                                      </Text>
+                                    </Stack>
+                                    <Text size="xs" c="dimmed" className="admin-ticket-message__time">
+                                      {formatDateTimeWithYear(message.createdAt)}
                                     </Text>
-                                  </Stack>
-                                  <Text size="sm" c="dimmed">
-                                    {formatDateTimeWithYear(message.createdAt)}
+                                  </Group>
+                                  <Text mt="sm" style={{ whiteSpace: "pre-wrap" }}>
+                                    {message.body}
                                   </Text>
-                                </Group>
-                                <Text style={{ whiteSpace: "pre-wrap" }}>{message.body}</Text>
-                              </Stack>
-                            </Paper>
-                          ))}
-                        </Stack>
+                                </Paper>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </Stack>
 
-                      <Stack gap="sm">
-                        <Group justify="space-between">
-                          <Title order={5}>回复</Title>
-                          {selectedTicket.status === "closed" ? (
-                            <Button
-                              variant="default"
-                              size="xs"
-                              loading={statusChanging === selectedTicket.id}
-                              onClick={() => void handleStatusAction(selectedTicket, "reopen")}
-                            >
-                              重开工单
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="default"
-                              color="red"
-                              size="xs"
-                              loading={statusChanging === selectedTicket.id}
-                              onClick={() => void handleStatusAction(selectedTicket, "close")}
-                            >
-                              关闭工单
-                            </Button>
-                          )}
-                        </Group>
+                      <Stack gap="sm" className="admin-ticket-reply">
+                        <Title order={5}>回复</Title>
                         <Textarea
                           minRows={5}
                           placeholder={selectedTicket.status === "closed" ? "工单已关闭，请先重开再回复。" : "输入回复内容"}
@@ -482,7 +431,7 @@ export function TicketsPage() {
                   )}
                 </Stack>
               </Card>
-            </SimpleGrid>
+            </div>
           )}
         </Stack>
       </SectionCard>
