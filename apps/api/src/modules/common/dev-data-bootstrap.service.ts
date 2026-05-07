@@ -383,45 +383,19 @@ export class DevDataBootstrapService {
   }
 
   private async ensureBuiltinAdminAccount() {
+    const existingAdmin = await this.prisma.user.findFirst({
+      where: {
+        role: "admin"
+      },
+      orderBy: {
+        createdAt: "asc"
+      }
+    });
+    if (existingAdmin) {
+      return;
+    }
+
     const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
-    const now = new Date();
-
-    const builtInAdmin = await this.prisma.user.findUnique({
-      where: { id: BUILTIN_ADMIN_ID }
-    });
-    if (builtInAdmin) {
-      await this.prisma.user.update({
-        where: { id: builtInAdmin.id },
-        data: {
-          email: BUILTIN_ADMIN_ACCOUNT,
-          displayName: "系统管理员",
-          role: "admin",
-          status: "active",
-          maxConcurrentSessionsOverride: null,
-          passwordHash: adminPasswordHash,
-          lastSeenAt: now
-        }
-      });
-      return;
-    }
-
-    const accountAdmin = await this.prisma.user.findUnique({
-      where: { email: BUILTIN_ADMIN_ACCOUNT }
-    });
-    if (accountAdmin) {
-      await this.prisma.user.update({
-        where: { id: accountAdmin.id },
-        data: {
-          displayName: "系统管理员",
-          role: "admin",
-          status: "active",
-          maxConcurrentSessionsOverride: null,
-          passwordHash: adminPasswordHash,
-          lastSeenAt: now
-        }
-      });
-      return;
-    }
 
     await this.prisma.user.create({
       data: {
@@ -433,7 +407,7 @@ export class DevDataBootstrapService {
         authVersion: 1,
         maxConcurrentSessionsOverride: null,
         passwordHash: adminPasswordHash,
-        lastSeenAt: now
+        lastSeenAt: new Date()
       }
     });
   }

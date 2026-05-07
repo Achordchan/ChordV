@@ -26,8 +26,6 @@ import {
   toSubscriptionStatusDto
 } from "./subscription.utils";
 
-const BUILTIN_ADMIN_ACCOUNT = "admin";
-
 type ClientSubscriptionAccess = {
   subscription: {
     id: string;
@@ -339,19 +337,6 @@ export class ClientAccessService {
   }
 
   private async resolveUserForLogin(account: string) {
-    if (account === BUILTIN_ADMIN_ACCOUNT) {
-      const adminByAccount = await this.prisma.user.findUnique({
-        where: { email: BUILTIN_ADMIN_ACCOUNT }
-      });
-      if (adminByAccount) {
-        return adminByAccount;
-      }
-      return this.prisma.user.findFirst({
-        where: { role: "admin" },
-        orderBy: { createdAt: "asc" }
-      });
-    }
-
     return this.prisma.user.findUnique({
       where: { email: account }
     });

@@ -75,6 +75,12 @@ export interface UserProfileDto {
   lastSeenAt: string;
 }
 
+export interface UpdateCurrentAdminSecurityInputDto {
+  currentPassword: string;
+  email: string;
+  newPassword?: string;
+}
+
 export interface SubscriptionStatusDto {
   id?: string;
   ownerType: SubscriptionOwnerType;

@@ -63,6 +63,20 @@ export class CreateUserDto {
   maxConcurrentSessionsOverride?: number | null;
 }
 
+export class UpdateCurrentAdminSecurityDto {
+  @IsString()
+  @MinLength(8)
+  currentPassword!: string;
+
+  @IsEmail()
+  email!: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  newPassword?: string;
+}
+
 export class UpdateUserDto {
   @IsOptional()
   @IsString()

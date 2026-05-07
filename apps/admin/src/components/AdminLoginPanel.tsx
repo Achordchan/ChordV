@@ -34,6 +34,7 @@ export function AdminLoginPanel(props: AdminLoginPanelProps) {
 
         <Paper className="admin-auth-form-card" radius={32} p={36}>
           <form
+            autoComplete="off"
             onSubmit={(event) => {
               event.preventDefault();
               props.onSubmit();
@@ -53,6 +54,7 @@ export function AdminLoginPanel(props: AdminLoginPanelProps) {
                 onChange={(event) => props.onAccountChange(event.currentTarget.value)}
                 radius="xl"
                 size="md"
+                autoComplete="username"
                 autoFocus
               />
               <PasswordInput
@@ -62,6 +64,7 @@ export function AdminLoginPanel(props: AdminLoginPanelProps) {
                 onChange={(event) => props.onPasswordChange(event.currentTarget.value)}
                 radius="xl"
                 size="md"
+                autoComplete="current-password"
               />
 
               {props.error ? <Alert color="red">{props.error}</Alert> : null}

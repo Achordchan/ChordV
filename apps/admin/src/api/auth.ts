@@ -1,4 +1,4 @@
-import type { AuthSessionDto } from "@chordv/shared";
+import type { AuthSessionDto, UpdateCurrentAdminSecurityInputDto } from "@chordv/shared";
 import {
   clearStoredAdminSession,
   getStoredAdminRefreshToken,
@@ -32,6 +32,13 @@ export function refreshAdminSession(refreshToken: string) {
 export function logoutAdminSession() {
   return request<{ ok: boolean }>("/auth/logout", {
     method: "POST"
+  });
+}
+
+export function updateCurrentAdminSecurity(input: UpdateCurrentAdminSecurityInputDto) {
+  return request<AuthSessionDto>("/admin/me/security", {
+    method: "PUT",
+    body: JSON.stringify(input)
   });
 }
 

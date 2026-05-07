@@ -11,11 +11,13 @@ import {
   Modal,
   NavLink,
   Paper,
+  PasswordInput,
   Select,
   SimpleGrid,
   Stack,
   Table,
   Text,
+  TextInput,
   Title
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -113,6 +115,7 @@ import {
   persistAdminSession,
   updateTeam,
   updateTeamMember,
+  updateCurrentAdminSecurity,
   updateUser
 } from "./api/client";
 import { ADMIN_SESSION_EXPIRED_EVENT, isAdminSessionExpiredMessage } from "./api/base";
@@ -193,6 +196,13 @@ type AdminAuthFormState = {
   password: string;
 };
 
+type AdminSecurityFormState = {
+  email: string;
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+};
+
 const sectionMeta: Record<SectionKey, { label: string; description: string; icon: ReactNode }> = {
   overview: {
     label: "概览",
@@ -251,8 +261,16 @@ export function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authForm, setAuthForm] = useState<AdminAuthFormState>({
-    account: "admin",
+    account: "",
     password: ""
+  });
+  const [adminSecurityOpened, setAdminSecurityOpened] = useState(false);
+  const [adminSecuritySaving, setAdminSecuritySaving] = useState(false);
+  const [adminSecurityForm, setAdminSecurityForm] = useState<AdminSecurityFormState>({
+    email: "",
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: ""
   });
   const [section, setSection] = useState<SectionKey>("overview");
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
@@ -752,6 +770,89 @@ export function App() {
       setAuthenticated(false);
       setAuthError(null);
       setError(null);
+    }
+  }
+
+  function openAdminSecurityModal() {
+    const adminUser = snapshot?.users.find((item) => item.role === "admin");
+    setAdminSecurityForm({
+      email: adminUser?.email ?? "",
+      currentPassword: "",
+      newPassword: "",
+      confirmPassword: ""
+    });
+    setAdminSecurityOpened(true);
+  }
+
+  function closeAdminSecurityModal() {
+    if (adminSecuritySaving) return;
+    setAdminSecurityOpened(false);
+    setAdminSecurityForm({
+      email: "",
+      currentPassword: "",
+      newPassword: "",
+      confirmPassword: ""
+    });
+  }
+
+  async function saveAdminSecurity() {
+    const email = adminSecurityForm.email.trim();
+    const newPassword = adminSecurityForm.newPassword.trim();
+    if (!email || !adminSecurityForm.currentPassword.trim()) {
+      notifications.show({
+        color: "red",
+        title: "账号安全",
+        message: "请输入管理员账号和当前密码"
+      });
+      return;
+    }
+    if (newPassword && newPassword !== adminSecurityForm.confirmPassword.trim()) {
+      notifications.show({
+        color: "red",
+        title: "账号安全",
+        message: "两次输入的新密码不一致"
+      });
+      return;
+    }
+    if (newPassword && newPassword.length < 8) {
+      notifications.show({
+        color: "red",
+        title: "账号安全",
+        message: "新密码至少 8 位"
+      });
+      return;
+    }
+
+    try {
+      setAdminSecuritySaving(true);
+      const session = await updateCurrentAdminSecurity({
+        email,
+        currentPassword: adminSecurityForm.currentPassword,
+        ...(newPassword ? { newPassword } : {})
+      });
+      persistAdminSession(session);
+      setAuthForm({ account: email, password: "" });
+      setAdminSecurityOpened(false);
+      setAdminSecurityForm({
+        email: "",
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: ""
+      });
+      await loadFullSnapshot();
+      notifications.show({
+        color: "green",
+        title: "账号安全",
+        message: "管理员账号安全信息已更新"
+      });
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "账号安全",
+        message: readError(reason, "更新管理员账号失败")
+      });
+    } finally {
+      setAdminSecuritySaving(false);
     }
   }
 
@@ -1686,6 +1787,9 @@ export function App() {
               <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadFullSnapshot()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
               </Button>
+              <Button variant="default" onClick={openAdminSecurityModal}>
+                账号安全
+              </Button>
               <Button variant="default" onClick={() => void handleAdminLogout()}>
                 退出登录
               </Button>
@@ -2003,6 +2107,52 @@ export function App() {
         onClose={closeNodeAccessEditor}
         onSave={() => void saveNodeAccessEditor()}
       />
+
+      <Modal opened={adminSecurityOpened} onClose={closeAdminSecurityModal} title="账号安全" centered size="md">
+        <Stack gap="md">
+          <TextInput
+            label="管理员账号"
+            value={adminSecurityForm.email}
+            placeholder="请输入新的后台登录账号"
+            autoComplete="username"
+            onChange={(event) => setAdminSecurityForm((current) => ({ ...current, email: event.currentTarget.value }))}
+          />
+          <PasswordInput
+            label="当前密码"
+            value={adminSecurityForm.currentPassword}
+            placeholder="用于确认本次修改"
+            autoComplete="current-password"
+            onChange={(event) => setAdminSecurityForm((current) => ({ ...current, currentPassword: event.currentTarget.value }))}
+          />
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+            <PasswordInput
+              label="新密码"
+              value={adminSecurityForm.newPassword}
+              placeholder="不修改可留空"
+              autoComplete="new-password"
+              onChange={(event) => setAdminSecurityForm((current) => ({ ...current, newPassword: event.currentTarget.value }))}
+            />
+            <PasswordInput
+              label="确认新密码"
+              value={adminSecurityForm.confirmPassword}
+              placeholder="再次输入新密码"
+              autoComplete="new-password"
+              onChange={(event) => setAdminSecurityForm((current) => ({ ...current, confirmPassword: event.currentTarget.value }))}
+            />
+          </SimpleGrid>
+          <Alert color="blue" variant="light">
+            保存后会刷新后台登录态，其他已登录会话需要重新登录。
+          </Alert>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={closeAdminSecurityModal} disabled={adminSecuritySaving}>
+              取消
+            </Button>
+            <Button onClick={() => void saveAdminSecurity()} loading={adminSecuritySaving}>
+              保存修改
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </>
   );
 }

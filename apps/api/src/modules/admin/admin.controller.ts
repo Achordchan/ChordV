@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import type { ResetSubscriptionTrafficInputDto } from "@chordv/shared";
 import { diskStorage } from "multer";
@@ -30,6 +30,7 @@ import {
   UpdateReleaseArtifactDto,
   UpdateReleaseDto,
   UpdateAnnouncementDto,
+  UpdateCurrentAdminSecurityDto,
   UpdateNodeDto,
   UpdatePlanDto,
   UpdatePlanSecurityDto,
@@ -69,6 +70,11 @@ export class AdminController {
   @Get("dashboard")
   getDashboard() {
     return this.devDataService.getAdminDashboard();
+  }
+
+  @Put("me/security")
+  updateCurrentAdminSecurity(@Headers("authorization") authorization: string | undefined, @Body() body: UpdateCurrentAdminSecurityDto) {
+    return this.devDataService.updateCurrentAdminSecurity(authorization, body);
   }
 
   @Get("users")

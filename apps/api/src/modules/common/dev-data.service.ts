@@ -9,6 +9,7 @@ import {
   OnModuleInit,
   UnauthorizedException
 } from "@nestjs/common";
+import * as bcrypt from "bcryptjs";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type {
@@ -93,6 +94,7 @@ import type {
   UpdateSubscriptionNodeAccessInputDto,
   UpdateTeamInputDto,
   UpdateTeamMemberInputDto,
+  UpdateCurrentAdminSecurityInputDto,
   UpdateUserSecurityInputDto,
   UpdateUserInputDto,
   UserProfileDto,
@@ -830,6 +832,65 @@ export class DevDataService implements OnModuleInit {
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
     return this.adminSubscriptionService.listAdminUsers();
+  }
+
+  async updateCurrentAdminSecurity(
+    authorization: string | undefined,
+    input: UpdateCurrentAdminSecurityInputDto
+  ): Promise<AuthSessionDto> {
+    const currentAdmin = await this.authSessionService.authenticateAccessToken(authorization);
+    if (currentAdmin.role !== "admin") {
+      throw new ForbiddenException("需要管理员权限");
+    }
+
+    const nextEmail = input.email.trim().toLowerCase();
+    if (!nextEmail) {
+      throw new BadRequestException("请输入新的管理员账号");
+    }
+
+    const admin = await this.prisma.user.findUnique({
+      where: { id: currentAdmin.id }
+    });
+    if (!admin || admin.role !== "admin" || admin.status !== "active") {
+      throw new ForbiddenException("当前管理员不可用");
+    }
+
+    const passwordMatched = await bcrypt.compare(input.currentPassword, admin.passwordHash);
+    if (!passwordMatched) {
+      throw new UnauthorizedException("当前密码错误");
+    }
+
+    const existing = await this.prisma.user.findUnique({
+      where: { email: nextEmail }
+    });
+    if (existing && existing.id !== admin.id) {
+      throw new ConflictException("该账号已被占用");
+    }
+
+    const nextPassword = input.newPassword?.trim();
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.user.update({
+        where: { id: admin.id },
+        data: {
+          email: nextEmail,
+          ...(nextPassword ? { passwordHash: await bcrypt.hash(nextPassword, 10) } : {}),
+          authVersion: { increment: 1 },
+          lastSeenAt: new Date()
+        }
+      });
+      await tx.refreshToken.updateMany({
+        where: {
+          userId: admin.id,
+          revokedAt: null
+        },
+        data: {
+          revokedAt: new Date()
+        }
+      });
+      return row;
+    });
+
+    return this.authSessionService.issueSession(updated.id);
   }
 
   async createUser(input: CreateUserInputDto): Promise<AdminUserRecordDto> {
