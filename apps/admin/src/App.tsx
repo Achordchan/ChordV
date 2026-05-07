@@ -94,6 +94,7 @@ import {
   fetchAdminTeams,
   fetchAdminUsers,
   fetchNodePanelInbounds,
+  getAdminProfile,
   getSubscriptionNodeAccess,
   importNode,
   kickTeamMember,
@@ -774,9 +775,9 @@ export function App() {
   }
 
   function openAdminSecurityModal() {
-    const adminUser = snapshot?.users.find((item) => item.role === "admin");
+    const adminProfile = getAdminProfile();
     setAdminSecurityForm({
-      email: adminUser?.email ?? "",
+      email: adminProfile?.email ?? "",
       currentPassword: "",
       newPassword: "",
       confirmPassword: ""

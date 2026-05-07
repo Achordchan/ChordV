@@ -1,6 +1,7 @@
 import type { AuthSessionDto, UpdateCurrentAdminSecurityInputDto } from "@chordv/shared";
 import {
   clearStoredAdminSession,
+  getStoredAdminProfile,
   getStoredAdminRefreshToken,
   hasStoredAdminSession,
   persistAdminSessionTokens,
@@ -56,4 +57,8 @@ export function hasAdminSession() {
 
 export function getAdminRefreshToken() {
   return getStoredAdminRefreshToken();
+}
+
+export function getAdminProfile() {
+  return getStoredAdminProfile();
 }

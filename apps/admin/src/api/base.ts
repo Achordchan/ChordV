@@ -5,6 +5,7 @@ const API_BASE =
     : window.location.origin;
 export const ADMIN_ACCESS_TOKEN_KEY = "chordv_admin_access_token";
 export const ADMIN_REFRESH_TOKEN_KEY = "chordv_admin_refresh_token";
+export const ADMIN_PROFILE_KEY = "chordv_admin_profile";
 export const ADMIN_SESSION_EXPIRED_EVENT = "chordv:admin-session-expired";
 export const ADMIN_SESSION_EXPIRED_MESSAGE = "登录态已失效，请重新登录";
 
@@ -16,6 +17,8 @@ type AuthSessionResponse = {
   accessToken: string;
   refreshToken: string;
   user?: {
+    email?: string;
+    displayName?: string;
     role?: string;
   } | null;
 };
@@ -30,14 +33,38 @@ export function getStoredAdminRefreshToken() {
   return localStorage.getItem(ADMIN_REFRESH_TOKEN_KEY) ?? "";
 }
 
-export function persistAdminSessionTokens(session: Pick<AuthSessionResponse, "accessToken" | "refreshToken">) {
+export function getStoredAdminProfile() {
+  const raw = localStorage.getItem(ADMIN_PROFILE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { email?: unknown; displayName?: unknown };
+    return {
+      email: typeof parsed.email === "string" ? parsed.email : "",
+      displayName: typeof parsed.displayName === "string" ? parsed.displayName : ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function persistAdminSessionTokens(session: Pick<AuthSessionResponse, "accessToken" | "refreshToken" | "user">) {
   localStorage.setItem(ADMIN_ACCESS_TOKEN_KEY, session.accessToken);
   localStorage.setItem(ADMIN_REFRESH_TOKEN_KEY, session.refreshToken);
+  if (session.user) {
+    localStorage.setItem(
+      ADMIN_PROFILE_KEY,
+      JSON.stringify({
+        email: session.user.email ?? "",
+        displayName: session.user.displayName ?? ""
+      })
+    );
+  }
 }
 
 export function clearStoredAdminSession(options?: { notify?: boolean }) {
   localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
   localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_PROFILE_KEY);
   if (options?.notify) {
     window.dispatchEvent(new CustomEvent(ADMIN_SESSION_EXPIRED_EVENT));
   }
