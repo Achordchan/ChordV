@@ -4,7 +4,14 @@ import type { AdminNodeRecordDto, AdminSnapshotDto, AdminSubscriptionRecordDto }
 import { IconBell, IconListDetails, IconMapPin, IconMessageCircle, IconUser, IconUsers } from "@tabler/icons-react";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
-import { nodeProbeColor, subscriptionStateColor, translateProbeStatus, translateSubscriptionState } from "../utils/admin-translate";
+import {
+  nodePanelColor,
+  nodeProbeColor,
+  subscriptionStateColor,
+  translatePanelStatus,
+  translateProbeStatus,
+  translateSubscriptionState
+} from "../utils/admin-translate";
 
 type OverviewPageProps = {
   snapshot: AdminSnapshotDto;
@@ -20,7 +27,7 @@ export function OverviewPage(props: OverviewPageProps) {
         <MetricCard label="团队数" value={props.snapshot.dashboard.teams} icon={<IconUsers size={18} />} />
         <MetricCard label="有效套餐" value={props.snapshot.dashboard.activePlans} icon={<IconListDetails size={18} />} />
         <MetricCard label="有效订阅" value={props.snapshot.dashboard.activeSubscriptions} icon={<IconUser size={18} />} />
-        <MetricCard label="节点数" value={props.snapshot.dashboard.activeNodes} icon={<IconMapPin size={18} />} />
+        <MetricCard label="启用节点" value={props.snapshot.dashboard.activeNodes} icon={<IconMapPin size={18} />} />
         <MetricCard label="在线公告" value={props.snapshot.dashboard.announcements} icon={<IconBell size={18} />} />
         <MetricCard label="待处理工单" value={props.snapshot.dashboard.waitingAdminTickets ?? 0} icon={<IconMessageCircle size={18} />} />
         <MetricCard label="处理中工单" value={props.snapshot.dashboard.openTickets ?? 0} icon={<IconMessageCircle size={18} />} />
@@ -98,19 +105,45 @@ function CompactSubscriptionList({ items }: { items: AdminSubscriptionRecordDto[
 function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
   return (
     <Stack gap="sm">
-      {items.map((item) => (
-        <Paper key={item.id} withBorder radius="lg" p="md">
-          <Group justify="space-between" align="start">
-            <div>
-              <Text fw={600}>{item.name}</Text>
-              <Text size="sm" c="dimmed">
-                {item.serverHost}:{item.serverPort}
-              </Text>
-            </div>
-            <StatusBadge color={nodeProbeColor(item.probeStatus)} label={translateProbeStatus(item.probeStatus)} />
-          </Group>
-        </Paper>
-      ))}
+      {items.map((item) => {
+        const status = compactNodeStatus(item);
+
+        return (
+          <Paper key={item.id} withBorder radius="lg" p="md">
+            <Group justify="space-between" align="start" wrap="nowrap">
+              <div style={{ minWidth: 0 }}>
+                <Text fw={600} lineClamp={1}>
+                  {item.name}
+                </Text>
+                <Text size="sm" c="dimmed" lineClamp={1}>
+                  {item.serverHost}:{item.serverPort}
+                </Text>
+                <Text size="xs" c="dimmed" lineClamp={1}>
+                  3x-ui：{translatePanelStatus(item.panelStatus)} · 探测：{translateProbeStatus(item.probeStatus)}
+                  {item.panelSyncPendingCount ? ` · 待同步 ${item.panelSyncPendingCount}` : ""}
+                </Text>
+              </div>
+              <StatusBadge color={status.color} label={status.label} />
+            </Group>
+          </Paper>
+        );
+      })}
     </Stack>
   );
+}
+
+function compactNodeStatus(item: AdminNodeRecordDto) {
+  if (item.isActive === false) {
+    return { color: "gray", label: "已禁用" };
+  }
+
+  if (item.panelSyncPendingCount) {
+    return { color: "yellow", label: "待同步" };
+  }
+
+  if (item.panelStatus === "degraded") {
+    return { color: nodePanelColor(item.panelStatus), label: "面板异常" };
+  }
+
+  return { color: nodeProbeColor(item.probeStatus), label: translateProbeStatus(item.probeStatus) };
 }

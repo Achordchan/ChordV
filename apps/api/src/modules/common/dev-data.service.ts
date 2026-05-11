@@ -403,7 +403,7 @@ export class DevDataService implements OnModuleInit {
         users: users.length,
         teams: teams.length,
         activeSubscriptions: subscriptions.filter((item) => item.state === "active").length,
-        activeNodes: nodes.length,
+        activeNodes: nodes.filter((item) => item.isActive).length,
         announcements: announcements.filter((item) => item.isActive).length,
         activePlans: plans.filter((item) => item.isActive).length,
         openTickets: ticketCounts.openTickets,

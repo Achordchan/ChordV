@@ -1,7 +1,7 @@
 {
   "name": "chordv",
   "private": true,
-  "version": "1.1.4",
+  "version": "1.1.5",
   "packageManager": "pnpm@9.15.3",
   "scripts": {
     "dev": "turbo dev",
@@ -9,6 +9,7 @@
     "check": "turbo check",
     "lint": "turbo lint",
     "prepare:1panel-bundle": "node ./scripts/prepare-1panel-chordv-bundle.mjs",
+    "release:desktop": "bash scripts/release-desktop.sh",
     "setup:mac": "docker compose up -d postgres && pnpm install && pnpm --filter @chordv/api db:generate && pnpm --filter @chordv/api db:push && pnpm --filter @chordv/api db:seed",
     "dev:mac": "pnpm --filter @chordv/desktop tauri:dev",
     "dev:ops": "concurrently -k -n api,admin -c blue,green \"pnpm --filter @chordv/api dev\" \"pnpm --filter @chordv/admin dev -- --host 127.0.0.1\"",
