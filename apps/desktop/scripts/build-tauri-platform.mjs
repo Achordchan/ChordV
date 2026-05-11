@@ -29,7 +29,7 @@ const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
 const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.platform.conf.json`);
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
 const buildArgs = ["exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const pnpmCommand = "pnpm";
 
 prepareBundledRuntimeResources(platform);
 const bundledResources = buildBundledRuntimeResources(platform);
@@ -56,6 +56,7 @@ console.log(`执行打包命令：${pnpmCommand} ${buildArgs.join(" ")}`);
 const result = spawnSync(pnpmCommand, buildArgs, {
   cwd: desktopRoot,
   stdio: "inherit",
+  shell: process.platform === "win32",
   env: {
     ...process.env,
     VITE_APP_VERSION: version
