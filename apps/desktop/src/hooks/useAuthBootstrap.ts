@@ -104,7 +104,6 @@ export type UseAuthBootstrapOptions = {
     preferredId: string | null,
     probeResults?: Record<string, RuntimeNodeProbeResult>
   ) => NodeSummaryDto | null;
-  loadLastNodeId: () => string | null;
   resolveDefaultMode: (bootstrap: ClientBootstrapDto) => ConnectionMode;
   clearResolvedGuidance: (
     current: ConnectionGuidanceLike | null,
@@ -156,7 +155,6 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
     runProbe,
     runUpdateCheck,
     pickNode,
-    loadLastNodeId,
     resolveDefaultMode,
     clearResolvedGuidance,
     showErrorToast,
@@ -227,7 +225,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           showErrorToast("当前订阅未分配节点，请联系服务商处理");
         }
 
-        const preferred = pickNode(nextNodes, loadLastNodeId());
+        const preferred = pickNode(nextNodes, null);
         setSelectedNodeId(preferred?.id ?? null);
 
         if (autoProbe && nextNodes.length > 0) {
@@ -334,7 +332,6 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       isAccessTokenExpiredApiError,
       isForbiddenApiError,
       isUnauthorizedApiError,
-      loadLastNodeId,
       pickNode,
       readError,
       refreshStoredSessionNative,

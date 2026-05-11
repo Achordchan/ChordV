@@ -20,7 +20,6 @@ type UseNodeProbeOptions = {
   readError?: (message: string) => string;
   onUnauthorized?: () => Promise<unknown> | unknown;
   onError?: (message: string) => void;
-  loadLastNodeId?: () => string | null;
   pickNodeId?: (
     nodes: NodeSummaryDto[],
     preferredId: string | null,
@@ -66,12 +65,11 @@ export function useNodeProbe(options: UseNodeProbeOptions) {
         setProbeResults(nextResults);
         setProbeCooldownUntil(Date.now() + (options.probeCooldownMs ?? 25_000));
 
-        const saved = options.loadLastNodeId?.() ?? null;
         const currentSelectedId = options.selectedNodeId ?? null;
         const preferredNodeId =
           currentSelectedId && nextResults[currentSelectedId]?.status === "healthy"
             ? currentSelectedId
-            : options.pickNodeId?.(targetNodes, saved, nextResults) ?? currentSelectedId ?? targetNodes[0]?.id ?? null;
+            : options.pickNodeId?.(targetNodes, null, nextResults) ?? currentSelectedId ?? targetNodes[0]?.id ?? null;
         options.onSelectedNodeIdChange?.(preferredNodeId);
 
         const offlineNodeId = options.selectedNodeId ?? currentSelectedId ?? null;

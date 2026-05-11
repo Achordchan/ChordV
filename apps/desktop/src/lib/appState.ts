@@ -55,10 +55,6 @@ export function pickNode(
   return nodes[0] ?? null;
 }
 
-export function loadLastNodeId(key: string) {
-  return localStorage.getItem(key);
-}
-
 export function resolveDefaultMode(bootstrap: ClientBootstrapDto) {
   return bootstrap.policies.modes.includes(bootstrap.policies.defaultMode)
     ? bootstrap.policies.defaultMode

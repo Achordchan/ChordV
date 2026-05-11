@@ -123,7 +123,6 @@ type UseRuntimeActionsOptions = {
   runUpdateCheck: (input: RunUpdateCheckInput) => Promise<void>;
   refreshRuntime: () => Promise<RuntimeStatus | null>;
   forceStopLocalRuntime: () => Promise<void>;
-  loadLastNodeId: () => string | null;
   pickNode: (
     nodes: NodeSummaryDto[],
     preferredId: string | null,
@@ -333,7 +332,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         nextNodes = nodesResult.value;
         options.setNodes(nextNodes);
         options.setSelectedNodeId((current) =>
-          options.pickNode(nextNodes, current ?? options.loadLastNodeId(), options.probeResultsRef.current)?.id ?? null
+          options.pickNode(nextNodes, current, options.probeResultsRef.current)?.id ?? null
         );
         options.lastForegroundSyncErrorRef.current = null;
       }
@@ -511,7 +510,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           const nextNodes = await fetchNodes(accessToken);
           options.setNodes(nextNodes);
           options.setSelectedNodeId((current) =>
-            options.pickNode(nextNodes, current ?? options.loadLastNodeId(), options.probeResultsRef.current)?.id ?? null
+            options.pickNode(nextNodes, current, options.probeResultsRef.current)?.id ?? null
           );
         } catch {
           options.setServerProbe((current) => ({
@@ -643,7 +642,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         sessionId: config.sessionId,
         nodeId: config.node.id
       });
-      localStorage.setItem("chordv_last_node_id", selectedNode.id);
       options.setRuntime(config);
       options.setConnectionGuidance(null);
       options.setGuidanceDialog(null);

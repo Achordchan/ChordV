@@ -58,7 +58,6 @@ import {
 } from "./lib/connectionGuidance";
 import {
   clearRememberedCredentials as clearRememberedCredentialsStorage,
-  loadLastNodeId as loadLastNodeIdFromStorage,
   loadRememberedCredentials as loadRememberedCredentialsFromStorage,
   pickNode,
   primaryButtonLabel,
@@ -83,7 +82,6 @@ import { useRuntimeAssets } from "./hooks/useRuntimeAssets";
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useSupportTickets } from "./hooks/useSupportTickets";
 import { useUpdateFlow } from "./hooks/useUpdateFlow";
-const LAST_NODE_KEY = "chordv_last_node_id";
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 const DESKTOP_CLOSE_HINT_KEY = "chordv_desktop_close_hint_ack";
 const RUNTIME_COMPONENT_MIRROR_PREFIX_KEY = "chordv_runtime_component_mirror_prefix";
@@ -151,7 +149,6 @@ export function App() {
     setRuntime,
     leaseHeartbeatFailedAtRef
   });
-  const loadLastNodeId = () => loadLastNodeIdFromStorage(LAST_NODE_KEY);
   const loadRememberedCredentials = () => loadRememberedCredentialsFromStorage(REMEMBER_CREDENTIALS_KEY);
   const saveRememberedCredentials = (email: string, password: string) =>
     saveRememberedCredentialsToStorage(REMEMBER_CREDENTIALS_KEY, email, password);
@@ -292,7 +289,6 @@ export function App() {
     readError,
     onUnauthorized: recoverSessionAfterUnauthorized,
     onError: showErrorToast,
-    loadLastNodeId,
     pickNodeId: (targetNodes, preferredId, results) => pickNode(targetNodes, preferredId, results)?.id ?? null,
     pickAlternativeNodeId: (targetNodes, currentNodeId, results) =>
       pickAlternativeNode(targetNodes, currentNodeId, results)?.id ?? null,
@@ -385,7 +381,6 @@ export function App() {
     runProbe: runProbeForAuth,
     runUpdateCheck: runUpdateCheckForAuth,
     pickNode,
-    loadLastNodeId,
     resolveDefaultMode,
     clearResolvedGuidance: clearResolvedGuidanceForAuth,
     showErrorToast,
@@ -453,7 +448,6 @@ export function App() {
     runUpdateCheck: runUpdateCheckForActions,
     refreshRuntime,
     forceStopLocalRuntime,
-    loadLastNodeId,
     pickNode
   });
 
