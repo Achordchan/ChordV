@@ -1374,7 +1374,7 @@ export class RuntimeSessionService {
     };
 
     if (!subscription) {
-      await revokeAndThrow("当前订阅不存在，会话已失效", "subscription_missing");
+      await revokeAndThrow("当前订阅不存在，连接已失效", "subscription_missing");
     }
     const ensuredSubscription = subscription as NonNullable<typeof subscription>;
 
@@ -1383,7 +1383,7 @@ export class RuntimeSessionService {
         await revokeAndThrow("当前会话不属于该账号", "subscription_owner_mismatch");
       }
       if (!ensuredSubscription.user || ensuredSubscription.user.status !== "active") {
-        await revokeAndThrow("当前账号已禁用，会话已失效", "subscription_user_disabled");
+        await revokeAndThrow("当前账号已禁用，连接已失效", "subscription_user_disabled");
       }
     } else if (ensuredSubscription.teamId) {
       const membership = await this.prisma.teamMember.findUnique({
@@ -1393,19 +1393,19 @@ export class RuntimeSessionService {
         }
       });
       if (!membership || !membership.team || membership.teamId !== ensuredSubscription.teamId) {
-        await revokeAndThrow("当前成员已失去团队访问权限，会话已失效", "team_membership_missing");
+        await revokeAndThrow("当前成员已失去团队访问权限，连接已失效", "team_membership_missing");
         return;
       }
       if (membership.team.status !== "active") {
-        await revokeAndThrow("当前团队已停用，会话已失效", "team_disabled");
+        await revokeAndThrow("当前团队已停用，连接已失效", "team_disabled");
         return;
       }
     } else {
-      await revokeAndThrow("当前订阅缺少归属信息，会话已失效", "subscription_owner_missing");
+      await revokeAndThrow("当前订阅缺少归属信息，连接已失效", "subscription_owner_missing");
     }
 
     if (ensuredSubscription.nodeAccesses.length === 0) {
-      await revokeAndThrow("当前节点授权已取消，会话已失效", "node_access_revoked");
+      await revokeAndThrow("当前节点授权已取消，连接已失效", "node_access_revoked");
     }
 
     try {
@@ -1433,7 +1433,7 @@ export class RuntimeSessionService {
     });
 
     if (!binding) {
-      await revokeAndThrow("当前节点客户端已停用，会话已失效", "panel_client_disabled");
+      await revokeAndThrow("当前节点客户端已停用，连接已失效", "panel_client_disabled");
       return;
     }
 
@@ -1441,7 +1441,7 @@ export class RuntimeSessionService {
       binding.panelClientEmail !== lease.xrayUserEmail ||
       binding.panelClientId !== lease.xrayUserUuid
     ) {
-      await revokeAndThrow("当前节点客户端凭据已更新，会话已失效", "panel_client_rotated");
+      await revokeAndThrow("当前节点客户端凭据已更新，连接已失效", "panel_client_rotated");
     }
   }
 

@@ -4,7 +4,7 @@ export function resolveProtectedAccessReason(rawMessage: string): ProtectedAcces
   if (!rawMessage) {
     return null;
   }
-  if (rawMessage.includes("当前账号已禁用")) {
+  if (rawMessage.includes("当前账号已禁用") || rawMessage.includes("当前用户已禁用")) {
     return "account_disabled";
   }
   if (rawMessage.includes("当前成员已失去团队访问权限")) {

@@ -178,7 +178,7 @@ export function getLeaseFailureDetails(
     case "subscription_user_disabled":
       return {
         reasonCode: "account_disabled",
-        reasonMessage: "当前账号已禁用，会话已失效",
+        reasonMessage: "当前账号已禁用，连接已失效",
         detailReason: revokedReason,
         evictedReason: null
       };
@@ -187,7 +187,7 @@ export function getLeaseFailureDetails(
     case "team_disabled":
       return {
         reasonCode: "team_access_revoked",
-        reasonMessage: "当前成员已失去团队访问权限，会话已失效",
+        reasonMessage: "当前成员已失去团队访问权限，连接已失效",
         detailReason: revokedReason,
         evictedReason: null
       };

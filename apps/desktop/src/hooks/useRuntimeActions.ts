@@ -22,6 +22,7 @@ import {
   heartbeatSession,
   isAccessTokenExpiredApiError,
   isForbiddenApiError,
+  isNotFoundApiError,
   isUnauthorizedApiError
 } from "../api/client";
 import {
@@ -250,8 +251,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           await options.clearSession(true);
           options.notify({
             color: "yellow",
-            title: "登录已失效",
-            message: "当前账号已失去可用订阅，请重新登录或联系管理员。"
+            title: "订阅不可用",
+            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
           });
         }
       }
@@ -302,6 +303,12 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         announcementsResult.status === "rejected" ? announcementsResult.reason : null,
         runtimeResult.status === "rejected" ? runtimeResult.reason : null
       ].filter((reason): reason is unknown => Boolean(reason) && isForbiddenApiError(reason));
+      const notFoundReasons = [
+        subscriptionResult.status === "rejected" ? subscriptionResult.reason : null,
+        nodesResult.status === "rejected" ? nodesResult.reason : null,
+        announcementsResult.status === "rejected" ? announcementsResult.reason : null,
+        runtimeResult.status === "rejected" ? runtimeResult.reason : null
+      ].filter((reason): reason is unknown => Boolean(reason) && isNotFoundApiError(reason));
 
       for (const forbiddenReason of forbiddenReasons) {
         if (await handleProtectedAccessRevoked(forbiddenReason)) {
@@ -312,8 +319,21 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           await options.clearSession(true);
           options.notify({
             color: "yellow",
-            title: "登录已失效",
-            message: "当前账号已失去可用订阅，请重新登录或联系管理员。"
+            title: "订阅不可用",
+            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
+          });
+          return;
+        }
+      }
+
+      for (const notFoundReason of notFoundReasons) {
+        const message = notFoundReason instanceof Error ? notFoundReason.message : "";
+        if (message.includes("当前没有可用订阅")) {
+          await options.clearSession(true);
+          options.notify({
+            color: "yellow",
+            title: "订阅不可用",
+            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
           });
           return;
         }

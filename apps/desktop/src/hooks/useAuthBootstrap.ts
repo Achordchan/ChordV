@@ -14,6 +14,7 @@ import {
   fetchNodes as fetchNodesRequest,
   isAccessTokenExpiredApiError,
   isForbiddenApiError,
+  isNotFoundApiError,
   isUnauthorizedApiError,
   login as loginRequest,
   logoutSession as logoutSessionRequest,
@@ -274,9 +275,23 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
             });
             return Boolean(refreshed);
           } catch (refreshReason) {
-            if (isUnauthorizedApiError(refreshReason) || isForbiddenApiError(refreshReason)) {
+            if (isUnauthorizedApiError(refreshReason)) {
               await clearSession(true);
               showErrorToast("登录态已失效");
+              return false;
+            }
+            if (isForbiddenApiError(refreshReason)) {
+              const accessReason = resolveProtectedAccessReason(
+                refreshReason instanceof Error ? readError(refreshReason.message) : ""
+              );
+              if (accessReason) {
+                const notice = buildProtectedAccessNotice(accessReason);
+                await clearSession(true);
+                showErrorToast(notice.message);
+                return false;
+              }
+              await clearSession(true);
+              showErrorToast(refreshReason instanceof Error ? readError(refreshReason.message) : "登录失败");
               return false;
             }
             if (session) {
@@ -309,7 +324,16 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           const message = reason instanceof Error ? readError(reason.message) : "当前账号无法继续使用";
           if (message.includes("当前没有可用订阅") || message.includes("失去可用订阅")) {
             await clearSession(true);
-            showErrorToast("当前账号已失去可用订阅，请重新登录或联系管理员。");
+            showErrorToast("当前账号没有可用订阅，请联系管理员恢复订阅后再使用。");
+            return false;
+          }
+        }
+
+        if (isNotFoundApiError(reason)) {
+          const message = reason instanceof Error ? readError(reason.message) : "";
+          if (message.includes("当前没有可用订阅")) {
+            await clearSession(true);
+            showErrorToast("当前账号没有可用订阅，请联系管理员恢复订阅后再使用。");
             return false;
           }
         }

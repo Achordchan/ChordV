@@ -1178,7 +1178,7 @@ export class AdminSubscriptionService {
       panelSyncMessage,
       message,
       reasonCode: input.disableAccount ? "account_disabled" : "admin_paused_connection",
-      reasonMessage: input.disableAccount ? "当前账号已禁用，会话已失效。" : "管理员已暂停当前连接，可稍后恢复使用。",
+      reasonMessage: input.disableAccount ? "当前账号已禁用，连接已失效。" : "管理员已暂停当前连接，可稍后恢复使用。",
       team: await this.requireTeamRecord(teamId),
       user
     };

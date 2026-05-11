@@ -102,7 +102,7 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
       }
     });
     if (response.status < 200 || response.status >= 300) {
-      throw createApiRequestError(response.status, response.body);
+      throw createApiRequestError(path, response.status, response.body);
     }
     return {
       data: response.body ? (JSON.parse(response.body) as T) : ({} as T),
@@ -122,7 +122,7 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
 
   if (!response.ok) {
     const text = await response.text();
-    throw createApiRequestError(response.status, text);
+    throw createApiRequestError(path, response.status, text);
   }
 
   const body = await response.text();
@@ -166,10 +166,35 @@ function normalizeHeaders(headers?: HeadersInit) {
   return { ...headers };
 }
 
-function createApiRequestError(status: number | null, rawMessage: string | null | undefined) {
+function extractApiErrorMessage(rawMessage: string | null | undefined) {
+  const trimmed = rawMessage?.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { message?: string[] | string };
+    if (Array.isArray(parsed.message)) {
+      return parsed.message.filter(Boolean).join("，");
+    }
+    if (typeof parsed.message === "string") {
+      return parsed.message.trim();
+    }
+  } catch {
+    return trimmed;
+  }
+
+  return trimmed;
+}
+
+function createApiRequestError(path: string, status: number | null, rawMessage: string | null | undefined) {
   const normalizedStatus = typeof status === "number" && Number.isFinite(status) ? status : null;
-  const fallbackMessage = rawMessage?.trim() || (normalizedStatus ? `HTTP ${normalizedStatus}` : "请求失败");
+  const parsedMessage = extractApiErrorMessage(rawMessage);
+  const fallbackMessage = parsedMessage || (normalizedStatus ? `HTTP ${normalizedStatus}` : "请求失败");
   if (normalizedStatus === 401) {
+    if (path === "/auth/login") {
+      return new ApiRequestError(normalizedStatus, fallbackMessage, fallbackMessage);
+    }
     return new ApiRequestError(normalizedStatus, "登录状态已失效，请重新登录。", fallbackMessage);
   }
   return new ApiRequestError(normalizedStatus, fallbackMessage, fallbackMessage);
@@ -200,6 +225,11 @@ function isApiStatusError(reason: unknown, ...statuses: number[]) {
 export function isUnauthorizedApiError(reason: unknown) {
   const status = getApiErrorStatus(reason);
   return status === 401;
+}
+
+export function isNotFoundApiError(reason: unknown) {
+  const status = getApiErrorStatus(reason);
+  return status === 404;
 }
 
 export function isAccessTokenExpiredApiError(reason: unknown) {
@@ -528,7 +558,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       });
 
       if (!response.ok) {
-        throw createApiRequestError(response.status, await response.text());
+        throw createApiRequestError("/client/events/stream", response.status, await response.text());
       }
 
       if (!response.body) {
