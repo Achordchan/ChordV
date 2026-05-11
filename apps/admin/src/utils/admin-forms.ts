@@ -81,6 +81,7 @@ export type TeamSubscriptionFormState = {
 export type NodeFormState = {
   subscriptionUrl: string;
   name: string;
+  countryCode: string;
   region: string;
   provider: string;
   tags: string;
@@ -233,6 +234,7 @@ export function emptyNodeForm(): NodeFormState {
   return {
     subscriptionUrl: "",
     name: "",
+    countryCode: "",
     region: "",
     provider: "自有节点",
     tags: "",

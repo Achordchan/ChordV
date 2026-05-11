@@ -244,15 +244,17 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
           setProbeResults({});
         }
 
-        try {
-          await runUpdateCheck({
-            accessToken: nextSession.accessToken,
-            bootstrapVersion: nextBootstrap.version,
-            source: allowRefresh ? "refresh" : "login",
-            silent: true
-          });
-        } catch (reason) {
-          showErrorToast(reason instanceof Error ? readError(reason.message) : "更新信息同步失败");
+        if (!allowRefresh) {
+          try {
+            await runUpdateCheck({
+              accessToken: nextSession.accessToken,
+              bootstrapVersion: nextBootstrap.version,
+              source: "login",
+              silent: true
+            });
+          } catch (reason) {
+            showErrorToast(reason instanceof Error ? readError(reason.message) : "更新信息同步失败");
+          }
         }
 
         return true;

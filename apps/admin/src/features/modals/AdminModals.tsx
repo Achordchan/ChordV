@@ -1,5 +1,7 @@
 import { Badge, Button, Checkbox, Divider, Group, Modal, MultiSelect, Paper, SimpleGrid, Stack, Table, Text } from "@mantine/core";
 import type { AdminNodeRecordDto, AdminTeamUsageRecordDto } from "@chordv/shared";
+import { resolveCountryCode } from "@chordv/shared";
+import { CountryFlag } from "../../components/CountryFlag";
 import { formatDateTime, formatTrafficGb } from "../../utils/admin-format";
 
 export function DeleteNodeModal(props: {
@@ -109,7 +111,10 @@ export function TeamUsageDetailModal(props: {
                     </Group>
                   </Table.Td>
                   <Table.Td>
-                    <Badge variant="light">{entry.nodeRegion}</Badge>
+                    <Group gap={6} wrap="nowrap">
+                      <CountryFlag code={resolveCountryCode({ region: entry.nodeRegion })} size="sm" />
+                      <Badge variant="light">{entry.nodeRegion}</Badge>
+                    </Group>
                   </Table.Td>
                   <Table.Td>{formatTrafficGb(entry.usedTrafficGb)} GB</Table.Td>
                   <Table.Td>{entry.recordCount} 条</Table.Td>

@@ -42,7 +42,11 @@ pnpm setup:mac
 
 该命令会安装依赖、启动本地 PostgreSQL、生成 Prisma Client、同步数据库结构并写入基础数据。初始化完成后即可启动 API、运营后台和桌面客户端。
 
+如果你当前使用的是远端数据库和现成后台，不要执行这个命令。只需要把根目录 `.env` 里的 `DATABASE_URL` 指向远端 PostgreSQL，然后直接启动桌面端即可。
+
 ### 启动运营后台与 API
+
+仅当你需要本地跑 API 和后台时再执行：
 
 ```bash
 pnpm dev:ops
@@ -56,14 +60,16 @@ pnpm dev:ops
 ### 启动桌面客户端
 
 ```bash
-pnpm dev:mac
+PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgroup.com pnpm dev:mac
 ```
 
 仅启动桌面前端：
 
 ```bash
-pnpm dev:desktop
+PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgroup.com pnpm dev:desktop
 ```
+
+如果 `tauri dev` 报 native binding / code signature 错误，先确认当前终端优先使用的是 Homebrew 的 Node，而不是 Codex.app 自带的 Node。
 
 ## 环境变量
 

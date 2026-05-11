@@ -8,5 +8,8 @@
     "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "i18n-iso-countries": "^7.14.0"
   }
 }

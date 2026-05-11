@@ -25,6 +25,7 @@ import {
   pickCurrentSubscription,
   toSubscriptionStatusDto
 } from "./subscription.utils";
+import { toNodeSummary } from "./node-import.utils";
 
 type ClientSubscriptionAccess = {
   subscription: {
@@ -45,31 +46,6 @@ type ClientSubscriptionAccess = {
   memberRole: TeamMemberRole | null;
   memberUsedTrafficGb: number | null;
 };
-
-export function toNodeSummary(row: {
-  id: string;
-  name: string;
-  region: string;
-  provider: string;
-  tags: string[];
-  recommended: boolean;
-  latencyMs: number;
-  probeLatencyMs?: number | null;
-  protocol: string;
-  security: string;
-}): NodeSummaryDto {
-  return {
-    id: row.id,
-    name: row.name,
-    region: row.region,
-    provider: row.provider,
-    tags: row.tags,
-    recommended: row.recommended,
-    latencyMs: row.probeLatencyMs ?? row.latencyMs,
-    protocol: row.protocol as "vless",
-    security: row.security as "reality"
-  };
-}
 
 @Injectable()
 export class ClientAccessService {

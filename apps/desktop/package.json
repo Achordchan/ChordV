@@ -29,8 +29,9 @@
     "@mantine/core": "^7.15.3",
     "@mantine/hooks": "^7.15.3",
     "@mantine/notifications": "^7.15.3",
-    "@tauri-apps/api": "^2.2.0",
     "@tabler/icons-react": "^3.28.1",
+    "@tauri-apps/api": "^2.2.0",
+    "flag-icons": "^7.5.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

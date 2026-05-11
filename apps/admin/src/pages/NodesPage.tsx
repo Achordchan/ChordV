@@ -1,6 +1,7 @@
 import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
 import type { AdminNodeRecordDto, AdminPanelSyncJobDto } from "@chordv/shared";
 import { IconBolt, IconListDetails, IconPencil, IconRefresh, IconTrash } from "@tabler/icons-react";
+import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -59,9 +60,12 @@ export function NodesPage(props: NodesPageProps) {
                   <Table.Td>
                     <div>
                       <Text>{item.name}</Text>
-                      <Text size="sm" c="dimmed">
-                        {item.region} · {item.provider}
-                      </Text>
+                      <Group gap={6} wrap="nowrap" align="center">
+                        <CountryFlag code={item.countryCode} size="sm" />
+                        <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0, flex: 1 }}>
+                          {item.region} · {item.provider}
+                        </Text>
+                      </Group>
                     </div>
                   </Table.Td>
                   <Table.Td>

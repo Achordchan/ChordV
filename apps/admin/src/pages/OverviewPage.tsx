@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Button, Card, Group, Paper, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import type { AdminNodeRecordDto, AdminSnapshotDto, AdminSubscriptionRecordDto } from "@chordv/shared";
 import { IconBell, IconListDetails, IconMapPin, IconMessageCircle, IconUser, IconUsers } from "@tabler/icons-react";
+import { CountryFlag } from "../components/CountryFlag";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
 import {
@@ -115,9 +116,12 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
                 <Text fw={600} lineClamp={1}>
                   {item.name}
                 </Text>
-                <Text size="sm" c="dimmed" lineClamp={1}>
-                  {item.serverHost}:{item.serverPort}
-                </Text>
+                <Group gap={6} wrap="nowrap">
+                  <CountryFlag code={item.countryCode} size="sm" />
+                  <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0, flex: 1 }}>
+                    {item.region} · {item.serverHost}:{item.serverPort}
+                  </Text>
+                </Group>
                 <Text size="xs" c="dimmed" lineClamp={1}>
                   3x-ui：{translatePanelStatus(item.panelStatus)} · 探测：{translateProbeStatus(item.probeStatus)}
                   {item.panelSyncPendingCount ? ` · 待同步 ${item.panelSyncPendingCount}` : ""}

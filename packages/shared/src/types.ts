@@ -105,6 +105,7 @@ export interface SubscriptionStatusDto {
 export interface NodeSummaryDto {
   id: string;
   name: string;
+  countryCode: string | null;
   region: string;
   provider: string;
   tags: string[];
@@ -809,6 +810,7 @@ export interface ConvertSubscriptionToTeamResultDto {
 export interface ImportNodeInputDto {
   subscriptionUrl?: string;
   name?: string;
+  countryCode?: string;
   region?: string;
   provider?: string;
   tags?: string[];
@@ -824,6 +826,7 @@ export interface ImportNodeInputDto {
 
 export interface UpdateNodeInputDto {
   name?: string;
+  countryCode?: string;
   region?: string;
   provider?: string;
   tags?: string[];

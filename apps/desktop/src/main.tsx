@@ -4,6 +4,7 @@ import { createTheme, MantineProvider } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
 import "@mantine/core/styles.css";
 import "@mantine/notifications/styles.css";
+import "flag-icons/css/flag-icons.min.css";
 import { App } from "./App";
 import "./styles.css";
 

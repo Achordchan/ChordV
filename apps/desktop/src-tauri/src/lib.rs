@@ -210,6 +210,7 @@ impl Default for RuntimeState {
 struct NodeSummaryDto {
     id: String,
     name: String,
+    country_code: Option<String>,
     region: String,
     provider: String,
     tags: Vec<String>,

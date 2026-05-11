@@ -13,12 +13,12 @@ import { ClientEventsPublisher } from "./client-events.publisher";
 import { createId } from "./release-center.utils";
 import {
   fetchSubscriptionNode,
-  inferRegion,
   normalizePanelApiBasePath,
   normalizeTags,
   parseVlessLink,
   probeNodeConnectivity,
   readRuntimeInboundId,
+  resolveNodeCountry,
   toAdminNodeRecord,
   toNodeId
 } from "./node-import.utils";
@@ -110,6 +110,12 @@ export class AdminNodeService {
     const nextPanelPassword = panelPassword ?? current?.panelPassword ?? null;
     const resolvedInboundId = readRuntimeInboundId(imported);
     const nextPanelInboundId = input.panelInboundId ?? current?.panelInboundId ?? resolvedInboundId ?? null;
+    const nextCountry = resolveNodeCountry({
+      countryCode: input.countryCode,
+      region: input.region,
+      name: input.name?.trim() || imported.name,
+      host: imported.serverHost
+    });
     const nextPanelEnabled = await this.resolveNodePanelEnabled({
       inputValue: input.panelEnabled,
       currentValue: current?.panelEnabled ?? null,
@@ -124,7 +130,8 @@ export class AdminNodeService {
       create: {
         id: nodeId,
         name: input.name?.trim() || imported.name,
-        region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
+        countryCode: nextCountry.countryCode,
+        region: nextCountry.region,
         provider: input.provider?.trim() || "自有节点",
         tags: normalizeTags(input.tags, imported.name),
         isActive: input.isActive ?? true,
@@ -152,7 +159,8 @@ export class AdminNodeService {
       },
       update: {
         name: input.name?.trim() || imported.name,
-        region: input.region?.trim() || inferRegion(imported.name, imported.serverHost),
+        countryCode: nextCountry.countryCode,
+        region: nextCountry.region,
         provider: input.provider?.trim() || "自有节点",
         tags: normalizeTags(input.tags, imported.name),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
@@ -249,12 +257,21 @@ export class AdminNodeService {
     const derivedInboundId = readRuntimeInboundId(derived);
     const shouldPersistPanelEnabledByDefault = panelConfigTouched && input.panelEnabled === undefined && nextPanelEnabled !== current.panelEnabled;
     const shouldPersistDerivedInboundId = input.panelInboundId === undefined && derivedInboundId !== null;
+    const countryTouched = input.countryCode !== undefined || input.region !== undefined;
+    const nextCountry = countryTouched
+      ? resolveNodeCountry({
+          countryCode: input.countryCode ?? current.countryCode,
+          region: input.region ?? current.region,
+          name: input.name?.trim() || current.name,
+          host: current.serverHost
+        })
+      : null;
 
     const row = await this.prisma.node.update({
       where: { id: nodeId },
       data: {
         ...(input.name !== undefined ? { name: input.name.trim() } : {}),
-        ...(input.region !== undefined ? { region: input.region.trim() } : {}),
+        ...(nextCountry ? { countryCode: nextCountry.countryCode, region: nextCountry.region } : {}),
         ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
         ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),

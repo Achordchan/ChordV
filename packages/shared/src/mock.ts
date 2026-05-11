@@ -19,6 +19,7 @@ import type {
   UserProfileDto,
   UserSubscriptionSummaryDto
 } from "./types";
+import { resolveCountryCode } from "./countries";
 
 export const mockUser: UserProfileDto = {
   id: "user_001",
@@ -61,6 +62,7 @@ export const mockNodes: NodeSummaryDto[] = [
   {
     id: "node_hk_01",
     name: "香港 01",
+    countryCode: "HK",
     region: "香港",
     provider: "自有节点",
     tags: ["流媒体", "低延迟"],
@@ -72,6 +74,7 @@ export const mockNodes: NodeSummaryDto[] = [
   {
     id: "node_sg_01",
     name: "新加坡 01",
+    countryCode: "SG",
     region: "新加坡",
     provider: "自有节点",
     tags: ["AI", "稳定"],
@@ -83,6 +86,7 @@ export const mockNodes: NodeSummaryDto[] = [
   {
     id: "node_jp_01",
     name: "日本 01",
+    countryCode: "JP",
     region: "日本",
     provider: "自有节点",
     tags: ["游戏", "备用"],
@@ -172,7 +176,7 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
     },
     outbound: {
       protocol: "vless",
-      server: `${node.region.toLowerCase()}.edge.chordv.app`,
+      server: `${(node.countryCode ?? resolveCountryCode({ region: node.region }) ?? node.region).toLowerCase()}.edge.chordv.app`,
       port: 443,
       uuid: "d5076fbe-b935-4dc6-8f59-a056d05db6f3",
       flow: "xtls-rprx-vision",
@@ -275,7 +279,7 @@ export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   panelLastSyncedAt: null,
   panelError: null,
   serverName: "aws.amazon.com",
-  serverHost: `${node.region.toLowerCase()}.edge.chordv.app`,
+  serverHost: `${(node.countryCode ?? resolveCountryCode({ region: node.region }) ?? node.region).toLowerCase()}.edge.chordv.app`,
   serverPort: 443,
   shortId: "6ba85179",
   spiderX: "/",

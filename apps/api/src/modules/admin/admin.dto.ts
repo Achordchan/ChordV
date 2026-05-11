@@ -1,5 +1,5 @@
 import { Transform, Type } from "class-transformer";
-import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Min, MinLength, ValidateNested } from "class-validator";
+import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Matches, Min, MinLength, ValidateNested } from "class-validator";
 import type {
   ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
@@ -365,6 +365,12 @@ export class ImportNodeDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @Matches(/^[A-Z]{2}$/i)
+  countryCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
   region?: string;
 
   @IsOptional()
@@ -421,6 +427,12 @@ export class UpdateNodeDto {
   @IsString()
   @IsNotEmpty()
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^[A-Z]{2}$/i)
+  countryCode?: string;
 
   @IsOptional()
   @IsString()

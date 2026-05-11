@@ -20,6 +20,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
+import { toNodeSummary } from "./node-import.utils";
 import {
   assertSubscriptionConnectable,
   buildLeaseDiagnosticFields,
@@ -1561,31 +1562,6 @@ export class RuntimeSessionService {
   private async resolveActiveUserFromToken(token?: string): Promise<UserProfileDto> {
     return this.authSessionService.authenticateAccessToken(token);
   }
-}
-
-function toNodeSummary(row: {
-  id: string;
-  name: string;
-  region: string;
-  provider: string;
-  tags: string[];
-  recommended: boolean;
-  latencyMs: number;
-  probeLatencyMs?: number | null;
-  protocol: string;
-  security: string;
-}) {
-  return {
-    id: row.id,
-    name: row.name,
-    region: row.region,
-    provider: row.provider,
-    tags: row.tags,
-    recommended: row.recommended,
-    latencyMs: row.probeLatencyMs ?? row.latencyMs,
-    protocol: row.protocol as "vless",
-    security: row.security as "reality"
-  };
 }
 
 function buildXuiRuntimeFromLease(

@@ -3,6 +3,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import type { NodeSummaryDto } from "@chordv/shared";
 import { IconBolt, IconRefresh, IconRosetteDiscountCheck } from "@tabler/icons-react";
 import type { RuntimeNodeProbeResult } from "../lib/runtime";
+import { CountryFlag } from "./CountryFlag";
 
 type NodeListPanelProps = {
   nodes: NodeSummaryDto[];
@@ -77,9 +78,12 @@ export function NodeListPanel(props: NodeListPanelProps) {
                       {status === "healthy" ? "可用" : "不可用"}
                     </Badge>
                   </Group>
-                  <Text size="sm" c="dimmed" lineClamp={1}>
-                    {node.region} · {node.provider}
-                  </Text>
+                  <Group gap={6} wrap="nowrap">
+                    <CountryFlag code={node.countryCode} size="sm" />
+                    <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0, flex: 1 }}>
+                      {node.region} · {node.provider}
+                    </Text>
+                  </Group>
                   {probe?.error ? (
                     <Text size="xs" c="red.6">
                       {probe.error}

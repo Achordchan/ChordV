@@ -176,6 +176,7 @@ export class DevDataBootstrapService {
       data: mockNodes.map((node) => ({
         id: node.id,
         name: node.name,
+        countryCode: node.countryCode,
         region: node.region,
         provider: node.provider,
         tags: node.tags,
@@ -183,7 +184,7 @@ export class DevDataBootstrapService {
         latencyMs: node.latencyMs,
         protocol: node.protocol,
         security: node.security,
-        serverHost: `${node.region.toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
+        serverHost: `${(node.countryCode ?? node.region).toLowerCase().replaceAll(" ", "-")}.edge.chordv.app`,
         serverPort: 443,
         uuid: "d5076fbe-b935-4dc6-8f59-a056d05db6f3",
         flow: "xtls-rprx-vision",

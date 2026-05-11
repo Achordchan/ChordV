@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import * as net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import type { AdminNodeRecordDto, NodeProbeStatus, NodeSummaryDto } from "@chordv/shared";
+import { getCountryLabelFromCode, resolveCountryCode } from "@chordv/shared";
 
 export type ParsedVlessLink = {
   name: string;
@@ -49,6 +50,26 @@ export function inferRegion(name: string, host: string) {
   if (value.includes("jp") || value.includes("japan") || value.includes("日本")) return "日本";
   if (value.includes("us") || value.includes("united states") || value.includes("america") || value.includes("美国")) return "美国";
   return "未分组";
+}
+
+export function resolveNodeCountry(input: {
+  countryCode?: string | null;
+  region?: string | null;
+  name: string;
+  host: string;
+}) {
+  const countryCode = resolveCountryCode({
+    countryCode: input.countryCode,
+    region: input.region,
+    name: input.name,
+    host: input.host
+  });
+  const region = input.region?.trim() || getCountryLabelFromCode(countryCode) || inferRegion(input.name, input.host);
+
+  return {
+    countryCode,
+    region: getCountryLabelFromCode(countryCode) ?? region
+  };
 }
 
 export function decodeSubscriptionText(raw: string) {
@@ -125,6 +146,7 @@ export async function fetchSubscriptionNode(subscriptionUrl: string) {
 export function toNodeSummary(row: {
   id: string;
   name: string;
+  countryCode?: string | null;
   region: string;
   provider: string;
   tags: string[];
@@ -138,6 +160,7 @@ export function toNodeSummary(row: {
   return {
     id: row.id,
     name: row.name,
+    countryCode: row.countryCode ?? resolveCountryCode({ region: row.region }),
     region: row.region,
     provider: row.provider,
     tags: row.tags,
@@ -152,6 +175,7 @@ export function toNodeSummary(row: {
 export function toAdminNodeRecord(row: {
   id: string;
   name: string;
+  countryCode?: string | null;
   region: string;
   provider: string;
   tags: string[];

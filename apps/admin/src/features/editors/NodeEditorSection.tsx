@@ -1,6 +1,8 @@
-import { Alert, Button, Group, NumberInput, Select, Switch, TextInput } from "@mantine/core";
+import { Alert, Button, Group, NumberInput, Select, Switch, TextInput, Text } from "@mantine/core";
 import type { AdminNodePanelInboundDto } from "@chordv/shared";
+import { countryOptions, getCountryLabelFromCode } from "@chordv/shared";
 import type { NodeFormState } from "../../utils/admin-forms";
+import { CountryFlag } from "../../components/CountryFlag";
 
 type NodeEditorSectionProps = {
   nodeForm: NodeFormState;
@@ -27,10 +29,26 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
         onChange={(event) => props.setNodeForm((current) => ({ ...current, name: event.currentTarget.value }))}
       />
       <Group grow>
-        <TextInput
-          label="地区"
-          value={props.nodeForm.region}
-          onChange={(event) => props.setNodeForm((current) => ({ ...current, region: event.currentTarget.value }))}
+        <Select
+          label="国家"
+          placeholder="选择国家"
+          searchable
+          clearable={false}
+          data={countryOptions.map((item) => ({ value: item.code, label: item.label }))}
+          value={props.nodeForm.countryCode || null}
+          onChange={(value) =>
+            props.setNodeForm((current) => ({
+              ...current,
+              countryCode: value ?? "",
+              region: value ? getCountryLabelFromCode(value) ?? current.region : current.region
+            }))
+          }
+          renderOption={({ option }) => (
+            <Group gap="xs" wrap="nowrap">
+              <CountryFlag code={option.value} size="sm" />
+              <Text size="sm">{option.label}</Text>
+            </Group>
+          )}
         />
         <TextInput
           label="供应商"

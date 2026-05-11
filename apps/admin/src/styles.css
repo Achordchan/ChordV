@@ -65,6 +65,29 @@ body {
   box-shadow: 0 14px 36px rgba(17, 35, 59, 0.06);
 }
 
+.country-flag {
+  display: inline-block;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.country-flag--sm {
+  width: 16px;
+  height: 12px;
+}
+
+.country-flag--md {
+  width: 20px;
+  height: 15px;
+}
+
+.country-flag--placeholder {
+  background: linear-gradient(135deg, rgba(148, 163, 184, 0.18), rgba(148, 163, 184, 0.32));
+}
+
 .admin-auth-root {
   min-height: 100vh;
   display: flex;

@@ -53,6 +53,7 @@ import type {
   UpdateTeamMemberInputDto,
   UpdateUserInputDto
 } from "@chordv/shared";
+import { resolveCountryCode } from "@chordv/shared";
 import {
   IconBell,
   IconBolt,
@@ -444,6 +445,7 @@ export function App() {
     () =>
       filterByKeyword(snapshot?.nodes ?? [], search.nodes, (item) => [
         item.name,
+        item.countryCode ?? "",
         item.region,
         item.provider,
         item.serverHost,
@@ -1075,6 +1077,7 @@ export function App() {
         const nextForm = {
           subscriptionUrl: record.subscriptionUrl ?? "",
           name: record.name,
+          countryCode: record.countryCode ?? resolveCountryCode({ region: record.region }) ?? "",
           region: record.region,
           provider: record.provider,
           tags: record.tags.join(", "),
@@ -1274,6 +1277,7 @@ export function App() {
         const payload = {
           subscriptionUrl: undefined,
           name: nodeForm.name || undefined,
+          countryCode: nodeForm.countryCode || undefined,
           region: nodeForm.region || undefined,
           provider: nodeForm.provider || undefined,
           tags: splitCsv(nodeForm.tags),
@@ -1292,6 +1296,7 @@ export function App() {
                 updateNode(drawer.recordId!, {
                   subscriptionUrl: payload.subscriptionUrl || undefined,
                   name: payload.name,
+                  countryCode: payload.countryCode,
                   region: payload.region,
                   provider: payload.provider,
                   tags: payload.tags,
