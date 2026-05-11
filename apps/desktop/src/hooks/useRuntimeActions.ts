@@ -14,6 +14,7 @@ import type { ServerProbeState } from "./useClientEvents";
 import {
   connectSession,
   disconnectSession,
+  fetchBootstrap,
   fetchAnnouncements,
   fetchClientRuntime,
   fetchNodes,
@@ -78,12 +79,14 @@ type UseRuntimeActionsOptions = {
   session: AuthSessionDto | null;
   bootstrap: ClientBootstrapDto | null;
   setBootstrap: Dispatch<SetStateAction<ClientBootstrapDto | null>>;
+  setMode: Dispatch<SetStateAction<ConnectionMode>>;
   nodes: NodeSummaryDto[];
   setNodes: Dispatch<SetStateAction<NodeSummaryDto[]>>;
   selectedNode: NodeSummaryDto | null;
   selectedNodeId: string | null;
   setSelectedNodeId: Dispatch<SetStateAction<string | null>>;
   mode: ConnectionMode;
+  resolveDefaultMode: (bootstrap: ClientBootstrapDto) => ConnectionMode;
   runtime: GeneratedRuntimeConfigDto | null;
   setRuntime: Dispatch<SetStateAction<GeneratedRuntimeConfigDto | null>>;
   desktopStatus: RuntimeStatus;
@@ -274,20 +277,68 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [options]
   );
 
+  const syncBootstrapState = useCallback(
+    async (accessToken: string) => {
+      try {
+        const nextBootstrap = await fetchBootstrap(accessToken);
+        options.setBootstrap(nextBootstrap);
+        const nextMode = nextBootstrap.policies.modes.includes(options.mode)
+          ? options.mode
+          : options.resolveDefaultMode(nextBootstrap);
+        if (nextMode !== options.mode) {
+          options.setMode(nextMode);
+        }
+      } catch (reason) {
+        if (isUnauthorizedApiError(reason)) {
+          await options.recoverSessionAfterUnauthorized();
+          return;
+        }
+        if (isForbiddenApiError(reason)) {
+          if (await handleProtectedAccessRevoked(reason)) {
+            return;
+          }
+        }
+        const message = reason instanceof Error ? reason.message : "";
+        if (message.includes("当前没有可用订阅")) {
+          await options.clearSession(true);
+          options.notify({
+            color: "yellow",
+            title: "订阅不可用",
+            message: "当前账号没有可用订阅，请联系管理员恢复订阅后再使用。"
+          });
+        }
+      }
+    },
+    [handleProtectedAccessRevoked, options]
+  );
+
   const syncForegroundState = useCallback(
     async (accessToken: string) => {
       await options.refreshRuntime().catch(() => null);
 
       const activeRuntime = options.runtimeRef.current;
       const activeSessionId = activeRuntime?.sessionId ?? options.desktopStatus.activeSessionId;
-      const [subscriptionResult, nodesResult, announcementsResult, runtimeResult] = await Promise.allSettled([
-        fetchSubscription(accessToken),
-        fetchNodes(accessToken),
-        fetchAnnouncements(accessToken),
-        activeSessionId ? fetchClientRuntime(accessToken, activeSessionId) : Promise.resolve(null)
-      ]);
+      const [bootstrapResult, subscriptionResult, nodesResult, announcementsResult, runtimeResult] =
+        await Promise.allSettled([
+          fetchBootstrap(accessToken),
+          fetchSubscription(accessToken),
+          fetchNodes(accessToken),
+          fetchAnnouncements(accessToken),
+          activeSessionId ? fetchClientRuntime(accessToken, activeSessionId) : Promise.resolve(null)
+        ]);
+
+      if (bootstrapResult.status === "fulfilled") {
+        options.setBootstrap(bootstrapResult.value);
+        const nextMode = bootstrapResult.value.policies.modes.includes(options.mode)
+          ? options.mode
+          : options.resolveDefaultMode(bootstrapResult.value);
+        if (nextMode !== options.mode) {
+          options.setMode(nextMode);
+        }
+      }
 
       if (
+        (bootstrapResult.status === "rejected" && isUnauthorizedApiError(bootstrapResult.reason)) ||
         (subscriptionResult.status === "rejected" && isUnauthorizedApiError(subscriptionResult.reason)) ||
         (nodesResult.status === "rejected" && isUnauthorizedApiError(nodesResult.reason)) ||
         (announcementsResult.status === "rejected" && isUnauthorizedApiError(announcementsResult.reason)) ||
@@ -298,12 +349,14 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
 
       const forbiddenReasons = [
+        bootstrapResult.status === "rejected" ? bootstrapResult.reason : null,
         subscriptionResult.status === "rejected" ? subscriptionResult.reason : null,
         nodesResult.status === "rejected" ? nodesResult.reason : null,
         announcementsResult.status === "rejected" ? announcementsResult.reason : null,
         runtimeResult.status === "rejected" ? runtimeResult.reason : null
       ].filter((reason): reason is unknown => Boolean(reason) && isForbiddenApiError(reason));
       const notFoundReasons = [
+        bootstrapResult.status === "rejected" ? bootstrapResult.reason : null,
         subscriptionResult.status === "rejected" ? subscriptionResult.reason : null,
         nodesResult.status === "rejected" ? nodesResult.reason : null,
         announcementsResult.status === "rejected" ? announcementsResult.reason : null,
@@ -339,7 +392,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         }
       }
 
-      let nextSubscription = options.bootstrap?.subscription ?? null;
+      let nextSubscription = bootstrapResult.status === "fulfilled" ? bootstrapResult.value.subscription : options.bootstrap?.subscription ?? null;
       let nextNodes = options.nodesRef.current;
 
       if (subscriptionResult.status === "fulfilled") {
@@ -504,6 +557,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         await syncForegroundState(accessToken);
       } else if (eventType === "announcement_read_state_updated") {
         await syncAnnouncementsState(accessToken);
+      } else if (eventType === "policy_updated") {
+        await syncBootstrapState(accessToken);
       }
 
       if (eventType === "version_updated") {

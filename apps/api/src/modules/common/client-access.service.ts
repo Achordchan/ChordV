@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import * as net from "node:net";
 import type {
@@ -61,13 +61,16 @@ export class ClientAccessService {
   async login(account: string, password: string): Promise<AuthSessionDto> {
     const user = await this.resolveUserForLogin(account.trim().toLowerCase());
 
-    if (!user || user.status !== "active") {
+    if (!user) {
       throw new UnauthorizedException("账号或密码错误");
     }
 
     const matched = await bcrypt.compare(password, user.passwordHash);
     if (!matched) {
       throw new UnauthorizedException("账号或密码错误");
+    }
+    if (user.status !== "active") {
+      throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
     }
 
     const updated = await this.prisma.user.update({

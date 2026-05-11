@@ -353,6 +353,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               variant={props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
               color={props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
               size="xs"
+              leftSection={<IconRosetteDiscountCheck size={14} />}
               className="subscription-secondary-button subscription-toolbar-button"
               loading={props.updateBusy}
               onClick={props.onCheckUpdate}

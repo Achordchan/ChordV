@@ -269,7 +269,20 @@ export class AnnouncementPolicyService {
         ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {})
       }
     });
+    await this.publishPolicyUpdatedEvent();
     return this.getAdminPolicy();
+  }
+
+  private async publishPolicyUpdatedEvent() {
+    const rows = await this.prisma.user.findMany({
+      where: { status: "active" },
+      select: { id: true }
+    });
+    const userIds = Array.from(new Set(rows.map((row) => row.id)));
+    this.clientRuntimeEventsService.publishToUsers(userIds, {
+      type: "policy_updated",
+      occurredAt: new Date().toISOString()
+    });
   }
 
   private async publishAnnouncementUpdatedEvent(announcementId: string) {

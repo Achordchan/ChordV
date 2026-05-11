@@ -58,6 +58,7 @@ export type ClientRuntimeEventType =
   | "subscription_updated"
   | "node_access_updated"
   | "announcement_updated"
+  | "policy_updated"
   | "announcement_read_state_updated"
   | "ticket_updated"
   | "ticket_read_state_updated"

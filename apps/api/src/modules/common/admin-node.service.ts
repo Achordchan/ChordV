@@ -185,7 +185,11 @@ export class AdminNodeService {
       }
     });
 
-    return this.probeNode(row.id);
+    const record = await this.probeNode(row.id);
+    if (current) {
+      await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(row.id);
+    }
+    return record;
   }
 
   async listNodePanelInbounds(input: {
@@ -313,7 +317,17 @@ export class AdminNodeService {
     } else if (!current.isActive && input.isActive === true) {
       await this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId);
     }
-    if (input.isActive !== undefined && current.isActive !== input.isActive) {
+    const shouldPublishNodeUpdated =
+      (input.isActive !== undefined && current.isActive !== input.isActive) ||
+      input.name !== undefined ||
+      countryTouched ||
+      input.provider !== undefined ||
+      input.tags !== undefined ||
+      input.recommended !== undefined ||
+      input.subscriptionUrl !== undefined ||
+      panelConfigTouched ||
+      Boolean(derived);
+    if (shouldPublishNodeUpdated) {
       await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId);
     }
 
@@ -356,6 +370,7 @@ export class AdminNodeService {
       }
     });
 
+    await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId);
     return toAdminNodeRecord(row);
   }
 

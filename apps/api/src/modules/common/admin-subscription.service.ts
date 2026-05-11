@@ -954,6 +954,7 @@ export class AdminSubscriptionService {
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = input.name.trim();
     if (input.status !== undefined) data.status = input.status;
+    const teamSubscription = await this.findCurrentTeamSubscription(teamId);
 
     if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
       const nextOwner = await this.ensureUserExists(input.ownerUserId);
@@ -1001,6 +1002,24 @@ export class AdminSubscriptionService {
       where: { id: teamId },
       data
     });
+
+    if (teamSubscription) {
+      if (input.status !== undefined && input.status !== current.status) {
+        if (input.status === "disabled") {
+          await this.runtimeSessionService.revokeSubscriptionLeases(teamSubscription.id, "team_disabled");
+          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(teamSubscription.id);
+        } else if (input.status === "active") {
+          await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
+        }
+      } else if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
+        await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
+      }
+      await this.publishSubscriptionUpdatedEvent({
+        subscriptionId: teamSubscription.id,
+        teamId,
+        state: teamSubscription.state
+      });
+    }
 
     return this.requireTeamRecord(teamId);
   }
