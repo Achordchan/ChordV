@@ -29,6 +29,7 @@ const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
 const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.platform.conf.json`);
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
 const buildArgs = ["exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
+const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 
 prepareBundledRuntimeResources(platform);
 const bundledResources = buildBundledRuntimeResources(platform);
@@ -50,7 +51,9 @@ buildArgs.push(...extraArgs);
 
 cleanupBundleOutput(platform);
 
-const result = spawnSync("pnpm", buildArgs, {
+console.log(`执行打包命令：${pnpmCommand} ${buildArgs.join(" ")}`);
+
+const result = spawnSync(pnpmCommand, buildArgs, {
   cwd: desktopRoot,
   stdio: "inherit",
   env: {
@@ -60,6 +63,10 @@ const result = spawnSync("pnpm", buildArgs, {
 });
 
 fs.rmSync(tempConfigPath, { force: true });
+if (result.error) {
+  console.error(`启动打包命令失败：${result.error.message}`);
+  process.exit(1);
+}
 if ((result.status ?? 1) === 0) {
   curateReleaseArtifacts(platform, version, projectRoot);
 }
