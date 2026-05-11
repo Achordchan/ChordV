@@ -1,9 +1,15 @@
-import { getCountryFlagClassName } from "@chordv/shared";
-
 type CountryFlagProps = {
   code?: string | null;
   size?: "sm" | "md";
 };
+
+function getCountryFlagClassName(code?: string | null) {
+  const normalized = code?.trim().toUpperCase();
+  if (!normalized || !/^[A-Z]{2}$/.test(normalized)) {
+    return null;
+  }
+  return `fi fi-${normalized.toLowerCase()}`;
+}
 
 export function CountryFlag(props: CountryFlagProps) {
   const className = getCountryFlagClassName(props.code);
