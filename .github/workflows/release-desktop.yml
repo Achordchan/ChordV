@@ -75,9 +75,9 @@ jobs:
       - name: Build desktop bundle
         run: |
           if [ "${{ matrix.platform }}" = "windows" ]; then
-            pnpm --filter @chordv/desktop tauri:build:platform -- windows --target x86_64-pc-windows-msvc
+            pnpm --filter @chordv/desktop exec node ./scripts/build-tauri-platform.mjs windows --target x86_64-pc-windows-msvc
           else
-            pnpm --filter @chordv/desktop tauri:build:platform -- macos
+            pnpm --filter @chordv/desktop exec node ./scripts/build-tauri-platform.mjs macos
           fi
 
       - name: Upload artifact

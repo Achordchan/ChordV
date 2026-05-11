@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { rename, chmod, unlink } from "node:fs/promises";
+import { copyFile, rename, chmod, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,7 +84,7 @@ try {
     await verifyDownloadedFile(tempDownloadPath, component, kind);
 
     rmSync(outputPath, { force: true });
-    await rename(tempDownloadPath, outputPath);
+    await moveFile(tempDownloadPath, outputPath);
     if (kind === "xray" && target.executable) {
       await chmod(outputPath, 0o755);
     }
@@ -174,6 +174,19 @@ async function safeUnlink(filePath) {
   try {
     await unlink(filePath);
   } catch {}
+}
+
+async function moveFile(source, destination) {
+  try {
+    await rename(source, destination);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EXDEV") {
+      await copyFile(source, destination);
+      await unlink(source);
+      return;
+    }
+    throw error;
+  }
 }
 
 function cleanupLegacyBundledBinaryNames(currentTarget) {
