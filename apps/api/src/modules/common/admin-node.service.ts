@@ -207,23 +207,31 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    const panelConfigTouched =
-      input.panelBaseUrl !== undefined ||
-      input.panelApiBasePath !== undefined ||
-      input.panelUsername !== undefined ||
-      input.panelPassword !== undefined ||
-      input.panelInboundId !== undefined;
     const nextPanelBaseUrl = input.panelBaseUrl !== undefined ? input.panelBaseUrl?.trim() || null : current.panelBaseUrl;
+    const nextPanelApiBasePath =
+      input.panelApiBasePath !== undefined ? normalizePanelApiBasePath(input.panelApiBasePath) : current.panelApiBasePath;
     const nextPanelUsername = input.panelUsername !== undefined ? input.panelUsername?.trim() || null : current.panelUsername;
     const nextPanelPassword = input.panelPassword !== undefined ? input.panelPassword?.trim() || null : current.panelPassword;
-    const nextPanelEnabled = await this.resolveNodePanelEnabled({
-      inputValue: input.panelEnabled,
-      currentValue: current.panelEnabled,
-      panelBaseUrl: nextPanelBaseUrl,
-      panelUsername: nextPanelUsername,
-      panelPassword: nextPanelPassword,
-      applyXuiDefault: panelConfigTouched
-    });
+    const nextPanelInboundId =
+      input.panelInboundId !== undefined ? input.panelInboundId : current.panelInboundId;
+    const nextPanelEnabled =
+      input.panelEnabled !== undefined
+        ? input.panelEnabled
+        : await this.resolveNodePanelEnabled({
+            inputValue: undefined,
+            currentValue: current.panelEnabled,
+            panelBaseUrl: nextPanelBaseUrl,
+            panelUsername: nextPanelUsername,
+            panelPassword: nextPanelPassword,
+            applyXuiDefault: false
+          });
+    const panelConfigTouched =
+      (input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
+      (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
+      (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false) ||
+      (input.panelPassword !== undefined ? nextPanelPassword !== current.panelPassword : false) ||
+      (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false) ||
+      (input.panelEnabled !== undefined ? nextPanelEnabled !== current.panelEnabled : false);
 
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null = null;
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
