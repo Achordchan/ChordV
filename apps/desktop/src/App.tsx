@@ -248,7 +248,8 @@ export function App() {
     runUpdateCheck: runUpdateCheckFromHook,
     runUpdateCheckAndFocus,
     handleManualUpdateCheck,
-    handleUpdateDownload
+    handleUpdateDownload,
+    handleQuitForUpdate
   } = updateFlow;
   const runUpdateCheck = runUpdateCheckFromHook;
   const runUpdateCheckForAuth = async (input: import("./hooks/useAuthBootstrap").RunUpdateCheckInput) => {
@@ -1985,12 +1986,21 @@ export function App() {
               </Button>
             ) : null}
             {effectiveUpdate?.downloadUrl ? (
-              <Button
-                loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
-                onClick={() => void handleUpdateDownload()}
-              >
-                {updateActionLabel(effectiveUpdate, updateDownload)}
-              </Button>
+              updateDownload.phase === "completed" ? (
+                <Button
+                  color="green"
+                  onClick={() => void handleQuitForUpdate()}
+                >
+                  安装并重启
+                </Button>
+              ) : (
+                <Button
+                  loading={updateDownload.phase === "preparing" || updateDownload.phase === "downloading"}
+                  onClick={() => void handleUpdateDownload()}
+                >
+                  {updateActionLabel(effectiveUpdate, updateDownload)}
+                </Button>
+              )
             ) : (
               <Button disabled>暂无下载地址</Button>
             )}

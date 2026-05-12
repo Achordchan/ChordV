@@ -489,6 +489,14 @@ export async function openDesktopInstaller(path: string) {
   return invoke("open_desktop_installer", { path });
 }
 
+export async function quitForUpdate() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: false as const };
+  }
+  return invoke("quit_for_update");
+}
+
 export async function loadDesktopRuntimeEnvironment() {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {

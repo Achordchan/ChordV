@@ -33,10 +33,33 @@ const pnpmCommand = "pnpm";
 
 prepareBundledRuntimeResources(platform);
 const bundledResources = buildBundledRuntimeResources(platform);
+const macosGuideImagePath = path.join(desktopRoot, "public", "yindao.png");
+const macosGuideImageConfigPath = "../public/yindao.png";
+const macosGuideImageBundlePath = "yindao.png";
+const bundleConfig = {
+  ...baseConfig.bundle,
+  resources: bundledResources
+};
+
+if (platform === "macos" && fs.existsSync(macosGuideImagePath)) {
+  bundleConfig.resources = {
+    ...Object.fromEntries(bundledResources.map((resource) => [resource, resource])),
+    [macosGuideImageConfigPath]: macosGuideImageBundlePath
+  };
+  bundleConfig.macOS = {
+    ...bundleConfig.macOS,
+    dmg: {
+      ...(bundleConfig.macOS?.dmg ?? {}),
+      windowSize: { width: 760, height: 520 },
+      appPosition: { x: 160, y: 190 },
+      applicationFolderPosition: { x: 600, y: 190 }
+    }
+  };
+}
 
 fs.writeFileSync(
   tempConfigPath,
-  `${JSON.stringify({ ...baseConfig, version, bundle: { ...baseConfig.bundle, resources: bundledResources } }, null, 2)}\n`,
+  `${JSON.stringify({ ...baseConfig, version, bundle: bundleConfig }, null, 2)}\n`,
   "utf8"
 );
 
@@ -102,7 +125,6 @@ function buildBundledRuntimeResources(platform) {
 function curateReleaseArtifacts(platform, version, projectRoot) {
   const outputDir = path.join(projectRoot, "output", "release", platform === "macos" ? "macos" : "windows");
   fs.mkdirSync(outputDir, { recursive: true });
-  removeStaleInstallerArtifacts(outputDir, platform);
 
   if (platform === "macos") {
     const artifact = findLatestArtifact(path.join(desktopRoot, "src-tauri", "target"), (filePath) => {
@@ -113,6 +135,7 @@ function curateReleaseArtifacts(platform, version, projectRoot) {
     }
     const targetPath = path.join(outputDir, buildMacArtifactNames(version).dmg);
     fs.copyFileSync(artifact, targetPath);
+    appendMacGuideImageToDmg(targetPath);
     return;
   }
 
@@ -126,24 +149,61 @@ function curateReleaseArtifacts(platform, version, projectRoot) {
   fs.copyFileSync(artifact, targetPath);
 }
 
-function removeStaleInstallerArtifacts(outputDir, platform) {
-  const entries = fs.readdirSync(outputDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isFile()) {
-      continue;
-    }
-    if (entry.name === ".DS_Store") {
-      fs.rmSync(path.join(outputDir, entry.name), { force: true });
-      continue;
-    }
-    if (platform === "macos" && entry.name.endsWith(".dmg")) {
-      fs.rmSync(path.join(outputDir, entry.name), { force: true });
-      continue;
-    }
-    if (platform === "windows" && entry.name.endsWith(".exe")) {
-      fs.rmSync(path.join(outputDir, entry.name), { force: true });
-    }
+function appendMacGuideImageToDmg(dmgPath) {
+  const sourcePath = path.join(desktopRoot, "public", "yindao.png");
+  if (!fs.existsSync(sourcePath)) {
+    return;
   }
+
+  const tempWritablePath = path.join(path.dirname(dmgPath), `.${path.basename(dmgPath, ".dmg")}.rw.dmg`);
+  const finalTempPath = path.join(path.dirname(dmgPath), `.${path.basename(dmgPath, ".dmg")}.final.dmg`);
+  fs.rmSync(tempWritablePath, { force: true });
+  fs.rmSync(finalTempPath, { force: true });
+
+  runCommand("hdiutil", ["convert", dmgPath, "-format", "UDRW", "-o", tempWritablePath]);
+  const attach = runCommand("hdiutil", ["attach", tempWritablePath, "-readwrite", "-nobrowse", "-plist"], {
+    capture: true
+  });
+  const mountPoint = readMountedDmgPath(attach.stdout);
+  try {
+    const guideImagePath = path.join(mountPoint, "01-使用引导.png");
+    fs.copyFileSync(sourcePath, guideImagePath);
+  } finally {
+    runCommand("hdiutil", ["detach", mountPoint]);
+  }
+  runCommand("hdiutil", ["convert", tempWritablePath, "-format", "UDZO", "-imagekey", "zlib-level=9", "-o", finalTempPath]);
+  fs.rmSync(dmgPath, { force: true });
+  fs.renameSync(finalTempPath, dmgPath);
+  fs.rmSync(tempWritablePath, { force: true });
+}
+
+function readMountedDmgPath(plistOutput) {
+  const matches = [...plistOutput.matchAll(/<key>mount-point<\/key>\s*<string>(.*?)<\/string>/g)];
+  const mountPoint = matches.at(-1)?.[1];
+  if (!mountPoint) {
+    throw new Error("无法读取 DMG 挂载路径");
+  }
+  return mountPoint
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", "\"")
+    .replaceAll("&apos;", "'");
+}
+
+function runCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: desktopRoot,
+    encoding: "utf8",
+    stdio: options.capture ? ["ignore", "pipe", "inherit"] : "inherit"
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`${command} ${args.join(" ")} 执行失败`);
+  }
+  return result;
 }
 
 function cleanupBundleOutput(platform) {

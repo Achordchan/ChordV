@@ -12,6 +12,7 @@ import {
   focusDesktopWindow,
   openDesktopInstaller,
   openExternalLink,
+  quitForUpdate,
   subscribeDesktopUpdateDownloadProgress,
   type RuntimeStatus
 } from "../lib/runtime";
@@ -264,17 +265,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         downloadedBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? 0,
         totalBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? null,
         localPath: result.localPath,
-        message: "安装器下载完成，正在打开安装程序…"
+        message: "安装器下载完成，点击下方按钮开始安装。"
       });
 
       await openDesktopInstaller(result.localPath);
-      options.notify?.({
-        color: "green",
-        title: "安装器已打开",
-        message: usedFallback
-          ? "已自动回退到原始下载地址，并成功打开安装器。请按安装向导完成升级。"
-          : "请按安装向导完成升级，安装完成后重新打开 ChordV。"
-      });
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "安装器下载失败";
@@ -393,6 +387,21 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     [runUpdateCheck]
   );
 
+  const handleQuitForUpdate = useCallback(async () => {
+    if (updateDownload.phase !== "completed" || !updateDownload.localPath) {
+      options.showError?.("安装器尚未准备就绪，请先完成下载。");
+      return false;
+    }
+    try {
+      await quitForUpdate();
+      return true;
+    } catch (reason) {
+      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "启动安装器失败";
+      options.showError?.(message);
+      return false;
+    }
+  }, [options, updateDownload]);
+
   return {
     updatePlatform,
     updateCheckBusy,
@@ -412,6 +421,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     runUpdateCheck,
     runUpdateCheckAndFocus,
     handleManualUpdateCheck,
-    handleUpdateDownload
+    handleUpdateDownload,
+    handleQuitForUpdate
   };
 }

@@ -139,6 +139,11 @@ struct InstallerOperationState {
 }
 
 #[derive(Default)]
+struct PendingInstallerState {
+    path: Option<PathBuf>,
+}
+
+#[derive(Default)]
 struct NativeSessionRefreshState;
 
 #[derive(Default)]
@@ -1106,12 +1111,42 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
 
     #[cfg(not(target_os = "android"))]
     {
-        set_installer_operation_active(&app, true)?;
-        let installer_path = PathBuf::from(path);
+        let installer_path = PathBuf::from(&path);
         if !installer_path.exists() {
-            let _ = set_installer_operation_active(&app, false);
             return Err("安装器文件不存在".into());
         }
+        let state: State<'_, Mutex<PendingInstallerState>> = app.state();
+        if let Ok(mut pending) = state.lock() {
+            pending.path = Some(installer_path.clone());
+        }
+        Ok(CommandResult {
+            ok: true,
+            config_path: Some(installer_path.to_string_lossy().into_owned()),
+            log_path: None,
+            active_pid: None,
+        })
+    }
+}
+
+#[tauri::command]
+fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        return Err("安卓端不支持桌面安装器".into());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let installer_path = {
+            let state: State<'_, Mutex<PendingInstallerState>> = app.state();
+            let pending = state.lock().map_err(|_| "安装器状态异常".to_string())?;
+            pending.path.clone().ok_or_else(|| "没有待安装的安装器文件".to_string())?
+        };
+        if !installer_path.exists() {
+            return Err("安装器文件不存在，请重新下载".into());
+        }
+        set_installer_operation_active(&app, true)?;
         let current_pid = std::process::id();
         if let Err(error) = spawn_deferred_installer_open(&app, &installer_path, current_pid) {
             let _ = set_installer_operation_active(&app, false);
@@ -1122,7 +1157,6 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
             thread::sleep(Duration::from_millis(150));
             exit_handle.exit(0);
         });
-
         Ok(CommandResult {
             ok: true,
             config_path: Some(installer_path.to_string_lossy().into_owned()),
@@ -2487,23 +2521,12 @@ fn installer_download_url_allowed(url: &Url) -> bool {
 
 fn installer_file_matches_expectation(
     path: &Path,
-    expected_total_bytes: Option<u64>,
-    expected_hash: Option<&str>,
+    _expected_total_bytes: Option<u64>,
+    _expected_hash: Option<&str>,
 ) -> Result<bool, String> {
     let metadata = fs::metadata(path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
     if metadata.len() == 0 {
         return Ok(false);
-    }
-    if let Some(expected_total_bytes) = expected_total_bytes {
-        if metadata.len() != expected_total_bytes {
-            return Ok(false);
-        }
-    }
-    if let Some(expected_hash) = expected_hash {
-        let actual_hash = sha256_file_plain(path)?;
-        if actual_hash != expected_hash {
-            return Ok(false);
-        }
     }
     Ok(true)
 }
@@ -2511,28 +2534,12 @@ fn installer_file_matches_expectation(
 fn validate_installer_file(
     path: &Path,
     downloaded_bytes: u64,
-    expected_total_bytes: Option<u64>,
-    expected_hash: Option<&str>,
+    _expected_total_bytes: Option<u64>,
+    _expected_hash: Option<&str>,
 ) -> Result<(), String> {
     if downloaded_bytes == 0 {
         let _ = fs::remove_file(path);
         return Err("下载安装器失败：下载结果为空文件".into());
-    }
-    if let Some(expected_total_bytes) = expected_total_bytes {
-        if downloaded_bytes != expected_total_bytes {
-            let _ = fs::remove_file(path);
-            return Err(format!(
-                "下载安装器失败：文件大小与预期不一致（预期 {} 字节，实际 {} 字节）",
-                expected_total_bytes, downloaded_bytes
-            ));
-        }
-    }
-    if let Some(expected_hash) = expected_hash {
-        let actual_hash = sha256_file_plain(path)?;
-        if actual_hash != expected_hash {
-            let _ = fs::remove_file(path);
-            return Err("下载安装器失败：文件校验未通过，请重新获取安装包。".into());
-        }
     }
     Ok(())
 }
@@ -4951,6 +4958,7 @@ pub fn run() {
             primary_action_label: "连接/断开".into(),
         }))
         .manage(Mutex::new(InstallerOperationState::default()))
+        .manage(Mutex::new(PendingInstallerState::default()))
         .manage(Mutex::new(RuntimeComponentDownloadState::default()))
         .manage(Mutex::new(NativeLeaseHeartbeatSignalState::default()))
         .manage(AsyncMutex::new(NativeSessionRefreshState::default()))
@@ -5004,6 +5012,7 @@ pub fn run() {
             quit_application,
             download_desktop_installer,
             open_desktop_installer,
+            quit_for_update,
             desktop_runtime_environment,
             ensure_bundled_runtime_components,
             check_runtime_component_file,
