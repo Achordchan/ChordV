@@ -246,6 +246,7 @@ export function App() {
     describeUpdateDownload: readUpdateDownloadDescription,
     displayUpdateDownloadProgress: readUpdateDownloadProgress,
     runUpdateCheck: runUpdateCheckFromHook,
+    runUpdateCheckAndFocus,
     handleManualUpdateCheck,
     handleUpdateDownload
   } = updateFlow;
@@ -299,7 +300,7 @@ export function App() {
     await runProbe(targetNodes, auto, accessTokenOverride);
   };
   const runUpdateCheckForActions = async (input: import("./hooks/useAuthBootstrap").RunUpdateCheckInput) => {
-    await runUpdateCheck(input);
+    await runUpdateCheckAndFocus(input);
   };
   const loadTicketListForActions = async (preferredTicketId?: string | null) => {
     await loadTicketList(preferredTicketId);

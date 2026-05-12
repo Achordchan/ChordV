@@ -316,6 +316,11 @@ export async function focusDesktopWindow() {
     return;
   }
 
+  const invoke = await loadInvoke();
+  if (invoke) {
+    await invoke("show_main_window").catch(() => null);
+  }
+
   try {
     const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
     const currentWindow = getCurrentWindow();
@@ -433,12 +438,26 @@ export async function downloadDesktopInstaller(input: {
   fileName?: string | null;
   expectedTotalBytes?: number | null;
   expectedHash?: string | null;
+  onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {
     return null;
   }
-  return invoke<DesktopInstallerDownloadResult>("download_desktop_installer", { input });
+  const commandInput: Record<string, unknown> = {
+    url: input.url,
+    fileName: input.fileName,
+    expectedTotalBytes: input.expectedTotalBytes,
+    expectedHash: input.expectedHash
+  };
+  const { Channel } = await import("@tauri-apps/api/core");
+  const progressChannel = new Channel<DesktopUpdateDownloadProgressPayload>((payload) => {
+    input.onProgress?.(normalizeDesktopUpdateDownloadProgress(payload));
+  });
+  return invoke<DesktopInstallerDownloadResult>("download_desktop_installer", {
+    input: commandInput,
+    progressChannel
+  });
 }
 
 function normalizeDesktopUpdateDownloadProgress(

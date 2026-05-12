@@ -14,7 +14,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager, RunEvent, State};
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(not(target_os = "android"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -59,6 +61,9 @@ const ANDROID_TUN_IPV4_PREFIX: u8 = 30;
 const ANDROID_TUN_IPV6_ADDRESS: &str = "fd66:6f72:6463::2";
 const ANDROID_TUN_IPV6_PREFIX: u8 = 126;
 const DOWNLOAD_PROGRESS_SLICE_BYTES: usize = 64 * 1024;
+const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS: u64 = 120;
+const DOWNLOAD_PROGRESS_EMIT_PERCENT_STEP: u64 = 1;
+const DOWNLOAD_PROGRESS_EMIT_BYTES_STEP: u64 = 1024 * 1024;
 const DOWNLOAD_DIAGNOSTIC_CHECKPOINT_BYTES: u64 = 512 * 1024;
 const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
 
@@ -803,10 +808,11 @@ fn api_proxy_bypass_hosts() -> Vec<String> {
 async fn download_desktop_installer(
     app: AppHandle,
     input: DesktopInstallerDownloadInput,
+    progress_channel: Channel<DesktopInstallerDownloadProgress>,
 ) -> Result<DesktopInstallerDownloadResult, String> {
     #[cfg(target_os = "android")]
     {
-        let _ = (app, input);
+        let _ = (app, input, progress_channel);
         return Err("安卓端不支持桌面安装器下载".into());
     }
 
@@ -832,8 +838,9 @@ async fn download_desktop_installer(
                     expected_hash.as_deref().unwrap_or("none")
                 ),
             );
-            emit_update_download_progress(
+            send_update_download_progress(
                 &app,
+                &progress_channel,
                 DesktopInstallerDownloadProgress {
                     phase: "preparing".into(),
                     file_name: Some(file_name.clone()),
@@ -866,8 +873,9 @@ async fn download_desktop_installer(
                             input.expected_total_bytes
                         ),
                     );
-                    emit_update_download_progress(
+                    send_update_download_progress(
                         &app,
+                        &progress_channel,
                         DesktopInstallerDownloadProgress {
                             phase: "completed".into(),
                             file_name: Some(file_name.clone()),
@@ -898,6 +906,23 @@ async fn download_desktop_installer(
                 .timeout(Duration::from_secs(600))
                 .build()
                 .map_err(|error| format!("初始化下载器失败：{error}"))?;
+            append_download_diagnostic_log(
+                &app,
+                "update-download",
+                "request-start".to_string(),
+            );
+            send_update_download_progress(
+                &app,
+                &progress_channel,
+                DesktopInstallerDownloadProgress {
+                    phase: "downloading".into(),
+                    file_name: Some(file_name.clone()),
+                    downloaded_bytes: 0,
+                    total_bytes: input.expected_total_bytes,
+                    local_path: None,
+                    message: Some("正在连接下载服务器…".into()),
+                },
+            );
             let mut response = client
                 .get(url.clone())
                 .send()
@@ -921,9 +946,13 @@ async fn download_desktop_installer(
             let total_bytes = response_content_length.or(input.expected_total_bytes);
             let mut downloaded_bytes = 0_u64;
             let mut last_logged_bytes = 0_u64;
+            let mut last_emitted_bytes = 0_u64;
+            let mut first_chunk_logged = false;
+            let mut last_progress_emit_at = Instant::now();
             let mut file = File::create(&temp_path).map_err(|error| format!("创建安装器文件失败：{error}"))?;
-            emit_update_download_progress(
+            send_update_download_progress(
                 &app,
+                &progress_channel,
                 DesktopInstallerDownloadProgress {
                     phase: "downloading".into(),
                     file_name: Some(file_name.clone()),
@@ -943,17 +972,37 @@ async fn download_desktop_installer(
                     file.write_all(slice)
                         .map_err(|error| format!("写入安装器文件失败：{error}"))?;
                     downloaded_bytes += slice.len() as u64;
-                    emit_update_download_progress(
-                        &app,
-                        DesktopInstallerDownloadProgress {
-                            phase: "downloading".into(),
-                            file_name: Some(file_name.clone()),
-                            downloaded_bytes,
-                            total_bytes,
-                            local_path: None,
-                            message: Some("正在下载安装器…".into()),
-                        },
+                    if !first_chunk_logged {
+                        append_download_diagnostic_log(
+                            &app,
+                            "update-download",
+                            format!("first-chunk bytes={}", slice.len()),
+                        );
+                        first_chunk_logged = true;
+                    }
+                    let progress_emit_due = should_emit_update_download_progress(
+                        downloaded_bytes,
+                        total_bytes,
+                        last_emitted_bytes,
+                        last_progress_emit_at,
                     );
+                    if progress_emit_due {
+                        send_update_download_progress(
+                            &app,
+                            &progress_channel,
+                            DesktopInstallerDownloadProgress {
+                                phase: "downloading".into(),
+                                file_name: Some(file_name.clone()),
+                                downloaded_bytes,
+                                total_bytes,
+                                local_path: None,
+                                message: Some("正在下载安装器…".into()),
+                            },
+                        );
+                        last_emitted_bytes = downloaded_bytes;
+                        last_progress_emit_at = Instant::now();
+                        tokio::task::yield_now().await;
+                    }
                     maybe_log_download_checkpoint(
                         &app,
                         "update-download",
@@ -962,6 +1011,22 @@ async fn download_desktop_installer(
                         &mut last_logged_bytes,
                     );
                 }
+                tokio::task::yield_now().await;
+            }
+            if downloaded_bytes > 0 {
+                send_update_download_progress(
+                    &app,
+                    &progress_channel,
+                    DesktopInstallerDownloadProgress {
+                        phase: "downloading".into(),
+                        file_name: Some(file_name.clone()),
+                        downloaded_bytes,
+                        total_bytes,
+                        local_path: None,
+                        message: Some("正在下载安装器…".into()),
+                    },
+                );
+                tokio::task::yield_now().await;
             }
 
             file.flush().map_err(|error| format!("写入安装器文件失败：{error}"))?;
@@ -982,8 +1047,9 @@ async fn download_desktop_installer(
                     local_path, downloaded_bytes, total_bytes
                 ),
             );
-            emit_update_download_progress(
+            send_update_download_progress(
                 &app,
+                &progress_channel,
                 DesktopInstallerDownloadProgress {
                     phase: "completed".into(),
                     file_name: Some(file_name.clone()),
@@ -2793,6 +2859,38 @@ fn emit_update_download_progress(app: &AppHandle, progress: DesktopInstallerDown
     let _ = app.emit("chordv://update-download-progress", progress);
 }
 
+fn send_update_download_progress(
+    app: &AppHandle,
+    channel: &Channel<DesktopInstallerDownloadProgress>,
+    progress: DesktopInstallerDownloadProgress,
+) {
+    emit_update_download_progress(app, progress.clone());
+    let _ = channel.send(progress);
+}
+
+fn should_emit_update_download_progress(
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    last_emitted_bytes: u64,
+    last_progress_emit_at: Instant,
+) -> bool {
+    if total_bytes.map(|value| downloaded_bytes >= value).unwrap_or(false) {
+        return true;
+    }
+
+    if let Some(total) = total_bytes.filter(|value| *value > 0) {
+        let current_percent = downloaded_bytes.saturating_mul(100) / total;
+        let last_percent = last_emitted_bytes.saturating_mul(100) / total;
+        if current_percent >= last_percent + DOWNLOAD_PROGRESS_EMIT_PERCENT_STEP {
+            return true;
+        }
+    } else if downloaded_bytes.saturating_sub(last_emitted_bytes) >= DOWNLOAD_PROGRESS_EMIT_BYTES_STEP {
+        return true;
+    }
+
+    last_progress_emit_at.elapsed() >= Duration::from_millis(DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS)
+}
+
 fn write_xray_config(
     config: &GeneratedRuntimeConfigDto,
     config_path: &Path,
@@ -4386,6 +4484,8 @@ fn window_for_shell(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 #[cfg(not(target_os = "android"))]
 fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     let window = window_for_shell(app)?;
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(ActivationPolicy::Regular);
     #[cfg(windows)]
     let _ = window.set_skip_taskbar(false);
     window.show().map_err(|error| error.to_string())?;

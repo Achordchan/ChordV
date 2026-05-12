@@ -9,6 +9,7 @@ import {
 } from "../api/client";
 import {
   downloadDesktopInstaller,
+  focusDesktopWindow,
   openDesktopInstaller,
   openExternalLink,
   subscribeDesktopUpdateDownloadProgress,
@@ -103,7 +104,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   );
 
   useEffect(() => {
-    if (options.platformTarget === "android" || options.platformTarget === "web") {
+    if (updatePlatform === "android") {
       return;
     }
 
@@ -127,7 +128,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       disposed = true;
       unlisten?.();
     };
-  }, [options.platformTarget]);
+  }, [updatePlatform]);
 
   useEffect(() => {
     setUpdateDownload(createIdleUpdateDownloadState());
@@ -227,7 +228,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           url: resolvedDownloadUrl,
           fileName: preferredFileName,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
+          expectedHash: effectiveUpdate.artifact?.fileHash ?? null,
+          onProgress: (progress) => {
+            setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
+          }
         });
       } catch (reason) {
         if (!originDownloadUrl || originDownloadUrl === resolvedDownloadUrl) {
@@ -243,7 +247,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           url: originDownloadUrl,
           fileName: preferredFileName,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
+          expectedHash: effectiveUpdate.artifact?.fileHash ?? null,
+          onProgress: (progress) => {
+            setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
+          }
         });
       }
 
@@ -313,6 +320,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         setUpdateCheckResult(result);
 
         if (!result || !result.hasUpdate) {
+          setUpdateDialogOpened(false);
+          setUpdateDownload(createIdleUpdateDownloadState());
+          deferredUpdatePromptKeyRef.current = null;
+          lastUpdatePromptVersionRef.current = null;
           if (runOptions.source === "manual" && !runOptions.silent) {
             options.notify?.({
               color: "green",
@@ -371,6 +382,17 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     });
   }, [options.accessToken, options.bootstrapVersion, runUpdateCheck]);
 
+  const runUpdateCheckAndFocus = useCallback(
+    async (runOptions: RunUpdateCheckOptions) => {
+      const result = await runUpdateCheck(runOptions);
+      if (result?.hasUpdate) {
+        await focusDesktopWindow();
+      }
+      return result;
+    },
+    [runUpdateCheck]
+  );
+
   return {
     updatePlatform,
     updateCheckBusy,
@@ -388,6 +410,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     describeUpdateDownload: () => describeUpdateDownload(updateDownload),
     displayUpdateDownloadProgress: () => displayUpdateDownloadProgress(updateDownload, indeterminateUpdateProgress),
     runUpdateCheck,
+    runUpdateCheckAndFocus,
     handleManualUpdateCheck,
     handleUpdateDownload
   };

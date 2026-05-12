@@ -338,6 +338,9 @@ export function displayUpdateDownloadProgress(downloadState: UpdateDownloadState
     }
     return 0;
   }
+  if (downloadState.phase === "downloading" && downloadState.downloadedBytes <= 0) {
+    return indeterminateValue;
+  }
   return downloadProgressPercent(downloadState);
 }
 
