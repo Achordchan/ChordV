@@ -290,11 +290,6 @@ export class ReleaseCenterService {
 
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
-    const externalMetadata = await this.resolveExternalReleaseArtifactMetadata(
-      input.type,
-      input.downloadUrl,
-      defaultMirrorPrefix
-    );
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
@@ -315,10 +310,10 @@ export class ReleaseCenterService {
           downloadUrl: input.downloadUrl.trim(),
           defaultMirrorPrefix,
           allowClientMirror: input.allowClientMirror ?? true,
-          fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName),
+          fileName: normalizeNullableText(input.fileName),
           storedFilePath: null,
-          fileSizeBytes: externalMetadata?.fileSizeBytes ?? normalizeBigInt(input.fileSizeBytes),
-          fileHash: externalMetadata?.fileHash ?? normalizeNullableText(input.fileHash),
+          fileSizeBytes: normalizeBigInt(input.fileSizeBytes),
+          fileHash: normalizeNullableText(input.fileHash),
           isPrimary: isPrimary ?? false,
           isFullPackage: isFullPackage ?? true
         }
@@ -352,10 +347,6 @@ export class ReleaseCenterService {
       throw new BadRequestException("切换为上传产物时请使用上传接口。");
     }
 
-    const externalMetadata =
-      nextSource === "external"
-        ? await this.resolveExternalReleaseArtifactMetadata(nextType, nextDownloadUrl, nextDefaultMirrorPrefix)
-        : null;
     if (nextSource === "external") {
       assertExternalReleaseArtifactUrlMatchesType(nextType, nextDownloadUrl);
     }
@@ -379,9 +370,9 @@ export class ReleaseCenterService {
           ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
           ...(nextSource === "external"
             ? {
-                fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName) ?? current.fileName,
-                fileSizeBytes: externalMetadata?.fileSizeBytes ?? normalizeBigInt(input.fileSizeBytes) ?? current.fileSizeBytes,
-                fileHash: externalMetadata?.fileHash ?? normalizeNullableText(input.fileHash) ?? current.fileHash
+                fileName: normalizeNullableText(input.fileName) ?? current.fileName,
+                fileSizeBytes: normalizeBigInt(input.fileSizeBytes) ?? current.fileSizeBytes,
+                fileHash: normalizeNullableText(input.fileHash) ?? current.fileHash
               }
             : {}),
           ...(nextSource !== "external" && input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),

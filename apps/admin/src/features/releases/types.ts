@@ -46,7 +46,7 @@ export const releaseArtifactTypeOptions = [
   { value: "external", label: "外部下载页" }
 ] as const;
 
-export const DEFAULT_GITHUB_MIRROR_PREFIX = "https://ghfast.top/{url}";
+export const DEFAULT_GITHUB_MIRROR_PREFIX = "";
 
 export function releaseArtifactTypeOptionsForPlatform(platform: AdminReleasePlatform, currentType?: AdminReleaseArtifactType) {
   const allowed = new Set<AdminReleaseArtifactType>(

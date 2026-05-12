@@ -144,8 +144,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                           <Group gap="xs" wrap="wrap">
                             <Badge variant="light">{artifact.source === "uploaded" ? "已上传" : "外部链接"}</Badge>
                             <Badge variant="outline">{translateArtifactType(artifact.type)}</Badge>
-                            {artifact.isPrimary ? <Badge color="blue" variant="light">客户端更新入口</Badge> : null}
-                            {artifact.isFullPackage ? <Badge color="gray" variant="light">完整安装包</Badge> : null}
+                            {artifact.isPrimary ? <Badge color="blue" variant="light">更新入口</Badge> : null}
                           </Group>
                           <Text fw={600}>{artifact.fileName || "未命名产物"}</Text>
                           <Text size="sm" c="dimmed">

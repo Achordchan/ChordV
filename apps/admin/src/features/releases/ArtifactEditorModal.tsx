@@ -1,6 +1,6 @@
 import { Alert, Badge, Button, FileInput, Group, Modal, Select, SegmentedControl, Stack, Switch, Text, TextInput } from "@mantine/core";
 import type { ArtifactEditorFormState } from "./types";
-import { isDesktopReleasePlatform, releaseArtifactTypeOptionsForPlatform } from "./types";
+import { releaseArtifactTypeOptionsForPlatform } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
 
 type ArtifactEditorModalProps = {
@@ -20,7 +20,6 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
   const usesExternalLink = props.form.source === "external" || props.form.type === "external";
   const typeOptions = releaseArtifactTypeOptionsForPlatform(props.platform, props.form.type);
   const defaultType = defaultArtifactTypeForPlatform(props.platform);
-  const showFullPackageToggle = !isDesktopReleasePlatform(props.platform);
 
   return (
     <Modal opened={props.opened} onClose={props.onClose} title={props.title} centered size="lg">
@@ -143,21 +142,6 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             ) : null}
           </>
         )}
-
-        <Group grow>
-          <Switch
-            checked={props.form.isPrimary}
-            onChange={(event) => props.onChange({ ...props.form, isPrimary: event.currentTarget.checked })}
-            label="客户端更新入口"
-          />
-          {showFullPackageToggle ? (
-            <Switch
-              checked={props.form.isFullPackage}
-              onChange={(event) => props.onChange({ ...props.form, isFullPackage: event.currentTarget.checked })}
-              label="完整安装包"
-            />
-          ) : null}
-        </Group>
 
         <Group justify="flex-end">
           <Button variant="default" onClick={props.onClose}>
