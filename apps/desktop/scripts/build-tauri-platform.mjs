@@ -64,7 +64,7 @@ fs.writeFileSync(
 );
 
 if (platform === "macos" && !extraArgs.includes("--target") && !extraArgs.some((arg) => arg.startsWith("--target="))) {
-  buildArgs.push("--target", "aarch64-apple-darwin");
+  buildArgs.push("--target", "universal-apple-darwin");
 }
 if (platform === "windows" && !extraArgs.includes("--target") && !extraArgs.some((arg) => arg.startsWith("--target="))) {
   buildArgs.push("--runner", "cargo-xwin");
@@ -215,7 +215,7 @@ function cleanupBundleOutput(platform) {
     platform === "macos"
       ? [
           path.join(targetRoot, "release", "bundle"),
-          path.join(targetRoot, "aarch64-apple-darwin", "release", "bundle")
+          path.join(targetRoot, "universal-apple-darwin", "release", "bundle")
         ]
       : [path.join(targetRoot, "x86_64-pc-windows-msvc", "release", "bundle")];
 
