@@ -100,16 +100,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                   </Badge>
                 ) : null}
               </Group>
-              {meteringActive ? (
-                <Group gap={6} wrap="wrap" align="center">
-                  <Badge variant="light" color="yellow">
-                    计量同步延迟
-                  </Badge>
-                  <Text c={isTeam ? "rgba(255,255,255,0.78)" : "dimmed"} size="xs" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
-                    {meteringMessage}
-                  </Text>
-                </Group>
-              ) : null}
             </Stack>
 
             <Menu shadow="md" width={180} position="bottom-end">
@@ -140,6 +130,28 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               </Menu.Dropdown>
             </Menu>
           </Group>
+
+          {meteringActive ? (
+            <Paper
+              withBorder
+              radius="md"
+              p="sm"
+              className="subscription-state-banner"
+              style={{
+                borderColor: isTeam ? "rgba(245, 158, 11, 0.28)" : "rgba(245, 158, 11, 0.22)",
+                background: isTeam ? "rgba(255, 251, 235, 0.12)" : "rgba(255, 251, 235, 0.92)"
+              }}
+            >
+              <Group gap={8} wrap="wrap" align="center">
+                <Badge variant="light" color="yellow">
+                  计量同步延迟
+                </Badge>
+                <Text c={isTeam ? "rgba(255,255,255,0.78)" : "dimmed"} size="xs" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
+                  {meteringMessage}
+                </Text>
+              </Group>
+            </Paper>
+          ) : null}
 
           <Paper
             withBorder
@@ -281,16 +293,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 </Badge>
               ) : null}
             </Group>
-            {meteringActive ? (
-              <Group gap={8} wrap="wrap" align="center" className="subscription-metering-state">
-                <Badge variant="light" color="yellow">
-                  计量同步延迟
-                </Badge>
-                <Text c={isTeam ? "rgba(255,255,255,0.78)" : "dimmed"} size="xs" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
-                  {meteringMessage}
-                </Text>
-              </Group>
-            ) : null}
           </div>
 
           <Group gap="xs" align="center" className="subscription-actions subscription-actions--toolbar">
@@ -392,8 +394,30 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
             >
               退出登录
             </Button>
-          </Group>
-        </div>
+            </Group>
+          </div>
+
+          {meteringActive ? (
+            <Paper
+              withBorder
+              radius="md"
+              p="sm"
+              className="subscription-state-banner"
+              style={{
+                borderColor: isTeam ? "rgba(245, 158, 11, 0.28)" : "rgba(245, 158, 11, 0.22)",
+                background: isTeam ? "rgba(255, 251, 235, 0.12)" : "rgba(255, 251, 235, 0.92)"
+              }}
+            >
+              <Group gap={8} wrap="wrap" align="center">
+                <Badge variant="light" color="yellow">
+                  计量同步延迟
+                </Badge>
+                <Text c={isTeam ? "rgba(255,255,255,0.78)" : "dimmed"} size="xs" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
+                  {meteringMessage}
+                </Text>
+              </Group>
+            </Paper>
+          ) : null}
 
         <div className="subscription-metrics">
           {metrics.map((item) => (

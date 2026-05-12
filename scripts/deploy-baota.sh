@@ -10,6 +10,7 @@ DEPLOY_NODE_VERSION="${DEPLOY_NODE_VERSION:-v20.19.0}"
 DEPLOY_DOMAIN="${DEPLOY_DOMAIN:-v.baymaxgroup.com}"
 DEPLOY_PORT="${DEPLOY_PORT:-3001}"
 DEPLOY_HEALTH_PATH="${DEPLOY_HEALTH_PATH:-/api/client/version}"
+DEPLOY_XUI_TIMEOUT_MS="${DEPLOY_XUI_TIMEOUT_MS:-30000}"
 SSH_OPTS="${SSH_OPTS:-}"
 
 if [ -x /usr/local/bin/node ]; then
@@ -97,9 +98,10 @@ ssh ${SSH_OPTS} "${REMOTE}" \
   DEPLOY_PROJECT="${DEPLOY_PROJECT}" \
   DEPLOY_NODE_VERSION="${DEPLOY_NODE_VERSION}" \
   DEPLOY_DOMAIN="${DEPLOY_DOMAIN}" \
-  DEPLOY_HOST="${DEPLOY_HOST}" \
-  DEPLOY_PORT="${DEPLOY_PORT}" \
-  DEPLOY_HEALTH_PATH="${DEPLOY_HEALTH_PATH}" \
+DEPLOY_HOST="${DEPLOY_HOST}" \
+DEPLOY_PORT="${DEPLOY_PORT}" \
+DEPLOY_XUI_TIMEOUT_MS="${DEPLOY_XUI_TIMEOUT_MS}" \
+DEPLOY_HEALTH_PATH="${DEPLOY_HEALTH_PATH}" \
   'bash -s' <<'REMOTE_SCRIPT'
 set -euo pipefail
 
@@ -116,6 +118,33 @@ if [ ! -f "start.sh" ]; then
   echo "服务器 start.sh 不存在，停止部署。"
   exit 1
 fi
+
+python3 - <<'PY'
+from pathlib import Path
+import os
+
+path = Path("start.sh")
+text = path.read_text(encoding="utf-8")
+target = f"export CHORDV_XUI_TIMEOUT_MS={os.environ['DEPLOY_XUI_TIMEOUT_MS']}"
+lines = text.splitlines()
+replaced = False
+for index, line in enumerate(lines):
+  if line.startswith("export CHORDV_XUI_TIMEOUT_MS="):
+    lines[index] = target
+    replaced = True
+    break
+if not replaced:
+  insert_at = None
+  for index, line in enumerate(lines):
+    if line.startswith("export CHORDV_PANEL_DEFAULT_TIMEOUT_MS="):
+      insert_at = index + 1
+      break
+  if insert_at is None:
+    lines.append(target)
+  else:
+    lines.insert(insert_at, target)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
 
 if [ ! -x "${NODE_BIN}" ]; then
   echo "宝塔 Node 不存在：${NODE_BIN}"

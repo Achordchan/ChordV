@@ -239,6 +239,7 @@ body {
 
 .subscription-state-banner {
   margin-top: 12px;
+  grid-column: 1 / -1;
 }
 
 .subscription-metrics {

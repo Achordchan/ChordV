@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { BadGatewayException, BadRequestException, Injectable } from "@nestjs/common";
 import { fetch as undiciFetch, Headers, FormData, type Dispatcher, Agent } from "undici";
 
-const PANEL_TIMEOUT_MS = Number(process.env.CHORDV_XUI_TIMEOUT_MS ?? 15000);
+const PANEL_TIMEOUT_MS = Number(process.env.CHORDV_XUI_TIMEOUT_MS ?? 30000);
 const PANEL_USER_AGENT = "ChordV/0.1";
 const DEFAULT_PANEL_PATH = "/";
 
