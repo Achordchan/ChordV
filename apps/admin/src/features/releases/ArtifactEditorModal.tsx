@@ -64,10 +64,10 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
           <>
             <Alert color="blue" variant="light">
               {props.creatingRelease
-                ? "保存后会一次性创建发布记录和首个外部安装产物，不会留下空白草稿。文件大小、Hash 这类元信息由后端探测后再回填。"
-                : "这里先只保留外链本身和加速前缀。文件大小、Hash 这类元信息由后端探测后再回填，前端不再摆空字段。"}
+                ? "保存后会一次性创建发布记录和首个外部安装产物，不会留下空白草稿。文件大小由后端探测后再回填。"
+                : "这里先只保留外链本身和加速前缀。文件大小由后端探测后再回填，前端不再摆空字段。"}
             </Alert>
-            {(props.form.fileSizeBytes !== "" || props.form.fileHash.trim() || props.form.fileName.trim()) ? (
+            {(props.form.fileSizeBytes !== "" || props.form.fileName.trim()) ? (
               <Stack gap={6}>
                 <Text size="sm" fw={500}>
                   已回填的元信息
@@ -75,7 +75,6 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
                 <Group gap="xs" wrap="wrap">
                   {props.form.fileName.trim() ? <Badge variant="light">文件名：{props.form.fileName.trim()}</Badge> : null}
                   {props.form.fileSizeBytes !== "" ? <Badge variant="light">大小：{props.form.fileSizeBytes} 字节</Badge> : null}
-                  {props.form.fileHash.trim() ? <Badge variant="light">Hash：{props.form.fileHash.trim()}</Badge> : null}
                 </Group>
               </Stack>
             ) : null}
@@ -120,7 +119,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             <Alert color="blue" variant="light">
               {props.creatingRelease
                 ? "上传模式下会先创建发布记录，再上传首个安装包；如果上传失败，系统会自动清理，不会留下空白草稿。"
-                : "上传后会自动生成下载地址、文件大小和 Hash。这里只需要确认更新入口。"}
+                : "上传后会自动生成下载地址和文件大小。这里只需要确认更新入口。"}
             </Alert>
             {props.form.downloadUrl ? (
               <Stack gap={4}>
@@ -132,26 +131,14 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
                 </Text>
               </Stack>
             ) : null}
-            {(props.form.fileSizeBytes !== "" || props.form.fileHash.trim()) ? (
+            {props.form.fileSizeBytes !== "" ? (
               <Group grow align="flex-start">
-                {props.form.fileSizeBytes !== "" ? (
-                  <Stack gap={4}>
-                    <Text size="sm" fw={500}>
-                      文件大小
-                    </Text>
-                    <Badge variant="light">{props.form.fileSizeBytes} 字节</Badge>
-                  </Stack>
-                ) : null}
-                {props.form.fileHash.trim() ? (
-                  <Stack gap={4}>
-                    <Text size="sm" fw={500}>
-                      文件 Hash
-                    </Text>
-                    <Text size="sm" c="dimmed">
-                      {props.form.fileHash}
-                    </Text>
-                  </Stack>
-                ) : null}
+                <Stack gap={4}>
+                  <Text size="sm" fw={500}>
+                    文件大小
+                  </Text>
+                  <Badge variant="light">{props.form.fileSizeBytes} 字节</Badge>
+                </Stack>
               </Group>
             ) : null}
           </>

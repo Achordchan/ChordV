@@ -208,15 +208,6 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                             文件大小：未自动识别
                           </Text>
                         )}
-                        {artifact.fileHash ? (
-                          <Text size="sm" c="dimmed">
-                            文件 Hash：{artifact.fileHash}
-                          </Text>
-                        ) : (
-                          <Text size="sm" c="dimmed">
-                            文件 Hash：未自动识别
-                          </Text>
-                        )}
                         {artifact.source === "external" ? (
                           <Text size="sm" c="dimmed">
                             {artifact.allowClientMirror ? "允许客户端覆盖默认加速前缀" : "仅使用后台默认加速前缀"}

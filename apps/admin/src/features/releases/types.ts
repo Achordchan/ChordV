@@ -24,7 +24,6 @@ export type ArtifactEditorFormState = {
   allowClientMirror: boolean;
   fileName: string;
   fileSizeBytes: number | "";
-  fileHash: string;
   isPrimary: boolean;
   isFullPackage: boolean;
   selectedFile: File | null;
@@ -103,7 +102,6 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     allowClientMirror: true,
     fileName: "",
     fileSizeBytes: "",
-    fileHash: "",
     isPrimary: true,
     isFullPackage: true,
     selectedFile: null
@@ -119,7 +117,6 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     allowClientMirror: record.allowClientMirror,
     fileName: record.fileName ?? "",
     fileSizeBytes: record.fileSizeBytes ?? "",
-    fileHash: record.fileHash ?? "",
     isPrimary: record.isPrimary,
     isFullPackage: record.isFullPackage,
     selectedFile: null
