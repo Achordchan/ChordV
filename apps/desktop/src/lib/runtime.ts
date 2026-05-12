@@ -34,7 +34,7 @@ export type RuntimeLogs = {
 
 export type RuntimeNodeProbeResult = ClientNodeProbeResultDto;
 
-export type RuntimePlatform = PlatformTarget | "web";
+export type RuntimePlatform = PlatformTarget | "web" | "linux";
 
 type AndroidRuntimeStatus = {
   status: string;
