@@ -64,7 +64,7 @@ fs.writeFileSync(
 );
 
 if (platform === "macos" && !extraArgs.includes("--target") && !extraArgs.some((arg) => arg.startsWith("--target="))) {
-  buildArgs.push("--target", "universal-apple-darwin");
+  buildArgs.push("--target", "aarch64-apple-darwin");
 }
 if (platform === "windows" && !extraArgs.includes("--target") && !extraArgs.some((arg) => arg.startsWith("--target="))) {
   buildArgs.push("--runner", "cargo-xwin");
@@ -98,7 +98,7 @@ process.exit(result.status ?? 1);
 
 function prepareBundledRuntimeResources(platform) {
   const setupScript = path.join(desktopRoot, "scripts", "setup-xray.mjs");
-  const targets = platform === "macos" ? ["darwin-arm64", "darwin-x64"] : ["win32-x64"];
+  const targets = platform === "macos" ? ["darwin-arm64"] : ["win32-x64"];
   for (const target of targets) {
     const result = spawnSync("node", [setupScript], {
       cwd: desktopRoot,
@@ -117,7 +117,7 @@ function prepareBundledRuntimeResources(platform) {
 function buildBundledRuntimeResources(platform) {
   const common = ["bin/geoip.dat", "bin/geosite.dat"];
   if (platform === "macos") {
-    return [...common, "bin/xray-aarch64-apple-darwin", "bin/xray-x86_64-apple-darwin"];
+    return [...common, "bin/xray-aarch64-apple-darwin"];
   }
   return [...common, "bin/xray.exe"];
 }
@@ -215,7 +215,7 @@ function cleanupBundleOutput(platform) {
     platform === "macos"
       ? [
           path.join(targetRoot, "release", "bundle"),
-          path.join(targetRoot, "universal-apple-darwin", "release", "bundle")
+          path.join(targetRoot, "aarch64-apple-darwin", "release", "bundle")
         ]
       : [path.join(targetRoot, "x86_64-pc-windows-msvc", "release", "bundle")];
 

@@ -17,6 +17,7 @@ import {
   type RuntimeStatus
 } from "../lib/runtime";
 import {
+  compareVersion,
   createIdleUpdateDownloadState,
   createLegacyUpdateResult,
   describeUpdateDownload,
@@ -313,7 +314,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
         setUpdateCheckResult(result);
 
-        if (!result || !result.hasUpdate) {
+        // 如果服务端返回的最新版本就是当前版本，说明当前已是最新，不触发更新提示
+        const effectiveHasUpdate =
+          result?.hasUpdate &&
+          compareVersion(result.latestVersion, options.appVersion) > 0;
+
+        if (!result || !effectiveHasUpdate) {
           setUpdateDialogOpened(false);
           setUpdateDownload(createIdleUpdateDownloadState());
           deferredUpdatePromptKeyRef.current = null;
