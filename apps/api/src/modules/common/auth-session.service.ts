@@ -18,7 +18,7 @@ export class AuthSessionService {
     process.env.CHORDV_REFRESH_TOKEN_TTL_SECONDS,
     30 * 24 * 60 * 60
   );
-  private readonly jwtSecret = process.env.CHORDV_JWT_SECRET?.trim() || "chordv-dev-secret-change-me";
+  private readonly jwtSecret = resolveJwtSecret();
   private readonly jwtIssuer = process.env.CHORDV_JWT_ISSUER?.trim() || "chordv-api";
 
   constructor(private readonly prisma: PrismaService) {}
@@ -223,4 +223,15 @@ function toPositiveInt(raw: string | undefined, fallback: number) {
     return fallback;
   }
   return parsed;
+}
+
+function resolveJwtSecret() {
+  const secret = process.env.CHORDV_JWT_SECRET?.trim();
+  if (secret) {
+    return secret;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("生产环境缺少 CHORDV_JWT_SECRET");
+  }
+  return "chordv-dev-secret-change-me";
 }

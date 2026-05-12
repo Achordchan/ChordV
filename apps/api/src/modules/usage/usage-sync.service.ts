@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
+import { Client as PgClient } from "pg";
 import {
   METERING_REASON_COUNTER_ROLLBACK,
   METERING_REASON_MAPPING_MISSING,
@@ -17,6 +18,8 @@ import { XuiService } from "../xui/xui.service";
 const GB_IN_BYTES = 1024 ** 3;
 const NODE_USAGE_STALE_SECONDS = Number(process.env.CHORDV_NODE_USAGE_STALE_SECONDS ?? 90);
 const NODE_USAGE_WARN_INTERVAL_MS = Number(process.env.CHORDV_NODE_USAGE_WARN_INTERVAL_SECONDS ?? 600) * 1000;
+const USAGE_SYNC_LOCK_KEY_1 = 420_701;
+const USAGE_SYNC_LOCK_KEY_2 = 917_503;
 
 @Injectable()
 export class UsageSyncService {
@@ -43,7 +46,31 @@ export class UsageSyncService {
 
   @Cron("*/30 * * * * *")
   async syncNodeUsage() {
-    await this.syncXuiUsage();
+    const lockClient = new PgClient({
+      connectionString: process.env.DATABASE_URL
+    });
+    let locked = false;
+
+    try {
+      await lockClient.connect();
+      const result = await lockClient.query<{ locked: boolean }>(
+        "select pg_try_advisory_lock($1, $2) as locked",
+        [USAGE_SYNC_LOCK_KEY_1, USAGE_SYNC_LOCK_KEY_2]
+      );
+      locked = Boolean(result.rows[0]?.locked);
+      if (!locked) {
+        this.logger.debug("跳过本轮 3x-ui 流量同步，另一个实例正在执行");
+        return;
+      }
+      await this.syncXuiUsage();
+    } catch (error) {
+      this.logger.warn(`3x-ui 流量同步锁执行失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (locked) {
+        await lockClient.query("select pg_advisory_unlock($1, $2)", [USAGE_SYNC_LOCK_KEY_1, USAGE_SYNC_LOCK_KEY_2]).catch(() => undefined);
+      }
+      await lockClient.end().catch(() => undefined);
+    }
   }
 
   private async syncXuiUsage() {

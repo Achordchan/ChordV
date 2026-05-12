@@ -123,7 +123,6 @@ export function App() {
   const [serverProbeBusy, setServerProbeBusy] = useState(false);
   const [runtimeMirrorPrefix, setRuntimeMirrorPrefix] = useState("");
   const leaseHeartbeatFailedAtRef = useRef<number | null>(null);
-  const lastMeteringToastRef = useRef<string | null>(null);
   const lastGuidanceToastRef = useRef<string | null>(null);
   const lastRuntimeSignalKeyRef = useRef<string | null>(null);
   const lastForegroundSyncErrorRef = useRef<string | null>(null);
@@ -1340,26 +1339,6 @@ export function App() {
   }, [actionBusy, desktopStatus, fallbackNode?.id, runtime?.sessionId]);
 
   useEffect(() => {
-    const status = bootstrap?.subscription.meteringStatus;
-    const message = bootstrap?.subscription.meteringMessage ?? "计费待同步，正在等待节点统计恢复";
-    if (status !== "degraded") {
-      lastMeteringToastRef.current = null;
-      return;
-    }
-    const key = `${bootstrap?.subscription.id ?? "subscription"}:${message}`;
-    if (lastMeteringToastRef.current === key) {
-      return;
-    }
-    lastMeteringToastRef.current = key;
-    notifications.show({
-      color: "yellow",
-      title: "计量同步提醒",
-      message,
-      autoClose: 4000
-    });
-  }, [bootstrap?.subscription.id, bootstrap?.subscription.meteringMessage, bootstrap?.subscription.meteringStatus]);
-
-  useEffect(() => {
     if (!deferredUpdatePromptKeyRef.current) {
       return;
     }
@@ -1616,6 +1595,8 @@ export function App() {
                   runtime={runtime}
                   error={runtimeDisplayError}
                   runtimeAssetsPhase={runtimeAssets.phase}
+                  meteringStatus={bootstrap.subscription.meteringStatus}
+                  meteringMessage={bootstrap.subscription.meteringMessage ?? null}
                   onModeChange={setMode}
                   onPrimaryAction={() => void handlePrimaryAction()}
                   onOpenLogs={() => setLogDrawerOpened(true)}
@@ -1783,6 +1764,8 @@ export function App() {
               runtime={runtime}
               error={runtimeDisplayError}
               runtimeAssetsPhase={runtimeAssets.phase}
+              meteringStatus={bootstrap.subscription.meteringStatus}
+              meteringMessage={bootstrap.subscription.meteringMessage ?? null}
               onModeChange={setMode}
               onPrimaryAction={() => void handlePrimaryAction()}
               onOpenLogs={() => setLogDrawerOpened(true)}

@@ -9,6 +9,9 @@ apps/desktop/src-tauri/gen
 apps/desktop/src-tauri/Cargo.lock
 apps/desktop/src-tauri/.tauri.*.platform.conf.json
 output/
+*.db
+*.sqlite*
+*.tsbuildinfo
 .env
 .env.local
 _deploy/

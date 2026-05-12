@@ -55,6 +55,8 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   const isTeam = props.bootstrap.subscription.ownerType === "team";
   const title = isTeam ? props.bootstrap.team?.name ?? props.bootstrap.subscription.teamName ?? "团队订阅" : props.bootstrap.user.displayName;
   const subtitle = isTeam ? props.bootstrap.subscription.planName : `${props.bootstrap.subscription.planName} · 个人订阅`;
+  const meteringActive = props.bootstrap.subscription.meteringStatus === "degraded";
+  const meteringMessage = props.bootstrap.subscription.meteringMessage ?? "流量统计正在校准，请稍后查看";
   const metrics = [
     { label: isTeam ? "团队剩余流量" : "剩余流量", value: `${formatTrafficGb(props.bootstrap.subscription.remainingTrafficGb)} GB` },
     { label: isTeam ? "团队总流量" : "总流量", value: `${formatTrafficGb(props.bootstrap.subscription.totalTrafficGb)} GB` },
@@ -98,6 +100,16 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                   </Badge>
                 ) : null}
               </Group>
+              {meteringActive ? (
+                <Group gap={6} wrap="wrap" align="center">
+                  <Badge variant="light" color="yellow">
+                    计量同步延迟
+                  </Badge>
+                  <Text c={isTeam ? "rgba(255,255,255,0.78)" : "dimmed"} size="xs" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
+                    {meteringMessage}
+                  </Text>
+                </Group>
+              ) : null}
             </Stack>
 
             <Menu shadow="md" width={180} position="bottom-end">
@@ -269,6 +281,16 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 </Badge>
               ) : null}
             </Group>
+            {meteringActive ? (
+              <Group gap={8} wrap="wrap" align="center" className="subscription-metering-state">
+                <Badge variant="light" color="yellow">
+                  计量同步延迟
+                </Badge>
+                <Text c={isTeam ? "rgba(255,255,255,0.78)" : "dimmed"} size="xs" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
+                  {meteringMessage}
+                </Text>
+              </Group>
+            ) : null}
           </div>
 
           <Group gap="xs" align="center" className="subscription-actions subscription-actions--toolbar">

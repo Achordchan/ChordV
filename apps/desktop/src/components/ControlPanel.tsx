@@ -15,6 +15,8 @@ type ControlPanelProps = {
   runtime: GeneratedRuntimeConfigDto | null;
   error: string | null;
   runtimeAssetsPhase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
+  meteringStatus: "ok" | "degraded";
+  meteringMessage: string | null;
   onModeChange: (mode: ConnectionMode) => void;
   onPrimaryAction: () => void;
   onOpenLogs: () => void;
@@ -52,6 +54,27 @@ export function ControlPanel(props: ControlPanelProps) {
             nodeName={props.runtime?.node.name ?? "未连接"}
             compact
           />
+
+          {props.meteringStatus === "degraded" ? (
+            <Paper
+              withBorder
+              radius="md"
+              p="sm"
+              style={{
+                borderColor: "rgba(245, 158, 11, 0.28)",
+                background: "rgba(255, 251, 235, 0.92)"
+              }}
+            >
+              <Group gap="xs" align="flex-start" wrap="nowrap">
+                <Badge variant="light" color="yellow" radius="sm">
+                  计量同步延迟
+                </Badge>
+                <Text c="orange.8" size="sm" style={{ flex: 1, minWidth: 0 }} lineClamp={2}>
+                  {props.meteringMessage ?? "流量统计正在校准，请稍后查看"}
+                </Text>
+              </Group>
+            </Paper>
+          ) : null}
 
           <SegmentedControl
             fullWidth

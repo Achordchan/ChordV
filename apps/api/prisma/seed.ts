@@ -11,13 +11,18 @@ import {
   mockVersion
 } from "@chordv/shared";
 
-const prisma = new PrismaClient();
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
 const BUILTIN_ADMIN_PASSWORD = "woshichen123";
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
+let prisma: PrismaClient | null = null;
 
 async function main() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("生产环境禁止执行 Prisma seed");
+  }
+
+  prisma = new PrismaClient();
   const demoPasswordHash = await bcrypt.hash("demo123456", 10);
   const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
   const ownerPasswordHash = await bcrypt.hash("team123456", 10);
@@ -566,10 +571,10 @@ function normalizeReleaseArtifactType(type: string) {
 
 main()
   .then(async () => {
-    await prisma.$disconnect();
+    await prisma?.$disconnect();
   })
   .catch(async (error) => {
     console.error(error);
-    await prisma.$disconnect();
+    await prisma?.$disconnect();
     process.exit(1);
   });

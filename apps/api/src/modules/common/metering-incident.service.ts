@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
+import { METERING_NODE_UNAVAILABLE_GRACE_MS, METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { PrismaService } from "./prisma.service";
 
 @Injectable()
@@ -38,8 +39,13 @@ export class MeteringIncidentService {
     }
 
     const incident =
-      incidents.find((item) => item.reason !== "NODE_METERING_UNAVAILABLE") ??
-      (activeLeaseCount > 0 ? incidents[0] : null);
+      incidents.find((item) => item.reason !== METERING_REASON_NODE_UNAVAILABLE) ??
+      incidents.find(
+        (item) =>
+          item.reason === METERING_REASON_NODE_UNAVAILABLE &&
+          Date.now() - Math.max(item.createdAt.getTime(), item.openedAt.getTime()) >= METERING_NODE_UNAVAILABLE_GRACE_MS
+      ) ??
+      null;
 
     if (!incident) {
       return {
@@ -48,9 +54,16 @@ export class MeteringIncidentService {
       };
     }
 
+    if (incident.reason === METERING_REASON_NODE_UNAVAILABLE) {
+      return {
+        meteringStatus: "degraded" as const,
+        meteringMessage: "计量同步延迟，后台正在重试，请稍后查看"
+      };
+    }
+
     return {
       meteringStatus: "degraded" as const,
-      meteringMessage: incident.detail?.trim() || "计费待同步，请联系服务商检查节点状态"
+      meteringMessage: "流量统计正在校准，请稍后查看"
     };
   }
 

@@ -215,6 +215,10 @@ export class DevDataService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    if (!shouldAutoBootstrapDevData()) {
+      this.logger.log("已跳过开发数据自动初始化");
+      return;
+    }
     await this.devDataBootstrapService.initialize();
   }
 
@@ -1294,4 +1298,15 @@ export class DevDataService implements OnModuleInit {
     }
     return row;
   }
+}
+
+function shouldAutoBootstrapDevData() {
+  const flag = process.env.CHORDV_DEV_BOOTSTRAP?.trim().toLowerCase();
+  if (flag === "true") {
+    return true;
+  }
+  if (flag === "false") {
+    return false;
+  }
+  return process.env.NODE_ENV !== "production";
 }
