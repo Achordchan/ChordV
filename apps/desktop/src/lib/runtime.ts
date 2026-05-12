@@ -159,6 +159,16 @@ export function detectRuntimePlatform(): RuntimePlatform {
   if (isIosPlatform()) {
     return "ios";
   }
+  
+  // Use __TAURI_INTERNALS__ to get actual OS platform
+  try {
+    const platform = (window as any).__TAURI_INTERNALS__?.metadata?.currentTarget?.platform;
+    if (platform === "windows") return "windows";
+    if (platform === "macos") return "macos";
+    if (platform === "linux") return "linux";
+  } catch {}
+  
+  // Fallback to userAgent (unreliable for Tauri desktop)
   if (/windows/i.test(window.navigator.userAgent)) {
     return "windows";
   }
