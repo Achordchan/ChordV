@@ -295,6 +295,7 @@ export class AdminNodeService {
           : shouldPersistPanelEnabledByDefault
             ? { panelEnabled: nextPanelEnabled }
             : {}),
+        ...(input.isActive === false ? { panelStatus: "offline", panelError: null } : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -384,7 +385,10 @@ export class AdminNodeService {
     let panelStatus = current.panelStatus;
     let panelError = current.panelError;
     let panelLastSyncedAt = current.panelLastSyncedAt;
-    if (current.panelEnabled) {
+    if (!current.isActive) {
+      panelStatus = "offline";
+      panelError = null;
+    } else if (current.panelEnabled) {
       try {
         await this.xuiService.checkNodeHealth({
           id: current.id,

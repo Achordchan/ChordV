@@ -81,7 +81,8 @@ export class UsageSyncService {
           state: "active"
         },
         node: {
-          panelEnabled: true
+          panelEnabled: true,
+          isActive: true
         }
       },
       include: {

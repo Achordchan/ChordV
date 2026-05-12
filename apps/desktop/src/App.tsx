@@ -24,6 +24,7 @@ import { AnnouncementDrawer } from "./components/AnnouncementDrawer";
 import { ControlPanel } from "./components/ControlPanel";
 import { LogDrawer } from "./components/LogDrawer";
 import { LoginScreen } from "./components/LoginScreen";
+import { MeteringFloatingBanner } from "./components/MeteringFloatingBanner";
 import { NodeListPanel } from "./components/NodeListPanel";
 import { RuntimeAssetsBanner } from "./components/RuntimeAssetsBanner";
 import { SubscriptionPanel } from "./components/SubscriptionPanel";
@@ -1534,6 +1535,12 @@ export function App() {
   return (
     <div className={appClassName}>
       <LoadingOverlay visible={booting} zIndex={200} overlayProps={{ blur: 1 }} />
+      {bootstrap ? (
+        <MeteringFloatingBanner
+          status={bootstrap.subscription.meteringStatus}
+          message={bootstrap.subscription.meteringMessage ?? null}
+        />
+      ) : null}
       {runtimeAssets.phase !== "idle" && runtimeAssets.phase !== "ready" ? (
         <div className="desktop-runtime-overlay">
           <div className="desktop-runtime-overlay__inner">
@@ -1595,8 +1602,6 @@ export function App() {
                   runtime={runtime}
                   error={runtimeDisplayError}
                   runtimeAssetsPhase={runtimeAssets.phase}
-                  meteringStatus={bootstrap.subscription.meteringStatus}
-                  meteringMessage={bootstrap.subscription.meteringMessage ?? null}
                   onModeChange={setMode}
                   onPrimaryAction={() => void handlePrimaryAction()}
                   onOpenLogs={() => setLogDrawerOpened(true)}
@@ -1764,8 +1769,6 @@ export function App() {
               runtime={runtime}
               error={runtimeDisplayError}
               runtimeAssetsPhase={runtimeAssets.phase}
-              meteringStatus={bootstrap.subscription.meteringStatus}
-              meteringMessage={bootstrap.subscription.meteringMessage ?? null}
               onModeChange={setMode}
               onPrimaryAction={() => void handlePrimaryAction()}
               onOpenLogs={() => setLogDrawerOpened(true)}

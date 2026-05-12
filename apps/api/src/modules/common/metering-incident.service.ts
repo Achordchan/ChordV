@@ -8,15 +8,19 @@ export class MeteringIncidentService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getSubscriptionMeteringState(subscriptionId: string) {
-    const activeLeaseCount = await this.prisma.nodeSessionLease.count({
+    const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         subscriptionId,
         status: "active",
         expiresAt: { gt: new Date() }
+      },
+      select: {
+        nodeId: true
       }
     });
 
-    if (activeLeaseCount === 0) {
+    const activeNodeIds = Array.from(new Set(activeLeases.map((lease) => lease.nodeId)));
+    if (activeNodeIds.length === 0) {
       return {
         meteringStatus: "ok" as const,
         meteringMessage: null
@@ -26,7 +30,8 @@ export class MeteringIncidentService {
     const incidents = await this.prisma.meteringIncident.findMany({
       where: {
         subscriptionId,
-        status: "open"
+        status: "open",
+        nodeId: { in: activeNodeIds }
       },
       orderBy: [{ openedAt: "desc" }, { createdAt: "desc" }]
     });

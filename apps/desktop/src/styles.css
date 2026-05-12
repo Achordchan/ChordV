@@ -40,6 +40,32 @@ body {
   pointer-events: auto;
 }
 
+.metering-floating-banner {
+  position: fixed;
+  left: 50%;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 110;
+  width: min(720px, calc(100vw - 28px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.metering-floating-banner__panel {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  pointer-events: none;
+}
+
+.metering-floating-banner__badge {
+  flex: 0 0 auto;
+}
+
+.metering-floating-banner__text {
+  min-width: 0;
+}
+
 .desktop-app--mobile {
   min-height: 100dvh;
   height: 100dvh;
@@ -59,6 +85,16 @@ body {
 
 .desktop-app--mobile .desktop-runtime-overlay__inner {
   width: calc(100vw - 16px);
+}
+
+.desktop-app--mobile .metering-floating-banner {
+  bottom: max(92px, calc(env(safe-area-inset-bottom) + 86px));
+  width: calc(100vw - 20px);
+}
+
+.desktop-app--mobile .metering-floating-banner__panel {
+  min-height: 42px;
+  gap: 8px;
 }
 
 .desktop-main {
@@ -235,11 +271,6 @@ body {
   background: rgba(255, 255, 255, 0.98);
   color: #0f172a;
   box-shadow: 0 18px 36px rgba(15, 23, 42, 0.14);
-}
-
-.subscription-state-banner {
-  margin-top: 12px;
-  grid-column: 1 / -1;
 }
 
 .subscription-metrics {

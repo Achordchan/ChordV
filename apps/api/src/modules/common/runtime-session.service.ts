@@ -827,7 +827,12 @@ export class RuntimeSessionService {
         ]
       },
       include: {
-        node: true
+        node: true,
+        binding: {
+          select: {
+            status: true
+          }
+        }
       },
       orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
       take: PANEL_SYNC_BATCH_SIZE
@@ -867,21 +872,87 @@ export class RuntimeSessionService {
     action: string;
     attempts: number;
     bindingId: string;
+    subscriptionId: string;
     nodeId: string;
     panelClientEmail: string;
     panelClientId: string;
     node: {
       id: string;
+      isActive: boolean;
+      panelEnabled: boolean;
       panelBaseUrl: string | null;
       panelApiBasePath: string | null;
       panelUsername: string | null;
       panelPassword: string | null;
       panelInboundId: number | null;
     };
+    binding: {
+      status: string;
+    };
   }) {
     try {
       if (job.action !== "disable_client") {
         throw new Error(`未知面板同步动作：${job.action}`);
+      }
+
+      if (!job.node.isActive || !job.node.panelEnabled || job.binding.status !== "active") {
+        const completedAt = new Date();
+        if (job.binding.status === "active") {
+          await this.prisma.$transaction([
+            this.prisma.panelClientBinding.update({
+              where: { id: job.bindingId },
+              data: {
+                status: "disabled"
+              }
+            }),
+            this.prisma.panelSyncJob.update({
+              where: { id: job.id },
+              data: {
+                status: "completed",
+                lockedAt: null,
+                lastError: null,
+                completedAt
+              }
+            }),
+            this.prisma.meteringIncident.updateMany({
+              where: {
+                subscriptionId: job.subscriptionId,
+                nodeId: job.nodeId,
+                reason: METERING_REASON_NODE_UNAVAILABLE,
+                status: "open"
+              },
+              data: {
+                status: "resolved",
+                resolvedAt: completedAt
+              }
+            })
+          ]);
+        } else {
+          await this.prisma.$transaction([
+            this.prisma.panelSyncJob.update({
+              where: { id: job.id },
+              data: {
+                status: "completed",
+                lockedAt: null,
+                lastError: null,
+                completedAt
+              }
+            }),
+            this.prisma.meteringIncident.updateMany({
+              where: {
+                subscriptionId: job.subscriptionId,
+                nodeId: job.nodeId,
+                reason: METERING_REASON_NODE_UNAVAILABLE,
+                status: "open"
+              },
+              data: {
+                status: "resolved",
+                resolvedAt: completedAt
+              }
+            })
+          ]);
+        }
+        return;
       }
 
       await this.xuiService.setClientEnabled(
