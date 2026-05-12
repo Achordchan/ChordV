@@ -40,6 +40,7 @@ type SubscriptionPanelProps = {
   refreshing: boolean;
   updateBusy: boolean;
   hasUpdate: boolean;
+  forceUpdate?: boolean;
   serverProbe: SubscriptionServerProbe;
   serverProbeBusy?: boolean;
   onOpenAnnouncements: () => void;
@@ -119,7 +120,7 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                   onClick={props.onCheckUpdate}
                   disabled={props.updateBusy}
                 >
-                  {props.hasUpdate ? "查看更新" : "检查更新"}
+                  {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
                 </Menu.Item>
                 <Menu.Divider />
                 <Menu.Item color="red" leftSection={<IconLogout size={14} />} onClick={props.onLogout}>
@@ -350,15 +351,15 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
               刷新
             </Button>
             <Button
-              variant={props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
-              color={props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
+              variant={props.forceUpdate ? "filled" : props.hasUpdate ? "filled" : isTeam ? "white" : "default"}
+              color={props.forceUpdate ? "orange" : props.hasUpdate ? "blue" : isTeam ? "dark" : "gray"}
               size="xs"
               leftSection={<IconRosetteDiscountCheck size={14} />}
               className="subscription-secondary-button subscription-toolbar-button"
               loading={props.updateBusy}
               onClick={props.onCheckUpdate}
             >
-              {props.hasUpdate ? "查看更新" : "检查更新"}
+              {props.forceUpdate ? "必须更新" : props.hasUpdate ? "有新版本" : "检查更新"}
             </Button>
             <Button
               variant={isTeam ? "white" : "default"}

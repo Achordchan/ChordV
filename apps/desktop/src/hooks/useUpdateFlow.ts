@@ -393,6 +393,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return false;
     }
     try {
+      // 清空更新状态，避免重启后短暂显示旧的"有更新"提示
+      setUpdateCheckResult(null);
       await quitForUpdate();
       return true;
     } catch (reason) {

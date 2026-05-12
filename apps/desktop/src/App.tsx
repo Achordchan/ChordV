@@ -1507,7 +1507,7 @@ export function App() {
   const appClassName = `desktop-app${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
   const mobileHomeMode = Boolean(session && bootstrap && mobilePlatformClassName);
   const forceUpdateBanner =
-    forceUpdateRequired && effectiveUpdate?.hasUpdate ? (
+    forceUpdateRequired && effectiveUpdate?.hasUpdate && !updateDialogOpened ? (
       <Alert color={forceUpdateRequired ? "red" : "blue"}>
         <Stack gap={8}>
           <Text size="sm">
@@ -1647,6 +1647,7 @@ export function App() {
                   refreshing={refreshing}
                   updateBusy={updateCheckBusy}
                   hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
+                  forceUpdate={forceUpdateRequired && Boolean(effectiveUpdate?.hasUpdate)}
                   serverProbe={subscriptionServerProbe}
                   serverProbeBusy={serverProbeBusy}
                   onRefreshServerProbe={() => void handleManualServerProbe()}
@@ -1720,6 +1721,7 @@ export function App() {
               refreshing={refreshing}
               updateBusy={updateCheckBusy}
               hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
+              forceUpdate={forceUpdateRequired && Boolean(effectiveUpdate?.hasUpdate)}
               serverProbe={subscriptionServerProbe}
               serverProbeBusy={serverProbeBusy}
               onRefreshServerProbe={() => void handleManualServerProbe()}
