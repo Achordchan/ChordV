@@ -324,6 +324,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           setUpdateDownload(createIdleUpdateDownloadState());
           deferredUpdatePromptKeyRef.current = null;
           lastUpdatePromptVersionRef.current = null;
+          lastKnownUpdateArtifactRef.current = null;
           if (runOptions.source === "manual" && !runOptions.silent) {
             options.notify?.({
               color: "green",
