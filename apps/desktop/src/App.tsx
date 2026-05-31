@@ -82,7 +82,7 @@ import { useRuntimeActions } from "./hooks/useRuntimeActions";
 import { useRuntimeAssets } from "./hooks/useRuntimeAssets";
 import { useRuntimeStatus } from "./hooks/useRuntimeStatus";
 import { useSupportTickets } from "./hooks/useSupportTickets";
-import { useUpdateFlow } from "./hooks/useUpdateFlow";
+import { buildUpdatePromptKey, hasActionableUpdate, useUpdateFlow } from "./hooks/useUpdateFlow";
 const REMEMBER_CREDENTIALS_KEY = "chordv_remember_credentials";
 const DESKTOP_CLOSE_HINT_KEY = "chordv_desktop_close_hint_ack";
 const RUNTIME_COMPONENT_MIRROR_PREFIX_KEY = "chordv_runtime_component_mirror_prefix";
@@ -251,6 +251,7 @@ export function App() {
     handleUpdateDownload,
     handleQuitForUpdate
   } = updateFlow;
+  const effectiveUpdateActionable = hasActionableUpdate(effectiveUpdate, appVersion);
   const runUpdateCheck = runUpdateCheckFromHook;
   const runUpdateCheckForAuth = async (input: import("./hooks/useAuthBootstrap").RunUpdateCheckInput) => {
     await runUpdateCheckFromHook(input);
@@ -460,6 +461,13 @@ export function App() {
     setServerProbe,
     handleRuntimeEvent,
     syncConnectedState: syncForegroundState,
+    runUpdateCheckOnOpen: async () => {
+      await runUpdateCheck({
+        bootstrapVersion: bootstrap?.version ?? null,
+        source: "refresh",
+        silent: true
+      });
+    },
     recoverSessionAfterUnauthorized,
     readError
   });
@@ -1348,11 +1356,11 @@ export function App() {
     if (updateDialogOpened || runtimeAssetsBusy || runtimeAssetsDialogOpened || forcedAnnouncement || announcementDrawerOpened) {
       return;
     }
-    if (!effectiveUpdate?.hasUpdate) {
+    if (!effectiveUpdateActionable) {
       deferredUpdatePromptKeyRef.current = null;
       return;
     }
-    const promptKey = `${effectiveUpdate.latestVersion}:${effectiveUpdate.forceUpgrade ? "force" : "optional"}`;
+    const promptKey = buildUpdatePromptKey(effectiveUpdate);
     if (deferredUpdatePromptKeyRef.current !== promptKey) {
       deferredUpdatePromptKeyRef.current = null;
       return;
@@ -1362,9 +1370,8 @@ export function App() {
     setUpdateDialogOpened(true);
   }, [
     announcementDrawerOpened,
-    effectiveUpdate?.forceUpgrade,
-    effectiveUpdate?.hasUpdate,
-    effectiveUpdate?.latestVersion,
+    effectiveUpdate,
+    effectiveUpdateActionable,
     forcedAnnouncement,
     runtimeAssetsBusy,
     runtimeAssetsDialogOpened,
@@ -1447,9 +1454,11 @@ export function App() {
       if (restoredSession?.accessToken && localRuntime?.sessionId) {
         await syncForegroundState(restoredSession.accessToken).catch(() => null);
       }
-      if (!restoredSession) {
-        await runUpdateCheck({ source: "startup", silent: true });
-      }
+      await runUpdateCheck({
+        accessToken: restoredSession?.accessToken,
+        source: "startup",
+        silent: true
+      });
     } finally {
       await appReady().catch(() => null);
       window.requestAnimationFrame(() => {
@@ -1507,7 +1516,7 @@ export function App() {
   const appClassName = `desktop-app${mobilePlatformClassName ? ` ${mobilePlatformClassName}` : ""}${loginMobileClassName}`;
   const mobileHomeMode = Boolean(session && bootstrap && mobilePlatformClassName);
   const forceUpdateBanner =
-    forceUpdateRequired && effectiveUpdate?.hasUpdate && !updateDialogOpened ? (
+    forceUpdateRequired && effectiveUpdateActionable && effectiveUpdate && !updateDialogOpened ? (
       <Alert color={forceUpdateRequired ? "red" : "blue"}>
         <Stack gap={8}>
           <Text size="sm">
@@ -1646,8 +1655,8 @@ export function App() {
                   hasUnreadTickets={hasUnreadTickets}
                   refreshing={refreshing}
                   updateBusy={updateCheckBusy}
-                  hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
-                  forceUpdate={forceUpdateRequired && Boolean(effectiveUpdate?.hasUpdate)}
+                  hasUpdate={effectiveUpdateActionable}
+                  forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
                   serverProbe={subscriptionServerProbe}
                   serverProbeBusy={serverProbeBusy}
                   onRefreshServerProbe={() => void handleManualServerProbe()}
@@ -1720,8 +1729,8 @@ export function App() {
               hasUnreadTickets={hasUnreadTickets}
               refreshing={refreshing}
               updateBusy={updateCheckBusy}
-              hasUpdate={Boolean(effectiveUpdate?.hasUpdate)}
-              forceUpdate={forceUpdateRequired && Boolean(effectiveUpdate?.hasUpdate)}
+              hasUpdate={effectiveUpdateActionable}
+              forceUpdate={forceUpdateRequired && effectiveUpdateActionable}
               serverProbe={subscriptionServerProbe}
               serverProbeBusy={serverProbeBusy}
               onRefreshServerProbe={() => void handleManualServerProbe()}
@@ -1933,7 +1942,9 @@ export function App() {
           <Alert color={forceUpdateRequired ? "red" : "blue"} variant="light">
             {forceUpdateRequired
               ? "当前版本已低于最低支持版本，必须先升级客户端后再继续使用。"
-              : "下载完成后自动打开安装程序，再由你手动完成安装。"}
+              : effectiveUpdate?.deliveryMode === "desktop_full_replace"
+                ? "下载完整更新包后会自动静默替换并重启应用。"
+                : "下载完成后自动打开安装程序，再由你手动完成安装。"}
           </Alert>
           <Text size="sm" c="dimmed">
             当前版本：{formatVersionLabel(appVersion)}
@@ -1947,11 +1958,19 @@ export function App() {
           <Text size="sm" c="dimmed">
             发布渠道：正式版，仓库地址（<a href="https://github.com/achordchan" target="_blank" rel="noopener noreferrer">github.com/achordchan</a>）
           </Text>
-          {effectiveUpdate?.deliveryMode === "desktop_installer_download" && updateDownload.phase !== "idle" ? (
+          {(effectiveUpdate?.deliveryMode === "desktop_installer_download" ||
+            effectiveUpdate?.deliveryMode === "desktop_full_replace") &&
+          updateDownload.phase !== "idle" ? (
             <Stack gap={6}>
-              <Text fw={600}>安装器下载</Text>
+              <Text fw={600}>
+                {effectiveUpdate?.deliveryMode === "desktop_full_replace" ? "更新包下载" : "安装器下载"}
+              </Text>
               <Text size="sm" c="dimmed">
-                新版本会先在应用内下载完整安装器，下载完成后自动打开 {updatePlatform === "windows" ? "Setup 安装程序" : "DMG 安装包"}，再由你手动完成安装。
+                {effectiveUpdate?.deliveryMode === "desktop_full_replace"
+                  ? "新版本会先在应用内下载完整 ZIP 更新包，校验完成后自动替换并重启。"
+                  : `新版本会先在应用内下载安装器，下载完成后自动打开 ${
+                      updatePlatform === "windows" ? "Setup 安装程序" : "DMG 安装包"
+                    }，再由你手动完成安装。`}
               </Text>
               <Progress
                 value={readUpdateDownloadProgress()}

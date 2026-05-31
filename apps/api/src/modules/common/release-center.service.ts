@@ -10,6 +10,7 @@ import type {
   PlatformTarget,
   ReleaseArtifactType,
   ReleaseChannel,
+  UpdateDeliveryMode,
   UpdateReleaseArtifactInputDto,
   UpdateReleaseInputDto,
   UploadReleaseArtifactInputDto
@@ -17,28 +18,36 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { PrismaService } from "./prisma.service";
 import {
+  assertReleaseArtifactClientUsable,
+  assertReleaseArtifactDeliveryAllowed,
   assertExternalReleaseArtifactUrlMatchesType,
   assertReleaseArtifactTypeAllowed,
+  assertWindowsFullUpdateZipFile,
   buildReleaseArtifactDownloadUrl,
   calculateFileSha256,
   compareSemver,
   createId,
   defaultDeliveryModeForArtifact,
   defaultDeliveryModeForPlatform,
+  downloadExternalReleaseArtifactFile,
+  downloadExternalReleaseArtifactFileStrict,
   ensureFileReadable,
   fetchExternalReleaseArtifactMetadata,
-  normalizeBigInt,
   normalizeChangelog,
+  normalizeFileSizeBytes,
   normalizeNullableText,
   normalizeOptionalBoolean,
   normalizePublishedAt,
   normalizeReleaseChannel,
+  normalizeSha256Input,
   normalizeVersion,
   pickPrimaryReleaseArtifact,
+  type ReleaseRowLike,
   releaseArtifactStorageRoot,
   removeReleaseArtifactDirectory,
   removeReleaseArtifactFile,
   resolveReleaseArtifactAbsolutePath,
+  resolveReleaseArtifactDeliveryMode,
   resolveReleaseArtifactForClient,
   sanitizeReleaseArtifactFileName,
   toAdminReleaseArtifactRecord,
@@ -283,6 +292,11 @@ export class ReleaseCenterService {
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
     assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    const deliveryMode = resolveReleaseArtifactDeliveryMode(
+      release.platform as PlatformTarget,
+      input.type,
+      input.deliveryMode
+    );
     const source = input.source ?? "external";
     if (source === "uploaded") {
       throw new BadRequestException("创建上传产物时请使用上传接口。");
@@ -290,6 +304,13 @@ export class ReleaseCenterService {
 
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
+    const externalMetadata = await this.resolveExternalReleaseArtifactMetadata(
+      input.type,
+      input.downloadUrl,
+      defaultMirrorPrefix
+    );
+    const fileSizeBytes = externalMetadata?.fileSizeBytes ?? normalizeFileSizeBytes(input.fileSizeBytes) ?? null;
+    const fileHash = externalMetadata?.fileHash ?? normalizeSha256Input(input.fileHash) ?? null;
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
@@ -306,14 +327,14 @@ export class ReleaseCenterService {
           releaseId,
           source,
           type: toPrismaReleaseArtifactType(input.type),
-          deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+          deliveryMode,
           downloadUrl: input.downloadUrl.trim(),
           defaultMirrorPrefix,
           allowClientMirror: input.allowClientMirror ?? true,
-          fileName: normalizeNullableText(input.fileName),
+          fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName),
           storedFilePath: null,
-          fileSizeBytes: normalizeBigInt(input.fileSizeBytes),
-          fileHash: normalizeNullableText(input.fileHash),
+          fileSizeBytes,
+          fileHash,
           isPrimary: isPrimary ?? false,
           isFullPackage: isFullPackage ?? true
         }
@@ -342,7 +363,11 @@ export class ReleaseCenterService {
     const nextType = input.type ?? fromPrismaReleaseArtifactType(current.type);
     const nextDownloadUrl = input.downloadUrl ?? current.downloadUrl;
     const nextDefaultMirrorPrefix =
-      input.defaultMirrorPrefix !== undefined ? normalizeNullableText(input.defaultMirrorPrefix) : current.defaultMirrorPrefix;
+      nextSource === "external"
+        ? input.defaultMirrorPrefix !== undefined
+          ? normalizeNullableText(input.defaultMirrorPrefix)
+          : current.defaultMirrorPrefix
+        : null;
     if (input.source === "uploaded" && current.source !== "uploaded") {
       throw new BadRequestException("切换为上传产物时请使用上传接口。");
     }
@@ -350,6 +375,32 @@ export class ReleaseCenterService {
     if (nextSource === "external") {
       assertExternalReleaseArtifactUrlMatchesType(nextType, nextDownloadUrl);
     }
+    const nextDeliveryMode = resolveReleaseArtifactDeliveryMode(
+      release.platform as PlatformTarget,
+      nextType,
+      input.deliveryMode ?? (input.type !== undefined ? undefined : (current.deliveryMode as UpdateDeliveryMode))
+    );
+    const metadataIdentityChanged =
+      input.source !== undefined ||
+      input.type !== undefined ||
+      input.deliveryMode !== undefined ||
+      input.downloadUrl !== undefined ||
+      input.defaultMirrorPrefix !== undefined;
+    const externalMetadata =
+      nextSource === "external"
+        ? await this.resolveExternalReleaseArtifactMetadata(nextType, nextDownloadUrl, nextDefaultMirrorPrefix)
+        : null;
+    const nextExternalFileName =
+      externalMetadata?.fileName ??
+      (input.fileName !== undefined ? normalizeNullableText(input.fileName) : metadataIdentityChanged ? null : current.fileName);
+    const nextExternalFileSizeBytes =
+      externalMetadata?.fileSizeBytes ??
+      normalizeFileSizeBytes(input.fileSizeBytes) ??
+      (metadataIdentityChanged ? null : current.fileSizeBytes);
+    const nextExternalFileHash =
+      externalMetadata?.fileHash ??
+      normalizeSha256Input(input.fileHash) ??
+      (metadataIdentityChanged ? null : current.fileHash);
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
     await this.prisma.$transaction(async (tx) => {
@@ -364,24 +415,25 @@ export class ReleaseCenterService {
         data: {
           ...(input.source !== undefined ? { source: input.source } : {}),
           ...(input.type !== undefined ? { type: toPrismaReleaseArtifactType(input.type) } : {}),
-          ...(input.deliveryMode !== undefined ? { deliveryMode: input.deliveryMode } : {}),
+          ...(input.deliveryMode !== undefined || input.type !== undefined ? { deliveryMode: nextDeliveryMode } : {}),
           ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
-          ...(input.defaultMirrorPrefix !== undefined ? { defaultMirrorPrefix: nextDefaultMirrorPrefix } : {}),
+          ...(nextSource === "external" && input.defaultMirrorPrefix !== undefined ? { defaultMirrorPrefix: nextDefaultMirrorPrefix } : {}),
+          ...(nextSource !== "external" ? { defaultMirrorPrefix: null } : {}),
           ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
           ...(nextSource === "external"
             ? {
-                fileName: normalizeNullableText(input.fileName) ?? current.fileName,
-                fileSizeBytes: normalizeBigInt(input.fileSizeBytes) ?? current.fileSizeBytes,
-                fileHash: normalizeNullableText(input.fileHash) ?? current.fileHash
+                fileName: nextExternalFileName,
+                fileSizeBytes: nextExternalFileSizeBytes,
+                fileHash: nextExternalFileHash
               }
             : {}),
           ...(nextSource !== "external" && input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),
-          ...(nextSource !== "external" && input.fileSizeBytes !== undefined ? { fileSizeBytes: normalizeBigInt(input.fileSizeBytes) } : {}),
-          ...(nextSource !== "external" && input.fileHash !== undefined ? { fileHash: normalizeNullableText(input.fileHash) } : {}),
+          ...(nextSource !== "external" && input.fileSizeBytes !== undefined ? { fileSizeBytes: normalizeFileSizeBytes(input.fileSizeBytes) } : {}),
+          ...(nextSource !== "external" && input.fileHash !== undefined ? { fileHash: normalizeSha256Input(input.fileHash) } : {}),
           ...(isPrimary !== undefined ? { isPrimary } : {}),
           ...(isFullPackage !== undefined ? { isFullPackage } : {}),
           ...(input.source === "external" ? { storedFilePath: null } : {}),
-          ...(input.source === "uploaded" ? { defaultMirrorPrefix: null, allowClientMirror: true } : {})
+          ...(input.source === "uploaded" ? { allowClientMirror: true } : {})
         }
       });
     });
@@ -399,6 +451,11 @@ export class ReleaseCenterService {
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
     assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    const deliveryMode = resolveReleaseArtifactDeliveryMode(
+      release.platform as PlatformTarget,
+      input.type,
+      input.deliveryMode
+    );
     if (!file) {
       throw new BadRequestException("请先选择要上传的安装包文件");
     }
@@ -407,6 +464,9 @@ export class ReleaseCenterService {
 
     const artifactId = createId("artifact");
     const prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+    if (deliveryMode === "desktop_full_replace") {
+      await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
+    }
 
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -422,7 +482,7 @@ export class ReleaseCenterService {
             releaseId,
             source: "uploaded",
             type: toPrismaReleaseArtifactType(input.type),
-            deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+            deliveryMode,
             downloadUrl: prepared.downloadUrl,
             defaultMirrorPrefix: null,
             allowClientMirror: true,
@@ -461,11 +521,19 @@ export class ReleaseCenterService {
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
     assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    const deliveryMode = resolveReleaseArtifactDeliveryMode(
+      release.platform as PlatformTarget,
+      input.type,
+      input.deliveryMode
+    );
 
     const previousStoredFilePath = current.storedFilePath;
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
     const prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+    if (deliveryMode === "desktop_full_replace") {
+      await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
+    }
 
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -480,7 +548,7 @@ export class ReleaseCenterService {
           data: {
             source: "uploaded",
             type: toPrismaReleaseArtifactType(input.type),
-            deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+            deliveryMode,
             downloadUrl: prepared.downloadUrl,
             defaultMirrorPrefix: null,
             allowClientMirror: true,
@@ -544,6 +612,21 @@ export class ReleaseCenterService {
       throw new NotFoundException("发布产物不存在");
     }
 
+    const release = await this.ensureReleaseExists(releaseId);
+    const releasePlatform = release.platform as PlatformTarget;
+    const artifactType = fromPrismaReleaseArtifactType(artifact.type);
+    const artifactDeliveryMode = artifact.deliveryMode as UpdateDeliveryMode;
+    try {
+      assertReleaseArtifactTypeAllowed(releasePlatform, artifactType);
+      assertReleaseArtifactDeliveryAllowed(releasePlatform, artifactType, artifactDeliveryMode);
+    } catch (error) {
+      return {
+        artifactId,
+        status: "metadata_mismatch",
+        message: error instanceof Error ? error.message : "Release artifact protocol is invalid."
+      };
+    }
+
     if (artifact.source === "external") {
       const url = artifact.downloadUrl.trim();
       if (!url || !/^https?:\/\//i.test(url)) {
@@ -554,9 +637,9 @@ export class ReleaseCenterService {
         };
       }
       try {
-        assertExternalReleaseArtifactUrlMatchesType(fromPrismaReleaseArtifactType(artifact.type), url);
+        assertExternalReleaseArtifactUrlMatchesType(artifactType, url);
         const metadata = await this.resolveExternalReleaseArtifactMetadata(
-          fromPrismaReleaseArtifactType(artifact.type),
+          artifactType,
           url,
           artifact.defaultMirrorPrefix
         );
@@ -579,6 +662,102 @@ export class ReleaseCenterService {
               fileHash: nextFileHash
             }
           });
+        }
+
+        if (artifactDeliveryMode === "desktop_full_replace") {
+          let metadataError: string | null = null;
+          if (!nextFileSizeBytes || nextFileSizeBytes <= 0n) {
+            metadataError = "Full replacement updates require positive file size metadata before publishing.";
+          } else if (!nextFileHash) {
+            metadataError = "Full replacement updates require SHA256 metadata before publishing.";
+          } else {
+            try {
+              normalizeSha256Input(nextFileHash);
+            } catch (error) {
+              metadataError = error instanceof Error ? error.message : "Full replacement update SHA256 metadata is invalid.";
+            }
+          }
+          if (metadataError) {
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: metadataError,
+              actualFileSizeBytes,
+              actualFileHash
+            };
+          }
+          const requiredFileSizeBytes = nextFileSizeBytes;
+          const requiredFileHash = normalizeSha256Input(nextFileHash);
+          if (!requiredFileSizeBytes || !requiredFileHash) {
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: "Full replacement updates require positive size and SHA256 metadata.",
+              actualFileSizeBytes,
+              actualFileHash
+            };
+          }
+          const resolvedArtifact = resolveReleaseArtifactForClient(
+            {
+              ...artifact,
+              fileSizeBytes: requiredFileSizeBytes,
+              fileHash: requiredFileHash
+            },
+            null
+          );
+          try {
+            assertReleaseArtifactClientUsable(resolvedArtifact, releasePlatform);
+          } catch (error) {
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: error instanceof Error ? error.message : "Full replacement update URL is invalid.",
+              actualFileSizeBytes,
+              actualFileHash
+            };
+          }
+
+          const downloaded = await downloadExternalReleaseArtifactFileStrict(resolvedArtifact.downloadUrl);
+          try {
+            assertReleaseArtifactClientUsable(
+              {
+                ...resolvedArtifact,
+                downloadUrl: downloaded.resolvedUrl,
+                fileSizeBytes: requiredFileSizeBytes,
+                fileHash: requiredFileHash
+              },
+              releasePlatform
+            );
+            if (downloaded.fileSizeBytes !== requiredFileSizeBytes) {
+              return {
+                artifactId,
+                status: "metadata_mismatch",
+                message: `Full replacement ZIP size mismatch: expected ${requiredFileSizeBytes.toString()}, got ${downloaded.fileSizeBytes.toString()}.`,
+                actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+                actualFileHash: downloaded.fileHash
+              };
+            }
+            if (downloaded.fileHash !== requiredFileHash) {
+              return {
+                artifactId,
+                status: "metadata_mismatch",
+                message: "Full replacement ZIP SHA256 does not match metadata.",
+                actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+                actualFileHash: downloaded.fileHash
+              };
+            }
+            await assertWindowsFullUpdateZipFile(downloaded.absolutePath, downloaded.fileName ?? artifact.fileName, release.version);
+          } catch (error) {
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: error instanceof Error ? error.message : "Windows full replacement ZIP is invalid.",
+              actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+              actualFileHash: downloaded.fileHash
+            };
+          } finally {
+            await downloaded.cleanup();
+          }
         }
 
         return {
@@ -619,9 +798,53 @@ export class ReleaseCenterService {
       };
     }
 
+    if (artifactDeliveryMode === "desktop_full_replace") {
+      if (artifact.defaultMirrorPrefix) {
+        return {
+          artifactId,
+          status: "metadata_mismatch",
+          message: "Uploaded full replacement artifacts cannot use a default mirror prefix."
+        };
+      }
+      try {
+        const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
+        assertReleaseArtifactClientUsable(resolvedArtifact, releasePlatform);
+        await assertWindowsFullUpdateZipFile(absolutePath, artifact.fileName, release.version);
+      } catch (error) {
+        return {
+          artifactId,
+          status: "metadata_mismatch",
+          message: error instanceof Error ? error.message : "Windows full replacement ZIP is invalid."
+        };
+      }
+    }
+
     const stat = await import("node:fs/promises").then((module) => module.stat(absolutePath));
     const actualFileHash = await calculateFileSha256(absolutePath);
     const actualFileSizeBytes = stat.size.toString();
+    if (artifactDeliveryMode === "desktop_full_replace") {
+      let metadataError: string | null = null;
+      if (!artifact.fileSizeBytes || artifact.fileSizeBytes <= 0n) {
+        metadataError = "Full replacement updates require positive file size metadata before publishing.";
+      } else if (!artifact.fileHash) {
+        metadataError = "Full replacement updates require SHA256 metadata before publishing.";
+      } else {
+        try {
+          normalizeSha256Input(artifact.fileHash);
+        } catch (error) {
+          metadataError = error instanceof Error ? error.message : "Full replacement update SHA256 metadata is invalid.";
+        }
+      }
+      if (metadataError) {
+        return {
+          artifactId,
+          status: "metadata_mismatch",
+          message: metadataError,
+          actualFileSizeBytes,
+          actualFileHash
+        };
+      }
+    }
     const hashMatches = !artifact.fileHash || artifact.fileHash === actualFileHash;
     const sizeMatches = !artifact.fileSizeBytes || artifact.fileSizeBytes.toString() === actualFileSizeBytes;
 
@@ -685,8 +908,16 @@ export class ReleaseCenterService {
       };
     }
 
-    const recommendedArtifact = pickPrimaryReleaseArtifact(release.artifacts, input.artifactType);
-    const resolvedArtifact = recommendedArtifact ? resolveReleaseArtifactForClient(recommendedArtifact, input.clientMirrorPrefix ?? null) : null;
+    const preferredArtifactType = input.artifactType ?? (input.platform === "windows" ? "zip" : null);
+    const resolvedArtifact = this.pickClientUsableArtifact(
+      release.artifacts,
+      input.platform,
+      preferredArtifactType,
+      input.clientMirrorPrefix ?? null
+    );
+    const fallbackDeliveryMode = preferredArtifactType
+      ? defaultDeliveryModeForArtifact(preferredArtifactType)
+      : defaultDeliveryModeForPlatform(input.platform);
     const latestVersionComparison = compareSemver(release.version, input.currentVersion);
     const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
     const forcedByRelease = release.forceUpgrade;
@@ -705,7 +936,7 @@ export class ReleaseCenterService {
         channel: effectiveChannel,
         changelog: release.changelog,
         deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
-          ?? defaultDeliveryModeForPlatform(input.platform),
+          ?? fallbackDeliveryMode,
         recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
         downloadUrl: null,
         fileName: null,
@@ -728,7 +959,7 @@ export class ReleaseCenterService {
       channel: effectiveChannel,
       changelog: release.changelog,
       deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
-        ?? defaultDeliveryModeForPlatform(input.platform),
+        ?? fallbackDeliveryMode,
       recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
       downloadUrl: resolvedArtifact?.downloadUrl ?? null,
       fileName: resolvedArtifact?.fileName ?? null,
@@ -781,10 +1012,58 @@ export class ReleaseCenterService {
     if (!primaryArtifact) {
       throw new BadRequestException("请先上传或配置至少一个安装产物，再发布版本");
     }
+    if (release.platform === "windows") {
+      const windowsFullReplaceArtifact = release.artifacts.find(
+        (artifact) =>
+          fromPrismaReleaseArtifactType(artifact.type) === "zip" &&
+          (artifact.deliveryMode as UpdateDeliveryMode) === "desktop_full_replace"
+      );
+      if (!windowsFullReplaceArtifact) {
+        throw new BadRequestException("Windows releases require a ZIP full replacement artifact before publishing.");
+      }
+    }
+    for (const artifact of release.artifacts) {
+      const artifactValidation = await this.validateReleaseArtifact(releaseId, artifact.id);
+      if (artifactValidation.status !== "ready") {
+        throw new BadRequestException(`Release artifact ${artifact.fileName ?? artifact.id} is not publishable: ${artifactValidation.message}`);
+      }
+    }
     const validation = await this.validateReleaseArtifact(releaseId, primaryArtifact.id);
     if (validation.status !== "ready") {
       throw new BadRequestException(`主下载产物当前不可发布：${validation.message}`);
     }
+  }
+
+  private pickClientUsableArtifact(
+    artifacts: ReleaseRowLike["artifacts"],
+    platform: PlatformTarget,
+    preferredType?: ReleaseArtifactType | null,
+    clientMirrorPrefix?: string | null
+  ) {
+    const scopedArtifacts = preferredType
+      ? artifacts.filter((item) => fromPrismaReleaseArtifactType(item.type) === preferredType)
+      : artifacts;
+    const preferred = pickPrimaryReleaseArtifact(scopedArtifacts, preferredType);
+    const candidates = preferred
+      ? [preferred, ...scopedArtifacts.filter((item) => item.id !== preferred.id)]
+      : scopedArtifacts;
+    for (const artifact of candidates) {
+      try {
+        const resolvedArtifact = resolveReleaseArtifactForClient(artifact, clientMirrorPrefix ?? null);
+        assertReleaseArtifactClientUsable(resolvedArtifact, platform);
+        return resolvedArtifact;
+      } catch {
+        if (clientMirrorPrefix?.trim()) {
+          try {
+            const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
+            assertReleaseArtifactClientUsable(resolvedArtifact, platform);
+            return resolvedArtifact;
+          } catch {
+          }
+        }
+      }
+    }
+    return null;
   }
 
   private assertReleaseArtifactsMutable(release: { status: string }) {
@@ -803,6 +1082,7 @@ export class ReleaseCenterService {
       throw new BadRequestException("首个安装产物只支持外部链接，请先创建草稿后再走上传接口。");
     }
     assertReleaseArtifactTypeAllowed(platform, input.type);
+    const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
     assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
 
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
@@ -811,6 +1091,8 @@ export class ReleaseCenterService {
       input.downloadUrl,
       defaultMirrorPrefix
     );
+    const fileSizeBytes = externalMetadata?.fileSizeBytes ?? normalizeFileSizeBytes(input.fileSizeBytes) ?? null;
+    const fileHash = externalMetadata?.fileHash ?? normalizeSha256Input(input.fileHash) ?? null;
     const artifactId = createId("artifact");
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
 
@@ -819,14 +1101,14 @@ export class ReleaseCenterService {
       releaseId,
       source,
       type: toPrismaReleaseArtifactType(input.type),
-      deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
+      deliveryMode,
       downloadUrl: input.downloadUrl.trim(),
       defaultMirrorPrefix,
       allowClientMirror: input.allowClientMirror ?? true,
       fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName),
       storedFilePath: null,
-      fileSizeBytes: externalMetadata?.fileSizeBytes ?? normalizeBigInt(input.fileSizeBytes),
-      fileHash: externalMetadata?.fileHash ?? normalizeNullableText(input.fileHash),
+      fileSizeBytes,
+      fileHash,
       isPrimary: true,
       isFullPackage: isFullPackage ?? true
     };
@@ -884,7 +1166,7 @@ export class ReleaseCenterService {
   private async ensureReleaseExists(releaseId: string) {
     const row = await this.prisma.release.findUnique({
       where: { id: releaseId },
-      select: { id: true, platform: true, status: true }
+      select: { id: true, platform: true, status: true, version: true }
     });
     if (!row) {
       throw new NotFoundException("发布记录不存在");

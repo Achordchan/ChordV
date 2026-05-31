@@ -566,7 +566,7 @@ function normalizeReleaseArtifactType(type: string) {
   if (type === "setup.exe") {
     return "setup_exe" as const;
   }
-  return type as "dmg" | "app" | "exe" | "apk" | "ipa" | "external";
+  return type as "dmg" | "app" | "exe" | "zip" | "apk" | "ipa" | "external";
 }
 
 main()

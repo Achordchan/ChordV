@@ -64,6 +64,7 @@ export type UseClientEventsOptions = {
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   handleRuntimeEvent: (event: ClientRuntimeEventDto, accessToken: string) => Promise<void> | void;
   syncConnectedState?: (accessToken: string) => Promise<void> | void;
+  runUpdateCheckOnOpen?: () => Promise<void> | void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   readError: (message: string) => string;
   subscribeClientEvents?: typeof subscribeClientEventsRequest;
@@ -76,6 +77,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
     setServerProbe,
     handleRuntimeEvent,
     syncConnectedState,
+    runUpdateCheckOnOpen,
     recoverSessionAfterUnauthorized,
     readError,
     subscribeClientEvents = subscribeClientEventsRequest,
@@ -84,6 +86,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
   const handleRuntimeEventRef = useRef(handleRuntimeEvent);
   const recoverSessionAfterUnauthorizedRef = useRef(recoverSessionAfterUnauthorized);
   const syncConnectedStateRef = useRef(syncConnectedState);
+  const runUpdateCheckOnOpenRef = useRef(runUpdateCheckOnOpen);
   const readErrorRef = useRef(readError);
   const isUnauthorizedErrorRef = useRef(isUnauthorizedError);
   const setServerProbeRef = useRef(setServerProbe);
@@ -101,6 +104,10 @@ export function useClientEvents(options: UseClientEventsOptions) {
   useEffect(() => {
     syncConnectedStateRef.current = syncConnectedState;
   }, [syncConnectedState]);
+
+  useEffect(() => {
+    runUpdateCheckOnOpenRef.current = runUpdateCheckOnOpen;
+  }, [runUpdateCheckOnOpen]);
 
   useEffect(() => {
     readErrorRef.current = readError;
@@ -143,6 +150,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
         openedOnceRef.current = true;
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
         void syncConnectedStateRef.current?.(session.accessToken);
+        void runUpdateCheckOnOpenRef.current?.();
       },
       onError: (error, meta) => {
         if (meta.status === 401 || meta.authError || isUnauthorizedErrorRef.current(error)) {

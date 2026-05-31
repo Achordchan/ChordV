@@ -594,6 +594,7 @@ export class CreateReleaseDto {
 
   @IsString()
   @IsNotEmpty()
+  @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   version!: string;
 
   @IsString()
@@ -607,6 +608,7 @@ export class CreateReleaseDto {
 
   @IsString()
   @IsNotEmpty()
+  @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   minimumVersion!: string;
 
   @IsOptional()
@@ -641,6 +643,7 @@ export class UpdateReleaseDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   minimumVersion?: string;
 
   @IsOptional()
@@ -661,11 +664,11 @@ export class CreateReleaseArtifactDto {
   @IsIn(["uploaded", "external"])
   source?: "uploaded" | "external";
 
-  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
 
   @IsOptional()
-  @IsIn(["desktop_installer_download", "apk_download", "external_download", "none"])
+  @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
   @IsUrl({
@@ -690,10 +693,12 @@ export class CreateReleaseArtifactDto {
 
   @IsOptional()
   @IsString()
+  @Matches(/^[1-9]\d*$/)
   fileSizeBytes?: string | null;
 
   @IsOptional()
   @IsString()
+  @Matches(/^[a-fA-F0-9]{64}$/)
   fileHash?: string | null;
 
   @IsOptional()
@@ -717,11 +722,11 @@ export class UpdateReleaseArtifactDto {
   source?: "uploaded" | "external";
 
   @IsOptional()
-  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type?: ReleaseArtifactType;
 
   @IsOptional()
-  @IsIn(["desktop_installer_download", "apk_download", "external_download", "none"])
+  @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
   @IsOptional()
@@ -747,10 +752,12 @@ export class UpdateReleaseArtifactDto {
 
   @IsOptional()
   @IsString()
+  @Matches(/^[1-9]\d*$/)
   fileSizeBytes?: string | null;
 
   @IsOptional()
   @IsString()
+  @Matches(/^[a-fA-F0-9]{64}$/)
   fileHash?: string | null;
 
   @IsOptional()
@@ -773,11 +780,11 @@ export class UploadReleaseArtifactDto {
   @IsIn(["uploaded", "external"])
   source?: "uploaded" | "external";
 
-  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
 
   @IsOptional()
-  @IsIn(["desktop_installer_download", "apk_download", "external_download", "none"])
+  @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
   @IsOptional()

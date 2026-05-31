@@ -23,7 +23,8 @@ export type ArtifactEditorFormState = {
   defaultMirrorPrefix: string;
   allowClientMirror: boolean;
   fileName: string;
-  fileSizeBytes: number | "";
+  fileSizeBytes: string;
+  fileHash: string;
   isPrimary: boolean;
   isFullPackage: boolean;
   selectedFile: File | null;
@@ -53,13 +54,17 @@ export function releaseArtifactTypeOptionsForPlatform(platform: AdminReleasePlat
     platform === "macos"
       ? ["dmg"]
       : platform === "windows"
-        ? ["setup.exe"]
+        ? ["zip", "setup.exe"]
         : platform === "android"
           ? ["apk"]
           : ["ipa", "external"]
   );
 
-  const filtered = releaseArtifactTypeOptions.filter((item) => allowed.has(item.value as AdminReleaseArtifactType));
+  const options =
+    platform === "windows"
+      ? [...releaseArtifactTypeOptions, { value: "zip", label: "ZIP full update package" } as const]
+      : releaseArtifactTypeOptions;
+  const filtered = options.filter((item) => allowed.has(item.value as AdminReleaseArtifactType));
   if (currentType && !allowed.has(currentType)) {
     const legacy = releaseArtifactTypeOptions.find((item) => item.value === currentType);
     if (legacy) {
@@ -102,6 +107,7 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     allowClientMirror: true,
     fileName: "",
     fileSizeBytes: "",
+    fileHash: "",
     isPrimary: true,
     isFullPackage: true,
     selectedFile: null
@@ -116,7 +122,8 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     defaultMirrorPrefix: record.defaultMirrorPrefix ?? "",
     allowClientMirror: record.allowClientMirror,
     fileName: record.fileName ?? "",
-    fileSizeBytes: record.fileSizeBytes ?? "",
+    fileSizeBytes: record.fileSizeBytes == null ? "" : String(record.fileSizeBytes),
+    fileHash: record.fileHash ?? "",
     isPrimary: record.isPrimary,
     isFullPackage: record.isFullPackage,
     selectedFile: null

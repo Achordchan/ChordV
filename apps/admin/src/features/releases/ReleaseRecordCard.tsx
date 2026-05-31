@@ -233,6 +233,7 @@ function translatePlatform(platform: AdminReleasePlatform) {
 }
 
 function translateDeliveryMode(mode: string) {
+  if (mode === "desktop_full_replace") return "Full replace update";
   if (mode === "external_download") return "跳转外部链接";
   if (mode === "apk_download") return "应用内提示 APK 下载";
   if (mode === "none") return "不提供下载";
@@ -259,6 +260,8 @@ function translateArtifactType(type: string) {
       return "EXE";
     case "setup.exe":
       return "Setup";
+    case "zip":
+      return "ZIP";
     case "apk":
       return "APK";
     case "ipa":

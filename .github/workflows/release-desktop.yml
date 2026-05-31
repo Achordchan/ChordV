@@ -27,7 +27,9 @@ jobs:
           - platform: windows
             runner: windows-2022
             rust_targets: x86_64-pc-windows-msvc
-            artifact_path: output/release/windows/*.exe
+            artifact_path: |
+              output/release/windows/*.exe
+              output/release/windows/*.zip
     defaults:
       run:
         shell: bash
@@ -40,11 +42,7 @@ jobs:
       - name: Verify version matches tag
         run: |
           tag_name="${GITHUB_REF_NAME#v}"
-          package_version="$(node -e 'const fs=require("node:fs"); const pkg=JSON.parse(fs.readFileSync("package.json", "utf8")); process.stdout.write(pkg.version);')"
-          if [ "${package_version}" != "${tag_name}" ]; then
-            echo "package.json 版本 ${package_version} 与 tag ${tag_name} 不一致" >&2
-            exit 1
-          fi
+          node apps/desktop/scripts/check-version-consistency.mjs "${tag_name}"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -69,6 +67,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify Rust lockfile
+        run: pnpm --filter @chordv/desktop exec cargo metadata --manifest-path src-tauri/Cargo.toml --locked --format-version 1 > /dev/null
+
       - name: Build shared package
         run: pnpm --filter @chordv/shared build
 
@@ -79,6 +80,10 @@ jobs:
           else
             pnpm --filter @chordv/desktop exec node ./scripts/build-tauri-platform.mjs macos
           fi
+
+      - name: Verify Windows bundle
+        if: matrix.platform == 'windows'
+        run: pnpm --filter @chordv/desktop check:windows-bundle
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -107,3 +112,4 @@ jobs:
           files: |
             release-assets/**/*.dmg
             release-assets/**/*.exe
+            release-assets/**/*.zip

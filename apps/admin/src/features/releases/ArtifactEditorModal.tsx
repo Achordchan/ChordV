@@ -55,7 +55,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
 
         {props.platform === "macos" || props.platform === "windows" ? (
           <Alert color="blue" variant="light">
-            桌面端发布中心现在只保留安装器：macOS 使用 DMG，Windows 使用 Setup 安装器。
+            桌面端发布中心：macOS 使用 DMG，Windows 使用 ZIP 全量更新包。
           </Alert>
         ) : null}
 
@@ -81,7 +81,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               label="下载地址"
               placeholder={
                 props.platform === "windows"
-                  ? "https://github.com/你的仓库/releases/download/v1.0.2/ChordV_1.0.2_x64-setup.exe"
+                  ? "https://github.com/your/repo/releases/download/v1.0.2/ChordV_1.0.2_x64-full.zip"
                   : "https://github.com/你的仓库/releases/download/v1.0.2/ChordV_1.0.2.dmg"
               }
               value={props.form.downloadUrl}
@@ -104,6 +104,20 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               placeholder="可选，用于展示安装器名称"
               value={props.form.fileName}
               onChange={(event) => props.onChange({ ...props.form, fileName: event.currentTarget.value })}
+            />
+            <TextInput
+              label="File size bytes"
+              description="Required for Windows ZIP full replacement updates when the server cannot infer Content-Length."
+              placeholder="Example: 52428800"
+              value={props.form.fileSizeBytes}
+              onChange={(event) => props.onChange({ ...props.form, fileSizeBytes: event.currentTarget.value.trim() })}
+            />
+            <TextInput
+              label="SHA256"
+              description="Required for Windows ZIP full replacement updates."
+              placeholder="64-character SHA256 hex"
+              value={props.form.fileHash}
+              onChange={(event) => props.onChange({ ...props.form, fileHash: event.currentTarget.value.trim() })}
             />
           </>
         ) : (
@@ -158,7 +172,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
 
 function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): ArtifactEditorFormState["type"] {
   if (platform === "windows") {
-    return "setup.exe";
+    return "zip";
   }
   if (platform === "android") {
     return "apk";

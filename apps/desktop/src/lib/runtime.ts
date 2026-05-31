@@ -448,6 +448,7 @@ export async function downloadDesktopInstaller(input: {
   fileName?: string | null;
   expectedTotalBytes?: number | null;
   expectedHash?: string | null;
+  packageKind?: "installer" | "full_update";
   onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
   const invoke = await loadInvoke();
@@ -458,7 +459,8 @@ export async function downloadDesktopInstaller(input: {
     url: input.url,
     fileName: input.fileName,
     expectedTotalBytes: input.expectedTotalBytes,
-    expectedHash: input.expectedHash
+    expectedHash: input.expectedHash,
+    packageKind: input.packageKind
   };
   const { Channel } = await import("@tauri-apps/api/core");
   const progressChannel = new Channel<DesktopUpdateDownloadProgressPayload>((payload) => {
@@ -467,6 +469,19 @@ export async function downloadDesktopInstaller(input: {
   return invoke<DesktopInstallerDownloadResult>("download_desktop_installer", {
     input: commandInput,
     progressChannel
+  });
+}
+
+export function downloadDesktopFullUpdatePackage(input: {
+  url: string;
+  fileName?: string | null;
+  expectedTotalBytes?: number | null;
+  expectedHash?: string | null;
+  onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
+}) {
+  return downloadDesktopInstaller({
+    ...input,
+    packageKind: "full_update"
   });
 }
 
@@ -497,6 +512,22 @@ export async function openDesktopInstaller(path: string) {
     return { ok: false as const };
   }
   return invoke("open_desktop_installer", { path });
+}
+
+export async function applyDesktopFullUpdate(input: {
+  path: string;
+  expectedTotalBytes?: number | null;
+  expectedHash?: string | null;
+}) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return { ok: false as const };
+  }
+  return invoke("apply_desktop_full_update", {
+    path: input.path,
+    expectedTotalBytes: input.expectedTotalBytes,
+    expectedHash: input.expectedHash
+  });
 }
 
 export async function quitForUpdate() {

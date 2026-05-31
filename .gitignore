@@ -5,8 +5,10 @@ build
 .DS_Store
 coverage
 apps/desktop/src-tauri/target
+apps/desktop/src-tauri/target-*
 apps/desktop/src-tauri/gen
-apps/desktop/src-tauri/Cargo.lock
+apps/desktop/src-tauri/bin.bak/
+!apps/desktop/src-tauri/Cargo.lock
 apps/desktop/src-tauri/.tauri.*.platform.conf.json
 output/
 *.db

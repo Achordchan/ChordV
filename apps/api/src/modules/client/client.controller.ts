@@ -60,7 +60,7 @@ class UpdateCheckDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(["dmg", "app", "exe", "setup.exe", "apk", "ipa", "external"])
+  @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   artifactType?: ReleaseArtifactType | null;
 
   @IsOptional()

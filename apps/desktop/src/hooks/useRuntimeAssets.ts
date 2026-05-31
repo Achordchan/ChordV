@@ -165,6 +165,13 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         return true;
       }
       if (runtimeAssetsTaskRef.current) {
+        if (ensureOptions.interactive || ensureOptions.blockConnection) {
+          setRuntimeAssets((current) => ({
+            ...current,
+            blocking: current.blocking || ensureOptions.blockConnection
+          }));
+          setRuntimeAssetsDialogOpened(true);
+        }
         return runtimeAssetsTaskRef.current;
       }
 
@@ -185,6 +192,22 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
 
         try {
           const environment = await loadDesktopRuntimeEnvironment().catch(() => null);
+          const bundled = await ensureBundledRuntimeComponents().catch(() => null);
+          if (bundled?.ready) {
+            setRuntimeAssets({
+              phase: "ready",
+              currentComponent: null,
+              fileName: null,
+              downloadedBytes: 0,
+              totalBytes: null,
+              message: bundled.message ?? "Bundled runtime components are ready.",
+              errorCode: null,
+              errorMessage: null,
+              blocking: false
+            });
+            setRuntimeAssetsDialogOpened(false);
+            return true;
+          }
           if (environment?.platform === "macos") {
             const bundled = await ensureBundledRuntimeComponents().catch(() => null);
             if (bundled?.ready) {

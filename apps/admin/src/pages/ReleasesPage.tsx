@@ -326,6 +326,8 @@ export function ReleasesPage() {
             defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
             allowClientMirror: artifactForm.allowClientMirror,
             fileName: artifactForm.fileName.trim() || null,
+            fileSizeBytes: artifactForm.fileSizeBytes.trim() || null,
+            fileHash: artifactForm.fileHash.trim() || null,
             isPrimary: artifactForm.isPrimary,
             isFullPackage: artifactForm.isFullPackage
           }
@@ -526,7 +528,7 @@ export function ReleasesPage() {
                     <Stack gap={4}>
                       <Title order={5}>安装包发布</Title>
                       <Text size="sm" c="dimmed">
-                        这里只管理应用安装器。桌面端使用 DMG / Setup，移动端按平台使用 APK / IPA。
+                        这里只管理应用发布产物。桌面端使用 DMG / Windows ZIP，移动端按平台使用 APK / IPA。
                       </Text>
                     </Stack>
                     <Group gap="sm" wrap="wrap">
@@ -741,7 +743,7 @@ function normalizeVersionParts(version: string) {
 function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminReleaseArtifactRecordDto["type"] {
   switch (platform) {
     case "windows":
-      return "setup.exe";
+      return "zip";
     case "android":
       return "apk";
     case "ios":

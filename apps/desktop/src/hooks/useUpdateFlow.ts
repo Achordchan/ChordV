@@ -8,6 +8,8 @@ import {
   type ReleaseChannel
 } from "../api/client";
 import {
+  applyDesktopFullUpdate,
+  downloadDesktopFullUpdatePackage,
   downloadDesktopInstaller,
   focusDesktopWindow,
   openDesktopInstaller,
@@ -64,6 +66,64 @@ function defaultReadError(message: string) {
   return message;
 }
 
+function isDesktopManagedUpdate(mode: ClientUpdateCheckResult["deliveryMode"], platform: ResolvedUpdatePlatform) {
+  return mode === "desktop_installer_download" || (mode === "desktop_full_replace" && platform === "windows");
+}
+
+function isFullReplaceUpdate(update: ClientUpdateCheckResult, platform: ResolvedUpdatePlatform) {
+  return update.deliveryMode === "desktop_full_replace" && platform === "windows";
+}
+
+export function hasActionableUpdate(result: ClientUpdateCheckResult | null, appVersion: string) {
+  if (!result) {
+    return false;
+  }
+  return (
+    (result.hasUpdate && compareVersion(result.latestVersion, appVersion) > 0) ||
+    result.forceUpgrade ||
+    compareVersion(result.minimumVersion, appVersion) > 0
+  );
+}
+
+function buildUpdateArtifactIdentity(update: ClientUpdateCheckResult | null) {
+  if (!update) {
+    return null;
+  }
+  const artifact = update.artifact;
+  return [
+    update.latestVersion,
+    update.deliveryMode,
+    update.downloadUrl ?? "",
+    artifact?.originDownloadUrl ?? "",
+    artifact?.fileName ?? "",
+    artifact?.fileType ?? "",
+    artifact?.fileSizeBytes ?? "",
+    artifact?.fileHash ?? ""
+  ].join("|");
+}
+
+export function buildUpdatePromptKey(update: ClientUpdateCheckResult | null) {
+  if (!update) {
+    return null;
+  }
+  return `${update.latestVersion}:${update.forceUpgrade ? "force" : "optional"}:${buildUpdateArtifactIdentity(update) ?? "no-artifact"}`;
+}
+
+function mergePendingUpdateCheck(
+  current: RunUpdateCheckOptions | null,
+  next: RunUpdateCheckOptions
+): RunUpdateCheckOptions {
+  if (!current) {
+    return next;
+  }
+  return {
+    accessToken: next.accessToken ?? current.accessToken,
+    bootstrapVersion: next.bootstrapVersion ?? current.bootstrapVersion,
+    source: current.source === "manual" || next.source === "manual" ? "manual" : next.source,
+    silent: Boolean(current.silent && next.silent)
+  };
+}
+
 export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const updatePlatform = useMemo<ResolvedUpdatePlatform>(
     () => resolveUpdatePlatform(options.platformTarget),
@@ -77,6 +137,9 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const lastKnownUpdateArtifactRef = useRef<ClientUpdateArtifact | null>(null);
   const lastUpdatePromptVersionRef = useRef<string | null>(null);
   const deferredUpdatePromptKeyRef = useRef<string | null>(null);
+  const completedDownloadIdentityRef = useRef<string | null>(null);
+  const updateCheckBusyRef = useRef(false);
+  const pendingUpdateCheckRef = useRef<RunUpdateCheckOptions | null>(null);
 
   const effectiveUpdate = useMemo(
     () =>
@@ -97,13 +160,14 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       Boolean(
         effectiveUpdate &&
           (effectiveUpdate.forceUpgrade ||
-            effectiveUpdate.minimumVersion.localeCompare(options.appVersion, undefined, {
-              numeric: true,
-              sensitivity: "base"
-            }) > 0)
+            compareVersion(effectiveUpdate.minimumVersion, options.appVersion) > 0)
       ),
     [effectiveUpdate, options.appVersion]
   );
+
+  const updateArtifactIdentity = useMemo(() => {
+    return buildUpdateArtifactIdentity(effectiveUpdate);
+  }, [effectiveUpdate]);
 
   useEffect(() => {
     if (updatePlatform === "android") {
@@ -134,7 +198,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
   useEffect(() => {
     setUpdateDownload(createIdleUpdateDownloadState());
-  }, [effectiveUpdate?.latestVersion, effectiveUpdate?.downloadUrl]);
+    completedDownloadIdentityRef.current = null;
+  }, [updateArtifactIdentity]);
 
   useEffect(() => {
     if (updateCheckResult?.artifact) {
@@ -173,7 +238,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return false;
     }
 
-    if (effectiveUpdate.deliveryMode !== "desktop_installer_download" || updatePlatform === "android") {
+    const fullReplaceUpdate = isFullReplaceUpdate(effectiveUpdate, updatePlatform);
+    if (!isDesktopManagedUpdate(effectiveUpdate.deliveryMode, updatePlatform) || updatePlatform === "android") {
       await openExternalLink(resolvedDownloadUrl);
       options.notify?.({
         color: "blue",
@@ -190,9 +256,21 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       return false;
     }
 
-    if (updateDownload.phase === "completed" && updateDownload.localPath) {
+    if (
+      updateDownload.phase === "completed" &&
+      updateDownload.localPath &&
+      completedDownloadIdentityRef.current === updateArtifactIdentity
+    ) {
       try {
-        await openDesktopInstaller(updateDownload.localPath);
+        if (fullReplaceUpdate) {
+          await applyDesktopFullUpdate({
+            path: updateDownload.localPath,
+            expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+            expectedHash: effectiveUpdate.artifact?.fileHash ?? null
+          });
+        } else {
+          await openDesktopInstaller(updateDownload.localPath);
+        }
         options.notify?.({
           color: "green",
           title: "安装器已打开",
@@ -226,7 +304,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       let usedFallback = false;
       let result;
       try {
-        result = await downloadDesktopInstaller({
+        const downloadPackage = fullReplaceUpdate ? downloadDesktopFullUpdatePackage : downloadDesktopInstaller;
+        result = await downloadPackage({
           url: resolvedDownloadUrl,
           fileName: preferredFileName,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
@@ -245,7 +324,8 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           phase: "preparing",
           message: "加速下载失败，正在回退到原始下载地址…"
         }));
-        result = await downloadDesktopInstaller({
+        const downloadPackage = fullReplaceUpdate ? downloadDesktopFullUpdatePackage : downloadDesktopInstaller;
+        result = await downloadPackage({
           url: originDownloadUrl,
           fileName: preferredFileName,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
@@ -269,7 +349,16 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         message: "安装器下载完成，点击下方按钮开始安装。"
       });
 
-      await openDesktopInstaller(result.localPath);
+      completedDownloadIdentityRef.current = updateArtifactIdentity;
+      if (fullReplaceUpdate) {
+        await applyDesktopFullUpdate({
+          path: result.localPath,
+          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
+        });
+      } else {
+        await openDesktopInstaller(result.localPath);
+      }
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "安装器下载失败";
@@ -288,36 +377,39 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
   const runUpdateCheck = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
-      if (updateCheckBusy) {
+      if (updateCheckBusyRef.current) {
+        pendingUpdateCheckRef.current = mergePendingUpdateCheck(pendingUpdateCheckRef.current, runOptions);
         return null;
       }
 
       try {
+        updateCheckBusyRef.current = true;
         setUpdateCheckBusy(true);
+        const checkedUpdate = await checkClientUpdate({
+          currentVersion: options.appVersion,
+          platform: updatePlatform,
+          channel: options.updateChannel ?? "stable",
+          artifactType: preferredArtifactType(updatePlatform),
+          clientMirrorPrefix: options.runtimeMirrorPrefix,
+          accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
+        });
         const result =
-          (await checkClientUpdate({
-            currentVersion: options.appVersion,
-            platform: updatePlatform,
-            channel: options.updateChannel ?? "stable",
-            artifactType: preferredArtifactType(updatePlatform),
-            clientMirrorPrefix: options.runtimeMirrorPrefix,
-            accessToken: runOptions.accessToken ?? options.accessToken ?? undefined
-          })) ??
-          createLegacyUpdateResult(
-            runOptions.bootstrapVersion ?? options.bootstrapVersion ?? null,
-            updatePlatform,
-            options.appVersion,
-            options.runtimeMirrorPrefix,
-            lastKnownUpdateArtifactRef.current,
-            options.updateChannel ?? "stable"
-          );
+          checkedUpdate ??
+          (updatePlatform === "windows"
+            ? null
+            : createLegacyUpdateResult(
+                runOptions.bootstrapVersion ?? options.bootstrapVersion ?? null,
+                updatePlatform,
+                options.appVersion,
+                options.runtimeMirrorPrefix,
+                lastKnownUpdateArtifactRef.current,
+                options.updateChannel ?? "stable"
+              ));
 
         setUpdateCheckResult(result);
 
         // 如果服务端返回的最新版本就是当前版本，说明当前已是最新，不触发更新提示
-        const effectiveHasUpdate =
-          result?.hasUpdate &&
-          compareVersion(result.latestVersion, options.appVersion) > 0;
+        const effectiveHasUpdate = hasActionableUpdate(result, options.appVersion);
 
         if (!result || !effectiveHasUpdate) {
           setUpdateDialogOpened(false);
@@ -335,7 +427,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           return result;
         }
 
-        const promptKey = `${result.latestVersion}:${result.forceUpgrade ? "force" : "optional"}`;
+        const promptKey = buildUpdatePromptKey(result)!;
         const shouldPrompt =
           runOptions.source === "manual" ||
           result.forceUpgrade ||
@@ -369,10 +461,18 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }
         return null;
       } finally {
+        updateCheckBusyRef.current = false;
         setUpdateCheckBusy(false);
+        const pendingRun = pendingUpdateCheckRef.current;
+        pendingUpdateCheckRef.current = null;
+        if (pendingRun) {
+          window.setTimeout(() => {
+            void runUpdateCheck(pendingRun);
+          }, 0);
+        }
       }
     },
-    [options, updateCheckBusy, updatePlatform]
+    [options, updatePlatform]
   );
 
   const handleManualUpdateCheck = useCallback(async () => {
@@ -386,12 +486,12 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const runUpdateCheckAndFocus = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
       const result = await runUpdateCheck(runOptions);
-      if (result?.hasUpdate) {
+      if (hasActionableUpdate(result, options.appVersion)) {
         await focusDesktopWindow();
       }
       return result;
     },
-    [runUpdateCheck]
+    [options.appVersion, runUpdateCheck]
   );
 
   const handleQuitForUpdate = useCallback(async () => {
@@ -402,14 +502,22 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     try {
       // 清空更新状态，避免重启后短暂显示旧的"有更新"提示
       setUpdateCheckResult(null);
-      await quitForUpdate();
+      if (effectiveUpdate && isFullReplaceUpdate(effectiveUpdate, updatePlatform)) {
+        await applyDesktopFullUpdate({
+          path: updateDownload.localPath,
+          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
+        });
+      } else {
+        await quitForUpdate();
+      }
       return true;
     } catch (reason) {
       const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "启动安装器失败";
       options.showError?.(message);
       return false;
     }
-  }, [options, updateDownload]);
+  }, [effectiveUpdate, options, updateDownload, updatePlatform]);
 
   return {
     updatePlatform,

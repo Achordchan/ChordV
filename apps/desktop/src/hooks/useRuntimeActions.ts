@@ -633,7 +633,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       return;
     }
     const selectedNode = options.selectedNode;
-    if (!options.runtimeAssetsReady) {
+    const shouldForceRuntimeAssetCheck = options.desktopStatus.platformTarget === "windows" || !options.runtimeAssetsReady;
+    if (shouldForceRuntimeAssetCheck) {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
         interactive: true,
@@ -644,13 +645,16 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         return;
       }
     }
-    if (!options.canConnect) {
+    if (!options.canAttemptConnect) {
       debugAndroidConnect("handleConnect:blocked", {
         canConnect: options.canConnect,
         nodeId: selectedNode.id
       });
       return;
     }
+
+    let config: GeneratedRuntimeConfigDto | null = null;
+    let configAccessToken = options.session.accessToken;
 
     try {
       setActionBusy("connect");
@@ -675,7 +679,6 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           nodeId: selectedNode.id,
           mode: options.mode
         });
-      let config: GeneratedRuntimeConfigDto | null = null;
       try {
         debugAndroidConnect("handleConnect:connect-session:request", { nodeId: selectedNode.id, mode: options.mode });
         config = await connectWithAccessToken(options.session.accessToken);
@@ -692,6 +695,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
             throw reason;
           }
           config = await connectWithAccessToken(recoveredAccessToken);
+          configAccessToken = recoveredAccessToken;
           debugAndroidConnect("handleConnect:connect-session:recovered", {
             sessionId: config.sessionId,
             nodeId: config.node.id
@@ -738,6 +742,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.setDesktopStatus(runtimeStatus);
       }
       await options.forceStopLocalRuntime();
+      if (config?.sessionId) {
+        await disconnectSession(configAccessToken, config.sessionId).catch(() => null);
+      }
       const message = reason instanceof Error ? options.readError(reason.message) : "连接失败";
       const runtimeGuidance = runtimeStatus
         ? deriveGuidanceFromRuntimeFailure(composeRuntimeFailureText(runtimeStatus), options.fallbackNodeId)

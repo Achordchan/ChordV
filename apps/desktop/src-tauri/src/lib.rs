@@ -1,12 +1,13 @@
 mod android_mobile_plugin;
 mod android_runtime;
 
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -14,13 +15,14 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{ipc::Channel, AppHandle, Emitter, Manager, RunEvent, State};
+#[cfg(target_os = "macos")]
+use tauri::menu::SubmenuBuilder;
+#[cfg(not(target_os = "android"))]
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::sync::Mutex as AsyncMutex;
-#[cfg(not(target_os = "android"))]
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use reqwest::Client;
 use url::Url;
 
 #[cfg(not(target_os = "android"))]
@@ -34,7 +36,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
-use windows_sys::Win32::Networking::WinInet::{InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED};
+use windows_sys::Win32::Networking::WinInet::{
+    InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+};
 
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
@@ -66,6 +70,11 @@ const DOWNLOAD_PROGRESS_EMIT_PERCENT_STEP: u64 = 1;
 const DOWNLOAD_PROGRESS_EMIT_BYTES_STEP: u64 = 1024 * 1024;
 const DOWNLOAD_DIAGNOSTIC_CHECKPOINT_BYTES: u64 = 512 * 1024;
 const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
+const DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 180;
+const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 15;
+const DOWNLOAD_IDLE_TIMEOUT_SECS: u64 = 20;
+const MIN_WINDOWS_PE_BYTES: u64 = 1024 * 1024;
+const MIN_GEO_DATA_BYTES: u64 = 64 * 1024;
 
 struct RuntimeState {
     status: String,
@@ -183,9 +192,7 @@ fn shell_primary_action_label(status: &str) -> String {
 #[cfg(not(target_os = "android"))]
 fn set_installer_operation_active(app: &AppHandle, active: bool) -> Result<(), String> {
     let state: State<'_, Mutex<InstallerOperationState>> = app.state();
-    let mut state = state
-        .lock()
-        .map_err(|_| "安装器任务状态异常".to_string())?;
+    let mut state = state.lock().map_err(|_| "安装器任务状态异常".to_string())?;
     if active && state.active {
         return Err("安装器任务正在处理中，请稍后再试。".into());
     }
@@ -371,6 +378,7 @@ struct DesktopInstallerDownloadInput {
     file_name: Option<String>,
     expected_total_bytes: Option<u64>,
     expected_hash: Option<String>,
+    package_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -528,7 +536,8 @@ fn read_session_from_disk(app: &AppHandle) -> Result<Option<AuthSessionDto>, Str
     }
 
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let session = serde_json::from_str::<AuthSessionDto>(&content).map_err(|error| error.to_string())?;
+    let session =
+        serde_json::from_str::<AuthSessionDto>(&content).map_err(|error| error.to_string())?;
     Ok(Some(session))
 }
 
@@ -544,7 +553,8 @@ fn write_session_to_disk(app: &AppHandle, session: &AuthSessionDto) -> Result<()
 
 #[tauri::command]
 async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, String> {
-    let base = std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
+    let base = std::env::var("CHORDV_API_BASE_URL")
+        .unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
     let base = base.trim_end_matches('/');
     let api_path = if request.path.starts_with("/api/") {
         request.path.clone()
@@ -555,7 +565,13 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
     let url = Url::parse(&full_url).map_err(|error| format!("API 地址无效：{error}"))?;
 
     let force_https = std::env::var("CHORDV_DESKTOP_FORCE_HTTPS")
-        .unwrap_or_else(|_| if cfg!(debug_assertions) { "false".into() } else { "true".into() })
+        .unwrap_or_else(|_| {
+            if cfg!(debug_assertions) {
+                "false".into()
+            } else {
+                "true".into()
+            }
+        })
         .to_lowercase()
         == "true";
     if force_https && url.scheme() != "https" {
@@ -591,9 +607,15 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
     }
 
     let started_at = Instant::now();
-    let response = req.send().await.map_err(|error| format!("请求 API 失败：{error}"))?;
+    let response = req
+        .send()
+        .await
+        .map_err(|error| format!("请求 API 失败：{error}"))?;
     let status = response.status().as_u16();
-    let body = response.text().await.map_err(|error| format!("读取响应失败：{error}"))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("读取响应失败：{error}"))?;
     let elapsed_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
     Ok(ApiResponseOutput {
         status,
@@ -627,7 +649,10 @@ fn parse_api_error_message(body: &str) -> String {
     trimmed.to_string()
 }
 
-async fn refresh_access_session_inner(app: &AppHandle, refresh_token: &str) -> Result<AuthSessionDto, String> {
+async fn refresh_access_session_inner(
+    app: &AppHandle,
+    refresh_token: &str,
+) -> Result<AuthSessionDto, String> {
     let url = format!("{}/api/auth/refresh", api_base_url().trim_end_matches('/'));
     let response = api_client()?
         .post(url)
@@ -637,23 +662,32 @@ async fn refresh_access_session_inner(app: &AppHandle, refresh_token: &str) -> R
         .await
         .map_err(|error| format!("刷新登录态失败：{error}"))?;
     let status = response.status().as_u16();
-    let body = response.text().await.map_err(|error| format!("读取响应失败：{error}"))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("读取响应失败：{error}"))?;
     if status < 200 || status >= 300 {
         return Err(parse_api_error_message(&body));
     }
-    let session = serde_json::from_str::<AuthSessionDto>(&body).map_err(|error| format!("解析登录态失败：{error}"))?;
+    let session = serde_json::from_str::<AuthSessionDto>(&body)
+        .map_err(|error| format!("解析登录态失败：{error}"))?;
     write_session_to_disk(app, &session)?;
     let _ = app.emit("chordv://native-session-refreshed", &session);
     Ok(session)
 }
 
-async fn refresh_access_session(app: &AppHandle, refresh_token_hint: Option<&str>) -> Result<AuthSessionDto, String> {
+async fn refresh_access_session(
+    app: &AppHandle,
+    refresh_token_hint: Option<&str>,
+) -> Result<AuthSessionDto, String> {
     let refresh_state = app.state::<AsyncMutex<NativeSessionRefreshState>>();
     let _guard = refresh_state.lock().await;
 
     let session = read_session_from_disk(app)?.ok_or_else(|| "当前没有可用登录态".to_string())?;
     let stored_refresh_token = session.refresh_token.trim().to_string();
-    let hinted_refresh_token = refresh_token_hint.map(str::trim).filter(|value| !value.is_empty());
+    let hinted_refresh_token = refresh_token_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     if let Some(hint) = hinted_refresh_token {
         if hint != stored_refresh_token {
@@ -669,7 +703,10 @@ async fn refresh_access_session(app: &AppHandle, refresh_token_hint: Option<&str
 }
 
 #[tauri::command]
-async fn refresh_session_native(app: AppHandle, refresh_token: Option<String>) -> Result<AuthSessionDto, String> {
+async fn refresh_session_native(
+    app: AppHandle,
+    refresh_token: Option<String>,
+) -> Result<AuthSessionDto, String> {
     refresh_access_session(&app, refresh_token.as_deref()).await
 }
 
@@ -677,7 +714,10 @@ async fn native_heartbeat_once(
     session_id: &str,
     access_token: &str,
 ) -> Result<SessionLeaseStatusDto, (u16, String)> {
-    let url = format!("{}/api/client/session/heartbeat", api_base_url().trim_end_matches('/'));
+    let url = format!(
+        "{}/api/client/session/heartbeat",
+        api_base_url().trim_end_matches('/')
+    );
     let response = api_client()
         .map_err(|error| (0, error))?
         .post(url)
@@ -688,7 +728,10 @@ async fn native_heartbeat_once(
         .await
         .map_err(|error| (0, format!("续租失败：{error}")))?;
     let status = response.status().as_u16();
-    let body = response.text().await.map_err(|error| (status, format!("读取响应失败：{error}")))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| (status, format!("读取响应失败：{error}")))?;
     if status < 200 || status >= 300 {
         return Err((status, parse_api_error_message(&body)));
     }
@@ -739,9 +782,10 @@ fn start_native_lease_heartbeat_loop(app: AppHandle) {
                         match native_heartbeat_once(&session_id, &session.access_token).await {
                             Ok(lease) => Ok(lease),
                             Err((401, _)) => {
-                                let refreshed = refresh_access_session(&app, Some(&session.refresh_token))
-                                    .await
-                                    .map_err(|error| (401, error))?;
+                                let refreshed =
+                                    refresh_access_session(&app, Some(&session.refresh_token))
+                                        .await
+                                        .map_err(|error| (401, error))?;
                                 native_heartbeat_once(&session_id, &refreshed.access_token).await
                             }
                             Err(error) => Err(error),
@@ -791,16 +835,18 @@ fn start_native_lease_heartbeat_loop(app: AppHandle) {
 }
 
 fn api_proxy_bypass_hosts() -> Vec<String> {
-    let mut hosts = vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-    ];
+    let mut hosts = vec!["localhost".to_string(), "127.0.0.1".to_string()];
 
-    let base = std::env::var("CHORDV_API_BASE_URL").unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
+    let base = std::env::var("CHORDV_API_BASE_URL")
+        .unwrap_or_else(|_| "https://v.baymaxgroup.com".to_string());
     if let Ok(url) = Url::parse(base.trim()) {
         if let Some(host) = url.host_str() {
             let host = host.trim().to_string();
-            if !host.is_empty() && !hosts.iter().any(|candidate| candidate.eq_ignore_ascii_case(&host)) {
+            if !host.is_empty()
+                && !hosts
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&host))
+            {
                 hosts.push(host);
             }
         }
@@ -830,13 +876,24 @@ async fn download_desktop_installer(
                 return Err("安装器下载地址仅支持 HTTPS，开发环境仅允许 localhost/127.0.0.1".into());
             }
 
-            let file_name = resolve_installer_file_name(&url, input.file_name.as_deref());
+            let is_full_update = input.package_kind.as_deref() == Some("full_update");
+            let package_label = desktop_update_package_label(input.package_kind.as_deref());
+            let file_name = resolve_installer_file_name(&url, input.file_name.as_deref(), input.package_kind.as_deref());
             let expected_hash = normalize_optional_sha256(input.expected_hash.as_deref());
+            if is_full_update {
+                if input.expected_total_bytes.filter(|value| *value > 0).is_none() {
+                    return Err("full update package size metadata is required".into());
+                }
+                if expected_hash.as_deref().filter(|value| is_valid_sha256(value)).is_none() {
+                    return Err("full update package SHA256 metadata is required".into());
+                }
+            }
             append_download_diagnostic_log(
                 &app,
                 "update-download",
                 format!(
-                    "start url={} file_name={} expected_total_bytes={:?} expected_hash={}",
+                    "start package={} url={} file_name={} expected_total_bytes={:?} expected_hash={}",
+                    package_label,
                     url,
                     file_name,
                     input.expected_total_bytes,
@@ -908,7 +965,12 @@ async fn download_desktop_installer(
             }
 
             let client = Client::builder()
-                .timeout(Duration::from_secs(600))
+                .connect_timeout(Duration::from_secs(
+                    DOWNLOAD_CONNECT_TIMEOUT_SECS,
+                ))
+                .timeout(Duration::from_secs(
+                    DOWNLOAD_TOTAL_TIMEOUT_SECS,
+                ))
                 .build()
                 .map_err(|error| format!("初始化下载器失败：{error}"))?;
             append_download_diagnostic_log(
@@ -948,7 +1010,22 @@ async fn download_desktop_installer(
                 return Err(format!("下载安装器失败：HTTP {}", response.status().as_u16()));
             }
 
-            let total_bytes = response_content_length.or(input.expected_total_bytes);
+            if is_full_update {
+                if let (Some(content_length), Some(expected_total_bytes)) =
+                    (response_content_length, input.expected_total_bytes)
+                {
+                    if content_length != expected_total_bytes {
+                        return Err(format!(
+                            "full update package Content-Length mismatch: expected {expected_total_bytes}, got {content_length}"
+                        ));
+                    }
+                }
+            }
+            let total_bytes = if is_full_update {
+                input.expected_total_bytes
+            } else {
+                response_content_length.or(input.expected_total_bytes)
+            };
             let mut downloaded_bytes = 0_u64;
             let mut last_logged_bytes = 0_u64;
             let mut last_emitted_bytes = 0_u64;
@@ -968,9 +1045,17 @@ async fn download_desktop_installer(
                 },
             );
 
-            while let Some(chunk) = response
-                .chunk()
-                .await
+            while let Some(chunk) = tokio::time::timeout(
+                Duration::from_secs(DOWNLOAD_IDLE_TIMEOUT_SECS),
+                response.chunk(),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "download stalled with no data for {} seconds.",
+                    DOWNLOAD_IDLE_TIMEOUT_SECS
+                )
+            })?
                 .map_err(|error| format!("下载安装器失败：{error}"))?
             {
                 for slice in chunk.chunks(DOWNLOAD_PROGRESS_SLICE_BYTES) {
@@ -1141,7 +1226,10 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
         let installer_path = {
             let state: State<'_, Mutex<PendingInstallerState>> = app.state();
             let pending = state.lock().map_err(|_| "安装器状态异常".to_string())?;
-            pending.path.clone().ok_or_else(|| "没有待安装的安装器文件".to_string())?
+            pending
+                .path
+                .clone()
+                .ok_or_else(|| "没有待安装的安装器文件".to_string())?
         };
         if !installer_path.exists() {
             return Err("安装器文件不存在，请重新下载".into());
@@ -1163,6 +1251,129 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
             log_path: None,
             active_pid: None,
         })
+    }
+}
+
+#[tauri::command]
+fn apply_desktop_full_update(
+    app: AppHandle,
+    path: String,
+    expected_hash: String,
+    expected_total_bytes: u64,
+) -> Result<CommandResult, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, path, expected_hash, expected_total_bytes);
+        return Err("full replacement updates are only supported on Windows".into());
+    }
+
+    #[cfg(windows)]
+    {
+        set_installer_operation_active(&app, true)?;
+        let result = (|| {
+            let package_path = PathBuf::from(path);
+            if !package_path.exists() {
+                return Err("update package file does not exist".to_string());
+            }
+            if expected_total_bytes == 0 {
+                return Err("full update package size metadata is required".into());
+            }
+            let expected_hash = normalize_sha256(&expected_hash);
+            if !is_valid_sha256(&expected_hash) {
+                return Err("full update package SHA256 metadata is required".into());
+            }
+            let source_metadata = fs::metadata(&package_path)
+                .map_err(|error| format!("failed to read update package metadata: {error}"))?;
+            if source_metadata.len() != expected_total_bytes {
+                return Err(format!(
+                    "full update package size mismatch: expected {expected_total_bytes}, got {}",
+                    source_metadata.len()
+                ));
+            }
+            let source_hash = sha256_file_plain(&package_path)?;
+            if source_hash != expected_hash {
+                return Err("full update package SHA256 mismatch".into());
+            }
+
+            let current_exe = std::env::current_exe()
+                .map_err(|error| format!("failed to resolve current executable path: {error}"))?;
+            let install_dir = current_exe
+                .parent()
+                .ok_or_else(|| "current executable has no install directory".to_string())?
+                .to_path_buf();
+            let exe_name = current_exe
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "current executable name is invalid".to_string())?
+                .to_string();
+            assert_windows_install_dir_writable(&install_dir)?;
+
+            validate_desktop_full_update_package(&package_path, &exe_name)?;
+
+            let updater_dir = app
+                .path()
+                .app_local_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
+                .join("updater");
+            fs::create_dir_all(&updater_dir)
+                .map_err(|error| format!("failed to create updater directory: {error}"))?;
+            let package_hash = expected_hash;
+            let private_package_path = updater_dir.join(format!(
+                "full-update-package-{}.zip",
+                chrono::Utc::now().timestamp_millis()
+            ));
+            fs::copy(&package_path, &private_package_path)
+                .map_err(|error| format!("failed to stage update package: {error}"))?;
+            let staged_metadata = fs::metadata(&private_package_path).map_err(|error| {
+                format!("failed to read staged update package metadata: {error}")
+            })?;
+            if staged_metadata.len() != expected_total_bytes {
+                let _ = fs::remove_file(&private_package_path);
+                return Err("staged update package size mismatch".into());
+            }
+            let staged_hash = sha256_file_plain(&private_package_path)?;
+            if staged_hash != package_hash {
+                let _ = fs::remove_file(&private_package_path);
+                return Err("staged update package hash mismatch".into());
+            }
+            validate_desktop_full_update_package(&private_package_path, &exe_name)?;
+            let script_path = updater_dir.join(format!(
+                "apply-full-update-{}.ps1",
+                chrono::Utc::now().timestamp_millis()
+            ));
+            let log_path = updater_dir.join("full-update.log");
+            let ready_marker_path = updater_dir.join("startup-ready.marker");
+
+            write_full_update_script(&script_path)?;
+            spawn_deferred_full_update_apply(
+                &script_path,
+                &private_package_path,
+                &package_hash,
+                expected_total_bytes,
+                &install_dir,
+                &exe_name,
+                std::process::id(),
+                &log_path,
+                &ready_marker_path,
+            )?;
+
+            let exit_handle = app.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(150));
+                exit_handle.exit(0);
+            });
+
+            Ok(CommandResult {
+                ok: true,
+                config_path: Some(private_package_path.to_string_lossy().into_owned()),
+                log_path: Some(log_path.to_string_lossy().into_owned()),
+                active_pid: None,
+            })
+        })();
+        if result.is_err() {
+            let _ = set_installer_operation_active(&app, false);
+        }
+        result
     }
 }
 
@@ -1206,23 +1417,64 @@ fn check_runtime_component_file(
                 exists: false,
                 path: None,
                 reason_code: Some("component_missing".into()),
-                message: Some(format!("{} 尚未下载。", runtime_component_display_name(component.component))),
+                message: Some(format!(
+                    "{} 尚未下载。",
+                    runtime_component_display_name(component.component)
+                )),
             });
         }
-        let metadata = fs::metadata(&target_path)
-            .map_err(|error| runtime_component_error("write_failed", format!("读取组件文件状态失败：{error}")))?;
+        let metadata = fs::metadata(&target_path).map_err(|error| {
+            runtime_component_error("write_failed", format!("读取组件文件状态失败：{error}"))
+        })?;
         if metadata.len() == 0 {
             return Ok(RuntimeComponentFileStatus {
                 ready: false,
                 exists: true,
                 path: Some(target_path.to_string_lossy().into_owned()),
                 reason_code: Some("component_empty".into()),
-                message: Some(format!("{} 文件为空，请重新下载。", runtime_component_display_name(component.component))),
+                message: Some(format!(
+                    "{} 文件为空，请重新下载。",
+                    runtime_component_display_name(component.component)
+                )),
             });
         }
 
         if component.component == RuntimeComponentKindInput::Xray {
             ensure_executable(&target_path)?;
+        }
+
+        let required_hash = match component
+            .checksum_sha256
+            .as_deref()
+            .map(normalize_sha256)
+            .filter(|value| is_valid_sha256(value))
+        {
+            Some(value) => value,
+            None => {
+                return Ok(RuntimeComponentFileStatus {
+                    ready: false,
+                    exists: true,
+                    path: Some(target_path.to_string_lossy().into_owned()),
+                    reason_code: Some("metadata_missing".into()),
+                    message: Some(format!(
+                        "{} is missing SHA256 metadata.",
+                        runtime_component_display_name(component.component)
+                    )),
+                });
+            }
+        };
+        let required_actual = sha256_file(&target_path)?;
+        if required_actual != required_hash {
+            return Ok(RuntimeComponentFileStatus {
+                ready: false,
+                exists: true,
+                path: Some(target_path.to_string_lossy().into_owned()),
+                reason_code: Some("hash_mismatch".into()),
+                message: Some(format!(
+                    "{} hash verification failed.",
+                    runtime_component_display_name(component.component)
+                )),
+            });
         }
 
         if let Some(expected_hash) = component
@@ -1238,9 +1490,24 @@ fn check_runtime_component_file(
                     exists: true,
                     path: Some(target_path.to_string_lossy().into_owned()),
                     reason_code: Some("hash_mismatch".into()),
-                    message: Some(format!("{} 校验失败，请重新下载。", runtime_component_display_name(component.component))),
+                    message: Some(format!(
+                        "{} 校验失败，请重新下载。",
+                        runtime_component_display_name(component.component)
+                    )),
                 });
             }
+        }
+
+        if let Err(message) =
+            validate_runtime_component_file_content(&target_path, component.component)
+        {
+            return Ok(RuntimeComponentFileStatus {
+                ready: false,
+                exists: true,
+                path: Some(target_path.to_string_lossy().into_owned()),
+                reason_code: Some("content_invalid".into()),
+                message: Some(message),
+            });
         }
 
         Ok(RuntimeComponentFileStatus {
@@ -1248,13 +1515,18 @@ fn check_runtime_component_file(
             exists: true,
             path: Some(target_path.to_string_lossy().into_owned()),
             reason_code: None,
-            message: Some(format!("{} 已准备完成。", runtime_component_display_name(component.component))),
+            message: Some(format!(
+                "{} 已准备完成。",
+                runtime_component_display_name(component.component)
+            )),
         })
     }
 }
 
 #[tauri::command]
-fn ensure_bundled_runtime_components(app: AppHandle) -> Result<BundledRuntimeComponentsStatus, String> {
+fn ensure_bundled_runtime_components(
+    app: AppHandle,
+) -> Result<BundledRuntimeComponentsStatus, String> {
     #[cfg(target_os = "android")]
     {
         let _ = app;
@@ -1334,9 +1606,31 @@ async fn download_runtime_component(
         let result = async {
             let download_url =
                 Url::parse(input.url.trim()).map_err(|error| runtime_component_error("download_failed", format!("下载地址无效：{error}")))?;
-            if !matches!(download_url.scheme(), "https" | "http") {
+            if !installer_download_url_allowed(&download_url) {
                 return Err(runtime_component_error("download_failed", "下载地址仅支持 HTTP 或 HTTPS".into()));
             }
+            let expected_total_bytes = input
+                .component
+                .file_size_bytes
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    runtime_component_error(
+                        "metadata_missing",
+                        format!("{} requires positive file size metadata.", runtime_component_display_name(component)),
+                    )
+                })?;
+            let expected_hash = input
+                .component
+                .checksum_sha256
+                .as_deref()
+                .map(normalize_sha256)
+                .filter(|value| is_valid_sha256(value))
+                .ok_or_else(|| {
+                    runtime_component_error(
+                        "metadata_missing",
+                        format!("{} requires valid SHA256 metadata.", runtime_component_display_name(component)),
+                    )
+                })?;
             append_download_diagnostic_log(
                 &app,
                 "runtime-download",
@@ -1377,7 +1671,8 @@ async fn download_runtime_component(
             );
 
             let client = Client::builder()
-                .timeout(Duration::from_secs(600))
+                .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
+                .timeout(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS))
                 .build()
                 .map_err(|error| runtime_component_error("download_failed", format!("初始化组件下载器失败：{error}")))?;
             let mut response = client
@@ -1403,7 +1698,18 @@ async fn download_runtime_component(
                 ));
             }
 
-            let total_bytes = response_content_length.or(input.component.file_size_bytes);
+            if let Some(content_length) = response_content_length {
+                if content_length != expected_total_bytes {
+                    return Err(runtime_component_error(
+                        "metadata_mismatch",
+                        format!(
+                            "{} Content-Length mismatch: expected {expected_total_bytes}, got {content_length}",
+                            runtime_component_display_name(component)
+                        ),
+                    ));
+                }
+            }
+            let total_bytes = Some(expected_total_bytes);
             let mut downloaded_bytes = 0_u64;
             last_total_bytes = total_bytes;
             let mut last_logged_bytes = 0_u64;
@@ -1423,9 +1729,21 @@ async fn download_runtime_component(
             );
             last_downloaded_bytes = downloaded_bytes;
 
-            while let Some(chunk) = response
-                .chunk()
-                .await
+            while let Some(chunk) = tokio::time::timeout(
+                Duration::from_secs(DOWNLOAD_IDLE_TIMEOUT_SECS),
+                response.chunk(),
+            )
+            .await
+            .map_err(|_| {
+                runtime_component_error(
+                    "download_timeout",
+                    format!(
+                        "{} download stalled with no data for {} seconds.",
+                        runtime_component_display_name(component),
+                        DOWNLOAD_IDLE_TIMEOUT_SECS
+                    ),
+                )
+            })?
                 .map_err(|error| runtime_component_error("download_failed", format!("下载 {} 失败：{error}", runtime_component_display_name(component))))?
             {
                 for slice in chunk.chunks(DOWNLOAD_PROGRESS_SLICE_BYTES) {
@@ -1458,6 +1776,16 @@ async fn download_runtime_component(
             archive_file
                 .flush()
                 .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
+            if downloaded_bytes != expected_total_bytes {
+                let _ = fs::remove_file(&archive_path);
+                return Err(runtime_component_error(
+                    "metadata_mismatch",
+                    format!(
+                        "{} size mismatch: expected {expected_total_bytes}, got {downloaded_bytes}",
+                        runtime_component_display_name(component)
+                    ),
+                ));
+            }
             append_download_diagnostic_log(
                 &app,
                 "runtime-download",
@@ -1499,23 +1827,18 @@ async fn download_runtime_component(
                 }
             }
 
-            if let Some(expected_hash) = input
-                .component
-                .checksum_sha256
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                let actual = sha256_file(&temp_target_path)?;
-                if actual != normalize_sha256(expected_hash) {
-                    let _ = fs::remove_file(&temp_target_path);
-                    let _ = fs::remove_file(&archive_path);
-                    return Err(runtime_component_error(
-                        "hash_mismatch",
-                        format!("{} 校验失败，请检查下载源。", runtime_component_display_name(component)),
-                    ));
-                }
+            let actual_hash = sha256_file(&temp_target_path)?;
+            if actual_hash != expected_hash {
+                let _ = fs::remove_file(&temp_target_path);
+                let _ = fs::remove_file(&archive_path);
+                return Err(runtime_component_error(
+                    "hash_mismatch",
+                    format!("{} 校验失败，请检查下载源。", runtime_component_display_name(component)),
+                ));
             }
+
+            validate_runtime_component_file_content(&temp_target_path, component)
+                .map_err(|message| runtime_component_error("content_invalid", message))?;
 
             if component == RuntimeComponentKindInput::Xray {
                 ensure_executable(&temp_target_path)?;
@@ -1706,20 +2029,25 @@ fn runtime_logs(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Runtim
         .ok()
         .map(|path| tail_log(&path, 120))
         .unwrap_or_default();
-    let log = match (download_log.trim().is_empty(), runtime_log.trim().is_empty()) {
+    let log = match (
+        download_log.trim().is_empty(),
+        runtime_log.trim().is_empty(),
+    ) {
         (true, true) => String::new(),
         (false, true) => format!("=== 下载诊断日志 ===\n{download_log}"),
         (true, false) => runtime_log,
-        (false, false) => format!(
-            "=== 下载诊断日志 ===\n{download_log}\n\n=== 运行时日志 ===\n{runtime_log}"
-        ),
+        (false, false) => {
+            format!("=== 下载诊断日志 ===\n{download_log}\n\n=== 运行时日志 ===\n{runtime_log}")
+        }
     };
 
     RuntimeLogResponse { log }
 }
 
 #[tauri::command]
-fn runtime_snapshot(state: State<'_, Mutex<RuntimeState>>) -> Result<RuntimeSnapshotResponse, String> {
+fn runtime_snapshot(
+    state: State<'_, Mutex<RuntimeState>>,
+) -> Result<RuntimeSnapshotResponse, String> {
     let state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
     Ok(RuntimeSnapshotResponse {
         runtime: state.active_config.clone(),
@@ -1741,7 +2069,9 @@ fn connect_runtime(
             let _ = clear_system_proxy();
         }
 
-        if let Err(error) = detect_external_network_conflict(config.local_http_port, config.local_socks_port) {
+        if let Err(error) =
+            detect_external_network_conflict(config.local_http_port, config.local_socks_port)
+        {
             state.status = "error".into();
             state.active_session_id = None;
             state.active_node_id = None;
@@ -1766,7 +2096,10 @@ fn connect_runtime(
     }
 
     let runtime_dir = ensure_runtime_dir(&app)?;
-    let xray_binary_path = match tauri::async_runtime::block_on(prepare_desktop_runtime_components(&app, &runtime_dir)) {
+    let xray_binary_path = match tauri::async_runtime::block_on(prepare_desktop_runtime_components(
+        &app,
+        &runtime_dir,
+    )) {
         Ok(path) => path,
         Err(error) => {
             let mut state = state.lock().map_err(|_| "运行时状态异常".to_string())?;
@@ -1842,7 +2175,12 @@ fn connect_runtime(
     }
 
     if let Err(error) = set_system_proxy(config.local_http_port, config.local_socks_port) {
-        rollback_connect_failure(&app, &mut state, &mut child, format!("设置系统代理失败：{error}"));
+        rollback_connect_failure(
+            &app,
+            &mut state,
+            &mut child,
+            format!("设置系统代理失败：{error}"),
+        );
         return Err(format!("设置系统代理失败：{error}"));
     }
 
@@ -1885,7 +2223,10 @@ fn connect_runtime(
 }
 
 #[tauri::command]
-fn disconnect_runtime(app: AppHandle, state: State<'_, Mutex<RuntimeState>>) -> Result<CommandResult, String> {
+fn disconnect_runtime(
+    app: AppHandle,
+    state: State<'_, Mutex<RuntimeState>>,
+) -> Result<CommandResult, String> {
     let _ = state;
     disconnect_runtime_internal(&app)?;
 
@@ -1918,7 +2259,13 @@ fn append_download_diagnostic_log(app: &AppHandle, category: &str, message: impl
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(file, "[{}] [{}] {}", chrono_like_now(), category, message.as_ref());
+    let _ = writeln!(
+        file,
+        "[{}] [{}] {}",
+        chrono_like_now(),
+        category,
+        message.as_ref()
+    );
 }
 
 fn ensure_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -1955,7 +2302,8 @@ fn installed_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn ensure_xray_binary(app: &AppHandle, _runtime_dir: &Path) -> Result<PathBuf, String> {
     let installed_path = installed_runtime_bin_dir(app)?.join(runtime_binary_name());
-    if ensure_runtime_component_from_bundle(app, RuntimeComponentKindInput::Xray, &installed_path)? {
+    if ensure_runtime_component_from_bundle(app, RuntimeComponentKindInput::Xray, &installed_path)?
+    {
         ensure_executable(&installed_path)?;
     }
     if !installed_path.exists() {
@@ -1965,6 +2313,7 @@ fn ensure_xray_binary(app: &AppHandle, _runtime_dir: &Path) -> Result<PathBuf, S
     if metadata.len() == 0 {
         return Err("Xray 内核文件损坏，请重新下载必要内核组件。".into());
     }
+    validate_runtime_component_file_content(&installed_path, RuntimeComponentKindInput::Xray)?;
     ensure_executable(&installed_path)?;
     Ok(installed_path)
 }
@@ -2007,9 +2356,50 @@ fn set_private_permissions(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn runtime_component_min_size(component: RuntimeComponentKindInput) -> u64 {
+    match component {
+        RuntimeComponentKindInput::Xray => MIN_WINDOWS_PE_BYTES,
+        RuntimeComponentKindInput::Geoip | RuntimeComponentKindInput::Geosite => MIN_GEO_DATA_BYTES,
+    }
+}
+
+fn validate_runtime_component_file_content(
+    path: &Path,
+    component: RuntimeComponentKindInput,
+) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    let min_size = runtime_component_min_size(component);
+    if metadata.len() < min_size {
+        return Err(format!(
+            "{} is too small: expected at least {min_size} bytes, got {}",
+            runtime_component_display_name(component),
+            metadata.len()
+        ));
+    }
+    #[cfg(windows)]
+    if component == RuntimeComponentKindInput::Xray {
+        validate_mz_header(path, runtime_component_display_name(component))?;
+    }
+    Ok(())
+}
+
+fn validate_mz_header(path: &Path, label: &str) -> Result<(), String> {
+    let mut file = File::open(path).map_err(|error| format!("failed to open {label}: {error}"))?;
+    let mut magic = [0_u8; 2];
+    file.read_exact(&mut magic)
+        .map_err(|error| format!("failed to read {label} header: {error}"))?;
+    if magic != *b"MZ" {
+        return Err(format!("{label} is not a Windows PE file"));
+    }
+    Ok(())
+}
+
 fn ensure_geo_data(app: &AppHandle, _runtime_dir: &Path) -> Result<(), String> {
     let runtime_bin_dir = installed_runtime_bin_dir(app)?;
-    for kind in [RuntimeComponentKindInput::Geoip, RuntimeComponentKindInput::Geosite] {
+    for kind in [
+        RuntimeComponentKindInput::Geoip,
+        RuntimeComponentKindInput::Geosite,
+    ] {
         let target = runtime_bin_dir.join(runtime_component_file_name(kind));
         let _ = ensure_runtime_component_from_bundle(app, kind, &target)?;
         if !target.exists() {
@@ -2019,6 +2409,7 @@ fn ensure_geo_data(app: &AppHandle, _runtime_dir: &Path) -> Result<(), String> {
             ));
         }
         let metadata = fs::metadata(&target).map_err(|error| error.to_string())?;
+        validate_runtime_component_file_content(&target, kind)?;
         if metadata.len() == 0 {
             return Err(format!(
                 "{} 文件损坏，请重新下载必要内核组件。",
@@ -2030,7 +2421,10 @@ fn ensure_geo_data(app: &AppHandle, _runtime_dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn lock_runtime_component_files(state: &mut RuntimeState, runtime_bin_dir: &Path) -> Result<(), String> {
+fn lock_runtime_component_files(
+    state: &mut RuntimeState,
+    runtime_bin_dir: &Path,
+) -> Result<(), String> {
     state.runtime_component_handles.clear();
 
     for file_name in ["geoip.dat", "geosite.dat"] {
@@ -2039,21 +2433,23 @@ fn lock_runtime_component_files(state: &mut RuntimeState, runtime_bin_dir: &Path
             .read(true)
             .share_mode(0x0000_0001)
             .open(&path)
-            .map_err(|error| format!("锁定运行时文件失败（{}）：{error}", path.to_string_lossy()))?;
+            .map_err(|error| {
+                format!("锁定运行时文件失败（{}）：{error}", path.to_string_lossy())
+            })?;
         state.runtime_component_handles.push(handle);
     }
 
     Ok(())
 }
 
-fn normalize_runtime_component_plan_file_size(value: Option<RuntimeComponentPlanFileSizeValue>) -> Option<u64> {
+fn normalize_runtime_component_plan_file_size(
+    value: Option<RuntimeComponentPlanFileSizeValue>,
+) -> Option<u64> {
     match value {
         Some(RuntimeComponentPlanFileSizeValue::Number(raw)) => Some(raw),
-        Some(RuntimeComponentPlanFileSizeValue::String(raw)) => raw
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|parsed| *parsed > 0),
+        Some(RuntimeComponentPlanFileSizeValue::String(raw)) => {
+            raw.trim().parse::<u64>().ok().filter(|parsed| *parsed > 0)
+        }
         None => None,
     }
 }
@@ -2087,7 +2483,9 @@ async fn fetch_runtime_components_plan_once(
         .map_err(|error| (status, format!("解析运行时组件计划失败：{error}")))
 }
 
-async fn fetch_runtime_components_plan_for_connect(app: &AppHandle) -> Result<RuntimeComponentsPlanInput, String> {
+async fn fetch_runtime_components_plan_for_connect(
+    app: &AppHandle,
+) -> Result<RuntimeComponentsPlanInput, String> {
     let session = read_session_from_disk(app)?.ok_or_else(|| "当前没有可用登录态".to_string())?;
     match fetch_runtime_components_plan_once(&session.access_token).await {
         Ok(plan) => Ok(plan),
@@ -2107,12 +2505,31 @@ async fn auto_repair_runtime_components_for_connect(app: &AppHandle) -> Result<(
         return Err("运行时组件计划为空，无法自动修复。".into());
     }
 
+    for required_component in [
+        RuntimeComponentKindInput::Xray,
+        RuntimeComponentKindInput::Geoip,
+        RuntimeComponentKindInput::Geosite,
+    ] {
+        if !plan
+            .components
+            .iter()
+            .any(|item| item.kind == required_component)
+        {
+            return Err(format!(
+                "runtime component plan is missing {}",
+                runtime_component_key(required_component)
+            ));
+        }
+    }
+
     for item in plan.components {
         let component = RuntimeComponentDownloadItemInput {
             id: item.id.clone(),
             component: item.kind,
             file_name: item.file_name.clone(),
-            file_size_bytes: normalize_runtime_component_plan_file_size(item.file_size_bytes.clone()),
+            file_size_bytes: normalize_runtime_component_plan_file_size(
+                item.file_size_bytes.clone(),
+            ),
             source_format: if item
                 .archive_entry_name
                 .as_deref()
@@ -2148,6 +2565,27 @@ async fn auto_repair_runtime_components_for_connect(app: &AppHandle) -> Result<(
             continue;
         }
 
+        let target_path = runtime_component_target_path(app, component.component)?;
+        if restore_runtime_component_from_verified_bundle(
+            app,
+            component.component,
+            &target_path,
+            component.checksum_sha256.as_deref(),
+        )? {
+            let repaired_status = check_runtime_component_file(app.clone(), component.clone())?;
+            if repaired_status.ready {
+                append_download_diagnostic_log(
+                    app,
+                    "runtime-download",
+                    format!(
+                        "connect-auto-repair component={} restored_from_bundle",
+                        runtime_component_key(component.component)
+                    ),
+                );
+                continue;
+            }
+        }
+
         append_download_diagnostic_log(
             app,
             "runtime-download",
@@ -2175,7 +2613,40 @@ async fn auto_repair_runtime_components_for_connect(app: &AppHandle) -> Result<(
     Ok(())
 }
 
-async fn prepare_desktop_runtime_components(app: &AppHandle, runtime_dir: &Path) -> Result<PathBuf, String> {
+async fn prepare_desktop_runtime_components(
+    app: &AppHandle,
+    runtime_dir: &Path,
+) -> Result<PathBuf, String> {
+    if let Err(repair_error) = auto_repair_runtime_components_for_connect(app).await {
+        append_download_diagnostic_log(
+            app,
+            "runtime-download",
+            format!("connect-auto-repair-unavailable error={repair_error}"),
+        );
+        #[cfg(windows)]
+        {
+            return Err(format!(
+                "Windows runtime component verification failed before connect: {repair_error}"
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            if let Ok(xray_path) = ensure_xray_binary(app, runtime_dir).and_then(|xray_path| {
+                ensure_geo_data(app, runtime_dir)?;
+                Ok(xray_path)
+            }) {
+                append_download_diagnostic_log(
+                    app,
+                    "runtime-download",
+                    format!(
+                        "connect-local-runtime-ready-after-auto-repair-unavailable error={repair_error}"
+                    ),
+                );
+                return Ok(xray_path);
+            }
+        }
+    }
+
     match ensure_xray_binary(app, runtime_dir).and_then(|xray_path| {
         ensure_geo_data(app, runtime_dir)?;
         Ok(xray_path)
@@ -2197,7 +2668,10 @@ async fn prepare_desktop_runtime_components(app: &AppHandle, runtime_dir: &Path)
     }
 }
 
-fn runtime_component_target_path(app: &AppHandle, component: RuntimeComponentKindInput) -> Result<PathBuf, String> {
+fn runtime_component_target_path(
+    app: &AppHandle,
+    component: RuntimeComponentKindInput,
+) -> Result<PathBuf, String> {
     Ok(installed_runtime_bin_dir(app)?.join(runtime_component_file_name(component)))
 }
 
@@ -2247,13 +2721,19 @@ fn bundled_runtime_binary_resource_name() -> &'static str {
         "xray.exe"
     }
 
-    #[cfg(not(any(target_os = "macos", all(target_os = "windows", target_arch = "x86_64"))))]
+    #[cfg(not(any(
+        target_os = "macos",
+        all(target_os = "windows", target_arch = "x86_64")
+    )))]
     {
         runtime_binary_name()
     }
 }
 
-fn bundled_runtime_component_source_path(app: &AppHandle, component: RuntimeComponentKindInput) -> Option<PathBuf> {
+fn bundled_runtime_component_source_path(
+    app: &AppHandle,
+    component: RuntimeComponentKindInput,
+) -> Option<PathBuf> {
     let resource_name = bundled_runtime_component_resource_name(component);
     let resource_dir = app.path().resource_dir().ok();
     if let Some(resource_dir) = resource_dir {
@@ -2276,7 +2756,9 @@ fn bundled_runtime_component_source_path(app: &AppHandle, component: RuntimeComp
         }
     }
 
-    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("bin").join(resource_name);
+    let manifest_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("bin")
+        .join(resource_name);
     if manifest_bin.exists() {
         return Some(manifest_bin);
     }
@@ -2313,6 +2795,38 @@ fn ensure_runtime_component_from_bundle(
     Ok(true)
 }
 
+fn restore_runtime_component_from_verified_bundle(
+    app: &AppHandle,
+    component: RuntimeComponentKindInput,
+    target_path: &Path,
+    expected_hash: Option<&str>,
+) -> Result<bool, String> {
+    let Some(expected_hash) =
+        normalize_optional_sha256(expected_hash).filter(|value| is_valid_sha256(value))
+    else {
+        return Ok(false);
+    };
+    let Some(source_path) = bundled_runtime_component_source_path(app, component) else {
+        return Ok(false);
+    };
+    if sha256_file(&source_path)? != expected_hash {
+        return Ok(false);
+    }
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::copy(&source_path, target_path).map_err(|error| {
+        format!(
+            "failed to restore bundled {}: {error}",
+            runtime_component_display_name(component)
+        )
+    })?;
+    if component == RuntimeComponentKindInput::Xray {
+        ensure_executable(target_path)?;
+    }
+    Ok(true)
+}
+
 fn runtime_platform_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -2334,7 +2848,9 @@ fn detect_runtime_component_architecture() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = Command::new("uname").arg("-m").output() {
-            let architecture = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+            let architecture = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_lowercase();
             if architecture.contains("arm") || architecture.contains("aarch64") {
                 return "arm64";
             }
@@ -2409,7 +2925,9 @@ fn sanitize_runtime_download_file_name(file_name: &str) -> String {
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| runtime_component_error("write_failed", format!("读取组件文件失败：{error}")))?;
+    let bytes = fs::read(path).map_err(|error| {
+        runtime_component_error("write_failed", format!("读取组件文件失败：{error}"))
+    })?;
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
@@ -2429,6 +2947,11 @@ fn normalize_optional_sha256(value: Option<&str>) -> Option<String> {
         .map(normalize_sha256)
 }
 
+fn is_valid_sha256(value: &str) -> bool {
+    let normalized = normalize_sha256(value);
+    normalized.len() == 64 && normalized.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn maybe_log_download_checkpoint(
     app: &AppHandle,
     category: &str,
@@ -2441,8 +2964,11 @@ fn maybe_log_download_checkpoint(
     }
 
     let should_log = *last_logged_bytes == 0
-        || downloaded_bytes.saturating_sub(*last_logged_bytes) >= DOWNLOAD_DIAGNOSTIC_CHECKPOINT_BYTES
-        || total_bytes.map(|value| downloaded_bytes >= value).unwrap_or(false);
+        || downloaded_bytes.saturating_sub(*last_logged_bytes)
+            >= DOWNLOAD_DIAGNOSTIC_CHECKPOINT_BYTES
+        || total_bytes
+            .map(|value| downloaded_bytes >= value)
+            .unwrap_or(false);
     if !should_log {
         return;
     }
@@ -2465,9 +2991,14 @@ fn maybe_log_download_checkpoint(
     *last_logged_bytes = downloaded_bytes;
 }
 
-fn extract_zip_entry(archive_path: &Path, target_path: &Path, entry_name: &str) -> Result<(), String> {
+fn extract_zip_entry(
+    archive_path: &Path,
+    target_path: &Path,
+    entry_name: &str,
+) -> Result<(), String> {
     let file = File::open(archive_path).map_err(|error| format!("打开组件压缩包失败：{error}"))?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|error| format!("解析组件压缩包失败：{error}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|error| format!("解析组件压缩包失败：{error}"))?;
     let normalized_entry = entry_name.replace('\\', "/");
 
     let mut index = None;
@@ -2489,10 +3020,151 @@ fn extract_zip_entry(archive_path: &Path, target_path: &Path, entry_name: &str) 
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建目标目录失败：{error}"))?;
     }
-    let mut target = File::create(target_path).map_err(|error| format!("创建目标文件失败：{error}"))?;
+    let mut target =
+        File::create(target_path).map_err(|error| format!("创建目标文件失败：{error}"))?;
     io::copy(&mut entry, &mut target).map_err(|error| format!("写入解压文件失败：{error}"))?;
-    target.flush().map_err(|error| format!("写入解压文件失败：{error}"))?;
+    target
+        .flush()
+        .map_err(|error| format!("写入解压文件失败：{error}"))?;
     Ok(())
+}
+
+fn validate_desktop_full_update_package(package_path: &Path, exe_name: &str) -> Result<(), String> {
+    let file = File::open(package_path)
+        .map_err(|error| format!("failed to open full update package: {error}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("full update package is not a valid ZIP: {error}"))?;
+    let mut has_main_exe = false;
+    let mut has_xray = false;
+    let mut has_geoip = false;
+    let mut has_geosite = false;
+
+    for idx in 0..archive.len() {
+        let mut entry = archive
+            .by_index(idx)
+            .map_err(|error| format!("failed to read full update ZIP entry: {error}"))?;
+        let entry_name = entry.name().replace('\\', "/");
+        if !desktop_update_zip_entry_path_is_safe(&entry_name) {
+            return Err(format!(
+                "full update ZIP contains unsafe path: {entry_name}"
+            ));
+        }
+        let normalized = entry_name.trim_end_matches('/').to_ascii_lowercase();
+        if entry_name == exe_name
+            || normalized == "chordv.exe"
+            || normalized == "chordv-desktop.exe"
+        {
+            if entry.size() == 0 {
+                return Err(format!("full update ZIP executable is empty: {entry_name}"));
+            }
+            if entry.size() < MIN_WINDOWS_PE_BYTES {
+                return Err(format!(
+                    "full update ZIP executable is too small: {entry_name}"
+                ));
+            }
+            let mut magic = [0_u8; 2];
+            entry
+                .read_exact(&mut magic)
+                .map_err(|error| format!("failed to read full update executable: {error}"))?;
+            if magic != *b"MZ" {
+                return Err(format!(
+                    "full update ZIP executable is not a Windows PE file: {entry_name}"
+                ));
+            }
+            has_main_exe = true;
+        }
+        match normalized.as_str() {
+            "bin/xray.exe" => {
+                if entry.size() < MIN_WINDOWS_PE_BYTES {
+                    return Err("full update ZIP contains invalid bin/xray.exe".into());
+                }
+                let mut magic = [0_u8; 2];
+                entry
+                    .read_exact(&mut magic)
+                    .map_err(|error| format!("failed to read full update xray.exe: {error}"))?;
+                if magic != *b"MZ" {
+                    return Err("full update ZIP bin/xray.exe is not a Windows PE file".into());
+                }
+                has_xray = true;
+            }
+            "bin/geoip.dat" => {
+                if entry.size() < MIN_GEO_DATA_BYTES {
+                    return Err("full update ZIP contains invalid bin/geoip.dat".into());
+                }
+                has_geoip = true;
+            }
+            "bin/geosite.dat" => {
+                if entry.size() < MIN_GEO_DATA_BYTES {
+                    return Err("full update ZIP contains invalid bin/geosite.dat".into());
+                }
+                has_geosite = true;
+            }
+            _ => {}
+        }
+    }
+
+    if !has_main_exe {
+        return Err(format!(
+            "full update ZIP must contain {exe_name}, ChordV.exe, or chordv-desktop.exe at the package root"
+        ));
+    }
+    if !has_xray || !has_geoip || !has_geosite {
+        return Err(
+            "full update ZIP must contain bin/xray.exe, bin/geoip.dat, and bin/geosite.dat".into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn assert_windows_install_dir_writable(install_dir: &Path) -> Result<(), String> {
+    if !install_dir.is_dir() {
+        return Err("install directory does not exist".into());
+    }
+    assert_directory_writable(install_dir, "install directory")?;
+    let bin_dir = install_dir.join("bin");
+    fs::create_dir_all(&bin_dir)
+        .map_err(|error| format!("install runtime bin directory is not writable: {error}"))?;
+    assert_directory_writable(&bin_dir, "install runtime bin directory")?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn assert_directory_writable(dir: &Path, label: &str) -> Result<(), String> {
+    let probe_path = dir.join(format!(
+        ".chordv-write-test-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe_path)
+            .map_err(|error| format!("{label} is not writable: {error}"))?;
+        file.write_all(b"probe")
+            .map_err(|error| format!("{label} write probe failed: {error}"))?;
+        file.flush()
+            .map_err(|error| format!("{label} write probe flush failed: {error}"))?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&probe_path);
+    result
+}
+
+fn desktop_update_zip_entry_path_is_safe(entry_name: &str) -> bool {
+    let normalized = entry_name.replace('\\', "/");
+    if normalized.trim().is_empty()
+        || normalized.starts_with('/')
+        || normalized.starts_with('\\')
+        || normalized.contains(':')
+    {
+        return false;
+    }
+    normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .all(|part| part != "." && part != "..")
 }
 
 fn ensure_installer_download_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -2514,19 +3186,34 @@ fn installer_download_url_allowed(url: &Url) -> bool {
     }
 
     matches!(
-        url.host_str().map(|value| value.to_ascii_lowercase()).as_deref(),
+        url.host_str()
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref(),
         Some("localhost") | Some("127.0.0.1") | Some("::1")
     )
 }
 
 fn installer_file_matches_expectation(
     path: &Path,
-    _expected_total_bytes: Option<u64>,
-    _expected_hash: Option<&str>,
+    expected_total_bytes: Option<u64>,
+    expected_hash: Option<&str>,
 ) -> Result<bool, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
     if metadata.len() == 0 {
         return Ok(false);
+    }
+    if expected_total_bytes
+        .filter(|expected| *expected > 0)
+        .is_some_and(|expected| metadata.len() != expected)
+    {
+        return Ok(false);
+    }
+    if let Some(expected_hash) = expected_hash.filter(|value| !value.is_empty()) {
+        let actual = sha256_file_plain(path)?;
+        if actual != normalize_sha256(expected_hash) {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
@@ -2534,12 +3221,39 @@ fn installer_file_matches_expectation(
 fn validate_installer_file(
     path: &Path,
     downloaded_bytes: u64,
-    _expected_total_bytes: Option<u64>,
-    _expected_hash: Option<&str>,
+    expected_total_bytes: Option<u64>,
+    expected_hash: Option<&str>,
 ) -> Result<(), String> {
     if downloaded_bytes == 0 {
         let _ = fs::remove_file(path);
         return Err("下载安装器失败：下载结果为空文件".into());
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("read downloaded file metadata failed: {error}"))?;
+    if metadata.len() != downloaded_bytes {
+        let _ = fs::remove_file(path);
+        return Err(format!(
+            "downloaded file size mismatch: wrote {} bytes but file contains {} bytes",
+            downloaded_bytes,
+            metadata.len()
+        ));
+    }
+    if let Some(expected_total_bytes) = expected_total_bytes.filter(|value| *value > 0) {
+        if downloaded_bytes != expected_total_bytes {
+            let _ = fs::remove_file(path);
+            return Err(format!(
+                "downloaded file size mismatch: expected {} bytes but got {} bytes",
+                expected_total_bytes, downloaded_bytes
+            ));
+        }
+    }
+    if let Some(expected_hash) = expected_hash.filter(|value| !value.is_empty()) {
+        let actual = sha256_file_plain(path)?;
+        let expected = normalize_sha256(expected_hash);
+        if actual != expected {
+            let _ = fs::remove_file(path);
+            return Err("downloaded file SHA256 mismatch".into());
+        }
     }
     Ok(())
 }
@@ -2557,8 +3271,10 @@ fn installer_temp_path(path: &Path) -> PathBuf {
 fn cleanup_outdated_installer_packages(app: &AppHandle) -> Result<(), String> {
     let download_dir = ensure_installer_download_dir(app)?;
     let current_version = app.package_info().version.to_string();
-    let current_version = parse_installer_version(&current_version).ok_or_else(|| "当前应用版本号无效".to_string())?;
-    let entries = fs::read_dir(&download_dir).map_err(|error| format!("读取安装包目录失败：{error}"))?;
+    let current_version = parse_installer_version(&current_version)
+        .ok_or_else(|| "当前应用版本号无效".to_string())?;
+    let entries =
+        fs::read_dir(&download_dir).map_err(|error| format!("读取安装包目录失败：{error}"))?;
 
     for entry in entries {
         let entry = match entry {
@@ -2596,6 +3312,11 @@ fn installer_package_version(file_name: &str) -> Option<Vec<u32>> {
         return parse_installer_version(version);
     }
 
+    if let Some(version) = rest.strip_suffix(".zip") {
+        let version = version.split('_').next().unwrap_or(version);
+        return parse_installer_version(version);
+    }
+
     None
 }
 
@@ -2629,7 +3350,19 @@ fn compare_version_parts(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
-fn resolve_installer_file_name(url: &Url, preferred: Option<&str>) -> String {
+fn desktop_update_package_label(package_kind: Option<&str>) -> &'static str {
+    if package_kind == Some("full_update") {
+        "update package"
+    } else {
+        "installer"
+    }
+}
+
+fn resolve_installer_file_name(
+    url: &Url,
+    preferred: Option<&str>,
+    package_kind: Option<&str>,
+) -> String {
     let preferred_name = preferred
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2654,6 +3387,9 @@ fn resolve_installer_file_name(url: &Url, preferred: Option<&str>) -> String {
 
     #[cfg(windows)]
     {
+        if package_kind == Some("full_update") {
+            return "ChordV-full-update.zip".into();
+        }
         return "ChordV-setup.exe".into();
     }
 
@@ -2689,6 +3425,265 @@ fn shell_quote(value: &str) -> String {
 #[cfg(windows)]
 fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(windows)]
+fn full_update_startup_ready_marker_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let updater_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?
+        .join("updater");
+    Ok(updater_dir.join("startup-ready.marker"))
+}
+
+#[cfg(windows)]
+fn write_full_update_startup_ready_marker(app: &AppHandle) -> Result<(), String> {
+    let marker_path = full_update_startup_ready_marker_path(app)?;
+    if let Some(parent) = marker_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create updater directory: {error}"))?;
+    }
+    let marker = format!(
+        "pid={}\ntimestamp={}\n",
+        std::process::id(),
+        chrono::Utc::now().to_rfc3339()
+    );
+    fs::write(&marker_path, marker)
+        .map_err(|error| format!("failed to write startup ready marker: {error}"))
+}
+
+#[cfg(windows)]
+fn write_full_update_script(script_path: &Path) -> Result<(), String> {
+    let script = r#"
+param(
+  [Parameter(Mandatory=$true)][string]$PackagePath,
+  [Parameter(Mandatory=$true)][string]$ExpectedHash,
+  [Parameter(Mandatory=$true)][Int64]$ExpectedSizeBytes,
+  [Parameter(Mandatory=$true)][string]$InstallDir,
+  [Parameter(Mandatory=$true)][string]$ExeName,
+  [Parameter(Mandatory=$true)][int]$PidToWait,
+  [Parameter(Mandatory=$true)][string]$LogPath,
+  [Parameter(Mandatory=$true)][string]$ReadyMarkerPath
+)
+$ErrorActionPreference = 'Stop'
+function Write-UpdateLog([string]$Message) {
+  $parent = Split-Path -Parent $LogPath
+  if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+  Add-Content -LiteralPath $LogPath -Value ("{0:o} {1}" -f [DateTimeOffset]::UtcNow, $Message)
+}
+function Test-MinimumFileLength([string]$Path, [string]$Label, [Int64]$MinBytes) {
+  if (!(Test-Path -LiteralPath $Path)) {
+    throw "$Label missing"
+  }
+  $length = (Get-Item -LiteralPath $Path).Length
+  if ($length -lt $MinBytes) {
+    throw "$Label is too small: expected at least $MinBytes bytes, got $length"
+  }
+}
+function Test-MzHeader([string]$Path, [string]$Label) {
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $buffer = New-Object byte[] 2
+    $read = $stream.Read($buffer, 0, 2)
+    if ($read -ne 2 -or $buffer[0] -ne 0x4D -or $buffer[1] -ne 0x5A) {
+      throw "$Label is not a Windows PE file"
+    }
+  } finally {
+    $stream.Dispose()
+  }
+}
+try {
+  Write-UpdateLog "waiting for process $PidToWait"
+  while (Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) {
+    Start-Sleep -Milliseconds 200
+  }
+  Start-Sleep -Milliseconds 250
+  $actualSize = (Get-Item -LiteralPath $PackagePath).Length
+  if ($actualSize -ne $ExpectedSizeBytes) {
+    throw "update package size mismatch before extraction"
+  }
+  $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackagePath).Hash.ToLowerInvariant()
+  if ($actualHash -ne $ExpectedHash.ToLowerInvariant()) {
+    throw "update package hash mismatch before extraction"
+  }
+  $updaterDir = Split-Path -Parent $LogPath
+  $staging = Join-Path $updaterDir ("full-update-staging-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  if (Test-Path -LiteralPath $staging) {
+    Remove-Item -LiteralPath $staging -Recurse -Force
+  }
+  New-Item -ItemType Directory -Path $staging -Force | Out-Null
+  Write-UpdateLog "extracting $PackagePath"
+  Expand-Archive -LiteralPath $PackagePath -DestinationPath $staging -Force
+  $stagingRoot = [System.IO.Path]::GetFullPath($staging + [System.IO.Path]::DirectorySeparatorChar)
+  Get-ChildItem -LiteralPath $staging -Recurse -Force | ForEach-Object {
+    $fullPath = [System.IO.Path]::GetFullPath($_.FullName)
+    if (!$fullPath.StartsWith($stagingRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "unsafe extracted path: $fullPath"
+    }
+  }
+  $stagedExe = Join-Path $staging $ExeName
+  if (!(Test-Path -LiteralPath $stagedExe)) {
+    $stagedExe = Join-Path $staging "ChordV.exe"
+  }
+  if (!(Test-Path -LiteralPath $stagedExe)) {
+    $stagedExe = Join-Path $staging "chordv-desktop.exe"
+  }
+  if (!(Test-Path -LiteralPath $stagedExe)) {
+    throw "staged executable not found"
+  }
+  Test-MinimumFileLength $stagedExe "staged executable" 1048576
+  Test-MzHeader $stagedExe "staged executable"
+  foreach ($required in @("bin\xray.exe", "bin\geoip.dat", "bin\geosite.dat")) {
+    $requiredPath = Join-Path $staging $required
+    if (!(Test-Path -LiteralPath $requiredPath)) {
+      throw "staged runtime file missing: $required"
+    }
+    if ($required -eq "bin\xray.exe") {
+      Test-MinimumFileLength $requiredPath $required 1048576
+      Test-MzHeader $requiredPath $required
+    } else {
+      Test-MinimumFileLength $requiredPath $required 65536
+    }
+  }
+  $backup = Join-Path $updaterDir ("full-update-backup-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  New-Item -ItemType Directory -Path $backup -Force | Out-Null
+  Write-UpdateLog "backing up $InstallDir to $backup"
+  try {
+    Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object {
+      Copy-Item -LiteralPath $_.FullName -Destination $backup -Recurse -Force
+    }
+  } catch {
+    Write-UpdateLog ("backup failed, aborting before modifying install dir: " + $_.Exception.Message)
+    throw
+  }
+  Write-UpdateLog "mirroring staged payload files to $InstallDir"
+  try {
+    Get-ChildItem -LiteralPath $staging -Force | ForEach-Object {
+      $targetPath = Join-Path $InstallDir $_.Name
+      if (Test-Path -LiteralPath $targetPath) {
+        Remove-Item -LiteralPath $targetPath -Recurse -Force
+      }
+      Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
+    }
+    $exePath = Join-Path $InstallDir $ExeName
+    if (!(Test-Path -LiteralPath $exePath)) {
+      $exePath = Join-Path $InstallDir (Split-Path -Leaf $stagedExe)
+    }
+    if (!(Test-Path -LiteralPath $exePath)) {
+      throw "updated executable not found"
+    }
+    Test-MinimumFileLength $exePath "updated executable" 1048576
+    Test-MzHeader $exePath "updated executable"
+    $startedProcess = $null
+    if (Test-Path -LiteralPath $ReadyMarkerPath) {
+      Remove-Item -LiteralPath $ReadyMarkerPath -Force -ErrorAction SilentlyContinue
+    }
+    $readyMarkerParent = Split-Path -Parent $ReadyMarkerPath
+    if ($readyMarkerParent) {
+      New-Item -ItemType Directory -Path $readyMarkerParent -Force | Out-Null
+    }
+    Write-UpdateLog "starting $exePath"
+    $startedProcess = Start-Process -FilePath $exePath -WorkingDirectory $InstallDir -PassThru
+    $ready = $false
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+      $startedProcess.Refresh()
+      if ($startedProcess.HasExited) {
+        throw ("updated executable exited during startup readiness check, exit code " + $startedProcess.ExitCode)
+      }
+      if (Test-Path -LiteralPath $ReadyMarkerPath) {
+        $ready = $true
+        break
+      }
+      Start-Sleep -Milliseconds 250
+    }
+    if (!$ready) {
+      throw "updated executable did not report startup readiness within 30 seconds"
+    }
+    $startedProcess.Refresh()
+    if ($startedProcess.HasExited) {
+      throw ("updated executable exited during startup health check, exit code " + $startedProcess.ExitCode)
+    }
+    Write-UpdateLog "startup ready marker observed"
+  } catch {
+    Write-UpdateLog ("mirror failed, rolling back from complete backup: " + $_.Exception.Message)
+    if ($null -ne $startedProcess) {
+      try {
+        $startedProcess.Refresh()
+        if (!$startedProcess.HasExited) {
+          Stop-Process -Id $startedProcess.Id -Force -ErrorAction SilentlyContinue
+          Wait-Process -Id $startedProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
+        }
+      } catch {
+      }
+    }
+    Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+      Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem -LiteralPath $backup -Force | ForEach-Object {
+      Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
+    }
+    throw
+  }
+  Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+  Write-UpdateLog "full update complete"
+} catch {
+  Write-UpdateLog ("full update failed: " + $_.Exception.Message)
+  throw
+}
+"#;
+    fs::write(script_path, script)
+        .map_err(|error| format!("failed to write update script: {error}"))
+}
+
+#[cfg(windows)]
+fn spawn_deferred_full_update_apply(
+    script_path: &Path,
+    package_path: &Path,
+    expected_hash: &str,
+    expected_size_bytes: u64,
+    install_dir: &Path,
+    exe_name: &str,
+    current_pid: u32,
+    log_path: &Path,
+    ready_marker_path: &Path,
+) -> Result<(), String> {
+    let mut command = Command::new("powershell");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+        ])
+        .arg(script_path)
+        .arg("-PackagePath")
+        .arg(package_path)
+        .arg("-ExpectedHash")
+        .arg(expected_hash)
+        .arg("-ExpectedSizeBytes")
+        .arg(expected_size_bytes.to_string())
+        .arg("-InstallDir")
+        .arg(install_dir)
+        .arg("-ExeName")
+        .arg(exe_name)
+        .arg("-PidToWait")
+        .arg(current_pid.to_string())
+        .arg("-LogPath")
+        .arg(log_path)
+        .arg("-ReadyMarkerPath")
+        .arg(ready_marker_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to start full update helper: {error}"))?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2751,7 +3746,11 @@ done
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_deferred_installer_open(app: &AppHandle, installer_path: &Path, current_pid: u32) -> Result<(), String> {
+fn spawn_deferred_installer_open(
+    app: &AppHandle,
+    installer_path: &Path,
+    current_pid: u32,
+) -> Result<(), String> {
     let target_app_path = current_macos_app_bundle_path()
         .filter(|path| !path.starts_with("/Volumes"))
         .unwrap_or_else(|| PathBuf::from("/Applications/ChordV.app"));
@@ -2829,7 +3828,11 @@ cleanup_mount
 }
 
 #[cfg(windows)]
-fn spawn_deferred_installer_open(_app: &AppHandle, installer_path: &Path, current_pid: u32) -> Result<(), String> {
+fn spawn_deferred_installer_open(
+    _app: &AppHandle,
+    installer_path: &Path,
+    current_pid: u32,
+) -> Result<(), String> {
     let script = format!(
         "$pidToWait = {current_pid}; while (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; Start-Sleep -Milliseconds 200; Start-Process -FilePath {} -ArgumentList '/UPDATE'",
         powershell_quote(installer_path.to_string_lossy().as_ref())
@@ -2847,7 +3850,11 @@ fn spawn_deferred_installer_open(_app: &AppHandle, installer_path: &Path, curren
 }
 
 #[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
-fn spawn_deferred_installer_open(_app: &AppHandle, installer_path: &Path, current_pid: u32) -> Result<(), String> {
+fn spawn_deferred_installer_open(
+    _app: &AppHandle,
+    installer_path: &Path,
+    current_pid: u32,
+) -> Result<(), String> {
     let script = format!(
         "pid={current_pid}; while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done; xdg-open {}",
         shell_quote(installer_path.to_string_lossy().as_ref())
@@ -2881,7 +3888,10 @@ fn should_emit_update_download_progress(
     last_emitted_bytes: u64,
     last_progress_emit_at: Instant,
 ) -> bool {
-    if total_bytes.map(|value| downloaded_bytes >= value).unwrap_or(false) {
+    if total_bytes
+        .map(|value| downloaded_bytes >= value)
+        .unwrap_or(false)
+    {
         return true;
     }
 
@@ -2891,7 +3901,9 @@ fn should_emit_update_download_progress(
         if current_percent >= last_percent + DOWNLOAD_PROGRESS_EMIT_PERCENT_STEP {
             return true;
         }
-    } else if downloaded_bytes.saturating_sub(last_emitted_bytes) >= DOWNLOAD_PROGRESS_EMIT_BYTES_STEP {
+    } else if downloaded_bytes.saturating_sub(last_emitted_bytes)
+        >= DOWNLOAD_PROGRESS_EMIT_BYTES_STEP
+    {
         return true;
     }
 
@@ -3313,10 +4325,14 @@ fn load_runtime_pid_record(app: &AppHandle) -> Option<RuntimePidRecord> {
     serde_json::from_str::<RuntimePidRecord>(&content)
         .ok()
         .or_else(|| {
-            content.trim().parse::<u32>().ok().map(|pid| RuntimePidRecord {
-                pid,
-                binary_path: None,
-            })
+            content
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .map(|pid| RuntimePidRecord {
+                    pid,
+                    binary_path: None,
+                })
         })
 }
 
@@ -3466,8 +4482,10 @@ fn probe_single_node(node: NodeSummaryDto) -> NodeProbeResultDto {
         };
     };
     let start = Instant::now();
-    let outcome = resolve_socket_addr(server_host, server_port)
-        .and_then(|address| TcpStream::connect_timeout(&address, Duration::from_secs(4)).map_err(|error| error.to_string()));
+    let outcome = resolve_socket_addr(server_host, server_port).and_then(|address| {
+        TcpStream::connect_timeout(&address, Duration::from_secs(4))
+            .map_err(|error| error.to_string())
+    });
 
     match outcome {
         Ok(_) => NodeProbeResultDto {
@@ -3505,32 +4523,33 @@ fn verify_server_certificate_fingerprint(url: &Url, expected: &str) -> Result<()
 
     #[cfg(not(target_os = "android"))]
     {
-    let host = url
-        .host_str()
-        .ok_or_else(|| "API 地址缺少主机名".to_string())?;
-    let port = url.port_or_known_default().unwrap_or(443);
-    let tcp = TcpStream::connect((host, port)).map_err(|error| format!("建立 TLS 连接失败：{error}"))?;
-    let connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .map_err(|error| format!("初始化 TLS 连接器失败：{error}"))?;
-    let tls = connector
-        .connect(host, tcp)
-        .map_err(|error| format!("TLS 握手失败：{error}"))?;
-    let cert = tls
-        .peer_certificate()
-        .map_err(|error| format!("读取服务端证书失败：{error}"))?
-        .ok_or_else(|| "服务端未返回证书".to_string())?;
-    let der = cert
-        .to_der()
-        .map_err(|error| format!("解析服务端证书失败：{error}"))?;
-    let hash = Sha256::digest(der);
-    let actual = hex::encode(hash);
-    let normalized = expected.replace(':', "").to_lowercase();
-    if actual != normalized {
-        return Err("API 证书指纹校验失败".into());
-    }
-    Ok(())
+        let host = url
+            .host_str()
+            .ok_or_else(|| "API 地址缺少主机名".to_string())?;
+        let port = url.port_or_known_default().unwrap_or(443);
+        let tcp = TcpStream::connect((host, port))
+            .map_err(|error| format!("建立 TLS 连接失败：{error}"))?;
+        let connector = TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .map_err(|error| format!("初始化 TLS 连接器失败：{error}"))?;
+        let tls = connector
+            .connect(host, tcp)
+            .map_err(|error| format!("TLS 握手失败：{error}"))?;
+        let cert = tls
+            .peer_certificate()
+            .map_err(|error| format!("读取服务端证书失败：{error}"))?
+            .ok_or_else(|| "服务端未返回证书".to_string())?;
+        let der = cert
+            .to_der()
+            .map_err(|error| format!("解析服务端证书失败：{error}"))?;
+        let hash = Sha256::digest(der);
+        let actual = hex::encode(hash);
+        let normalized = expected.replace(':', "").to_lowercase();
+        if actual != normalized {
+            return Err("API 证书指纹校验失败".into());
+        }
+        Ok(())
     }
 }
 
@@ -3782,7 +4801,10 @@ fn detect_macos_external_network_conflict(http_port: u16, socks_port: u16) -> Re
 
 #[cfg(target_os = "macos")]
 fn detect_connected_macos_vpn_name() -> Option<String> {
-    let output = Command::new("scutil").args(["--nc", "list"]).output().ok()?;
+    let output = Command::new("scutil")
+        .args(["--nc", "list"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -3818,11 +4840,23 @@ fn detect_macos_proxy_conflict(http_port: u16, socks_port: u16) -> Option<String
     let socks_proxy = proxy_dict_value(&text, "SOCKSProxy");
 
     let http_conflict = http_enabled
-        && !matches_our_proxy(http_proxy.as_deref(), proxy_dict_u16(&text, "HTTPPort"), http_port);
+        && !matches_our_proxy(
+            http_proxy.as_deref(),
+            proxy_dict_u16(&text, "HTTPPort"),
+            http_port,
+        );
     let https_conflict = https_enabled
-        && !matches_our_proxy(https_proxy.as_deref(), proxy_dict_u16(&text, "HTTPSPort"), http_port);
+        && !matches_our_proxy(
+            https_proxy.as_deref(),
+            proxy_dict_u16(&text, "HTTPSPort"),
+            http_port,
+        );
     let socks_conflict = socks_enabled
-        && !matches_our_proxy(socks_proxy.as_deref(), proxy_dict_u16(&text, "SOCKSPort"), socks_port);
+        && !matches_our_proxy(
+            socks_proxy.as_deref(),
+            proxy_dict_u16(&text, "SOCKSPort"),
+            socks_port,
+        );
 
     if http_conflict {
         return Some(format!(
@@ -3963,7 +4997,10 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> 
         .find_map(|line| {
             let trimmed = line.trim();
             if trimmed.contains("ProxyServer") {
-                trimmed.split_whitespace().last().map(|value| value.to_string())
+                trimmed
+                    .split_whitespace()
+                    .last()
+                    .map(|value| value.to_string())
             } else {
                 None
             }
@@ -3975,9 +5012,24 @@ fn detect_windows_proxy_conflict(expected_proxy_server: &str) -> Option<String> 
 fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
     let bypass_hosts = api_proxy_bypass_hosts();
     for service in network_services() {
-        run_networksetup(&["-setwebproxy", &service, "127.0.0.1", &http_port.to_string()])?;
-        run_networksetup(&["-setsecurewebproxy", &service, "127.0.0.1", &http_port.to_string()])?;
-        run_networksetup(&["-setsocksfirewallproxy", &service, "127.0.0.1", &socks_port.to_string()])?;
+        run_networksetup(&[
+            "-setwebproxy",
+            &service,
+            "127.0.0.1",
+            &http_port.to_string(),
+        ])?;
+        run_networksetup(&[
+            "-setsecurewebproxy",
+            &service,
+            "127.0.0.1",
+            &http_port.to_string(),
+        ])?;
+        run_networksetup(&[
+            "-setsocksfirewallproxy",
+            &service,
+            "127.0.0.1",
+            &socks_port.to_string(),
+        ])?;
         run_networksetup(&["-setwebproxystate", &service, "on"])?;
         run_networksetup(&["-setsecurewebproxystate", &service, "on"])?;
         run_networksetup(&["-setsocksfirewallproxystate", &service, "on"])?;
@@ -3988,7 +5040,10 @@ fn set_proxy(http_port: u16, socks_port: u16) -> Result<(), std::io::Error> {
         }
         let status = bypass_command.status()?;
         if !status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, format!("设置代理绕过域名失败：{service}")));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("设置代理绕过域名失败：{service}"),
+            ));
         }
         verify_macos_proxy_config(&service, http_port, socks_port, &bypass_hosts)?;
     }
@@ -4015,10 +5070,9 @@ fn macos_proxy_owned_by_chordv() -> Result<bool, io::Error> {
         let secure_proxy = networksetup_output(&["-getsecurewebproxy", &service])?;
         let socks_proxy = networksetup_output(&["-getsocksfirewallproxy", &service])?;
         let bypass_output = networksetup_output(&["-getproxybypassdomains", &service])?;
-        let proxy_owned =
-            macos_proxy_points_to_loopback(&web_proxy)
-                || macos_proxy_points_to_loopback(&secure_proxy)
-                || macos_proxy_points_to_loopback(&socks_proxy);
+        let proxy_owned = macos_proxy_points_to_loopback(&web_proxy)
+            || macos_proxy_points_to_loopback(&secure_proxy)
+            || macos_proxy_points_to_loopback(&socks_proxy);
         let bypass_owned = bypass_hosts.iter().all(|host| {
             bypass_output
                 .lines()
@@ -4033,7 +5087,9 @@ fn macos_proxy_owned_by_chordv() -> Result<bool, io::Error> {
 
 #[cfg(target_os = "macos")]
 fn macos_proxy_points_to_loopback(output: &str) -> bool {
-    let enabled = output.lines().any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
+    let enabled = output
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
     let server_ok = output
         .lines()
         .any(|line| line.trim().eq_ignore_ascii_case("Server: 127.0.0.1"));
@@ -4052,7 +5108,10 @@ fn set_windows_proxy(http_port: u16, socks_port: u16) -> Result<(), io::Error> {
     let proxy_override = {
         let mut entries = vec!["<local>".to_string()];
         for host in api_proxy_bypass_hosts() {
-            if !entries.iter().any(|candidate| candidate.eq_ignore_ascii_case(&host)) {
+            if !entries
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&host))
+            {
                 entries.push(host);
             }
         }
@@ -4197,12 +5256,18 @@ fn run_windows_reg(args: &[&str]) -> Result<(), io::Error> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::new(io::ErrorKind::Other, format!("reg 命令执行失败：{:?}", args)))
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("reg 命令执行失败：{:?}", args),
+        ))
     }
 }
 
 #[cfg(windows)]
-fn verify_windows_proxy_config(expected_proxy_server: &str, expected_proxy_override: &str) -> Result<(), io::Error> {
+fn verify_windows_proxy_config(
+    expected_proxy_server: &str,
+    expected_proxy_override: &str,
+) -> Result<(), io::Error> {
     let mut enable = Command::new("reg");
     enable.creation_flags(CREATE_NO_WINDOW);
     let enable_output = enable
@@ -4215,7 +5280,10 @@ fn verify_windows_proxy_config(expected_proxy_server: &str, expected_proxy_overr
         .output()?;
     let enable_text = String::from_utf8_lossy(&enable_output.stdout).to_lowercase();
     if !enable_output.status.success() || !enable_text.contains("0x1") {
-        return Err(io::Error::new(io::ErrorKind::Other, "Windows 系统代理未成功启用"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Windows 系统代理未成功启用",
+        ));
     }
 
     let mut server = Command::new("reg");
@@ -4230,7 +5298,10 @@ fn verify_windows_proxy_config(expected_proxy_server: &str, expected_proxy_overr
         .output()?;
     let server_text = String::from_utf8_lossy(&server_output.stdout);
     if !server_output.status.success() || !server_text.contains(expected_proxy_server) {
-        return Err(io::Error::new(io::ErrorKind::Other, "Windows 系统代理地址未成功写入"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Windows 系统代理地址未成功写入",
+        ));
     }
 
     let mut override_query = Command::new("reg");
@@ -4297,7 +5368,10 @@ fn verify_macos_proxy_config(
 
     let bypass_output = networksetup_output(&["-getproxybypassdomains", service])?;
     for host in bypass_hosts {
-        if !bypass_output.lines().any(|line| line.trim().eq_ignore_ascii_case(host)) {
+        if !bypass_output
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case(host))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!("代理绕过域名未生效：{service} 缺少 {host}"),
@@ -4309,12 +5383,20 @@ fn verify_macos_proxy_config(
 }
 
 #[cfg(target_os = "macos")]
-fn verify_macos_named_proxy(output: &str, expected_port: u16, label: &str) -> Result<(), io::Error> {
-    let enabled = output.lines().any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
+fn verify_macos_named_proxy(
+    output: &str,
+    expected_port: u16,
+    label: &str,
+) -> Result<(), io::Error> {
+    let enabled = output
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
     let server_ok = output
         .lines()
         .any(|line| line.trim().eq_ignore_ascii_case("Server: 127.0.0.1"));
-    let port_ok = output.lines().any(|line| line.trim() == format!("Port: {expected_port}"));
+    let port_ok = output
+        .lines()
+        .any(|line| line.trim() == format!("Port: {expected_port}"));
     if enabled && server_ok && port_ok {
         return Ok(());
     }
@@ -4327,10 +5409,22 @@ fn verify_macos_named_proxy(output: &str, expected_port: u16, label: &str) -> Re
 #[cfg(windows)]
 fn refresh_windows_proxy_settings() -> Result<(), io::Error> {
     unsafe {
-        if InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_SETTINGS_CHANGED, std::ptr::null_mut(), 0) == 0 {
+        if InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_SETTINGS_CHANGED,
+            std::ptr::null_mut(),
+            0,
+        ) == 0
+        {
             return Err(io::Error::last_os_error());
         }
-        if InternetSetOptionW(std::ptr::null(), INTERNET_OPTION_REFRESH, std::ptr::null_mut(), 0) == 0 {
+        if InternetSetOptionW(
+            std::ptr::null(),
+            INTERNET_OPTION_REFRESH,
+            std::ptr::null_mut(),
+            0,
+        ) == 0
+        {
             return Err(io::Error::last_os_error());
         }
     }
@@ -4354,7 +5448,8 @@ fn network_services() -> Vec<String> {
     for line in text.lines() {
         let trimmed = line.trim();
 
-        if trimmed.starts_with('(') && trimmed.contains(')') && !trimmed.contains("Hardware Port:") {
+        if trimmed.starts_with('(') && trimmed.contains(')') && !trimmed.contains("Hardware Port:")
+        {
             if let Some((_, rest)) = trimmed.split_once(')') {
                 pending_name = Some(rest.trim().trim_start_matches('*').trim().to_string());
             }
@@ -4579,7 +5674,9 @@ fn emit_shell_action(app: &AppHandle, action: &str) -> Result<(), String> {
         _ => return Err(format!("未知壳层动作：{action}")),
     };
 
-    window.eval(script).map_err(|error| format!("壳层动作派发失败：{error}"))
+    window
+        .eval(script)
+        .map_err(|error| format!("壳层动作派发失败：{error}"))
 }
 
 #[cfg(not(target_os = "android"))]
@@ -4637,8 +5734,11 @@ fn disconnect_runtime_internal(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "android"))]
-fn build_shell_menu(app: &AppHandle, state: &ShellState) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+#[cfg(target_os = "macos")]
+fn build_shell_menu(
+    app: &AppHandle,
+    state: &ShellState,
+) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     let status_text = format!("当前状态：{}", shell_status_text(&state.status));
     let node_text = format!(
         "当前节点：{}",
@@ -4772,7 +5872,10 @@ fn build_shell_menu(app: &AppHandle, state: &ShellState) -> Result<tauri::menu::
 }
 
 #[cfg(not(target_os = "android"))]
-fn build_shell_tray_menu(app: &AppHandle, state: &ShellState) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+fn build_shell_tray_menu(
+    app: &AppHandle,
+    state: &ShellState,
+) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     #[cfg(target_os = "macos")]
     let _ = state;
 
@@ -4807,65 +5910,65 @@ fn build_shell_tray_menu(app: &AppHandle, state: &ShellState) -> Result<tauri::m
 
     #[cfg(not(target_os = "macos"))]
     {
-    let status_text = format!("当前状态：{}", shell_status_text(&state.status));
-    let node_text = format!(
-        "当前节点：{}",
-        state.node_name.as_deref().unwrap_or("未选择")
-    );
-    let primary_action = if state.primary_action_label.trim().is_empty() {
-        "连接/断开".to_string()
-    } else {
-        state.primary_action_label.clone()
-    };
+        let status_text = format!("当前状态：{}", shell_status_text(&state.status));
+        let node_text = format!(
+            "当前节点：{}",
+            state.node_name.as_deref().unwrap_or("未选择")
+        );
+        let primary_action = if state.primary_action_label.trim().is_empty() {
+            "连接/断开".to_string()
+        } else {
+            state.primary_action_label.clone()
+        };
 
-    let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
-        .build(app)
-        .map_err(|error| error.to_string())?;
-    let status = MenuItemBuilder::with_id("shell.status", status_text)
-        .enabled(false)
-        .build(app)
-        .map_err(|error| error.to_string())?;
-    let node = MenuItemBuilder::with_id("shell.node", node_text)
-        .enabled(false)
-        .build(app)
-        .map_err(|error| error.to_string())?;
-    let action = MenuItemBuilder::with_id("shell.toggle", primary_action)
-        .enabled(state.signed_in)
-        .build(app)
-        .map_err(|error| error.to_string())?;
-    let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
-        .enabled(state.signed_in)
-        .build(app)
-        .map_err(|error| error.to_string())?;
-    let hide = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
-        .build(app)
-        .map_err(|error| error.to_string())?;
-    let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
-        .build(app)
-        .map_err(|error| error.to_string())?;
+        let show = MenuItemBuilder::with_id("shell.show", "显示主界面")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let status = MenuItemBuilder::with_id("shell.status", status_text)
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let node = MenuItemBuilder::with_id("shell.node", node_text)
+            .enabled(false)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let action = MenuItemBuilder::with_id("shell.toggle", primary_action)
+            .enabled(state.signed_in)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let logs = MenuItemBuilder::with_id("shell.logs", "打开连接诊断")
+            .enabled(state.signed_in)
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let hide = MenuItemBuilder::with_id("shell.hide", "隐藏窗口")
+            .build(app)
+            .map_err(|error| error.to_string())?;
+        let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
+            .build(app)
+            .map_err(|error| error.to_string())?;
 
-    MenuBuilder::new(app)
-        .item(&show)
-        .item(&status)
-        .item(&node)
-        .separator()
-        .item(&action)
-        .item(&logs)
-        .item(&hide)
-        .separator()
-        .item(&quit)
-        .build()
-        .map_err(|error| error.to_string())
+        MenuBuilder::new(app)
+            .item(&show)
+            .item(&status)
+            .item(&node)
+            .separator()
+            .item(&action)
+            .item(&logs)
+            .item(&hide)
+            .separator()
+            .item(&quit)
+            .build()
+            .map_err(|error| error.to_string())
     }
 }
 
 #[cfg(not(target_os = "android"))]
 fn refresh_shell_ui(app: &AppHandle) -> Result<(), String> {
-    let shell_binding = app
-        .state::<Mutex<ShellState>>();
+    let shell_binding = app.state::<Mutex<ShellState>>();
     let shell = shell_binding
         .lock()
         .map_err(|_| "桌面壳层状态异常".to_string())?;
+    #[cfg(target_os = "macos")]
     let menu = build_shell_menu(app, &shell)?;
     #[cfg(target_os = "windows")]
     let tray_menu = build_shell_tray_menu(app, &shell)?;
@@ -4901,8 +6004,7 @@ fn refresh_shell_ui(_app: &AppHandle) -> Result<(), String> {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
-    let shell_binding = app
-        .state::<Mutex<ShellState>>();
+    let shell_binding = app.state::<Mutex<ShellState>>();
     let shell = shell_binding
         .lock()
         .map_err(|_| "桌面壳层状态异常".to_string())?;
@@ -4913,10 +6015,7 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
         .clone();
 
     let mut builder = TrayIconBuilder::with_id("main-tray");
-    builder = builder
-        .icon(icon)
-        .tooltip("ChordV")
-        .menu(&menu);
+    builder = builder.icon(icon).tooltip("ChordV").menu(&menu);
 
     #[cfg(target_os = "windows")]
     {
@@ -4938,9 +6037,7 @@ fn setup_desktop_tray(app: &AppHandle) -> Result<(), String> {
         builder = builder.show_menu_on_left_click(true);
     }
 
-    builder
-        .build(app)
-        .map_err(|error| error.to_string())?;
+    builder.build(app).map_err(|error| error.to_string())?;
 
     Ok(())
 }
@@ -4980,6 +6077,10 @@ pub fn run() {
                 let _ = ensure_runtime_bin_dir(&app.handle());
                 let _ = cleanup_outdated_installer_packages(&app.handle());
             }
+            #[cfg(windows)]
+            {
+                let _ = write_full_update_startup_ready_marker(&app.handle());
+            }
             #[cfg(target_os = "macos")]
             {
                 let _ = cleanup_mounted_installer_volumes(&app.handle());
@@ -5012,6 +6113,7 @@ pub fn run() {
             quit_application,
             download_desktop_installer,
             open_desktop_installer,
+            apply_desktop_full_update,
             quit_for_update,
             desktop_runtime_environment,
             ensure_bundled_runtime_components,
@@ -5047,7 +6149,10 @@ pub fn run() {
                         .ok()
                         .map(|runtime| runtime.status.clone())
                 };
-                if !matches!(status.as_deref(), Some("connected" | "connecting" | "disconnecting")) {
+                if !matches!(
+                    status.as_deref(),
+                    Some("connected" | "connecting" | "disconnecting")
+                ) {
                     let _ = show_main_window_internal(app_handle);
                 }
                 let _ = emit_shell_action(app_handle, "toggle-connection");

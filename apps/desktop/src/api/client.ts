@@ -28,8 +28,8 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com
 const DEFAULT_RELEASE_CHANNEL = "stable";
 
 export type ReleaseChannel = "stable";
-export type UpdateDeliveryMode = "desktop_installer_download" | "apk_download" | "external_download" | "none";
-export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "apk" | "ipa" | "external";
+export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_replace" | "apk_download" | "external_download" | "none";
+export type ReleaseArtifactType = "dmg" | "app" | "exe" | "setup.exe" | "zip" | "apk" | "ipa" | "external";
 
 export type ClientUpdateArtifact = {
   fileType: ReleaseArtifactType;
@@ -531,9 +531,11 @@ type ClientEventSubscriber = {
 };
 
 export function subscribeClientEvents(accessToken: string, subscriber: ClientEventSubscriber) {
-  const controller = new AbortController();
   let disposed = false;
   let reconnectTimer: number | null = null;
+  let activeController: AbortController | null = null;
+  const handshakeTimeoutMs = 25_000;
+  const streamIdleTimeoutMs = 45_000;
 
   const scheduleReconnect = () => {
     if (disposed) {
@@ -547,6 +549,35 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
   const connect = async () => {
     const startedAt = performance.now();
+    const controller = new AbortController();
+    activeController = controller;
+    let idleAbort = false;
+    let handshakeTimer: number | null = window.setTimeout(() => {
+      idleAbort = true;
+      controller.abort();
+    }, handshakeTimeoutMs);
+    let idleTimer: number | null = null;
+    const armIdleWatchdog = () => {
+      if (idleTimer !== null) {
+        window.clearTimeout(idleTimer);
+      }
+      idleTimer = window.setTimeout(() => {
+        idleAbort = true;
+        controller.abort();
+      }, streamIdleTimeoutMs);
+    };
+    const clearIdleWatchdog = () => {
+      if (idleTimer !== null) {
+        window.clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+    const clearHandshakeWatchdog = () => {
+      if (handshakeTimer !== null) {
+        window.clearTimeout(handshakeTimer);
+        handshakeTimer = null;
+      }
+    };
     try {
       const response = await fetch(`${API_BASE}/api/client/events/stream`, {
         method: "GET",
@@ -556,6 +587,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
         },
         signal: controller.signal
       });
+      clearHandshakeWatchdog();
 
       if (!response.ok) {
         throw createApiRequestError("/client/events/stream", response.status, await response.text());
@@ -568,6 +600,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       subscriber.onOpen?.({
         elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
       });
+      armIdleWatchdog();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -577,14 +610,14 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
           break;
         }
 
+        armIdleWatchdog();
         buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
+        const chunks = buffer.split(/\r?\n\r?\n/);
         buffer = chunks.pop() ?? "";
 
         for (const chunk of chunks) {
           const lines = chunk
-            .split("\n")
-            .map((line) => line.replace(/\r$/, ""))
+            .split(/\r?\n/)
             .filter(Boolean);
           if (lines.length === 0) {
             continue;
@@ -616,7 +649,10 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
       scheduleReconnect();
     } catch (error) {
-      if (disposed || controller.signal.aborted) {
+      if (disposed) {
+        return;
+      }
+      if (controller.signal.aborted && !idleAbort) {
         return;
       }
       const normalizedError = error instanceof Error ? error : new Error("事件流连接失败");
@@ -630,6 +666,12 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
         return;
       }
       scheduleReconnect();
+    } finally {
+      clearHandshakeWatchdog();
+      clearIdleWatchdog();
+      if (activeController === controller) {
+        activeController = null;
+      }
     }
   };
 
@@ -637,7 +679,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
   return () => {
     disposed = true;
-    controller.abort();
+    activeController?.abort();
     if (reconnectTimer !== null) {
       window.clearTimeout(reconnectTimer);
     }
@@ -660,7 +702,7 @@ function detectUpdatePlatform(): PlatformTarget | "ios" {
 function inferPreferredArtifact(platform: PlatformTarget | "ios"): ReleaseArtifactType {
   switch (platform) {
     case "windows":
-      return "setup.exe";
+      return "zip";
     case "android":
       return "apk";
     case "ios":
@@ -681,11 +723,11 @@ function normalizeUpdateCheckResult(
 ): ClientUpdateCheckResult {
   const record = raw as Record<string, unknown>;
   const artifactSource = asRecord(record.artifact) ?? asRecord(record.recommendedArtifact);
-  const artifactRecord = artifactSource ?? record;
+  const artifactRecord = artifactSource ?? (fallback.platform === "windows" ? null : record);
   const artifact = artifactRecord
     ? (() => {
-        const artifactUrl = resolvePublicUrl(
-          readString(artifactRecord.downloadUrl) ?? readString(record.downloadUrl) ?? ""
+      const artifactUrl = resolvePublicUrl(
+          readString(artifactRecord.downloadUrl) ?? ""
         );
         if (!artifactUrl) {
           return null;
@@ -698,8 +740,7 @@ function normalizeUpdateCheckResult(
           downloadUrl: artifactUrl,
           originDownloadUrl: resolvePublicUrl(
             readString(artifactRecord.originDownloadUrl) ??
-              readString(artifactRecord.downloadUrl) ??
-              readString(record.downloadUrl)
+              readString(artifactRecord.downloadUrl)
           ),
           defaultMirrorPrefix: readString(artifactRecord.defaultMirrorPrefix) ?? readString(record.defaultMirrorPrefix),
           allowClientMirror: readBoolean(artifactRecord.allowClientMirror) ?? readBoolean(record.allowClientMirror) ?? true,
@@ -711,7 +752,19 @@ function normalizeUpdateCheckResult(
         };
       })()
     : null;
-  const downloadUrl = resolvePublicUrl(readString(record.downloadUrl)) ?? artifact?.downloadUrl ?? null;
+  const deliveryMode = readDeliveryMode(record.deliveryMode) ?? inferDeliveryMode(fallback.platform, artifact?.fileType);
+  if (deliveryMode === "desktop_installer_download" && fallback.platform === "windows") {
+    throw new Error("Windows installer updates are disabled; use a ZIP full replacement artifact.");
+  }
+  if (deliveryMode === "desktop_full_replace" && fallback.platform === "windows") {
+    if (!artifact || artifact.fileType !== "zip" || !artifact.downloadUrl) {
+      throw new Error("Windows full replacement updates require a ZIP artifact.");
+    }
+  }
+  const downloadUrl =
+    deliveryMode === "desktop_full_replace" && fallback.platform === "windows"
+      ? artifact?.downloadUrl ?? null
+      : artifact?.downloadUrl ?? resolvePublicUrl(readString(record.downloadUrl)) ?? null;
   const latestVersion = readString(record.latestVersion) ?? readString(record.currentVersion) ?? fallback.currentVersion;
   const minimumVersion = readString(record.minimumVersion) ?? fallback.currentVersion;
   const forceUpgrade = readBoolean(record.forceUpgrade) ?? false;
@@ -728,7 +781,7 @@ function normalizeUpdateCheckResult(
     title: readString(record.title) ?? formatUpdateTitle(latestVersion),
     changelog: readStringArray(record.changelog),
     publishedAt: readString(record.publishedAt),
-    deliveryMode: readDeliveryMode(record.deliveryMode) ?? inferDeliveryMode(fallback.platform),
+    deliveryMode,
     downloadUrl,
     artifact: artifact && artifact.downloadUrl ? artifact : null
   };
@@ -781,12 +834,21 @@ function runtimeComponentDisplayName(
   return "GeoSite 数据";
 }
 
-function inferDeliveryMode(platform: PlatformTarget | "ios"): UpdateDeliveryMode {
+function inferDeliveryMode(platform: PlatformTarget | "ios", artifactType?: ReleaseArtifactType | null): UpdateDeliveryMode {
+  if (artifactType === "zip") {
+    return "desktop_full_replace";
+  }
+  if (artifactType === "setup.exe" || artifactType === "exe" || artifactType === "dmg" || artifactType === "app") {
+    return "desktop_installer_download";
+  }
   if (platform === "android") {
     return "apk_download";
   }
   if (platform === "ios") {
     return "external_download";
+  }
+  if (platform === "windows") {
+    return "desktop_full_replace";
   }
   return "desktop_installer_download";
 }
@@ -853,6 +915,7 @@ function readPlatform(value: unknown): PlatformTarget | "ios" | null {
 
 function readDeliveryMode(value: unknown): UpdateDeliveryMode | null {
   return value === "desktop_installer_download" ||
+    value === "desktop_full_replace" ||
     value === "apk_download" ||
     value === "external_download" ||
     value === "none"
@@ -865,6 +928,7 @@ function readArtifactType(value: unknown): ReleaseArtifactType | null {
     value === "app" ||
     value === "exe" ||
     value === "setup.exe" ||
+    value === "zip" ||
     value === "apk" ||
     value === "ipa" ||
     value === "external"

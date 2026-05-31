@@ -41,9 +41,11 @@ export function buildAndroidArtifactNames(version, release = false) {
 }
 
 export function buildWindowsArtifactNames(version) {
+  const baseName = `ChordV_${version}_x64`;
   return {
-    exe: `ChordV_${version}_x64.exe`,
-    setup: `ChordV_${version}_x64-setup.exe`
+    exe: `${baseName}.exe`,
+    setup: `${baseName}-setup.exe`,
+    fullZip: `${baseName}-full.zip`
   };
 }
 

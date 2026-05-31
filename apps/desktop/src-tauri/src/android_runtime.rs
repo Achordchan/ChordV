@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::{Path, PathBuf}, sync::Mutex};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::{AppHandle, State};
 
 #[cfg(target_os = "android")]
@@ -8,8 +12,8 @@ use tauri::Manager;
 #[cfg(target_os = "android")]
 use crate::android_mobile_plugin::AndroidRuntimePluginHandle;
 use crate::{
-    build_xray_config, chrono_like_now, ensure_runtime_dir,
-    CommandResult, GeneratedRuntimeConfigDto,
+    build_xray_config, chrono_like_now, ensure_runtime_dir, CommandResult,
+    GeneratedRuntimeConfigDto,
 };
 
 pub struct AndroidRuntimeState {
@@ -294,8 +298,11 @@ pub fn start_android_runtime(
         generated_at: config.generated_at.clone(),
     };
     let serialized = serde_json::to_string_pretty(&bootstrap).map_err(|error| error.to_string())?;
-    fs::write(runtime_dir.join(format!("{}-android.bootstrap.json", config.session_id)), serialized)
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        runtime_dir.join(format!("{}-android.bootstrap.json", config.session_id)),
+        serialized,
+    )
+    .map_err(|error| error.to_string())?;
 
     let xray_config = build_android_xray_config(&config, &log_path);
     let xray_serialized =
@@ -341,15 +348,15 @@ pub fn start_android_runtime(
             state.active_session_id = result
                 .active_session_id
                 .or_else(|| Some(config.session_id.clone()));
-            state.active_node_id = result.active_node_id.or_else(|| Some(config.node.id.clone()));
+            state.active_node_id = result
+                .active_node_id
+                .or_else(|| Some(config.node.id.clone()));
             state.config_path = result
                 .config_path
                 .map(PathBuf::from)
                 .or_else(|| Some(config_path.clone()));
             state.tun_name = result.tun_name.or_else(|| Some(ANDROID_TUN_NAME.into()));
-            state.last_started_at = result
-                .last_started_at
-                .or_else(|| Some(chrono_like_now()));
+            state.last_started_at = result.last_started_at.or_else(|| Some(chrono_like_now()));
             state.last_error = result.last_error.clone();
             state.reason_code = result.last_error_code.clone();
             state.recovery_hint = result
@@ -411,7 +418,9 @@ pub fn stop_android_runtime(
     let parsed_stop_error = native_error
         .clone()
         .map(|error| parse_android_bridge_error(error, "android_runtime_stop_failed"));
-    state.last_error = parsed_stop_error.as_ref().map(|error| error.message.clone());
+    state.last_error = parsed_stop_error
+        .as_ref()
+        .map(|error| error.message.clone());
     state.reason_code = parsed_stop_error.as_ref().map(|error| error.code.clone());
     state.recovery_hint = parsed_stop_error
         .as_ref()
@@ -441,8 +450,12 @@ fn recovery_hint_for_reason(reason: &str) -> Option<String> {
         "config_missing" | "geo_resource_missing" | "start_args_missing" => {
             Some("安卓本地运行资源不完整，请联系管理员重新打包。".into())
         }
-        "service_start_failed" | "android_runtime_start_failed" => Some("请稍后重试，若仍失败请查看日志。".into()),
-        "service_stop_failed" | "android_runtime_stop_failed" => Some("请重新打开应用后再次断开连接。".into()),
+        "service_start_failed" | "android_runtime_start_failed" => {
+            Some("请稍后重试，若仍失败请查看日志。".into())
+        }
+        "service_stop_failed" | "android_runtime_stop_failed" => {
+            Some("请重新打开应用后再次断开连接。".into())
+        }
         "runtime_stopped" | "runtime_mismatch" => Some("运行时已停止，请重新连接。".into()),
         "service_task_removed" => Some("应用任务被移除后连接已回收，请重新打开应用。".into()),
         _ => None,
@@ -641,12 +654,13 @@ fn wait_for_android_plugin_status(
         .last_error_code
         .clone()
         .unwrap_or_else(|| "start_timeout".into());
-    let error_message = snapshot
-        .last_error
-        .clone()
-        .unwrap_or_else(|| match snapshot.status.as_deref() {
-            Some("disconnecting") => "Android VPN/TUN 未能在预期时间内停止".into(),
-            _ => "Android VPN/TUN 未能在预期时间内完成连接".into(),
-        });
+    let error_message =
+        snapshot
+            .last_error
+            .clone()
+            .unwrap_or_else(|| match snapshot.status.as_deref() {
+                Some("disconnecting") => "Android VPN/TUN 未能在预期时间内停止".into(),
+                _ => "Android VPN/TUN 未能在预期时间内完成连接".into(),
+            });
     Err(format!("{error_code}: {error_message}"))
 }

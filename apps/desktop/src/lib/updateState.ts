@@ -102,7 +102,7 @@ export function resolveUpdatePlatform(platformTarget: RuntimeStatus["platformTar
 
 export function preferredArtifactType(platformTarget: ResolvedUpdatePlatform): ReleaseArtifactType {
   if (platformTarget === "windows") {
-    return "setup.exe";
+    return "zip";
   }
   if (platformTarget === "android") {
     return "apk";
@@ -161,6 +161,9 @@ function inferInstallerFileNameByType(fileType: string) {
   if (fileType === "setup.exe") {
     return "ChordV-setup.exe";
   }
+  if (fileType === "zip") {
+    return "ChordV-full-update.zip";
+  }
   if (fileType === "apk") {
     return "ChordV.apk";
   }
@@ -179,6 +182,9 @@ export function createLegacyUpdateResult(
   channel: ReleaseChannel = "stable"
 ): ClientUpdateCheckResult | null {
   if (!version) {
+    return null;
+  }
+  if (platformTarget === "windows") {
     return null;
   }
 
@@ -233,6 +239,18 @@ export function createLegacyUpdateResult(
 }
 
 export function updateActionLabel(update: ClientUpdateCheckResult, downloadState?: UpdateDownloadState) {
+  if (update.deliveryMode === "desktop_full_replace") {
+    if (downloadState?.phase === "preparing") {
+      return "Preparing update";
+    }
+    if (downloadState?.phase === "downloading") {
+      return "Downloading update package";
+    }
+    if (downloadState?.phase === "completed") {
+      return "Restart and apply update";
+    }
+    return "Download and update";
+  }
   if (downloadState?.phase === "preparing") {
     return "正在准备下载";
   }

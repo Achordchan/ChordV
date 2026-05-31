@@ -110,6 +110,7 @@ enum ReleaseArtifactType {
   app
   exe
   setup_exe
+  zip
   apk
   ipa
   external
@@ -156,6 +157,7 @@ enum RuntimeComponentSource {
 
 enum UpdateDeliveryMode {
   desktop_installer_download
+  desktop_full_replace
   apk_download
   external_download
   none

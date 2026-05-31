@@ -2,7 +2,9 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { inflateRawSync } from "node:zlib";
 import { Agent, fetch as undiciFetch } from "undici";
 import type {
   AdminReleaseArtifactDto,
@@ -15,6 +17,17 @@ import type {
 } from "@chordv/shared";
 
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
+const STRICT_SEMVER_PATTERN =
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES = new Set([
+  "bin/xray.exe",
+  "bin/geoip.dat",
+  "bin/geosite.dat"
+]);
+const WINDOWS_FULL_UPDATE_ROOT_EXES = new Set(["chordv.exe", "chordv-desktop.exe"]);
+const MIN_WINDOWS_FULL_UPDATE_PE_BYTES = 1024 * 1024;
+const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
 
 export type ReleaseArtifactRowLike = {
   id: string;
@@ -67,9 +80,12 @@ export function normalizeReleaseChannel(_channel: string | null | undefined): Re
 }
 
 export function normalizeVersion(value: string) {
-  const normalized = value.trim();
+  const normalized = value.trim().replace(/^v(?=\d)/i, "");
   if (!normalized) {
     throw new BadRequestException("版本号不能为空");
+  }
+  if (!STRICT_SEMVER_PATTERN.test(normalized)) {
+    throw new BadRequestException("Version must use semantic version format, for example 1.2.3 or 1.2.3-beta.1.");
   }
   return normalized;
 }
@@ -94,6 +110,34 @@ export function normalizeBigInt(value: string | null | undefined) {
     return null;
   }
   return BigInt(value.trim());
+}
+
+export function normalizeFileSizeBytes(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || value.trim() === "") {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!/^[1-9]\d*$/.test(normalized)) {
+    throw new BadRequestException("File size must be a positive integer byte count.");
+  }
+  return BigInt(normalized);
+}
+
+export function normalizeSha256Input(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || value.trim() === "") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!SHA256_PATTERN.test(normalized)) {
+    throw new BadRequestException("SHA256 must be a 64-character hexadecimal string.");
+  }
+  return normalized;
 }
 
 export function normalizeOptionalBoolean(value: boolean | string | null | undefined) {
@@ -144,15 +188,21 @@ export function compareSemver(left: string, right: string) {
 }
 
 export function parseSemver(value: string) {
-  const [corePart, prerelease = ""] = value.trim().split("-", 2);
-  const core = corePart.split(".").map((item) => Number.parseInt(item, 10) || 0);
-  while (core.length < 3) {
-    core.push(0);
+  const normalized = normalizeVersion(value);
+  const match = normalized.match(STRICT_SEMVER_PATTERN);
+  if (!match) {
+    throw new BadRequestException("Version must use semantic version format, for example 1.2.3 or 1.2.3-beta.1.");
   }
-  return { core, prerelease };
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] ?? ""
+  };
 }
 
 export function defaultDeliveryModeForArtifact(type: ReleaseArtifactType): UpdateDeliveryMode {
+  if (type === "zip") {
+    return "desktop_full_replace";
+  }
   if (type === "apk") {
     return "apk_download";
   }
@@ -169,7 +219,78 @@ export function defaultDeliveryModeForPlatform(platform: PlatformTarget): Update
   if (platform === "ios") {
     return "external_download";
   }
+  if (platform === "windows") {
+    return "desktop_full_replace";
+  }
   return "desktop_installer_download";
+}
+
+export function resolveReleaseArtifactDeliveryMode(
+  platform: PlatformTarget,
+  type: ReleaseArtifactType,
+  requestedMode?: UpdateDeliveryMode | null
+) {
+  const deliveryMode = requestedMode ?? defaultDeliveryModeForArtifact(type);
+  assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
+  return deliveryMode;
+}
+
+export function assertReleaseArtifactDeliveryAllowed(
+  platform: PlatformTarget,
+  type: ReleaseArtifactType,
+  deliveryMode: UpdateDeliveryMode
+) {
+  if (platform === "windows") {
+    if (type === "zip" && deliveryMode === "desktop_full_replace") {
+      return;
+    }
+    if (type === "setup.exe" && deliveryMode === "desktop_installer_download") {
+      return;
+    }
+    if (type === "external" && deliveryMode === "external_download") {
+      return;
+    }
+    throw new BadRequestException(
+      "Windows release artifacts must use zip + desktop_full_replace, setup.exe + desktop_installer_download, or external + external_download."
+    );
+  }
+
+  if (platform === "macos") {
+    if ((type === "dmg" && deliveryMode === "desktop_installer_download") || (type === "external" && deliveryMode === "external_download")) {
+      return;
+    }
+    throw new BadRequestException("macOS release artifacts must use dmg + desktop_installer_download or external + external_download.");
+  }
+
+  if (platform === "android") {
+    if ((type === "apk" && deliveryMode === "apk_download") || (type === "external" && deliveryMode === "external_download")) {
+      return;
+    }
+    throw new BadRequestException("Android release artifacts must use apk + apk_download or external + external_download.");
+  }
+
+  if ((type === "ipa" && deliveryMode === "external_download") || (type === "external" && deliveryMode === "external_download")) {
+    return;
+  }
+  throw new BadRequestException("iOS release artifacts must use ipa/external + external_download.");
+}
+
+export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLike, platform: PlatformTarget) {
+  const type = fromPrismaReleaseArtifactType(artifact.type);
+  const deliveryMode = artifact.deliveryMode as UpdateDeliveryMode;
+  assertReleaseArtifactTypeAllowed(platform, type);
+  assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
+
+  if (deliveryMode === "desktop_full_replace") {
+    if (!artifact.fileSizeBytes || artifact.fileSizeBytes <= 0n) {
+      throw new BadRequestException("Full replacement updates require positive file size metadata.");
+    }
+    normalizeSha256Input(artifact.fileHash);
+    if (!artifact.fileHash) {
+      throw new BadRequestException("Full replacement updates require SHA256 metadata.");
+    }
+    assertFullUpdateDownloadUrlAllowed(artifact.downloadUrl);
+  }
 }
 
 export function assertReleaseArtifactTypeAllowed(platform: PlatformTarget, type: ReleaseArtifactType) {
@@ -177,7 +298,7 @@ export function assertReleaseArtifactTypeAllowed(platform: PlatformTarget, type:
     platform === "macos"
       ? ["dmg", "external"]
       : platform === "windows"
-        ? ["setup.exe", "external"]
+        ? ["zip", "setup.exe", "external"]
         : platform === "android"
           ? ["apk", "external"]
           : ["ipa", "external"];
@@ -192,6 +313,266 @@ export async function ensureFileReadable(filePath: string) {
     await fs.access(filePath);
   } catch {
     throw new NotFoundException("安装包文件不存在或已丢失");
+  }
+}
+
+export async function assertWindowsFullUpdateZipFile(filePath: string, fileName?: string | null, expectedVersion?: string | null) {
+  const displayName = fileName ?? path.basename(filePath);
+  if (!displayName.toLowerCase().endsWith(".zip")) {
+    throw new BadRequestException("Windows full replacement artifacts must be .zip files.");
+  }
+
+  const entries = await readZipCentralDirectoryEntries(filePath);
+  const normalizedEntries = new Set<string>();
+  const expectedVersionCore = expectedVersion ? parseSemver(expectedVersion).core : null;
+  let hasRootExe = false;
+
+  for (const entry of entries) {
+    assertZipEntryPathSafe(entry.name);
+    const normalized = normalizeZipEntryName(entry.name);
+    if (!normalized || normalized.endsWith("/")) {
+      continue;
+    }
+    normalizedEntries.add(normalized);
+    const data = await verifyZipEntryData(filePath, entry);
+    const parts = normalized.split("/");
+    if (parts.length === 1 && WINDOWS_FULL_UPDATE_ROOT_EXES.has(parts[0].toLowerCase())) {
+      assertWindowsPeData(data, normalized, MIN_WINDOWS_FULL_UPDATE_PE_BYTES);
+      assertWindowsPeProductVersion(data, normalized, expectedVersionCore);
+      hasRootExe = true;
+    }
+    if (normalized === "bin/xray.exe") {
+      assertWindowsPeData(data, normalized, MIN_WINDOWS_FULL_UPDATE_PE_BYTES);
+    } else if (normalized === "bin/geoip.dat" || normalized === "bin/geosite.dat") {
+      assertMinimumEntrySize(data, normalized, MIN_WINDOWS_FULL_UPDATE_GEO_BYTES);
+    }
+  }
+
+  if (!hasRootExe) {
+    throw new BadRequestException("Windows full replacement ZIP must contain ChordV.exe or chordv-desktop.exe at the root.");
+  }
+
+  const missingEntries = [...WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES].filter((entry) => !normalizedEntries.has(entry));
+  if (missingEntries.length > 0) {
+    throw new BadRequestException(`Windows full replacement ZIP is missing required files: ${missingEntries.join(", ")}`);
+  }
+}
+
+async function readZipCentralDirectoryEntries(filePath: string) {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const stat = await handle.stat();
+    if (stat.size < 22) {
+      throw new BadRequestException("ZIP file is too small to contain a valid central directory.");
+    }
+    const tailLength = Math.min(stat.size, 65_557);
+    const tail = Buffer.alloc(tailLength);
+    await handle.read(tail, 0, tailLength, stat.size - tailLength);
+    const eocdOffsetInTail = findEndOfCentralDirectory(tail);
+    if (eocdOffsetInTail < 0) {
+      throw new BadRequestException("Invalid ZIP file: missing end of central directory.");
+    }
+
+    const centralDirectorySize = tail.readUInt32LE(eocdOffsetInTail + 12);
+    const centralDirectoryOffset = tail.readUInt32LE(eocdOffsetInTail + 16);
+    if (centralDirectorySize === 0xffffffff || centralDirectoryOffset === 0xffffffff) {
+      throw new BadRequestException("ZIP64 full replacement packages are not supported by the release validator.");
+    }
+    if (centralDirectoryOffset + centralDirectorySize > stat.size) {
+      throw new BadRequestException("Invalid ZIP file: central directory points outside the package.");
+    }
+
+    const centralDirectory = Buffer.alloc(centralDirectorySize);
+    await handle.read(centralDirectory, 0, centralDirectorySize, centralDirectoryOffset);
+    return parseZipCentralDirectoryEntries(centralDirectory);
+  } finally {
+    await handle.close();
+  }
+}
+
+function findEndOfCentralDirectory(buffer: Buffer) {
+  for (let offset = buffer.length - 22; offset >= 0; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      return offset;
+    }
+  }
+  return -1;
+}
+
+type ZipCentralDirectoryEntry = {
+  name: string;
+  compressionMethod: number;
+  crc32: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localHeaderOffset: number;
+};
+
+function parseZipCentralDirectoryEntries(buffer: Buffer) {
+  const entries: ZipCentralDirectoryEntry[] = [];
+  let offset = 0;
+  while (offset < buffer.length) {
+    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) {
+      throw new BadRequestException("Invalid ZIP file: malformed central directory entry.");
+    }
+    const compressionMethod = buffer.readUInt16LE(offset + 10);
+    const crc32 = buffer.readUInt32LE(offset + 16);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const fileNameStart = offset + 46;
+    const fileNameEnd = fileNameStart + fileNameLength;
+    if (fileNameEnd > buffer.length) {
+      throw new BadRequestException("Invalid ZIP file: malformed entry name.");
+    }
+    if (
+      compressedSize === 0xffffffff ||
+      uncompressedSize === 0xffffffff ||
+      localHeaderOffset === 0xffffffff
+    ) {
+      throw new BadRequestException("ZIP64 full replacement package entries are not supported by the release validator.");
+    }
+    entries.push({
+      name: buffer.subarray(fileNameStart, fileNameEnd).toString("utf8"),
+      compressionMethod,
+      crc32,
+      compressedSize,
+      uncompressedSize,
+      localHeaderOffset
+    });
+    offset = fileNameEnd + extraLength + commentLength;
+  }
+  return entries;
+}
+
+async function verifyZipEntryData(filePath: string, entry: ZipCentralDirectoryEntry) {
+  if (entry.name.replaceAll("\\", "/").endsWith("/")) {
+    return Buffer.alloc(0);
+  }
+  if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) {
+    throw new BadRequestException(`Unsupported ZIP compression method for ${entry.name}: ${entry.compressionMethod}`);
+  }
+
+  const handle = await fs.open(filePath, "r");
+  try {
+    const stat = await handle.stat();
+    const localHeader = Buffer.alloc(30);
+    const localHeaderRead = await handle.read(localHeader, 0, localHeader.length, entry.localHeaderOffset);
+    if (localHeaderRead.bytesRead !== localHeader.length) {
+      throw new BadRequestException(`Invalid ZIP local header for ${entry.name}: short read.`);
+    }
+    if (localHeader.readUInt32LE(0) !== 0x04034b50) {
+      throw new BadRequestException(`Invalid ZIP local header for ${entry.name}.`);
+    }
+    const localFileNameLength = localHeader.readUInt16LE(26);
+    const localExtraLength = localHeader.readUInt16LE(28);
+    const dataOffset = entry.localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+    if (dataOffset + entry.compressedSize > stat.size) {
+      throw new BadRequestException(`ZIP entry ${entry.name} points outside the package.`);
+    }
+    const compressedData = Buffer.alloc(entry.compressedSize);
+    const dataRead = await handle.read(compressedData, 0, entry.compressedSize, dataOffset);
+    if (dataRead.bytesRead !== entry.compressedSize) {
+      throw new BadRequestException(`ZIP entry ${entry.name} data is truncated.`);
+    }
+    const data =
+      entry.compressionMethod === 0
+        ? compressedData
+        : inflateRawSync(compressedData, { finishFlush: 2 });
+    if (data.length !== entry.uncompressedSize) {
+      throw new BadRequestException(`ZIP entry ${entry.name} has an invalid uncompressed size.`);
+    }
+    if (crc32(data) !== entry.crc32) {
+      throw new BadRequestException(`ZIP entry ${entry.name} failed CRC validation.`);
+    }
+    return data;
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertMinimumEntrySize(data: Buffer, label: string, minBytes: number) {
+  if (data.length < minBytes) {
+    throw new BadRequestException(`${label} is too small: expected at least ${minBytes} bytes, got ${data.length}.`);
+  }
+}
+
+function assertWindowsPeData(data: Buffer, label: string, minBytes: number) {
+  assertMinimumEntrySize(data, label, minBytes);
+  if (data.length < 0x40 || data[0] !== 0x4d || data[1] !== 0x5a) {
+    throw new BadRequestException(`${label} is not a Windows PE executable.`);
+  }
+  const peHeaderOffset = data.readUInt32LE(0x3c);
+  if (peHeaderOffset <= 0 || peHeaderOffset + 4 > data.length || data.readUInt32LE(peHeaderOffset) !== 0x00004550) {
+    throw new BadRequestException(`${label} has an invalid Windows PE header.`);
+  }
+}
+
+function assertWindowsPeProductVersion(data: Buffer, label: string, expectedVersionCore: number[] | null) {
+  if (!expectedVersionCore) {
+    return;
+  }
+  const version = readWindowsPeProductVersion(data);
+  if (!version) {
+    throw new BadRequestException(`${label} does not contain a readable Windows product version.`);
+  }
+  const actualCore = version.slice(0, 3);
+  const matches = expectedVersionCore.every((part, index) => actualCore[index] === part);
+  if (!matches) {
+    throw new BadRequestException(
+      `${label} product version ${version.join(".")} does not match release version ${expectedVersionCore.join(".")}.`
+    );
+  }
+}
+
+function readWindowsPeProductVersion(data: Buffer) {
+  for (let offset = 0; offset + 24 <= data.length; offset += 1) {
+    if (data.readUInt32LE(offset) !== 0xfeef04bd) {
+      continue;
+    }
+    const productVersionMs = data.readUInt32LE(offset + 16);
+    const productVersionLs = data.readUInt32LE(offset + 20);
+    return [
+      productVersionMs >>> 16,
+      productVersionMs & 0xffff,
+      productVersionLs >>> 16,
+      productVersionLs & 0xffff
+    ];
+  }
+  return null;
+}
+
+function crc32(buffer: Buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ byte) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+function normalizeZipEntryName(entry: string) {
+  return entry.replaceAll("\\", "/");
+}
+
+function assertZipEntryPathSafe(entry: string) {
+  const normalized = entry.replaceAll("\\", "/");
+  if (!normalized || normalized.startsWith("/") || /^[a-z]:\//i.test(normalized)) {
+    throw new BadRequestException(`Unsafe ZIP entry path: ${entry}`);
+  }
+  const parts = normalized.split("/");
+  if (parts.some((part, index) => part === ".." || (part === "" && index !== parts.length - 1))) {
+    throw new BadRequestException(`Unsafe ZIP entry path: ${entry}`);
   }
 }
 
@@ -248,7 +629,7 @@ export async function calculateFileSha256(filePath: string) {
 
 export function toPrismaReleaseArtifactType(
   type: ReleaseArtifactType
-): "dmg" | "app" | "exe" | "setup_exe" | "apk" | "ipa" | "external" {
+): "dmg" | "app" | "exe" | "setup_exe" | "zip" | "apk" | "ipa" | "external" {
   if (type === "setup.exe") {
     return "setup_exe";
   }
@@ -282,9 +663,10 @@ export function resolveReleaseArtifactForClient(
   artifact: ReleaseArtifactRowLike,
   clientMirrorPrefix: string | null
 ) {
+  const defaultMirrorPrefix = artifact.source === "external" ? artifact.defaultMirrorPrefix : null;
   const resolvedUrl = buildReleaseArtifactDownloadUrlForClient(
     artifact.downloadUrl,
-    artifact.defaultMirrorPrefix,
+    defaultMirrorPrefix,
     clientMirrorPrefix,
     artifact.allowClientMirror
   );
@@ -330,6 +712,60 @@ export async function fetchExternalReleaseArtifactMetadata(rawUrl: string, defau
     }
   }
   return fetchExternalReleaseArtifactMetadataWithFallback(rawUrl, rawUrl);
+}
+
+export async function downloadExternalReleaseArtifactFile(rawUrl: string, defaultMirrorPrefix?: string | null) {
+  const preferredUrl = buildExternalReleaseArtifactProbeUrl(rawUrl, defaultMirrorPrefix);
+  if (preferredUrl !== rawUrl) {
+    try {
+      return await requestExternalReleaseArtifactFile(preferredUrl, rawUrl);
+    } catch {
+    }
+  }
+  return requestExternalReleaseArtifactFile(rawUrl, rawUrl);
+}
+
+export async function downloadExternalReleaseArtifactFileStrict(rawUrl: string) {
+  return requestExternalReleaseArtifactFile(rawUrl, rawUrl);
+}
+
+async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: string) {
+  const dispatcher = createDispatcher(120_000, false);
+  let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
+  try {
+    response = await undiciFetch(rawUrl, {
+      method: "GET",
+      redirect: "follow",
+      dispatcher,
+      headers: {
+        "user-agent": "ChordV-Admin/1.0"
+      }
+    });
+    if (!response.ok) {
+      throw new BadRequestException(`External full update ZIP is not accessible: HTTP ${response.status}`);
+    }
+    assertFullUpdateDownloadUrlAllowed(response.url || rawUrl);
+    const body = Buffer.from(await response.arrayBuffer());
+    const absolutePath = path.join(tmpdir(), `chordv-release-artifact-${randomUUID()}.zip`);
+    await fs.writeFile(absolutePath, body);
+    return {
+      absolutePath,
+      resolvedUrl: response.url || rawUrl,
+      fileName: inferFileNameFromResponse(response, fallbackUrl),
+      fileSizeBytes: BigInt(body.length),
+      fileHash: createHash("sha256").update(body).digest("hex"),
+      cleanup: async () => {
+        await fs.rm(absolutePath, { force: true });
+      }
+    };
+  } catch (error) {
+    throw new BadRequestException(error instanceof Error ? error.message : "External full update ZIP validation failed.");
+  } finally {
+    try {
+      await response?.body?.cancel();
+    } catch {
+    }
+  }
 }
 
 async function fetchExternalReleaseArtifactMetadataWithFallback(requestUrl: string, fallbackUrl: string) {
@@ -475,12 +911,14 @@ export function assertExternalReleaseArtifactUrlMatchesType(type: ReleaseArtifac
     return;
   }
 
-  let pathname = "";
+  let parsedUrl: URL;
   try {
-    pathname = new URL(url).pathname.toLowerCase();
+    parsedUrl = new URL(url);
   } catch {
     throw new BadRequestException("外部下载地址格式不正确，请检查链接。");
   }
+
+  const pathname = parsedUrl.pathname.toLowerCase();
 
   if (type === "dmg" && !pathname.endsWith(".dmg")) {
     throw new BadRequestException("当前产物类型是 DMG 安装包，下载地址必须指向 .dmg 文件。");
@@ -488,11 +926,39 @@ export function assertExternalReleaseArtifactUrlMatchesType(type: ReleaseArtifac
   if (type === "setup.exe" && !pathname.endsWith(".exe")) {
     throw new BadRequestException("当前产物类型是 Setup 安装器，下载地址必须指向 .exe 文件。");
   }
+  if (type === "zip" && !pathname.endsWith(".zip")) {
+    throw new BadRequestException("ZIP full update artifact URLs must point to a .zip file.");
+  }
+  if (type === "zip" && parsedUrl.protocol !== "https:" && !isLocalhostUrl(parsedUrl)) {
+    throw new BadRequestException("ZIP full update artifact URLs must use HTTPS.");
+  }
   if (type === "apk" && !pathname.endsWith(".apk")) {
     throw new BadRequestException("当前产物类型是 APK 安装包，下载地址必须指向 .apk 文件。");
   }
   if (type === "ipa" && !pathname.endsWith(".ipa")) {
     throw new BadRequestException("当前产物类型是 IPA 安装包，下载地址必须指向 .ipa 文件。");
+  }
+}
+
+function isLocalhostUrl(url: URL) {
+  const hostname = url.hostname.toLowerCase();
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
+  const normalized = rawUrl.trim();
+  if (!normalized) {
+    throw new BadRequestException("Full replacement update download URL is empty.");
+  }
+  if (!/^https?:\/\//i.test(normalized)) {
+    if (normalized.startsWith("/")) {
+      return;
+    }
+    throw new BadRequestException("Full replacement update download URLs must be HTTPS or server-relative paths.");
+  }
+  const parsedUrl = new URL(normalized);
+  if (parsedUrl.protocol !== "https:" && !isLocalhostUrl(parsedUrl)) {
+    throw new BadRequestException("Full replacement update download URLs must use HTTPS.");
   }
 }
 

@@ -25,6 +25,8 @@ if (platform !== "macos" && platform !== "windows") {
 const version = resolveDesktopPlatformVersion(platform);
 const extraArgs = process.argv.slice(3);
 const projectRoot = path.resolve(desktopRoot, "..", "..");
+const minimumPeBytes = 1024 * 1024;
+const minimumGeoDataBytes = 64 * 1024;
 const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
 const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.platform.conf.json`);
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
@@ -67,6 +69,7 @@ if (platform === "macos" && !extraArgs.includes("--target") && !extraArgs.some((
   buildArgs.push("--target", "universal-apple-darwin");
 }
 if (platform === "windows" && !extraArgs.includes("--target") && !extraArgs.some((arg) => arg.startsWith("--target="))) {
+  assertCommandAvailable("cargo-xwin", ["--version"], "cargo install cargo-xwin --locked");
   buildArgs.push("--runner", "cargo-xwin");
   buildArgs.push("--target", "x86_64-pc-windows-msvc");
 }
@@ -76,6 +79,7 @@ cleanupBundleOutput(platform);
 
 console.log(`执行打包命令：${pnpmCommand} ${buildArgs.join(" ")}`);
 
+const buildStartedAt = Date.now();
 const result = spawnSync(pnpmCommand, buildArgs, {
   cwd: desktopRoot,
   stdio: "inherit",
@@ -92,7 +96,7 @@ if (result.error) {
   process.exit(1);
 }
 if ((result.status ?? 1) === 0) {
-  curateReleaseArtifacts(platform, version, projectRoot);
+  curateReleaseArtifacts(platform, version, projectRoot, buildStartedAt);
 }
 process.exit(result.status ?? 1);
 
@@ -122,14 +126,15 @@ function buildBundledRuntimeResources(platform) {
   return [...common, "bin/xray.exe"];
 }
 
-function curateReleaseArtifacts(platform, version, projectRoot) {
+function curateReleaseArtifacts(platform, version, projectRoot, buildStartedAt) {
   const outputDir = path.join(projectRoot, "output", "release", platform === "macos" ? "macos" : "windows");
   fs.mkdirSync(outputDir, { recursive: true });
+  cleanupCuratedArtifacts(outputDir, platform);
 
   if (platform === "macos") {
     const artifact = findLatestArtifact(path.join(desktopRoot, "src-tauri", "target"), (filePath) => {
       return filePath.includes(`${path.sep}bundle${path.sep}dmg${path.sep}`) && filePath.endsWith(".dmg");
-    });
+    }, buildStartedAt);
     if (!artifact) {
       throw new Error("未找到 macOS DMG 产物");
     }
@@ -141,12 +146,145 @@ function curateReleaseArtifacts(platform, version, projectRoot) {
 
   const artifact = findLatestArtifact(path.join(desktopRoot, "src-tauri", "target"), (filePath) => {
     return filePath.includes(`${path.sep}bundle${path.sep}nsis${path.sep}`) && filePath.endsWith("-setup.exe");
-  });
+  }, buildStartedAt);
   if (!artifact) {
     throw new Error("未找到 Windows Setup 安装器产物");
   }
   const targetPath = path.join(outputDir, buildWindowsArtifactNames(version).setup);
   fs.copyFileSync(artifact, targetPath);
+  createWindowsFullUpdateZip(version, outputDir, buildStartedAt);
+}
+
+function cleanupCuratedArtifacts(outputDir, platform) {
+  if (!fs.existsSync(outputDir)) {
+    return;
+  }
+  const patterns =
+    platform === "macos"
+      ? [/^ChordV_.+\.dmg$/]
+      : [/^ChordV_.+_x64\.exe$/, /^ChordV_.+_x64-setup\.exe$/, /^ChordV_.+_x64-full\.zip$/];
+  for (const entry of fs.readdirSync(outputDir, { withFileTypes: true })) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    if (patterns.some((pattern) => pattern.test(entry.name))) {
+      fs.rmSync(path.join(outputDir, entry.name), { force: true });
+    }
+  }
+}
+
+function createWindowsFullUpdateZip(version, outputDir, buildStartedAt) {
+  const artifactNames = buildWindowsArtifactNames(version);
+  const releaseDir = path.join(desktopRoot, "src-tauri", "target", "x86_64-pc-windows-msvc", "release");
+  const sourceExe = findWindowsReleaseExecutable(releaseDir, buildStartedAt);
+  if (!sourceExe) {
+    throw new Error("未找到 Windows release 可执行文件，无法生成全量更新 ZIP。");
+  }
+
+  const stagingDir = path.join(outputDir, `.${artifactNames.fullZip}.staging`);
+  const fullZipPath = path.join(outputDir, artifactNames.fullZip);
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+  fs.rmSync(fullZipPath, { force: true });
+  fs.mkdirSync(stagingDir, { recursive: true });
+
+  try {
+    const sourceExeName = path.basename(sourceExe);
+    fs.copyFileSync(sourceExe, path.join(stagingDir, sourceExeName));
+    for (const aliasName of ["ChordV.exe", "chordv-desktop.exe"]) {
+      if (aliasName !== sourceExeName) {
+        fs.copyFileSync(sourceExe, path.join(stagingDir, aliasName));
+      }
+    }
+
+    const sourceBinDir = path.join(desktopRoot, "src-tauri", "bin");
+    const stagingBinDir = path.join(stagingDir, "bin");
+    fs.mkdirSync(stagingBinDir, { recursive: true });
+    for (const resource of buildBundledRuntimeResources("windows")) {
+      const sourcePath = path.join(desktopRoot, "src-tauri", resource);
+      if (!fs.existsSync(sourcePath)) {
+        throw new Error(`缺少 Windows 全量更新资源：${resource}`);
+      }
+      const sourceStat = fs.statSync(sourcePath);
+      if (!sourceStat.isFile()) {
+        throw new Error(`Windows full update resource is empty or invalid: ${resource}`);
+      }
+      validateWindowsFullUpdateResource(sourcePath, resource);
+      const relativePath = path.relative(sourceBinDir, sourcePath);
+      const targetPath = path.join(stagingBinDir, relativePath);
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+
+    createZipFromDirectory(stagingDir, fullZipPath);
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+  }
+}
+
+function validateWindowsFullUpdateResource(sourcePath, resource) {
+  const size = fs.statSync(sourcePath).size;
+  if (resource === "bin/xray.exe") {
+    if (size < minimumPeBytes) {
+      throw new Error(`Windows full update resource is too small: ${resource}`);
+    }
+    const header = fs.readFileSync(sourcePath).subarray(0, 2).toString("ascii");
+    if (header !== "MZ") {
+      throw new Error(`Windows full update resource is not a PE executable: ${resource}`);
+    }
+    return;
+  }
+  if ((resource === "bin/geoip.dat" || resource === "bin/geosite.dat") && size < minimumGeoDataBytes) {
+    throw new Error(`Windows full update resource is too small: ${resource}`);
+  }
+}
+
+function findWindowsReleaseExecutable(releaseDir, buildStartedAt) {
+  const preferred = ["ChordV.exe", "chordv-desktop.exe"].map((name) => path.join(releaseDir, name));
+  for (const candidate of preferred) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).mtimeMs >= buildStartedAt) {
+      return candidate;
+    }
+  }
+  if (!fs.existsSync(releaseDir)) {
+    return null;
+  }
+  const candidates = fs
+    .readdirSync(releaseDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
+    .map((entry) => path.join(releaseDir, entry.name))
+    .filter((filePath) => fs.statSync(filePath).mtimeMs >= buildStartedAt)
+    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+  return candidates[0] ?? null;
+}
+
+function createZipFromDirectory(sourceDir, targetZipPath) {
+  if (process.platform === "win32") {
+    runCommand("powershell", [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      "$sourceDir = $env:CHORDV_ZIP_SOURCE; $targetZipPath = $env:CHORDV_ZIP_TARGET; if (-not $sourceDir -or -not $targetZipPath) { throw 'missing ZIP source or target path' }; Compress-Archive -Path (Join-Path $sourceDir '*') -DestinationPath $targetZipPath -Force"
+    ], {
+      env: {
+        ...process.env,
+        CHORDV_ZIP_SOURCE: sourceDir,
+        CHORDV_ZIP_TARGET: targetZipPath
+      }
+    });
+    return;
+  }
+
+  const zipResult = spawnSync("zip", ["-r", targetZipPath, "."], {
+    cwd: sourceDir,
+    stdio: "inherit"
+  });
+  if (zipResult.error) {
+    throw zipResult.error;
+  }
+  if ((zipResult.status ?? 1) !== 0) {
+    throw new Error("zip 执行失败，无法生成 Windows 全量更新 ZIP。");
+  }
 }
 
 function appendMacGuideImageToDmg(dmgPath) {
@@ -195,7 +333,8 @@ function runCommand(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: desktopRoot,
     encoding: "utf8",
-    stdio: options.capture ? ["ignore", "pipe", "inherit"] : "inherit"
+    stdio: options.capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    env: options.env ?? process.env
   });
   if (result.error) {
     throw result.error;
@@ -204,6 +343,18 @@ function runCommand(command, args, options = {}) {
     throw new Error(`${command} ${args.join(" ")} 执行失败`);
   }
   return result;
+}
+
+function assertCommandAvailable(command, args, installHint) {
+  const result = spawnSync(command, args, {
+    cwd: desktopRoot,
+    encoding: "utf8",
+    stdio: "ignore",
+    shell: process.platform === "win32"
+  });
+  if (result.error || (result.status ?? 1) !== 0) {
+    throw new Error(`${command} is required for this build. Install it with: ${installHint}`);
+  }
 }
 
 function cleanupBundleOutput(platform) {
@@ -224,7 +375,7 @@ function cleanupBundleOutput(platform) {
   }
 }
 
-function findLatestArtifact(rootDir, predicate) {
+function findLatestArtifact(rootDir, predicate, minMtimeMs = 0) {
   if (!fs.existsSync(rootDir)) {
     return null;
   }
@@ -240,10 +391,10 @@ function findLatestArtifact(rootDir, predicate) {
         queue.push(fullPath);
         continue;
       }
-      if (!predicate(fullPath)) {
+      const mtime = fs.statSync(fullPath).mtimeMs;
+      if (!predicate(fullPath) || mtime < minMtimeMs) {
         continue;
       }
-      const mtime = fs.statSync(fullPath).mtimeMs;
       if (!latest || mtime > latestMtime) {
         latest = fullPath;
         latestMtime = mtime;
