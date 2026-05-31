@@ -1,10 +1,30 @@
-import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import {
+  Body,
+  CallHandler,
+  Controller,
+  Delete,
+  ExecutionContext,
+  Get,
+  Headers,
+  Injectable,
+  NestInterceptor,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Req,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors
+} from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import type { ResetSubscriptionTrafficInputDto } from "@chordv/shared";
 import { diskStorage } from "multer";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { unlinkSync } from "node:fs";
+import { tap } from "rxjs";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
@@ -23,8 +43,11 @@ import {
   CreateUserDto,
   ImportNodeDto,
   KickTeamMemberDto,
+  ListRuntimeComponentFailuresDto,
+  ListReleasesDto,
   ReadNodePanelInboundsDto,
   ReplySupportTicketDto,
+  ResetSubscriptionTrafficDto,
   RenewSubscriptionDto,
   UploadReleaseArtifactDto,
   UpdateReleaseArtifactDto,
@@ -53,6 +76,30 @@ type UploadedReleaseFile = {
 
 type MulterCallback = (error: Error | null, filename: string) => void;
 const RELEASE_ARTIFACT_MAX_UPLOAD_BYTES = Number(process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? 1024 * 1024 * 1024);
+
+@Injectable()
+export class UploadedTempFileCleanupInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler) {
+    const cleanup = () => {
+      const request = context.switchToHttp().getRequest<{ file?: UploadedReleaseFile }>();
+      const filePath = request.file?.path;
+      if (filePath) {
+        try {
+          unlinkSync(filePath);
+        } catch {
+          // The upload service may have already moved or deleted the temp file.
+        }
+      }
+    };
+
+    return next.handle().pipe(
+      tap({
+        next: cleanup,
+        error: cleanup
+      })
+    );
+  }
+}
 
 @Controller("admin")
 @UseGuards(AdminAuthGuard)
@@ -158,7 +205,7 @@ export class AdminController {
   }
 
   @Post("subscriptions/:subscriptionId/reset-traffic")
-  resetSubscriptionTraffic(@Param("subscriptionId") subscriptionId: string, @Body() body: ResetSubscriptionTrafficInputDto) {
+  resetSubscriptionTraffic(@Param("subscriptionId") subscriptionId: string, @Body() body: ResetSubscriptionTrafficDto) {
     return this.devDataService.resetSubscriptionTraffic(subscriptionId, body ?? {});
   }
 
@@ -293,8 +340,12 @@ export class AdminController {
   }
 
   @Post("tickets/:ticketId/replies")
-  replySupportTicket(@Param("ticketId") ticketId: string, @Body() body: ReplySupportTicketDto) {
-    return this.devDataService.replyAdminSupportTicket(ticketId, body);
+  replySupportTicket(
+    @Param("ticketId") ticketId: string,
+    @Body() body: ReplySupportTicketDto,
+    @Req() request: { authUser?: { id: string } }
+  ) {
+    return this.devDataService.replyAdminSupportTicket(ticketId, body, request.authUser?.id ?? null);
   }
 
   @Post("tickets/:ticketId/close")
@@ -308,8 +359,8 @@ export class AdminController {
   }
 
   @Get("releases")
-  getReleases() {
-    return this.devDataService.listAdminReleases();
+  getReleases(@Query() query: ListReleasesDto) {
+    return this.devDataService.listAdminReleases(query);
   }
 
   @Get("runtime-components")
@@ -318,8 +369,8 @@ export class AdminController {
   }
 
   @Get("runtime-components/failures")
-  getRuntimeComponentFailures(@Query("limit") limit?: string) {
-    return this.runtimeComponentsService.listRuntimeComponentFailureReports(limit ? Number(limit) : undefined);
+  getRuntimeComponentFailures(@Query() query: ListRuntimeComponentFailuresDto) {
+    return this.runtimeComponentsService.listRuntimeComponentFailureReports(query.limit);
   }
 
   @Post("runtime-components")
@@ -329,6 +380,7 @@ export class AdminController {
 
   @Post("runtime-components/upload")
   @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
       storage: diskStorage({
         destination: tmpdir(),
@@ -352,6 +404,7 @@ export class AdminController {
 
   @Post("runtime-components/:componentId/upload")
   @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
       storage: diskStorage({
         destination: tmpdir(),
@@ -414,6 +467,7 @@ export class AdminController {
 
   @Post("releases/:releaseId/artifacts/upload")
   @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
       storage: diskStorage({
         destination: tmpdir(),
@@ -455,6 +509,7 @@ export class AdminController {
 
   @Post("releases/:releaseId/artifacts/:artifactId/upload")
   @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
       storage: diskStorage({
         destination: tmpdir(),

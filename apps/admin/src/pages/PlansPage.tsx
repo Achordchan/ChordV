@@ -28,6 +28,7 @@ export function PlansPage(props: PlansPageProps) {
               <Table.Tr>
                 <Table.Th>名称</Table.Th>
                 <Table.Th>总流量</Table.Th>
+                <Table.Th>最大并发</Table.Th>
                 <Table.Th>续费</Table.Th>
                 <Table.Th>状态</Table.Th>
                 <Table.Th>订阅数</Table.Th>
@@ -39,6 +40,7 @@ export function PlansPage(props: PlansPageProps) {
                 <Table.Tr key={item.id}>
                   <Table.Td>{item.name}</Table.Td>
                   <Table.Td>{item.totalTrafficGb} GB</Table.Td>
+                  <Table.Td>{item.maxConcurrentSessions}</Table.Td>
                   <Table.Td>{item.renewable ? "可续费" : "不可续费"}</Table.Td>
                   <Table.Td>
                     <StatusBadge color={item.isActive ? "green" : "gray"} label={item.isActive ? "启用" : "停用"} />

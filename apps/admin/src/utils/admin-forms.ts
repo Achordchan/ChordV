@@ -19,6 +19,7 @@ export type UserFormState = {
   displayName: string;
   role: UserRole;
   status: UserStatus;
+  maxConcurrentSessionsOverride: number | "";
 };
 
 export type PlanFormState = {
@@ -26,6 +27,7 @@ export type PlanFormState = {
   scope: PlanScope;
   totalTrafficGb: number;
   renewable: boolean;
+  maxConcurrentSessions: number;
   isActive: boolean;
 };
 
@@ -150,7 +152,8 @@ export function emptyUserForm(): UserFormState {
     password: "",
     displayName: "",
     role: "user",
-    status: "active"
+    status: "active",
+    maxConcurrentSessionsOverride: ""
   };
 }
 
@@ -160,6 +163,7 @@ export function emptyPlanForm(): PlanFormState {
     scope: "personal",
     totalTrafficGb: 100,
     renewable: true,
+    maxConcurrentSessions: 3,
     isActive: true
   };
 }

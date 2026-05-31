@@ -37,6 +37,14 @@ type UsersPageProps = {
 };
 
 export function UsersPage(props: UsersPageProps) {
+  const teamMemberRoleOptions =
+    props.teamMemberForm.role === "owner"
+      ? [
+          { value: "owner", label: "负责人", disabled: true },
+          { value: "member", label: "成员" }
+        ]
+      : [{ value: "member", label: "成员" }];
+
   return (
     <Stack gap="lg">
       <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
@@ -173,10 +181,9 @@ export function UsersPage(props: UsersPageProps) {
                             />
                             <Select
                               label="角色"
-                              data={[
-                                { value: "member", label: "成员" },
-                                { value: "owner", label: "负责人" }
-                              ]}
+                              description="负责人只能通过团队编辑里的负责人字段转移"
+                              data={teamMemberRoleOptions}
+                              disabled={props.teamMemberForm.role === "owner"}
                               value={props.teamMemberForm.role}
                               onChange={(value) =>
                                 props.setTeamMemberForm((current) => ({ ...current, role: (value || "member") as TeamMemberRole }))

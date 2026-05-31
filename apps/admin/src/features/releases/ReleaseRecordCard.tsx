@@ -290,12 +290,13 @@ function translateArtifactType(type: string) {
   }
 }
 
-function formatFileSize(value?: number | null) {
-  if (!value || value <= 0) return "未识别";
-  if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${value} B`;
+function formatFileSize(value?: string | number | null) {
+  const bytes = typeof value === "string" ? Number(value) : value;
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return "Unknown";
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 function artifactValidationColor(status?: AdminReleaseArtifactValidationDto["status"]) {

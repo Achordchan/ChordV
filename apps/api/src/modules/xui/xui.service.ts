@@ -213,13 +213,25 @@ export class XuiService {
   }
 
   async removeClient(node: XuiNodeConfig, clientId: string, email: string): Promise<XuiClientRemovalStatus> {
-    const inboundId = await this.resolveInboundId(node);
-    const inbound = await this.getInbound(node);
+    const directStatus = await this.removeClientByEmail(node, email);
+    if (directStatus) {
+      return directStatus;
+    }
+
+    let inbound: XuiInbound;
+    try {
+      inbound = await this.getInbound(node);
+    } catch (error) {
+      if (isPanelRecordNotFoundError(error) || isInboundMissingError(error)) {
+        return "not_found";
+      }
+      throw error;
+    }
     const matches = this.findInboundClients(inbound, email);
     if (matches.length === 0) {
       return "not_found";
     }
-    return this.removeInboundClients(node, inboundId, matches, clientId);
+    return this.removeInboundClients(node, inbound.id, matches, clientId);
   }
 
   async resetClientTraffic(node: XuiNodeConfig, email: string): Promise<boolean> {
@@ -237,7 +249,7 @@ export class XuiService {
       });
       return true;
     } catch (error) {
-      if (!isPanelPathNotFoundError(error)) {
+      if (!isPanelFallbackMissError(error)) {
         throw error;
       }
     }
@@ -425,7 +437,7 @@ export class XuiService {
       });
       return;
     } catch (error) {
-      if (!isPanelPathNotFoundError(error)) {
+      if (!isPanelFallbackMissError(error)) {
         throw error;
       }
     }
@@ -460,7 +472,7 @@ export class XuiService {
       });
       return;
     } catch (error) {
-      if (!isPanelPathNotFoundError(error)) {
+      if (!isPanelFallbackMissError(error)) {
         throw error;
       }
     }
@@ -771,6 +783,18 @@ export class XuiService {
       });
     }
 
+    const settings = parseJsonRecord(inbound.settings);
+    const settingsStats = settings?.clientStats;
+    if (Array.isArray(settingsStats)) {
+      for (const item of settingsStats as XuiInboundStat[]) {
+        const email = item.email?.trim().toLowerCase();
+        if (!email || statsByEmail.has(email)) {
+          continue;
+        }
+        statsByEmail.set(email, item);
+      }
+    }
+
     for (const client of clients) {
       const email = client.email?.trim().toLowerCase();
       if (!email || statsByEmail.has(email)) {
@@ -788,12 +812,6 @@ export class XuiService {
 
     if (statsByEmail.size > 0) {
       return Array.from(statsByEmail.values());
-    }
-
-    const settings = parseJsonRecord(inbound.settings);
-    const stats = parseJsonRecord(settings?.clientStats);
-    if (Array.isArray(stats)) {
-      return stats as XuiInboundStat[];
     }
 
     return clients.map((item) => ({
@@ -818,6 +836,26 @@ export class XuiService {
       return inbounds[0].id;
     }
     throw new BadRequestException("未选择 3x-ui 入站，请先读取入站列表并选择目标入站");
+  }
+
+  private async removeClientByEmail(node: XuiNodeConfig, email: string): Promise<XuiClientRemovalStatus | null> {
+    try {
+      await this.request({
+        node,
+        path: `/panel/api/clients/del/${encodeURIComponent(email)}`,
+        method: "POST",
+        useJson: true
+      });
+      return "deleted";
+    } catch (error) {
+      if (isPanelRecordNotFoundError(error)) {
+        return null;
+      }
+      if (isPanelPathNotFoundError(error)) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private sessionKey(node: XuiNodeConfig) {
@@ -855,8 +893,7 @@ export class XuiService {
         deletedAny = true;
       } catch (error) {
         if (isPanelRecordNotFoundError(error)) {
-          removed = true;
-          deletedAny = true;
+          removed = false;
         } else if (!isPanelPathNotFoundError(error)) {
           throw error;
         }
@@ -945,13 +982,40 @@ function normalizeNodeConfig(node: XuiNodeConfig) {
     throw new BadRequestException("节点缺少 3x-ui 面板配置");
   }
 
+  const panelLocation = normalizePanelLocation(node.panelBaseUrl, node.panelApiBasePath);
   return {
     ...node,
-    panelBaseUrl: node.panelBaseUrl.trim().replace(/\/$/, ""),
-    panelApiBasePath: normalizePanelBasePath(node.panelApiBasePath),
+    panelBaseUrl: panelLocation.panelBaseUrl,
+    panelApiBasePath: panelLocation.panelApiBasePath,
     panelUsername: node.panelUsername.trim(),
     panelPassword: node.panelPassword.trim()
   } satisfies NormalizedXuiNodeConfig;
+}
+
+function normalizePanelLocation(panelBaseUrl: string, panelApiBasePath: string | null) {
+  const trimmedBaseUrl = panelBaseUrl.trim().replace(/\/+$/, "");
+  const normalizedInputPath = normalizePanelBasePath(panelApiBasePath);
+
+  try {
+    const parsed = new URL(trimmedBaseUrl);
+    const urlPath = normalizePanelBasePath(parsed.pathname);
+    const normalizedBaseUrl = `${parsed.protocol}//${parsed.host}`;
+    if (!urlPath) {
+      return {
+        panelBaseUrl: normalizedBaseUrl,
+        panelApiBasePath: normalizedInputPath
+      };
+    }
+    return {
+      panelBaseUrl: normalizedBaseUrl,
+      panelApiBasePath: mergePanelBasePaths(urlPath, normalizedInputPath)
+    };
+  } catch {
+    return {
+      panelBaseUrl: trimmedBaseUrl,
+      panelApiBasePath: normalizedInputPath
+    };
+  }
 }
 
 function normalizePanelBasePath(input: string | null) {
@@ -959,7 +1023,35 @@ function normalizePanelBasePath(input: string | null) {
   if (raw === "/") {
     return "";
   }
-  return `/${raw.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+  const path = readUrlPath(raw) ?? raw;
+  const withoutSlashes = path.replace(/^\/+/, "").replace(/\/+$/, "");
+  const withoutApiSuffix = withoutSlashes.replace(/(?:^|\/)panel\/api$/i, "");
+  if (!withoutApiSuffix) {
+    return "";
+  }
+  return `/${withoutApiSuffix.replace(/\/+$/, "")}`;
+}
+
+function readUrlPath(raw: string) {
+  try {
+    const parsed = new URL(raw);
+    return parsed.pathname;
+  } catch {
+    return null;
+  }
+}
+
+function mergePanelBasePaths(urlPath: string, inputPath: string) {
+  if (!inputPath || inputPath === urlPath) {
+    return urlPath;
+  }
+  if (inputPath.startsWith(`${urlPath}/`)) {
+    return inputPath;
+  }
+  if (urlPath.startsWith(`${inputPath}/`)) {
+    return urlPath;
+  }
+  return `${urlPath}${inputPath}`;
 }
 
 function joinPanelPath(basePath: string, path: string) {
@@ -1096,6 +1188,33 @@ function isPanelRecordNotFoundError(error: unknown) {
     }
   }
   return false;
+}
+
+function isInboundMissingError(error: unknown) {
+  const message = readExceptionMessage(error);
+  return /inbound|入站|no available/i.test(message) && /not\s+found|missing|没有|未找到|no available/i.test(message);
+}
+
+function readExceptionMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  if (error instanceof BadGatewayException || error instanceof BadRequestException) {
+    const response = error.getResponse();
+    if (typeof response === "string") {
+      return response;
+    }
+    if (response && typeof response === "object") {
+      const message = Reflect.get(response, "message");
+      if (Array.isArray(message)) {
+        return message.join(" ");
+      }
+      if (typeof message === "string") {
+        return message;
+      }
+    }
+  }
+  return "";
 }
 
 function readErrorMessage(error: unknown) {

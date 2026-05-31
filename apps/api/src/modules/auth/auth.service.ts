@@ -13,7 +13,7 @@ export class AuthService {
     return this.devDataService.refresh(refreshToken);
   }
 
-  logout(token?: string) {
-    return this.devDataService.logout(token);
+  logout(token?: string, refreshToken?: string) {
+    return this.devDataService.logout(token, refreshToken);
   }
 }

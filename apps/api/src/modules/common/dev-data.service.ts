@@ -186,6 +186,7 @@ import {
   toClientSupportTicketSummary
 } from "./ticket.utils";
 import { RuntimeSessionService } from "./runtime-session.service";
+import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 
 type UploadedReleaseFile = {
@@ -230,16 +231,16 @@ export class DevDataService implements OnModuleInit {
     return this.clientAccessService.refresh(token);
   }
 
-  async logout(token?: string) {
-    return this.clientAccessService.logout(token);
+  async logout(token?: string, refreshToken?: string) {
+    return this.clientAccessService.logout(token, refreshToken);
   }
 
-  async streamRuntimeEvents(token?: string) {
-    return this.clientAccessService.streamRuntimeEvents(token);
+  async streamRuntimeEvents(token?: string, lastEventId?: string | null) {
+    return this.clientAccessService.streamRuntimeEvents(token, lastEventId);
   }
 
-  async getBootstrap(token?: string): Promise<ClientBootstrapDto> {
-    return this.clientAccessService.getBootstrap(token);
+  async getBootstrap(token?: string, platform?: PlatformTarget): Promise<ClientBootstrapDto> {
+    return this.clientAccessService.getBootstrap(token, platform);
   }
 
   async getSubscription(token?: string): Promise<SubscriptionStatusDto> {
@@ -269,8 +270,8 @@ export class DevDataService implements OnModuleInit {
     return this.announcementPolicyService.markClientAnnouncementsRead(input, token);
   }
 
-  async getClientVersion(): Promise<ClientVersionDto> {
-    return this.clientAccessService.getClientVersion();
+  async getClientVersion(platform?: PlatformTarget): Promise<ClientVersionDto> {
+    return this.clientAccessService.getClientVersion(platform);
   }
 
   private async listActiveUserIds(): Promise<string[]> {
@@ -477,11 +478,16 @@ export class DevDataService implements OnModuleInit {
 
   async replyAdminSupportTicket(
     ticketId: string,
-    input: ReplyClientSupportTicketInputDto
+    input: ReplyClientSupportTicketInputDto,
+    adminUserId?: string | null
   ): Promise<AdminSupportTicketDetailDto> {
     const body = input.body.trim();
     if (!body) {
       throw new BadRequestException("回复内容不能为空");
+    }
+
+    if (body.length > 4000) {
+      throw new BadRequestException("Reply body must not exceed 4000 characters.");
     }
 
     const current = await this.prisma.supportTicket.findUnique({
@@ -502,6 +508,7 @@ export class DevDataService implements OnModuleInit {
           id: createId("ticket_msg"),
           ticketId,
           authorRole: "admin",
+          authorUserId: adminUserId ?? null,
           body
         }
       }),
@@ -577,8 +584,8 @@ export class DevDataService implements OnModuleInit {
     return this.getAdminSupportTicketDetail(ticketId);
   }
 
-  async listAdminReleases(): Promise<AdminReleaseRecordDto[]> {
-    return this.releaseCenterService.listAdminReleases();
+  async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
+    return this.releaseCenterService.listAdminReleases(input);
   }
 
   async createRelease(input: CreateReleaseInputDto): Promise<AdminReleaseRecordDto> {
@@ -1077,6 +1084,13 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     input: UpdateSubscriptionNodeAccessInputDto
   ): Promise<SubscriptionNodeAccessDto> {
+    return runWithSubscriptionUsageLock(subscriptionId, () => this.updateSubscriptionNodeAccessLocked(subscriptionId, input));
+  }
+
+  private async updateSubscriptionNodeAccessLocked(
+    subscriptionId: string,
+    input: UpdateSubscriptionNodeAccessInputDto
+  ): Promise<SubscriptionNodeAccessDto> {
     const subscription = await this.requireSubscription(subscriptionId);
 
     const uniqueNodeIds = [...new Set(input.nodeIds)];
@@ -1094,16 +1108,30 @@ export class DevDataService implements OnModuleInit {
 
     if (uniqueNodeIds.length === 0) {
       if (existingRows.length > 0) {
-        await this.prisma.subscriptionNodeAccess.deleteMany({
-          where: { subscriptionId }
+        const queuedPanelSyncMessage = await this.prisma.$transaction(async (tx) => {
+          const queuedMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(
+            tx,
+            subscriptionId,
+            undefined
+          );
+          await tx.subscriptionNodeAccess.deleteMany({
+            where: { subscriptionId }
+          });
+          return queuedMessage;
         });
-        const pendingPanelSyncCount =
-          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscriptionId);
-        revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "node_access_revoked");
-        if (pendingPanelSyncCount > 0) {
+        const revocation = await this.tryApplyNodeAccessRevocationEffects(
+          subscriptionId,
+          undefined,
+          "node_access_revoked",
+          { queuedPanelSyncMessage }
+        );
+        revokedSessionCount = revocation.revokedSessionCount;
+        if (revocation.panelSyncMessage) {
           panelSyncStatus = "pending";
+          panelSyncMessage = revocation.panelSyncMessage;
           panelSyncMessage = "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。";
         }
+        panelSyncMessage = revocation.panelSyncMessage ?? panelSyncMessage;
         reasonCode = "node_access_revoked";
         reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
         message =
@@ -1144,25 +1172,42 @@ export class DevDataService implements OnModuleInit {
     const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
 
     if (removedNodeIds.length > 0) {
-      await this.prisma.subscriptionNodeAccess.deleteMany({
-        where: {
+      const queuedPanelSyncMessage = await this.prisma.$transaction(async (tx) => {
+        const queuedMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(
+          tx,
           subscriptionId,
-          nodeId: { in: removedNodeIds }
+          { nodeIds: removedNodeIds }
+        );
+        await tx.subscriptionNodeAccess.deleteMany({
+          where: {
+            subscriptionId,
+            nodeId: { in: removedNodeIds }
+          }
+        });
+        if (addedNodeIds.length > 0) {
+          await tx.subscriptionNodeAccess.createMany({
+            data: addedNodeIds.map((nodeId) => ({
+              id: createId("subscription_node"),
+              subscriptionId,
+              nodeId
+            }))
+          });
         }
+        return queuedMessage;
       });
-      const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
+      const revocation = await this.tryApplyNodeAccessRevocationEffects(
         subscriptionId,
-        {
-          nodeIds: removedNodeIds
-        }
+        { nodeIds: removedNodeIds },
+        "node_access_revoked",
+        { queuedPanelSyncMessage }
       );
-      revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "node_access_revoked", {
-        nodeIds: removedNodeIds
-      });
-      if (pendingPanelSyncCount > 0) {
+      revokedSessionCount = revocation.revokedSessionCount;
+      if (revocation.panelSyncMessage) {
         panelSyncStatus = "pending";
+        panelSyncMessage = revocation.panelSyncMessage;
         panelSyncMessage = "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。";
       }
+      panelSyncMessage = revocation.panelSyncMessage ?? panelSyncMessage;
       reasonCode = "node_access_revoked";
       reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
       message =
@@ -1171,7 +1216,7 @@ export class DevDataService implements OnModuleInit {
           : `节点授权已保存。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
     }
 
-    if (addedNodeIds.length > 0) {
+    if (removedNodeIds.length === 0 && addedNodeIds.length > 0) {
       await this.prisma.subscriptionNodeAccess.createMany({
         data: addedNodeIds.map((nodeId) => ({
           id: createId("subscription_node"),
@@ -1181,7 +1226,11 @@ export class DevDataService implements OnModuleInit {
       });
     }
 
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+    const panelSync = await this.trySyncSubscriptionPanelAccess(subscriptionId);
+    if (!panelSync.ok) {
+      panelSyncStatus = "pending";
+      panelSyncMessage = `节点授权已保存，但 3x-ui 客户端预同步失败，将在连接时重试：${panelSync.errorMessage}`;
+    }
     await this.publishNodeAccessUpdatedEvent({
       subscriptionId,
       userId: subscription.userId,
@@ -1204,7 +1253,97 @@ export class DevDataService implements OnModuleInit {
       reasonMessage,
       panelSyncStatus,
       panelSyncMessage,
-      message: message ?? "节点授权已保存。"
+      message: panelSyncMessage ? `${message ?? "节点授权已保存。"} ${panelSyncMessage}` : (message ?? "节点授权已保存。")
+    };
+  }
+
+  private async trySyncSubscriptionPanelAccess(subscriptionId: string) {
+    try {
+      await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+      return { ok: true as const };
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
+      return { ok: false as const, errorMessage };
+    }
+  }
+
+  private async queuePanelDisableJobsForNodeAccessRevocation(
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined
+  ) {
+    try {
+      const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
+        subscriptionId,
+        filter
+      );
+      return pendingPanelSyncCount > 0
+        ? "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。"
+        : null;
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger.warn(`Node access was not saved because 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      throw new BadGatewayException(`Node access was not saved because 3x-ui disable job queueing failed: ${errorMessage}`);
+      throw new BadGatewayException(`节点授权未保存：3x-ui 客户端禁用任务入队失败，避免远端客户端残留。${errorMessage}`);
+    }
+  }
+
+  private async queuePanelDisableJobsForNodeAccessRevocationTx(
+    writer: any,
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined
+  ) {
+    try {
+      const pendingPanelSyncCount = await this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(
+        writer,
+        subscriptionId,
+        filter
+      );
+      await this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(
+        writer,
+        subscriptionId,
+        "node_access_revoked",
+        filter
+      );
+      if (pendingPanelSyncCount > 0) {
+        return "3x-ui disable job queued; local node access and active sessions are invalidated.";
+      }
+      return null;
+      return pendingPanelSyncCount > 0
+        ? "3x-ui 瀹㈡埛绔鐢ㄥ凡鍔犲叆鍚庡彴闃熷垪锛屾湰鍦版巿鏉冨拰褰撳墠杩炴帴宸茬珛鍗冲け鏁堛€?"
+        : null;
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger.warn(`Node access was not saved because 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      throw new BadGatewayException(`Node access was not saved because 3x-ui disable job queueing failed: ${errorMessage}`);
+      throw new BadGatewayException(`鑺傜偣鎺堟潈鏈繚瀛橈細3x-ui 瀹㈡埛绔鐢ㄤ换鍔″叆闃熷け璐ワ紝閬垮厤杩滅瀹㈡埛绔畫鐣欍€?{errorMessage}`);
+    }
+  }
+
+  private async tryApplyNodeAccessRevocationEffects(
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined,
+    reason: string,
+    options: { queuedPanelSyncMessage?: string | null } = {}
+  ) {
+    const messages: string[] = [];
+    let revokedSessionCount = 0;
+
+    if (options.queuedPanelSyncMessage) {
+      messages.push(options.queuedPanelSyncMessage);
+    }
+
+    try {
+      revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger.warn(`Node access saved, but active lease revocation failed for ${subscriptionId}: ${errorMessage}`);
+      messages.push(`active lease revocation failed: ${errorMessage}`);
+    }
+
+    return {
+      revokedSessionCount,
+      panelSyncMessage: messages.length > 0 ? messages.join(" ") : null
     };
   }
 
@@ -1312,4 +1451,8 @@ function shouldAutoBootstrapDevData() {
     return false;
   }
   return false;
+}
+
+function readPanelSyncErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : "3x-ui 客户端预同步失败";
 }

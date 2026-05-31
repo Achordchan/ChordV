@@ -3559,11 +3559,10 @@ try {
   }
   Write-UpdateLog "mirroring staged payload files to $InstallDir"
   try {
+    Get-ChildItem -LiteralPath $InstallDir -Force | ForEach-Object {
+      Remove-Item -LiteralPath $_.FullName -Recurse -Force
+    }
     Get-ChildItem -LiteralPath $staging -Force | ForEach-Object {
-      $targetPath = Join-Path $InstallDir $_.Name
-      if (Test-Path -LiteralPath $targetPath) {
-        Remove-Item -LiteralPath $targetPath -Recurse -Force
-      }
       Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
     }
     $exePath = Join-Path $InstallDir $ExeName

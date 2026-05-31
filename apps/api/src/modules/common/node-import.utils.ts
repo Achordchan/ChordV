@@ -22,7 +22,26 @@ export function normalizePanelApiBasePath(value: string | null | undefined) {
   if (raw === "/") {
     return "/";
   }
-  return `/${raw.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+  return normalizePanelPathValue(raw) || "/";
+}
+
+function normalizePanelPathValue(raw: string) {
+  const parsedPath = readUrlPath(raw) ?? raw;
+  const withoutSlashes = parsedPath.replace(/^\/+/, "").replace(/\/+$/, "");
+  const withoutApiSuffix = withoutSlashes.replace(/(?:^|\/)panel\/api$/i, "");
+  if (!withoutApiSuffix) {
+    return "/";
+  }
+  return `/${withoutApiSuffix.replace(/\/+$/, "")}`;
+}
+
+function readUrlPath(raw: string) {
+  try {
+    const parsed = new URL(raw);
+    return parsed.pathname;
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeOptionalString(value: string | null | undefined) {

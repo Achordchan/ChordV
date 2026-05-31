@@ -493,6 +493,10 @@ model PanelSyncJob {
   panelClientEmail String
   panelClientId    String
   panelInboundId   Int
+  panelBaseUrl     String?
+  panelApiBasePath String?
+  panelUsername    String?
+  panelPassword    String?
   status           String             @default("pending")
   attempts         Int                @default(0)
   nextRunAt        DateTime           @default(now())
@@ -510,6 +514,28 @@ model PanelSyncJob {
   @@index([status, nextRunAt])
   @@index([nodeId, status, nextRunAt])
   @@index([subscriptionId, status])
+}
+
+model LeaseRevocationJob {
+  id             String    @id
+  dedupeKey      String    @unique
+  reason         String
+  subscriptionId String?
+  userId         String?
+  nodeId         String?
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  nextRunAt      DateTime  @default(now())
+  lockedAt       DateTime?
+  lastError      String?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, nextRunAt])
+  @@index([subscriptionId, status, nextRunAt])
+  @@index([userId, status, nextRunAt])
+  @@index([nodeId, status, nextRunAt])
 }
 
 model PolicyProfile {

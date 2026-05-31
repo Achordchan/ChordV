@@ -13,17 +13,23 @@ import type {
   UploadRuntimeComponentInputDto,
   UpdateRuntimeComponentInputDto
 } from "@chordv/shared";
-import { fetch as undiciFetch } from "undici";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { PrismaService } from "./prisma.service";
 import { AuthSessionService } from "./auth-session.service";
+import { moveUploadedFile } from "./upload-file.utils";
+import { readZipEntryData } from "./release-center.utils";
+import { fetchPublicHttpUrl } from "./remote-url.utils";
 
 const RUNTIME_COMPONENT_DOWNLOAD_PREFIX = "/api/downloads/runtime-components";
 const SHARED_RULESET_PLATFORM: PlatformTarget = "macos";
 const SHARED_RULESET_ARCHITECTURE: RuntimeComponentArchitecture = "arm64";
+const DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES = 512 * 1024 * 1024;
+const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 30 * 1000;
 
 type UploadedRuntimeComponentFile = {
   path: string;
@@ -55,10 +61,16 @@ export class RuntimeComponentsService {
   }
 
   async createAdminRuntimeComponent(input: CreateRuntimeComponentInputDto): Promise<AdminRuntimeComponentRecordDto> {
-    const originUrl = input.originUrl?.trim();
-    if (!originUrl) {
-      throw new BadRequestException("请填写组件下载直链");
+    const rawSource = (input as { source?: string }).source;
+    if (rawSource === "uploaded") {
+      throw new BadRequestException("Uploaded runtime components must be created through the upload endpoint.");
     }
+    const originUrl = input.originUrl?.trim();
+    if (!originUrl || !isHttpUrl(originUrl)) {
+      throw new BadRequestException("Remote runtime components require a valid HTTP(S) origin URL.");
+    }
+    const source = input.source ?? "github_remote";
+    const expectedHash = normalizeExpectedHash(input.expectedHash);
     const normalizedInput = normalizeRuntimeComponentIdentity(input.platform, input.architecture, input.kind);
     if (isSharedRuleset(input.kind)) {
       const existing = await this.findSharedRulesetRecord(input.kind);
@@ -69,13 +81,16 @@ export class RuntimeComponentsService {
             platform: normalizedInput.platform,
             architecture: normalizedInput.architecture,
             kind: input.kind,
-            source: input.source ?? "github_remote",
+            source,
             originUrl,
             defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix),
             allowClientMirror: input.allowClientMirror ?? true,
             fileName: input.fileName.trim(),
+            storedFilePath: null,
+            fileSizeBytes: null,
+            fileHash: null,
             archiveEntryName: normalizeNullableText(input.archiveEntryName),
-            expectedHash: normalizeNullableText(input.expectedHash),
+            expectedHash,
             enabled: input.enabled ?? true
           }
         });
@@ -90,7 +105,7 @@ export class RuntimeComponentsService {
         platform: normalizedInput.platform,
         architecture: normalizedInput.architecture,
         kind: input.kind,
-        source: input.source ?? "github_remote",
+        source,
         originUrl,
         defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix),
         allowClientMirror: input.allowClientMirror ?? true,
@@ -99,7 +114,7 @@ export class RuntimeComponentsService {
         fileSizeBytes: null,
         fileHash: null,
         archiveEntryName: normalizeNullableText(input.archiveEntryName),
-        expectedHash: normalizeNullableText(input.expectedHash),
+        expectedHash,
         enabled: input.enabled ?? true
       }
     });
@@ -129,6 +144,8 @@ export class RuntimeComponentsService {
     let prepared: PreparedUploadedRuntimeComponentFile | null = null;
     try {
       prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
+      const expectedHash = normalizeExpectedHash(input.expectedHash);
+      assertExpectedHashMatchesFile(expectedHash, prepared.fileHash);
       const created = await this.prisma.runtimeComponent.create({
         data: {
           id: componentId,
@@ -144,7 +161,7 @@ export class RuntimeComponentsService {
           fileSizeBytes: prepared.fileSizeBytes,
           fileHash: prepared.fileHash,
           archiveEntryName: null,
-          expectedHash: normalizeNullableText(input.expectedHash) ?? prepared.fileHash,
+          expectedHash: expectedHash ?? prepared.fileHash,
           enabled: input.enabled ?? true
         }
       });
@@ -155,6 +172,8 @@ export class RuntimeComponentsService {
     } catch (error) {
       if (prepared) {
         await removeRuntimeComponentFile(prepared.absolutePath);
+      } else {
+        await removeRuntimeComponentFile(file.path);
       }
       throw error;
     }
@@ -167,7 +186,10 @@ export class RuntimeComponentsService {
     const current = await this.ensureRuntimeComponentExists(componentId);
     const normalizedIdentity = normalizeRuntimeComponentIdentity(current.platform, current.architecture as RuntimeComponentArchitecture, current.kind as RuntimeComponentKind);
     const nextSource = input.source ?? current.source;
-    const nextOriginUrl = input.originUrl !== undefined ? input.originUrl.trim() : current.originUrl.trim();
+    const nextOriginUrl =
+      input.originUrl !== undefined ? normalizeRequiredText(input.originUrl, "originUrl") : current.originUrl.trim();
+    const nextFileName =
+      input.fileName !== undefined ? normalizeRequiredText(input.fileName, "fileName") : current.fileName;
     if (nextSource === "uploaded" && current.source !== "uploaded") {
       throw new BadRequestException("Uploaded runtime components must be created through the upload endpoint.");
     }
@@ -180,6 +202,16 @@ export class RuntimeComponentsService {
     if (nextSource !== "uploaded" && (!nextOriginUrl || !isHttpUrl(nextOriginUrl))) {
       throw new BadRequestException("Remote runtime components require a valid HTTP(S) origin URL.");
     }
+    const normalizedExpectedHash =
+      input.expectedHash !== undefined ? normalizeExpectedHash(input.expectedHash) : current.expectedHash;
+    const remoteValidationInvalidated =
+      nextSource !== "uploaded" &&
+      (current.source === "uploaded" ||
+        nextSource !== current.source ||
+        nextOriginUrl !== current.originUrl ||
+        normalizedExpectedHash !== current.expectedHash);
+    const staleUploadedFilePath =
+      remoteValidationInvalidated && current.storedFilePath ? current.storedFilePath : null;
 
     const updated = await this.prisma.runtimeComponent.update({
       where: { id: componentId },
@@ -190,10 +222,17 @@ export class RuntimeComponentsService {
           ? { defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix) }
           : {}),
         ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
-        ...(input.fileName !== undefined ? { fileName: input.fileName.trim() } : {}),
+        ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
         ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
-        ...(input.expectedHash !== undefined ? { expectedHash: normalizeNullableText(input.expectedHash) } : {}),
+        ...(input.expectedHash !== undefined ? { expectedHash: normalizedExpectedHash } : {}),
         ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        ...(remoteValidationInvalidated
+          ? {
+              storedFilePath: null,
+              fileSizeBytes: null,
+              fileHash: null
+            }
+          : {}),
         ...(isSharedRuleset(current.kind as RuntimeComponentKind)
           ? {
               platform: normalizedIdentity.platform,
@@ -211,6 +250,9 @@ export class RuntimeComponentsService {
     });
     if (isSharedRuleset(updated.kind as RuntimeComponentKind)) {
       await this.cleanupSharedRulesetDuplicates(updated.kind as RuntimeComponentKind, updated.id);
+    }
+    if (staleUploadedFilePath) {
+      await removeRuntimeComponentFile(resolveRuntimeComponentAbsolutePath(staleUploadedFilePath));
     }
     return toAdminRuntimeComponentRecord(updated);
   }
@@ -230,6 +272,8 @@ export class RuntimeComponentsService {
     let prepared: PreparedUploadedRuntimeComponentFile | null = null;
     try {
       prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
+      const expectedHash = normalizeExpectedHash(input.expectedHash);
+      assertExpectedHashMatchesFile(expectedHash, prepared.fileHash);
       const updated = await this.prisma.runtimeComponent.update({
         where: { id: componentId },
         data: {
@@ -245,7 +289,7 @@ export class RuntimeComponentsService {
           fileSizeBytes: prepared.fileSizeBytes,
           fileHash: prepared.fileHash,
           archiveEntryName: null,
-          expectedHash: normalizeNullableText(input.expectedHash) ?? prepared.fileHash,
+          expectedHash: expectedHash ?? prepared.fileHash,
           enabled: input.enabled ?? current.enabled
         }
       });
@@ -259,6 +303,8 @@ export class RuntimeComponentsService {
     } catch (error) {
       if (prepared) {
         await removeRuntimeComponentFile(prepared.absolutePath);
+      } else {
+        await removeRuntimeComponentFile(file.path);
       }
       throw error;
     }
@@ -307,7 +353,17 @@ export class RuntimeComponentsService {
     }
 
     try {
-      const response = await undiciFetch(resolvedUrl, { method: "HEAD", redirect: "follow" });
+      if (component.expectedHash) {
+        return await this.validateRemoteRuntimeComponentHash(
+          componentId,
+          resolvedUrl,
+          component.expectedHash,
+          component.archiveEntryName
+        );
+      }
+      const { response } = await fetchPublicHttpUrl(resolvedUrl, { method: "HEAD" }, {
+        errorPrefix: "Remote runtime component URL"
+      });
       if (response.ok) {
         return {
           componentId,
@@ -335,6 +391,9 @@ export class RuntimeComponentsService {
   }
 
   async listRuntimeComponentFailureReports(limit = 100): Promise<AdminRuntimeComponentFailureReportDto[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new BadRequestException("Runtime failure report limit must be an integer between 1 and 200.");
+    }
     const rows = await this.prisma.runtimeComponentFailureReport.findMany({
       orderBy: [{ createdAt: "desc" }],
       take: limit,
@@ -379,7 +438,7 @@ export class RuntimeComponentsService {
         orderBy: [{ updatedAt: "desc" }]
       })
     );
-    const rows = [...runtimeRows, ...sharedRulesetRows];
+    const rows = await filterClientUsableRuntimeComponents([...runtimeRows, ...sharedRulesetRows]);
 
     if (!hasCompleteRuntimeComponentSet(rows)) {
       return {
@@ -455,10 +514,21 @@ export class RuntimeComponentsService {
       }
     }
 
+    const componentId = normalizeNullableText(input.componentId);
+    if (componentId) {
+      const component = await this.prisma.runtimeComponent.findUnique({
+        where: { id: componentId },
+        select: { id: true }
+      });
+      if (!component) {
+        throw new BadRequestException("Runtime component does not exist.");
+      }
+    }
+
     await this.prisma.runtimeComponentFailureReport.create({
       data: {
         id: createId("rtfail"),
-        componentId: input.componentId ?? null,
+        componentId,
         platform: input.platform,
         architecture: input.architecture,
         kind: input.kind,
@@ -480,8 +550,7 @@ export class RuntimeComponentsService {
     if (!component || component.source !== "uploaded" || !component.storedFilePath || !component.enabled) {
       throw new NotFoundException("内核组件不存在");
     }
-    const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
-    await ensureFileReadable(absolutePath);
+    const { absolutePath } = await assertStoredRuntimeComponentReadable(component);
     return {
       absolutePath,
       fileName: component.fileName ?? path.basename(absolutePath)
@@ -508,11 +577,121 @@ export class RuntimeComponentsService {
     });
   }
 
+  private async validateRemoteRuntimeComponentHash(
+    componentId: string,
+    resolvedUrl: string,
+    expectedHash: string,
+    archiveEntryName: string | null
+  ): Promise<AdminRuntimeComponentValidationDto> {
+    const limits = getRemoteRuntimeHashLimits();
+    const controller = new AbortController();
+    let timeoutReason: "total" | "idle" | null = null;
+    const archiveDownloadPath = archiveEntryName
+      ? path.join(tmpdir(), `chordv-runtime-component-${randomUUID()}.download`)
+      : null;
+    const totalTimeout = setTimeout(() => {
+      timeoutReason = "total";
+      controller.abort();
+    }, limits.totalTimeoutMs);
+    try {
+      const { response } = await fetchPublicHttpUrl(resolvedUrl, { method: "GET", signal: controller.signal }, {
+        errorPrefix: "Remote runtime component URL"
+      });
+      if (!response.ok) {
+        return {
+          componentId,
+          status: "unreachable",
+          message: `Remote runtime component is not reachable: HTTP ${response.status}`,
+          finalUrlPreview: resolvedUrl,
+          httpStatus: response.status
+        };
+      }
+
+      const contentLength = parseContentLength(response.headers.get("content-length"));
+      if (contentLength !== null && contentLength > limits.maxBytes) {
+        return {
+          componentId,
+          status: "metadata_mismatch",
+          message: `Remote runtime component is too large: ${contentLength} bytes exceeds ${limits.maxBytes} bytes.`,
+          finalUrlPreview: resolvedUrl,
+          httpStatus: response.status
+        };
+      }
+
+      const metadata = await hashResponseBody(response, {
+        maxBytes: limits.maxBytes,
+        idleTimeoutMs: limits.idleTimeoutMs,
+        writePath: archiveDownloadPath,
+        onIdleTimeout: () => {
+          timeoutReason = "idle";
+          controller.abort();
+        }
+      });
+      const actualFileHash = archiveEntryName
+        ? createHash("sha256")
+            .update(await readZipEntryData(archiveDownloadPath as string, archiveEntryName))
+            .digest("hex")
+        : metadata.fileHash;
+      if (actualFileHash !== expectedHash) {
+        return {
+          componentId,
+          status: "metadata_mismatch",
+          message: "Remote runtime component SHA256 does not match expectedHash.",
+          finalUrlPreview: resolvedUrl,
+          httpStatus: response.status
+        };
+      }
+
+      await this.prisma.runtimeComponent.update({
+        where: { id: componentId },
+        data: {
+          fileSizeBytes: metadata.fileSizeBytes,
+          fileHash: actualFileHash,
+          expectedHash
+        }
+      });
+
+      return {
+        componentId,
+        status: "ready",
+        message: "Remote runtime component is reachable and expectedHash matches.",
+        finalUrlPreview: resolvedUrl,
+        httpStatus: response.status
+      };
+    } catch (error) {
+      if (error instanceof RemoteRuntimeHashSizeError) {
+        controller.abort();
+        return {
+          componentId,
+          status: "metadata_mismatch",
+          message: error.message,
+          finalUrlPreview: resolvedUrl
+        };
+      }
+      if (timeoutReason) {
+        const timeoutMs = timeoutReason === "total" ? limits.totalTimeoutMs : limits.idleTimeoutMs;
+        return {
+          componentId,
+          status: "unreachable",
+          message: `Remote runtime component download timed out after ${timeoutMs}ms (${timeoutReason}).`,
+          finalUrlPreview: resolvedUrl
+        };
+      }
+      throw error;
+    } finally {
+      clearTimeout(totalTimeout);
+      if (archiveDownloadPath) {
+        await fs.rm(archiveDownloadPath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+
   private async validateUploadedRuntimeComponent(
     componentId: string,
     component: {
       storedFilePath: string | null;
       fileHash: string | null;
+      expectedHash: string | null;
       fileSizeBytes: bigint | null;
     },
     resolvedUrl: string
@@ -526,39 +705,24 @@ export class RuntimeComponentsService {
       };
     }
 
-    const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
     try {
-      await ensureFileReadable(absolutePath);
-    } catch {
+      const metadata = await assertStoredRuntimeComponentReadable(component);
       return {
         componentId,
-        status: "missing_file",
-        message: "服务器上的内核组件文件已丢失，请重新上传。",
+        status: "ready",
+        message: "已上传组件可用，客户端下载地址和文件元信息已匹配。",
+        finalUrlPreview: resolvedUrl,
+        actualFileSizeBytes: metadata.fileSizeBytes.toString(),
+        actualFileHash: metadata.fileHash
+      };
+    } catch (error) {
+      return {
+        componentId,
+        status: error instanceof NotFoundException ? "missing_file" : "metadata_mismatch",
+        message: "服务器文件存在状态或元数据异常，建议重新上传覆盖。",
         finalUrlPreview: resolvedUrl
       };
     }
-
-    const stat = await fs.stat(absolutePath);
-    const actualFileHash = await calculateFileSha256(absolutePath);
-    const actualFileSizeBytes = stat.size.toString();
-    const hashMatches = !component.fileHash || component.fileHash === actualFileHash;
-    const sizeMatches = !component.fileSizeBytes || component.fileSizeBytes.toString() === actualFileSizeBytes;
-
-    if (!hashMatches || !sizeMatches) {
-      return {
-        componentId,
-        status: "metadata_mismatch",
-        message: "服务器文件存在，但记录里的大小或 Hash 与真实文件不一致，建议重新上传覆盖。",
-        finalUrlPreview: resolvedUrl
-      };
-    }
-
-    return {
-      componentId,
-      status: "ready",
-      message: "已上传组件可用，客户端下载地址和文件元信息已匹配。",
-      finalUrlPreview: resolvedUrl
-    };
   }
 
   private async prepareUploadedRuntimeComponentFile(
@@ -582,24 +746,6 @@ export class RuntimeComponentsService {
       downloadUrl: buildRuntimeComponentDownloadUrl(componentId)
     };
   }
-}
-
-async function moveUploadedFile(sourcePath: string, targetPath: string) {
-  try {
-    await fs.rename(sourcePath, targetPath);
-    return;
-  } catch (error) {
-    if (!isCrossDeviceRenameError(error)) {
-      throw error;
-    }
-  }
-
-  await fs.copyFile(sourcePath, targetPath);
-  await fs.unlink(sourcePath);
-}
-
-function isCrossDeviceRenameError(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "EXDEV";
 }
 
 function buildRuntimeComponentCandidates(
@@ -755,6 +901,212 @@ function normalizeNullableText(value?: string | null) {
 
 function isHttpUrl(value: string) {
   return /^https?:\/\//i.test(value.trim());
+}
+
+function normalizeRequiredText(value: string | null | undefined, fieldName: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new BadRequestException(`${fieldName} must not be empty.`);
+  }
+  return trimmed;
+}
+
+function normalizeExpectedHash(value?: string | null) {
+  const normalized = normalizeNullableText(value);
+  if (!normalized) {
+    return null;
+  }
+  if (!/^[a-f0-9]{64}$/i.test(normalized)) {
+    throw new BadRequestException("SHA256 must be a 64-character hexadecimal string.");
+  }
+  return normalized.toLowerCase();
+}
+
+function assertExpectedHashMatchesFile(expectedHash: string | null, actualHash: string) {
+  if (expectedHash && expectedHash !== actualHash) {
+    throw new BadRequestException("Uploaded runtime component SHA256 does not match expectedHash.");
+  }
+}
+
+async function hashResponseBody(
+  response: { body: any },
+  options: {
+    maxBytes: number;
+    idleTimeoutMs: number;
+    writePath?: string | null;
+    onIdleTimeout: () => void;
+  }
+) {
+  const hash = createHash("sha256");
+  let fileSizeBytes = 0n;
+  if (!response.body) {
+    return {
+      fileSizeBytes,
+      fileHash: hash.digest("hex")
+    };
+  }
+
+  const reader = response.body.getReader() as {
+    read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+    releaseLock: () => void;
+  };
+  let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+  const output = options.writePath ? await fs.open(options.writePath, "w") : null;
+  const resetIdleTimeout = () => {
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+    idleTimeout = setTimeout(options.onIdleTimeout, options.idleTimeoutMs);
+  };
+  try {
+    resetIdleTimeout();
+    while (true) {
+      const { done, value } = await reader.read();
+      resetIdleTimeout();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      hash.update(value);
+      if (output) {
+        await output.write(value);
+      }
+      fileSizeBytes += BigInt(value.byteLength);
+      if (fileSizeBytes > BigInt(options.maxBytes)) {
+        throw new RemoteRuntimeHashSizeError(
+          `Remote runtime component is too large: streamed bytes exceed ${options.maxBytes} bytes.`
+        );
+      }
+    }
+  } finally {
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+    if (output) {
+      await output.close();
+    }
+    reader.releaseLock();
+  }
+
+  return {
+    fileSizeBytes,
+    fileHash: hash.digest("hex")
+  };
+}
+
+async function assertStoredRuntimeComponentReadable(component: {
+  storedFilePath: string | null;
+  fileSizeBytes?: bigint | number | null;
+  fileHash?: string | null;
+  expectedHash?: string | null;
+}) {
+  if (!component.storedFilePath) {
+    throw new NotFoundException("Uploaded runtime component is missing its stored file.");
+  }
+  const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
+  await ensureFileReadable(absolutePath);
+  const stat = await fs.stat(absolutePath);
+  const actualSize = BigInt(stat.size);
+  if (!hasPositiveFileSize(component.fileSizeBytes) || toBigInt(component.fileSizeBytes) !== actualSize) {
+    throw new BadRequestException("Uploaded runtime component size metadata does not match the stored file.");
+  }
+  if (!isValidSha256(component.fileHash)) {
+    throw new BadRequestException("Uploaded runtime component is missing SHA256 metadata.");
+  }
+  const actualHash = await calculateFileSha256(absolutePath);
+  if (actualHash !== component.fileHash) {
+    throw new BadRequestException("Uploaded runtime component SHA256 metadata does not match the stored file.");
+  }
+  if (component.expectedHash && component.expectedHash !== actualHash) {
+    throw new BadRequestException("Uploaded runtime component expectedHash does not match the stored file.");
+  }
+  return {
+    absolutePath,
+    fileSizeBytes: actualSize,
+    fileHash: actualHash
+  };
+}
+
+class RemoteRuntimeHashSizeError extends Error {}
+
+function getRemoteRuntimeHashLimits() {
+  return {
+    maxBytes: readPositiveIntegerEnv("CHORDV_RUNTIME_REMOTE_HASH_MAX_BYTES", DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES),
+    totalTimeoutMs: readPositiveIntegerEnv(
+      "CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS",
+      DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS
+    ),
+    idleTimeoutMs: readPositiveIntegerEnv(
+      "CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS",
+      DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS
+    )
+  };
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+}
+
+function parseContentLength(value: string | null) {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+async function filterClientUsableRuntimeComponents<T extends {
+  source: string;
+  storedFilePath: string | null;
+  originUrl: string;
+  fileSizeBytes?: bigint | number | null;
+  fileHash?: string | null;
+  expectedHash?: string | null;
+}>(rows: T[]) {
+  const usableRows: T[] = [];
+  for (const row of rows) {
+    if (row.source !== "uploaded") {
+      if (isHttpUrl(row.originUrl) && hasPositiveFileSize(row.fileSizeBytes) && isValidSha256(row.expectedHash)) {
+        usableRows.push(row);
+      }
+      continue;
+    }
+    if (!row.storedFilePath) {
+      continue;
+    }
+    try {
+      await assertStoredRuntimeComponentReadable(row);
+      usableRows.push(row);
+    } catch {
+      continue;
+    }
+  }
+  return usableRows;
+}
+
+function hasPositiveFileSize(value: bigint | number | null | undefined) {
+  if (typeof value === "bigint") {
+    return value > 0n;
+  }
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function toBigInt(value: bigint | number | null | undefined) {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  return typeof value === "number" && Number.isFinite(value) ? BigInt(value) : null;
+}
+
+function isValidSha256(value: string | null | undefined) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
 
 function translatePlatform(platform: "macos" | "windows" | "android" | "ios") {

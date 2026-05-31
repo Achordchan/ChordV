@@ -49,7 +49,7 @@ export type AdminReleaseArtifactRecordDto = {
   defaultMirrorPrefix?: string | null;
   allowClientMirror: boolean;
   fileName?: string | null;
-  fileSizeBytes?: number | null;
+  fileSizeBytes?: string | null;
   fileHash?: string | null;
   isPrimary: boolean;
   isFullPackage: boolean;
@@ -61,7 +61,7 @@ export type AdminReleaseArtifactValidationDto = {
   artifactId: string;
   status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
   message: string;
-  actualFileSizeBytes?: number | null;
+  actualFileSizeBytes?: string | null;
   actualFileHash?: string | null;
 };
 
@@ -92,7 +92,7 @@ export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 
 export type CreateAdminReleaseInputDto = {
   platform: AdminReleasePlatform;
-  status: AdminReleaseStatus;
+  status: Extract<AdminReleaseStatus, "draft" | "published">;
   version: string;
   minimumVersion: string;
   forceUpgrade: boolean;
@@ -101,12 +101,17 @@ export type CreateAdminReleaseInputDto = {
   initialArtifact?: CreateAdminReleaseArtifactInputDto | null;
 };
 
-export type UpdateAdminReleaseInputDto = Partial<CreateAdminReleaseInputDto> & {
+export type UpdateAdminReleaseInputDto = {
+  title?: string;
+  changelog?: string[];
+  minimumVersion?: string;
+  forceUpgrade?: boolean;
+  status?: Extract<AdminReleaseStatus, "draft" | "published">;
   publishedAt?: string | null;
 };
 
 export type UploadAdminReleaseArtifactInputDto = {
-  source?: "uploaded" | "external";
+  source?: "uploaded";
   type: AdminReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
   defaultMirrorPrefix?: string | null;
@@ -140,12 +145,6 @@ function buildReleaseQuery(filters?: FetchAdminReleasesFilters) {
   return query ? `?${query}` : "";
 }
 
-function coerceFileSize(value?: string | null) {
-  if (!value) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function inferDeliveryMode(artifacts: SharedAdminReleaseArtifactDto[]): UpdateDeliveryMode {
   const primary = artifacts.find((item) => item.isPrimary) ?? artifacts[0];
   return primary?.deliveryMode ?? "none";
@@ -163,7 +162,7 @@ function mapArtifact(record: SharedAdminReleaseArtifactDto): AdminReleaseArtifac
     defaultMirrorPrefix: record.defaultMirrorPrefix ?? null,
     allowClientMirror: record.allowClientMirror ?? true,
     fileName: record.fileName ?? null,
-    fileSizeBytes: coerceFileSize(record.fileSizeBytes),
+    fileSizeBytes: record.fileSizeBytes ?? null,
     fileHash: record.fileHash ?? null,
     isPrimary: record.isPrimary,
     isFullPackage: record.isFullPackage,
@@ -292,7 +291,7 @@ export async function verifyAdminReleaseArtifact(releaseId: string, artifactId: 
     artifactId: result.artifactId,
     status: result.status,
     message: result.message,
-    actualFileSizeBytes: coerceFileSize(result.actualFileSizeBytes),
+    actualFileSizeBytes: result.actualFileSizeBytes ?? null,
     actualFileHash: result.actualFileHash ?? null
   } satisfies AdminReleaseArtifactValidationDto;
 }

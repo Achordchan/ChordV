@@ -56,6 +56,19 @@ export function UserEditorSection(props: {
         value={props.userForm.displayName}
         onChange={(event) => props.setUserForm((current) => ({ ...current, displayName: event.currentTarget.value }))}
       />
+      <NumberInput
+        label="最大并发覆盖"
+        description="留空则使用套餐默认并发数"
+        min={1}
+        allowDecimal={false}
+        value={props.userForm.maxConcurrentSessionsOverride}
+        onChange={(value) =>
+          props.setUserForm((current) => ({
+            ...current,
+            maxConcurrentSessionsOverride: value === "" || value === null ? "" : Number(value) || ""
+          }))
+        }
+      />
       <Select
         label="角色"
         data={[
@@ -105,6 +118,13 @@ export function PlanEditorSection(props: {
         min={0}
         value={props.planForm.totalTrafficGb}
         onChange={(value) => props.setPlanForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
+      />
+      <NumberInput
+        label="最大并发会话"
+        min={1}
+        allowDecimal={false}
+        value={props.planForm.maxConcurrentSessions}
+        onChange={(value) => props.setPlanForm((current) => ({ ...current, maxConcurrentSessions: Number(value) || 1 }))}
       />
       <Group grow>
         <Switch
@@ -307,6 +327,14 @@ export function TeamMemberEditorSection(props: {
   teamMemberForm: TeamMemberFormState;
   setTeamMemberForm: Dispatch<SetStateAction<TeamMemberFormState>>;
 }) {
+  const roleOptions =
+    props.teamMemberForm.role === "owner"
+      ? [
+          { value: "owner", label: "负责人", disabled: true },
+          { value: "member", label: "成员" }
+        ]
+      : [{ value: "member", label: "成员" }];
+
   return (
     <>
       <Select
@@ -318,10 +346,9 @@ export function TeamMemberEditorSection(props: {
       />
       <Select
         label="角色"
-        data={[
-          { value: "member", label: "成员" },
-          { value: "owner", label: "负责人" }
-        ]}
+        description="负责人只能通过团队编辑里的负责人字段转移"
+        data={roleOptions}
+        disabled={props.teamMemberForm.role === "owner"}
         value={props.teamMemberForm.role}
         onChange={(value) => props.setTeamMemberForm((current) => ({ ...current, role: (value || "member") as TeamMemberRole }))}
       />
@@ -405,8 +432,10 @@ export function AnnouncementEditorSection(props: {
         <NumberInput
           label="倒计时秒数"
           min={1}
+          step={1}
+          allowDecimal={false}
           value={props.announcementForm.countdownSeconds}
-          onChange={(value) => props.setAnnouncementForm((current) => ({ ...current, countdownSeconds: Number(value) || 1 }))}
+          onChange={(value) => props.setAnnouncementForm((current) => ({ ...current, countdownSeconds: Math.max(1, Math.trunc(Number(value) || 1)) }))}
         />
       ) : null}
       <Switch

@@ -462,7 +462,7 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
       const accessToken = session?.accessToken ?? null;
       await forceStopLocalRuntime();
       if (session) {
-        await logoutSession(accessToken ?? session.accessToken).catch(() => null);
+        await logoutSession(accessToken ?? session.accessToken, session.refreshToken).catch(() => null);
       }
       await clearSession(false);
       if (!rememberPassword) {

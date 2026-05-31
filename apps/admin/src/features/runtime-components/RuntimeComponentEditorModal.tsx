@@ -48,20 +48,21 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
           label="平台"
           data={runtimeComponentPlatformOptions}
           value={value.platform}
-          disabled={isRuleset}
+          disabled={editing || isRuleset}
           onChange={(next) => next && onChange({ ...value, platform: next as RuntimeComponentEditorFormState["platform"] })}
         />
         <Select
           label="架构"
           data={runtimeComponentArchitectureOptions}
           value={value.architecture}
-          disabled={isRuleset}
+          disabled={editing || isRuleset}
           onChange={(next) => next && onChange({ ...value, architecture: next as RuntimeComponentEditorFormState["architecture"] })}
         />
         <Select
           label="组件"
           data={runtimeComponentKindOptions}
           value={value.kind}
+          disabled={editing}
           onChange={(next) =>
             next &&
             onChange({
@@ -71,6 +72,12 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
             })
           }
         />
+
+        {editing ? (
+          <Alert color="blue" variant="light">
+            编辑已有组件时平台、架构和组件类型不可变；如需换身份，请新建一条组件记录，避免保存后显示和后端实际记录不一致。
+          </Alert>
+        ) : null}
 
         {isRuleset ? (
           <Alert color="blue" variant="light">

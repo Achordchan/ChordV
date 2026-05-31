@@ -10,7 +10,7 @@ import {
 
 export function loginAdmin(account: string, password: string) {
   return request<AuthSessionDto>(
-    "/auth/login",
+    "/auth/admin/login",
     {
       method: "POST",
       body: JSON.stringify({ email: account, password })
@@ -19,12 +19,12 @@ export function loginAdmin(account: string, password: string) {
   );
 }
 
-export function refreshAdminSession(refreshToken: string) {
+export function refreshAdminSession(refreshToken?: string) {
   return request<AuthSessionDto>(
     "/auth/refresh",
     {
       method: "POST",
-      body: JSON.stringify({ refreshToken })
+      body: JSON.stringify(refreshToken ? { refreshToken } : {})
     },
     false
   );

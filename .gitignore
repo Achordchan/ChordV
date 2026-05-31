@@ -11,6 +11,8 @@ apps/desktop/src-tauri/bin.bak/
 !apps/desktop/src-tauri/Cargo.lock
 apps/desktop/src-tauri/.tauri.*.platform.conf.json
 output/
+storage/
+apps/api/storage/
 *.db
 *.sqlite*
 *.tsbuildinfo

@@ -15,6 +15,7 @@ import type {
   ReleaseStatus,
   UpdateDeliveryMode
 } from "@chordv/shared";
+import { fetchPublicHttpUrl } from "./remote-url.utils";
 
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const STRICT_SEMVER_PATTERN =
@@ -30,6 +31,7 @@ const MIN_WINDOWS_FULL_UPDATE_PE_BYTES = 1024 * 1024;
 const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
 const DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MAX_ZIP_VALIDATION_ENTRIES = 10_000;
 const configuredMaxExternalReleaseArtifactBytes = Number(
   process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES
 );
@@ -44,6 +46,13 @@ const MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES =
   Number.isFinite(configuredMaxWindowsFullUpdateZipEntryBytes) && configuredMaxWindowsFullUpdateZipEntryBytes > 0
     ? Math.trunc(configuredMaxWindowsFullUpdateZipEntryBytes)
     : DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES;
+const configuredMaxZipValidationEntries = Number(
+  process.env.CHORDV_RELEASE_MAX_ZIP_VALIDATION_ENTRIES ?? DEFAULT_MAX_ZIP_VALIDATION_ENTRIES
+);
+const MAX_ZIP_VALIDATION_ENTRIES =
+  Number.isFinite(configuredMaxZipValidationEntries) && configuredMaxZipValidationEntries > 0
+    ? Math.trunc(configuredMaxZipValidationEntries)
+    : DEFAULT_MAX_ZIP_VALIDATION_ENTRIES;
 
 export type ReleaseArtifactRowLike = {
   id: string;
@@ -56,6 +65,7 @@ export type ReleaseArtifactRowLike = {
   defaultMirrorPrefix: string | null;
   allowClientMirror: boolean;
   fileName: string | null;
+  storedFilePath?: string | null;
   fileSizeBytes: bigint | null;
   fileHash: string | null;
   isPrimary: boolean;
@@ -297,13 +307,16 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   assertReleaseArtifactTypeAllowed(platform, type);
   assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
 
+  if (deliveryMode !== "none") {
+    normalizeSha256Input(artifact.fileHash);
+    if (!artifact.fileHash) {
+      throw new BadRequestException("Client-visible release artifacts require SHA256 metadata.");
+    }
+  }
+
   if (deliveryMode === "desktop_full_replace") {
     if (!artifact.fileSizeBytes || artifact.fileSizeBytes <= 0n) {
       throw new BadRequestException("Full replacement updates require positive file size metadata.");
-    }
-    normalizeSha256Input(artifact.fileHash);
-    if (!artifact.fileHash) {
-      throw new BadRequestException("Full replacement updates require SHA256 metadata.");
     }
     assertFullUpdateDownloadUrlAllowed(artifact.downloadUrl);
   }
@@ -374,6 +387,21 @@ export async function assertWindowsFullUpdateZipFile(filePath: string, fileName?
   }
 }
 
+export async function readZipEntryData(filePath: string, entryName: string) {
+  assertZipEntryPathSafe(entryName);
+  const normalizedTarget = normalizeZipEntryName(entryName);
+  if (!normalizedTarget || normalizedTarget.endsWith("/")) {
+    throw new BadRequestException("ZIP entry name must point to a file.");
+  }
+  const entries = await readZipCentralDirectoryEntries(filePath);
+  const entry = entries.find((item) => normalizeZipEntryName(item.name) === normalizedTarget);
+  if (!entry) {
+    throw new BadRequestException(`ZIP entry not found: ${entryName}`);
+  }
+  assertZipEntryPathSafe(entry.name);
+  return verifyZipEntryData(filePath, entry);
+}
+
 async function readZipCentralDirectoryEntries(filePath: string) {
   const handle = await fs.open(filePath, "r");
   try {
@@ -400,7 +428,20 @@ async function readZipCentralDirectoryEntries(filePath: string) {
 
     const centralDirectory = Buffer.alloc(centralDirectorySize);
     await handle.read(centralDirectory, 0, centralDirectorySize, centralDirectoryOffset);
-    return parseZipCentralDirectoryEntries(centralDirectory);
+    const entries = parseZipCentralDirectoryEntries(centralDirectory);
+    if (entries.length > MAX_ZIP_VALIDATION_ENTRIES) {
+      throw new BadRequestException(`ZIP file has too many entries: ${entries.length} exceeds ${MAX_ZIP_VALIDATION_ENTRIES}.`);
+    }
+    let totalCompressedSize = 0;
+    let totalUncompressedSize = 0;
+    for (const entry of entries) {
+      totalCompressedSize += entry.compressedSize;
+      totalUncompressedSize += entry.uncompressedSize;
+      if (totalCompressedSize > MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES || totalUncompressedSize > MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES) {
+        throw new BadRequestException("ZIP file expands beyond the validation size limit.");
+      }
+    }
+    return entries;
   } finally {
     await handle.close();
   }
@@ -762,18 +803,23 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
   const dispatcher = createDispatcher(120_000, false);
   let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
   try {
-    response = await undiciFetch(rawUrl, {
-      method: "GET",
-      redirect: "follow",
-      dispatcher,
-      headers: {
-        "user-agent": "ChordV-Admin/1.0"
-      }
-    });
+    const fetched = await fetchPublicHttpUrl(
+      rawUrl,
+      {
+        method: "GET",
+        dispatcher,
+        headers: {
+          "user-agent": "ChordV-Admin/1.0"
+        }
+      },
+      { errorPrefix: "External release artifact URL" }
+    );
+    response = fetched.response;
+    const resolvedUrl = fetched.resolvedUrl;
     if (!response.ok) {
       throw new BadRequestException(`External full update ZIP is not accessible: HTTP ${response.status}`);
     }
-    assertFullUpdateDownloadUrlAllowed(response.url || rawUrl);
+    assertFullUpdateDownloadUrlAllowed(resolvedUrl);
     const contentLength = readExternalFileSize(response.headers);
     if (contentLength !== null && contentLength > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
       throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
@@ -805,8 +851,8 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
     }
     return {
       absolutePath,
-      resolvedUrl: response.url || rawUrl,
-      fileName: inferFileNameFromResponse(response, fallbackUrl),
+      resolvedUrl,
+      fileName: inferFileNameFromResponse({ headers: response.headers, url: resolvedUrl }, fallbackUrl),
       fileSizeBytes,
       fileHash: hash.digest("hex"),
       cleanup: async () => {
@@ -846,12 +892,17 @@ async function requestExternalReleaseArtifactMetadata(
 
   let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
   try {
-    response = await undiciFetch(rawUrl, {
-      method,
-      redirect: "follow",
-      dispatcher,
-      headers
-    });
+    const fetched = await fetchPublicHttpUrl(
+      rawUrl,
+      {
+        method,
+        dispatcher,
+        headers
+      },
+      { errorPrefix: "External release artifact URL" }
+    );
+    response = fetched.response;
+    const resolvedUrl = fetched.resolvedUrl;
 
     if (!response.ok && response.status !== 206) {
       if (method === "HEAD" && (response.status === 403 || response.status === 405)) {
@@ -861,8 +912,8 @@ async function requestExternalReleaseArtifactMetadata(
     }
 
     return {
-      resolvedUrl: response.url || rawUrl,
-      fileName: inferFileNameFromResponse(response, fallbackUrl),
+      resolvedUrl,
+      fileName: inferFileNameFromResponse({ headers: response.headers, url: resolvedUrl }, fallbackUrl),
       fileSizeBytes: readExternalFileSize(response.headers),
       fileHash: null
     };

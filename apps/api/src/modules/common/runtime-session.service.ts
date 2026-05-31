@@ -84,6 +84,9 @@ type PanelBindingFilter = {
 const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ?? 20);
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
+const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
+const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
+const LEASE_REVOCATION_RETRY_MAX_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_MAX_SECONDS ?? 900);
 const CONNECT_LOCK_KEY_1 = 420_702;
 
 @Injectable()
@@ -180,9 +183,20 @@ export class RuntimeSessionService {
 
     const user = await this.resolveActiveUserFromToken(token);
     return this.runWithDistributedUserLeaseLock(user.id, async () => {
+      const initialAccess = await this.resolveSubscriptionAccessForUser(user.id);
+      if (!initialAccess.subscription) {
+        throw new NotFoundException("当前没有可用订阅");
+      }
+
+      const lockedSubscriptionId = initialAccess.subscription.id;
+      return runWithSubscriptionUsageLock(lockedSubscriptionId, async () => {
       const access = await this.resolveSubscriptionAccessForUser(user.id);
       if (!access.subscription) {
-        throw new NotFoundException("当前没有可用订阅");
+        throw new NotFoundException("褰撳墠娌℃湁鍙敤璁㈤槄");
+      }
+
+      if (access.subscription.id !== lockedSubscriptionId) {
+        throw new ForbiddenException("Current subscription changed while connecting. Please retry.");
       }
 
       assertRuntimeAccessConnectable(access);
@@ -219,10 +233,16 @@ export class RuntimeSessionService {
           access.subscription.plan.maxConcurrentSessions ??
           DEFAULT_MAX_CONCURRENT_SESSIONS
       );
-      await this.evictExceededUserLeases(user.id, concurrentLimit);
+      await this.evictExceededUserLeases(user.id, concurrentLimit, 1);
 
       return this.connectWithXui(node, user, access, request, policy);
+      });
     });
+  }
+
+  async enforceUserConcurrentLeaseLimit(userId: string, maxConcurrentSessions: number) {
+    const limit = Math.max(1, Math.trunc(maxConcurrentSessions));
+    return this.runWithDistributedUserLeaseLock(userId, () => this.evictExceededUserLeases(userId, limit, 0));
   }
 
   async heartbeatSession(sessionId: string, token?: string) {
@@ -313,8 +333,14 @@ export class RuntimeSessionService {
     }
 
     const previous = this.activeRuntime;
-    this.clearActiveRuntime(sessionId);
-    return { ok: true, previousSessionId: previous?.sessionId ?? null };
+    const canClearPreviousRuntime =
+      Boolean(previous) &&
+      previous?.sessionId === sessionId &&
+      this.activeRuntimeUsageContext?.userId === user.id;
+    if (canClearPreviousRuntime) {
+      this.clearActiveRuntime(sessionId);
+    }
+    return { ok: true, previousSessionId: canClearPreviousRuntime ? previous?.sessionId ?? null : null };
   }
 
   async getActiveRuntime(sessionId?: string, token?: string) {
@@ -383,6 +409,10 @@ export class RuntimeSessionService {
   }
 
   async syncSubscriptionPanelAccess(subscriptionId: string) {
+    return runWithSubscriptionUsageLock(subscriptionId, () => this.syncSubscriptionPanelAccessLocked(subscriptionId));
+  }
+
+  private async syncSubscriptionPanelAccessLocked(subscriptionId: string) {
     const subscription = await this.prisma.subscription.findUnique({
       where: { id: subscriptionId },
       include: {
@@ -673,12 +703,30 @@ export class RuntimeSessionService {
     subscriptionId: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
-    const bindings = await this.prisma.panelClientBinding.findMany({
+    return this.prisma.$transaction((tx) => this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, filter));
+  }
+
+  async queuePanelDisableJobsForSubscriptionTx(
+    writer: any,
+    subscriptionId: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    const bindings = await writer.panelClientBinding.findMany({
       where: {
         subscriptionId,
         ...(filter?.userId ? { userId: filter.userId } : {}),
         ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
         status: "active"
+      },
+      include: {
+        node: {
+          select: {
+            panelBaseUrl: true,
+            panelApiBasePath: true,
+            panelUsername: true,
+            panelPassword: true
+          }
+        }
       }
     });
     if (bindings.length === 0) {
@@ -686,40 +734,94 @@ export class RuntimeSessionService {
     }
     const now = new Date();
 
-    await this.prisma.$transaction([
-      ...bindings.map((binding) =>
-        this.prisma.panelSyncJob.upsert({
-          where: {
-            dedupeKey: `disable:${binding.id}`
-          },
-          create: {
-            id: randomUUID(),
-            dedupeKey: `disable:${binding.id}`,
-            action: "disable_client",
-            bindingId: binding.id,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            status: "pending",
-            nextRunAt: now
-          },
-          update: {
-            status: "pending",
-            nextRunAt: now,
-            lockedAt: null,
-            completedAt: null,
-            attempts: 0,
-            lastError: null
-          }
-        })
-      )
-    ]);
+    for (const binding of bindings) {
+      const snapshot = binding.node ?? {};
+      await writer.panelSyncJob.upsert({
+        where: {
+          dedupeKey: `disable:${binding.id}`
+        },
+        create: {
+          id: randomUUID(),
+          dedupeKey: `disable:${binding.id}`,
+          action: "disable_client",
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: snapshot.panelBaseUrl ?? null,
+          panelApiBasePath: snapshot.panelApiBasePath ?? null,
+          panelUsername: snapshot.panelUsername ?? null,
+          panelPassword: snapshot.panelPassword ?? null,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          status: "pending",
+          nextRunAt: now,
+          lockedAt: null,
+          completedAt: null,
+          attempts: 0,
+          lastError: null,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: snapshot.panelBaseUrl ?? null,
+          panelApiBasePath: snapshot.panelApiBasePath ?? null,
+          panelUsername: snapshot.panelUsername ?? null,
+          panelPassword: snapshot.panelPassword ?? null
+        }
+      });
+    }
 
     return bindings.length;
+  }
+
+  async queueLeaseRevocationJobsForSubscriptionTx(
+    writer: any,
+    subscriptionId: string,
+    reason: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    const now = new Date();
+    const nodeIds = filter?.nodeIds && filter.nodeIds.length > 0 ? Array.from(new Set(filter.nodeIds)) : [null];
+    for (const nodeId of nodeIds) {
+      await writer.leaseRevocationJob.upsert({
+        where: {
+          dedupeKey: buildLeaseRevocationJobKey(subscriptionId, reason, filter?.userId ?? null, nodeId)
+        },
+        create: {
+          id: randomUUID(),
+          dedupeKey: buildLeaseRevocationJobKey(subscriptionId, reason, filter?.userId ?? null, nodeId),
+          subscriptionId,
+          userId: filter?.userId ?? null,
+          nodeId,
+          reason,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          subscriptionId,
+          userId: filter?.userId ?? null,
+          nodeId,
+          reason,
+          status: "pending",
+          attempts: 0,
+          nextRunAt: now,
+          lockedAt: null,
+          completedAt: null,
+          lastError: null
+        }
+      });
+    }
+    return nodeIds.length;
   }
 
   async markPanelBindingsDisabledForNode(nodeId: string) {
@@ -767,7 +869,15 @@ export class RuntimeSessionService {
     return { requested, updated, failed };
   }
 
-  async removePanelBindingsForNode(nodeId: string): Promise<PanelBindingMutationResult> {
+  async removePanelBindingsForNode(
+    nodeId: string,
+    panelConfig?: {
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+    }
+  ): Promise<PanelBindingMutationResult> {
     const subscriptions = await this.prisma.subscription.findMany({
       where: {
         panelClientBindings: {
@@ -784,12 +894,51 @@ export class RuntimeSessionService {
     let requested = 0;
     let updated = 0;
     for (const subscription of subscriptions) {
-      const result = await this.removePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] });
+      const result = await this.removePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] }, panelConfig);
       requested += result.requested;
       updated += result.updated;
       failed.push(...result.failed);
     }
     return { requested, updated, failed };
+  }
+
+  async markPanelBindingsDeletedForNode(nodeId: string) {
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        nodeId,
+        status: { in: ["active", "disabled"] }
+      },
+      select: {
+        id: true,
+        nodeId: true,
+        subscriptionId: true,
+        userId: true
+      }
+    });
+    if (bindings.length === 0) {
+      return 0;
+    }
+
+    await this.prisma.$transaction([
+      ...bindings.map((binding) =>
+        this.prisma.trafficSnapshot.deleteMany({
+          where: {
+            snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
+          }
+        })
+      ),
+      this.prisma.panelClientBinding.updateMany({
+        where: {
+          id: { in: bindings.map((binding) => binding.id) },
+          status: { in: ["active", "disabled"] }
+        },
+        data: {
+          status: "deleted"
+        }
+      })
+    ]);
+
+    return bindings.length;
   }
 
   async syncPanelAccessForNode(nodeId: string) {
@@ -897,7 +1046,13 @@ export class RuntimeSessionService {
 
   async removePanelBindingsForSubscription(
     subscriptionId: string,
-    filter?: { userId?: string; nodeIds?: string[] }
+    filter?: { userId?: string; nodeIds?: string[] },
+    panelConfig?: {
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+    }
   ): Promise<PanelBindingMutationResult> {
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
@@ -917,10 +1072,10 @@ export class RuntimeSessionService {
         const removalStatus = await this.xuiService.removeClient(
           {
             id: binding.node.id,
-            panelBaseUrl: binding.node.panelBaseUrl,
-            panelApiBasePath: binding.node.panelApiBasePath,
-            panelUsername: binding.node.panelUsername,
-            panelPassword: binding.node.panelPassword,
+            panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node.panelBaseUrl,
+            panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node.panelApiBasePath,
+            panelUsername: panelConfig?.panelUsername ?? binding.node.panelUsername,
+            panelPassword: panelConfig?.panelPassword ?? binding.node.panelPassword,
             panelInboundId: binding.panelInboundId
           },
           binding.panelClientId,
@@ -1060,6 +1215,10 @@ export class RuntimeSessionService {
     panelClientEmail: string;
     panelClientId: string;
     panelInboundId?: number | null;
+    panelBaseUrl?: string | null;
+    panelApiBasePath?: string | null;
+    panelUsername?: string | null;
+    panelPassword?: string | null;
     node: {
       id: string;
       isActive: boolean;
@@ -1074,7 +1233,8 @@ export class RuntimeSessionService {
       status: string;
     };
   }) {
-    try {
+    return runWithSubscriptionUsageLock(job.subscriptionId, async () => {
+      try {
       if (job.action !== "disable_client") {
         throw new Error(`未知面板同步动作：${job.action}`);
       }
@@ -1084,15 +1244,22 @@ export class RuntimeSessionService {
         return;
       }
 
+      const panelNodeConfig = {
+        id: job.node.id,
+        panelBaseUrl: job.panelBaseUrl ?? job.node.panelBaseUrl,
+        panelApiBasePath: job.panelApiBasePath ?? job.node.panelApiBasePath,
+        panelUsername: job.panelUsername ?? job.node.panelUsername,
+        panelPassword: job.panelPassword ?? job.node.panelPassword,
+        panelInboundId: job.panelInboundId ?? job.node.panelInboundId
+      };
+
+      if (!(await this.shouldRunPanelDisableJob(job))) {
+        await this.completePanelSyncJob(job);
+        return;
+      }
+
       await this.xuiService.setClientEnabled(
-        {
-          id: job.node.id,
-          panelBaseUrl: job.node.panelBaseUrl,
-          panelApiBasePath: job.node.panelApiBasePath,
-          panelUsername: job.node.panelUsername,
-          panelPassword: job.node.panelPassword,
-          panelInboundId: job.panelInboundId ?? job.node.panelInboundId
-        },
+        panelNodeConfig,
         job.panelClientId,
         job.panelClientEmail,
         false
@@ -1142,34 +1309,21 @@ export class RuntimeSessionService {
         })
       ]);
       this.logger.warn(`面板同步任务失败，${retrySeconds} 秒后重试：${job.nodeId}/${job.panelClientEmail}: ${message}`);
-    }
+      }
+    });
   }
 
   private async completePanelSyncJob(job: { id: string; subscriptionId: string; nodeId: string }) {
     const completedAt = new Date();
-    await this.prisma.$transaction([
-      this.prisma.panelSyncJob.update({
-        where: { id: job.id },
-        data: {
-          status: "completed",
-          lockedAt: null,
-          lastError: null,
-          completedAt
-        }
-      }),
-      this.prisma.meteringIncident.updateMany({
-        where: {
-          subscriptionId: job.subscriptionId,
-          nodeId: job.nodeId,
-          reason: METERING_REASON_NODE_UNAVAILABLE,
-          status: "open"
-        },
-        data: {
-          status: "resolved",
-          resolvedAt: completedAt
-        }
-      })
-    ]);
+    await this.prisma.panelSyncJob.update({
+      where: { id: job.id },
+      data: {
+        status: "completed",
+        lockedAt: null,
+        lastError: null,
+        completedAt
+      }
+    });
   }
 
   private async shouldRunPanelDisableJob(job: { id: string; nodeId: string }) {
@@ -1214,6 +1368,109 @@ export class RuntimeSessionService {
         : [];
     const activeMemberships = new Set(memberships.map((membership) => `${membership.teamId}:${membership.userId}`));
     return !isPanelDisableJobClearableAfterNodeReenabled(freshJob, activeMemberships);
+  }
+
+  @Cron("*/30 * * * * *")
+  async retryPendingLeaseRevocationJobs() {
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - 10 * 60 * 1000);
+    const jobs = await this.prisma.leaseRevocationJob.findMany({
+      where: {
+        OR: [
+          {
+            status: { in: ["pending", "failed"] },
+            nextRunAt: { lte: now },
+            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+          },
+          {
+            status: "running",
+            lockedAt: { lt: staleLockBefore }
+          }
+        ]
+      },
+      orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
+      take: LEASE_REVOCATION_BATCH_SIZE
+    });
+
+    for (const job of jobs) {
+      const locked = await this.prisma.leaseRevocationJob.updateMany({
+        where: {
+          id: job.id,
+          OR: [
+            {
+              status: { in: ["pending", "failed"] },
+              nextRunAt: { lte: now },
+              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+            },
+            {
+              status: "running",
+              lockedAt: { lt: staleLockBefore }
+            }
+          ]
+        },
+        data: {
+          status: "running",
+          lockedAt: new Date()
+        }
+      });
+      if (locked.count === 0) {
+        continue;
+      }
+
+      await this.runLeaseRevocationJob(job);
+    }
+  }
+
+  private async runLeaseRevocationJob(job: {
+    id: string;
+    attempts: number;
+    subscriptionId: string | null;
+    userId: string | null;
+    nodeId: string | null;
+    reason: string;
+  }) {
+    try {
+      if (job.subscriptionId) {
+        await this.revokeSubscriptionLeases(job.subscriptionId, job.reason, {
+          ...(job.userId ? { userId: job.userId } : {}),
+          ...(job.nodeId ? { nodeIds: [job.nodeId] } : {})
+        });
+      } else if (job.userId) {
+        await this.revokeUserLeases(job.userId, job.reason, job.nodeId ? { nodeIds: [job.nodeId] } : undefined);
+      } else if (job.nodeId) {
+        await this.revokeNodeLeases(job.nodeId, job.reason);
+      } else {
+        throw new Error("Lease revocation job is missing a target.");
+      }
+
+      await this.prisma.leaseRevocationJob.update({
+        where: { id: job.id },
+        data: {
+          status: "completed",
+          lockedAt: null,
+          lastError: null,
+          completedAt: new Date()
+        }
+      });
+    } catch (error) {
+      const nextAttempts = job.attempts + 1;
+      const retrySeconds = Math.min(
+        LEASE_REVOCATION_RETRY_MAX_SECONDS,
+        LEASE_REVOCATION_RETRY_BASE_SECONDS * 2 ** Math.min(nextAttempts - 1, 6)
+      );
+      const message = error instanceof Error ? error.message : "lease revocation failed";
+      await this.prisma.leaseRevocationJob.update({
+        where: { id: job.id },
+        data: {
+          status: "failed",
+          attempts: nextAttempts,
+          lockedAt: null,
+          lastError: message,
+          nextRunAt: new Date(Date.now() + retrySeconds * 1000)
+        }
+      });
+      this.logger.warn(`Lease revocation job failed; retrying in ${retrySeconds}s: ${job.id}: ${message}`);
+    }
   }
 
   async syncActiveLeasesForSubscription(subscription: {
@@ -1420,7 +1677,8 @@ export class RuntimeSessionService {
       buildPanelClientEmail(input.userEmail, input.subscriptionId, input.node.id, input.userId);
     const panelClientId =
       existing?.status === "deleted" ? randomUUID() : existing?.panelClientId ?? randomUUID();
-    const panelInboundId = input.node.panelInboundId ?? existing?.panelInboundId ?? null;
+    const panelInboundId =
+      input.node.panelInboundId ?? (existing && existing.status !== "deleted" ? existing.panelInboundId : null);
     const nodeConfig = {
       id: input.node.id,
       panelBaseUrl: input.node.panelBaseUrl,
@@ -1495,22 +1753,21 @@ export class RuntimeSessionService {
       return binding;
     }
 
-    const binding = await this.prisma.panelClientBinding.create({
-      data: {
-        id: createId("panel_client"),
-        subscriptionId: input.subscriptionId,
-        userId: input.userId,
-        teamId: input.teamId,
-        nodeId: input.node.id,
-        panelClientEmail,
-        panelClientId: resolvedPanelClientId,
-        panelInboundId: resolvedPanelInboundId ?? 0,
-        lastUplinkBytes: baseline.uplinkBytes,
-        lastDownlinkBytes: baseline.downlinkBytes,
-        lastSyncedAt: baseline.sampledAt,
-        status: "active"
-      }
-    });
+    const createData = {
+      id: createId("panel_client"),
+      subscriptionId: input.subscriptionId,
+      userId: input.userId,
+      teamId: input.teamId,
+      nodeId: input.node.id,
+      panelClientEmail,
+      panelClientId: resolvedPanelClientId,
+      panelInboundId: resolvedPanelInboundId ?? 0,
+      lastUplinkBytes: baseline.uplinkBytes,
+      lastDownlinkBytes: baseline.downlinkBytes,
+      lastSyncedAt: baseline.sampledAt,
+      status: "active"
+    };
+    const binding = await this.createPanelClientBindingOrRecover(createData);
     await this.ensureTrafficSnapshotBaseline({
       nodeId: binding.nodeId,
       subscriptionId: binding.subscriptionId,
@@ -1521,6 +1778,54 @@ export class RuntimeSessionService {
       sampledAt: baseline.sampledAt
     });
     return binding;
+  }
+
+  private async createPanelClientBindingOrRecover(data: {
+    id: string;
+    subscriptionId: string;
+    userId: string;
+    teamId: string | null;
+    nodeId: string;
+    panelClientEmail: string;
+    panelClientId: string;
+    panelInboundId: number;
+    lastUplinkBytes: bigint;
+    lastDownlinkBytes: bigint;
+    lastSyncedAt: Date;
+    status: string;
+  }) {
+    try {
+      return await this.prisma.panelClientBinding.create({ data });
+    } catch (error) {
+      if (!isPrismaUniqueConstraintError(error)) {
+        throw error;
+      }
+    }
+
+    const existing = await this.prisma.panelClientBinding.findFirst({
+      where: {
+        subscriptionId: data.subscriptionId,
+        nodeId: data.nodeId,
+        userId: data.userId
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    if (!existing) {
+      throw new BadGatewayException("Panel client binding was created concurrently but could not be reloaded.");
+    }
+    return this.prisma.panelClientBinding.update({
+      where: { id: existing.id },
+      data: {
+        teamId: data.teamId,
+        panelClientEmail: data.panelClientEmail,
+        panelClientId: data.panelClientId,
+        panelInboundId: data.panelInboundId,
+        lastUplinkBytes: data.lastUplinkBytes,
+        lastDownlinkBytes: data.lastDownlinkBytes,
+        lastSyncedAt: data.lastSyncedAt,
+        status: "active"
+      }
+    });
   }
 
   private async readPanelClientBaseline(
@@ -1556,38 +1861,36 @@ export class RuntimeSessionService {
     const snapshotKey = buildSnapshotKey(input.nodeId, input.subscriptionId, input.userId);
     const sampledAt = input.sampledAt ?? new Date();
     const totalBytes = input.uplinkBytes + input.downlinkBytes;
-    await runWithSubscriptionUsageLock(input.subscriptionId, async () => {
-      const current = await this.prisma.trafficSnapshot.findUnique({
-        where: { snapshotKey }
-      });
-      if (current && !input.replaceExisting) {
-        return;
+    const current = await this.prisma.trafficSnapshot.findUnique({
+      where: { snapshotKey }
+    });
+    if (current && !input.replaceExisting) {
+      return;
+    }
+    await this.prisma.trafficSnapshot.upsert({
+      where: { snapshotKey },
+      update: {
+        uplinkBytes: input.uplinkBytes,
+        downlinkBytes: input.downlinkBytes,
+        totalBytes,
+        sampledAt
+      },
+      create: {
+        id: randomUUID(),
+        snapshotKey,
+        nodeId: input.nodeId,
+        subscriptionId: input.subscriptionId,
+        userId: input.userId,
+        teamId: input.teamId,
+        uplinkBytes: input.uplinkBytes,
+        downlinkBytes: input.downlinkBytes,
+        totalBytes,
+        sampledAt
       }
-      await this.prisma.trafficSnapshot.upsert({
-        where: { snapshotKey },
-        update: {
-          uplinkBytes: input.uplinkBytes,
-          downlinkBytes: input.downlinkBytes,
-          totalBytes,
-          sampledAt
-        },
-        create: {
-          id: randomUUID(),
-          snapshotKey,
-          nodeId: input.nodeId,
-          subscriptionId: input.subscriptionId,
-          userId: input.userId,
-          teamId: input.teamId,
-          uplinkBytes: input.uplinkBytes,
-          downlinkBytes: input.downlinkBytes,
-          totalBytes,
-          sampledAt
-        }
-      });
     });
   }
 
-  private async evictExceededUserLeases(userId: string, maxConcurrentSessions: number) {
+  private async evictExceededUserLeases(userId: string, maxConcurrentSessions: number, reservedSlots: number) {
     const graceWindowStart = new Date(Date.now() - LEASE_GRACE_SECONDS * 1000);
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
@@ -1599,7 +1902,7 @@ export class RuntimeSessionService {
       orderBy: [{ lastHeartbeatAt: "asc" }, { issuedAt: "asc" }]
     });
 
-    const evictCount = activeLeases.length - maxConcurrentSessions + 1;
+    const evictCount = activeLeases.length - maxConcurrentSessions + reservedSlots;
     if (evictCount <= 0) {
       return;
     }
@@ -1832,13 +2135,14 @@ export class RuntimeSessionService {
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
-    return this.prisma.subscription.findFirst({
+    const rows = await this.prisma.subscription.findMany({
       where: {
         userId
       },
       include: { plan: true, user: true, team: true },
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
+    return pickCurrentSubscription(rows);
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
@@ -1941,6 +2245,19 @@ function assertRuntimeAccessConnectable(access: ResolvedSubscriptionAccess) {
 
 function deriveUserAdvisoryLockKey(userId: string) {
   return createHash("sha256").update(userId).digest().readInt32BE(0);
+}
+
+function buildLeaseRevocationJobKey(
+  subscriptionId: string,
+  reason: string,
+  userId: string | null,
+  nodeId: string | null
+) {
+  return `lease:${subscriptionId}:${reason}:${userId ?? "*"}:${nodeId ?? "*"}`;
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }
 
 function isPanelDisableJobClearableAfterNodeReenabled(

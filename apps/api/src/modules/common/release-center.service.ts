@@ -10,6 +10,7 @@ import type {
   PlatformTarget,
   ReleaseArtifactType,
   ReleaseChannel,
+  ReleaseStatus,
   UpdateDeliveryMode,
   UpdateReleaseArtifactInputDto,
   UpdateReleaseInputDto,
@@ -55,6 +56,7 @@ import {
   toPrismaReleaseArtifactType,
   fromPrismaReleaseArtifactType
 } from "./release-center.utils";
+import { moveUploadedFile } from "./upload-file.utils";
 
 type UploadedReleaseFile = {
   path: string;
@@ -78,8 +80,12 @@ export class ReleaseCenterService {
     private readonly clientEventsPublisher: ClientEventsPublisher
   ) {}
 
-  async listAdminReleases(): Promise<AdminReleaseRecordDto[]> {
+  async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
     const rows = await this.prisma.release.findMany({
+      where: {
+        ...(input?.platform ? { platform: input.platform } : {}),
+        ...(input?.status ? { status: input.status } : {})
+      },
       include: {
         artifacts: {
           orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
@@ -315,10 +321,15 @@ export class ReleaseCenterService {
       input.type,
       input.deliveryMode
     );
-    const source = input.source ?? "external";
-    if (source === "uploaded") {
+    const rawSource = (input as { source?: string }).source;
+    if (rawSource === "uploaded") {
       throw new BadRequestException("创建上传产物时请使用上传接口。");
     }
+
+    if (rawSource !== undefined && rawSource !== "external") {
+      throw new BadRequestException("Release artifact source must be external.");
+    }
+    const source = "external";
 
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
@@ -388,6 +399,13 @@ export class ReleaseCenterService {
         : null;
     if (input.source === "uploaded" && current.source !== "uploaded") {
       throw new BadRequestException("切换为上传产物时请使用上传接口。");
+    }
+
+    if (nextSource === "uploaded" && input.downloadUrl !== undefined && input.downloadUrl.trim() !== current.downloadUrl) {
+      throw new BadRequestException("Uploaded release artifact URLs are managed by the upload endpoint.");
+    }
+    if (nextSource === "uploaded" && !current.storedFilePath) {
+      throw new BadRequestException("Uploaded release artifact is missing its stored file.");
     }
 
     if (nextSource === "external") {
@@ -517,6 +535,8 @@ export class ReleaseCenterService {
     } catch (error) {
       if (prepared) {
         await removeReleaseArtifactFile(prepared.absolutePath);
+      } else {
+        await removeReleaseArtifactFile(file.path);
       }
       throw error;
     }
@@ -586,6 +606,8 @@ export class ReleaseCenterService {
     } catch (error) {
       if (prepared) {
         await removeReleaseArtifactFile(prepared.absolutePath);
+      } else {
+        await removeReleaseArtifactFile(file.path);
       }
       throw error;
     }
@@ -899,8 +921,8 @@ export class ReleaseCenterService {
     if (!artifact || artifact.source !== "uploaded" || !artifact.storedFilePath || artifact.release.status !== "published") {
       throw new NotFoundException("安装包不存在");
     }
+    await this.assertStoredReleaseArtifactReadable(artifact);
     const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
-    await ensureFileReadable(absolutePath);
     return {
       absolutePath,
       fileName: artifact.fileName ?? path.basename(absolutePath)
@@ -955,8 +977,8 @@ export class ReleaseCenterService {
       };
     }
 
-    const preferredArtifactType = input.artifactType ?? (input.platform === "windows" ? "zip" : null);
-    const resolvedArtifact = this.pickClientUsableArtifact(
+    const preferredArtifactType = input.platform === "windows" ? "zip" : input.artifactType ?? null;
+    const resolvedArtifact = await this.pickClientUsableArtifact(
       release.artifacts,
       input.platform,
       preferredArtifactType,
@@ -968,6 +990,29 @@ export class ReleaseCenterService {
     const latestVersionComparison = compareSemver(release.version, input.currentVersion);
     const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
     const forcedByRelease = release.forceUpgrade;
+
+    if (!resolvedArtifact) {
+      return {
+        hasUpdate: false,
+        forceUpgrade: false,
+        blockedByMinimumVersion: false,
+        forcedByRelease: false,
+        updateRequirement: "optional",
+        currentVersion: input.currentVersion,
+        latestVersion: input.currentVersion,
+        minimumVersion: release.minimumVersion,
+        platform: input.platform,
+        channel: effectiveChannel,
+        changelog: release.changelog,
+        deliveryMode: fallbackDeliveryMode,
+        recommendedArtifact: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        publishedAt: release.publishedAt?.toISOString() ?? null
+      };
+    }
 
     if (latestVersionComparison <= 0 && !mustUpgrade) {
       return {
@@ -1083,7 +1128,7 @@ export class ReleaseCenterService {
     }
   }
 
-  private pickClientUsableArtifact(
+  private async pickClientUsableArtifact(
     artifacts: ReleaseRowLike["artifacts"],
     platform: PlatformTarget,
     preferredType?: ReleaseArtifactType | null,
@@ -1098,12 +1143,14 @@ export class ReleaseCenterService {
       : scopedArtifacts;
     for (const artifact of candidates) {
       try {
+        await this.assertStoredReleaseArtifactReadable(artifact);
         const resolvedArtifact = resolveReleaseArtifactForClient(artifact, clientMirrorPrefix ?? null);
         assertReleaseArtifactClientUsable(resolvedArtifact, platform);
         return resolvedArtifact;
       } catch {
         if (clientMirrorPrefix?.trim()) {
           try {
+            await this.assertStoredReleaseArtifactReadable(artifact);
             const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
             assertReleaseArtifactClientUsable(resolvedArtifact, platform);
             return resolvedArtifact;
@@ -1113,6 +1160,29 @@ export class ReleaseCenterService {
       }
     }
     return null;
+  }
+
+  private async assertStoredReleaseArtifactReadable(artifact: ReleaseRowLike["artifacts"][number]) {
+    if (artifact.source !== "uploaded") {
+      return;
+    }
+    if (!artifact.storedFilePath) {
+      throw new BadRequestException("Uploaded release artifact is missing its stored file.");
+    }
+    const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
+    await ensureFileReadable(absolutePath);
+    const fs = await import("node:fs/promises");
+    const stat = await fs.stat(absolutePath);
+    if (!artifact.fileSizeBytes || artifact.fileSizeBytes !== BigInt(stat.size)) {
+      throw new BadRequestException("Uploaded release artifact size metadata does not match the stored file.");
+    }
+    if (!artifact.fileHash) {
+      throw new BadRequestException("Uploaded release artifact is missing SHA256 metadata.");
+    }
+    const actualHash = await calculateFileSha256(absolutePath);
+    if (actualHash !== artifact.fileHash) {
+      throw new BadRequestException("Uploaded release artifact SHA256 metadata does not match the stored file.");
+    }
   }
 
   private assertReleaseArtifactsMutable(release: { status: string }) {
@@ -1190,7 +1260,7 @@ export class ReleaseCenterService {
 
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.rename(file.path, absolutePath);
+    await moveUploadedFile(file.path, absolutePath);
 
     return {
       absolutePath,

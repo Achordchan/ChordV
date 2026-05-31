@@ -1,15 +1,18 @@
-import { Body, Controller, Headers, Ip, Post, Res } from "@nestjs/common";
-import { IsNotEmpty, IsOptional, IsString, MinLength } from "class-validator";
+import { Body, Controller, ForbiddenException, Headers, Ip, Post, Res } from "@nestjs/common";
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
 
 class LoginDto {
   @IsString()
+  @IsEmail()
   @IsNotEmpty()
+  @MaxLength(320)
   email!: string;
 
   @IsString()
   @MinLength(8)
+  @MaxLength(256)
   password!: string;
 }
 
@@ -30,26 +33,48 @@ export class AuthController {
     @Res({ passthrough: true }) response?: Response
   ) {
     const session = await this.authService.login(body.email, body.password, normalizeClientIp(ip));
-    setRefreshCookie(response, session.refreshToken);
+    setRefreshCookie(response, session.refreshToken, session.refreshTokenExpiresAt);
+    return session;
+  }
+
+  @Post("admin/login")
+  async adminLogin(
+    @Body() body: LoginDto,
+    @Ip() ip?: string,
+    @Res({ passthrough: true }) response?: Response
+  ) {
+    const session = await this.authService.login(body.email, body.password, normalizeClientIp(ip));
+    if (session.user.role !== "admin") {
+      await this.authService.logout(undefined, session.refreshToken).catch(() => undefined);
+      clearRefreshCookie(response);
+      throw new ForbiddenException("Current account does not have admin permission.");
+    }
+    setRefreshCookie(response, session.refreshToken, session.refreshTokenExpiresAt);
     return session;
   }
 
   @Post("refresh")
   async refresh(
-    @Body() body: RefreshDto,
+    @Body() body: RefreshDto | undefined,
     @Headers("cookie") cookieHeader?: string,
     @Res({ passthrough: true }) response?: Response
   ) {
-    const refreshToken = body.refreshToken?.trim() || readCookie(cookieHeader, ADMIN_REFRESH_COOKIE_NAME);
+    const refreshToken = body?.refreshToken?.trim() || readCookie(cookieHeader, ADMIN_REFRESH_COOKIE_NAME);
     const session = await this.authService.refresh(refreshToken);
-    setRefreshCookie(response, session.refreshToken);
+    setRefreshCookie(response, session.refreshToken, session.refreshTokenExpiresAt);
     return session;
   }
 
   @Post("logout")
-  logout(@Headers("authorization") authorization?: string, @Res({ passthrough: true }) response?: Response) {
+  logout(
+    @Body() body: RefreshDto | undefined,
+    @Headers("authorization") authorization?: string,
+    @Headers("cookie") cookieHeader?: string,
+    @Res({ passthrough: true }) response?: Response
+  ) {
     clearRefreshCookie(response);
-    return this.authService.logout(authorization);
+    const refreshToken = body?.refreshToken?.trim() || readCookie(cookieHeader, ADMIN_REFRESH_COOKIE_NAME);
+    return this.authService.logout(authorization, refreshToken);
   }
 }
 
@@ -59,8 +84,8 @@ function normalizeClientIp(ip: string | undefined) {
   return ip?.trim() || "unknown";
 }
 
-function setRefreshCookie(response: Response | undefined, refreshToken: string) {
-  response?.setHeader("Set-Cookie", buildRefreshCookie(encodeURIComponent(refreshToken), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)));
+function setRefreshCookie(response: Response | undefined, refreshToken: string, refreshTokenExpiresAt: string) {
+  response?.setHeader("Set-Cookie", buildRefreshCookie(encodeURIComponent(refreshToken), new Date(refreshTokenExpiresAt)));
 }
 
 function clearRefreshCookie(response: Response | undefined) {

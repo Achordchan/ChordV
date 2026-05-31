@@ -9,16 +9,20 @@ type EventSink = (event: MessageEvent) => void;
 type ClusterEnvelope = {
   originInstanceId: string;
   userId: string;
+  eventId: string;
   event: ClientRuntimeEventDto;
 };
 
 const RUNTIME_EVENTS_CHANNEL = "chordv_runtime_events";
+const MAX_REPLAY_EVENTS_PER_USER = 100;
 
 @Injectable()
 export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ClientRuntimeEventsService.name);
   private readonly instanceId = randomUUID();
   private readonly subscribers = new Map<string, Set<EventSink>>();
+  private readonly replayEventsByUser = new Map<string, MessageEvent[]>();
+  private eventSequence = 0;
   private listener: PgClient | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private destroyed = false;
@@ -39,24 +43,47 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
     this.listener = null;
   }
 
-  streamForUser(userId: string): Observable<MessageEvent> {
+  streamForUser(
+    userId: string,
+    options?: { validate?: () => Promise<void> | void; lastEventId?: string | null }
+  ): Observable<MessageEvent> {
     return new Observable<MessageEvent>((subscriber) => {
-      const sink: EventSink = (event) => subscriber.next(event);
+      let deliveryQueue = Promise.resolve();
+      const sink: EventSink = (event) => {
+        deliveryQueue = deliveryQueue
+          .then(() => options?.validate?.())
+          .then(() => {
+            subscriber.next(event);
+          })
+          .catch((error) => {
+            subscriber.error(error);
+          });
+      };
       const current = this.subscribers.get(userId) ?? new Set<EventSink>();
       current.add(sink);
       this.subscribers.set(userId, current);
+
+      for (const event of this.getReplayEvents(userId, options?.lastEventId)) {
+        subscriber.next(event);
+      }
 
       for (const event of this.createStreamOpenedEvents()) {
         subscriber.next(this.toMessageEvent(event));
       }
 
       const timer = setInterval(() => {
-        subscriber.next(
-          this.toMessageEvent({
-            type: "keepalive",
-            occurredAt: new Date().toISOString()
+        Promise.resolve(options?.validate?.())
+          .then(() => {
+            subscriber.next(
+              this.toMessageEvent({
+                type: "keepalive",
+                occurredAt: new Date().toISOString()
+              })
+            );
           })
-        );
+          .catch((error) => {
+            subscriber.error(error);
+          });
       }, 15000);
 
       return () => {
@@ -74,8 +101,10 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
   }
 
   publishToUser(userId: string, event: ClientRuntimeEventDto) {
-    this.dispatchToUser(userId, event);
-    void this.broadcastToCluster(userId, event);
+    const message = this.toReplayableMessageEvent(event, this.nextEventId());
+    this.recordReplayEvent(userId, message);
+    this.dispatchMessageToUser(userId, message);
+    void this.broadcastToCluster(userId, message.id ?? "", event);
   }
 
   publishToUsers(userIds: Iterable<string>, event: ClientRuntimeEventDto) {
@@ -88,20 +117,25 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  private dispatchToUser(userId: string, event: ClientRuntimeEventDto) {
+  private dispatchToUser(userId: string, event: ClientRuntimeEventDto, eventId: string) {
+    const message = this.toReplayableMessageEvent(event, eventId);
+    this.recordReplayEvent(userId, message);
+    this.dispatchMessageToUser(userId, message);
+  }
+
+  private dispatchMessageToUser(userId: string, message: MessageEvent) {
     const subscribers = this.subscribers.get(userId);
     if (!subscribers || subscribers.size === 0) {
       return;
     }
-    const payload = this.toMessageEvent(event);
     for (const sink of subscribers) {
-      sink(payload);
+      sink(message);
     }
   }
 
-  private async broadcastToCluster(userId: string, event: ClientRuntimeEventDto) {
+  private async broadcastToCluster(userId: string, eventId: string, event: ClientRuntimeEventDto) {
     try {
-      await this.prisma.$executeRaw`select pg_notify(${RUNTIME_EVENTS_CHANNEL}, ${JSON.stringify({ originInstanceId: this.instanceId, userId, event })})`;
+      await this.prisma.$executeRaw`select pg_notify(${RUNTIME_EVENTS_CHANNEL}, ${JSON.stringify({ originInstanceId: this.instanceId, userId, eventId, event })})`;
     } catch (error) {
       this.logger.warn(`SSE 广播发送失败：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -114,13 +148,51 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
     };
   }
 
+  private toReplayableMessageEvent(event: ClientRuntimeEventDto, eventId: string): MessageEvent {
+    return {
+      id: eventId,
+      type: event.type,
+      data: JSON.stringify(event)
+    };
+  }
+
+  private nextEventId() {
+    this.eventSequence = (this.eventSequence + 1) % Number.MAX_SAFE_INTEGER;
+    return `${Date.now()}-${this.eventSequence}`;
+  }
+
+  private recordReplayEvent(userId: string, event: MessageEvent) {
+    if (!event.id) {
+      return;
+    }
+    const events = this.replayEventsByUser.get(userId) ?? [];
+    events.push(event);
+    if (events.length > MAX_REPLAY_EVENTS_PER_USER) {
+      events.splice(0, events.length - MAX_REPLAY_EVENTS_PER_USER);
+    }
+    this.replayEventsByUser.set(userId, events);
+  }
+
+  private getReplayEvents(userId: string, lastEventId?: string | null) {
+    const normalizedLastEventId = lastEventId?.trim();
+    if (!normalizedLastEventId) {
+      return [];
+    }
+    const events = this.replayEventsByUser.get(userId) ?? [];
+    const lastIndex = events.findIndex((event) => event.id === normalizedLastEventId);
+    return lastIndex >= 0 ? events.slice(lastIndex + 1) : events;
+  }
+
   private createStreamOpenedEvents(): ClientRuntimeEventDto[] {
     const occurredAt = new Date().toISOString();
     return [
       { type: "keepalive", occurredAt },
       { type: "subscription_updated", occurredAt },
       { type: "node_access_updated", occurredAt },
-      { type: "announcement_updated", occurredAt }
+      { type: "announcement_updated", occurredAt },
+      { type: "policy_updated", occurredAt },
+      { type: "version_updated", occurredAt },
+      { type: "ticket_updated", occurredAt }
     ];
   }
 
@@ -144,7 +216,10 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
           if (!envelope || envelope.originInstanceId === this.instanceId) {
             return;
           }
-          this.dispatchToUser(envelope.userId, envelope.event);
+          if (!envelope.eventId) {
+            return;
+          }
+          this.dispatchToUser(envelope.userId, envelope.event, envelope.eventId);
         } catch (error) {
           this.logger.warn(`解析 SSE 广播失败：${error instanceof Error ? error.message : String(error)}`);
         }

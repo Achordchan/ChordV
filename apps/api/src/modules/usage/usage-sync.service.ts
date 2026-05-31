@@ -122,8 +122,33 @@ export class UsageSyncService {
       }
     }
 
+    const nodeResults = new Map<
+      string,
+      {
+        subscriptionIds: Set<string>;
+        lastSuccessfulSyncAt: Date | null;
+        errors: string[];
+      }
+    >();
+    const readNodeResult = (nodeId: string) => {
+      let result = nodeResults.get(nodeId);
+      if (!result) {
+        result = {
+          subscriptionIds: new Set<string>(),
+          lastSuccessfulSyncAt: null,
+          errors: []
+        };
+        nodeResults.set(nodeId, result);
+      }
+      return result;
+    };
+
     for (const { nodeId, panelInboundId, bindings: nodeBindings } of nodeMap.values()) {
       const subscriptionIds = Array.from(new Set(nodeBindings.map((item) => item.subscriptionId)));
+      const nodeResult = readNodeResult(nodeId);
+      for (const subscriptionId of subscriptionIds) {
+        nodeResult.subscriptionIds.add(subscriptionId);
+      }
       try {
         const allowedEmails = new Set(
           nodeBindings.map((item) => item.panelClientEmail.trim().toLowerCase()).filter(Boolean)
@@ -136,29 +161,13 @@ export class UsageSyncService {
           panelPassword: nodeBindings[0].node.panelPassword,
           panelInboundId
         })).filter((item) => allowedEmails.has(item.xrayUserEmail.trim().toLowerCase()));
-        const context = await this.loadNodeSyncContext(nodeId);
+        const context = await this.loadNodeSyncContext(nodeId, panelInboundId);
         await this.applyNodeSamples(nodeId, records, context);
-        const now = new Date();
-        await this.prisma.node.update({
-          where: { id: nodeId },
-          data: {
-            panelStatus: "online",
-            panelError: null,
-            panelLastSyncedAt: now,
-            statsLastSyncedAt: now
-          }
-        });
-        await this.resolveIncidentForSubscriptions(subscriptionIds, nodeId, METERING_REASON_NODE_UNAVAILABLE);
+        nodeResult.lastSuccessfulSyncAt = new Date();
       } catch (error) {
         const detail = error instanceof Error ? error.message : "3x-ui 面板流量同步失败";
         this.warnThrottled(nodeId, detail);
-        await this.prisma.node.update({
-          where: { id: nodeId },
-          data: {
-            panelStatus: "degraded",
-            panelError: detail
-          }
-        });
+        nodeResult.errors.push(detail);
         await this.openIncidentForSubscriptions(
           subscriptionIds,
           nodeId,
@@ -166,6 +175,36 @@ export class UsageSyncService {
           `3x-ui 面板流量同步失败：${detail}`
         );
       }
+    }
+
+    for (const [nodeId, result] of nodeResults) {
+      if (result.errors.length > 0) {
+        await this.prisma.node.update({
+          where: { id: nodeId },
+          data: {
+            panelStatus: "degraded",
+            panelError: result.errors.join("; ")
+          }
+        });
+        continue;
+      }
+      if (!result.lastSuccessfulSyncAt) {
+        continue;
+      }
+      await this.prisma.node.update({
+        where: { id: nodeId },
+        data: {
+          panelStatus: "online",
+          panelError: null,
+          panelLastSyncedAt: result.lastSuccessfulSyncAt,
+          statsLastSyncedAt: result.lastSuccessfulSyncAt
+        }
+      });
+      await this.resolveIncidentForSubscriptions(
+        Array.from(result.subscriptionIds),
+        nodeId,
+        METERING_REASON_NODE_UNAVAILABLE
+      );
     }
   }
 
@@ -553,13 +592,14 @@ export class UsageSyncService {
     });
   }
 
-  private async loadNodeSyncContext(nodeId: string): Promise<NodeSyncContext> {
+  private async loadNodeSyncContext(nodeId: string, panelInboundId?: number): Promise<NodeSyncContext> {
     const subscriptionIds: string[] = [];
     const mappings = new Map<string, UsageMapping>();
     const leaseMappingsByUuid = new Map<string, UsageMapping>();
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
         nodeId,
+        ...(panelInboundId !== undefined ? { panelInboundId } : {}),
         status: "active"
       },
       select: {

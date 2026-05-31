@@ -233,6 +233,8 @@ export interface AdminRuntimeComponentValidationDto {
   message: string;
   finalUrlPreview: string;
   httpStatus?: number | null;
+  actualFileSizeBytes?: string | null;
+  actualFileHash?: string | null;
 }
 
 export interface AdminRuntimeComponentFailureReportDto {
@@ -417,6 +419,9 @@ export interface AdminSubscriptionRecordDto {
   hasNodeAccess: boolean;
   stateReasonCode?: SessionReasonCode | null;
   stateReasonMessage?: string | null;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message?: string | null;
 }
 
 export interface SubscriptionNodeAccessDto {
@@ -805,6 +810,8 @@ export interface ConvertSubscriptionToTeamResultDto {
   teamId: string;
   teamName: string;
   teamSubscriptionId: string;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
   message: string;
 }
 
@@ -949,12 +956,12 @@ export interface UpdateReleaseInputDto {
   changelog?: string[];
   minimumVersion?: string;
   forceUpgrade?: boolean;
-  status?: ReleaseStatus;
+  status?: Extract<ReleaseStatus, "draft" | "published">;
   publishedAt?: string | null;
 }
 
 export interface CreateReleaseArtifactInputDto {
-  source?: "uploaded" | "external";
+  source?: "external";
   type: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
   downloadUrl: string;
@@ -971,7 +978,7 @@ export interface CreateRuntimeComponentInputDto {
   platform: PlatformTarget;
   architecture: RuntimeComponentArchitecture;
   kind: RuntimeComponentKind;
-  source?: RuntimeComponentSource;
+  source?: Exclude<RuntimeComponentSource, "uploaded">;
   originUrl?: string;
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
@@ -1033,7 +1040,7 @@ export interface UpdateReleaseArtifactInputDto {
 }
 
 export interface UploadReleaseArtifactInputDto {
-  source?: "uploaded" | "external";
+  source?: "uploaded";
   type: ReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
   defaultMirrorPrefix?: string | null;

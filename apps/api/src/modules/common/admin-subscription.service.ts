@@ -43,7 +43,7 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
-import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
+import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import {
   isEffectiveSubscription,
@@ -59,6 +59,14 @@ import {
   toUserSubscriptionSummary
 } from "./subscription.utils";
 import { XuiService } from "../xui/xui.service";
+
+type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
+type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
+type ResetTrafficCountersResult = {
+  subscription: AdminSubscriptionEntity;
+  targetUserId: string | null;
+  clearedBindingCount: number;
+};
 
 @Injectable()
 export class AdminSubscriptionService {
@@ -159,44 +167,65 @@ export class AdminSubscriptionService {
       data.maxConcurrentSessionsOverride = input.maxConcurrentSessionsOverride;
     }
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data
-    });
-
-    if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
-      await this.authSessionService.revokeAllUserSessions(userId);
-    }
-
-    if (statusChanged) {
+    const disableTargets: string[] = [];
+    if (statusChanged && input.status === "disabled") {
       const personalSubscription = await this.findCurrentPersonalSubscription(userId);
       if (personalSubscription) {
-        if (input.status === "disabled") {
-          await this.runtimeSessionService.revokeUserLeases(userId, "user_disabled", {
-            subscriptionId: personalSubscription.id
-          });
-          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(personalSubscription.id, { userId });
-        } else if (input.status === "active") {
-          await this.runtimeSessionService.syncSubscriptionPanelAccess(personalSubscription.id);
-        }
+        disableTargets.push(personalSubscription.id);
       }
-
       const memberships = await this.prisma.teamMember.findMany({
         where: { userId },
         select: { teamId: true }
       });
       for (const membership of memberships) {
         const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
-        if (!teamSubscription) {
-          continue;
+        if (teamSubscription) {
+          disableTargets.push(teamSubscription.id);
         }
-        if (input.status === "disabled") {
-          await this.runtimeSessionService.revokeUserLeases(userId, "user_disabled", {
-            subscriptionId: teamSubscription.id
-          });
-          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(teamSubscription.id, { userId });
-        } else if (input.status === "active") {
-          await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
+      }
+    }
+
+    if (disableTargets.length > 0) {
+      await this.prisma.$transaction(async (tx) => {
+        for (const subscriptionId of disableTargets) {
+          await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId });
+          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "user_disabled", { userId });
+        }
+        await tx.user.update({
+          where: { id: userId },
+          data
+        });
+      });
+    } else {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data
+      });
+    }
+
+    if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
+      await this.authSessionService.revokeAllUserSessions(userId);
+    }
+
+    if (statusChanged) {
+      if (input.status === "disabled") {
+        for (const subscriptionId of disableTargets) {
+          await this.revokeSubscriptionLeasesBestEffort(subscriptionId, "user_disabled", { userId });
+        }
+      } else if (input.status === "active") {
+        const personalSubscription = await this.findCurrentPersonalSubscription(userId);
+        if (personalSubscription) {
+          await this.syncSubscriptionPanelAccessBestEffort(personalSubscription.id);
+        }
+        const memberships = await this.prisma.teamMember.findMany({
+          where: { userId },
+          select: { teamId: true }
+        });
+        for (const membership of memberships) {
+          const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
+          if (teamSubscription) {
+            await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+          }
         }
       }
 
@@ -216,12 +245,17 @@ export class AdminSubscriptionService {
 
   async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {
     await this.ensureUserExists(userId);
-    await this.prisma.user.update({
+    const row = await this.prisma.user.update({
       where: { id: userId },
       data: {
         maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
       }
     });
+    const effectiveLimit =
+      row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
+    if (effectiveLimit !== null) {
+      await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
+    }
     return this.requireAdminUserRecord(userId);
   }
 
@@ -230,201 +264,32 @@ export class AdminSubscriptionService {
     input: ResetSubscriptionTrafficInputDto = {}
   ): Promise<ResetSubscriptionTrafficResultDto> {
     const subscription = await this.requireSubscription(subscriptionId);
-    const requestedUserId = normalizeOptionalString(input.userId);
-
-    let targetUserId: string | null;
-    if (subscription.teamId) {
-      if (!requestedUserId) {
-        throw new BadRequestException("Team 订阅重置流量时必须指定成员账号");
-      }
-      const membership = await this.prisma.teamMember.findFirst({
-        where: {
-          teamId: subscription.teamId,
-          userId: requestedUserId
-        }
-      });
-      if (!membership) {
-        throw new BadRequestException("指定成员不属于当前 Team 订阅");
-      }
-      targetUserId = requestedUserId;
-    } else {
-      if (!subscription.userId) {
-        throw new BadRequestException("个人订阅缺少所属用户，不能重置流量");
-      }
-      if (requestedUserId && requestedUserId !== subscription.userId) {
-        throw new BadRequestException("个人订阅不能指定其他成员流量");
-      }
-      targetUserId = subscription.userId;
+    if (input.userId !== undefined && input.userId !== null && typeof input.userId !== "string") {
+      throw new BadRequestException("reset traffic userId must be a string.");
     }
-
-    let staleBindingCount = 0;
-    let clearedBindingCount = 0;
-
-    await runWithSubscriptionUsageLock(subscription.id, async () => {
-      const bindings = await this.prisma.panelClientBinding.findMany({
-        where: {
-          subscriptionId: subscription.id,
-          ...(targetUserId ? { userId: targetUserId } : {}),
-          status: { in: ["active", "disabled"] }
-        },
-        include: {
-          node: true
-        }
-      });
-      clearedBindingCount = bindings.length;
-
-      const baselineSamples = await Promise.all(
-        bindings.map(async (binding) => {
-          const nodeConfig = {
-            id: binding.node.id,
-            panelBaseUrl: binding.node.panelBaseUrl,
-            panelApiBasePath: binding.node.panelApiBasePath,
-            panelUsername: binding.node.panelUsername,
-            panelPassword: binding.node.panelPassword,
-            panelInboundId: binding.panelInboundId
-          };
-          const resetApplied = await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
-          if (!resetApplied) {
-            staleBindingCount += 1;
-            return {
-              binding,
-              uplinkBytes: 0n,
-              downlinkBytes: 0n,
-              sampledAt: new Date()
-            };
-          }
-          const baseline = await this.readPanelClientBaseline(nodeConfig, binding.panelClientEmail);
-          return {
-            binding,
-            uplinkBytes: baseline.uplinkBytes,
-            downlinkBytes: baseline.downlinkBytes,
-            sampledAt: baseline.sampledAt
-          };
-        })
-      );
-
-      await this.prisma.$transaction(async (tx) => {
-      const lockedSubscription = await tx.subscription.findUnique({
-        where: { id: subscription.id }
-      });
-      if (!lockedSubscription) {
-        return;
-      }
-      const expireAt = new Date(lockedSubscription.expireAt);
-      for (const item of baselineSamples) {
-        const totalBytes = item.uplinkBytes + item.downlinkBytes;
-        const snapshotKey = buildSnapshotKey(item.binding.nodeId, item.binding.subscriptionId, item.binding.userId);
-        await tx.trafficSnapshot.upsert({
-          where: { snapshotKey },
-          update: {
-            uplinkBytes: item.uplinkBytes,
-            downlinkBytes: item.downlinkBytes,
-            totalBytes,
-            sampledAt: item.sampledAt
-          },
-          create: {
-            id: randomUUID(),
-            snapshotKey,
-            nodeId: item.binding.nodeId,
-            subscriptionId: item.binding.subscriptionId,
-            userId: item.binding.userId,
-            teamId: item.binding.teamId,
-            uplinkBytes: item.uplinkBytes,
-            downlinkBytes: item.downlinkBytes,
-            totalBytes,
-            sampledAt: item.sampledAt
-          }
-        });
-
-        await tx.panelClientBinding.update({
-          where: { id: item.binding.id },
-          data: {
-            lastUplinkBytes: item.uplinkBytes,
-            lastDownlinkBytes: item.downlinkBytes,
-            lastSyncedAt: item.sampledAt
-          }
-        });
-      }
-
-      if (lockedSubscription.teamId && targetUserId) {
-        await tx.trafficLedger.deleteMany({
-          where: {
-            teamId: lockedSubscription.teamId,
-            subscriptionId: lockedSubscription.id,
-            userId: targetUserId
-          }
-        });
-
-        const aggregate = await tx.trafficLedger.aggregate({
-          where: { subscriptionId: lockedSubscription.id },
-          _sum: { usedTrafficGb: true }
-        });
-        const usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
-        const remainingTrafficGb = Math.max(0, lockedSubscription.totalTrafficGb - usedTrafficGb);
-        await tx.subscription.update({
-          where: { id: lockedSubscription.id },
-          data: {
-            usedTrafficGb,
-            remainingTrafficGb,
-            state: resolveSubscriptionState(
-              lockedSubscription.state === "paused" ? "paused" : "active",
-              remainingTrafficGb,
-              expireAt
-            ),
-            lastSyncedAt: new Date()
-          }
-        });
-      } else {
-        await tx.subscription.update({
-          where: { id: lockedSubscription.id },
-          data: {
-            usedTrafficGb: 0,
-            remainingTrafficGb: lockedSubscription.totalTrafficGb,
-            state: resolveSubscriptionState(
-              lockedSubscription.state === "paused" ? "paused" : "active",
-              lockedSubscription.totalTrafficGb,
-              expireAt
-            ),
-            lastSyncedAt: new Date()
-          }
-        });
-      }
-      });
+    const reset = await this.resetSubscriptionTrafficCounters(subscription, {
+      requestedUserId: typeof input.userId === "string" ? input.userId : undefined,
+      allowTeamWideReset: false
     });
-
-    const updatedSubscription = await this.prisma.subscription.findUnique({
-      where: { id: subscription.id },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      }
-    });
-    if (!updatedSubscription) {
-      throw new NotFoundException("订阅不存在");
-    }
 
     await this.publishSubscriptionUpdatedEvent({
-      subscriptionId: updatedSubscription.id,
-      userId: updatedSubscription.userId,
-      teamId: updatedSubscription.teamId,
-      state: updatedSubscription.state
+      subscriptionId: reset.subscription.id,
+      userId: reset.subscription.userId,
+      teamId: reset.subscription.teamId,
+      state: reset.subscription.state
     });
 
-    const user = targetUserId ? await this.requireAdminUserRecord(targetUserId) : null;
+    const user = reset.targetUserId ? await this.requireAdminUserRecord(reset.targetUserId) : null;
     return {
       ok: true,
       subscriptionId: subscription.id,
-      userId: targetUserId,
-      clearedBindingCount,
+      userId: reset.targetUserId,
+      clearedBindingCount: reset.clearedBindingCount,
       message:
-        clearedBindingCount > 0
-          ? staleBindingCount > 0
-            ? `已重置订阅流量，并校正 ${staleBindingCount} 条失效的 3x-ui 客户端绑定`
-            : "已重置订阅流量，并同步清空 3x-ui 面板计量"
+        reset.clearedBindingCount > 0
+          ? "已重置订阅流量，并同步清空 3x-ui 面板计量"
           : "已重置订阅流量，当前没有可同步的 3x-ui 客户端",
-      subscription: toAdminSubscriptionRecord(updatedSubscription),
+      subscription: toAdminSubscriptionRecord(reset.subscription),
       user
     };
   }
@@ -477,7 +342,11 @@ export class AdminSubscriptionService {
   }
 
   async updatePlan(planId: string, input: UpdatePlanInputDto): Promise<AdminPlanRecordDto> {
-    await this.ensurePlanExists(planId);
+    const current = await this.ensurePlanExists(planId);
+    const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    if (input.scope !== undefined && input.scope !== current.scope && subscriptionCount > 0) {
+      throw new BadRequestException("Plan scope cannot be changed while subscriptions are using this plan.");
+    }
     const row = await this.prisma.plan.update({
       where: { id: planId },
       data: {
@@ -489,7 +358,9 @@ export class AdminSubscriptionService {
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
       }
     });
-    const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    if (input.maxConcurrentSessions !== undefined && input.maxConcurrentSessions !== current.maxConcurrentSessions) {
+      await this.reconcilePlanConcurrentLeaseLimits(planId, row.maxConcurrentSessions);
+    }
     return {
       id: row.id,
       name: row.name,
@@ -513,6 +384,7 @@ export class AdminSubscriptionService {
       }
     });
     const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    await this.reconcilePlanConcurrentLeaseLimits(planId, row.maxConcurrentSessions);
     return {
       id: row.id,
       name: row.name,
@@ -541,6 +413,10 @@ export class AdminSubscriptionService {
   }
 
   async createSubscription(input: CreateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    return runWithSubscriptionOwnerLock(`personal:${input.userId}`, () => this.createSubscriptionLocked(input));
+  }
+
+  private async createSubscriptionLocked(input: CreateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
     const user = await this.ensureUserExists(input.userId);
     if (user.status !== "active") {
       throw new BadRequestException("用户已禁用");
@@ -596,12 +472,17 @@ export class AdminSubscriptionService {
       }
     });
 
-    await this.closeTeamSupportTicketsForUser(
-      input.userId,
-      "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
-    );
+    try {
+      await this.closeTeamSupportTicketsForUser(
+        input.userId,
+        "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
+      );
+    } catch (error) {
+      await this.prisma.subscription.delete({ where: { id: row.id } }).catch(() => undefined);
+      throw new BadGatewayException(`Subscription was not created because support ticket cleanup failed: ${readErrorMessage(error, "unknown error")}`);
+    }
 
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(row.id);
+    const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -609,40 +490,63 @@ export class AdminSubscriptionService {
       state: row.state
     });
 
-    return toAdminSubscriptionRecord(row);
+    return withPanelSyncStatus(toAdminSubscriptionRecord(row), panelSync, "订阅已创建。");
   }
 
   async renewSubscription(subscriptionId: string, input: RenewSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
-    await this.requireSubscription(subscriptionId);
-    const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
-      const current = await this.requireSubscription(subscriptionId);
-      const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
-      const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
-      const usedTrafficGb = input.resetTraffic ? 0 : current.usedTrafficGb;
-      const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+    const current = await this.requireSubscription(subscriptionId);
+    const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
+    const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
+    const row = input.resetTraffic
+      ? (
+          await this.resetSubscriptionTrafficCounters(current, {
+            allowTeamWideReset: true,
+            totalTrafficGb,
+            expireAt: nextExpireAt,
+            sourceAction: "renewed",
+            statePreference: "active"
+          })
+        ).subscription
+      : await runWithSubscriptionUsageLock(subscriptionId, async () => {
+          const lockedSubscription = await this.requireSubscription(subscriptionId);
+          const remainingTrafficGb = Math.max(0, totalTrafficGb - lockedSubscription.usedTrafficGb);
+          const state = resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt);
+          const disconnectReason = getSubscriptionDisconnectReason({
+            state,
+            remainingTrafficGb,
+            expireAt: nextExpireAt
+          });
+          const mustDisableRemoteClients = Boolean(disconnectReason);
 
-      return this.prisma.subscription.update({
-        where: { id: subscriptionId },
-        data: {
-          totalTrafficGb,
-          usedTrafficGb,
-          remainingTrafficGb,
-          expireAt: nextExpireAt,
-          state: resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt),
-          sourceAction: "renewed",
-          lastSyncedAt: new Date()
-        },
-        include: {
-          plan: true,
-          user: true,
-          team: true,
-          nodeAccesses: true
-        }
-      });
-    });
+          return this.prisma.$transaction(async (tx) => {
+            if (mustDisableRemoteClients) {
+              await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId);
+              await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, disconnectReason as string);
+            }
+            return tx.subscription.update({
+              where: { id: subscriptionId },
+              data: {
+                totalTrafficGb,
+                remainingTrafficGb,
+                expireAt: nextExpireAt,
+                state,
+                sourceAction: "renewed",
+                lastSyncedAt: new Date()
+              },
+              include: {
+                plan: true,
+                user: true,
+                team: true,
+                nodeAccesses: true
+              }
+            });
+          });
+        });
 
-    await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+    const panelSync = mergePanelSyncResults(
+      await this.syncActiveLeasesForSubscriptionBestEffort(row),
+      await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+    );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -650,7 +554,7 @@ export class AdminSubscriptionService {
       state: row.state
     });
 
-    return toAdminSubscriptionRecord(row);
+    return withPanelSyncStatus(toAdminSubscriptionRecord(row), panelSync, "订阅已续期。");
   }
 
   async changeSubscriptionPlan(
@@ -665,6 +569,7 @@ export class AdminSubscriptionService {
 
     const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
     const current = await this.requireSubscription(subscriptionId);
+    assertPlanScopeMatchesSubscription(plan.scope, current);
     const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
     if (Number.isNaN(expireAt.getTime())) {
       throw new BadRequestException("到期时间无效");
@@ -672,59 +577,28 @@ export class AdminSubscriptionService {
 
     const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
-    return this.prisma.subscription.update({
-      where: { id: subscriptionId },
-      data: {
-        planId: plan.id,
-        totalTrafficGb,
-        remainingTrafficGb,
-        expireAt,
-        renewable: plan.renewable,
-        state: resolveSubscriptionState("active", remainingTrafficGb, expireAt),
-        sourceAction: "plan_changed",
-        lastSyncedAt: new Date()
-      },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
+    const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
+    const disconnectReason = getSubscriptionDisconnectReason({
+      state,
+      remainingTrafficGb,
+      expireAt
+    });
+    const mustDisableRemoteClients = Boolean(disconnectReason);
+    return this.prisma.$transaction(async (tx) => {
+      if (mustDisableRemoteClients) {
+        await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId);
+        await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, disconnectReason as string);
       }
-    });
-    });
-
-    await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
-    await this.publishSubscriptionUpdatedEvent({
-      subscriptionId: row.id,
-      userId: row.userId,
-      teamId: row.teamId,
-      state: row.state
-    });
-
-    return toAdminSubscriptionRecord(row);
-  }
-
-  async updateSubscription(subscriptionId: string, input: UpdateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
-    await this.requireSubscription(subscriptionId);
-
-    const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
-      const current = await this.requireSubscription(subscriptionId);
-      const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
-      const usedTrafficGb = input.usedTrafficGb ?? current.usedTrafficGb;
-      const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
-      const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
-      const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
-
-      return this.prisma.subscription.update({
+      return tx.subscription.update({
         where: { id: subscriptionId },
         data: {
+          planId: plan.id,
           totalTrafficGb,
-          usedTrafficGb,
           remainingTrafficGb,
           expireAt,
+          renewable: plan.renewable,
           state,
-          sourceAction: "adjusted",
+          sourceAction: "plan_changed",
           lastSyncedAt: new Date()
         },
         include: {
@@ -735,9 +609,13 @@ export class AdminSubscriptionService {
         }
       });
     });
+    });
 
-    await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+    const panelSync = mergePanelSyncResults(
+      await this.enforceSubscriptionConcurrentLeaseLimits(row),
+      await this.syncActiveLeasesForSubscriptionBestEffort(row),
+      await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+    );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -745,7 +623,68 @@ export class AdminSubscriptionService {
       state: row.state
     });
 
-    return toAdminSubscriptionRecord(row);
+    return withPanelSyncStatus(toAdminSubscriptionRecord(row), panelSync, "订阅套餐已变更。");
+  }
+
+  async updateSubscription(subscriptionId: string, input: UpdateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    await this.requireSubscription(subscriptionId);
+
+    const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
+      const current = await this.requireSubscription(subscriptionId);
+      const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
+      const usedTrafficGb = input.usedTrafficGb ?? current.usedTrafficGb;
+      const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
+      if (Number.isNaN(expireAt.getTime())) {
+        throw new BadRequestException("鍒版湡鏃堕棿鏃犳晥");
+      }
+      const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+      const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
+      const disconnectReason = getSubscriptionDisconnectReason({
+        state,
+        remainingTrafficGb,
+        expireAt
+      });
+      const mustDisableRemoteClients = Boolean(disconnectReason);
+
+      return this.prisma.$transaction(async (tx) => {
+        if (mustDisableRemoteClients) {
+          await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId);
+          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, disconnectReason as string);
+        }
+        return tx.subscription.update({
+          where: { id: subscriptionId },
+          data: {
+            totalTrafficGb,
+            usedTrafficGb,
+            remainingTrafficGb,
+            expireAt,
+            state,
+            sourceAction: "adjusted",
+            lastSyncedAt: new Date()
+          },
+          include: {
+            plan: true,
+            user: true,
+            team: true,
+            nodeAccesses: true
+          }
+        });
+      });
+    });
+
+    const leaseSync = await this.syncActiveLeasesForSubscriptionBestEffort(row);
+    const panelSync = mergePanelSyncResults(
+      leaseSync,
+      await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+    );
+    await this.publishSubscriptionUpdatedEvent({
+      subscriptionId: row.id,
+      userId: row.userId,
+      teamId: row.teamId,
+      state: row.state
+    });
+
+    return withPanelSyncStatus(toAdminSubscriptionRecord(row), panelSync, "订阅已更新。");
   }
 
   async convertPersonalSubscriptionToTeam(
@@ -779,6 +718,7 @@ export class AdminSubscriptionService {
 
     const membershipId = createId("member");
     let membershipCreated = false;
+    let teamPanelSync: PanelSyncBestEffortResult = { ok: true };
 
     try {
       await this.prisma.teamMember.create({
@@ -791,7 +731,7 @@ export class AdminSubscriptionService {
       });
       membershipCreated = true;
 
-      await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
+      teamPanelSync = await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
       await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "team_member_removed", {
         userId: user.id
       });
@@ -814,15 +754,13 @@ export class AdminSubscriptionService {
           where: { id: membershipId }
         });
         const rollbackErrors: string[] = [];
-        try {
-          await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
-        } catch (rollbackError) {
-          rollbackErrors.push(readErrorMessage(rollbackError, "清理 Team 授权失败"));
+        const teamRollback = await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+        if (!teamRollback.ok) {
+          rollbackErrors.push(teamRollback.errorMessage);
         }
-        try {
-          await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
-        } catch (rollbackError) {
-          rollbackErrors.push(readErrorMessage(rollbackError, "恢复个人订阅授权失败"));
+        const personalRollback = await this.syncSubscriptionPanelAccessBestEffort(subscriptionId);
+        if (!personalRollback.ok) {
+          rollbackErrors.push(personalRollback.errorMessage);
         }
         if (rollbackErrors.length > 0) {
           const baseMessage = readErrorMessage(error, "个人订阅转 Team 失败");
@@ -850,7 +788,8 @@ export class AdminSubscriptionService {
       teamId: teamRecord.id,
       teamName: teamRecord.name,
       teamSubscriptionId: teamSubscription.id,
-      message: `个人订阅已删除，账号已转入 Team「${teamRecord.name}」，后续将按团队共享订阅生效。`
+      ...buildPanelSyncResult(teamPanelSync),
+      message: buildPanelSyncMessage(teamPanelSync, `个人订阅已删除，账号已转入 Team「${teamRecord.name}」。`)
     };
   }
 
@@ -944,6 +883,10 @@ export class AdminSubscriptionService {
   }
 
   async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
+    return runWithSubscriptionOwnerLock(`personal:${input.ownerUserId}`, () => this.createTeamLocked(input));
+  }
+
+  private async createTeamLocked(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
     const owner = await this.ensureUserExists(input.ownerUserId);
     if (owner.status !== "active") {
       throw new BadRequestException("负责人账号已禁用");
@@ -952,28 +895,44 @@ export class AdminSubscriptionService {
     await this.assertUserCanJoinTeam(owner.id);
 
     const teamId = createId("team");
-    await this.prisma.team.create({
-      data: {
-        id: teamId,
-        name: input.name.trim(),
-        ownerUserId: owner.id,
-        status: input.status ?? "active"
-      }
-    });
+    let teamCreated = false;
+    try {
+      await this.prisma.$transaction([
+        this.prisma.team.create({
+          data: {
+            id: teamId,
+            name: input.name.trim(),
+            ownerUserId: owner.id,
+            status: input.status ?? "active"
+          }
+        }),
+        this.prisma.teamMember.create({
+          data: {
+            id: createId("member"),
+            teamId,
+            userId: owner.id,
+            role: "owner"
+          }
+        })
+      ]);
+      teamCreated = true;
 
-    await this.prisma.teamMember.create({
-      data: {
-        id: createId("member"),
-        teamId,
-        userId: owner.id,
-        role: "owner"
+      await this.closePersonalSupportTicketsForUser(
+        owner.id,
+        "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
+      );
+    } catch (error) {
+      if (teamCreated) {
+        try {
+          await this.prisma.team.delete({ where: { id: teamId } });
+        } catch (rollbackError) {
+          throw new BadGatewayException(
+            `${readErrorMessage(error, "创建 Team 失败")}；回滚 Team 时又出现问题：${readErrorMessage(rollbackError, "删除 Team 失败")}`
+          );
+        }
       }
-    });
-
-    await this.closePersonalSupportTicketsForUser(
-      owner.id,
-      "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
-    );
+      throw error;
+    }
 
     return this.requireTeamRecord(teamId);
   }
@@ -984,6 +943,8 @@ export class AdminSubscriptionService {
     if (input.name !== undefined) data.name = input.name.trim();
     if (input.status !== undefined) data.status = input.status;
     const teamSubscription = await this.findCurrentTeamSubscription(teamId);
+    const teamWillBeDisabled = Boolean(teamSubscription && input.status === "disabled" && input.status !== current.status);
+    let teamUpdatedInOwnerTransaction = false;
 
     if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
       const nextOwner = await this.ensureUserExists(input.ownerUserId);
@@ -1003,45 +964,88 @@ export class AdminSubscriptionService {
       }
 
       data.ownerUserId = nextOwner.id;
-      await this.prisma.teamMember.updateMany({
-        where: { teamId, role: "owner" },
-        data: { role: "member" }
-      });
-
-      await this.prisma.teamMember.upsert({
-        where: { userId: nextOwner.id },
-        update: { role: "owner" },
-        create: {
-          id: createId("member"),
-          teamId,
-          userId: nextOwner.id,
-          role: "owner"
+      await this.prisma.$transaction(async (tx) => {
+        if (teamWillBeDisabled && teamSubscription) {
+          await this.queuePanelDisableJobsForSubscriptionTx(tx, teamSubscription.id);
+          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, teamSubscription.id, "team_disabled");
         }
+        await tx.teamMember.updateMany({
+          where: { teamId, role: "owner" },
+          data: { role: "member" }
+        });
+        await tx.teamMember.upsert({
+          where: { userId: nextOwner.id },
+          update: { role: "owner" },
+          create: {
+            id: createId("member"),
+            teamId,
+            userId: nextOwner.id,
+            role: "owner"
+          }
+        });
+        await tx.team.update({
+          where: { id: teamId },
+          data
+        });
       });
+      teamUpdatedInOwnerTransaction = true;
 
       if (joinsCurrentTeamAsNewOwner) {
-        await this.closePersonalSupportTicketsForUser(
+        try {
+          await this.closePersonalSupportTicketsForUser(
           nextOwner.id,
           "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
         );
+        } catch (error) {
+          await this.prisma.$transaction([
+            this.prisma.teamMember.updateMany({
+              where: { teamId, userId: current.ownerUserId },
+              data: { role: "owner" }
+            }),
+            this.prisma.teamMember.deleteMany({
+              where: { teamId, userId: nextOwner.id }
+            }),
+            this.prisma.team.update({
+              where: { id: teamId },
+              data: {
+                ownerUserId: current.ownerUserId,
+                name: current.name,
+                status: current.status
+              }
+            })
+          ]);
+          throw new BadGatewayException(`Team owner was not changed because support ticket cleanup failed: ${readErrorMessage(error, "unknown error")}`);
+        }
       }
     }
 
-    await this.prisma.team.update({
-      where: { id: teamId },
-      data
-    });
+    if (!teamUpdatedInOwnerTransaction) {
+      if (teamWillBeDisabled && teamSubscription) {
+        await this.prisma.$transaction(async (tx) => {
+          await this.queuePanelDisableJobsForSubscriptionTx(tx, teamSubscription.id);
+          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, teamSubscription.id, "team_disabled");
+          await tx.team.update({
+            where: { id: teamId },
+            data
+          });
+        });
+      } else {
+        await this.prisma.team.update({
+          where: { id: teamId },
+          data
+        });
+      }
+    }
 
     if (teamSubscription) {
       if (input.status !== undefined && input.status !== current.status) {
         if (input.status === "disabled") {
-          await this.runtimeSessionService.revokeSubscriptionLeases(teamSubscription.id, "team_disabled");
-          await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(teamSubscription.id);
+          await this.revokeSubscriptionLeasesBestEffort(teamSubscription.id, "team_disabled");
         } else if (input.status === "active") {
-          await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
+          await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
         }
       } else if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
-        await this.runtimeSessionService.syncSubscriptionPanelAccess(teamSubscription.id);
+        await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
       }
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: teamSubscription.id,
@@ -1054,10 +1058,17 @@ export class AdminSubscriptionService {
   }
 
   async createTeamMember(teamId: string, input: CreateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
+    return runWithSubscriptionOwnerLock(`personal:${input.userId}`, () => this.createTeamMemberLocked(teamId, input));
+  }
+
+  private async createTeamMemberLocked(teamId: string, input: CreateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
     await this.requireTeam(teamId);
+    if (input.role === "owner") {
+      throw new BadRequestException("Use the team owner transfer flow to assign an owner.");
+    }
     await this.assertUserCanJoinTeam(input.userId);
 
-    await this.prisma.teamMember.create({
+    const member = await this.prisma.teamMember.create({
       data: {
         id: createId("member"),
         teamId,
@@ -1066,14 +1077,20 @@ export class AdminSubscriptionService {
       }
     });
 
-    await this.closePersonalSupportTicketsForUser(
+    try {
+      await this.closePersonalSupportTicketsForUser(
       input.userId,
       "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
     );
 
+    } catch (error) {
+      await this.prisma.teamMember.delete({ where: { id: member.id } }).catch(() => null);
+      throw new BadGatewayException(`Team member was not added because support ticket cleanup failed: ${readErrorMessage(error, "unknown error")}`);
+    }
+
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
-      await this.runtimeSessionService.syncSubscriptionPanelAccess(subscription.id);
+      await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: subscription.id,
         teamId: subscription.teamId,
@@ -1090,23 +1107,36 @@ export class AdminSubscriptionService {
       throw new BadRequestException("Team member does not belong to the requested team.");
     }
     const nextRole = input.role ?? member.role;
-
-    await this.prisma.teamMember.update({
-      where: { id: memberId },
-      data: { role: nextRole }
-    });
+    if (member.role === "owner" && nextRole !== "owner") {
+      throw new BadRequestException("Use the team owner transfer flow before changing the current owner role.");
+    }
 
     if (nextRole === "owner") {
-      await this.prisma.teamMember.updateMany({
-        where: {
-          teamId: member.teamId,
-          NOT: { id: memberId }
-        },
-        data: { role: "member" }
-      });
-      await this.prisma.team.update({
-        where: { id: member.teamId },
-        data: { ownerUserId: member.userId }
+      const ownerUser = await this.ensureUserExists(member.userId);
+      if (ownerUser.status !== "active") {
+        throw new BadRequestException("Team owner account must be active.");
+      }
+      await this.prisma.$transaction([
+        this.prisma.teamMember.update({
+          where: { id: memberId },
+          data: { role: "owner" }
+        }),
+        this.prisma.teamMember.updateMany({
+          where: {
+            teamId: member.teamId,
+            NOT: { id: memberId }
+          },
+          data: { role: "member" }
+        }),
+        this.prisma.team.update({
+          where: { id: member.teamId },
+          data: { ownerUserId: member.userId }
+        })
+      ]);
+    } else {
+      await this.prisma.teamMember.update({
+        where: { id: memberId },
+        data: { role: nextRole }
       });
     }
 
@@ -1123,15 +1153,6 @@ export class AdminSubscriptionService {
     }
 
     const subscription = await this.findCurrentTeamSubscription(member.teamId);
-    if (subscription) {
-      await this.runtimeSessionService.revokeSubscriptionLeases(subscription.id, "team_member_removed", {
-        userId: member.userId
-      });
-      await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscription.id, {
-        userId: member.userId
-      });
-    }
-
     await this.closeSupportTicketsForUser(
       {
         userId: member.userId,
@@ -1140,9 +1161,25 @@ export class AdminSubscriptionService {
       "当前账号已离开原 Team，原 Team 工单已失效。如需继续咨询，请按当前归属重新创建工单。"
     );
 
-    await this.prisma.teamMember.delete({
-      where: { id: memberId }
+    await this.prisma.$transaction(async (tx) => {
+      if (subscription) {
+        await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id, {
+          userId: member.userId
+        });
+        await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_member_removed", {
+          userId: member.userId
+        });
+      }
+      await tx.teamMember.delete({
+        where: { id: memberId }
+      });
     });
+
+    if (subscription) {
+      await this.revokeSubscriptionLeasesBestEffort(subscription.id, "team_member_removed", {
+        userId: member.userId
+      });
+    }
 
     if (subscription) {
       await this.publishSubscriptionUpdatedEvent({
@@ -1238,6 +1275,10 @@ export class AdminSubscriptionService {
   }
 
   async createTeamSubscription(teamId: string, input: CreateTeamSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
+    return runWithSubscriptionOwnerLock(`team:${teamId}`, () => this.createTeamSubscriptionLocked(teamId, input));
+  }
+
+  private async createTeamSubscriptionLocked(teamId: string, input: CreateTeamSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
     const team = await this.requireTeam(teamId);
     if (team.status !== "active") {
       throw new BadRequestException("团队已停用");
@@ -1288,7 +1329,7 @@ export class AdminSubscriptionService {
       }
     });
 
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(row.id);
+    const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -1296,7 +1337,7 @@ export class AdminSubscriptionService {
       state: row.state
     });
 
-    return toAdminSubscriptionRecord(row);
+    return withPanelSyncStatus(toAdminSubscriptionRecord(row), panelSync, "Team 订阅已创建。");
   }
 
   async getTeamUsage(teamId: string): Promise<AdminTeamUsageRecordDto[]> {
@@ -1307,6 +1348,234 @@ export class AdminSubscriptionService {
       orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
     });
     return summarizeTeamUsageRecords(rows);
+  }
+
+  private async resetSubscriptionTrafficCounters(
+    subscription: AdminSubscriptionEntity,
+    options: {
+      requestedUserId?: string | null;
+      allowTeamWideReset: boolean;
+      totalTrafficGb?: number;
+      expireAt?: Date;
+      sourceAction?: "renewed";
+      statePreference?: SubscriptionState;
+    }
+  ): Promise<ResetTrafficCountersResult> {
+    const requestedUserId = normalizeOptionalString(options.requestedUserId);
+
+    let targetUserId: string | null;
+    if (subscription.teamId) {
+      if (requestedUserId) {
+        const membership = await this.prisma.teamMember.findFirst({
+          where: {
+            teamId: subscription.teamId,
+            userId: requestedUserId
+          }
+        });
+        if (!membership) {
+          throw new BadRequestException("指定成员不属于当前 Team 订阅");
+        }
+        targetUserId = requestedUserId;
+      } else if (options.allowTeamWideReset) {
+        targetUserId = null;
+      } else {
+        throw new BadRequestException("Team 订阅重置流量时必须指定成员账号");
+      }
+    } else {
+      if (!subscription.userId) {
+        throw new BadRequestException("个人订阅缺少所属用户，不能重置流量");
+      }
+      if (requestedUserId && requestedUserId !== subscription.userId) {
+        throw new BadRequestException("个人订阅不能指定其他成员流量");
+      }
+      targetUserId = subscription.userId;
+    }
+
+    let clearedBindingCount = 0;
+    let updatedSubscription: AdminSubscriptionEntity | null = null;
+
+    await runWithSubscriptionUsageLock(subscription.id, async () => {
+      const bindings = await this.prisma.panelClientBinding.findMany({
+        where: {
+          subscriptionId: subscription.id,
+          ...(targetUserId ? { userId: targetUserId } : {}),
+          status: { in: ["active", "disabled"] }
+        },
+        include: {
+          node: true
+        }
+      });
+      clearedBindingCount = bindings.length;
+
+      let staleBindingCount = 0;
+      const baselineSamples = await Promise.all(
+        bindings.map(async (binding) => {
+          const nodeConfig = {
+            id: binding.node.id,
+            panelBaseUrl: binding.node.panelBaseUrl,
+            panelApiBasePath: binding.node.panelApiBasePath,
+            panelUsername: binding.node.panelUsername,
+            panelPassword: binding.node.panelPassword,
+            panelInboundId: binding.panelInboundId
+          };
+          const resetApplied = await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
+          if (!resetApplied) {
+            staleBindingCount += 1;
+            return null;
+          }
+          const baseline = await this.readPanelClientBaseline(nodeConfig, binding.panelClientEmail);
+          return {
+            binding,
+            uplinkBytes: baseline.uplinkBytes,
+            downlinkBytes: baseline.downlinkBytes,
+            sampledAt: baseline.sampledAt
+          };
+        })
+      );
+      if (staleBindingCount > 0) {
+        await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)));
+        throw new BadGatewayException("Reset traffic was not applied to every 3x-ui client; local traffic counters were left unchanged.");
+      }
+
+      updatedSubscription = await this.prisma.$transaction(async (tx) => {
+        const lockedSubscription = await tx.subscription.findUnique({
+          where: { id: subscription.id },
+          include: {
+            plan: true,
+            user: true,
+            team: true,
+            nodeAccesses: true
+          }
+        });
+        if (!lockedSubscription) {
+          return null;
+        }
+
+        await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
+
+        const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
+        const expireAt = options.expireAt ?? new Date(lockedSubscription.expireAt);
+        let usedTrafficGb = 0;
+
+        if (lockedSubscription.teamId) {
+          await tx.trafficLedger.deleteMany({
+            where: {
+              teamId: lockedSubscription.teamId,
+              subscriptionId: lockedSubscription.id,
+              ...(targetUserId ? { userId: targetUserId } : {})
+            }
+          });
+
+          if (targetUserId) {
+            const aggregate = await tx.trafficLedger.aggregate({
+              where: { subscriptionId: lockedSubscription.id },
+              _sum: { usedTrafficGb: true }
+            });
+            usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+          }
+        }
+
+        const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+        return tx.subscription.update({
+          where: { id: lockedSubscription.id },
+          data: {
+            totalTrafficGb,
+            usedTrafficGb,
+            remainingTrafficGb,
+            expireAt,
+            state: resolveSubscriptionState(
+              options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
+              remainingTrafficGb,
+              expireAt
+            ),
+            ...(options.sourceAction ? { sourceAction: options.sourceAction } : {}),
+            lastSyncedAt: new Date()
+          },
+          include: {
+            plan: true,
+            user: true,
+            team: true,
+            nodeAccesses: true
+          }
+        });
+      });
+    });
+
+    if (!updatedSubscription) {
+      throw new NotFoundException("订阅不存在");
+    }
+
+    return {
+      subscription: updatedSubscription,
+      targetUserId,
+      clearedBindingCount
+    };
+  }
+
+  private async persistTrafficResetBaselineSamples(
+    samples: Array<{
+      binding: {
+        id: string;
+        nodeId: string;
+        subscriptionId: string;
+        userId: string | null;
+        teamId: string | null;
+      };
+      uplinkBytes: bigint;
+      downlinkBytes: bigint;
+      sampledAt: Date;
+    }>,
+    tx?: any
+  ) {
+    if (samples.length === 0) {
+      return;
+    }
+    const client = tx ?? this.prisma;
+    const writeSamples = async (writer: any) => {
+      for (const item of samples) {
+        if (!item.binding.userId) {
+          continue;
+        }
+        const totalBytes = item.uplinkBytes + item.downlinkBytes;
+        const snapshotKey = buildSnapshotKey(item.binding.nodeId, item.binding.subscriptionId, item.binding.userId);
+        await writer.trafficSnapshot.upsert({
+          where: { snapshotKey },
+          update: {
+            uplinkBytes: item.uplinkBytes,
+            downlinkBytes: item.downlinkBytes,
+            totalBytes,
+            sampledAt: item.sampledAt
+          },
+          create: {
+            id: randomUUID(),
+            snapshotKey,
+            nodeId: item.binding.nodeId,
+            subscriptionId: item.binding.subscriptionId,
+            userId: item.binding.userId,
+            teamId: item.binding.teamId,
+            uplinkBytes: item.uplinkBytes,
+            downlinkBytes: item.downlinkBytes,
+            totalBytes,
+            sampledAt: item.sampledAt
+          }
+        });
+
+        await writer.panelClientBinding.update({
+          where: { id: item.binding.id },
+          data: {
+            lastUplinkBytes: item.uplinkBytes,
+            lastDownlinkBytes: item.downlinkBytes,
+            lastSyncedAt: item.sampledAt
+          }
+        });
+      }
+    };
+
+    if (tx) {
+      await writeSamples(client);
+      return;
+    }
+    await this.prisma.$transaction(writeSamples);
   }
 
   private async readPanelClientBaseline(
@@ -1359,22 +1628,171 @@ export class AdminSubscriptionService {
     });
   }
 
+  private async queuePanelDisableJobsForSubscriptionTx(
+    writer: any,
+    subscriptionId: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    return this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(writer, subscriptionId, filter);
+  }
+
+  private async queueLeaseRevocationJobsForSubscriptionTx(
+    writer: any,
+    subscriptionId: string,
+    reason: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    return this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(writer, subscriptionId, reason, filter);
+  }
+
+  private async syncActiveLeasesForSubscriptionBestEffort(subscription: Parameters<RuntimeSessionService["syncActiveLeasesForSubscription"]>[0]) {
+    try {
+      await this.runtimeSessionService.syncActiveLeasesForSubscription(subscription);
+      return { ok: true as const };
+    } catch (error) {
+      return {
+        ok: false as const,
+        errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
+      };
+    }
+  }
+
+  private async revokeSubscriptionLeasesBestEffort(
+    subscriptionId: string,
+    reason: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    try {
+      await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
+      return { ok: true as const };
+    } catch (error) {
+      return {
+        ok: false as const,
+        errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
+      };
+    }
+  }
+
+  private async reconcilePlanConcurrentLeaseLimits(planId: string, maxConcurrentSessions: number) {
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: { planId },
+      include: {
+        team: {
+          include: {
+            members: true
+          }
+        }
+      }
+    });
+    const affectedUserIds = new Set<string>();
+    for (const subscription of subscriptions) {
+      if (subscription.userId) {
+        affectedUserIds.add(subscription.userId);
+      }
+      for (const member of subscription.team?.members ?? []) {
+        affectedUserIds.add(member.userId);
+      }
+    }
+    if (affectedUserIds.size === 0) {
+      return;
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: [...affectedUserIds] } },
+      select: { id: true, maxConcurrentSessionsOverride: true }
+    });
+    for (const user of users) {
+      if (user.maxConcurrentSessionsOverride !== null) {
+        continue;
+      }
+      try {
+        await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(user.id, maxConcurrentSessions);
+      } catch {
+        // Lease enforcement is retried on subsequent security updates and normal lease validation.
+      }
+    }
+  }
+
+  private async enforceSubscriptionConcurrentLeaseLimits(subscription: {
+    userId?: string | null;
+    teamId?: string | null;
+    plan: { maxConcurrentSessions: number };
+  }) {
+    const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(subscription);
+    if (userIds.length === 0) {
+      return { ok: true as const };
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, maxConcurrentSessionsOverride: true }
+    });
+    const failures: string[] = [];
+    for (const user of users) {
+      const limit = user.maxConcurrentSessionsOverride ?? subscription.plan.maxConcurrentSessions;
+      try {
+        await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(user.id, limit);
+      } catch (error) {
+        failures.push(`${user.id}: ${readErrorMessage(error, "unknown error")}`);
+      }
+    }
+
+    if (failures.length > 0) {
+      return {
+        ok: false as const,
+        errorMessage: `lease concurrency reconciliation failed: ${failures.join("; ")}`
+      };
+    }
+    return { ok: true as const };
+  }
+
+  private async resolveEffectiveConcurrentLeaseLimitForUser(userId: string) {
+    const personalSubscription = await this.findCurrentPersonalSubscription(userId);
+    if (personalSubscription && isEffectiveSubscription(personalSubscription)) {
+      return personalSubscription.plan.maxConcurrentSessions;
+    }
+
+    const membership = await this.getUserMembership(userId);
+    if (!membership) {
+      return DEFAULT_MAX_CONCURRENT_SESSIONS;
+    }
+    const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
+    if (teamSubscription && isEffectiveSubscription(teamSubscription)) {
+      return teamSubscription.plan.maxConcurrentSessions;
+    }
+    return DEFAULT_MAX_CONCURRENT_SESSIONS;
+  }
+
+  private async syncSubscriptionPanelAccessBestEffort(subscriptionId: string) {
+    try {
+      await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+      return { ok: true as const };
+    } catch (error) {
+      return {
+        ok: false as const,
+        errorMessage: readErrorMessage(error, "3x-ui panel sync failed")
+      };
+    }
+  }
+
   private async findCurrentPersonalSubscription(userId: string) {
-    return this.prisma.subscription.findFirst({
+    const rows = await this.prisma.subscription.findMany({
       where: {
         userId
       },
       include: { plan: true, user: true, team: true, nodeAccesses: true },
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
+    return pickCurrentSubscription(rows);
   }
 
   private async findCurrentTeamSubscription(teamId: string) {
-    return this.prisma.subscription.findFirst({
+    const rows = await this.prisma.subscription.findMany({
       where: { teamId },
       include: { plan: true, user: true, team: true, nodeAccesses: true },
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
+    return pickCurrentSubscription(rows);
   }
 
   private async getUserMembership(userId: string) {
@@ -1573,4 +1991,76 @@ function createId(prefix: string) {
 
 function readErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+}
+
+function withPanelSyncStatus<T extends object>(
+  record: T,
+  panelSync: PanelSyncBestEffortResult,
+  syncedMessage: string
+) {
+  return {
+    ...record,
+    ...buildPanelSyncResult(panelSync),
+    message: buildPanelSyncMessage(panelSync, syncedMessage)
+  };
+}
+
+function buildPanelSyncResult(panelSync: PanelSyncBestEffortResult) {
+  if (panelSync.ok) {
+    return {
+      panelSyncStatus: "synced" as const,
+      panelSyncMessage: null
+    };
+  }
+  return {
+    panelSyncStatus: "pending" as const,
+    panelSyncMessage: `3x-ui 面板同步失败，将在后续连接或手动操作时重试：${panelSync.errorMessage}`
+  };
+}
+
+function buildPanelSyncMessage(panelSync: PanelSyncBestEffortResult, syncedMessage: string) {
+  if (panelSync.ok) {
+    return syncedMessage;
+  }
+  return `${syncedMessage} ${buildPanelSyncResult(panelSync).panelSyncMessage}`;
+}
+
+function mergePanelSyncResults(...results: PanelSyncBestEffortResult[]): PanelSyncBestEffortResult {
+  const failed = results.filter((item): item is { ok: false; errorMessage: string } => !item.ok);
+  if (failed.length === 0) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    errorMessage: failed.map((item) => item.errorMessage).join("；")
+  };
+}
+
+function getSubscriptionDisconnectReason(subscription: {
+  state: SubscriptionState;
+  remainingTrafficGb: number;
+  expireAt: Date;
+}) {
+  if (subscription.expireAt.getTime() <= Date.now() || subscription.state === "expired") {
+    return "subscription_expired";
+  }
+  if (subscription.remainingTrafficGb <= 0 || subscription.state === "exhausted") {
+    return "subscription_exhausted";
+  }
+  if (subscription.state === "paused") {
+    return "subscription_paused";
+  }
+  return null;
+}
+
+function assertPlanScopeMatchesSubscription(
+  planScope: "personal" | "team",
+  subscription: { userId: string | null; teamId: string | null }
+) {
+  if (subscription.userId && planScope !== "personal") {
+    throw new BadRequestException("Personal subscriptions can only use personal plans.");
+  }
+  if (subscription.teamId && planScope !== "team") {
+    throw new BadRequestException("Team subscriptions can only use team plans.");
+  }
 }

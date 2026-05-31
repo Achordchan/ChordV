@@ -11,6 +11,7 @@ import type {
   ClientVersionDto,
   NodeProbeStatus,
   NodeSummaryDto,
+  PlatformTarget,
   PolicyBundleDto,
   SubscriptionState,
   SubscriptionStatusDto,
@@ -109,17 +110,22 @@ export class ClientAccessService {
     return this.authSessionService.rotateRefreshToken(token);
   }
 
-  async logout(token?: string) {
-    await this.authSessionService.revokeByAccessToken(token);
+  async logout(token?: string, refreshToken?: string) {
+    await this.authSessionService.revokeByAccessOrRefreshToken(token, refreshToken);
     return { ok: true };
   }
 
-  async streamRuntimeEvents(token?: string) {
+  async streamRuntimeEvents(token?: string, lastEventId?: string | null) {
     const user = await this.authSessionService.authenticateAccessToken(token);
-    return this.clientRuntimeEventsService.streamForUser(user.id);
+    return this.clientRuntimeEventsService.streamForUser(user.id, {
+      lastEventId,
+      validate: async () => {
+        await this.authSessionService.authenticateAccessToken(token);
+      }
+    });
   }
 
-  async getBootstrap(token?: string): Promise<ClientBootstrapDto> {
+  async getBootstrap(token?: string, platform?: PlatformTarget): Promise<ClientBootstrapDto> {
     const user = await this.authSessionService.authenticateAccessToken(token);
     const access = await this.resolveSubscriptionAccessForUser(user.id);
     if (!access.subscription) {
@@ -130,7 +136,7 @@ export class ClientAccessService {
     const [policies, announcements, version, supportTickets] = await Promise.all([
       this.announcementPolicyService.getPolicies(),
       this.announcementPolicyService.getAnnouncements(token),
-      this.getClientVersion(),
+      this.getClientVersion(platform),
       this.clientTicketService.getClientSupportTicketInbox(user.id)
     ]);
 
@@ -255,12 +261,12 @@ export class ClientAccessService {
     return this.announcementPolicyService.getPolicies();
   }
 
-  async getClientVersion(): Promise<ClientVersionDto> {
-    const latestRelease = await this.findLatestPublishedRelease("stable");
+  async getClientVersion(platform?: PlatformTarget): Promise<ClientVersionDto> {
+    const profile = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" }
+    });
+    const latestRelease = platform ? await this.findLatestPublishedRelease("stable", platform) : null;
     if (!latestRelease) {
-      const profile = await this.prisma.policyProfile.findUnique({
-        where: { id: "default" }
-      });
 
       if (!profile) {
         throw new NotFoundException("版本配置不存在");
@@ -338,11 +344,12 @@ export class ClientAccessService {
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
-    return this.prisma.subscription.findFirst({
+    const rows = await this.prisma.subscription.findMany({
       where: { userId },
       include: { plan: true, user: true, team: true },
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
+    return pickCurrentSubscription(rows);
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
@@ -461,11 +468,12 @@ export class ClientAccessService {
     return buckets[0]?.blockedUntil ?? null;
   }
 
-  private async findLatestPublishedRelease(channel: "stable") {
+  private async findLatestPublishedRelease(channel: "stable", platform?: PlatformTarget) {
     const rows = await this.prisma.release.findMany({
       where: {
         channel,
-        status: "published"
+        status: "published",
+        ...(platform ? { platform } : {})
       },
       include: {
         artifacts: {

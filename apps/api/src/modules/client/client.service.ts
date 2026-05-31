@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import type {
   ClientPingDto,
+  PlatformTarget,
   ClientUpdateCheckDto,
   CreateClientSupportTicketInputDto,
   MarkClientAnnouncementsReadInputDto,
@@ -12,8 +13,8 @@ import { DevDataService } from "../common/dev-data.service";
 export class ClientService {
   constructor(private readonly devDataService: DevDataService) {}
 
-  getBootstrap(token?: string) {
-    return this.devDataService.getBootstrap(token);
+  getBootstrap(token?: string, platform?: PlatformTarget) {
+    return this.devDataService.getBootstrap(token, platform);
   }
 
   getSubscription(token?: string) {
@@ -40,8 +41,8 @@ export class ClientService {
     return this.devDataService.markClientAnnouncementsRead(input, token);
   }
 
-  getVersion() {
-    return this.devDataService.getClientVersion();
+  getVersion(platform?: PlatformTarget) {
+    return this.devDataService.getClientVersion(platform);
   }
 
   ping(token?: string): Promise<ClientPingDto> {
@@ -64,8 +65,8 @@ export class ClientService {
     return this.devDataService.disconnect(sessionId, token);
   }
 
-  streamEvents(token?: string) {
-    return this.devDataService.streamRuntimeEvents(token);
+  streamEvents(token?: string, lastEventId?: string | null) {
+    return this.devDataService.streamRuntimeEvents(token, lastEventId);
   }
 
   getRuntime(sessionId?: string, token?: string) {

@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable, UnauthorizedException } from "@nestjs/common";
-import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as jwt from "jsonwebtoken";
 import type { AuthSessionDto, UserProfileDto } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
@@ -9,6 +9,30 @@ type AccessPayload = {
   email: string;
   role: "user" | "admin";
   ver: number;
+  sid: string;
+};
+
+type SessionUser = {
+  id: string;
+  email: string;
+  displayName: string;
+  role: "user" | "admin";
+  status: "active" | "disabled";
+  lastSeenAt: Date;
+  authVersion: number;
+};
+
+type RefreshTokenWriter = {
+  refreshToken: {
+    create(input: {
+      data: {
+        id: string;
+        userId: string;
+        tokenHash: string;
+        expiresAt: Date;
+      };
+    }): Promise<unknown>;
+  };
 };
 
 const MIN_JWT_SECRET_LENGTH = 32;
@@ -28,44 +52,10 @@ export class AuthSessionService {
   async issueSession(userId: string): Promise<AuthSessionDto> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.status !== "active") {
-      throw new UnauthorizedException("用户不可用");
+      throw new UnauthorizedException("User is not active.");
     }
 
-    const now = Date.now();
-    const accessTokenExpiresAt = new Date(now + this.accessTokenTtlSeconds * 1000);
-    const refreshTokenExpiresAt = new Date(now + this.refreshTokenTtlSeconds * 1000);
-
-    const accessToken = jwt.sign(
-      {
-        sub: user.id,
-        email: user.email,
-        role: user.role,
-        ver: user.authVersion
-      } satisfies AccessPayload,
-      this.jwtSecret,
-      {
-        issuer: this.jwtIssuer,
-        expiresIn: this.accessTokenTtlSeconds
-      }
-    );
-
-    const refreshToken = this.generateRefreshToken();
-    await this.prisma.refreshToken.create({
-      data: {
-        id: randomUUID(),
-        userId: user.id,
-        tokenHash: this.hashToken(refreshToken),
-        expiresAt: refreshTokenExpiresAt
-      }
-    });
-
-    return {
-      accessToken,
-      refreshToken,
-      accessTokenExpiresAt: accessTokenExpiresAt.toISOString(),
-      refreshTokenExpiresAt: refreshTokenExpiresAt.toISOString(),
-      user: toUserProfile(user)
-    };
+    return this.createSessionForUser(user, this.prisma);
   }
 
   async rotateRefreshToken(refreshToken: string): Promise<AuthSessionDto> {
@@ -76,26 +66,35 @@ export class AuthSessionService {
     });
 
     if (!current || current.revokedAt || current.expiresAt.getTime() <= Date.now()) {
-      throw new UnauthorizedException("刷新令牌无效");
+      throw new UnauthorizedException("Refresh token is invalid.");
     }
-
     if (current.user.status !== "active") {
-      throw new ForbiddenException("当前用户已禁用");
+      throw new ForbiddenException("Current user is disabled.");
     }
 
-    const rotated = await this.prisma.refreshToken.updateMany({
-      where: {
-        id: current.id,
-        revokedAt: null,
-        expiresAt: { gt: new Date() }
-      },
-      data: { revokedAt: new Date() }
+    return this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: current.userId } });
+      if (!user || user.status !== "active") {
+        throw new ForbiddenException("Current user is disabled.");
+      }
+      if (user.authVersion !== current.user.authVersion) {
+        throw new UnauthorizedException("Refresh token is stale; please sign in again.");
+      }
+
+      const rotated = await tx.refreshToken.updateMany({
+        where: {
+          id: current.id,
+          revokedAt: null,
+          expiresAt: { gt: new Date() }
+        },
+        data: { revokedAt: new Date() }
+      });
+      if (rotated.count !== 1) {
+        throw new UnauthorizedException("Refresh token is no longer valid.");
+      }
+
+      return this.createSessionForUser(user, tx);
     });
-    if (rotated.count !== 1) {
-      throw new UnauthorizedException("Refresh token is no longer valid.");
-    }
-
-    return this.issueSession(current.userId);
   }
 
   async authenticateAccessToken(authorization?: string): Promise<UserProfileDto> {
@@ -106,16 +105,27 @@ export class AuthSessionService {
     });
 
     if (!user) {
-      throw new UnauthorizedException("用户不存在");
+      throw new UnauthorizedException("User does not exist.");
     }
     if (user.status !== "active") {
-      throw new ForbiddenException("当前用户已禁用");
+      throw new ForbiddenException("Current user is disabled.");
     }
     if (user.role !== payload.role) {
       throw new UnauthorizedException("Login session is stale; please sign in again.");
     }
     if (user.authVersion !== payload.ver) {
-      throw new UnauthorizedException("登录态已失效，请重新登录");
+      throw new UnauthorizedException("Login session expired; please sign in again.");
+    }
+    const session = await this.prisma.refreshToken.findUnique({
+      where: { id: payload.sid },
+      select: {
+        userId: true,
+        revokedAt: true,
+        expiresAt: true
+      }
+    });
+    if (!session || session.userId !== payload.sub || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException("Login session expired; please sign in again.");
     }
 
     return toUserProfile(user);
@@ -124,22 +134,55 @@ export class AuthSessionService {
   async revokeByAccessToken(authorization?: string) {
     const token = this.extractBearerToken(authorization);
     const payload = this.verifyAccessToken(token);
-    await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: payload.sub },
-        data: {
-          authVersion: { increment: 1 }
-        }
-      });
-      await tx.refreshToken.updateMany({
-        where: {
-          userId: payload.sub,
-          revokedAt: null
-        },
-        data: {
-          revokedAt: new Date()
-        }
-      });
+    await this.prisma.refreshToken.updateMany({
+      where: {
+        id: payload.sid,
+        userId: payload.sub,
+        revokedAt: null,
+        expiresAt: { gt: new Date() }
+      },
+      data: {
+        revokedAt: new Date()
+      }
+    });
+  }
+
+  async revokeByAccessOrRefreshToken(authorization?: string, refreshToken?: string) {
+    if (authorization?.startsWith("Bearer ")) {
+      await this.revokeByAccessToken(authorization).catch(() => undefined);
+    }
+    if (refreshToken?.trim()) {
+      await this.revokeByRefreshToken(refreshToken);
+      return;
+    }
+  }
+
+  async revokeByRefreshToken(refreshToken?: string) {
+    const token = refreshToken?.trim();
+    if (!token) {
+      return;
+    }
+    const current = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hashToken(token) },
+      select: {
+        id: true,
+        revokedAt: true,
+        expiresAt: true
+      }
+    });
+    if (!current || current.revokedAt || current.expiresAt.getTime() <= Date.now()) {
+      return;
+    }
+
+    await this.prisma.refreshToken.updateMany({
+      where: {
+        id: current.id,
+        revokedAt: null,
+        expiresAt: { gt: new Date() }
+      },
+      data: {
+        revokedAt: new Date()
+      }
     });
   }
 
@@ -163,46 +206,89 @@ export class AuthSessionService {
     });
   }
 
+  private async createSessionForUser(user: SessionUser, client: RefreshTokenWriter): Promise<AuthSessionDto> {
+    const now = Date.now();
+    const accessTokenExpiresAt = new Date(now + this.accessTokenTtlSeconds * 1000);
+    const refreshTokenExpiresAt = new Date(now + this.refreshTokenTtlSeconds * 1000);
+    const refreshTokenId = randomUUID();
+
+    const accessToken = jwt.sign(
+      {
+        sub: user.id,
+        email: user.email,
+        role: user.role,
+        ver: user.authVersion,
+        sid: refreshTokenId
+      } satisfies AccessPayload,
+      this.jwtSecret,
+      {
+        issuer: this.jwtIssuer,
+        expiresIn: this.accessTokenTtlSeconds
+      }
+    );
+
+    const refreshToken = this.generateRefreshToken();
+    await client.refreshToken.create({
+      data: {
+        id: refreshTokenId,
+        userId: user.id,
+        tokenHash: this.hashToken(refreshToken),
+        expiresAt: refreshTokenExpiresAt
+      }
+    });
+
+    return {
+      accessToken,
+      refreshToken,
+      accessTokenExpiresAt: accessTokenExpiresAt.toISOString(),
+      refreshTokenExpiresAt: refreshTokenExpiresAt.toISOString(),
+      user: toUserProfile(user)
+    };
+  }
+
   private verifyAccessToken(token: string): AccessPayload {
     try {
       const payload = jwt.verify(token, this.jwtSecret, {
         issuer: this.jwtIssuer
       });
       if (!payload || typeof payload !== "object") {
-        throw new UnauthorizedException("访问令牌无效");
+        throw new UnauthorizedException("Access token is invalid.");
       }
 
       const sub = Reflect.get(payload, "sub");
       const email = Reflect.get(payload, "email");
       const role = Reflect.get(payload, "role");
       const ver = Reflect.get(payload, "ver");
+      const sid = Reflect.get(payload, "sid");
       if (
         typeof sub !== "string" ||
         typeof email !== "string" ||
         (role !== "user" && role !== "admin") ||
-        typeof ver !== "number"
+        typeof ver !== "number" ||
+        typeof sid !== "string"
       ) {
-        throw new UnauthorizedException("访问令牌无效");
+        throw new UnauthorizedException("Access token is invalid.");
       }
 
       return {
         sub,
         email,
         role,
-        ver
+        ver,
+        sid
       };
     } catch {
-      throw new UnauthorizedException("访问令牌无效");
+      throw new UnauthorizedException("Access token is invalid.");
     }
   }
 
   private extractBearerToken(authorization?: string) {
     if (!authorization || !authorization.startsWith("Bearer ")) {
-      throw new UnauthorizedException("缺少访问令牌");
+      throw new UnauthorizedException("Missing access token.");
     }
     const token = authorization.slice("Bearer ".length).trim();
     if (!token) {
-      throw new UnauthorizedException("缺少访问令牌");
+      throw new UnauthorizedException("Missing access token.");
     }
     return token;
   }

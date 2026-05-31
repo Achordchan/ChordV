@@ -248,7 +248,8 @@ export function login(email: string, password: string) {
 }
 
 export async function probeClientServerLatency(_accessToken?: string) {
-  const result = await requestWithMeta<ClientVersionDto>("/client/version");
+  const platform = detectUpdatePlatform();
+  const result = await requestWithMeta<ClientVersionDto>(`/client/version?platform=${encodeURIComponent(platform)}`);
   return {
     ok: true,
     serverTime: null,
@@ -263,17 +264,18 @@ export function refreshSession(refreshToken: string) {
   });
 }
 
-export function logoutSession(accessToken: string) {
+export function logoutSession(accessToken: string, refreshToken?: string | null) {
   return request<{ ok: boolean }>("/auth/logout", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`
-    }
+    },
+    body: JSON.stringify({ refreshToken: refreshToken ?? null })
   });
 }
 
-export function fetchBootstrap(accessToken: string) {
-  return request<ClientBootstrapDto>("/client/bootstrap", {
+export function fetchBootstrap(accessToken: string, platform: PlatformTarget | "ios" = detectUpdatePlatform()) {
+  return request<ClientBootstrapDto>(`/client/bootstrap?platform=${encodeURIComponent(platform)}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
@@ -534,6 +536,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
   let disposed = false;
   let reconnectTimer: number | null = null;
   let activeController: AbortController | null = null;
+  let lastEventId: string | null = null;
   const handshakeTimeoutMs = 25_000;
   const streamIdleTimeoutMs = 45_000;
 
@@ -583,7 +586,8 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
         method: "GET",
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          Accept: "text/event-stream"
+          Accept: "text/event-stream",
+          ...(lastEventId ? { "Last-Event-ID": lastEventId } : {})
         },
         signal: controller.signal
       });
@@ -624,10 +628,14 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
           }
 
           const dataLines: string[] = [];
+          let chunkEventId: string | null = null;
 
           for (const line of lines) {
             if (line.startsWith("data:")) {
               dataLines.push(line.slice(5).trim());
+            } else if (line.startsWith("id:")) {
+              const eventId = line.slice(3).trim();
+              chunkEventId = eventId || null;
             }
           }
 
@@ -637,6 +645,9 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
           try {
             const payload = JSON.parse(dataLines.join("\n")) as ClientRuntimeEventDto;
+            if (chunkEventId) {
+              lastEventId = chunkEventId;
+            }
             subscriber.onEvent(payload);
           } catch (error) {
             subscriber.onError?.(error instanceof Error ? error : new Error("事件解析失败"), {

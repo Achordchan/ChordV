@@ -4,6 +4,7 @@ import type {
   AdminAnnouncementRecordDto,
   AdminPolicyRecordDto,
   AnnouncementDto,
+  ConnectionMode,
   CreateAnnouncementInputDto,
   MarkClientAnnouncementsReadInputDto,
   PolicyBundleDto,
@@ -180,13 +181,15 @@ export class AnnouncementPolicyService {
   }
 
   async createAnnouncement(input: CreateAnnouncementInputDto): Promise<AdminAnnouncementRecordDto> {
+    const title = normalizeRequiredText(input.title, "title");
+    const body = normalizeRequiredText(input.body, "body");
     const displayMode = input.displayMode ?? "passive";
-    const countdownSeconds = displayMode === "modal_countdown" ? Math.max(1, input.countdownSeconds ?? 5) : 0;
+    const countdownSeconds = displayMode === "modal_countdown" ? normalizeCountdownSeconds(input.countdownSeconds ?? 5) : 0;
     const row = await this.prisma.announcement.create({
       data: {
         id: createEntityId("announcement"),
-        title: input.title.trim(),
-        body: input.body.trim(),
+        title,
+        body,
         level: input.level,
         publishedAt: input.publishedAt ? new Date(input.publishedAt) : new Date(),
         isActive: input.isActive ?? true,
@@ -210,13 +213,18 @@ export class AnnouncementPolicyService {
     }
 
     const displayMode = input.displayMode ?? current.displayMode;
-    const countdownBase = input.countdownSeconds ?? current.countdownSeconds ?? 5;
-    const countdownSeconds = displayMode === "modal_countdown" ? Math.max(1, countdownBase) : 0;
+    const countdownBase =
+      input.countdownSeconds ??
+      (displayMode === "modal_countdown" && current.countdownSeconds < 1 ? 5 : current.countdownSeconds) ??
+      5;
+    const countdownSeconds = displayMode === "modal_countdown" ? normalizeCountdownSeconds(countdownBase) : 0;
+    const title = input.title !== undefined ? normalizeRequiredText(input.title, "title") : undefined;
+    const body = input.body !== undefined ? normalizeRequiredText(input.body, "body") : undefined;
     const row = await this.prisma.announcement.update({
       where: { id: announcementId },
       data: {
-        ...(input.title !== undefined ? { title: input.title.trim() } : {}),
-        ...(input.body !== undefined ? { body: input.body.trim() } : {}),
+        ...(title !== undefined ? { title } : {}),
+        ...(body !== undefined ? { body } : {}),
         ...(input.level !== undefined ? { level: input.level } : {}),
         ...(input.publishedAt !== undefined ? { publishedAt: new Date(input.publishedAt) } : {}),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
@@ -265,8 +273,8 @@ export class AnnouncementPolicyService {
     if (!current) {
       throw new NotFoundException("策略配置不存在");
     }
-    const nextModes = input.modes ?? current.modes;
-    const nextDefaultMode = input.defaultMode ?? current.defaultMode;
+    const nextModes = input.modes !== undefined ? normalizePolicyModes(input.modes) : normalizeExistingPolicyModes(current.modes);
+    const nextDefaultMode = input.defaultMode ?? (current.defaultMode as ConnectionMode);
     if (!nextModes.includes(nextDefaultMode)) {
       throw new BadRequestException("默认模式必须包含在可用模式中");
     }
@@ -275,7 +283,7 @@ export class AnnouncementPolicyService {
       where: { id: "default" },
       data: {
         ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
-        ...(input.modes !== undefined ? { modes: input.modes } : {}),
+        ...(input.modes !== undefined ? { modes: nextModes } : {}),
         ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
         ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
         ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {})
@@ -313,6 +321,49 @@ export class AnnouncementPolicyService {
 
 function createEntityId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function normalizeRequiredText(value: string, fieldName: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new BadRequestException(`${fieldName} must not be empty.`);
+  }
+  return trimmed;
+}
+
+function normalizeCountdownSeconds(value: number) {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new BadRequestException("countdownSeconds must be a positive integer.");
+  }
+  return value;
+}
+
+function normalizePolicyModes(value: unknown): ConnectionMode[] {
+  if (!Array.isArray(value)) {
+    throw new BadRequestException("modes must be an array.");
+  }
+  const deduped = Array.from(new Set(value));
+  if (deduped.length !== value.length) {
+    throw new BadRequestException("modes must not contain duplicates.");
+  }
+  if (deduped.length === 0 || deduped.length > 3) {
+    throw new BadRequestException("modes must contain between 1 and 3 entries.");
+  }
+  for (const mode of deduped) {
+    if (mode !== "global" && mode !== "rule" && mode !== "direct") {
+      throw new BadRequestException("modes contains an invalid connection mode.");
+    }
+  }
+  return deduped as ConnectionMode[];
+}
+
+function normalizeExistingPolicyModes(value: unknown): ConnectionMode[] {
+  if (!Array.isArray(value)) {
+    throw new BadRequestException("modes must be an array.");
+  }
+  const modes = value.filter((mode): mode is ConnectionMode => mode === "global" || mode === "rule" || mode === "direct");
+  const deduped = Array.from(new Set(modes));
+  return deduped.length > 0 ? deduped : ["rule"];
 }
 
 function toAdminAnnouncementRecord(row: {

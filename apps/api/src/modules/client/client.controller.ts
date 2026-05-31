@@ -71,6 +71,13 @@ class UpdateCheckDto {
   clientMirrorPrefix?: string | null;
 }
 
+class VersionQueryDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform?: PlatformTarget;
+}
+
 class RuntimeComponentsPlanDto {
   @IsString()
   @IsIn(["macos", "windows", "android", "ios"])
@@ -145,7 +152,9 @@ class ReplySupportTicketDto {
 
 class MarkAnnouncementsReadDto {
   @IsArray()
+  @ArrayMaxSize(100)
   @IsString({ each: true })
+  @MaxLength(128, { each: true })
   announcementIds!: string[];
 
   @IsString()
@@ -162,8 +171,8 @@ export class ClientController {
 
   @Get("bootstrap")
   @UseGuards(ClientAuthGuard)
-  getBootstrap(@Headers("authorization") authorization?: string) {
-    return this.clientService.getBootstrap(authorization);
+  getBootstrap(@Query() query: VersionQueryDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.getBootstrap(authorization, query.platform);
   }
 
   @Get("subscription")
@@ -185,6 +194,7 @@ export class ClientController {
   }
 
   @Get("policies")
+  @UseGuards(ClientAuthGuard)
   getPolicies() {
     return this.clientService.getPolicies();
   }
@@ -202,8 +212,8 @@ export class ClientController {
   }
 
   @Get("version")
-  getVersion() {
-    return this.clientService.getVersion();
+  getVersion(@Query() query: VersionQueryDto) {
+    return this.clientService.getVersion(query.platform);
   }
 
   @Get("ping")
@@ -292,13 +302,13 @@ export class ClientController {
 
   @Sse("events/stream")
   @UseGuards(ClientAuthGuard)
-  streamEvents(@Headers("authorization") authorization?: string) {
-    return this.clientService.streamEvents(authorization);
+  streamEvents(@Headers("authorization") authorization?: string, @Headers("last-event-id") lastEventId?: string) {
+    return this.clientService.streamEvents(authorization, lastEventId);
   }
 
   @Sse("events")
   @UseGuards(ClientAuthGuard)
-  streamEventsAlias(@Headers("authorization") authorization?: string) {
-    return this.clientService.streamEvents(authorization);
+  streamEventsAlias(@Headers("authorization") authorization?: string, @Headers("last-event-id") lastEventId?: string) {
+    return this.clientService.streamEvents(authorization, lastEventId);
   }
 }

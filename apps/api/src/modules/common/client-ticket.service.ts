@@ -385,11 +385,12 @@ export class ClientTicketService {
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
-    return this.prisma.subscription.findFirst({
+    const rows = await this.prisma.subscription.findMany({
       where: { userId },
       include: { plan: true, user: true, team: true },
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
+    return pickCurrentSubscription(rows);
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {

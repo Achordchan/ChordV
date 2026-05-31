@@ -124,6 +124,19 @@ export class AdminNodeService {
       panelPassword: nextPanelPassword,
       applyXuiDefault: true
     });
+    const panelConnectionChanged = Boolean(
+      current?.panelEnabled &&
+      nextPanelEnabled &&
+      (
+        nextPanelBaseUrl !== current.panelBaseUrl ||
+        nextPanelApiBasePath !== current.panelApiBasePath ||
+        nextPanelUsername !== current.panelUsername ||
+        nextPanelPassword !== current.panelPassword ||
+        nextPanelInboundId !== current.panelInboundId
+      )
+    );
+    const panelWillBeDisabled = Boolean(current?.panelEnabled && !nextPanelEnabled);
+    const nodeWillBeDisabled = Boolean(current?.isActive && input.isActive === false);
 
     const row = await this.prisma.node.upsert({
       where: { id: nodeId },
@@ -155,7 +168,8 @@ export class AdminNodeService {
         panelPassword: nextPanelPassword,
         panelInboundId: nextPanelInboundId,
         panelEnabled: nextPanelEnabled,
-        panelStatus: current?.panelStatus ?? "offline"
+        panelStatus: nextPanelEnabled ? current?.panelStatus ?? "offline" : "offline",
+        panelError: nextPanelEnabled ? current?.panelError ?? null : null
       },
       update: {
         name: input.name?.trim() || imported.name,
@@ -181,12 +195,32 @@ export class AdminNodeService {
         panelUsername: nextPanelUsername,
         panelPassword: nextPanelPassword,
         panelInboundId: nextPanelInboundId,
-        panelEnabled: nextPanelEnabled
+        panelEnabled: nextPanelEnabled,
+        ...(!nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {})
       }
     });
 
+    if (current && panelConnectionChanged && !nodeWillBeDisabled) {
+      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed");
+      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+      if (result.failed.length > 0) {
+        await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
+      }
+    }
+
+    if (current && (panelWillBeDisabled || nodeWillBeDisabled)) {
+      await this.runtimeSessionService.revokeNodeLeases(
+        nodeId,
+        nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+      );
+      await this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId);
+    }
+
     const record = await this.probeNode(row.id);
     if (current) {
+      if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
+        await this.runtimeSessionService.syncPanelAccessForNode(row.id);
+      }
       await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(row.id);
     }
     return record;
@@ -281,19 +315,6 @@ export class AdminNodeService {
         })
       : null;
 
-    if (panelConnectionChanged && !nodeWillBeDisabled) {
-      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed");
-      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
-      this.runtimeSessionService.assertPanelBindingMutation("Migrate node panel clients", result);
-    } else if (panelWillBeDisabled || nodeWillBeDisabled) {
-      await this.runtimeSessionService.revokeNodeLeases(
-        nodeId,
-        nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
-      );
-      const result = await this.runtimeSessionService.disablePanelBindingsForNode(nodeId);
-      this.runtimeSessionService.assertPanelBindingMutation("Disable node panel clients", result);
-    }
-
     const row = await this.prisma.node.update({
       where: { id: nodeId },
       data: {
@@ -318,7 +339,7 @@ export class AdminNodeService {
           : shouldPersistPanelEnabledByDefault
             ? { panelEnabled: nextPanelEnabled }
             : {}),
-        ...(input.isActive === false ? { panelStatus: "offline", panelError: null } : {}),
+        ...(input.isActive === false || !nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -335,7 +356,24 @@ export class AdminNodeService {
       }
     });
 
-    if (current.isActive && input.isActive === false) {
+    if (panelConnectionChanged && !nodeWillBeDisabled) {
+      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed");
+      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
+        panelBaseUrl: current.panelBaseUrl,
+        panelApiBasePath: current.panelApiBasePath,
+        panelUsername: current.panelUsername,
+        panelPassword: current.panelPassword
+      });
+      if (result.failed.length > 0) {
+        await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
+      }
+    }
+
+    if ((current.isActive && input.isActive === false) || panelWillBeDisabled) {
+      await this.runtimeSessionService.revokeNodeLeases(
+        nodeId,
+        nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+      );
       await this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId);
     } else if (!current.isActive && input.isActive === true) {
       await this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId);
@@ -410,7 +448,7 @@ export class AdminNodeService {
     let panelStatus = current.panelStatus;
     let panelError = current.panelError;
     let panelLastSyncedAt = current.panelLastSyncedAt;
-    if (!current.isActive) {
+    if (!current.isActive || !current.panelEnabled) {
       panelStatus = "offline";
       panelError = null;
     } else if (current.panelEnabled) {

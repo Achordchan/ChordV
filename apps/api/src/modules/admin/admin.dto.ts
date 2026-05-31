@@ -1,5 +1,5 @@
 import { Transform, Type } from "class-transformer";
-import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Matches, Min, MinLength, ValidateNested, registerDecorator } from "class-validator";
+import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested, registerDecorator } from "class-validator";
 import type {
   ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
@@ -41,6 +41,10 @@ function transformOptionalBoolean(value: unknown) {
   return value;
 }
 
+function transformTrimmedString(value: unknown) {
+  return typeof value === "string" ? value.trim() : value;
+}
+
 export class CreateUserDto {
   @IsEmail()
   email!: string;
@@ -78,20 +82,20 @@ export class UpdateCurrentAdminSecurityDto {
 }
 
 export class UpdateUserDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   displayName?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["user", "admin"])
   role?: UserRole;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "disabled"])
   status?: UserStatus;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @MinLength(8)
   password?: string;
@@ -131,32 +135,32 @@ export class CreatePlanDto {
 }
 
 export class UpdatePlanDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   name?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["personal", "team"])
   scope?: PlanScope;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   totalTrafficGb?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   renewable?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(1)
   maxConcurrentSessions?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   isActive?: boolean;
 }
@@ -199,6 +203,7 @@ export class CreateSubscriptionDto {
 
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   expireAt!: string;
 
   @IsOptional()
@@ -210,6 +215,7 @@ export class RenewSubscriptionDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   expireAt?: string;
 
   @IsOptional()
@@ -237,6 +243,7 @@ export class ChangeSubscriptionPlanDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   expireAt?: string;
 }
 
@@ -256,6 +263,7 @@ export class UpdateSubscriptionDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   expireAt?: string;
 
   @IsOptional()
@@ -271,7 +279,12 @@ export class ConvertSubscriptionToTeamDto {
 
 export class UpdateSubscriptionNodeAccessDto {
   @IsArray()
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @Transform(({ value }) => (Array.isArray(value) ? value.map((item) => transformTrimmedString(item)) : value))
   @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @MaxLength(64, { each: true })
   nodeIds!: string[];
 }
 
@@ -290,17 +303,17 @@ export class CreateTeamDto {
 }
 
 export class UpdateTeamDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   name?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   ownerUserId?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "disabled"])
   status?: TeamStatus;
 }
@@ -334,6 +347,7 @@ export class CreateTeamSubscriptionDto {
 
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   expireAt!: string;
 
   @IsOptional()
@@ -423,41 +437,41 @@ export class ImportNodeDto {
 }
 
 export class UpdateNodeDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   name?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   @Matches(/^[A-Z]{2}$/i)
   countryCode?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   region?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   provider?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   isActive?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   recommended?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsUrl({
     require_tld: false
   })
@@ -487,7 +501,7 @@ export class UpdateNodeDto {
   @Min(1)
   panelInboundId?: number | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   panelEnabled?: boolean;
 }
@@ -512,20 +526,25 @@ export class ReadNodePanelInboundsDto {
 }
 
 export class CreateAnnouncementDto {
+  @Transform(({ value }) => transformTrimmedString(value))
   @IsString()
   @IsNotEmpty()
+  @MaxLength(120)
   title!: string;
 
+  @Transform(({ value }) => transformTrimmedString(value))
   @IsString()
   @IsNotEmpty()
+  @MaxLength(4000)
   body!: string;
 
   @IsIn(["info", "warning", "success"])
   level!: AnnouncementLevel;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   publishedAt?: string;
 
   @IsOptional()
@@ -539,49 +558,75 @@ export class CreateAnnouncementDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @IsInt()
   @Min(0)
   countdownSeconds?: number;
 }
 
 export class UpdateAnnouncementDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => transformTrimmedString(value))
   @IsString()
   @IsNotEmpty()
+  @MaxLength(120)
   title?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => transformTrimmedString(value))
   @IsString()
   @IsNotEmpty()
+  @MaxLength(4000)
   body?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["info", "warning", "success"])
   level?: AnnouncementLevel;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
+  @IsDateString()
   publishedAt?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   isActive?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["passive", "modal_confirm", "modal_countdown"])
   displayMode?: AnnouncementDisplayMode;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
+  @IsInt()
   @Min(0)
   countdownSeconds?: number;
+}
+
+export class ResetSubscriptionTrafficDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => transformTrimmedString(value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  userId?: string;
+}
+
+export class ListRuntimeComponentFailuresDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
 }
 
 export class ReplySupportTicketDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
+  @MaxLength(4000)
   body!: string;
 }
 
@@ -617,10 +662,11 @@ export class CreateReleaseDto {
 
   @IsOptional()
   @IsIn(["draft", "published"])
-  status?: ReleaseStatus;
+  status?: Extract<ReleaseStatus, "draft" | "published">;
 
   @IsOptional()
   @IsString()
+  @IsDateString()
   publishedAt?: string | null;
 
   @IsOptional()
@@ -630,39 +676,50 @@ export class CreateReleaseDto {
 }
 
 export class UpdateReleaseDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   displayTitle?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsArray()
   @IsString({ each: true })
   changelog?: string[];
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   minimumVersion?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   forceUpgrade?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["draft", "published"])
-  status?: ReleaseStatus;
+  status?: Extract<ReleaseStatus, "draft" | "published">;
 
   @IsOptional()
   @IsString()
+  @IsDateString()
   publishedAt?: string | null;
+}
+
+export class ListReleasesDto {
+  @IsOptional()
+  @IsIn(["macos", "windows", "android", "ios"])
+  platform?: PlatformTarget;
+
+  @IsOptional()
+  @IsIn(["draft", "published", "archived"])
+  status?: ReleaseStatus;
 }
 
 export class CreateReleaseArtifactDto {
   @IsOptional()
-  @IsIn(["uploaded", "external"])
-  source?: "uploaded" | "external";
+  @IsIn(["external"])
+  source?: "external";
 
   @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
@@ -717,19 +774,19 @@ export class CreateReleaseArtifactDto {
 }
 
 export class UpdateReleaseArtifactDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["uploaded", "external"])
   source?: "uploaded" | "external";
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type?: ReleaseArtifactType;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsUrl({
     require_tld: false
   })
@@ -777,8 +834,8 @@ export class UpdateReleaseArtifactDto {
 
 export class UploadReleaseArtifactDto {
   @IsOptional()
-  @IsIn(["uploaded", "external"])
-  source?: "uploaded" | "external";
+  @IsIn(["uploaded"])
+  source?: "uploaded";
 
   @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
@@ -828,8 +885,8 @@ export class CreateRuntimeComponentDto {
   kind!: RuntimeComponentKind;
 
   @IsOptional()
-  @IsIn(["uploaded", "github_remote", "custom_remote"])
-  source?: RuntimeComponentSource;
+  @IsIn(["github_remote", "custom_remote"])
+  source?: Exclude<RuntimeComponentSource, "uploaded">;
 
   @IsOptional()
   @IsUrl({
@@ -869,7 +926,7 @@ export class CreateRuntimeComponentDto {
 }
 
 export class UpdateRuntimeComponentDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["uploaded", "github_remote", "custom_remote"])
   source?: RuntimeComponentSource;
 
@@ -981,26 +1038,28 @@ export class ReportRuntimeComponentFailureDto implements ClientRuntimeComponentF
 }
 
 export class UpdatePolicyDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["global", "rule", "direct"])
   @IsDefaultModeInModes()
   defaultMode?: ConnectionMode;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayMaxSize(3)
+  @ArrayUnique()
   @IsIn(["global", "rule", "direct"], { each: true })
   modes?: ConnectionMode[];
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   blockAds?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   chinaDirect?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   aiServicesProxy?: boolean;
 }

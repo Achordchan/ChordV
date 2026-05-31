@@ -115,6 +115,7 @@ import {
   loginAdmin,
   logoutAdminSession,
   persistAdminSession,
+  refreshAdminSession,
   updateTeam,
   updateTeamMember,
   updateCurrentAdminSecurity,
@@ -286,6 +287,7 @@ export function App() {
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
+  const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
   const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases">, string>>({
     users: "",
     plans: "",
@@ -343,13 +345,55 @@ export function App() {
   };
 
   useEffect(() => {
+    if (authBootstrapped) {
+      return;
+    }
+
+    let disposed = false;
+    void (async () => {
+      try {
+        const session = await refreshAdminSession();
+        if (disposed) {
+          return;
+        }
+        if (session.user.role !== "admin") {
+          clearAdminSession();
+          setAuthenticated(false);
+          setLoading(false);
+          return;
+        }
+        persistAdminSession(session);
+        setAuthenticated(true);
+        setError(null);
+      } catch {
+        if (!disposed) {
+          clearAdminSession();
+          setAuthenticated(false);
+          setLoading(false);
+        }
+      } finally {
+        if (!disposed) {
+          setAuthBootstrapped(true);
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+    };
+  }, [authBootstrapped]);
+
+  useEffect(() => {
+    if (!authBootstrapped) {
+      return;
+    }
     if (!authenticated) {
       setSnapshot(null);
       setLoading(false);
       return;
     }
     void loadInitialAdminData();
-  }, [authenticated]);
+  }, [authenticated, authBootstrapped]);
 
   useEffect(() => {
     if (!authenticated || !snapshot) {
@@ -869,6 +913,7 @@ export function App() {
       setError(null);
       const result = await action();
       const resolvedMessage = extractActionMessage(result, successText);
+      const panelSyncPending = hasPendingPanelSync(result);
       await refreshCurrentDataAfterAction().catch((refreshReason) => {
         notifications.show({
           color: "yellow",
@@ -877,8 +922,8 @@ export function App() {
         });
       });
       notifications.show({
-        color: "green",
-        title: "操作成功",
+        color: panelSyncPending ? "yellow" : "green",
+        title: panelSyncPending ? "操作已保存，面板同步待重试" : "操作成功",
         message: resolvedMessage
       });
       return true;
@@ -975,7 +1020,8 @@ export function App() {
           password: "",
           displayName: record.displayName,
           role: record.role,
-          status: record.status
+          status: record.status,
+          maxConcurrentSessionsOverride: record.maxConcurrentSessionsOverride ?? ""
         });
       } else {
         setUserForm(emptyUserForm());
@@ -991,6 +1037,7 @@ export function App() {
           scope: record.scope,
           totalTrafficGb: record.totalTrafficGb,
           renewable: record.renewable,
+          maxConcurrentSessions: record.maxConcurrentSessions,
           isActive: record.isActive
         });
       } else {
@@ -1158,6 +1205,8 @@ export function App() {
           displayName: userForm.displayName,
           role: userForm.role,
           status: userForm.status,
+          maxConcurrentSessionsOverride:
+            userForm.maxConcurrentSessionsOverride === "" ? null : Number(userForm.maxConcurrentSessionsOverride),
           ...(userForm.password ? { password: userForm.password } : {})
         } satisfies UpdateUserInputDto;
 
@@ -1169,7 +1218,9 @@ export function App() {
                   email: userForm.email,
                   password: userForm.password,
                   displayName: userForm.displayName,
-                  role: userForm.role
+                  role: userForm.role,
+                  maxConcurrentSessionsOverride:
+                    userForm.maxConcurrentSessionsOverride === "" ? null : Number(userForm.maxConcurrentSessionsOverride)
                 } satisfies CreateUserInputDto),
               "用户已创建"
             );
@@ -1183,6 +1234,7 @@ export function App() {
           scope: planForm.scope,
           totalTrafficGb: planForm.totalTrafficGb,
           renewable: planForm.renewable,
+          maxConcurrentSessions: planForm.maxConcurrentSessions,
           isActive: planForm.isActive
         };
         const success = drawer.recordId
@@ -1291,6 +1343,22 @@ export function App() {
       }
 
       if (drawer.type === "node") {
+        if (
+          nodeForm.panelEnabled &&
+          (!nodeForm.panelBaseUrl.trim() ||
+            !nodeForm.panelUsername.trim() ||
+            !nodeForm.panelPassword.trim() ||
+            !Number.isFinite(Number(nodeForm.panelInboundId)) ||
+            Number(nodeForm.panelInboundId) <= 0)
+        ) {
+          notifications.show({
+            color: "yellow",
+            title: "面板信息不完整",
+            message: "启用 3x-ui 面板时必须填写面板地址、账号、密码，并先选择有效入站。"
+          });
+          return;
+        }
+
         const updatePayload = {
           subscriptionUrl: undefined,
           name: nodeForm.name || undefined,
@@ -2216,6 +2284,15 @@ function extractActionMessage(result: unknown, fallback: string) {
     }
   }
   return fallback;
+}
+
+function hasPendingPanelSync(result: unknown) {
+  return Boolean(
+    result &&
+      typeof result === "object" &&
+      "panelSyncStatus" in result &&
+      (result as { panelSyncStatus?: unknown }).panelSyncStatus === "pending"
+  );
 }
 
 function splitCsv(value: string) {
