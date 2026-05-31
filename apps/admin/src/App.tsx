@@ -233,7 +233,7 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
   },
   nodes: {
     label: "节点",
-    description: "导入、刷新、探测、删除",
+    description: "添加面板、刷新、探测、删除",
     icon: <IconMapPin size={18} />
   },
   announcements: {
@@ -1311,7 +1311,7 @@ export function App() {
                 } satisfies UpdateNodeInputDto),
               "节点已更新"
             )
-          : await runAction(() => importNode(payload satisfies ImportNodeInputDto), "节点已导入");
+          : await runAction(() => importNode(payload satisfies ImportNodeInputDto), "面板已添加");
         if (success) closeDrawer();
       }
 
@@ -1834,7 +1834,7 @@ export function App() {
                     全部探测
                   </Button>
                   <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("node")}>
-                    导入节点
+                    添加面板
                   </Button>
                 </Group>
               ) : null}

@@ -102,6 +102,7 @@ type BodyInitLike = string | FormData;
 
 type XuiSessionState = {
   cookieHeader: string;
+  csrfToken?: string | null;
 };
 
 type NormalizedXuiNodeConfig = XuiNodeConfig & {
@@ -485,9 +486,18 @@ export class XuiService {
   ) {
     const headers = new Headers();
     headers.set("User-Agent", PANEL_USER_AGENT);
-    const session = this.sessions.get(this.sessionKey(node));
-    if (session?.cookieHeader) {
-      headers.set("Cookie", session.cookieHeader);
+    headers.set("X-Requested-With", "XMLHttpRequest");
+    const sessionKey = this.sessionKey(node);
+    const session = this.sessions.get(sessionKey);
+    if (method !== "GET") {
+      const csrfToken = await this.ensureCsrfToken(node, session);
+      if (csrfToken) {
+        headers.set("X-CSRF-Token", csrfToken);
+      }
+    }
+    const nextSession = this.sessions.get(sessionKey) ?? session;
+    if (nextSession?.cookieHeader) {
+      headers.set("Cookie", nextSession.cookieHeader);
     }
     if (body && contentType && !(body instanceof FormData)) {
       headers.set("Content-Type", contentType);
@@ -508,17 +518,27 @@ export class XuiService {
       strictCredentialCheck?: boolean;
     }
   ) {
-    const form = new FormData();
+    const csrfState = await this.fetchCsrfToken(node);
+    const form = new URLSearchParams();
     form.set("username", node.panelUsername);
     form.set("password", node.panelPassword);
     form.set("twoFactorCode", "");
 
+    const headers = new Headers();
+    headers.set("User-Agent", PANEL_USER_AGENT);
+    headers.set("X-Requested-With", "XMLHttpRequest");
+    headers.set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+    if (csrfState.cookieHeader) {
+      headers.set("Cookie", csrfState.cookieHeader);
+    }
+    if (csrfState.csrfToken) {
+      headers.set("X-CSRF-Token", csrfState.csrfToken);
+    }
+
     const response = await undiciFetch(`${normalizeBaseUrl(node.panelBaseUrl)}${joinPanelPath(node.panelApiBasePath, "/login")}`, {
       method: "POST",
-      body: form,
-      headers: {
-        "User-Agent": PANEL_USER_AGENT
-      },
+      body: form.toString(),
+      headers,
       dispatcher: this.dispatcher,
       signal: AbortSignal.timeout(PANEL_TIMEOUT_MS)
     });
@@ -535,7 +555,10 @@ export class XuiService {
 
     if (!response.ok) {
       if (response.status === 401 || response.status === 403 || isCredentialError(loginMessage)) {
-        throw new BadRequestException("3x-ui 账号或密码错误");
+        if (response.status === 401 || isCredentialError(loginMessage)) {
+          throw new BadRequestException("3x-ui 账号或密码错误");
+        }
+        throw new BadGatewayException("3x-ui 登录请求被面板拒绝，请检查面板路径或 CSRF 校验");
       }
       throw new BadGatewayException(`3x-ui 登录失败：HTTP ${response.status}`);
     }
@@ -547,24 +570,61 @@ export class XuiService {
       throw new BadGatewayException(loginMessage ? `3x-ui 登录失败：${loginMessage}` : "3x-ui 登录失败");
     }
 
-    const cookies = response.headers.getSetCookie?.() ?? [];
-    const cookieHeader = cookies.map((item) => item.split(";")[0]).filter(Boolean).join("; ");
+    const cookieHeader = mergeCookieHeaders(csrfState.cookieHeader, readCookieHeader(response.headers));
     if (!cookieHeader) {
-      const fallbackCookie = response.headers.get("set-cookie");
-      if (fallbackCookie) {
-        this.sessions.set(this.sessionKey(node), { cookieHeader: fallbackCookie.split(";")[0] });
-        return;
-      }
       if (isCredentialError(loginMessage)) {
         throw new BadRequestException("3x-ui 账号或密码错误");
       }
       if (strictCredentialCheck) {
-        throw new BadRequestException("3x-ui 账号或密码错误");
+        throw new BadGatewayException("3x-ui 登录失败：未获取到会话 Cookie，请检查面板地址或登录接口路径");
       }
       throw new BadGatewayException("3x-ui 登录失败：未获取到会话 Cookie，请检查面板地址或登录接口路径");
     }
 
-    this.sessions.set(this.sessionKey(node), { cookieHeader });
+    this.sessions.set(this.sessionKey(node), { cookieHeader, csrfToken: csrfState.csrfToken });
+  }
+
+  private async ensureCsrfToken(node: NormalizedXuiNodeConfig, session?: XuiSessionState) {
+    if (session?.csrfToken) {
+      return session.csrfToken;
+    }
+
+    const csrfState = await this.fetchCsrfToken(node, session?.cookieHeader);
+    const cookieHeader = mergeCookieHeaders(session?.cookieHeader, csrfState.cookieHeader);
+    const csrfToken = csrfState.csrfToken ?? session?.csrfToken ?? null;
+    if (cookieHeader) {
+      this.sessions.set(this.sessionKey(node), { cookieHeader, csrfToken });
+    }
+    return csrfToken;
+  }
+
+  private async fetchCsrfToken(node: NormalizedXuiNodeConfig, cookieHeader?: string | null) {
+    try {
+      const headers = new Headers();
+      headers.set("User-Agent", PANEL_USER_AGENT);
+      headers.set("X-Requested-With", "XMLHttpRequest");
+      if (cookieHeader) {
+        headers.set("Cookie", cookieHeader);
+      }
+      const response = await undiciFetch(`${normalizeBaseUrl(node.panelBaseUrl)}${joinPanelPath(node.panelApiBasePath, "/csrf-token")}`, {
+        method: "GET",
+        headers,
+        dispatcher: this.dispatcher,
+        signal: AbortSignal.timeout(PANEL_TIMEOUT_MS)
+      });
+      const responseText = await response.text().catch(() => "");
+      const payload = parseJsonRecord(responseText);
+      const token = response.ok && payload?.success === true ? readString(payload.obj) : null;
+      return {
+        csrfToken: token,
+        cookieHeader: mergeCookieHeaders(cookieHeader, readCookieHeader(response.headers))
+      };
+    } catch {
+      return {
+        csrfToken: null,
+        cookieHeader: cookieHeader ?? null
+      };
+    }
   }
 
   private extractInboundClients(inbound: XuiInbound) {
@@ -773,6 +833,34 @@ function joinPanelPath(basePath: string, path: string) {
 
 function normalizeBaseUrl(value: string) {
   return value.replace(/\/$/, "");
+}
+
+function readCookieHeader(headers: Headers) {
+  const cookies = headers.getSetCookie?.() ?? [];
+  const cookieHeader = cookies.map((item) => item.split(";")[0]).filter(Boolean).join("; ");
+  if (cookieHeader) {
+    return cookieHeader;
+  }
+  const fallbackCookie = headers.get("set-cookie");
+  return fallbackCookie ? fallbackCookie.split(";")[0] : null;
+}
+
+function mergeCookieHeaders(...headers: Array<string | null | undefined>) {
+  const cookies = new Map<string, string>();
+  for (const header of headers) {
+    if (!header) {
+      continue;
+    }
+    for (const cookie of header.split(/;\s*/)) {
+      const normalized = cookie.trim();
+      const separatorIndex = normalized.indexOf("=");
+      if (separatorIndex <= 0) {
+        continue;
+      }
+      cookies.set(normalized.slice(0, separatorIndex), normalized);
+    }
+  }
+  return Array.from(cookies.values()).join("; ") || null;
 }
 
 function parseJsonRecord(value: unknown): Record<string, any> | null {

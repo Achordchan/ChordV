@@ -474,7 +474,7 @@ export class AdminNodeService {
       });
     }
 
-    throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板账号后读取入站并导入节点");
+    throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板账号后读取入站并添加面板");
   }
 
   private async resolveNodePanelEnabled(input: {
