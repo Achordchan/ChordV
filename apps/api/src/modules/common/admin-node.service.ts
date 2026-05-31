@@ -434,6 +434,25 @@ export class AdminNodeService {
 
   async deleteNode(nodeId: string) {
     const userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
+    const bindingSubscriptions = await this.prisma.panelClientBinding.findMany({
+      where: {
+        nodeId,
+        status: { in: ["active", "disabled"] }
+      },
+      select: {
+        subscriptionId: true
+      },
+      distinct: ["subscriptionId"]
+    });
+
+    await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted");
+    for (const bindingSubscription of bindingSubscriptions) {
+      const result = await this.runtimeSessionService.removePanelBindingsForSubscription(bindingSubscription.subscriptionId, {
+        nodeIds: [nodeId]
+      });
+      this.runtimeSessionService.assertPanelBindingMutation("Delete node", result);
+    }
+
     await this.prisma.node.delete({ where: { id: nodeId } });
     this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     return { ok: true };

@@ -5,8 +5,8 @@ import { DevDataService } from "../common/dev-data.service";
 export class AuthService {
   constructor(private readonly devDataService: DevDataService) {}
 
-  login(email: string, password: string) {
-    return this.devDataService.login(email, password);
+  login(email: string, password: string, clientIp?: string) {
+    return this.devDataService.login(email, password, clientIp);
   }
 
   refresh(refreshToken: string) {

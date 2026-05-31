@@ -1375,6 +1375,11 @@ export function App() {
   }
 
   async function handleDeleteTeamMember(teamId: string, memberId: string) {
+    const confirmed = window.confirm("Remove this team member? Their team subscription access will be revoked immediately.");
+    if (!confirmed) {
+      return;
+    }
+
     await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除");
   }
 

@@ -222,8 +222,8 @@ export class DevDataService implements OnModuleInit {
     await this.devDataBootstrapService.initialize();
   }
 
-  async login(account: string, password: string): Promise<AuthSessionDto> {
-    return this.clientAccessService.login(account, password);
+  async login(account: string, password: string, clientIp?: string): Promise<AuthSessionDto> {
+    return this.clientAccessService.login(account, password, clientIp);
   }
 
   async refresh(token: string): Promise<AuthSessionDto> {
@@ -1303,8 +1303,8 @@ export class DevDataService implements OnModuleInit {
 function shouldAutoBootstrapDevData() {
   const flag = process.env.CHORDV_DEV_BOOTSTRAP?.trim().toLowerCase();
   if (flag === "true") {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("Refusing to bootstrap development data in production.");
+    if (process.env.NODE_ENV !== "development" && process.env.NODE_ENV !== "test") {
+      throw new Error("Development data bootstrap is allowed only when NODE_ENV is development or test.");
     }
     return true;
   }

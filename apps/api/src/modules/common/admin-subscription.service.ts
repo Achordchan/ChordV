@@ -43,6 +43,7 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
+import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import {
   isEffectiveSubscription,
@@ -256,50 +257,60 @@ export class AdminSubscriptionService {
       targetUserId = subscription.userId;
     }
 
-    const bindings = await this.prisma.panelClientBinding.findMany({
-      where: {
-        subscriptionId: subscription.id,
-        ...(targetUserId ? { userId: targetUserId } : {}),
-        status: { in: ["active", "disabled"] }
-      },
-      include: {
-        node: true
-      }
-    });
-
     let staleBindingCount = 0;
-    const baselineSamples = await Promise.all(
-      bindings.map(async (binding) => {
-        const nodeConfig = {
-          id: binding.node.id,
-          panelBaseUrl: binding.node.panelBaseUrl,
-          panelApiBasePath: binding.node.panelApiBasePath,
-          panelUsername: binding.node.panelUsername,
-          panelPassword: binding.node.panelPassword,
-          panelInboundId: binding.node.panelInboundId
-        };
-        const resetApplied = await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
-        if (!resetApplied) {
-          staleBindingCount += 1;
+    let clearedBindingCount = 0;
+
+    await runWithSubscriptionUsageLock(subscription.id, async () => {
+      const bindings = await this.prisma.panelClientBinding.findMany({
+        where: {
+          subscriptionId: subscription.id,
+          ...(targetUserId ? { userId: targetUserId } : {}),
+          status: { in: ["active", "disabled"] }
+        },
+        include: {
+          node: true
+        }
+      });
+      clearedBindingCount = bindings.length;
+
+      const baselineSamples = await Promise.all(
+        bindings.map(async (binding) => {
+          const nodeConfig = {
+            id: binding.node.id,
+            panelBaseUrl: binding.node.panelBaseUrl,
+            panelApiBasePath: binding.node.panelApiBasePath,
+            panelUsername: binding.node.panelUsername,
+            panelPassword: binding.node.panelPassword,
+            panelInboundId: binding.node.panelInboundId
+          };
+          const resetApplied = await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
+          if (!resetApplied) {
+            staleBindingCount += 1;
+            return {
+              binding,
+              uplinkBytes: 0n,
+              downlinkBytes: 0n,
+              sampledAt: new Date()
+            };
+          }
+          const baseline = await this.readPanelClientBaseline(nodeConfig, binding.panelClientEmail);
           return {
             binding,
-            uplinkBytes: 0n,
-            downlinkBytes: 0n,
-            sampledAt: new Date()
+            uplinkBytes: baseline.uplinkBytes,
+            downlinkBytes: baseline.downlinkBytes,
+            sampledAt: baseline.sampledAt
           };
-        }
-        const baseline = await this.readPanelClientBaseline(nodeConfig, binding.panelClientEmail);
-        return {
-          binding,
-          uplinkBytes: baseline.uplinkBytes,
-          downlinkBytes: baseline.downlinkBytes,
-          sampledAt: baseline.sampledAt
-        };
-      })
-    );
+        })
+      );
 
-    const expireAt = new Date(subscription.expireAt);
-    await this.prisma.$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx) => {
+      const lockedSubscription = await tx.subscription.findUnique({
+        where: { id: subscription.id }
+      });
+      if (!lockedSubscription) {
+        return;
+      }
+      const expireAt = new Date(lockedSubscription.expireAt);
       for (const item of baselineSamples) {
         const totalBytes = item.uplinkBytes + item.downlinkBytes;
         const snapshotKey = buildSnapshotKey(item.binding.nodeId, item.binding.subscriptionId, item.binding.userId);
@@ -335,28 +346,28 @@ export class AdminSubscriptionService {
         });
       }
 
-      if (subscription.teamId && targetUserId) {
+      if (lockedSubscription.teamId && targetUserId) {
         await tx.trafficLedger.deleteMany({
           where: {
-            teamId: subscription.teamId,
-            subscriptionId: subscription.id,
+            teamId: lockedSubscription.teamId,
+            subscriptionId: lockedSubscription.id,
             userId: targetUserId
           }
         });
 
         const aggregate = await tx.trafficLedger.aggregate({
-          where: { subscriptionId: subscription.id },
+          where: { subscriptionId: lockedSubscription.id },
           _sum: { usedTrafficGb: true }
         });
         const usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
-        const remainingTrafficGb = Math.max(0, subscription.totalTrafficGb - usedTrafficGb);
+        const remainingTrafficGb = Math.max(0, lockedSubscription.totalTrafficGb - usedTrafficGb);
         await tx.subscription.update({
-          where: { id: subscription.id },
+          where: { id: lockedSubscription.id },
           data: {
             usedTrafficGb,
             remainingTrafficGb,
             state: resolveSubscriptionState(
-              subscription.state === "paused" ? "paused" : "active",
+              lockedSubscription.state === "paused" ? "paused" : "active",
               remainingTrafficGb,
               expireAt
             ),
@@ -365,19 +376,20 @@ export class AdminSubscriptionService {
         });
       } else {
         await tx.subscription.update({
-          where: { id: subscription.id },
+          where: { id: lockedSubscription.id },
           data: {
             usedTrafficGb: 0,
-            remainingTrafficGb: subscription.totalTrafficGb,
+            remainingTrafficGb: lockedSubscription.totalTrafficGb,
             state: resolveSubscriptionState(
-              subscription.state === "paused" ? "paused" : "active",
-              subscription.totalTrafficGb,
+              lockedSubscription.state === "paused" ? "paused" : "active",
+              lockedSubscription.totalTrafficGb,
               expireAt
             ),
             lastSyncedAt: new Date()
           }
         });
       }
+      });
     });
 
     const updatedSubscription = await this.prisma.subscription.findUnique({
@@ -405,9 +417,9 @@ export class AdminSubscriptionService {
       ok: true,
       subscriptionId: subscription.id,
       userId: targetUserId,
-      clearedBindingCount: bindings.length,
+      clearedBindingCount,
       message:
-        bindings.length > 0
+        clearedBindingCount > 0
           ? staleBindingCount > 0
             ? `已重置订阅流量，并校正 ${staleBindingCount} 条失效的 3x-ui 客户端绑定`
             : "已重置订阅流量，并同步清空 3x-ui 面板计量"
@@ -601,29 +613,32 @@ export class AdminSubscriptionService {
   }
 
   async renewSubscription(subscriptionId: string, input: RenewSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
-    const current = await this.requireSubscription(subscriptionId);
-    const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
-    const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
-    const usedTrafficGb = input.resetTraffic ? 0 : current.usedTrafficGb;
-    const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+    await this.requireSubscription(subscriptionId);
+    const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
+      const current = await this.requireSubscription(subscriptionId);
+      const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
+      const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
+      const usedTrafficGb = input.resetTraffic ? 0 : current.usedTrafficGb;
+      const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
 
-    const row = await this.prisma.subscription.update({
-      where: { id: subscriptionId },
-      data: {
-        totalTrafficGb,
-        usedTrafficGb,
-        remainingTrafficGb,
-        expireAt: nextExpireAt,
-        state: resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt),
-        sourceAction: "renewed",
-        lastSyncedAt: new Date()
-      },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      }
+      return this.prisma.subscription.update({
+        where: { id: subscriptionId },
+        data: {
+          totalTrafficGb,
+          usedTrafficGb,
+          remainingTrafficGb,
+          expireAt: nextExpireAt,
+          state: resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt),
+          sourceAction: "renewed",
+          lastSyncedAt: new Date()
+        },
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        }
+      });
     });
 
     await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
@@ -642,12 +657,14 @@ export class AdminSubscriptionService {
     subscriptionId: string,
     input: ChangeSubscriptionPlanInputDto
   ): Promise<AdminSubscriptionRecordDto> {
-    const current = await this.requireSubscription(subscriptionId);
+    await this.requireSubscription(subscriptionId);
     const plan = await this.ensurePlanExists(input.planId);
     if (!plan.isActive) {
       throw new BadRequestException("套餐已停用，不能切换");
     }
 
+    const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
+    const current = await this.requireSubscription(subscriptionId);
     const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
     if (Number.isNaN(expireAt.getTime())) {
       throw new BadRequestException("到期时间无效");
@@ -655,7 +672,7 @@ export class AdminSubscriptionService {
 
     const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
-    const row = await this.prisma.subscription.update({
+    return this.prisma.subscription.update({
       where: { id: subscriptionId },
       data: {
         planId: plan.id,
@@ -674,6 +691,7 @@ export class AdminSubscriptionService {
         nodeAccesses: true
       }
     });
+    });
 
     await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
@@ -688,30 +706,34 @@ export class AdminSubscriptionService {
   }
 
   async updateSubscription(subscriptionId: string, input: UpdateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
-    const current = await this.requireSubscription(subscriptionId);
-    const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
-    const usedTrafficGb = input.usedTrafficGb ?? current.usedTrafficGb;
-    const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
-    const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
-    const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
+    await this.requireSubscription(subscriptionId);
 
-    const row = await this.prisma.subscription.update({
-      where: { id: subscriptionId },
-      data: {
-        totalTrafficGb,
-        usedTrafficGb,
-        remainingTrafficGb,
-        expireAt,
-        state,
-        sourceAction: "adjusted",
-        lastSyncedAt: new Date()
-      },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      }
+    const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
+      const current = await this.requireSubscription(subscriptionId);
+      const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
+      const usedTrafficGb = input.usedTrafficGb ?? current.usedTrafficGb;
+      const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
+      const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+      const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
+
+      return this.prisma.subscription.update({
+        where: { id: subscriptionId },
+        data: {
+          totalTrafficGb,
+          usedTrafficGb,
+          remainingTrafficGb,
+          expireAt,
+          state,
+          sourceAction: "adjusted",
+          lastSyncedAt: new Date()
+        },
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        }
+      });
     });
 
     await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);

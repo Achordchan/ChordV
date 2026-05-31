@@ -33,7 +33,7 @@ export * from "./teams";
 export * from "./users";
 
 export type AdminReleasePlatform = "macos" | "windows" | "android" | "ios";
-export type AdminReleaseStatus = Exclude<ReleaseStatus, "archived">;
+export type AdminReleaseStatus = ReleaseStatus;
 export type AdminReleaseArtifactType = ReleaseArtifactType;
 export type AdminRuntimeComponentArchitecture = RuntimeComponentArchitecture;
 export type AdminRuntimeComponentKind = RuntimeComponentKind;
@@ -177,7 +177,7 @@ function mapRelease(record: SharedAdminReleaseRecordDto): AdminReleaseRecordDto 
   return {
     id: record.id,
     platform: record.platform,
-    status: record.status === "published" ? "published" : "draft",
+    status: record.status,
     version: record.version,
     minimumVersion: record.minimumVersion,
     forceUpgrade: record.forceUpgrade,

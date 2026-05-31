@@ -11,6 +11,8 @@ type AccessPayload = {
   ver: number;
 };
 
+const MIN_JWT_SECRET_LENGTH = 32;
+
 @Injectable()
 export class AuthSessionService {
   private readonly accessTokenTtlSeconds = toPositiveInt(process.env.CHORDV_ACCESS_TOKEN_TTL_SECONDS, 15 * 60);
@@ -122,14 +124,22 @@ export class AuthSessionService {
   async revokeByAccessToken(authorization?: string) {
     const token = this.extractBearerToken(authorization);
     const payload = this.verifyAccessToken(token);
-    await this.prisma.refreshToken.updateMany({
-      where: {
-        userId: payload.sub,
-        revokedAt: null
-      },
-      data: {
-        revokedAt: new Date()
-      }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: payload.sub },
+        data: {
+          authVersion: { increment: 1 }
+        }
+      });
+      await tx.refreshToken.updateMany({
+        where: {
+          userId: payload.sub,
+          revokedAt: null
+        },
+        data: {
+          revokedAt: new Date()
+        }
+      });
     });
   }
 
@@ -238,16 +248,22 @@ function toPositiveInt(raw: string | undefined, fallback: number) {
 function resolveJwtSecret() {
   const secret = process.env.CHORDV_JWT_SECRET?.trim();
   if (secret) {
+    if (secret.length < MIN_JWT_SECRET_LENGTH) {
+      throw new Error(`CHORDV_JWT_SECRET must be at least ${MIN_JWT_SECRET_LENGTH} characters.`);
+    }
     return secret;
   }
-  if (isExplicitDevelopmentRuntime() || isEnabled(process.env.CHORDV_ALLOW_INSECURE_DEV_SECRET)) {
+  if (process.env.NODE_ENV === "test") {
     return "chordv-dev-secret-change-me";
   }
-  throw new Error("Missing CHORDV_JWT_SECRET. Set NODE_ENV=development only for local development.");
-}
-
-function isExplicitDevelopmentRuntime() {
-  return process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+  if (process.env.NODE_ENV === "development" && isEnabled(process.env.CHORDV_ALLOW_INSECURE_DEV_SECRET)) {
+    console.warn("Using insecure development JWT secret because CHORDV_ALLOW_INSECURE_DEV_SECRET=true.");
+    return "chordv-dev-secret-change-me";
+  }
+  if (isEnabled(process.env.CHORDV_ALLOW_INSECURE_DEV_SECRET)) {
+    throw new Error("CHORDV_ALLOW_INSECURE_DEV_SECRET is only allowed when NODE_ENV=development.");
+  }
+  throw new Error("Missing CHORDV_JWT_SECRET.");
 }
 
 function isEnabled(value: string | undefined) {

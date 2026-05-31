@@ -87,8 +87,7 @@ export class MeteringIncidentService {
       await this.prisma.meteringIncident.update({
         where: { id: existing.id },
         data: {
-          detail: detail?.trim() || existing.detail,
-          openedAt: new Date()
+          detail: detail?.trim() || existing.detail
         }
       });
       return;

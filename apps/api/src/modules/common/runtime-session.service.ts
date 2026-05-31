@@ -7,7 +7,8 @@ import {
   NotFoundException
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { Client as PgClient } from "pg";
 import type {
   ConnectRequestDto,
   GeneratedRuntimeConfigDto,
@@ -41,6 +42,7 @@ import {
   toClientRuntimeEventType
 } from "./runtime-session.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
+import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { XuiService } from "../xui/xui.service";
 
 type ResolvedSubscriptionAccess = {
@@ -82,6 +84,7 @@ type PanelBindingFilter = {
 const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ?? 20);
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
+const CONNECT_LOCK_KEY_1 = 420_702;
 
 @Injectable()
 export class RuntimeSessionService {
@@ -117,6 +120,30 @@ export class RuntimeSessionService {
     }
   }
 
+  private async runWithDistributedUserLeaseLock<T>(userId: string, task: () => Promise<T>) {
+    return this.runWithUserLeaseLock(userId, async () => {
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) {
+        return task();
+      }
+
+      const lockClient = new PgClient({ connectionString });
+      let locked = false;
+      const userLockKey = deriveUserAdvisoryLockKey(userId);
+      try {
+        await lockClient.connect();
+        await lockClient.query("select pg_advisory_lock($1, $2)", [CONNECT_LOCK_KEY_1, userLockKey]);
+        locked = true;
+        return await task();
+      } finally {
+        if (locked) {
+          await lockClient.query("select pg_advisory_unlock($1, $2)", [CONNECT_LOCK_KEY_1, userLockKey]).catch(() => undefined);
+        }
+        await lockClient.end().catch(() => undefined);
+      }
+    });
+  }
+
   private logLeaseWarning(
     message: string,
     lease: {
@@ -149,12 +176,13 @@ export class RuntimeSessionService {
     }
 
     const user = await this.resolveActiveUserFromToken(token);
-    return this.runWithUserLeaseLock(user.id, async () => {
+    return this.runWithDistributedUserLeaseLock(user.id, async () => {
       const access = await this.resolveSubscriptionAccessForUser(user.id);
       if (!access.subscription) {
         throw new NotFoundException("当前没有可用订阅");
       }
 
+      assertRuntimeAccessConnectable(access);
       assertSubscriptionConnectable(access.subscription);
 
       const policy = await this.prisma.policyProfile.findUnique({
@@ -305,6 +333,12 @@ export class RuntimeSessionService {
       return null;
     }
     if (isLeaseHardExpired(lease.expiresAt, new Date())) {
+      this.clearActiveRuntime(lease.sessionId);
+      return null;
+    }
+    try {
+      await this.assertLeaseCanHeartbeat(lease, user.id);
+    } catch {
       this.clearActiveRuntime(lease.sessionId);
       return null;
     }
@@ -649,14 +683,6 @@ export class RuntimeSessionService {
     const now = new Date();
 
     await this.prisma.$transaction([
-      this.prisma.panelClientBinding.updateMany({
-        where: {
-          id: { in: bindings.map((binding) => binding.id) }
-        },
-        data: {
-          status: "disabled"
-        }
-      }),
       ...bindings.map((binding) =>
         this.prisma.panelSyncJob.upsert({
           where: {
@@ -711,11 +737,67 @@ export class RuntimeSessionService {
   }
 
   async clearPendingPanelDisableJobsForNode(nodeId: string) {
-    const result = await this.prisma.panelSyncJob.updateMany({
+    const jobs = await this.prisma.panelSyncJob.findMany({
       where: {
         nodeId,
         action: "disable_client",
-        status: { in: ["pending", "running", "failed"] }
+        status: { in: ["pending", "failed"] }
+      },
+      include: {
+        binding: {
+          include: {
+            user: true
+          }
+        },
+        node: true,
+        subscription: {
+          include: {
+            user: true,
+            team: true,
+            nodeAccesses: {
+              where: { nodeId },
+              select: { nodeId: true }
+            }
+          }
+        }
+      }
+    });
+
+    if (jobs.length === 0) {
+      return 0;
+    }
+
+    const membershipPairs = jobs
+      .filter((job) => job.teamId && job.userId)
+      .map((job) => ({ teamId: job.teamId as string, userId: job.userId as string }));
+    const memberships =
+      membershipPairs.length > 0
+        ? await this.prisma.teamMember.findMany({
+            where: {
+              OR: membershipPairs.map((pair) => ({
+                teamId: pair.teamId,
+                userId: pair.userId
+              }))
+            },
+            select: {
+              teamId: true,
+              userId: true
+            }
+          })
+        : [];
+    const activeMemberships = new Set(memberships.map((membership) => `${membership.teamId}:${membership.userId}`));
+    const clearableJobIds = jobs
+      .filter((job) => isPanelDisableJobClearableAfterNodeReenabled(job, activeMemberships))
+      .map((job) => job.id);
+
+    if (clearableJobIds.length === 0) {
+      return 0;
+    }
+
+    const result = await this.prisma.panelSyncJob.updateMany({
+      where: {
+        id: { in: clearableJobIds },
+        status: { in: ["pending", "failed"] }
       },
       data: {
         status: "completed",
@@ -895,63 +977,31 @@ export class RuntimeSessionService {
         throw new Error(`未知面板同步动作：${job.action}`);
       }
 
-      if (!job.node.isActive || !job.node.panelEnabled || job.binding.status !== "active") {
+      if (job.binding.status === "deleted") {
         const completedAt = new Date();
-        if (job.binding.status === "active") {
-          await this.prisma.$transaction([
-            this.prisma.panelClientBinding.update({
-              where: { id: job.bindingId },
-              data: {
-                status: "disabled"
-              }
-            }),
-            this.prisma.panelSyncJob.update({
-              where: { id: job.id },
-              data: {
-                status: "completed",
-                lockedAt: null,
-                lastError: null,
-                completedAt
-              }
-            }),
-            this.prisma.meteringIncident.updateMany({
-              where: {
-                subscriptionId: job.subscriptionId,
-                nodeId: job.nodeId,
-                reason: METERING_REASON_NODE_UNAVAILABLE,
-                status: "open"
-              },
-              data: {
-                status: "resolved",
-                resolvedAt: completedAt
-              }
-            })
-          ]);
-        } else {
-          await this.prisma.$transaction([
-            this.prisma.panelSyncJob.update({
-              where: { id: job.id },
-              data: {
-                status: "completed",
-                lockedAt: null,
-                lastError: null,
-                completedAt
-              }
-            }),
-            this.prisma.meteringIncident.updateMany({
-              where: {
-                subscriptionId: job.subscriptionId,
-                nodeId: job.nodeId,
-                reason: METERING_REASON_NODE_UNAVAILABLE,
-                status: "open"
-              },
-              data: {
-                status: "resolved",
-                resolvedAt: completedAt
-              }
-            })
-          ]);
-        }
+        await this.prisma.$transaction([
+          this.prisma.panelSyncJob.update({
+            where: { id: job.id },
+            data: {
+              status: "completed",
+              lockedAt: null,
+              lastError: null,
+              completedAt
+            }
+          }),
+          this.prisma.meteringIncident.updateMany({
+            where: {
+              subscriptionId: job.subscriptionId,
+              nodeId: job.nodeId,
+              reason: METERING_REASON_NODE_UNAVAILABLE,
+              status: "open"
+            },
+            data: {
+              status: "resolved",
+              resolvedAt: completedAt
+            }
+          })
+        ]);
         return;
       }
 
@@ -1273,14 +1323,23 @@ export class RuntimeSessionService {
         }
       });
       if (existing.status === "deleted" || !snapshot) {
+        const baselineSource =
+          existing.status === "deleted"
+            ? baseline
+            : {
+                uplinkBytes: existing.lastUplinkBytes,
+                downlinkBytes: existing.lastDownlinkBytes,
+                sampledAt: existing.lastSyncedAt ?? baseline.sampledAt
+              };
         await this.ensureTrafficSnapshotBaseline({
           nodeId: binding.nodeId,
           subscriptionId: binding.subscriptionId,
           userId: binding.userId,
           teamId: binding.teamId,
-          uplinkBytes: baseline.uplinkBytes,
-          downlinkBytes: baseline.downlinkBytes,
-          sampledAt: baseline.sampledAt
+          uplinkBytes: baselineSource.uplinkBytes,
+          downlinkBytes: baselineSource.downlinkBytes,
+          sampledAt: baselineSource.sampledAt,
+          replaceExisting: existing.status === "deleted"
         });
       }
       return binding;
@@ -1342,30 +1401,39 @@ export class RuntimeSessionService {
     uplinkBytes: bigint;
     downlinkBytes: bigint;
     sampledAt?: Date;
+    replaceExisting?: boolean;
   }) {
     const snapshotKey = buildSnapshotKey(input.nodeId, input.subscriptionId, input.userId);
     const sampledAt = input.sampledAt ?? new Date();
     const totalBytes = input.uplinkBytes + input.downlinkBytes;
-    await this.prisma.trafficSnapshot.upsert({
-      where: { snapshotKey },
-      update: {
-        uplinkBytes: input.uplinkBytes,
-        downlinkBytes: input.downlinkBytes,
-        totalBytes,
-        sampledAt
-      },
-      create: {
-        id: randomUUID(),
-        snapshotKey,
-        nodeId: input.nodeId,
-        subscriptionId: input.subscriptionId,
-        userId: input.userId,
-        teamId: input.teamId,
-        uplinkBytes: input.uplinkBytes,
-        downlinkBytes: input.downlinkBytes,
-        totalBytes,
-        sampledAt
+    await runWithSubscriptionUsageLock(input.subscriptionId, async () => {
+      const current = await this.prisma.trafficSnapshot.findUnique({
+        where: { snapshotKey }
+      });
+      if (current && !input.replaceExisting) {
+        return;
       }
+      await this.prisma.trafficSnapshot.upsert({
+        where: { snapshotKey },
+        update: {
+          uplinkBytes: input.uplinkBytes,
+          downlinkBytes: input.downlinkBytes,
+          totalBytes,
+          sampledAt
+        },
+        create: {
+          id: randomUUID(),
+          snapshotKey,
+          nodeId: input.nodeId,
+          subscriptionId: input.subscriptionId,
+          userId: input.userId,
+          teamId: input.teamId,
+          uplinkBytes: input.uplinkBytes,
+          downlinkBytes: input.downlinkBytes,
+          totalBytes,
+          sampledAt
+        }
+      });
     });
   }
 
@@ -1703,4 +1771,78 @@ function buildXuiRuntimeFromLease(
 
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function assertRuntimeAccessConnectable(access: ResolvedSubscriptionAccess) {
+  const subscription = access.subscription;
+  if (!subscription) {
+    throw new NotFoundException("Current subscription is unavailable.");
+  }
+  if (subscription.user?.status === "disabled") {
+    throw new ForbiddenException("Current account is disabled.");
+  }
+  if (access.team?.status && access.team.status !== "active") {
+    throw new ForbiddenException("Current team is disabled.");
+  }
+  if (subscription.team?.status && subscription.team.status !== "active") {
+    throw new ForbiddenException("Current team is disabled.");
+  }
+}
+
+function deriveUserAdvisoryLockKey(userId: string) {
+  return createHash("sha256").update(userId).digest().readInt32BE(0);
+}
+
+function isPanelDisableJobClearableAfterNodeReenabled(
+  job: {
+    userId: string | null;
+    teamId: string | null;
+    binding: {
+      status: string;
+      user?: { status: "active" | "disabled" } | null;
+    };
+    node: {
+      isActive: boolean;
+      panelEnabled: boolean;
+    };
+    subscription: {
+      userId: string | null;
+      teamId: string | null;
+      state: "active" | "expired" | "exhausted" | "paused";
+      expireAt: Date;
+      remainingTrafficGb: number;
+      user?: { status: "active" | "disabled" } | null;
+      team?: { status: TeamStatus } | null;
+      nodeAccesses: Array<{ nodeId: string }>;
+    };
+  },
+  activeMemberships: Set<string>
+) {
+  if (job.binding.status !== "active") {
+    return false;
+  }
+  if (!job.node.isActive || !job.node.panelEnabled) {
+    return false;
+  }
+  if (
+    job.subscription.state !== "active" ||
+    job.subscription.expireAt.getTime() <= Date.now() ||
+    job.subscription.remainingTrafficGb <= 0 ||
+    job.subscription.nodeAccesses.length === 0
+  ) {
+    return false;
+  }
+  if (job.subscription.userId) {
+    return job.subscription.user?.status === "active";
+  }
+  if (job.subscription.teamId) {
+    if (job.subscription.team?.status !== "active" || job.binding.user?.status !== "active") {
+      return false;
+    }
+    if (!job.userId || !job.teamId) {
+      return false;
+    }
+    return activeMemberships.has(`${job.teamId}:${job.userId}`);
+  }
+  return false;
 }

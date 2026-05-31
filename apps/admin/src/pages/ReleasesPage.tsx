@@ -45,7 +45,7 @@ import { SectionCard } from "../features/shared/SectionCard";
 import { readError } from "../utils/admin-filters";
 
 type PlatformFilter = AdminReleasePlatform | "all";
-type StatusFilter = "all" | "draft" | "published";
+type StatusFilter = "all" | "draft" | "published" | "archived";
 
 type ArtifactEditorState = {
   releaseId: string | null;
@@ -226,10 +226,28 @@ export function ReleasesPage() {
       return;
     }
 
+    const unverifiedArtifacts = record.artifacts.filter((artifact) => artifactValidation[artifact.id]?.status !== "ready");
+    if (unverifiedArtifacts.length > 0) {
+      notifications.show({
+        color: "yellow",
+        title: "Release center",
+        message: "Verify every artifact successfully before publishing this release."
+      });
+      return;
+    }
+
+    if (!window.confirm(`Publish ${record.version}? This immediately changes the client update channel.`)) {
+      return;
+    }
+
     await updateReleaseStatus(record, "published");
   }
 
   async function withdrawRelease(record: AdminReleaseRecordDto) {
+    if (!window.confirm(`Withdraw ${record.version} to draft? Clients will stop receiving this release.`)) {
+      return;
+    }
+
     await updateReleaseStatus(record, "draft");
   }
 
@@ -369,7 +387,7 @@ export function ReleasesPage() {
             type: artifactForm.type,
             fileName: artifactForm.fileName.trim() || artifactForm.selectedFile.name,
             defaultMirrorPrefix: null,
-            allowClientMirror: true,
+            allowClientMirror: false,
             isPrimary: artifactForm.isPrimary,
             isFullPackage: artifactForm.isFullPackage
           };
@@ -382,7 +400,7 @@ export function ReleasesPage() {
             type: artifactForm.type,
             fileName: artifactForm.fileName.trim() || null,
             defaultMirrorPrefix: null,
-            allowClientMirror: true,
+            allowClientMirror: false,
             isPrimary: artifactForm.isPrimary,
             isFullPackage: artifactForm.isFullPackage
           };

@@ -192,6 +192,13 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }
 
   async function removeComponent(record: AdminRuntimeComponentRecordDto) {
+    const confirmMessage = record.enabled
+      ? `Delete enabled runtime component ${record.platform}/${record.kind}/${record.architecture}/${record.fileName}? Disable it first unless this is an emergency.`
+      : `Delete runtime component ${record.platform}/${record.kind}/${record.architecture}/${record.fileName}?`;
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
     try {
       onSavingChange(true);
       await deleteAdminRuntimeComponent(record.id);

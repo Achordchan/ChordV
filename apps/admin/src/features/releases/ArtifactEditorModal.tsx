@@ -30,7 +30,8 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             props.onChange({
               ...props.form,
               source: value as ArtifactEditorFormState["source"],
-              type: props.form.type === "external" ? defaultType : props.form.type
+              type: props.form.type === "external" ? defaultType : props.form.type,
+              allowClientMirror: value === "external"
             })
           }
           data={[

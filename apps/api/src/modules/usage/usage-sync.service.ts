@@ -13,6 +13,7 @@ import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
 import { RuntimeSessionService } from "../common/runtime-session.service";
+import { runWithSubscriptionUsageLock } from "../common/usage-lock.utils";
 import { XuiService } from "../xui/xui.service";
 
 const GB_IN_BYTES = 1024 ** 3;
@@ -183,6 +184,7 @@ export class UsageSyncService {
 
       mappedSubscriptions.add(mapping.subscriptionId);
 
+      await runWithSubscriptionUsageLock(mapping.subscriptionId, async () => {
       const totalBytes = sample.uplinkBytes + sample.downlinkBytes;
       const snapshotKey = buildSnapshotKey(nodeId, mapping.subscriptionId, mapping.userId);
       const snapshot = await this.prisma.trafficSnapshot.findUnique({
@@ -191,14 +193,66 @@ export class UsageSyncService {
 
       const sampledAt = parseSampledAt(sample.sampledAt);
       if (!snapshot) {
-        await this.prisma.trafficSnapshot.create({
-          data: {
-            id: randomUUID(),
+        const previousTotalBytes = (mapping.bindingLastUplinkBytes ?? 0n) + (mapping.bindingLastDownlinkBytes ?? 0n);
+        if (totalBytes < previousTotalBytes) {
+          rollbackSubscriptions.add(mapping.subscriptionId);
+          rollbackDetails.set(mapping.subscriptionId, `鐢ㄦ埛 ${normalizedEmail} 鐨勭疮璁℃祦閲忚鏁板彂鐢熷洖閫€`);
+          await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
+          return;
+        }
+
+        const initialDeltaBytes = totalBytes - previousTotalBytes;
+        if (initialDeltaBytes <= 0n) {
+          await this.createTrafficSnapshot({
             snapshotKey,
             nodeId,
             subscriptionId: mapping.subscriptionId,
-            userId: mapping.userId,
             teamId: mapping.teamId,
+            userId: mapping.userId,
+            uplinkBytes: sample.uplinkBytes,
+            downlinkBytes: sample.downlinkBytes,
+            totalBytes,
+            sampledAt
+          });
+          await this.touchBindingSyncState(mapping.bindingId, sample.uplinkBytes, sample.downlinkBytes, sampledAt);
+          await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
+          return;
+        }
+
+        await this.applyUsageDelta({
+          nodeId,
+          snapshotKey,
+          snapshotMode: "create",
+          subscriptionId: mapping.subscriptionId,
+          teamId: mapping.teamId,
+          userId: mapping.userId,
+          bindingId: mapping.bindingId,
+          uplinkBytes: sample.uplinkBytes,
+          downlinkBytes: sample.downlinkBytes,
+          totalBytes,
+          deltaBytes: initialDeltaBytes,
+          sampledAt,
+          lockHeld: true
+        });
+        return;
+      }
+
+      if (sampledAt.getTime() < snapshot.sampledAt.getTime()) {
+        return;
+      }
+
+      if (totalBytes < snapshot.totalBytes) {
+        rollbackSubscriptions.add(mapping.subscriptionId);
+        rollbackDetails.set(mapping.subscriptionId, `用户 ${normalizedEmail} 的累计流量计数发生回退`);
+        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
+        return;
+      }
+
+      const deltaBytes = totalBytes - snapshot.totalBytes;
+      if (deltaBytes <= 0n) {
+        await this.prisma.trafficSnapshot.update({
+          where: { snapshotKey },
+          data: {
             uplinkBytes: sample.uplinkBytes,
             downlinkBytes: sample.downlinkBytes,
             totalBytes,
@@ -207,34 +261,25 @@ export class UsageSyncService {
         });
         await this.touchBindingSyncState(mapping.bindingId, sample.uplinkBytes, sample.downlinkBytes, sampledAt);
         await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
-        continue;
+        return;
       }
 
-      if (totalBytes < snapshot.totalBytes) {
-        rollbackSubscriptions.add(mapping.subscriptionId);
-        rollbackDetails.set(mapping.subscriptionId, `用户 ${normalizedEmail} 的累计流量计数发生回退`);
-        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
-        continue;
-      }
-
-      const deltaBytes = totalBytes - snapshot.totalBytes;
-      await this.prisma.trafficSnapshot.update({
-        where: { snapshotKey },
-        data: {
-          uplinkBytes: sample.uplinkBytes,
-          downlinkBytes: sample.downlinkBytes,
-          totalBytes,
-          sampledAt
-        }
+      await this.applyUsageDelta({
+        nodeId,
+        snapshotKey,
+        snapshotMode: "update",
+        subscriptionId: mapping.subscriptionId,
+        teamId: mapping.teamId,
+        userId: mapping.userId,
+        bindingId: mapping.bindingId,
+        uplinkBytes: sample.uplinkBytes,
+        downlinkBytes: sample.downlinkBytes,
+        totalBytes,
+        deltaBytes,
+        sampledAt,
+        lockHeld: true
       });
-      await this.touchBindingSyncState(mapping.bindingId, sample.uplinkBytes, sample.downlinkBytes, sampledAt);
-
-      if (deltaBytes <= 0n) {
-        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
-        continue;
-      }
-
-      await this.applyUsageDelta(nodeId, mapping.subscriptionId, mapping.teamId, mapping.userId, deltaBytes, sampledAt);
+      });
     }
 
     const missingSnapshotKeys = Array.from(context.mappings.entries())
@@ -316,20 +361,14 @@ export class UsageSyncService {
     }
   }
 
-  private async applyUsageDelta(
-    nodeId: string,
-    subscriptionId: string,
-    teamId: string | null,
-    userId: string | null,
-    deltaBytes: bigint,
-    sampledAt: Date
-  ) {
-    const deltaGb = Number(deltaBytes) / GB_IN_BYTES;
-    let nextState: "active" | "expired" | "exhausted" | "paused" = "active";
+  private async applyUsageDelta(input: UsageDeltaInput) {
+    const apply = async () => {
+    const deltaGb = Number(input.deltaBytes) / GB_IN_BYTES;
+    let nextState: "active" | "expired" | "exhausted" | "paused" | null = null;
 
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.subscription.findUnique({
-        where: { id: subscriptionId }
+        where: { id: input.subscriptionId }
       });
 
       if (!current) {
@@ -339,43 +378,85 @@ export class UsageSyncService {
       const nextUsedTrafficGb = roundTrafficGb(current.usedTrafficGb + deltaGb);
       const nextRemainingTrafficGb = roundTrafficGb(Math.max(0, current.totalTrafficGb - nextUsedTrafficGb));
       nextState =
-        current.expireAt.getTime() <= sampledAt.getTime()
+        current.state !== "active"
+          ? current.state
+          : current.expireAt.getTime() <= input.sampledAt.getTime()
           ? "expired"
           : nextRemainingTrafficGb <= 0
             ? "exhausted"
-            : current.state === "paused"
-              ? "paused"
-              : "active";
+            : "active";
+
+      const snapshotData = {
+          uplinkBytes: input.uplinkBytes,
+          downlinkBytes: input.downlinkBytes,
+          totalBytes: input.totalBytes,
+          sampledAt: input.sampledAt
+      };
+      if (input.snapshotMode === "create") {
+        await tx.trafficSnapshot.upsert({
+          where: { snapshotKey: input.snapshotKey },
+          update: snapshotData,
+          create: {
+            id: randomUUID(),
+            snapshotKey: input.snapshotKey,
+            nodeId: input.nodeId,
+            subscriptionId: input.subscriptionId,
+            userId: input.userId,
+            teamId: input.teamId,
+            ...snapshotData
+          }
+        });
+      } else {
+        await tx.trafficSnapshot.update({
+          where: { snapshotKey: input.snapshotKey },
+          data: snapshotData
+        });
+      }
+
+      if (input.bindingId) {
+        await tx.panelClientBinding.updateMany({
+          where: { id: input.bindingId },
+          data: {
+            lastUplinkBytes: input.uplinkBytes,
+            lastDownlinkBytes: input.downlinkBytes,
+            lastSyncedAt: input.sampledAt
+          }
+        });
+      }
 
       await tx.subscription.update({
-        where: { id: subscriptionId },
+        where: { id: input.subscriptionId },
         data: {
           usedTrafficGb: nextUsedTrafficGb,
           remainingTrafficGb: nextRemainingTrafficGb,
           state: nextState,
-          lastSyncedAt: sampledAt
+          lastSyncedAt: input.sampledAt
         }
       });
 
-      if (teamId && userId) {
+      if (input.teamId && input.userId) {
         await tx.trafficLedger.create({
           data: {
             id: randomUUID(),
-            teamId,
-            userId,
-            subscriptionId,
-            nodeId,
+            teamId: input.teamId,
+            userId: input.userId,
+            subscriptionId: input.subscriptionId,
+            nodeId: input.nodeId,
             usedTrafficGb: roundTrafficGb(deltaGb),
-            recordedAt: sampledAt
+            recordedAt: input.sampledAt
           }
         });
       }
     });
 
+    if (!nextState) {
+      return;
+    }
+
     if (nextState !== "active") {
-      await this.deactivatePanelClients(subscriptionId, "disabled");
+      await this.getRuntimeSessionService().markPanelBindingsDisabledForSubscription(input.subscriptionId);
       await this.revokeActiveLeases(
-        subscriptionId,
+        input.subscriptionId,
         nextState === "expired"
           ? "subscription_expired"
           : nextState === "exhausted"
@@ -385,17 +466,56 @@ export class UsageSyncService {
     }
 
     await this.clientEventsPublisher.publishSubscriptionUpdated({
-      subscriptionId,
-      userId,
-      teamId,
+      subscriptionId: input.subscriptionId,
+      userId: input.userId,
+      teamId: input.teamId,
       state: nextState
     });
+    };
+    if (input.lockHeld) {
+      return apply();
+    }
+    return runWithSubscriptionUsageLock(input.subscriptionId, apply);
   }
 
   private async touchSubscriptionSyncState(subscriptionId: string, sampledAt: Date) {
     await this.prisma.subscription.update({
       where: { id: subscriptionId },
       data: { lastSyncedAt: sampledAt }
+    });
+  }
+
+  private async createTrafficSnapshot(input: {
+    snapshotKey: string;
+    nodeId: string;
+    subscriptionId: string;
+    teamId: string | null;
+    userId: string | null;
+    uplinkBytes: bigint;
+    downlinkBytes: bigint;
+    totalBytes: bigint;
+    sampledAt: Date;
+  }) {
+    await this.prisma.trafficSnapshot.upsert({
+      where: { snapshotKey: input.snapshotKey },
+      update: {
+        uplinkBytes: input.uplinkBytes,
+        downlinkBytes: input.downlinkBytes,
+        totalBytes: input.totalBytes,
+        sampledAt: input.sampledAt
+      },
+      create: {
+        id: randomUUID(),
+        snapshotKey: input.snapshotKey,
+        nodeId: input.nodeId,
+        subscriptionId: input.subscriptionId,
+        userId: input.userId,
+        teamId: input.teamId,
+        uplinkBytes: input.uplinkBytes,
+        downlinkBytes: input.downlinkBytes,
+        totalBytes: input.totalBytes,
+        sampledAt: input.sampledAt
+      }
     });
   }
 
@@ -434,7 +554,9 @@ export class UsageSyncService {
         subscriptionId: true,
         userId: true,
         teamId: true,
-        lastSyncedAt: true
+        lastSyncedAt: true,
+        lastUplinkBytes: true,
+        lastDownlinkBytes: true
       }
     });
     for (const binding of bindings) {
@@ -444,6 +566,8 @@ export class UsageSyncService {
         subscriptionId: binding.subscriptionId,
         teamId: binding.teamId,
         userId: binding.userId,
+        bindingLastUplinkBytes: binding.lastUplinkBytes,
+        bindingLastDownlinkBytes: binding.lastDownlinkBytes,
         bindingLastSyncedAt: binding.lastSyncedAt
       });
       leaseMappingsByUuid.set(binding.panelClientId, {
@@ -451,6 +575,8 @@ export class UsageSyncService {
         subscriptionId: binding.subscriptionId,
         teamId: binding.teamId,
         userId: binding.userId,
+        bindingLastUplinkBytes: binding.lastUplinkBytes,
+        bindingLastDownlinkBytes: binding.lastDownlinkBytes,
         bindingLastSyncedAt: binding.lastSyncedAt
       });
     }
@@ -565,7 +691,25 @@ type UsageMapping = {
   subscriptionId: string;
   teamId: string | null;
   userId: string | null;
+  bindingLastUplinkBytes?: bigint | null;
+  bindingLastDownlinkBytes?: bigint | null;
   bindingLastSyncedAt?: Date | null;
+};
+
+type UsageDeltaInput = {
+  nodeId: string;
+  snapshotKey: string;
+  snapshotMode: "create" | "update";
+  subscriptionId: string;
+  teamId: string | null;
+  userId: string | null;
+  bindingId?: string;
+  uplinkBytes: bigint;
+  downlinkBytes: bigint;
+  totalBytes: bigint;
+  deltaBytes: bigint;
+  sampledAt: Date;
+  lockHeld?: boolean;
 };
 
 type NodeSyncContext = {

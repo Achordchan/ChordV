@@ -24,13 +24,14 @@ type AuthSessionResponse = {
 };
 
 let refreshPromise: Promise<string | null> | null = null;
+let adminAccessToken: string | null = null;
 
 export function getStoredAdminAccessToken() {
-  return localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) ?? (import.meta.env.DEV ? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "" : "");
+  return adminAccessToken ?? (import.meta.env.DEV ? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "" : "");
 }
 
 export function getStoredAdminRefreshToken() {
-  return localStorage.getItem(ADMIN_REFRESH_TOKEN_KEY) ?? "";
+  return "";
 }
 
 export function getStoredAdminProfile() {
@@ -48,8 +49,9 @@ export function getStoredAdminProfile() {
 }
 
 export function persistAdminSessionTokens(session: Pick<AuthSessionResponse, "accessToken" | "refreshToken" | "user">) {
-  localStorage.setItem(ADMIN_ACCESS_TOKEN_KEY, session.accessToken);
-  localStorage.setItem(ADMIN_REFRESH_TOKEN_KEY, session.refreshToken);
+  adminAccessToken = session.accessToken;
+  localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
+  localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
   if (session.user) {
     localStorage.setItem(
       ADMIN_PROFILE_KEY,
@@ -62,6 +64,7 @@ export function persistAdminSessionTokens(session: Pick<AuthSessionResponse, "ac
 }
 
 export function clearStoredAdminSession(options?: { notify?: boolean }) {
+  adminAccessToken = null;
   localStorage.removeItem(ADMIN_ACCESS_TOKEN_KEY);
   localStorage.removeItem(ADMIN_REFRESH_TOKEN_KEY);
   localStorage.removeItem(ADMIN_PROFILE_KEY);
@@ -71,7 +74,7 @@ export function clearStoredAdminSession(options?: { notify?: boolean }) {
 }
 
 export function hasStoredAdminSession() {
-  return Boolean(getStoredAdminAccessToken() || getStoredAdminRefreshToken());
+  return Boolean(getStoredAdminAccessToken() || localStorage.getItem(ADMIN_PROFILE_KEY));
 }
 
 export function isAdminSessionExpiredMessage(message: string) {
@@ -99,6 +102,7 @@ async function requestOnce(path: string, init?: RequestOptions, useAuth = true, 
   try {
     return await fetch(`${API_BASE}/api${path}`, {
       ...init,
+      credentials: "include",
       signal: init?.signal ?? controller.signal,
       headers: {
         ...(adminAccessToken ? { Authorization: `Bearer ${adminAccessToken}` } : {}),
@@ -116,18 +120,13 @@ async function refreshAdminAccessToken() {
     return refreshPromise;
   }
 
-  const refreshToken = getStoredAdminRefreshToken();
-  if (!refreshToken) {
-    return null;
-  }
-
   refreshPromise = (async () => {
     try {
       const response = await requestOnce(
         "/auth/refresh",
         {
           method: "POST",
-          body: JSON.stringify({ refreshToken })
+          body: JSON.stringify({})
         },
         false
       );

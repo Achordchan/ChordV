@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 import {
   mockAnnouncements,
   mockAdminReleases,
@@ -13,22 +14,21 @@ import {
 
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
-const BUILTIN_ADMIN_PASSWORD = "woshichen123";
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 let prisma: PrismaClient | null = null;
 
 async function main() {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("生产环境禁止执行 Prisma seed");
-  }
-
   assertSeedDatabaseAllowed();
 
   prisma = new PrismaClient();
+  const devAdminPassword = resolveDevAdminPassword();
   const demoPasswordHash = await bcrypt.hash("demo123456", 10);
-  const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
+  const adminPasswordHash = await bcrypt.hash(devAdminPassword.password, 10);
   const ownerPasswordHash = await bcrypt.hash("team123456", 10);
   const memberPasswordHash = await bcrypt.hash("team123456", 10);
+  if (devAdminPassword.generated) {
+    console.warn(`Generated temporary dev admin password for ${BUILTIN_ADMIN_ACCOUNT}: ${devAdminPassword.password}`);
+  }
 
   await prisma.user.upsert({
     where: { email: mockUser.email },
@@ -61,9 +61,7 @@ async function main() {
       displayName: "系统管理员",
       role: "admin",
       status: "active",
-      authVersion: 1,
       maxConcurrentSessionsOverride: null,
-      passwordHash: adminPasswordHash,
       lastSeenAt: new Date()
     },
     create: {
@@ -572,30 +570,28 @@ function normalizeReleaseArtifactType(type: string) {
 }
 
 function assertSeedDatabaseAllowed() {
-  if (isEnabled(process.env.CHORDV_ALLOW_REMOTE_DEV_SEED)) {
-    return;
+  if (!isDevelopmentOrTestRuntime()) {
+    throw new Error("Prisma seed is allowed only when NODE_ENV is development or test.");
   }
-  const databaseUrl = process.env.DATABASE_URL?.trim();
-  if (!databaseUrl || isLocalDatabaseUrl(databaseUrl)) {
-    return;
+  if (!isEnabled(process.env.CHORDV_DEV_SEED_CONFIRM)) {
+    throw new Error("Refusing to run dev seed without CHORDV_DEV_SEED_CONFIRM=true.");
   }
-  throw new Error(
-    "Refusing to seed a non-local database. Set CHORDV_ALLOW_REMOTE_DEV_SEED=true only for disposable environments."
-  );
 }
 
 function isEnabled(value: string | undefined) {
   return value?.trim().toLowerCase() === "true";
 }
 
-function isLocalDatabaseUrl(rawUrl: string) {
-  try {
-    const { hostname } = new URL(rawUrl);
-    const normalized = hostname.toLowerCase();
-    return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
-  } catch {
-    return false;
+function isDevelopmentOrTestRuntime() {
+  return process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+}
+
+function resolveDevAdminPassword() {
+  const configured = process.env.CHORDV_DEV_ADMIN_PASSWORD?.trim();
+  if (configured) {
+    return { password: configured, generated: false };
   }
+  return { password: randomBytes(18).toString("base64url"), generated: true };
 }
 
 main()

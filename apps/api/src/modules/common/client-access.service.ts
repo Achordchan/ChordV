@@ -1,6 +1,8 @@
-import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
+import { createHash } from "node:crypto";
 import * as net from "node:net";
+import { Client as PgClient } from "pg";
 import type {
   AuthSessionDto,
   ClientBootstrapDto,
@@ -26,6 +28,19 @@ import {
   toSubscriptionStatusDto
 } from "./subscription.utils";
 import { toNodeSummary } from "./node-import.utils";
+
+const LOGIN_DUMMY_PASSWORD_HASH = bcrypt.hashSync("chordv-login-dummy-password", 10);
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_BASE_BACKOFF_MS = 30_000;
+const LOGIN_MAX_BACKOFF_MS = 15 * 60_000;
+const LOGIN_BUCKET_TTL_MS = 60 * 60_000;
+const PROBE_RATE_LIMIT = 30;
+const PROBE_RATE_WINDOW_MS = 60_000;
+const PROBE_RATE_BLOCK_MS = 60_000;
+const MAX_CLIENT_NODE_PROBE_IDS = 32;
+const MAX_CLIENT_NODE_ID_LENGTH = 128;
+const MAX_CONCURRENT_NODE_PROBES = 6;
+const RATE_LIMIT_LOCK_KEY_1 = 420_705;
 
 type ClientSubscriptionAccess = {
   subscription: {
@@ -58,26 +73,36 @@ export class ClientAccessService {
     private readonly clientTicketService: ClientTicketService
   ) {}
 
-  async login(account: string, password: string): Promise<AuthSessionDto> {
-    const user = await this.resolveUserForLogin(account.trim().toLowerCase());
+  async login(account: string, password: string, clientIp = "unknown"): Promise<AuthSessionDto> {
+    const normalizedAccount = account.trim().toLowerCase();
+    const loginKeys = this.createLoginRateLimitKeys(normalizedAccount, clientIp);
+    return runWithRateLimitBucketLocks(loginKeys, async () => {
+      await this.assertLoginAllowed(loginKeys);
+      const user = await this.resolveUserForLogin(normalizedAccount);
 
-    if (!user) {
-      throw new UnauthorizedException("账号或密码错误");
-    }
+      if (!user) {
+        await bcrypt.compare(password, LOGIN_DUMMY_PASSWORD_HASH);
+        await this.recordFailedLogin(loginKeys, { lockHeld: true });
+        throw new UnauthorizedException("账号或密码错误");
+      }
 
-    const matched = await bcrypt.compare(password, user.passwordHash);
-    if (!matched) {
-      throw new UnauthorizedException("账号或密码错误");
-    }
-    if (user.status !== "active") {
-      throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
-    }
+      const matched = await bcrypt.compare(password, user.passwordHash);
+      if (!matched) {
+        await this.recordFailedLogin(loginKeys, { lockHeld: true });
+        throw new UnauthorizedException("账号或密码错误");
+      }
+      if (user.status !== "active") {
+        await this.recordFailedLogin(loginKeys, { lockHeld: true });
+        throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
+      }
 
-    const updated = await this.prisma.user.update({
-      where: { id: user.id },
-      data: { lastSeenAt: new Date() }
+      await this.clearLoginFailures(loginKeys, { lockHeld: true });
+      const updated = await this.prisma.user.update({
+        where: { id: user.id },
+        data: { lastSeenAt: new Date() }
+      });
+      return this.authSessionService.issueSession(updated.id);
     });
-    return this.authSessionService.issueSession(updated.id);
   }
 
   async refresh(token: string): Promise<AuthSessionDto> {
@@ -144,6 +169,9 @@ export class ClientAccessService {
     if (!access.subscription) {
       return [];
     }
+    if (!isClientSubscriptionUsable(access)) {
+      return [];
+    }
 
     const rows = await this.prisma.subscriptionNodeAccess.findMany({
       where: {
@@ -167,12 +195,21 @@ export class ClientAccessService {
 
   async probeClientNodes(nodeIds: string[], token?: string): Promise<ClientNodeProbeResultDto[]> {
     const user = await this.authSessionService.authenticateAccessToken(token);
+    await this.consumeRateLimit([`node-probe:user:${user.id}`], {
+      limit: PROBE_RATE_LIMIT,
+      windowMs: PROBE_RATE_WINDOW_MS,
+      blockMs: PROBE_RATE_BLOCK_MS,
+      message: "Too many node probe requests. Please try again later."
+    });
     const access = await this.resolveSubscriptionAccessForUser(user.id);
     if (!access.subscription) {
       return [];
     }
+    if (!isClientSubscriptionUsable(access)) {
+      return [];
+    }
 
-    const requestedNodeIds = Array.from(new Set(nodeIds.filter((item) => typeof item === "string" && item.trim().length > 0)));
+    const requestedNodeIds = normalizeClientProbeNodeIds(nodeIds);
     if (requestedNodeIds.length === 0) {
       return [];
     }
@@ -189,8 +226,7 @@ export class ClientAccessService {
     });
 
     const rowMap = new Map(rows.map((row) => [row.nodeId, row.node]));
-    return Promise.all(
-      requestedNodeIds.map(async (nodeId) => {
+    return mapWithConcurrency(requestedNodeIds, MAX_CONCURRENT_NODE_PROBES, async (nodeId) => {
         const node = rowMap.get(nodeId);
         if (!node) {
           return {
@@ -210,8 +246,7 @@ export class ClientAccessService {
           checkedAt: new Date().toISOString(),
           error: probe.error
         };
-      })
-    );
+      });
   }
 
   async getPolicies(): Promise<PolicyBundleDto> {
@@ -321,6 +356,109 @@ export class ClientAccessService {
     });
   }
 
+  private createLoginRateLimitKeys(account: string, clientIp: string) {
+    const ip = clientIp.trim() || "unknown";
+    return [`ip:${ip}`, `account:${account}`, `ip-account:${ip}:${account}`];
+  }
+
+  private async assertLoginAllowed(keys: string[]) {
+    const blockedUntil = await this.findBlockedUntil(keys);
+    if (blockedUntil && blockedUntil.getTime() > Date.now()) {
+      throw new HttpException("Too many login attempts. Please try again later.", HttpStatus.TOO_MANY_REQUESTS);
+    }
+  }
+
+  private async recordFailedLogin(keys: string[], options?: { lockHeld?: boolean }) {
+    const record = async () => {
+    const now = Date.now();
+    await this.prisma.$transaction(async (tx) => {
+      for (const key of keys) {
+        const current = await tx.rateLimitBucket.findUnique({ where: { key } });
+        const isExpired = !current || current.updatedAt.getTime() + LOGIN_BUCKET_TTL_MS < now;
+        const count = (isExpired ? 0 : current.count) + 1;
+        const excess = Math.max(0, count - LOGIN_FAILURE_LIMIT);
+        const blockedUntil =
+          excess > 0
+            ? new Date(now + Math.min(LOGIN_MAX_BACKOFF_MS, LOGIN_BASE_BACKOFF_MS * 2 ** Math.min(excess - 1, 8)))
+            : null;
+        await tx.rateLimitBucket.upsert({
+          where: { key },
+          create: {
+            key,
+            count,
+            blockedUntil
+          },
+          update: {
+            count,
+            blockedUntil
+          }
+        });
+      }
+    });
+    };
+    if (options?.lockHeld) {
+      return record();
+    }
+    return runWithRateLimitBucketLocks(keys, record);
+  }
+
+  private async clearLoginFailures(keys: string[], options?: { lockHeld?: boolean }) {
+    const clear = async () => this.prisma.rateLimitBucket.deleteMany({
+      where: { key: { in: keys } }
+    });
+    if (options?.lockHeld) {
+      await clear();
+      return;
+    }
+    await runWithRateLimitBucketLocks(keys, clear);
+  }
+
+  private async consumeRateLimit(
+    keys: string[],
+    options: { limit: number; windowMs: number; blockMs: number; message: string }
+  ) {
+    await runWithRateLimitBucketLocks(keys, async () => {
+      const now = Date.now();
+      const blockedUntil = await this.findBlockedUntil(keys);
+      if (blockedUntil && blockedUntil.getTime() > now) {
+        throw new HttpException(options.message, HttpStatus.TOO_MANY_REQUESTS);
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+      for (const key of keys) {
+        const current = await tx.rateLimitBucket.findUnique({ where: { key } });
+        const isExpired = !current || current.updatedAt.getTime() + options.windowMs < now;
+        const count = (isExpired ? 0 : current.count) + 1;
+        const blockedUntil = count > options.limit ? new Date(now + options.blockMs) : null;
+        await tx.rateLimitBucket.upsert({
+          where: { key },
+          create: {
+            key,
+            count,
+            blockedUntil
+          },
+          update: {
+            count,
+            blockedUntil
+          }
+        });
+      }
+      });
+    });
+  }
+
+  private async findBlockedUntil(keys: string[]) {
+    const buckets = await this.prisma.rateLimitBucket.findMany({
+      where: {
+        key: { in: keys },
+        blockedUntil: { gt: new Date() }
+      },
+      orderBy: { blockedUntil: "desc" },
+      take: 1
+    });
+    return buckets[0]?.blockedUntil ?? null;
+  }
+
   private async findLatestPublishedRelease(channel: "stable") {
     const rows = await this.prisma.release.findMany({
       where: {
@@ -346,6 +484,87 @@ export class ClientAccessService {
       return (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0);
     })[0];
   }
+}
+
+function normalizeClientProbeNodeIds(nodeIds: string[]) {
+  const normalized = Array.from(
+    new Set(
+      nodeIds
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0 && item.length <= MAX_CLIENT_NODE_ID_LENGTH)
+    )
+  );
+  if (normalized.length > MAX_CLIENT_NODE_PROBE_IDS) {
+    throw new HttpException(
+      `Too many node probes in one request. Maximum is ${MAX_CLIENT_NODE_PROBE_IDS}.`,
+      HttpStatus.TOO_MANY_REQUESTS
+    );
+  }
+  return normalized;
+}
+
+function isClientSubscriptionUsable(access: ClientSubscriptionAccess) {
+  const subscription = access.subscription;
+  if (!subscription) {
+    return false;
+  }
+  if (subscription.user?.status === "disabled") {
+    return false;
+  }
+  if (access.team?.status && access.team.status !== "active") {
+    return false;
+  }
+  if (subscription.team?.status && subscription.team.status !== "active") {
+    return false;
+  }
+  return subscription.state === "active" && subscription.expireAt.getTime() > Date.now() && subscription.remainingTrafficGb > 0;
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
+  const results: R[] = [];
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex]);
+      }
+    })
+  );
+  return results;
+}
+
+async function runWithRateLimitBucketLocks<T>(keys: string[], task: () => Promise<T>) {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    return task();
+  }
+
+  const uniqueKeys = Array.from(new Set(keys)).sort();
+  const lockClient = new PgClient({ connectionString });
+  const lockedKeys: string[] = [];
+  try {
+    await lockClient.connect();
+    for (const key of uniqueKeys) {
+      await lockClient.query("select pg_advisory_lock($1, $2)", [RATE_LIMIT_LOCK_KEY_1, deriveRateLimitLockKey(key)]);
+      lockedKeys.push(key);
+    }
+    return await task();
+  } finally {
+    for (const key of lockedKeys.reverse()) {
+      await lockClient
+        .query("select pg_advisory_unlock($1, $2)", [RATE_LIMIT_LOCK_KEY_1, deriveRateLimitLockKey(key)])
+        .catch(() => undefined);
+    }
+    await lockClient.end().catch(() => undefined);
+  }
+}
+
+function deriveRateLimitLockKey(key: string) {
+  return createHash("sha256").update(key).digest().readInt32BE(0);
 }
 
 function compareSemver(left: string, right: string) {

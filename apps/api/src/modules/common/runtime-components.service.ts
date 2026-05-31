@@ -31,6 +31,15 @@ type UploadedRuntimeComponentFile = {
   size: number;
 };
 
+type PreparedUploadedRuntimeComponentFile = {
+  absolutePath: string;
+  storedFilePath: string;
+  fileName: string;
+  fileSizeBytes: bigint;
+  fileHash: string;
+  downloadUrl: string;
+};
+
 @Injectable()
 export class RuntimeComponentsService {
   constructor(
@@ -117,9 +126,9 @@ export class RuntimeComponentsService {
     }
 
     const componentId = createId("rtcomp");
-    const prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
-
+    let prepared: PreparedUploadedRuntimeComponentFile | null = null;
     try {
+      prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
       const created = await this.prisma.runtimeComponent.create({
         data: {
           id: componentId,
@@ -144,7 +153,9 @@ export class RuntimeComponentsService {
       }
       return toAdminRuntimeComponentRecord(created);
     } catch (error) {
-      await removeRuntimeComponentFile(prepared.absolutePath);
+      if (prepared) {
+        await removeRuntimeComponentFile(prepared.absolutePath);
+      }
       throw error;
     }
   }
@@ -207,9 +218,9 @@ export class RuntimeComponentsService {
     const current = await this.ensureRuntimeComponentExists(componentId);
     const normalizedInput = normalizeRuntimeComponentIdentity(input.platform, input.architecture, input.kind);
     const previousStoredFilePath = current.storedFilePath;
-    const prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
-
+    let prepared: PreparedUploadedRuntimeComponentFile | null = null;
     try {
+      prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
       const updated = await this.prisma.runtimeComponent.update({
         where: { id: componentId },
         data: {
@@ -237,7 +248,9 @@ export class RuntimeComponentsService {
       }
       return toAdminRuntimeComponentRecord(updated);
     } catch (error) {
-      await removeRuntimeComponentFile(prepared.absolutePath);
+      if (prepared) {
+        await removeRuntimeComponentFile(prepared.absolutePath);
+      }
       throw error;
     }
   }
@@ -447,7 +460,7 @@ export class RuntimeComponentsService {
     const component = await this.prisma.runtimeComponent.findUnique({
       where: { id: componentId }
     });
-    if (!component || component.source !== "uploaded" || !component.storedFilePath) {
+    if (!component || component.source !== "uploaded" || !component.storedFilePath || !component.enabled) {
       throw new NotFoundException("内核组件不存在");
     }
     const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
@@ -537,11 +550,10 @@ export class RuntimeComponentsService {
     preferredFileName?: string | null
   ) {
     const finalFileName = sanitizeStoredFileName(preferredFileName?.trim() || file.originalname || `${componentId}.bin`);
-    const storedFilePath = path.join(componentId, finalFileName);
+    const storedFilePath = path.join(componentId, `${createId("file")}_${finalFileName}`);
     const absolutePath = resolveRuntimeComponentAbsolutePath(storedFilePath);
 
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.rm(absolutePath, { force: true });
     await moveUploadedFile(file.path, absolutePath);
 
     return {

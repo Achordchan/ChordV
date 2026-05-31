@@ -89,7 +89,7 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
 export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEditorFormState {
   return {
     platform: record.platform,
-    status: record.status === "published" ? "published" : "draft",
+    status: record.status,
     version: record.version,
     minimumVersion: record.minimumVersion,
     forceUpgrade: record.forceUpgrade,
@@ -104,7 +104,7 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     type,
     downloadUrl: "",
     defaultMirrorPrefix: DEFAULT_GITHUB_MIRROR_PREFIX,
-    allowClientMirror: true,
+    allowClientMirror: false,
     fileName: "",
     fileSizeBytes: "",
     fileHash: "",

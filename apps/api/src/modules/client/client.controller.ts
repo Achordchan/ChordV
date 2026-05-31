@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, Sse, UseGuards } from "@nestjs/common";
-import { IsArray, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
+import { ArrayMaxSize, IsArray, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
 import type {
   ConnectionMode,
   PlatformTarget,
@@ -41,7 +41,9 @@ class RuntimeQueryDto {
 
 class ProbeNodesDto {
   @IsArray()
+  @ArrayMaxSize(32)
   @IsString({ each: true })
+  @MaxLength(128, { each: true })
   nodeIds!: string[];
 }
 

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 import {
   mockAdminReleases,
   mockAnnouncements,
@@ -15,11 +16,11 @@ import { DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";
-const BUILTIN_ADMIN_PASSWORD = "woshichen123";
 
 @Injectable()
 export class DevDataBootstrapService {
   private readonly logger = new Logger(DevDataBootstrapService.name);
+  private readonly devAdminPassword = resolveDevAdminPassword();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -39,7 +40,7 @@ export class DevDataBootstrapService {
     }
 
     const demoPasswordHash = await bcrypt.hash("demo123456", 10);
-    const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
+    const adminPasswordHash = await bcrypt.hash(this.devAdminPassword.password, 10);
     const ownerPasswordHash = await bcrypt.hash("team123456", 10);
     const memberPasswordHash = await bcrypt.hash("team123456", 10);
 
@@ -311,6 +312,9 @@ export class DevDataBootstrapService {
         countdownSeconds: item.countdownSeconds
       }))
     });
+    if (this.devAdminPassword.generated) {
+      this.logger.warn(`Generated temporary dev admin password for ${BUILTIN_ADMIN_ACCOUNT}: ${this.devAdminPassword.password}`);
+    }
   }
 
   private async migrateLegacyDefaultConcurrentSessions() {
@@ -397,7 +401,7 @@ export class DevDataBootstrapService {
       return;
     }
 
-    const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
+    const adminPasswordHash = await bcrypt.hash(this.devAdminPassword.password, 10);
 
     await this.prisma.user.create({
       data: {
@@ -412,6 +416,9 @@ export class DevDataBootstrapService {
         lastSeenAt: new Date()
       }
     });
+    if (this.devAdminPassword.generated) {
+      this.logger.warn(`Generated temporary dev admin password for ${BUILTIN_ADMIN_ACCOUNT}: ${this.devAdminPassword.password}`);
+    }
   }
 
   private async backfillTrafficLedgerNodeIds() {
@@ -507,31 +514,26 @@ function pickLedgerNodeCandidate(
 }
 
 function assertDevelopmentBootstrapAllowed() {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("Refusing to bootstrap development data in production.");
+  if (!isDevelopmentOrTestRuntime()) {
+    throw new Error("Development data bootstrap is allowed only when NODE_ENV is development or test.");
   }
-  if (isEnabled(process.env.CHORDV_ALLOW_REMOTE_DEV_BOOTSTRAP)) {
-    return;
+  if (!isEnabled(process.env.CHORDV_DEV_BOOTSTRAP_CONFIRM)) {
+    throw new Error("Refusing to bootstrap development data without CHORDV_DEV_BOOTSTRAP_CONFIRM=true.");
   }
-  const databaseUrl = process.env.DATABASE_URL?.trim();
-  if (!databaseUrl || isLocalDatabaseUrl(databaseUrl)) {
-    return;
-  }
-  throw new Error(
-    "Refusing to bootstrap development data against a non-local database. Set CHORDV_ALLOW_REMOTE_DEV_BOOTSTRAP=true only for disposable environments."
-  );
 }
 
 function isEnabled(value: string | undefined) {
   return value?.trim().toLowerCase() === "true";
 }
 
-function isLocalDatabaseUrl(rawUrl: string) {
-  try {
-    const { hostname } = new URL(rawUrl);
-    const normalized = hostname.toLowerCase();
-    return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
-  } catch {
-    return false;
+function isDevelopmentOrTestRuntime() {
+  return process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+}
+
+function resolveDevAdminPassword() {
+  const configured = process.env.CHORDV_DEV_ADMIN_PASSWORD?.trim();
+  if (configured) {
+    return { password: configured, generated: false };
   }
+  return { password: randomBytes(18).toString("base64url"), generated: true };
 }

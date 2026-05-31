@@ -28,6 +28,22 @@ const WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES = new Set([
 const WINDOWS_FULL_UPDATE_ROOT_EXES = new Set(["chordv.exe", "chordv-desktop.exe"]);
 const MIN_WINDOWS_FULL_UPDATE_PE_BYTES = 1024 * 1024;
 const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
+const DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
+const configuredMaxExternalReleaseArtifactBytes = Number(
+  process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES
+);
+const MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES =
+  Number.isFinite(configuredMaxExternalReleaseArtifactBytes) && configuredMaxExternalReleaseArtifactBytes > 0
+    ? Math.trunc(configuredMaxExternalReleaseArtifactBytes)
+    : DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES;
+const configuredMaxWindowsFullUpdateZipEntryBytes = Number(
+  process.env.CHORDV_RELEASE_MAX_ZIP_ENTRY_BYTES ?? DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES
+);
+const MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES =
+  Number.isFinite(configuredMaxWindowsFullUpdateZipEntryBytes) && configuredMaxWindowsFullUpdateZipEntryBytes > 0
+    ? Math.trunc(configuredMaxWindowsFullUpdateZipEntryBytes)
+    : DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES;
 
 export type ReleaseArtifactRowLike = {
   id: string;
@@ -455,6 +471,14 @@ async function verifyZipEntryData(filePath: string, entry: ZipCentralDirectoryEn
   if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) {
     throw new BadRequestException(`Unsupported ZIP compression method for ${entry.name}: ${entry.compressionMethod}`);
   }
+  if (
+    entry.compressedSize > MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES ||
+    entry.uncompressedSize > MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES
+  ) {
+    throw new BadRequestException(
+      `ZIP entry ${entry.name} exceeds the per-file validation limit of ${MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES} bytes.`
+    );
+  }
 
   const handle = await fs.open(filePath, "r");
   try {
@@ -667,16 +691,18 @@ export function resolveReleaseArtifactForClient(
   clientMirrorPrefix: string | null
 ) {
   const defaultMirrorPrefix = artifact.source === "external" ? artifact.defaultMirrorPrefix : null;
+  const allowClientMirror = artifact.source === "uploaded" ? false : artifact.allowClientMirror;
   const resolvedUrl = buildReleaseArtifactDownloadUrlForClient(
     artifact.downloadUrl,
     defaultMirrorPrefix,
     clientMirrorPrefix,
-    artifact.allowClientMirror
+    allowClientMirror
   );
   return {
     ...artifact,
     downloadUrl: resolvedUrl,
-    originDownloadUrl: artifact.downloadUrl
+    originDownloadUrl: artifact.downloadUrl,
+    allowClientMirror
   };
 }
 
@@ -748,15 +774,41 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
       throw new BadRequestException(`External full update ZIP is not accessible: HTTP ${response.status}`);
     }
     assertFullUpdateDownloadUrlAllowed(response.url || rawUrl);
-    const body = Buffer.from(await response.arrayBuffer());
+    const contentLength = readExternalFileSize(response.headers);
+    if (contentLength !== null && contentLength > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
+      throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
+    }
     const absolutePath = path.join(tmpdir(), `chordv-release-artifact-${randomUUID()}.zip`);
-    await fs.writeFile(absolutePath, body);
+    const hash = createHash("sha256");
+    let fileSizeBytes = 0n;
+    let fileHandle: Awaited<ReturnType<typeof fs.open>> | null = null;
+    try {
+      if (!response.body) {
+        throw new BadRequestException("External full update ZIP response body is empty.");
+      }
+      fileHandle = await fs.open(absolutePath, "wx");
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+        const buffer = Buffer.from(chunk);
+        fileSizeBytes += BigInt(buffer.byteLength);
+        if (fileSizeBytes > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
+          throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
+        }
+        hash.update(buffer);
+        await fileHandle.write(buffer);
+      }
+      await fileHandle.close();
+      fileHandle = null;
+    } catch (error) {
+      await fileHandle?.close().catch(() => undefined);
+      await fs.rm(absolutePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
     return {
       absolutePath,
       resolvedUrl: response.url || rawUrl,
       fileName: inferFileNameFromResponse(response, fallbackUrl),
-      fileSizeBytes: BigInt(body.length),
-      fileHash: createHash("sha256").update(body).digest("hex"),
+      fileSizeBytes,
+      fileHash: hash.digest("hex"),
       cleanup: async () => {
         await fs.rm(absolutePath, { force: true });
       }
@@ -981,7 +1033,7 @@ export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike): Admin
       row.allowClientMirror
     ),
     defaultMirrorPrefix: row.defaultMirrorPrefix,
-    allowClientMirror: row.allowClientMirror,
+    allowClientMirror: row.source === "uploaded" ? false : row.allowClientMirror,
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes?.toString() ?? null,
     fileHash: row.fileHash,
@@ -1002,7 +1054,7 @@ export function toAdminReleaseRecord(row: ReleaseRowLike): AdminReleaseRecordDto
     changelog: row.changelog,
     minimumVersion: row.minimumVersion,
     forceUpgrade: row.forceUpgrade,
-    status: row.status === "published" ? "published" : "draft",
+    status: row.status as AdminReleaseRecordDto["status"],
     publishedAt: row.publishedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

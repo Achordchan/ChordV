@@ -33,9 +33,15 @@ type ReleaseRecordCardProps = {
 
 export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
   const { record } = props;
-  const publishDisabled = record.artifacts.length === 0;
-  const artifactEditingDisabled = record.status === "published";
-  const tone = record.status === "published" ? { color: "green", bg: "rgba(46, 160, 67, 0.05)" } : { color: "blue", bg: "rgba(34, 139, 230, 0.05)" };
+  const isArchived = record.status === "archived";
+  const publishDisabled = record.artifacts.length === 0 || isArchived;
+  const artifactEditingDisabled = record.status !== "draft";
+  const tone =
+    record.status === "published"
+      ? { color: "green", bg: "rgba(46, 160, 67, 0.05)" }
+      : isArchived
+        ? { color: "gray", bg: "rgba(134, 142, 150, 0.08)" }
+        : { color: "blue", bg: "rgba(34, 139, 230, 0.05)" };
 
   return (
     <Card withBorder radius="xl" p="lg" style={{ background: tone.bg }}>
@@ -57,7 +63,14 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
             </Text>
           </Stack>
           <Group gap="xs" wrap="wrap">
-            <Button size="xs" variant="default" leftSection={<IconEdit size={14} />} onClick={() => props.onEditRelease(record)}>
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<IconEdit size={14} />}
+              onClick={() => props.onEditRelease(record)}
+              disabled={isArchived}
+              title={isArchived ? "Archived releases are read-only." : undefined}
+            >
               编辑发布
             </Button>
             <Button
@@ -70,7 +83,11 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
             >
               新增产物
             </Button>
-            {record.status === "published" ? (
+            {isArchived ? (
+              <Button size="xs" variant="default" disabled>
+                Archived
+              </Button>
+            ) : record.status === "published" ? (
               <Button size="xs" color="orange" variant="light" loading={props.saving} onClick={() => props.onWithdraw(record)}>
                 撤回发布
               </Button>
@@ -79,7 +96,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                 发布版本
               </Button>
             )}
-            <Button size="xs" color="red" variant="subtle" onClick={() => props.onDeleteRelease(record)}>
+            <Button size="xs" color="red" variant="subtle" onClick={() => props.onDeleteRelease(record)} disabled={isArchived}>
               删除记录
             </Button>
           </Group>
@@ -241,11 +258,13 @@ function translateDeliveryMode(mode: string) {
 }
 
 function translateReleaseStatus(status: AdminReleaseRecordDto["status"]) {
+  if (status === "archived") return "Archived";
   if (status === "published") return "已发布";
   return "草稿";
 }
 
 function releaseStatusColor(status: AdminReleaseRecordDto["status"]) {
+  if (status === "archived") return "gray";
   if (status === "published") return "green";
   return "blue";
 }

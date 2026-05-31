@@ -62,6 +62,15 @@ type UploadedReleaseFile = {
   size: number;
 };
 
+type PreparedUploadedReleaseArtifactFile = {
+  absolutePath: string;
+  storedFilePath: string;
+  fileName: string;
+  fileSizeBytes: bigint;
+  fileHash: string;
+  downloadUrl: string;
+};
+
 @Injectable()
 export class ReleaseCenterService {
   constructor(
@@ -87,14 +96,17 @@ export class ReleaseCenterService {
     }
 
     const releaseId = createId("release");
+    const version = normalizeVersion(input.version);
+    const minimumVersion = normalizeVersion(input.minimumVersion);
+    assertMinimumVersionNotAboveRelease(version, minimumVersion);
     const baseReleaseData = {
       id: releaseId,
       platform: input.platform,
       channel: normalizeReleaseChannel(input.channel),
-      version: normalizeVersion(input.version),
+      version,
       displayTitle: input.displayTitle.trim(),
       changelog: normalizeChangelog(input.changelog),
-      minimumVersion: normalizeVersion(input.minimumVersion),
+      minimumVersion,
       forceUpgrade: input.forceUpgrade ?? false,
       status: input.status ?? "draft",
       publishedAt: normalizePublishedAt(input.status ?? "draft", input.publishedAt)
@@ -129,11 +141,14 @@ export class ReleaseCenterService {
 
   async updateRelease(releaseId: string, input: UpdateReleaseInputDto): Promise<AdminReleaseRecordDto> {
     const current = await this.ensureReleaseExists(releaseId);
+    this.assertReleaseRecordMutable(current);
+    const nextMinimumVersion = input.minimumVersion !== undefined ? normalizeVersion(input.minimumVersion) : current.minimumVersion;
+    assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
 
     const baseData = {
       ...(input.displayTitle !== undefined ? { displayTitle: input.displayTitle.trim() } : {}),
       ...(input.changelog !== undefined ? { changelog: normalizeChangelog(input.changelog) } : {}),
-      ...(input.minimumVersion !== undefined ? { minimumVersion: normalizeVersion(input.minimumVersion) } : {}),
+      ...(input.minimumVersion !== undefined ? { minimumVersion: nextMinimumVersion } : {}),
       ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
       ...(input.status === undefined && input.publishedAt !== undefined && current.status === "published"
         ? { publishedAt: input.publishedAt ? new Date(input.publishedAt) : null }
@@ -229,7 +244,8 @@ export class ReleaseCenterService {
   }
 
   async unpublishRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
-    await this.ensureReleaseExists(releaseId);
+    const current = await this.ensureReleaseExists(releaseId);
+    this.assertReleaseRecordMutable(current);
     const updated = await this.prisma.release.update({
       where: { id: releaseId },
       data: {
@@ -259,6 +275,8 @@ export class ReleaseCenterService {
     if (!release) {
       throw new NotFoundException("发布记录不存在");
     }
+
+    this.assertReleaseRecordMutable(release);
 
     const storedFilePaths = release.artifacts
       .map((artifact) => artifact.storedFilePath)
@@ -433,7 +451,7 @@ export class ReleaseCenterService {
           ...(isPrimary !== undefined ? { isPrimary } : {}),
           ...(isFullPackage !== undefined ? { isFullPackage } : {}),
           ...(input.source === "external" ? { storedFilePath: null } : {}),
-          ...(input.source === "uploaded" ? { allowClientMirror: true } : {})
+          ...(input.source === "uploaded" ? { allowClientMirror: false } : {})
         }
       });
     });
@@ -463,12 +481,13 @@ export class ReleaseCenterService {
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
 
     const artifactId = createId("artifact");
-    const prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
-    if (deliveryMode === "desktop_full_replace") {
-      await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
-    }
-
+    let prepared: PreparedUploadedReleaseArtifactFile | null = null;
     try {
+      prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+      if (deliveryMode === "desktop_full_replace") {
+        await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
+      }
+      const preparedFile = prepared;
       await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
@@ -483,20 +502,22 @@ export class ReleaseCenterService {
             source: "uploaded",
             type: toPrismaReleaseArtifactType(input.type),
             deliveryMode,
-            downloadUrl: prepared.downloadUrl,
+            downloadUrl: preparedFile.downloadUrl,
             defaultMirrorPrefix: null,
-            allowClientMirror: true,
-            fileName: prepared.fileName,
-            storedFilePath: prepared.storedFilePath,
-            fileSizeBytes: prepared.fileSizeBytes,
-            fileHash: prepared.fileHash,
+            allowClientMirror: false,
+            fileName: preparedFile.fileName,
+            storedFilePath: preparedFile.storedFilePath,
+            fileSizeBytes: preparedFile.fileSizeBytes,
+            fileHash: preparedFile.fileHash,
             isPrimary: isPrimary ?? false,
             isFullPackage: isFullPackage ?? true
           }
         });
       });
     } catch (error) {
-      await removeReleaseArtifactFile(prepared.absolutePath);
+      if (prepared) {
+        await removeReleaseArtifactFile(prepared.absolutePath);
+      }
       throw error;
     }
 
@@ -530,12 +551,13 @@ export class ReleaseCenterService {
     const previousStoredFilePath = current.storedFilePath;
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
-    const prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
-    if (deliveryMode === "desktop_full_replace") {
-      await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
-    }
-
+    let prepared: PreparedUploadedReleaseArtifactFile | null = null;
     try {
+      prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+      if (deliveryMode === "desktop_full_replace") {
+        await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
+      }
+      const preparedFile = prepared;
       await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
@@ -549,24 +571,26 @@ export class ReleaseCenterService {
             source: "uploaded",
             type: toPrismaReleaseArtifactType(input.type),
             deliveryMode,
-            downloadUrl: prepared.downloadUrl,
+            downloadUrl: preparedFile.downloadUrl,
             defaultMirrorPrefix: null,
-            allowClientMirror: true,
-            fileName: prepared.fileName,
-            storedFilePath: prepared.storedFilePath,
-            fileSizeBytes: prepared.fileSizeBytes,
-            fileHash: prepared.fileHash,
+            allowClientMirror: false,
+            fileName: preparedFile.fileName,
+            storedFilePath: preparedFile.storedFilePath,
+            fileSizeBytes: preparedFile.fileSizeBytes,
+            fileHash: preparedFile.fileHash,
             isPrimary: isPrimary ?? current.isPrimary,
             isFullPackage: isFullPackage ?? current.isFullPackage
           }
         });
       });
     } catch (error) {
-      await removeReleaseArtifactFile(prepared.absolutePath);
+      if (prepared) {
+        await removeReleaseArtifactFile(prepared.absolutePath);
+      }
       throw error;
     }
 
-    if (previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
+    if (prepared && previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
       await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(previousStoredFilePath));
     }
 
@@ -869,9 +893,10 @@ export class ReleaseCenterService {
 
   async getReleaseArtifactDownloadDescriptor(artifactId: string) {
     const artifact = await this.prisma.releaseArtifact.findUnique({
-      where: { id: artifactId }
+      where: { id: artifactId },
+      include: { release: true }
     });
-    if (!artifact || artifact.source !== "uploaded" || !artifact.storedFilePath) {
+    if (!artifact || artifact.source !== "uploaded" || !artifact.storedFilePath || artifact.release.status !== "published") {
       throw new NotFoundException("安装包不存在");
     }
     const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
@@ -899,6 +924,28 @@ export class ReleaseCenterService {
         channel: effectiveChannel,
         changelog: [],
         deliveryMode: "none",
+        recommendedArtifact: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        publishedAt: null
+      };
+    }
+    if (compareSemver(release.minimumVersion, release.version) > 0) {
+      return {
+        hasUpdate: false,
+        forceUpgrade: false,
+        blockedByMinimumVersion: false,
+        forcedByRelease: false,
+        updateRequirement: "optional",
+        currentVersion: input.currentVersion,
+        latestVersion: input.currentVersion,
+        minimumVersion: input.currentVersion,
+        platform: input.platform,
+        channel: effectiveChannel,
+        changelog: [],
+        deliveryMode: defaultDeliveryModeForPlatform(input.platform),
         recommendedArtifact: null,
         downloadUrl: null,
         fileName: null,
@@ -1008,10 +1055,12 @@ export class ReleaseCenterService {
     if (!release) {
       throw new NotFoundException("发布记录不存在");
     }
+    this.assertReleaseRecordMutable(release);
     const primaryArtifact = release.artifacts.find((item) => item.isPrimary) ?? release.artifacts[0];
     if (!primaryArtifact) {
       throw new BadRequestException("请先上传或配置至少一个安装产物，再发布版本");
     }
+    assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
     if (release.platform === "windows") {
       const windowsFullReplaceArtifact = release.artifacts.find(
         (artifact) =>
@@ -1067,8 +1116,14 @@ export class ReleaseCenterService {
   }
 
   private assertReleaseArtifactsMutable(release: { status: string }) {
-    if (release.status === "published") {
+    if (release.status !== "draft") {
       throw new BadRequestException("请先撤回发布，再调整安装产物。");
+    }
+  }
+
+  private assertReleaseRecordMutable(release: { status: string }) {
+    if (release.status === "archived") {
+      throw new BadRequestException("Archived releases are read-only.");
     }
   }
 
@@ -1130,12 +1185,11 @@ export class ReleaseCenterService {
     preferredFileName?: string | null
   ) {
     const finalFileName = sanitizeReleaseArtifactFileName(preferredFileName?.trim() || file.originalname || `${artifactId}.bin`);
-    const storedFilePath = path.join(releaseId, artifactId, finalFileName);
+    const storedFilePath = path.join(releaseId, artifactId, `${createId("file")}_${finalFileName}`);
     const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
 
     const fs = await import("node:fs/promises");
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.rm(absolutePath, { force: true });
     await fs.rename(file.path, absolutePath);
 
     return {
@@ -1166,11 +1220,17 @@ export class ReleaseCenterService {
   private async ensureReleaseExists(releaseId: string) {
     const row = await this.prisma.release.findUnique({
       where: { id: releaseId },
-      select: { id: true, platform: true, status: true, version: true }
+      select: { id: true, platform: true, status: true, version: true, minimumVersion: true }
     });
     if (!row) {
       throw new NotFoundException("发布记录不存在");
     }
     return row;
+  }
+}
+
+function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: string) {
+  if (compareSemver(minimumVersion, version) > 0) {
+    throw new BadRequestException("minimumVersion must not be greater than release version.");
   }
 }
