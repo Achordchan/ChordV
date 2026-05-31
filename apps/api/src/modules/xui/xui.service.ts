@@ -6,6 +6,8 @@ const PANEL_TIMEOUT_MS = Number(process.env.CHORDV_XUI_TIMEOUT_MS ?? 30000);
 const PANEL_USER_AGENT = "ChordV/0.1";
 const DEFAULT_PANEL_PATH = "/";
 
+class XuiPanelPathNotFoundError extends BadGatewayException {}
+
 type XuiNodeConfig = {
   id: string;
   panelBaseUrl: string | null;
@@ -25,8 +27,12 @@ type XuiClientPayload = {
   totalGB: number;
   subId?: string;
   reset: number;
-  tgId: string;
+  tgId: string | number;
   comment: string;
+};
+
+type XuiPanelClientPayload = Omit<XuiClientPayload, "tgId"> & {
+  tgId: number;
 };
 
 type XuiInboundClient = {
@@ -39,7 +45,7 @@ type XuiInboundClient = {
   totalGB?: number;
   subId?: string;
   reset?: number;
-  tgId?: string;
+  tgId?: string | number;
   comment?: string;
 };
 
@@ -220,6 +226,20 @@ export class XuiService {
     if (this.findInboundClients(inbound, email).length === 0) {
       return false;
     }
+    try {
+      await this.request({
+        node,
+        path: `/panel/api/clients/resetTraffic/${encodeURIComponent(email)}`,
+        method: "POST",
+        useJson: true
+      });
+      return true;
+    } catch (error) {
+      if (!isPanelPathNotFoundError(error)) {
+        throw error;
+      }
+    }
+
     const attempts = [
       { path: `/panel/api/inbounds/resetClientTraffic/${inboundId}/${encodeURIComponent(email)}` },
       { path: `/panel/api/inbounds/${inboundId}/resetClientTraffic/${encodeURIComponent(email)}` },
@@ -381,6 +401,26 @@ export class XuiService {
 
   private async addClient(node: XuiNodeConfig, client: XuiClientPayload) {
     const inboundId = await this.resolveInboundId(node);
+    const panelClient = toPanelClientPayload(client);
+    try {
+      await this.request({
+        node,
+        path: "/panel/api/clients/add",
+        method: "POST",
+        body: JSON.stringify({
+          client: panelClient,
+          inboundIds: [inboundId]
+        }),
+        contentType: "application/json",
+        useJson: true
+      });
+      return;
+    } catch (error) {
+      if (!isPanelPathNotFoundError(error)) {
+        throw error;
+      }
+    }
+
     await this.request({
       node,
       path: "/panel/api/inbounds/addClient",
@@ -388,7 +428,7 @@ export class XuiService {
       body: JSON.stringify({
         id: inboundId,
         settings: JSON.stringify({
-          clients: [client]
+          clients: [panelClient]
         })
       }),
       contentType: "application/json",
@@ -398,6 +438,23 @@ export class XuiService {
 
   private async updateClient(node: XuiNodeConfig, client: XuiClientPayload, targetClientId?: string) {
     const inboundId = await this.resolveInboundId(node);
+    const panelClient = toPanelClientPayload(client);
+    try {
+      await this.request({
+        node,
+        path: `/panel/api/clients/update/${encodeURIComponent(client.email)}`,
+        method: "POST",
+        body: JSON.stringify(panelClient),
+        contentType: "application/json",
+        useJson: true
+      });
+      return;
+    } catch (error) {
+      if (!isPanelPathNotFoundError(error)) {
+        throw error;
+      }
+    }
+
     const attempts = [
       `/panel/api/inbounds/updateClient/${encodeURIComponent(targetClientId ?? client.id)}`,
       `/panel/api/inbounds/updateClient/${inboundId}/${encodeURIComponent(targetClientId ?? client.id)}`
@@ -412,7 +469,7 @@ export class XuiService {
           body: JSON.stringify({
             id: inboundId,
             settings: JSON.stringify({
-              clients: [client]
+              clients: [panelClient]
             })
           }),
           contentType: "application/json",
@@ -460,7 +517,7 @@ export class XuiService {
 
     if (!response.ok) {
       if (response.status === 404) {
-        throw new BadGatewayException("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
+        throw new XuiPanelPathNotFoundError("3x-ui panel API path not found");
       }
       const text = await response.text().catch(() => "");
       throw new BadGatewayException(`3x-ui 面板请求失败：HTTP ${response.status}${text ? ` ${text}` : ""}`);
@@ -737,6 +794,23 @@ export class XuiService {
         continue;
       }
       const resolvedClientId = client.id || fallbackClientId || email;
+      let removed = false;
+      try {
+        await this.request({
+          node,
+          path: `/panel/api/clients/del/${encodeURIComponent(email)}`,
+          method: "POST",
+          useJson: true
+        });
+        removed = true;
+      } catch (error) {
+        if (isPanelRecordNotFoundError(error)) {
+          removed = true;
+        } else if (!isPanelPathNotFoundError(error)) {
+          throw error;
+        }
+      }
+
       const attempts = [
         { path: `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(resolvedClientId)}` },
         {
@@ -749,21 +823,22 @@ export class XuiService {
         { path: `/panel/api/inbounds/delClient/${encodeURIComponent(email)}` }
       ];
 
-      let removed = false;
-      for (const attempt of attempts) {
-        try {
-          await this.request({
-            node,
-            path: attempt.path,
-            method: "POST",
-            body: attempt.body,
-            contentType: attempt.contentType,
-            useJson: true
-          });
-          removed = true;
-          break;
-        } catch {
-          continue;
+      if (!removed) {
+        for (const attempt of attempts) {
+          try {
+            await this.request({
+              node,
+              path: attempt.path,
+              method: "POST",
+              body: attempt.body,
+              contentType: attempt.contentType,
+              useJson: true
+            });
+            removed = true;
+            break;
+          } catch {
+            continue;
+          }
         }
       }
 
@@ -892,6 +967,49 @@ function readObj(value: unknown) {
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function toPanelClientPayload(client: XuiClientPayload): XuiPanelClientPayload {
+  return {
+    ...client,
+    limitIp: toFiniteInteger(client.limitIp),
+    totalGB: toFiniteInteger(client.totalGB),
+    expiryTime: toFiniteInteger(client.expiryTime),
+    reset: toFiniteInteger(client.reset),
+    tgId: toFiniteInteger(client.tgId)
+  };
+}
+
+function toFiniteInteger(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+  }
+  return 0;
+}
+
+function isPanelPathNotFoundError(error: unknown) {
+  return error instanceof XuiPanelPathNotFoundError;
+}
+
+function isPanelRecordNotFoundError(error: unknown) {
+  if (error instanceof Error && /record\s+not\s+found|not\s+found/i.test(error.message)) {
+    return true;
+  }
+  if (error instanceof BadGatewayException) {
+    const response = error.getResponse();
+    if (typeof response === "string") {
+      return /record\s+not\s+found|not\s+found/i.test(response);
+    }
+    if (response && typeof response === "object") {
+      const message = Reflect.get(response, "message");
+      return typeof message === "string" && /record\s+not\s+found|not\s+found/i.test(message);
+    }
+  }
+  return false;
 }
 
 function toBigInt(value: unknown) {

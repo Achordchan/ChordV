@@ -1290,7 +1290,7 @@ export class RuntimeSessionService {
       totalGB: 0,
       subId: "",
       reset: 0,
-      tgId: "",
+      tgId: 0,
       comment: `${input.userDisplayName} · ${input.node.name}`
     });
     const resolvedPanelClientId = ensured.uuid || panelClientId;
