@@ -65,6 +65,7 @@ class UpdateCheckDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(512)
   clientMirrorPrefix?: string | null;
 }
 
@@ -79,6 +80,7 @@ class RuntimeComponentsPlanDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(512)
   clientMirrorPrefix?: string | null;
 }
 
@@ -101,18 +103,22 @@ class RuntimeComponentFailureDto {
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(80)
   reason!: RuntimeDownloadFailureReason | string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   message?: string | null;
 
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   effectiveUrl?: string | null;
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   appVersion?: string | null;
 }
 
@@ -219,6 +225,7 @@ export class ClientController {
   }
 
   @Post("runtime-components/report-failure")
+  @UseGuards(ClientAuthGuard)
   reportRuntimeComponentFailure(@Body() body: RuntimeComponentFailureDto, @Headers("authorization") authorization?: string) {
     return this.runtimeComponentsService.reportRuntimeComponentFailure(body, authorization);
   }

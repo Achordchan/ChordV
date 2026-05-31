@@ -81,10 +81,17 @@ export class AuthSessionService {
       throw new ForbiddenException("当前用户已禁用");
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: current.id },
+    const rotated = await this.prisma.refreshToken.updateMany({
+      where: {
+        id: current.id,
+        revokedAt: null,
+        expiresAt: { gt: new Date() }
+      },
       data: { revokedAt: new Date() }
     });
+    if (rotated.count !== 1) {
+      throw new UnauthorizedException("Refresh token is no longer valid.");
+    }
 
     return this.issueSession(current.userId);
   }
@@ -101,6 +108,9 @@ export class AuthSessionService {
     }
     if (user.status !== "active") {
       throw new ForbiddenException("当前用户已禁用");
+    }
+    if (user.role !== payload.role) {
+      throw new UnauthorizedException("Login session is stale; please sign in again.");
     }
     if (user.authVersion !== payload.ver) {
       throw new UnauthorizedException("登录态已失效，请重新登录");
@@ -230,8 +240,16 @@ function resolveJwtSecret() {
   if (secret) {
     return secret;
   }
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("生产环境缺少 CHORDV_JWT_SECRET");
+  if (isExplicitDevelopmentRuntime() || isEnabled(process.env.CHORDV_ALLOW_INSECURE_DEV_SECRET)) {
+    return "chordv-dev-secret-change-me";
   }
-  return "chordv-dev-secret-change-me";
+  throw new Error("Missing CHORDV_JWT_SECRET. Set NODE_ENV=development only for local development.");
+}
+
+function isExplicitDevelopmentRuntime() {
+  return process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+}
+
+function isEnabled(value: string | undefined) {
+  return value?.trim().toLowerCase() === "true";
 }

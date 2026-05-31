@@ -1303,10 +1303,13 @@ export class DevDataService implements OnModuleInit {
 function shouldAutoBootstrapDevData() {
   const flag = process.env.CHORDV_DEV_BOOTSTRAP?.trim().toLowerCase();
   if (flag === "true") {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Refusing to bootstrap development data in production.");
+    }
     return true;
   }
   if (flag === "false") {
     return false;
   }
-  return process.env.NODE_ENV !== "production";
+  return false;
 }

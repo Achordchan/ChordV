@@ -26,7 +26,7 @@ type AuthSessionResponse = {
 let refreshPromise: Promise<string | null> | null = null;
 
 export function getStoredAdminAccessToken() {
-  return localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) ?? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "";
+  return localStorage.getItem(ADMIN_ACCESS_TOKEN_KEY) ?? (import.meta.env.DEV ? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "" : "");
 }
 
 export function getStoredAdminRefreshToken() {

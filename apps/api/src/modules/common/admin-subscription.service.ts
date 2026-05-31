@@ -146,6 +146,9 @@ export class AdminSubscriptionService {
 
   async updateUser(userId: string, input: UpdateUserInputDto): Promise<AdminUserRecordDto> {
     const currentUser = await this.ensureUserExists(userId);
+    const roleChanged = input.role !== undefined && input.role !== currentUser.role;
+    const passwordChanged = input.password !== undefined;
+    const statusChanged = input.status !== undefined && input.status !== currentUser.status;
     const data: Record<string, unknown> = {};
     if (input.displayName !== undefined) data.displayName = input.displayName.trim();
     if (input.role !== undefined) data.role = input.role;
@@ -160,7 +163,11 @@ export class AdminSubscriptionService {
       data
     });
 
-    if (input.status !== undefined && input.status !== currentUser.status) {
+    if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
+      await this.authSessionService.revokeAllUserSessions(userId);
+    }
+
+    if (statusChanged) {
       const personalSubscription = await this.findCurrentPersonalSubscription(userId);
       if (personalSubscription) {
         if (input.status === "disabled") {

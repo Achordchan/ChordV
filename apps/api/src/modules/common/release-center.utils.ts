@@ -601,7 +601,10 @@ export function releaseArtifactStorageRoot() {
 }
 
 export function resolveReleaseArtifactAbsolutePath(storedFilePath: string) {
-  return path.resolve(releaseArtifactStorageRoot(), storedFilePath);
+  const storageRoot = releaseArtifactStorageRoot();
+  const resolvedPath = path.resolve(storageRoot, storedFilePath);
+  assertPathInsideRoot(storageRoot, resolvedPath);
+  return resolvedPath;
 }
 
 export function buildReleaseArtifactDownloadUrl(artifactId: string) {
@@ -1014,4 +1017,12 @@ function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {
       rejectUnauthorized: !allowInsecureTls
     }
   });
+}
+
+function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {
+  const relativePath = path.relative(storageRoot, resolvedPath);
+  if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
+    return;
+  }
+  throw new BadRequestException("Stored release artifact path resolves outside the release storage root.");
 }

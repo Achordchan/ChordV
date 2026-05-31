@@ -22,6 +22,8 @@ async function main() {
     throw new Error("生产环境禁止执行 Prisma seed");
   }
 
+  assertSeedDatabaseAllowed();
+
   prisma = new PrismaClient();
   const demoPasswordHash = await bcrypt.hash("demo123456", 10);
   const adminPasswordHash = await bcrypt.hash(BUILTIN_ADMIN_PASSWORD, 10);
@@ -567,6 +569,33 @@ function normalizeReleaseArtifactType(type: string) {
     return "setup_exe" as const;
   }
   return type as "dmg" | "app" | "exe" | "zip" | "apk" | "ipa" | "external";
+}
+
+function assertSeedDatabaseAllowed() {
+  if (isEnabled(process.env.CHORDV_ALLOW_REMOTE_DEV_SEED)) {
+    return;
+  }
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl || isLocalDatabaseUrl(databaseUrl)) {
+    return;
+  }
+  throw new Error(
+    "Refusing to seed a non-local database. Set CHORDV_ALLOW_REMOTE_DEV_SEED=true only for disposable environments."
+  );
+}
+
+function isEnabled(value: string | undefined) {
+  return value?.trim().toLowerCase() === "true";
+}
+
+function isLocalDatabaseUrl(rawUrl: string) {
+  try {
+    const { hostname } = new URL(rawUrl);
+    const normalized = hostname.toLowerCase();
+    return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+  } catch {
+    return false;
+  }
 }
 
 main()

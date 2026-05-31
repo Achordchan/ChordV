@@ -14,7 +14,7 @@ import type {
   UpdateRuntimeComponentInputDto
 } from "@chordv/shared";
 import { fetch as undiciFetch } from "undici";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -743,7 +743,10 @@ function runtimeComponentStorageRoot() {
 }
 
 function resolveRuntimeComponentAbsolutePath(storedFilePath: string) {
-  return path.resolve(runtimeComponentStorageRoot(), storedFilePath);
+  const storageRoot = runtimeComponentStorageRoot();
+  const resolvedPath = path.resolve(storageRoot, storedFilePath);
+  assertPathInsideRoot(storageRoot, resolvedPath);
+  return resolvedPath;
 }
 
 function buildRuntimeComponentDownloadUrl(componentId: string) {
@@ -786,5 +789,13 @@ async function calculateFileSha256(filePath: string) {
 }
 
 function createId(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {
+  const relativePath = path.relative(storageRoot, resolvedPath);
+  if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
+    return;
+  }
+  throw new BadRequestException("Stored runtime component path resolves outside the runtime storage root.");
 }

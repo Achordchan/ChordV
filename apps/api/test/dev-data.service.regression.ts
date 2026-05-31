@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { DevDataService } from "../src/modules/common/dev-data.service";
+import { AdminSubscriptionService } from "../src/modules/common/admin-subscription.service";
 import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
+import { resolveReleaseArtifactAbsolutePath } from "../src/modules/common/release-center.utils";
 
 const GB_IN_BYTES = 1024 ** 3;
 
@@ -20,6 +22,74 @@ function createRuntimeSessionService(overrides: Record<string, unknown> = {}) {
 
 function createUsageSyncService(overrides: Record<string, unknown> = {}) {
   return createInstance<UsageSyncService>(UsageSyncService.prototype, overrides);
+}
+
+function createAdminSubscriptionService(overrides: Record<string, unknown> = {}) {
+  return createInstance<AdminSubscriptionService>(AdminSubscriptionService.prototype, overrides);
+}
+
+async function testUpdateUserPasswordRevokesExistingSessions() {
+  const revokeCalls: string[] = [];
+  const updates: Array<Record<string, unknown>> = [];
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      role: "user",
+      status: "active"
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, unknown>) => {
+          updates.push(payload);
+        }
+      }
+    },
+    authSessionService: {
+      revokeAllUserSessions: async (userId: string) => {
+        revokeCalls.push(userId);
+      }
+    },
+    requireAdminUserRecord: async (userId: string) => ({ id: userId })
+  });
+
+  await service.updateUser("user_1", { password: "new-password" });
+
+  assert.equal(updates.length, 1, "admin password reset should update the user row");
+  assert.deepEqual(revokeCalls, ["user_1"], "admin password reset must revoke existing access and refresh tokens");
+}
+
+async function testUpdateUserRoleRevokesExistingSessions() {
+  const revokeCalls: string[] = [];
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      role: "user",
+      status: "active"
+    }),
+    prisma: {
+      user: {
+        update: async () => undefined
+      }
+    },
+    authSessionService: {
+      revokeAllUserSessions: async (userId: string) => {
+        revokeCalls.push(userId);
+      }
+    },
+    requireAdminUserRecord: async (userId: string) => ({ id: userId })
+  });
+
+  await service.updateUser("user_1", { role: "admin" });
+
+  assert.deepEqual(revokeCalls, ["user_1"], "role changes must not upgrade existing tokens in-place");
+}
+
+function testReleaseArtifactPathTraversalIsRejected() {
+  assert.throws(
+    () => resolveReleaseArtifactAbsolutePath("../secret.bin"),
+    /outside the release storage root/,
+    "stored release artifact paths must stay inside the configured storage root"
+  );
 }
 
 async function testUpdateReleaseDelegatesToReleaseCenter() {
@@ -537,6 +607,9 @@ async function testUsageTriggeredInvalidationUsesUnifiedRevokePath() {
 }
 
 async function main() {
+  await testUpdateUserPasswordRevokesExistingSessions();
+  await testUpdateUserRoleRevokesExistingSessions();
+  testReleaseArtifactPathTraversalIsRejected();
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();

@@ -125,24 +125,31 @@ import os
 
 path = Path("start.sh")
 text = path.read_text(encoding="utf-8")
-target = f"export CHORDV_XUI_TIMEOUT_MS={os.environ['DEPLOY_XUI_TIMEOUT_MS']}"
 lines = text.splitlines()
-replaced = False
-for index, line in enumerate(lines):
-  if line.startswith("export CHORDV_XUI_TIMEOUT_MS="):
-    lines[index] = target
-    replaced = True
-    break
-if not replaced:
-  insert_at = None
+
+def upsert_export(name, value, insert_after_prefix=None):
+  target = f"export {name}={value}"
   for index, line in enumerate(lines):
-    if line.startswith("export CHORDV_PANEL_DEFAULT_TIMEOUT_MS="):
-      insert_at = index + 1
-      break
+    if line.startswith(f"export {name}="):
+      lines[index] = target
+      return
+  insert_at = None
+  if insert_after_prefix:
+    for index, line in enumerate(lines):
+      if line.startswith(insert_after_prefix):
+        insert_at = index + 1
+        break
   if insert_at is None:
     lines.append(target)
   else:
     lines.insert(insert_at, target)
+
+upsert_export("NODE_ENV", "production")
+upsert_export(
+  "CHORDV_XUI_TIMEOUT_MS",
+  os.environ["DEPLOY_XUI_TIMEOUT_MS"],
+  "export CHORDV_PANEL_DEFAULT_TIMEOUT_MS="
+)
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 

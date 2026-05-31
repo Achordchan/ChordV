@@ -81,10 +81,14 @@ PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgr
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `CHORDV_JWT_SECRET` | JWT 签名密钥，生产环境必须单独配置 |
 | `CHORDV_DEV_BOOTSTRAP` | 开发数据自动初始化开关，生产环境应关闭 |
+| `CHORDV_ALLOW_REMOTE_DEV_SEED` | 允许对非本机数据库执行开发 seed，仅用于一次性测试环境 |
+| `CHORDV_ALLOW_REMOTE_DEV_BOOTSTRAP` | 允许对非本机数据库执行开发数据自举，仅用于一次性测试环境 |
 | `CHORDV_RELEASE_STORAGE_ROOT` | 发布中心安装包存储目录 |
 | `CHORDV_RELEASE_MAX_UPLOAD_BYTES` | 发布中心单文件上传上限 |
 | `CHORDV_SESSION_HEARTBEAT_INTERVAL_SECONDS` | 客户端会话心跳周期 |
 | `CHORDV_SESSION_GRACE_SECONDS` | 会话失联宽限时间 |
+
+安全默认值：未配置 `CHORDV_JWT_SECRET` 时，API 只会在 `NODE_ENV=development`、`NODE_ENV=test` 或显式设置 `CHORDV_ALLOW_INSECURE_DEV_SECRET=true` 时使用开发密钥。`CHORDV_DEV_BOOTSTRAP` 默认不会自动执行，确需写入开发数据时必须显式设为 `true`。
 
 生产环境不得使用仓库示例密钥，数据库、JWT、面板凭据与发布目录必须由部署环境单独提供。
 

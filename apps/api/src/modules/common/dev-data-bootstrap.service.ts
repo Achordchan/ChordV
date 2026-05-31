@@ -24,6 +24,7 @@ export class DevDataBootstrapService {
   constructor(private readonly prisma: PrismaService) {}
 
   async initialize() {
+    assertDevelopmentBootstrapAllowed();
     await this.seedIfEmpty();
     await this.ensureReleaseCenterSeeded();
     await this.migrateLegacyDefaultConcurrentSessions();
@@ -503,4 +504,34 @@ function pickLedgerNodeCandidate(
     );
     return issuedTime <= targetTime && endedTime >= targetTime;
   });
+}
+
+function assertDevelopmentBootstrapAllowed() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Refusing to bootstrap development data in production.");
+  }
+  if (isEnabled(process.env.CHORDV_ALLOW_REMOTE_DEV_BOOTSTRAP)) {
+    return;
+  }
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl || isLocalDatabaseUrl(databaseUrl)) {
+    return;
+  }
+  throw new Error(
+    "Refusing to bootstrap development data against a non-local database. Set CHORDV_ALLOW_REMOTE_DEV_BOOTSTRAP=true only for disposable environments."
+  );
+}
+
+function isEnabled(value: string | undefined) {
+  return value?.trim().toLowerCase() === "true";
+}
+
+function isLocalDatabaseUrl(rawUrl: string) {
+  try {
+    const { hostname } = new URL(rawUrl);
+    const normalized = hostname.toLowerCase();
+    return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
+  } catch {
+    return false;
+  }
 }
