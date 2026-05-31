@@ -35,6 +35,8 @@ type XuiPanelClientPayload = Omit<XuiClientPayload, "tgId"> & {
   tgId: number;
 };
 
+type XuiClientRemovalStatus = "deleted" | "disabled" | "not_found";
+
 type XuiInboundClient = {
   id: string;
   email: string;
@@ -210,14 +212,14 @@ export class XuiService {
     }
   }
 
-  async removeClient(node: XuiNodeConfig, clientId: string, email: string) {
+  async removeClient(node: XuiNodeConfig, clientId: string, email: string): Promise<XuiClientRemovalStatus> {
     const inboundId = await this.resolveInboundId(node);
     const inbound = await this.getInbound(node);
     const matches = this.findInboundClients(inbound, email);
     if (matches.length === 0) {
-      return;
+      return "not_found";
     }
-    await this.removeInboundClients(node, inboundId, matches, clientId);
+    return this.removeInboundClients(node, inboundId, matches, clientId);
   }
 
   async resetClientTraffic(node: XuiNodeConfig, email: string): Promise<boolean> {
@@ -250,6 +252,7 @@ export class XuiService {
       }
     ];
 
+    let lastResetFallbackError: unknown = null;
     for (const attempt of attempts) {
       try {
         await this.request({
@@ -261,7 +264,11 @@ export class XuiService {
           useJson: true
         });
         return true;
-      } catch {
+      } catch (error) {
+        lastResetFallbackError = error;
+        if (!isPanelFallbackMissError(error)) {
+          throw error;
+        }
         continue;
       }
     }
@@ -271,7 +278,9 @@ export class XuiService {
       return false;
     }
 
-    throw new BadGatewayException(`重置 3x-ui 客户端流量失败：${email}`);
+    throw new BadGatewayException(
+      `Reset 3x-ui client traffic failed: ${email}${lastResetFallbackError ? `: ${readErrorMessage(lastResetFallbackError)}` : ""}`
+    );
   }
 
   async listNodeUsage(node: XuiNodeConfig) {
@@ -356,7 +365,7 @@ export class XuiService {
     return {
       inboundId: inbound.id,
       name: readString(inbound.remark) ?? `${panelHost}:${inbound.port ?? 443}`,
-      serverHost: readString(inbound.listen) ?? panelHost,
+      serverHost: resolveInboundServerHost(readString(inbound.listen), panelHost),
       serverPort: typeof inbound.port === "number" && Number.isFinite(inbound.port) ? inbound.port : 443,
       uuid: readString(firstClient?.id) ?? "",
       flow: readString(firstClient?.flow) ?? readString(settings?.flow) ?? "xtls-rprx-vision",
@@ -440,11 +449,12 @@ export class XuiService {
     const inboundId = await this.resolveInboundId(node);
     const panelClient = toPanelClientPayload(client);
     try {
+      const hydratedPanelClient = await this.hydratePanelClientPayload(node, client.email, panelClient);
       await this.request({
         node,
         path: `/panel/api/clients/update/${encodeURIComponent(client.email)}`,
         method: "POST",
-        body: JSON.stringify(panelClient),
+        body: JSON.stringify(hydratedPanelClient),
         contentType: "application/json",
         useJson: true
       });
@@ -460,6 +470,7 @@ export class XuiService {
       `/panel/api/inbounds/updateClient/${inboundId}/${encodeURIComponent(targetClientId ?? client.id)}`
     ];
 
+    let lastFallbackError: unknown = null;
     for (const path of attempts) {
       try {
         await this.request({
@@ -476,12 +487,48 @@ export class XuiService {
           useJson: true
         });
         return;
-      } catch {
+      } catch (error) {
+        lastFallbackError = error;
+        if (!isPanelFallbackMissError(error)) {
+          throw error;
+        }
         continue;
       }
     }
 
-    throw new BadGatewayException("更新 3x-ui 客户端失败");
+    throw new BadGatewayException(
+      `Update 3x-ui client failed${lastFallbackError ? `: ${readErrorMessage(lastFallbackError)}` : ""}`
+    );
+  }
+
+  private async hydratePanelClientPayload(
+    node: XuiNodeConfig,
+    email: string,
+    fallback: XuiPanelClientPayload
+  ): Promise<Record<string, unknown> & XuiPanelClientPayload> {
+    try {
+      const payload = await this.request({
+        node,
+        path: `/panel/api/clients/get/${encodeURIComponent(email)}`,
+        method: "GET",
+        useJson: true
+      });
+      const existing = readPanelClientPayloadObject(readObj(payload));
+      if (!existing) {
+        return fallback;
+      }
+      return {
+        ...existing,
+        ...fallback,
+        id: readString(existing.id) ?? fallback.id,
+        email: readString(existing.email) ?? fallback.email
+      };
+    } catch (error) {
+      if (!isPanelFallbackMissError(error)) {
+        throw error;
+      }
+      return fallback;
+    }
   }
 
   private async request({
@@ -517,7 +564,7 @@ export class XuiService {
 
     if (!response.ok) {
       if (response.status === 404) {
-        throw new XuiPanelPathNotFoundError("3x-ui panel API path not found");
+        throw new XuiPanelPathNotFoundError("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
       }
       const text = await response.text().catch(() => "");
       throw new BadGatewayException(`3x-ui 面板请求失败：HTTP ${response.status}${text ? ` ${text}` : ""}`);
@@ -787,7 +834,9 @@ export class XuiService {
     inboundId: number,
     clients: XuiInboundClient[],
     fallbackClientId?: string
-  ) {
+  ): Promise<XuiClientRemovalStatus> {
+    let deletedAny = false;
+    let disabledAny = false;
     for (const client of clients) {
       const email = client.email?.trim();
       if (!email) {
@@ -803,9 +852,11 @@ export class XuiService {
           useJson: true
         });
         removed = true;
+        deletedAny = true;
       } catch (error) {
         if (isPanelRecordNotFoundError(error)) {
           removed = true;
+          deletedAny = true;
         } else if (!isPanelPathNotFoundError(error)) {
           throw error;
         }
@@ -835,8 +886,12 @@ export class XuiService {
               useJson: true
             });
             removed = true;
+            deletedAny = true;
             break;
-          } catch {
+          } catch (error) {
+            if (!isPanelFallbackMissError(error)) {
+              throw error;
+            }
             continue;
           }
         }
@@ -849,6 +904,7 @@ export class XuiService {
       const refreshedInbound = await this.getInbound(node);
       const remaining = this.findInboundClients(refreshedInbound, email);
       if (remaining.length === 0) {
+        deletedAny = true;
         continue;
       }
 
@@ -870,8 +926,13 @@ export class XuiService {
           },
           stale.id || resolvedClientId
         );
+        disabledAny = true;
       }
     }
+    if (disabledAny) {
+      return "disabled";
+    }
+    return deletedAny ? "deleted" : "not_found";
   }
 }
 
@@ -965,8 +1026,29 @@ function readObj(value: unknown) {
   return value;
 }
 
+function readPanelClientPayloadObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if ("client" in value) {
+    const client = Reflect.get(value, "client");
+    return client && typeof client === "object" ? (client as Record<string, unknown>) : null;
+  }
+  if ("email" in value || "id" in value) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function resolveInboundServerHost(listen: string | null, panelHost: string) {
+  if (!listen || listen === "0.0.0.0" || listen === "::" || listen === "[::]") {
+    return panelHost;
+  }
+  return listen;
 }
 
 function toPanelClientPayload(client: XuiClientPayload): XuiPanelClientPayload {
@@ -995,6 +1077,10 @@ function isPanelPathNotFoundError(error: unknown) {
   return error instanceof XuiPanelPathNotFoundError;
 }
 
+function isPanelFallbackMissError(error: unknown) {
+  return isPanelPathNotFoundError(error) || isPanelRecordNotFoundError(error);
+}
+
 function isPanelRecordNotFoundError(error: unknown) {
   if (error instanceof Error && /record\s+not\s+found|not\s+found/i.test(error.message)) {
     return true;
@@ -1010,6 +1096,13 @@ function isPanelRecordNotFoundError(error: unknown) {
     }
   }
   return false;
+}
+
+function readErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return "unknown error";
 }
 
 function toBigInt(value: unknown) {

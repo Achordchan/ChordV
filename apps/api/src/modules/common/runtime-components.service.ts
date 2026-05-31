@@ -167,9 +167,18 @@ export class RuntimeComponentsService {
     const current = await this.ensureRuntimeComponentExists(componentId);
     const normalizedIdentity = normalizeRuntimeComponentIdentity(current.platform, current.architecture as RuntimeComponentArchitecture, current.kind as RuntimeComponentKind);
     const nextSource = input.source ?? current.source;
-    const nextOriginUrl = input.originUrl?.trim();
-    if (nextSource !== "uploaded" && input.originUrl !== undefined && !nextOriginUrl) {
-      throw new BadRequestException("请填写组件下载直链");
+    const nextOriginUrl = input.originUrl !== undefined ? input.originUrl.trim() : current.originUrl.trim();
+    if (nextSource === "uploaded" && current.source !== "uploaded") {
+      throw new BadRequestException("Uploaded runtime components must be created through the upload endpoint.");
+    }
+    if (nextSource === "uploaded" && input.originUrl !== undefined && nextOriginUrl !== current.originUrl) {
+      throw new BadRequestException("Uploaded runtime component URLs are managed by the upload endpoint.");
+    }
+    if (nextSource === "uploaded" && !current.storedFilePath) {
+      throw new BadRequestException("Uploaded runtime component is missing its stored file.");
+    }
+    if (nextSource !== "uploaded" && (!nextOriginUrl || !isHttpUrl(nextOriginUrl))) {
+      throw new BadRequestException("Remote runtime components require a valid HTTP(S) origin URL.");
     }
 
     const updated = await this.prisma.runtimeComponent.update({
@@ -371,6 +380,14 @@ export class RuntimeComponentsService {
       })
     );
     const rows = [...runtimeRows, ...sharedRulesetRows];
+
+    if (!hasCompleteRuntimeComponentSet(rows)) {
+      return {
+        platform: input.platform,
+        architecture: input.architecture,
+        components: []
+      };
+    }
 
     return {
       platform: input.platform,
@@ -710,6 +727,11 @@ function dedupeSharedRulesets<
 
 function isSharedRuleset(kind: RuntimeComponentKind) {
   return kind === "geoip" || kind === "geosite";
+}
+
+function hasCompleteRuntimeComponentSet(rows: Array<{ kind: string }>) {
+  const kinds = new Set(rows.map((row) => row.kind));
+  return kinds.has("xray") && kinds.has("geoip") && kinds.has("geosite");
 }
 
 function normalizeRuntimeComponentIdentity(

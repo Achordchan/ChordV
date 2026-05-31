@@ -662,6 +662,8 @@ export function App() {
         mergeSnapshot({ nodes, panelSyncJobs });
       } else if (targetSection === "announcements") {
         applyListPatch("announcements", await fetchAdminAnnouncements());
+      } else if (targetSection === "policies") {
+        mergeSnapshot({ policy: await fetchAdminPolicy() });
       }
       setLoadedSections((current) => new Set(current).add(targetSection));
     } catch (reason) {
@@ -675,6 +677,9 @@ export function App() {
           title: "加载失败",
           message
         });
+      }
+      if (options?.silent) {
+        throw reason;
       }
     } finally {
       if (!options?.silent) {
@@ -864,12 +869,18 @@ export function App() {
       setError(null);
       const result = await action();
       const resolvedMessage = extractActionMessage(result, successText);
+      await refreshCurrentDataAfterAction().catch((refreshReason) => {
+        notifications.show({
+          color: "yellow",
+          title: "操作已完成，但刷新失败",
+          message: readError(refreshReason, "刷新最新数据失败")
+        });
+      });
       notifications.show({
         color: "green",
         title: "操作成功",
         message: resolvedMessage
       });
-      void refreshCurrentDataAfterAction();
       return true;
     } catch (reason) {
       const message = readError(reason, "操作失败");
@@ -930,7 +941,13 @@ export function App() {
         message: result.message ?? "节点授权已保存"
       });
       closeNodeAccessEditor();
-      void refreshCurrentDataAfterAction();
+      void refreshCurrentDataAfterAction().catch((refreshReason) => {
+        notifications.show({
+          color: "yellow",
+          title: "授权已保存，但刷新失败",
+          message: readError(refreshReason, "刷新最新数据失败")
+        });
+      });
     } catch (reason) {
       const message = readError(reason, "保存节点授权失败");
       if (ensureAuthenticated(message)) {
@@ -1274,7 +1291,7 @@ export function App() {
       }
 
       if (drawer.type === "node") {
-        const payload = {
+        const updatePayload = {
           subscriptionUrl: undefined,
           name: nodeForm.name || undefined,
           countryCode: nodeForm.countryCode || undefined,
@@ -1283,35 +1300,43 @@ export function App() {
           tags: splitCsv(nodeForm.tags),
           isActive: nodeForm.isActive,
           recommended: nodeForm.recommended,
-          panelBaseUrl: nodeForm.panelBaseUrl || undefined,
-          panelApiBasePath: nodeForm.panelApiBasePath || undefined,
-          panelUsername: nodeForm.panelUsername || undefined,
-          panelPassword: nodeForm.panelPassword || undefined,
-          panelInboundId: Number(nodeForm.panelInboundId) || undefined,
+          panelBaseUrl: nodeForm.panelBaseUrl || null,
+          panelApiBasePath: nodeForm.panelApiBasePath || null,
+          panelUsername: nodeForm.panelUsername || null,
+          panelPassword: nodeForm.panelPassword || null,
+          panelInboundId: Number(nodeForm.panelInboundId) || null,
           panelEnabled: nodeForm.panelEnabled
+        };
+        const importPayload = {
+          ...updatePayload,
+          panelBaseUrl: updatePayload.panelBaseUrl ?? undefined,
+          panelApiBasePath: updatePayload.panelApiBasePath ?? undefined,
+          panelUsername: updatePayload.panelUsername ?? undefined,
+          panelPassword: updatePayload.panelPassword ?? undefined,
+          panelInboundId: updatePayload.panelInboundId ?? undefined
         };
         const success = drawer.recordId
           ? await runAction(
               () =>
                 updateNode(drawer.recordId!, {
-                  subscriptionUrl: payload.subscriptionUrl || undefined,
-                  name: payload.name,
-                  countryCode: payload.countryCode,
-                  region: payload.region,
-                  provider: payload.provider,
-                  tags: payload.tags,
-                  isActive: payload.isActive,
-                  recommended: payload.recommended,
-                  panelBaseUrl: payload.panelBaseUrl,
-                  panelApiBasePath: payload.panelApiBasePath,
-                  panelUsername: payload.panelUsername,
-                  panelPassword: payload.panelPassword,
-                  panelInboundId: payload.panelInboundId,
-                  panelEnabled: payload.panelEnabled
+                  subscriptionUrl: updatePayload.subscriptionUrl || undefined,
+                  name: updatePayload.name,
+                  countryCode: updatePayload.countryCode,
+                  region: updatePayload.region,
+                  provider: updatePayload.provider,
+                  tags: updatePayload.tags,
+                  isActive: updatePayload.isActive,
+                  recommended: updatePayload.recommended,
+                  panelBaseUrl: updatePayload.panelBaseUrl,
+                  panelApiBasePath: updatePayload.panelApiBasePath,
+                  panelUsername: updatePayload.panelUsername,
+                  panelPassword: updatePayload.panelPassword,
+                  panelInboundId: updatePayload.panelInboundId,
+                  panelEnabled: updatePayload.panelEnabled
                 } satisfies UpdateNodeInputDto),
               "节点已更新"
             )
-          : await runAction(() => importNode(payload satisfies ImportNodeInputDto), "面板已添加");
+          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "面板已添加");
         if (success) closeDrawer();
       }
 
@@ -1677,18 +1702,33 @@ export function App() {
 
     try {
       setPolicySaving(true);
-      const success = await runAction(
-        () =>
-          updatePolicy({
-            defaultMode: policyForm.defaultMode,
-            modes: policyForm.modes,
-            blockAds: policyForm.blockAds,
-            chinaDirect: policyForm.chinaDirect,
-            aiServicesProxy: policyForm.aiServicesProxy
-          } satisfies UpdatePolicyInputDto),
-        "策略已更新"
-      );
-      if (success) closeDrawer();
+      if (!policyForm.modes.includes(policyForm.defaultMode)) {
+        notifications.show({
+          color: "red",
+          title: "策略配置错误",
+          message: "默认模式必须包含在可用模式中"
+        });
+        return;
+      }
+      const policy = await updatePolicy({
+        defaultMode: policyForm.defaultMode,
+        modes: policyForm.modes,
+        blockAds: policyForm.blockAds,
+        chinaDirect: policyForm.chinaDirect,
+        aiServicesProxy: policyForm.aiServicesProxy
+      } satisfies UpdatePolicyInputDto);
+      mergeSnapshot({ policy });
+      notifications.show({
+        color: "green",
+        title: "操作成功",
+        message: "策略已更新"
+      });
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "操作失败",
+        message: readError(reason, "策略更新失败")
+      });
     } finally {
       setPolicySaving(false);
     }

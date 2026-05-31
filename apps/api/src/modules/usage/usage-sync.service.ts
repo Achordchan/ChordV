@@ -100,14 +100,29 @@ export class UsageSyncService {
       }
     });
 
-    const nodeMap = new Map<string, typeof bindings>();
+    const nodeMap = new Map<
+      string,
+      {
+        nodeId: string;
+        panelInboundId: number;
+        bindings: typeof bindings;
+      }
+    >();
     for (const binding of bindings) {
-      const current = nodeMap.get(binding.nodeId) ?? [];
-      current.push(binding);
-      nodeMap.set(binding.nodeId, current);
+      const groupKey = `${binding.nodeId}:${binding.panelInboundId}`;
+      const current = nodeMap.get(groupKey);
+      if (current) {
+        current.bindings.push(binding);
+      } else {
+        nodeMap.set(groupKey, {
+          nodeId: binding.nodeId,
+          panelInboundId: binding.panelInboundId,
+          bindings: [binding]
+        });
+      }
     }
 
-    for (const [nodeId, nodeBindings] of nodeMap.entries()) {
+    for (const { nodeId, panelInboundId, bindings: nodeBindings } of nodeMap.values()) {
       const subscriptionIds = Array.from(new Set(nodeBindings.map((item) => item.subscriptionId)));
       try {
         const allowedEmails = new Set(
@@ -119,7 +134,7 @@ export class UsageSyncService {
           panelApiBasePath: nodeBindings[0].node.panelApiBasePath,
           panelUsername: nodeBindings[0].node.panelUsername,
           panelPassword: nodeBindings[0].node.panelPassword,
-          panelInboundId: nodeBindings[0].node.panelInboundId
+          panelInboundId
         })).filter((item) => allowedEmails.has(item.xrayUserEmail.trim().toLowerCase()));
         const context = await this.loadNodeSyncContext(nodeId);
         await this.applyNodeSamples(nodeId, records, context);
@@ -196,7 +211,7 @@ export class UsageSyncService {
         const previousTotalBytes = (mapping.bindingLastUplinkBytes ?? 0n) + (mapping.bindingLastDownlinkBytes ?? 0n);
         if (totalBytes < previousTotalBytes) {
           rollbackSubscriptions.add(mapping.subscriptionId);
-          rollbackDetails.set(mapping.subscriptionId, `鐢ㄦ埛 ${normalizedEmail} 鐨勭疮璁℃祦閲忚鏁板彂鐢熷洖閫€`);
+          rollbackDetails.set(mapping.subscriptionId, `用户 ${normalizedEmail} 的累计流量计数发生回退`);
           await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
           return;
         }
@@ -646,7 +661,7 @@ export class UsageSyncService {
             panelApiBasePath: binding.node.panelApiBasePath,
             panelUsername: binding.node.panelUsername,
             panelPassword: binding.node.panelPassword,
-            panelInboundId: binding.node.panelInboundId
+            panelInboundId: binding.panelInboundId
           },
           binding.panelClientId,
           binding.panelClientEmail,

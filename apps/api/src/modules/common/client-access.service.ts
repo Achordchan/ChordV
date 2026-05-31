@@ -177,7 +177,8 @@ export class ClientAccessService {
       where: {
         subscriptionId: access.subscription.id,
         node: {
-          isActive: true
+          isActive: true,
+          panelEnabled: true
         }
       },
       include: { node: true },
@@ -219,7 +220,8 @@ export class ClientAccessService {
         subscriptionId: access.subscription.id,
         nodeId: { in: requestedNodeIds },
         node: {
-          isActive: true
+          isActive: true,
+          panelEnabled: true
         }
       },
       include: { node: true }

@@ -281,7 +281,7 @@ export class AdminSubscriptionService {
             panelApiBasePath: binding.node.panelApiBasePath,
             panelUsername: binding.node.panelUsername,
             panelPassword: binding.node.panelPassword,
-            panelInboundId: binding.node.panelInboundId
+            panelInboundId: binding.panelInboundId
           };
           const resetApplied = await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
           if (!resetApplied) {
@@ -641,8 +641,8 @@ export class AdminSubscriptionService {
       });
     });
 
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
+    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -693,8 +693,8 @@ export class AdminSubscriptionService {
     });
     });
 
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
+    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -736,8 +736,8 @@ export class AdminSubscriptionService {
       });
     });
 
-    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.runtimeSessionService.syncActiveLeasesForSubscription(row);
+    await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -1084,8 +1084,11 @@ export class AdminSubscriptionService {
     return this.requireTeamRecord(teamId);
   }
 
-  async updateTeamMember(memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
+  async updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
     const member = await this.requireTeamMember(memberId);
+    if (member.teamId !== teamId) {
+      throw new BadRequestException("Team member does not belong to the requested team.");
+    }
     const nextRole = input.role ?? member.role;
 
     await this.prisma.teamMember.update({
@@ -1110,8 +1113,11 @@ export class AdminSubscriptionService {
     return this.requireTeamRecord(member.teamId);
   }
 
-  async deleteTeamMember(memberId: string) {
+  async deleteTeamMember(teamId: string, memberId: string) {
     const member = await this.requireTeamMember(memberId);
+    if (member.teamId !== teamId) {
+      throw new BadRequestException("Team member does not belong to the requested team.");
+    }
     if (member.role === "owner") {
       throw new BadRequestException("负责人不能直接移除，请先转移负责人");
     }
@@ -1121,10 +1127,9 @@ export class AdminSubscriptionService {
       await this.runtimeSessionService.revokeSubscriptionLeases(subscription.id, "team_member_removed", {
         userId: member.userId
       });
-      const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(subscription.id, {
+      await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscription.id, {
         userId: member.userId
       });
-      this.runtimeSessionService.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
     }
 
     await this.closeSupportTicketsForUser(

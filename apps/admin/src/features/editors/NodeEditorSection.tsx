@@ -1,6 +1,6 @@
 import { Alert, Button, Group, NumberInput, Select, Switch, TextInput, Text } from "@mantine/core";
 import type { AdminNodePanelInboundDto } from "@chordv/shared";
-import { countryOptions, getCountryLabelFromCode } from "@chordv/shared";
+import { countryOptions } from "@chordv/shared";
 import type { NodeFormState } from "../../utils/admin-forms";
 import { CountryFlag } from "../../components/CountryFlag";
 
@@ -39,8 +39,7 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
           onChange={(value) =>
             props.setNodeForm((current) => ({
               ...current,
-              countryCode: value ?? "",
-              region: value ? getCountryLabelFromCode(value) ?? current.region : current.region
+              countryCode: value ?? ""
             }))
           }
           renderOption={({ option }) => (
@@ -56,6 +55,12 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
           onChange={(event) => props.setNodeForm((current) => ({ ...current, provider: event.currentTarget.value }))}
         />
       </Group>
+      <TextInput
+        label="地区/城市"
+        placeholder="Los Angeles / Tokyo / Singapore"
+        value={props.nodeForm.region}
+        onChange={(event) => props.setNodeForm((current) => ({ ...current, region: event.currentTarget.value }))}
+      />
       <TextInput
         label="标签"
         description="使用英文逗号分隔"

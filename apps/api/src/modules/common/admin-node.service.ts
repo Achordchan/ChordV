@@ -244,6 +244,16 @@ export class AdminNodeService {
       (input.panelPassword !== undefined ? nextPanelPassword !== current.panelPassword : false) ||
       (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false) ||
       (input.panelEnabled !== undefined ? nextPanelEnabled !== current.panelEnabled : false);
+    const panelConnectionChanged =
+      current.panelEnabled &&
+      nextPanelEnabled &&
+      ((input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
+        (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
+        (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false) ||
+        (input.panelPassword !== undefined ? nextPanelPassword !== current.panelPassword : false) ||
+        (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false));
+    const panelWillBeDisabled = current.panelEnabled && !nextPanelEnabled;
+    const nodeWillBeDisabled = current.isActive && input.isActive === false;
 
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null = null;
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
@@ -251,11 +261,11 @@ export class AdminNodeService {
     } else if (nextPanelEnabled && panelConfigTouched) {
       derived = await this.xuiService.getInboundRuntime({
         id: current.id,
-        panelBaseUrl: input.panelBaseUrl ?? current.panelBaseUrl,
-        panelApiBasePath: input.panelApiBasePath ?? current.panelApiBasePath,
-        panelUsername: input.panelUsername ?? current.panelUsername,
-        panelPassword: input.panelPassword ?? current.panelPassword,
-        panelInboundId: input.panelInboundId ?? current.panelInboundId ?? null
+        panelBaseUrl: nextPanelBaseUrl,
+        panelApiBasePath: nextPanelApiBasePath,
+        panelUsername: nextPanelUsername,
+        panelPassword: nextPanelPassword,
+        panelInboundId: nextPanelInboundId
       });
     }
     const derivedInboundId = readRuntimeInboundId(derived);
@@ -270,6 +280,19 @@ export class AdminNodeService {
           host: current.serverHost
         })
       : null;
+
+    if (panelConnectionChanged && !nodeWillBeDisabled) {
+      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed");
+      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+      this.runtimeSessionService.assertPanelBindingMutation("Migrate node panel clients", result);
+    } else if (panelWillBeDisabled || nodeWillBeDisabled) {
+      await this.runtimeSessionService.revokeNodeLeases(
+        nodeId,
+        nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+      );
+      const result = await this.runtimeSessionService.disablePanelBindingsForNode(nodeId);
+      this.runtimeSessionService.assertPanelBindingMutation("Disable node panel clients", result);
+    }
 
     const row = await this.prisma.node.update({
       where: { id: nodeId },
@@ -313,10 +336,12 @@ export class AdminNodeService {
     });
 
     if (current.isActive && input.isActive === false) {
-      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_disabled");
       await this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId);
     } else if (!current.isActive && input.isActive === true) {
       await this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId);
+    }
+    if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
+      await this.runtimeSessionService.syncPanelAccessForNode(nodeId);
     }
     const shouldPublishNodeUpdated =
       (input.isActive !== undefined && current.isActive !== input.isActive) ||
@@ -433,6 +458,11 @@ export class AdminNodeService {
   }
 
   async deleteNode(nodeId: string) {
+    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    if (!current) {
+      throw new NotFoundException("节点不存在");
+    }
+
     const userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
     const bindingSubscriptions = await this.prisma.panelClientBinding.findMany({
       where: {

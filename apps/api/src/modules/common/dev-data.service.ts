@@ -1041,12 +1041,12 @@ export class DevDataService implements OnModuleInit {
     return this.adminSubscriptionService.createTeamMember(teamId, input);
   }
 
-  async updateTeamMember(memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
-    return this.adminSubscriptionService.updateTeamMember(memberId, input);
+  async updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
+    return this.adminSubscriptionService.updateTeamMember(teamId, memberId, input);
   }
 
-  async deleteTeamMember(memberId: string) {
-    return this.adminSubscriptionService.deleteTeamMember(memberId);
+  async deleteTeamMember(teamId: string, memberId: string) {
+    return this.adminSubscriptionService.deleteTeamMember(teamId, memberId);
   }
 
   async kickTeamMember(teamId: string, memberId: string, input: KickTeamMemberInputDto): Promise<KickTeamMemberResultDto> {

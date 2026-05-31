@@ -183,13 +183,13 @@ export class AdminController {
   }
 
   @Patch("teams/:teamId/members/:memberId")
-  updateTeamMember(@Param("memberId") memberId: string, @Body() body: UpdateTeamMemberDto) {
-    return this.devDataService.updateTeamMember(memberId, body);
+  updateTeamMember(@Param("teamId") teamId: string, @Param("memberId") memberId: string, @Body() body: UpdateTeamMemberDto) {
+    return this.devDataService.updateTeamMember(teamId, memberId, body);
   }
 
   @Delete("teams/:teamId/members/:memberId")
-  deleteTeamMember(@Param("memberId") memberId: string) {
-    return this.devDataService.deleteTeamMember(memberId);
+  deleteTeamMember(@Param("teamId") teamId: string, @Param("memberId") memberId: string) {
+    return this.devDataService.deleteTeamMember(teamId, memberId);
   }
 
   @Post("teams/:teamId/members/:memberId/kick")

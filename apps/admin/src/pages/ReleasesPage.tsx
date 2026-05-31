@@ -226,16 +226,6 @@ export function ReleasesPage() {
       return;
     }
 
-    const unverifiedArtifacts = record.artifacts.filter((artifact) => artifactValidation[artifact.id]?.status !== "ready");
-    if (unverifiedArtifacts.length > 0) {
-      notifications.show({
-        color: "yellow",
-        title: "Release center",
-        message: "Verify every artifact successfully before publishing this release."
-      });
-      return;
-    }
-
     if (!window.confirm(`Publish ${record.version}? This immediately changes the client update channel.`)) {
       return;
     }
@@ -408,6 +398,13 @@ export function ReleasesPage() {
         }
       }
 
+      if (artifactEditor.artifactId) {
+        setArtifactValidation((current) => {
+          const next = { ...current };
+          delete next[artifactEditor.artifactId!];
+          return next;
+        });
+      }
       setReleases((current) => upsertRelease(current, record));
       closeArtifactEditor({ silent: true });
       notifications.show({
@@ -447,6 +444,11 @@ export function ReleasesPage() {
     try {
       setSaving(true);
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
+      setArtifactValidation((current) => {
+        const next = { ...current };
+        delete next[artifactId];
+        return next;
+      });
       setReleases((current) => upsertRelease(current, record));
       notifications.show({
         color: "green",
@@ -668,7 +670,17 @@ export function ReleasesPage() {
               onRefresh={loadRuntimeComponents}
               onComponentsChange={setRuntimeComponents}
               onFailuresChange={setRuntimeFailures}
-              onValidationChange={(componentId, next) => setRuntimeValidation((current) => ({ ...current, [componentId]: next }))}
+              onValidationChange={(componentId, next) =>
+                setRuntimeValidation((current) => {
+                  const updated = { ...current };
+                  if (next) {
+                    updated[componentId] = next;
+                  } else {
+                    delete updated[componentId];
+                  }
+                  return updated;
+                })
+              }
               onSavingChange={setSaving}
             />
           )}

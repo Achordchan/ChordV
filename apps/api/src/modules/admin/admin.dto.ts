@@ -1,5 +1,5 @@
 import { Transform, Type } from "class-transformer";
-import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Matches, Min, MinLength, ValidateNested } from "class-validator";
+import { ArrayNotEmpty, IsArray, IsBoolean, IsEmail, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Matches, Min, MinLength, ValidateNested, registerDecorator } from "class-validator";
 import type {
   ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
@@ -983,6 +983,7 @@ export class ReportRuntimeComponentFailureDto implements ClientRuntimeComponentF
 export class UpdatePolicyDto {
   @IsOptional()
   @IsIn(["global", "rule", "direct"])
+  @IsDefaultModeInModes()
   defaultMode?: ConnectionMode;
 
   @IsOptional()
@@ -1002,4 +1003,26 @@ export class UpdatePolicyDto {
   @IsOptional()
   @IsBoolean()
   aiServicesProxy?: boolean;
+}
+
+function IsDefaultModeInModes() {
+  return function (object: object, propertyName: string) {
+    registerDecorator({
+      name: "isDefaultModeInModes",
+      target: object.constructor,
+      propertyName,
+      options: {
+        message: "defaultMode must be included in modes"
+      },
+      validator: {
+        validate(value: unknown, args) {
+          const modes = (args?.object as { modes?: unknown } | undefined)?.modes;
+          if (!Array.isArray(modes) || typeof value !== "string") {
+            return true;
+          }
+          return modes.includes(value);
+        }
+      }
+    });
+  };
 }

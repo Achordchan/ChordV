@@ -4,6 +4,7 @@ import { RuntimeSessionService } from "../src/modules/common/runtime-session.ser
 import { DevDataService } from "../src/modules/common/dev-data.service";
 import { AdminSubscriptionService } from "../src/modules/common/admin-subscription.service";
 import { AdminNodeService } from "../src/modules/common/admin-node.service";
+import { ClientAccessService } from "../src/modules/common/client-access.service";
 import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
@@ -41,6 +42,10 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
 
 function createAdminNodeService(overrides: Record<string, unknown> = {}) {
   return createInstance<AdminNodeService>(AdminNodeService.prototype, overrides);
+}
+
+function createClientAccessService(overrides: Record<string, unknown> = {}) {
+  return createInstance<ClientAccessService>(ClientAccessService.prototype, overrides);
 }
 
 async function testUpdateUserPasswordRevokesExistingSessions() {
@@ -764,6 +769,29 @@ async function testPanelDisableJobCallsXuiEvenWhenNodeInactive() {
         }
       },
       panelSyncJob: {
+        findUnique: async () => ({
+          id: "job_1",
+          userId: "user_1",
+          teamId: null,
+          binding: {
+            status: "active",
+            user: { status: "active" }
+          },
+          node: {
+            isActive: false,
+            panelEnabled: false
+          },
+          subscription: {
+            userId: "user_1",
+            teamId: null,
+            state: "active",
+            expireAt: new Date(Date.now() + 86_400_000),
+            remainingTrafficGb: 10,
+            user: { status: "active" },
+            team: null,
+            nodeAccesses: []
+          }
+        }),
         update: async (payload: Record<string, unknown>) => {
           jobUpdates.push(payload);
           return {};
@@ -1283,6 +1311,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
         findMany: async () => [{ subscriptionId: "sub_1" }]
       },
       node: {
+        findUnique: async () => ({ id: "node_1" }),
         delete: async () => {
           nodeDeleted = true;
         }
@@ -1292,6 +1321,511 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
 
   await assert.rejects(() => service.deleteNode("node_1"), /panel cleanup failed/);
   assert.equal(nodeDeleted, false, "node row must not be deleted before remote panel bindings are cleaned up");
+}
+
+async function testPanelDisableJobUpsertResetsStaleFailureState() {
+  const upserts: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "panel_client_1",
+            panelInboundId: 7
+          }
+        ]
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          upserts.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  await service.markPanelBindingsDisabledForSubscription("sub_1");
+
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0].update.attempts, 0, "re-queued disable jobs must reset stale retry attempts");
+  assert.equal(upserts[0].update.lastError, null, "re-queued disable jobs must clear stale errors");
+}
+
+async function testDisablePanelBindingUsesStoredInboundId() {
+  const inboundIds: Array<number | null> = [];
+  const service = createRuntimeSessionService({
+    xuiService: {
+      setClientEnabled: async (node: { panelInboundId: number | null }) => {
+        inboundIds.push(node.panelInboundId);
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "panel_client_1",
+            panelInboundId: 7,
+            node: {
+              id: "node_1",
+              name: "node",
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 99
+            }
+          }
+        ],
+        update: async () => ({})
+      }
+    }
+  });
+
+  const result = await service.disablePanelBindingsForSubscription("sub_1");
+
+  assert.equal(result.failed.length, 0);
+  assert.deepEqual(inboundIds, [7], "disable must use the binding inbound id captured at provision time");
+}
+
+async function testUsageSyncUsesStoredInboundIdGroups() {
+  const inboundIds: Array<number | null> = [];
+  const appliedEmails: string[][] = [];
+  const service = createUsageSyncService({
+    xuiService: {
+      listNodeUsage: async (node: { panelInboundId: number | null }) => {
+        inboundIds.push(node.panelInboundId);
+        return [
+          {
+            xrayUserEmail: node.panelInboundId === 7 ? "alpha@example.com" : "beta@example.com",
+            xrayUserUuid: "",
+            uplinkBytes: 0n,
+            downlinkBytes: 0n,
+            sampledAt: new Date().toISOString()
+          }
+        ];
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "alpha@example.com",
+            panelClientId: "panel_client_1",
+            panelInboundId: 7,
+            node: {
+              id: "node_1",
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 99
+            }
+          },
+          {
+            id: "binding_2",
+            subscriptionId: "sub_2",
+            userId: "user_2",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "beta@example.com",
+            panelClientId: "panel_client_2",
+            panelInboundId: 8,
+            node: {
+              id: "node_1",
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 99
+            }
+          }
+        ]
+      },
+      node: {
+        update: async () => undefined
+      }
+    },
+    loadNodeSyncContext: async () => ({}),
+    applyNodeSamples: async (_nodeId: string, records: Array<{ xrayUserEmail: string }>) => {
+      appliedEmails.push(records.map((record) => record.xrayUserEmail));
+    },
+    resolveIncidentForSubscriptions: async () => undefined,
+    openIncidentForSubscriptions: async () => undefined
+  });
+
+  await service["syncXuiUsage"]();
+
+  assert.deepEqual(inboundIds.sort((left, right) => Number(left) - Number(right)), [7, 8]);
+  assert.deepEqual(appliedEmails, [["alpha@example.com"], ["beta@example.com"]]);
+}
+
+async function testDeactivatePanelClientsUsesStoredInboundId() {
+  const inboundIds: Array<number | null> = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const service = createUsageSyncService({
+    xuiService: {
+      setClientEnabled: async (node: { panelInboundId: number | null }) => {
+        inboundIds.push(node.panelInboundId);
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "panel_client_1",
+            panelInboundId: 7,
+            node: {
+              id: "node_1",
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 99
+            }
+          }
+        ],
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+        }
+      },
+      node: {
+        update: async () => undefined
+      }
+    }
+  });
+
+  await service["deactivatePanelClients"]("sub_1", "disabled");
+
+  assert.deepEqual(inboundIds, [7], "subscription deactivation must disable the stored binding inbound id");
+  assert.equal(bindingUpdates[0].data.status, "disabled");
+}
+
+async function testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh() {
+  const capturedInboundIds: Array<number | null> = [];
+  const now = new Date();
+  const currentNode = {
+    id: "node_1",
+    name: "node",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "old.example.com",
+    serverPort: 443,
+    uuid: "uuid",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "public_key",
+    shortId: "short_id",
+    serverName: "old.example.com",
+    fingerprint: "chrome",
+    spiderX: "/",
+    subscriptionUrl: null,
+    statsLastSyncedAt: null,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 99,
+    panelEnabled: true,
+    panelStatus: "online" as const,
+    panelLastSyncedAt: null,
+    panelError: null,
+    probeStatus: "unknown" as const,
+    probeCheckedAt: null,
+    probeError: null,
+    createdAt: now,
+    updatedAt: now
+  };
+  const service = createAdminNodeService({
+    xuiService: {
+      getInboundRuntime: async (node: { panelInboundId: number | null }) => {
+        capturedInboundIds.push(node.panelInboundId);
+        return {
+          inboundId: 7,
+          name: "node",
+          serverHost: "new.example.com",
+          serverPort: 443,
+          uuid: "uuid",
+          flow: "xtls-rprx-vision",
+          realityPublicKey: "public_key",
+          shortId: "short_id",
+          serverName: "new.example.com",
+          fingerprint: "chrome",
+          spiderX: "/"
+        };
+      }
+    },
+    runtimeSessionService: {
+      revokeNodeLeases: async () => 0,
+      removePanelBindingsForNode: async () => ({ requested: 0, updated: 0, failed: [] }),
+      assertPanelBindingMutation: () => undefined,
+      syncPanelAccessForNode: async () => 0
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => ({
+          ...currentNode,
+          ...payload.data,
+          updatedAt: new Date()
+        })
+      }
+    }
+  });
+
+  const record = await service.updateNode("node_1", { panelInboundId: null });
+
+  assert.deepEqual(capturedInboundIds, [null], "panel refresh must respect explicit inbound-id clearing");
+  assert.equal(record.panelInboundId, null);
+}
+
+async function testClientNodesRequirePanelEnabled() {
+  const capturedWhere: Array<Record<string, any>> = [];
+  const now = new Date();
+  const service = createClientAccessService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    resolveSubscriptionAccessForUser: async () => ({
+      subscription: {
+        id: "sub_1",
+        planId: "plan_1",
+        totalTrafficGb: 100,
+        usedTrafficGb: 0,
+        remainingTrafficGb: 100,
+        expireAt: new Date(Date.now() + 86_400_000),
+        state: "active",
+        renewable: true,
+        lastSyncedAt: now,
+        plan: { name: "plan", maxConcurrentSessions: 2 },
+        user: { id: "user_1", status: "active" },
+        team: null
+      },
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: Record<string, any>) => {
+          capturedWhere.push(payload.where);
+          return [
+            {
+              nodeId: "node_enabled",
+              node: {
+                id: "node_enabled",
+                name: "node",
+                countryCode: "US",
+                region: "Los Angeles",
+                provider: "provider",
+                tags: [],
+                isActive: true,
+                panelEnabled: true,
+                recommended: true,
+                latencyMs: 0,
+                probeLatencyMs: null,
+                protocol: "vless",
+                security: "reality"
+              }
+            }
+          ];
+        }
+      }
+    }
+  });
+
+  const nodes = await service.getNodes("Bearer token");
+
+  assert.equal(capturedWhere[0].node.panelEnabled, true, "client node list must filter out panel-disabled nodes");
+  assert.equal(nodes.length, 1);
+}
+
+async function testConnectRejectsPanelDisabledNode() {
+  const service = createRuntimeSessionService({
+    prisma: {
+      node: {
+        findUnique: async () => ({
+          id: "node_1",
+          isActive: true,
+          panelEnabled: false
+        })
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.connect({ nodeId: "node_1", mode: "rule" }, "Bearer token"),
+    /未启用面板接入/,
+    "connect must reject panel-disabled nodes before creating leases"
+  );
+}
+
+async function testRemovePanelBindingDisabledFallbackDoesNotMarkDeleted() {
+  const bindingUpdates: Array<Record<string, any>> = [];
+  let deletedSnapshot = false;
+  const service = createRuntimeSessionService({
+    xuiService: {
+      removeClient: async () => "disabled"
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "panel_client_1",
+            panelInboundId: 7,
+            node: {
+              id: "node_1",
+              name: "node",
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 99
+            }
+          }
+        ],
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+          return {};
+        }
+      },
+      trafficSnapshot: {
+        deleteMany: async () => {
+          deletedSnapshot = true;
+        }
+      }
+    }
+  });
+
+  const result = await service.removePanelBindingsForSubscription("sub_1");
+
+  assert.equal(result.updated, 0);
+  assert.equal(result.failed.length, 1);
+  assert.equal(bindingUpdates[0].data.status, "disabled", "disabled fallback must keep local binding disabled");
+  assert.equal(deletedSnapshot, false, "disabled fallback must not delete traffic baseline as if remote deletion succeeded");
+}
+
+async function testRuntimePlanRequiresCompleteComponentSet() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async (payload: { where: { kind?: string | { in: string[] } } }) => {
+          if (payload.where.kind === "xray") {
+            return [];
+          }
+          return [
+            {
+              id: "geoip_1",
+              platform: "macos",
+              architecture: "arm64",
+              kind: "geoip",
+              source: "github_remote",
+              originUrl: "https://example.com/geoip.dat",
+              defaultMirrorPrefix: null,
+              allowClientMirror: true,
+              fileName: "geoip.dat",
+              fileSizeBytes: null,
+              archiveEntryName: null,
+              expectedHash: null
+            }
+          ];
+        }
+      }
+    }
+  });
+
+  const plan = await service.getClientRuntimeComponentsPlan({
+    platform: "windows",
+    architecture: "x64"
+  });
+
+  assert.equal(plan.components.length, 0, "client plan must not expose a partial runtime component set");
+}
+
+async function testRuntimeComponentPatchCannotSwitchToUploadedSource() {
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "github_remote",
+      originUrl: "https://example.com/xray.zip",
+      defaultMirrorPrefix: null,
+      allowClientMirror: true,
+      fileName: "xray.zip",
+      storedFilePath: null,
+      fileSizeBytes: null,
+      fileHash: null,
+      archiveEntryName: null,
+      expectedHash: null,
+      enabled: true
+    })
+  });
+
+  await assert.rejects(
+    () => service.updateAdminRuntimeComponent("component_1", { source: "uploaded" }),
+    /upload endpoint/,
+    "ordinary PATCH must not create semantic uploaded records without a stored file"
+  );
+}
+
+async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_real",
+      userId: "user_1",
+      role: "member"
+    })
+  });
+
+  await assert.rejects(
+    () => service.updateTeamMember("team_route", "member_1", { role: "member" }),
+    /requested team/,
+    "team member mutations must validate the team id from the route"
+  );
 }
 
 async function main() {
@@ -1321,6 +1855,17 @@ async function main() {
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
+  await testPanelDisableJobUpsertResetsStaleFailureState();
+  await testDisablePanelBindingUsesStoredInboundId();
+  await testUsageSyncUsesStoredInboundIdGroups();
+  await testDeactivatePanelClientsUsesStoredInboundId();
+  await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
+  await testClientNodesRequirePanelEnabled();
+  await testConnectRejectsPanelDisabledNode();
+  await testRemovePanelBindingDisabledFallbackDoesNotMarkDeleted();
+  await testRuntimePlanRequiresCompleteComponentSet();
+  await testRuntimeComponentPatchCannotSwitchToUploadedSource();
+  await testTeamMemberMutationRejectsMismatchedTeamRoute();
   console.log("dev-data and usage regression checks passed");
 }
 

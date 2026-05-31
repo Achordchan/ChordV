@@ -135,6 +135,7 @@ rsync -az --delete \
   --exclude ".well-known/" \
   --exclude "node_modules/" \
   --exclude "data/" \
+  --exclude "storage/" \
   --exclude "uploads/" \
   --exclude "logs/" \
   --exclude "*.log" \
@@ -182,6 +183,7 @@ rsync -az --delete \
   --exclude "node_modules/" \
   --exclude "start.sh" \
   --exclude "data/" \
+  --exclude "storage/" \
   --exclude "uploads/" \
   --exclude "logs/" \
   --exclude "*.log" \

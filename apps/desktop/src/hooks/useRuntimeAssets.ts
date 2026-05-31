@@ -59,6 +59,11 @@ function defaultReadError(message: string) {
   return message;
 }
 
+function hasRequiredRuntimeComponents(plan: { components: Array<{ component: string }> }) {
+  const kinds = new Set(plan.components.map((component) => component.component));
+  return kinds.has("xray") && kinds.has("geoip") && kinds.has("geosite");
+}
+
 export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
   const [runtimeAssets, setRuntimeAssets] = useState<RuntimeAssetsUiState>(createIdleRuntimeAssetsState);
   const [runtimeAssetsDialogOpened, setRuntimeAssetsDialogOpened] = useState(false);
@@ -232,7 +237,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             clientMirrorPrefix: options.runtimeMirrorPrefix
           });
 
-          if (!plan || !plan.components.length) {
+          if (!plan || !hasRequiredRuntimeComponents(plan)) {
             return failRuntimeAssets(
               {
                 code: "plan_missing",

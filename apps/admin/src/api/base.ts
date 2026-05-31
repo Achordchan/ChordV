@@ -74,7 +74,7 @@ export function clearStoredAdminSession(options?: { notify?: boolean }) {
 }
 
 export function hasStoredAdminSession() {
-  return Boolean(getStoredAdminAccessToken() || localStorage.getItem(ADMIN_PROFILE_KEY));
+  return Boolean(getStoredAdminAccessToken());
 }
 
 export function isAdminSessionExpiredMessage(message: string) {

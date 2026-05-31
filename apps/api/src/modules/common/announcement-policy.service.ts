@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import type {
   AdminAnnouncementRecordDto,
@@ -259,6 +259,18 @@ export class AnnouncementPolicyService {
   }
 
   async updatePolicy(input: UpdatePolicyInputDto): Promise<AdminPolicyRecordDto> {
+    const current = await this.prisma.policyProfile.findUnique({
+      where: { id: "default" }
+    });
+    if (!current) {
+      throw new NotFoundException("策略配置不存在");
+    }
+    const nextModes = input.modes ?? current.modes;
+    const nextDefaultMode = input.defaultMode ?? current.defaultMode;
+    if (!nextModes.includes(nextDefaultMode)) {
+      throw new BadRequestException("默认模式必须包含在可用模式中");
+    }
+
     await this.prisma.policyProfile.update({
       where: { id: "default" },
       data: {

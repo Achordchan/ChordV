@@ -50,7 +50,7 @@ type RuntimeComponentsPanelProps = {
   onRefresh: () => Promise<void>;
   onComponentsChange: (next: AdminRuntimeComponentRecordDto[]) => void;
   onFailuresChange: (next: AdminRuntimeComponentFailureReportDto[]) => void;
-  onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto) => void;
+  onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto | null) => void;
   onSavingChange: (next: boolean) => void;
 };
 
@@ -155,6 +155,9 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           : await createAdminRuntimeComponent(payload);
       }
 
+      if (editingId) {
+        onValidationChange(editingId, null);
+      }
       onComponentsChange(upsertRuntimeComponent(components, record));
       closeEditor();
       notifications.show({
@@ -202,6 +205,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     try {
       onSavingChange(true);
       await deleteAdminRuntimeComponent(record.id);
+      onValidationChange(record.id, null);
       onComponentsChange(components.filter((item) => item.id !== record.id));
       notifications.show({
         color: "green",
