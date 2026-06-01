@@ -48,7 +48,7 @@ export function AdminLoginPanel(props: AdminLoginPanelProps) {
               <Text className="admin-auth-form-desc">请输入管理员账号与密码。</Text>
 
               <TextInput
-                label="账号"
+                label="管理员账号"
                 value={props.account}
                 placeholder="请输入管理员账号"
                 onChange={(event) => props.onAccountChange(event.currentTarget.value)}

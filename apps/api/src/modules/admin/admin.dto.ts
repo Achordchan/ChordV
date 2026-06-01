@@ -72,7 +72,9 @@ export class UpdateCurrentAdminSecurityDto {
   @MinLength(8)
   currentPassword!: string;
 
-  @IsEmail()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(320)
   email!: string;
 
   @IsOptional()

@@ -1,11 +1,10 @@
 import { Body, Controller, ForbiddenException, Headers, Ip, Post, Res } from "@nestjs/common";
-import { IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 import type { Response } from "express";
 import { AuthService } from "./auth.service";
 
 class LoginDto {
   @IsString()
-  @IsEmail()
   @IsNotEmpty()
   @MaxLength(320)
   email!: string;
