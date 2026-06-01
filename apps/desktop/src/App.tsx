@@ -200,6 +200,8 @@ export function App() {
     setTicketDraft,
     ticketReplyDraft,
     setTicketReplyDraft,
+    ticketReplyAttachment,
+    setTicketReplyAttachment,
     ticketCenterError,
     setTicketCenterError,
     ticketListBusy,
@@ -1810,6 +1812,7 @@ export function App() {
         createTitle={ticketDraft.title}
         createBody={ticketDraft.body}
         replyBody={ticketReplyDraft}
+        replyAttachment={ticketReplyAttachment}
         onClose={() => setTicketCenterOpened(false)}
         onRefresh={() => void loadTicketList(selectedTicketId)}
         onOpenCreate={openTicketComposer}
@@ -1818,10 +1821,12 @@ export function App() {
           setTicketCreateMode(false);
           setSelectedTicketId(ticketId);
           setTicketReplyDraft("");
+          setTicketReplyAttachment(null);
         }}
         onCreateTitleChange={(value) => setTicketDraft((current) => ({ ...current, title: value }))}
         onCreateBodyChange={(value) => setTicketDraft((current) => ({ ...current, body: value }))}
         onReplyBodyChange={setTicketReplyDraft}
+        onReplyAttachmentChange={setTicketReplyAttachment}
         onSubmitCreate={() => void handleCreateTicket()}
         onSubmitReply={() => void handleReplyTicket()}
       />

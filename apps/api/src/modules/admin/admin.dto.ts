@@ -180,6 +180,80 @@ export class UpdateUserSecurityDto {
   maxConcurrentSessionsOverride?: number | null;
 }
 
+export class UpdateImageBedConfigDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(512)
+  baseUrl?: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @ValidateIf((_object, value) => value !== null)
+  @IsString()
+  @MaxLength(512)
+  apiToken?: string | null;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @ValidateIf((_object, value) => value !== null)
+  @IsString()
+  @MaxLength(160)
+  uploadFolder?: string | null;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @ValidateIf((_object, value) => value !== null)
+  @IsString()
+  @MaxLength(40)
+  uploadChannel?: string | null;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @ValidateIf((_object, value) => value !== null)
+  @IsString()
+  @MaxLength(80)
+  channelName?: string | null;
+}
+
+export class ListImageBedFilesDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  start?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  count?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  search?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  dir?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsBoolean()
+  recursive?: boolean;
+}
+
+export class DeleteImageBedFileDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(512)
+  path!: string;
+
+  @IsOptional()
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsBoolean()
+  folder?: boolean;
+}
+
 export class CreateSubscriptionDto {
   @IsString()
   @IsNotEmpty()

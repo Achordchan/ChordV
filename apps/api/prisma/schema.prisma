@@ -163,6 +163,13 @@ enum UpdateDeliveryMode {
   none
 }
 
+model SystemSetting {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model User {
   id                   String              @id
   email                String              @unique
@@ -574,6 +581,7 @@ model SupportTicket {
   subscription     Subscription?       @relation(fields: [subscriptionId], references: [id])
   team             Team?               @relation(fields: [teamId], references: [id])
   messages         SupportTicketMessage[]
+  attachments      SupportTicketAttachment[]
   readStates       SupportTicketReadState[]
 
   @@index([userId, updatedAt])
@@ -591,9 +599,27 @@ model SupportTicketMessage {
   createdAt     DateTime                @default(now())
   ticket        SupportTicket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   authorUser    User?                   @relation("SupportTicketMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  attachments   SupportTicketAttachment[]
 
   @@index([ticketId, createdAt])
   @@index([authorUserId, createdAt])
+}
+
+model SupportTicketAttachment {
+  id            String               @id
+  ticketId      String
+  messageId     String
+  provider      String
+  url           String
+  fileName      String
+  mimeType      String
+  fileSizeBytes BigInt?
+  createdAt     DateTime             @default(now())
+  ticket        SupportTicket        @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  message       SupportTicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@index([messageId, createdAt])
 }
 
 model SupportTicketReadState {

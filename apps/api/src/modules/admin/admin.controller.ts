@@ -27,6 +27,7 @@ import { unlinkSync } from "node:fs";
 import { tap } from "rxjs";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
+import { ImageBedService } from "../common/image-bed.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import {
   ChangeSubscriptionPlanDto,
@@ -41,8 +42,10 @@ import {
   CreateTeamMemberDto,
   CreateTeamSubscriptionDto,
   CreateUserDto,
+  DeleteImageBedFileDto,
   ImportNodeDto,
   KickTeamMemberDto,
+  ListImageBedFilesDto,
   ListRuntimeComponentFailuresDto,
   ListReleasesDto,
   ReadNodePanelInboundsDto,
@@ -54,6 +57,7 @@ import {
   UpdateReleaseDto,
   UpdateAnnouncementDto,
   UpdateCurrentAdminSecurityDto,
+  UpdateImageBedConfigDto,
   UpdateNodeDto,
   UpdatePlanDto,
   UpdatePlanSecurityDto,
@@ -106,7 +110,8 @@ export class UploadedTempFileCleanupInterceptor implements NestInterceptor {
 export class AdminController {
   constructor(
     private readonly devDataService: DevDataService,
-    private readonly runtimeComponentsService: RuntimeComponentsService
+    private readonly runtimeComponentsService: RuntimeComponentsService,
+    private readonly imageBedService: ImageBedService
   ) {}
 
   @Get("snapshot")
@@ -117,6 +122,26 @@ export class AdminController {
   @Get("dashboard")
   getDashboard() {
     return this.devDataService.getAdminDashboard();
+  }
+
+  @Get("image-bed/config")
+  getImageBedConfig() {
+    return this.imageBedService.getAdminConfig();
+  }
+
+  @Patch("image-bed/config")
+  updateImageBedConfig(@Body() body: UpdateImageBedConfigDto) {
+    return this.imageBedService.updateAdminConfig(body);
+  }
+
+  @Get("image-bed/files")
+  getImageBedFiles(@Query() query: ListImageBedFilesDto) {
+    return this.imageBedService.listAdminFiles(query);
+  }
+
+  @Delete("image-bed/files")
+  deleteImageBedFile(@Query() query: DeleteImageBedFileDto) {
+    return this.imageBedService.deleteAdminFile(query);
   }
 
   @Put("me/security")

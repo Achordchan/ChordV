@@ -8,6 +8,7 @@ import type {
   ReplyClientSupportTicketInputDto
 } from "@chordv/shared";
 import { DevDataService } from "../common/dev-data.service";
+import type { UploadedTicketAttachmentFile } from "../common/image-bed.service";
 
 @Injectable()
 export class ClientService {
@@ -91,5 +92,14 @@ export class ClientService {
 
   replySupportTicket(ticketId: string, input: ReplyClientSupportTicketInputDto, token?: string) {
     return this.devDataService.replyClientSupportTicket(ticketId, input, token);
+  }
+
+  replySupportTicketWithAttachment(
+    ticketId: string,
+    input: { body?: string | null },
+    file: UploadedTicketAttachmentFile | undefined,
+    token?: string
+  ) {
+    return this.devDataService.replyClientSupportTicketWithAttachment(ticketId, input, file, token);
   }
 }

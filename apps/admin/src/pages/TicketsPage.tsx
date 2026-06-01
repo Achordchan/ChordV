@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Anchor,
   Badge,
   Button,
   Card,
@@ -405,6 +406,32 @@ export function TicketsPage() {
                                   <Text mt="sm" style={{ whiteSpace: "pre-wrap" }}>
                                     {message.body}
                                   </Text>
+                                  {(message.attachments ?? []).length > 0 ? (
+                                    <Group mt="sm" gap="xs">
+                                      {(message.attachments ?? []).map((attachment) => (
+                                        <Anchor
+                                          key={attachment.id}
+                                          href={attachment.url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          style={{ textDecoration: "none" }}
+                                        >
+                                          <Paper withBorder radius="md" p={6}>
+                                            <Stack gap={4}>
+                                              <img
+                                                src={attachment.url}
+                                                alt={attachment.fileName}
+                                                style={{ width: 128, height: 84, objectFit: "cover", borderRadius: 8 }}
+                                              />
+                                              <Text size="xs" lineClamp={1}>
+                                                {attachment.fileName}
+                                              </Text>
+                                            </Stack>
+                                          </Paper>
+                                        </Anchor>
+                                      ))}
+                                    </Group>
+                                  ) : null}
                                 </Paper>
                               </div>
                             );

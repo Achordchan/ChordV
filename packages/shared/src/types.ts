@@ -605,9 +605,65 @@ export interface AdminSnapshotDto {
   releases: AdminReleaseRecordDto[];
 }
 
+export interface AdminImageBedConfigDto {
+  baseUrl: string;
+  uploadFolder: string | null;
+  uploadChannel: string | null;
+  channelName: string | null;
+  hasToken: boolean;
+  tokenPreview: string | null;
+  tokenSource: "database" | "environment" | "none";
+  updatedAt: string | null;
+}
+
+export interface UpdateAdminImageBedConfigInputDto {
+  baseUrl?: string;
+  apiToken?: string | null;
+  uploadFolder?: string | null;
+  uploadChannel?: string | null;
+  channelName?: string | null;
+}
+
+export interface UploadedSupportTicketAttachmentInputDto {
+  body?: string | null;
+}
+
+export interface AdminImageBedFileDto {
+  name: string;
+  url: string;
+  mimeType: string | null;
+  fileSizeBytes: string | null;
+  uploadedAt: string | null;
+  channel: string | null;
+}
+
+export interface AdminImageBedFileListDto {
+  files: AdminImageBedFileDto[];
+  directories: string[];
+  totalCount: number;
+  returnedCount: number;
+  indexLastUpdated: string | null;
+}
+
+export interface DeleteAdminImageBedFileResultDto {
+  success: boolean;
+  fileId: string | null;
+  deleted: string[];
+  failed: string[];
+}
+
 export interface ClientPingDto {
   ok: boolean;
   serverTime: string;
+}
+
+export interface SupportTicketAttachmentDto {
+  id: string;
+  url: string;
+  fileName: string;
+  mimeType: string;
+  fileSizeBytes: string | null;
+  createdAt: string;
 }
 
 export interface ClientSupportTicketMessageDto {
@@ -616,6 +672,7 @@ export interface ClientSupportTicketMessageDto {
   authorRole: SupportTicketAuthorRole;
   authorDisplayName: string | null;
   body: string;
+  attachments: SupportTicketAttachmentDto[];
   createdAt: string;
 }
 
@@ -649,6 +706,7 @@ export interface AdminSupportTicketMessageDto {
   authorDisplayName: string | null;
   authorEmail: string | null;
   body: string;
+  attachments: SupportTicketAttachmentDto[];
   createdAt: string;
 }
 

@@ -3,6 +3,7 @@ import type {
   AdminSupportTicketSummaryDto,
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
+  SupportTicketAttachmentDto,
   SupportTicketAuthorRole,
   SupportTicketSource,
   SupportTicketStatus
@@ -12,6 +13,15 @@ type TicketReadState = {
   lastReadAt: Date | null;
   lastReadMessageAt: Date | null;
 } | null | undefined;
+
+type TicketAttachmentRow = {
+  id: string;
+  url: string;
+  fileName: string;
+  mimeType: string;
+  fileSizeBytes: bigint | number | null;
+  createdAt: Date;
+};
 
 type TicketSummaryRow = {
   id: string;
@@ -47,6 +57,7 @@ type TicketDetailRow = {
     authorRole: SupportTicketAuthorRole;
     body: string;
     createdAt: Date;
+    attachments?: TicketAttachmentRow[];
     authorUser?: { displayName: string } | null;
   }>;
   readStates?: Array<{ lastReadAt: Date | null; lastReadMessageAt: Date | null }>;
@@ -90,6 +101,7 @@ type AdminTicketDetailRow = {
     authorUserId: string | null;
     body: string;
     createdAt: Date;
+    attachments?: TicketAttachmentRow[];
     authorUser?: { id: string; email: string; displayName: string } | null;
   }>;
 };
@@ -123,6 +135,17 @@ export function readSupportTicketAuthorDisplayName(role: SupportTicketAuthorRole
     return "系统";
   }
   return "用户";
+}
+
+export function toSupportTicketAttachmentDto(row: TicketAttachmentRow): SupportTicketAttachmentDto {
+  return {
+    id: row.id,
+    url: row.url,
+    fileName: row.fileName,
+    mimeType: row.mimeType,
+    fileSizeBytes: row.fileSizeBytes !== null ? row.fileSizeBytes.toString() : null,
+    createdAt: row.createdAt.toISOString()
+  };
 }
 
 export function toClientSupportTicketSummary(
@@ -165,6 +188,7 @@ export function toClientSupportTicketDetail(row: TicketDetailRow): ClientSupport
       authorRole: message.authorRole,
       authorDisplayName: readSupportTicketAuthorDisplayName(message.authorRole, message.authorUser?.displayName ?? null),
       body: message.body,
+      attachments: (message.attachments ?? []).map(toSupportTicketAttachmentDto),
       createdAt: message.createdAt.toISOString()
     }))
   };
@@ -204,6 +228,7 @@ export function toAdminSupportTicketDetail(row: AdminTicketDetailRow): AdminSupp
       authorDisplayName: readSupportTicketAuthorDisplayName(message.authorRole, message.authorUser?.displayName ?? null),
       authorEmail: message.authorUser?.email ?? null,
       body: message.body,
+      attachments: (message.attachments ?? []).map(toSupportTicketAttachmentDto),
       createdAt: message.createdAt.toISOString()
     }))
   };

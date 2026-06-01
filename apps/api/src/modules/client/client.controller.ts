@@ -1,5 +1,10 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Sse, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { ArrayMaxSize, IsArray, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
+import { diskStorage } from "multer";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import type {
   ConnectionMode,
   PlatformTarget,
@@ -12,6 +17,16 @@ import type {
 import { ClientAuthGuard } from "../common/client-auth.guard";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { ClientService } from "./client.service";
+
+type UploadedTicketAttachmentFile = {
+  path: string;
+  originalname: string;
+  mimetype: string;
+  size: number;
+};
+
+type MulterCallback = (error: Error | null, filename: string) => void;
+const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = Number(process.env.CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024);
 
 class ConnectDto {
   @IsString()
@@ -150,6 +165,13 @@ class ReplySupportTicketDto {
   body!: string;
 }
 
+class ReplySupportTicketAttachmentDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  body?: string | null;
+}
+
 class MarkAnnouncementsReadDto {
   @IsArray()
   @ArrayMaxSize(100)
@@ -280,6 +302,30 @@ export class ClientController {
     @Headers("authorization") authorization?: string
   ) {
     return this.clientService.replySupportTicket(ticketId, body, authorization);
+  }
+
+  @Post("tickets/:ticketId/attachments")
+  @UseGuards(ClientAuthGuard)
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
+      }
+    })
+  )
+  replyTicketWithAttachment(
+    @Param("ticketId") ticketId: string,
+    @Body() body: ReplySupportTicketAttachmentDto,
+    @UploadedFile() file: UploadedTicketAttachmentFile | undefined,
+    @Headers("authorization") authorization?: string
+  ) {
+    return this.clientService.replySupportTicketWithAttachment(ticketId, body, file, authorization);
   }
 
   @Post("session/connect")

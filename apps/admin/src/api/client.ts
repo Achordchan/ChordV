@@ -1,6 +1,8 @@
 import type {
   AdminSupportTicketDetailDto as SharedAdminSupportTicketDetailDto,
   AdminSupportTicketSummaryDto as SharedAdminSupportTicketSummaryDto,
+  AdminImageBedConfigDto,
+  AdminImageBedFileListDto,
   AdminReleaseArtifactDto as SharedAdminReleaseArtifactDto,
   AdminRuntimeComponentFailureReportDto as SharedAdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto as SharedAdminRuntimeComponentRecordDto,
@@ -8,6 +10,7 @@ import type {
   AdminReleaseRecordDto as SharedAdminReleaseRecordDto,
   CreateReleaseArtifactInputDto,
   CreateReleaseInputDto,
+  DeleteAdminImageBedFileResultDto,
   CreateRuntimeComponentInputDto,
   ReplyClientSupportTicketInputDto,
   ReleaseArtifactType,
@@ -17,6 +20,7 @@ import type {
   RuntimeComponentSource,
   SupportTicketStatus,
   UpdateDeliveryMode,
+  UpdateAdminImageBedConfigInputDto,
   UpdateReleaseArtifactInputDto,
   UpdateReleaseInputDto,
   UpdateRuntimeComponentInputDto
@@ -419,6 +423,44 @@ export type FetchAdminSupportTicketsFilters = {
   userEmail?: string;
   keyword?: string;
 };
+
+export type FetchAdminImageBedFilesInput = {
+  start?: number;
+  count?: number;
+  search?: string;
+  dir?: string;
+  recursive?: boolean;
+};
+
+export async function fetchAdminImageBedConfig() {
+  return request<AdminImageBedConfigDto>("/admin/image-bed/config");
+}
+
+export async function updateAdminImageBedConfig(input: UpdateAdminImageBedConfigInputDto) {
+  return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function fetchAdminImageBedFiles(input?: FetchAdminImageBedFilesInput) {
+  const params = new URLSearchParams();
+  if (input?.start !== undefined) params.set("start", String(input.start));
+  if (input?.count !== undefined) params.set("count", String(input.count));
+  if (input?.search?.trim()) params.set("search", input.search.trim());
+  if (input?.dir?.trim()) params.set("dir", input.dir.trim());
+  if (input?.recursive !== undefined) params.set("recursive", String(input.recursive));
+  const query = params.toString();
+  return request<AdminImageBedFileListDto>(`/admin/image-bed/files${query ? `?${query}` : ""}`);
+}
+
+export async function deleteAdminImageBedFile(path: string, folder?: boolean) {
+  const params = new URLSearchParams({ path });
+  if (folder) params.set("folder", "true");
+  return request<DeleteAdminImageBedFileResultDto>(`/admin/image-bed/files?${params.toString()}`, {
+    method: "DELETE"
+  });
+}
 
 export async function fetchAdminSupportTickets() {
   return request<SharedAdminSupportTicketSummaryDto[]>("/admin/tickets");

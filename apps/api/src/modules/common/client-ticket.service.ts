@@ -8,6 +8,7 @@ import type {
 } from "@chordv/shared";
 import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
+import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { PrismaService } from "./prisma.service";
 import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
@@ -34,7 +35,8 @@ export class ClientTicketService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
-    private readonly clientRuntimeEventsService: ClientRuntimeEventsService
+    private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    private readonly imageBedService: ImageBedService
   ) {}
 
   async getClientSupportTicketInbox(userId: string) {
@@ -281,6 +283,97 @@ export class ClientTicketService {
     return this.getClientSupportTicketDetail(ticketId, token);
   }
 
+  async replyClientSupportTicketWithAttachment(
+    ticketId: string,
+    input: { body?: string | null },
+    file: UploadedTicketAttachmentFile | undefined,
+    token?: string
+  ): Promise<ClientSupportTicketDetailDto> {
+    const user = await this.authSessionService.authenticateAccessToken(token);
+    const body = input.body?.trim() ?? "";
+    if (!body && !file) {
+      throw new BadRequestException("回复内容或附件不能为空");
+    }
+    if (body.length > 4000) {
+      throw new BadRequestException("Reply body must not exceed 4000 characters.");
+    }
+
+    const current = await this.prisma.supportTicket.findFirst({
+      where: { id: ticketId, userId: user.id },
+      select: { id: true, status: true }
+    });
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status === "closed") {
+      throw new BadRequestException("当前工单已关闭，请等待管理员重新打开。");
+    }
+
+    const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const message = await tx.supportTicketMessage.create({
+        data: {
+          id: createId("ticket_msg"),
+          ticketId,
+          authorRole: "user",
+          authorUserId: user.id,
+          body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
+        }
+      });
+      if (uploaded) {
+        await tx.supportTicketAttachment.create({
+          data: {
+            id: createId("ticket_att"),
+            ticketId,
+            messageId: message.id,
+            provider: "image-bed",
+            url: uploaded.url,
+            fileName: uploaded.fileName,
+            mimeType: uploaded.mimeType,
+            fileSizeBytes: uploaded.fileSizeBytes
+          }
+        });
+      }
+      await tx.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "waiting_admin",
+          lastMessageAt: now,
+          closedAt: null
+        }
+      });
+      await tx.supportTicketReadState.upsert({
+        where: {
+          ticketId_userId: {
+            ticketId,
+            userId: user.id
+          }
+        },
+        create: {
+          id: createId("ticket_read"),
+          ticketId,
+          userId: user.id,
+          lastReadMessageAt: now,
+          lastReadAt: now
+        },
+        update: {
+          lastReadMessageAt: now,
+          lastReadAt: now
+        }
+      });
+    });
+
+    this.clientRuntimeEventsService.publishToUser(user.id, {
+      type: "ticket_updated",
+      occurredAt: now.toISOString(),
+      ticketId,
+      ticketStatus: "waiting_admin"
+    });
+
+    return this.getClientSupportTicketDetail(ticketId, token);
+  }
+
   private async loadLatestAdminTicketMessageMap(ticketIds: string[]) {
     const uniqueTicketIds = Array.from(new Set(ticketIds.filter((item) => item.trim().length > 0)));
     const result = new Map<string, Date>();
@@ -322,6 +415,9 @@ export class ClientTicketService {
           include: {
             authorUser: {
               select: { displayName: true }
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" }
             }
           },
           orderBy: { createdAt: "asc" }

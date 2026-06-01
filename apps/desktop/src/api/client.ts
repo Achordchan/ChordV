@@ -16,7 +16,8 @@ import type {
   PlatformTarget,
   ReplyClientSupportTicketInputDto,
   SessionLeaseStatusDto,
-  SubscriptionStatusDto
+  SubscriptionStatusDto,
+  UploadedSupportTicketAttachmentInputDto
 } from "@chordv/shared";
 import type {
   ClientRuntimeComponentsPlan,
@@ -136,6 +137,29 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
 async function request<T>(path: string, init?: RequestInit) {
   const result = await requestWithMeta<T>(path, init);
   return result.data;
+}
+
+async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestInit, "body">) {
+  const startedAt = performance.now();
+  const response = await fetch(`${API_BASE}/api${path}`, {
+    ...init,
+    body,
+    headers: {
+      ...(init?.headers ?? {})
+    }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw createApiRequestError(path, response.status, text);
+  }
+
+  const responseBody = await response.text();
+  return {
+    data: responseBody ? (JSON.parse(responseBody) as T) : ({} as T),
+    status: response.status,
+    elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
+  };
 }
 
 async function loadNativeInvoke(): Promise<NativeInvoke | null> {
@@ -415,6 +439,26 @@ export function replySupportTicket(accessToken: string, ticketId: string, input:
     },
     body: JSON.stringify(input)
   });
+}
+
+export async function replySupportTicketWithAttachment(
+  accessToken: string,
+  ticketId: string,
+  input: UploadedSupportTicketAttachmentInputDto,
+  file: File
+) {
+  const body = new FormData();
+  if (input.body?.trim()) {
+    body.set("body", input.body.trim());
+  }
+  body.set("file", file);
+  const result = await requestForm<ClientSupportTicketDetailDto>(`/client/tickets/${encodeURIComponent(ticketId)}/attachments`, body, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  return result.data;
 }
 
 export function fetchClientRuntime(accessToken: string, sessionId?: string | null) {

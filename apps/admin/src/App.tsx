@@ -70,7 +70,8 @@ import {
   IconSpeakerphone,
   IconTrash,
   IconUser,
-  IconUsers
+  IconUsers,
+  IconPhoto
 } from "@tabler/icons-react";
 import {
   changeSubscriptionPlan,
@@ -126,6 +127,7 @@ import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
+import { ImageBedPage } from "./pages/ImageBedPage";
 import { NodesPage } from "./pages/NodesPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
@@ -180,7 +182,8 @@ type SectionKey =
   | "nodes"
   | "announcements"
   | "policies"
-  | "releases";
+  | "releases"
+  | "imageBed";
 type EditorState = {
   type: DrawerType;
   recordId: string | null;
@@ -251,6 +254,11 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
     label: "发布中心",
     description: "版本发布、渠道与安装产物",
     icon: <IconCloudDownload size={18} />
+  },
+  imageBed: {
+    label: "图床",
+    description: "配置工单附件图床，并管理已上传图片",
+    icon: <IconPhoto size={18} />
   }
 };
 
@@ -293,7 +301,8 @@ export function App() {
     plans: "",
     subscriptions: "",
     nodes: "",
-    announcements: ""
+    announcements: "",
+    imageBed: ""
   });
   const [deleteNodeTarget, setDeleteNodeTarget] = useState<AdminNodeRecordDto | null>(null);
   const [kickMemberTarget, setKickMemberTarget] = useState<{ teamId: string; memberId: string; memberName: string } | null>(null);
@@ -2085,6 +2094,8 @@ export function App() {
             ) : null}
 
             {section === "releases" ? <ReleasesPage /> : null}
+
+            {section === "imageBed" ? <ImageBedPage /> : null}
           </Stack>
         </AppShell.Main>
       </AppShell>

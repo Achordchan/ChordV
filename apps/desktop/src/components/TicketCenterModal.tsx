@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Badge, Button, Group, Loader, Modal, Paper, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { Alert, Badge, Button, FileButton, Group, Loader, Modal, Paper, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
-import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend } from "@tabler/icons-react";
+import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend, IconX } from "@tabler/icons-react";
 import { isSupportTicketUnread } from "../lib/supportTickets";
 
 type TicketCenterModalProps = {
@@ -18,6 +18,7 @@ type TicketCenterModalProps = {
   createTitle: string;
   createBody: string;
   replyBody: string;
+  replyAttachment: File | null;
   onClose: () => void;
   onRefresh: () => void;
   onOpenCreate: () => void;
@@ -26,6 +27,7 @@ type TicketCenterModalProps = {
   onCreateTitleChange: (value: string) => void;
   onCreateBodyChange: (value: string) => void;
   onReplyBodyChange: (value: string) => void;
+  onReplyAttachmentChange: (value: File | null) => void;
   onSubmitCreate: () => void;
   onSubmitReply: () => void;
 };
@@ -37,7 +39,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const replyingDisabled =
-    props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || !props.replyBody.trim();
+    props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || (!props.replyBody.trim() && !props.replyAttachment);
   const creatingDisabled = props.submitting || props.createTitle.trim().length < 2 || props.createBody.trim().length < 5;
   const filteredTickets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -313,6 +315,22 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                           <Text size="sm" className="ticket-center__message-body">
                             {message.body}
                           </Text>
+                          {(message.attachments ?? []).length > 0 ? (
+                            <div className="ticket-center__attachments">
+                              {(message.attachments ?? []).map((attachment) => (
+                                <a
+                                  key={attachment.id}
+                                  href={attachment.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="ticket-center__attachment"
+                                >
+                                  <img src={attachment.url} alt={attachment.fileName} />
+                                  <span>{attachment.fileName}</span>
+                                </a>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -341,9 +359,31 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                       {props.replyBody.length} 字
                     </Text>
                     <Group gap="xs">
-                      <Button size="sm" variant="default" leftSection={<IconPaperclip size={15} />} className="ticket-center__action-button" disabled>
-                        添加附件
-                      </Button>
+                      {props.replyAttachment ? (
+                        <Button
+                          size="sm"
+                          variant="light"
+                          rightSection={<IconX size={14} />}
+                          className="ticket-center__action-button"
+                          onClick={() => props.onReplyAttachmentChange(null)}
+                        >
+                          {props.replyAttachment.name}
+                        </Button>
+                      ) : null}
+                      <FileButton onChange={props.onReplyAttachmentChange} accept="image/png,image/jpeg,image/webp,image/gif">
+                        {(fileButtonProps) => (
+                          <Button
+                            {...fileButtonProps}
+                            size="sm"
+                            variant="default"
+                            leftSection={<IconPaperclip size={15} />}
+                            className="ticket-center__action-button"
+                            disabled={props.submitting || props.ticketDetail?.status === "closed"}
+                          >
+                            添加附件
+                          </Button>
+                        )}
+                      </FileButton>
                       <Button
                         size="sm"
                         leftSection={<IconSend size={15} />}

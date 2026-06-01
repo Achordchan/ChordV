@@ -113,6 +113,7 @@ import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
+import type { UploadedTicketAttachmentFile } from "./image-bed.service";
 import { dedupeNodeAccessRows } from "./dev-data.utils";
 import {
   decodeSubscriptionText,
@@ -363,6 +364,15 @@ export class DevDataService implements OnModuleInit {
     token?: string
   ): Promise<ClientSupportTicketDetailDto> {
     return this.clientTicketService.replyClientSupportTicket(ticketId, input, token);
+  }
+
+  async replyClientSupportTicketWithAttachment(
+    ticketId: string,
+    input: { body?: string | null },
+    file: UploadedTicketAttachmentFile | undefined,
+    token?: string
+  ): Promise<ClientSupportTicketDetailDto> {
+    return this.clientTicketService.replyClientSupportTicketWithAttachment(ticketId, input, file, token);
   }
 
   async checkClientUpdate(input: ClientUpdateCheckDto): Promise<ClientUpdateCheckResultDto> {
@@ -774,6 +784,9 @@ export class DevDataService implements OnModuleInit {
           include: {
             authorUser: {
               select: { id: true, email: true, displayName: true }
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" }
             }
           },
           orderBy: { createdAt: "asc" }
@@ -805,6 +818,9 @@ export class DevDataService implements OnModuleInit {
           include: {
             authorUser: {
               select: { id: true, email: true, displayName: true }
+            },
+            attachments: {
+              orderBy: { createdAt: "asc" }
             }
           },
           orderBy: { createdAt: "asc" }

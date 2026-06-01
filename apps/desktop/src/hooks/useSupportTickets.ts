@@ -11,7 +11,8 @@ import {
   fetchSupportTickets,
   isUnauthorizedApiError,
   markSupportTicketRead,
-  replySupportTicket
+  replySupportTicket,
+  replySupportTicketWithAttachment
 } from "../api/client";
 import { isSupportTicketUnread, markSupportTicketAsRead } from "../lib/supportTickets";
 
@@ -52,6 +53,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
   const [ticketDetail, setTicketDetail] = useState<ClientSupportTicketDetailDto | null>(null);
   const [ticketDraft, setTicketDraft] = useState<TicketDraft>({ title: "", body: "" });
   const [ticketReplyDraft, setTicketReplyDraft] = useState("");
+  const [ticketReplyAttachment, setTicketReplyAttachment] = useState<File | null>(null);
   const [ticketCenterError, setTicketCenterError] = useState<string | null>(null);
   const [ticketListBusy, setTicketListBusy] = useState(false);
   const [ticketDetailBusy, setTicketDetailBusy] = useState(false);
@@ -154,6 +156,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     setTicketCreateMode(true);
     setTicketCenterError(null);
     setTicketReplyDraft("");
+    setTicketReplyAttachment(null);
   }, []);
 
   const closeTicketComposer = useCallback(() => {
@@ -198,19 +201,30 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
   }, [loadTicketList, options, ticketDraft, ticketSubmitting]);
 
   const handleReplyTicket = useCallback(async () => {
-    if (!options.accessToken || !selectedTicketId || ticketSubmitting || !ticketReplyDraft.trim()) {
+    if (!options.accessToken || !selectedTicketId || ticketSubmitting) {
+      return null;
+    }
+    if (!ticketReplyDraft.trim() && !ticketReplyAttachment) {
       return null;
     }
 
     try {
       setTicketSubmitting(true);
       setTicketCenterError(null);
-      const input: ReplyClientSupportTicketInputDto = {
-        body: ticketReplyDraft.trim()
-      };
-      const detail = await replySupportTicket(options.accessToken, selectedTicketId, input);
+      const trimmedBody = ticketReplyDraft.trim();
+      const detail = ticketReplyAttachment
+        ? await replySupportTicketWithAttachment(
+            options.accessToken,
+            selectedTicketId,
+            { body: trimmedBody || null },
+            ticketReplyAttachment
+          )
+        : await replySupportTicket(options.accessToken, selectedTicketId, {
+            body: trimmedBody
+          } satisfies ReplyClientSupportTicketInputDto);
       setTicketDetail(detail);
       setTicketReplyDraft("");
+      setTicketReplyAttachment(null);
       await loadTicketList(detail.id);
       options.notify?.({
         color: "green",
@@ -228,7 +242,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     } finally {
       setTicketSubmitting(false);
     }
-  }, [loadTicketList, options, selectedTicketId, ticketReplyDraft, ticketSubmitting]);
+  }, [loadTicketList, options, selectedTicketId, ticketReplyAttachment, ticketReplyDraft, ticketSubmitting]);
 
   return {
     ticketCenterOpened,
@@ -245,6 +259,8 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     setTicketDraft,
     ticketReplyDraft,
     setTicketReplyDraft,
+    ticketReplyAttachment,
+    setTicketReplyAttachment,
     ticketCenterError,
     setTicketCenterError,
     ticketListBusy,
