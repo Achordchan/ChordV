@@ -706,6 +706,13 @@ export class ReplySupportTicketDto {
   body!: string;
 }
 
+export class ReplySupportTicketAttachmentDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  body?: string | null;
+}
+
 export class CreateReleaseDto {
   @IsIn(["macos", "windows", "android", "ios"])
   platform!: PlatformTarget;

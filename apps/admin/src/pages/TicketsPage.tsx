@@ -5,6 +5,7 @@ import {
   Badge,
   Button,
   Card,
+  FileButton,
   Group,
   Loader,
   Paper,
@@ -17,12 +18,14 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { SupportTicketStatus } from "@chordv/shared";
+import { IconPaperclip, IconSend, IconX } from "@tabler/icons-react";
 import {
   closeAdminSupportTicket,
   fetchAdminSupportTicketDetail,
   fetchAdminSupportTickets,
   reopenAdminSupportTicket,
   replyAdminSupportTicket,
+  replyAdminSupportTicketWithAttachment,
   type AdminSupportTicketDetailDto,
   type AdminSupportTicketSummaryDto
 } from "../api/client";
@@ -61,6 +64,7 @@ export function TicketsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState("");
+  const [replyAttachment, setReplyAttachment] = useState<File | null>(null);
   const [replySaving, setReplySaving] = useState(false);
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
 
@@ -73,8 +77,11 @@ export function TicketsPage() {
       setSelectedTicket(null);
       setDetailError(null);
       setReplyDraft("");
+      setReplyAttachment(null);
       return;
     }
+    setReplyDraft("");
+    setReplyAttachment(null);
     void loadTicketDetail(selectedTicketId);
   }, [selectedTicketId]);
 
@@ -143,18 +150,20 @@ export function TicketsPage() {
   }
 
   async function handleReply() {
-    if (!selectedTicket || !replyDraft.trim()) {
+    const body = replyDraft.trim();
+    if (!selectedTicket || (!body && !replyAttachment)) {
       return;
     }
 
     try {
       setReplySaving(true);
-      const detail = await replyAdminSupportTicket(selectedTicket.id, {
-        body: replyDraft.trim()
-      });
+      const detail = replyAttachment
+        ? await replyAdminSupportTicketWithAttachment(selectedTicket.id, { body: body || null }, replyAttachment)
+        : await replyAdminSupportTicket(selectedTicket.id, { body });
       setSelectedTicket(detail);
       upsertTicketSummary(detail);
       setReplyDraft("");
+      setReplyAttachment(null);
       notifications.show({
         color: "green",
         title: "工单",
@@ -202,6 +211,8 @@ export function TicketsPage() {
       ),
     [selectedTicket?.messages]
   );
+  const replyClosed = !selectedTicket || selectedTicket.status === "closed";
+  const canSendReply = Boolean(selectedTicket && selectedTicket.status !== "closed" && (replyDraft.trim() || replyAttachment));
 
   return (
     <Stack gap="lg">
@@ -440,16 +451,52 @@ export function TicketsPage() {
                       </Stack>
 
                       <Stack gap="sm" className="admin-ticket-reply">
-                        <Title order={5}>回复</Title>
+                        <Group justify="space-between" align="center">
+                          <Title order={5}>回复</Title>
+                          <Text size="xs" c="dimmed">
+                            {replyDraft.length} 字
+                          </Text>
+                        </Group>
                         <Textarea
                           minRows={5}
                           placeholder={selectedTicket.status === "closed" ? "工单已关闭，请先重开再回复。" : "输入回复内容"}
                           value={replyDraft}
                           onChange={(event) => setReplyDraft(event.currentTarget.value)}
-                          disabled={selectedTicket.status === "closed"}
+                          disabled={replyClosed}
                         />
-                        <Group justify="flex-end">
-                          <Button onClick={() => void handleReply()} loading={replySaving} disabled={!replyDraft.trim() || selectedTicket.status === "closed"}>
+                        <Group justify="space-between" align="center" className="admin-ticket-reply__toolbar">
+                          <Group gap="xs" className="admin-ticket-attachment-actions">
+                            {replyAttachment ? (
+                              <Button
+                                size="xs"
+                                variant="light"
+                                rightSection={<IconX size={14} />}
+                                className="admin-ticket-attachment-pill"
+                                onClick={() => setReplyAttachment(null)}
+                              >
+                                {replyAttachment.name}
+                              </Button>
+                            ) : null}
+                            <FileButton onChange={setReplyAttachment} accept="image/png,image/jpeg,image/webp,image/gif">
+                              {(fileButtonProps) => (
+                                <Button
+                                  {...fileButtonProps}
+                                  size="xs"
+                                  variant="default"
+                                  leftSection={<IconPaperclip size={14} />}
+                                  disabled={replySaving || replyClosed}
+                                >
+                                  添加附件
+                                </Button>
+                              )}
+                            </FileButton>
+                          </Group>
+                          <Button
+                            leftSection={<IconSend size={15} />}
+                            onClick={() => void handleReply()}
+                            loading={replySaving}
+                            disabled={!canSendReply || replySaving}
+                          >
                             发送回复
                           </Button>
                         </Group>

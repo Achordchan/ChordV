@@ -1653,6 +1653,7 @@ export function App() {
 
                 <SubscriptionPanel
                   bootstrap={bootstrap}
+                  appVersion={appVersion}
                   hasUnreadAnnouncements={hasUnreadAnnouncements}
                   hasUnreadTickets={hasUnreadTickets}
                   refreshing={refreshing}
@@ -1727,6 +1728,7 @@ export function App() {
           <Stack gap="sm">
             <SubscriptionPanel
               bootstrap={bootstrap}
+              appVersion={appVersion}
               hasUnreadAnnouncements={hasUnreadAnnouncements}
               hasUnreadTickets={hasUnreadTickets}
               refreshing={refreshing}

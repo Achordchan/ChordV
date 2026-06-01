@@ -6367,6 +6367,97 @@ async function testUploadedTempFileCleanupInterceptorDeletesTempFileOnError() {
   }
 }
 
+async function testAdminReplySupportTicketWithAttachmentCreatesAttachment() {
+  const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
+  const publishedEvents: Array<{ userId: string; event: Record<string, unknown> }> = [];
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/screenshot.png",
+    providerFileId: "support-tickets/screenshot.png",
+    fileName: "screenshot.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(1234)
+  };
+
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<void>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "message", data });
+              return { id: data.id };
+            }
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "attachment", data });
+              return data;
+            }
+          },
+          supportTicket: {
+            update: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "ticket", data });
+              return data;
+            }
+          }
+        })
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async (file: { originalname: string; mimetype: string; size: number }) => {
+        assert.equal(file.originalname, "screenshot.png");
+        assert.equal(file.mimetype, "image/png");
+        assert.equal(file.size, 1234);
+        return uploadedFile;
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: (userId: string, event: Record<string, unknown>) => {
+        publishedEvents.push({ userId, event });
+      }
+    },
+    getAdminSupportTicketDetail: async (ticketId: string) => ({ id: ticketId })
+  });
+
+  const result = await service.replyAdminSupportTicketWithAttachment(
+    "ticket_1",
+    { body: " 请查看截图 " },
+    {
+      path: path.join(tmpdir(), "screenshot.png"),
+      originalname: "screenshot.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "admin_1"
+  );
+
+  assert.equal((result as { id: string }).id, "ticket_1");
+  const message = writes.find((item) => item.kind === "message")?.data;
+  const attachment = writes.find((item) => item.kind === "attachment")?.data;
+  const ticketUpdate = writes.find((item) => item.kind === "ticket")?.data;
+  assert.equal(message?.body, "请查看截图");
+  assert.equal(message?.authorRole, "admin");
+  assert.equal(message?.authorUserId, "admin_1");
+  assert.equal(attachment?.provider, "image-bed");
+  assert.equal(attachment?.url, uploadedFile.url);
+  assert.equal(attachment?.fileName, uploadedFile.fileName);
+  assert.equal(attachment?.fileSizeBytes, uploadedFile.fileSizeBytes);
+  assert.equal(ticketUpdate?.status, "waiting_user");
+  assert.deepEqual(publishedEvents, [
+    {
+      userId: "user_1",
+      event: {
+        type: "ticket_updated",
+        occurredAt: publishedEvents[0]?.event.occurredAt,
+        ticketId: "ticket_1",
+        ticketStatus: "waiting_user"
+      }
+    }
+  ]);
+}
+
 async function main() {
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();
@@ -6491,6 +6582,7 @@ async function main() {
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
   await testDeleteTeamMemberDoesNotRevokeAccessWhenTicketCleanupFails();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
+  await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");
 }

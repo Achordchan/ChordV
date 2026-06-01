@@ -27,7 +27,7 @@ import { unlinkSync } from "node:fs";
 import { tap } from "rxjs";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
-import { ImageBedService } from "../common/image-bed.service";
+import { ImageBedService, type UploadedTicketAttachmentFile } from "../common/image-bed.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import {
   ChangeSubscriptionPlanDto,
@@ -49,6 +49,7 @@ import {
   ListRuntimeComponentFailuresDto,
   ListReleasesDto,
   ReadNodePanelInboundsDto,
+  ReplySupportTicketAttachmentDto,
   ReplySupportTicketDto,
   ResetSubscriptionTrafficDto,
   RenewSubscriptionDto,
@@ -80,6 +81,7 @@ type UploadedReleaseFile = {
 
 type MulterCallback = (error: Error | null, filename: string) => void;
 const RELEASE_ARTIFACT_MAX_UPLOAD_BYTES = Number(process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? 1024 * 1024 * 1024);
+const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = Number(process.env.CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024);
 
 @Injectable()
 export class UploadedTempFileCleanupInterceptor implements NestInterceptor {
@@ -371,6 +373,30 @@ export class AdminController {
     @Req() request: { authUser?: { id: string } }
   ) {
     return this.devDataService.replyAdminSupportTicket(ticketId, body, request.authUser?.id ?? null);
+  }
+
+  @Post("tickets/:ticketId/attachments")
+  @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
+      }
+    })
+  )
+  replySupportTicketWithAttachment(
+    @Param("ticketId") ticketId: string,
+    @Body() body: ReplySupportTicketAttachmentDto,
+    @UploadedFile() file: UploadedTicketAttachmentFile | undefined,
+    @Req() request: { authUser?: { id: string } }
+  ) {
+    return this.devDataService.replyAdminSupportTicketWithAttachment(ticketId, body, file, request.authUser?.id ?? null);
   }
 
   @Post("tickets/:ticketId/close")

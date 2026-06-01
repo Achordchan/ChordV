@@ -113,7 +113,7 @@ import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
-import type { UploadedTicketAttachmentFile } from "./image-bed.service";
+import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { dedupeNodeAccessRows } from "./dev-data.utils";
 import {
   decodeSubscriptionText,
@@ -213,6 +213,7 @@ export class DevDataService implements OnModuleInit {
     private readonly releaseCenterService: ReleaseCenterService,
     private readonly adminNodeService: AdminNodeService,
     private readonly adminSubscriptionService: AdminSubscriptionService,
+    private readonly imageBedService: ImageBedService,
     private readonly runtimeSessionService: RuntimeSessionService
   ) {}
 
@@ -531,6 +532,78 @@ export class DevDataService implements OnModuleInit {
         }
       })
     ]);
+
+    this.clientRuntimeEventsService.publishToUser(current.userId, {
+      type: "ticket_updated",
+      occurredAt: now.toISOString(),
+      ticketId,
+      ticketStatus: "waiting_user"
+    });
+
+    return this.getAdminSupportTicketDetail(ticketId);
+  }
+
+  async replyAdminSupportTicketWithAttachment(
+    ticketId: string,
+    input: { body?: string | null },
+    file: UploadedTicketAttachmentFile | undefined,
+    adminUserId?: string | null
+  ): Promise<AdminSupportTicketDetailDto> {
+    const body = input.body?.trim() ?? "";
+    if (!body && !file) {
+      throw new BadRequestException("回复内容或附件不能为空");
+    }
+
+    if (body.length > 4000) {
+      throw new BadRequestException("Reply body must not exceed 4000 characters.");
+    }
+
+    const current = await this.prisma.supportTicket.findUnique({
+      where: { id: ticketId },
+      select: { id: true, status: true, userId: true }
+    });
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status === "closed") {
+      throw new BadRequestException("当前工单已关闭，请先重新打开。");
+    }
+
+    const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const message = await tx.supportTicketMessage.create({
+        data: {
+          id: createId("ticket_msg"),
+          ticketId,
+          authorRole: "admin",
+          authorUserId: adminUserId ?? null,
+          body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
+        }
+      });
+      if (uploaded) {
+        await tx.supportTicketAttachment.create({
+          data: {
+            id: createId("ticket_att"),
+            ticketId,
+            messageId: message.id,
+            provider: "image-bed",
+            url: uploaded.url,
+            fileName: uploaded.fileName,
+            mimeType: uploaded.mimeType,
+            fileSizeBytes: uploaded.fileSizeBytes
+          }
+        });
+      }
+      await tx.supportTicket.update({
+        where: { id: ticketId },
+        data: {
+          status: "waiting_user",
+          lastMessageAt: now,
+          closedAt: null
+        }
+      });
+    });
 
     this.clientRuntimeEventsService.publishToUser(current.userId, {
       type: "ticket_updated",

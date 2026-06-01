@@ -21,6 +21,7 @@ import type {
   SupportTicketStatus,
   UpdateDeliveryMode,
   UpdateAdminImageBedConfigInputDto,
+  UploadedSupportTicketAttachmentInputDto,
   UpdateReleaseArtifactInputDto,
   UpdateReleaseInputDto,
   UpdateRuntimeComponentInputDto
@@ -474,6 +475,22 @@ export async function replyAdminSupportTicket(ticketId: string, input: ReplyAdmi
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/replies`, {
     method: "POST",
     body: JSON.stringify(input)
+  });
+}
+
+export async function replyAdminSupportTicketWithAttachment(
+  ticketId: string,
+  input: UploadedSupportTicketAttachmentInputDto,
+  file: File
+) {
+  const body = new FormData();
+  if (input.body?.trim()) {
+    body.set("body", input.body.trim());
+  }
+  body.set("file", file);
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/attachments`, {
+    method: "POST",
+    body
   });
 }
 
