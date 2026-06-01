@@ -18,6 +18,7 @@ const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = readPositiveIntegerEnv(
   "CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES",
   DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
 );
+const IMAGE_BED_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", 15_000);
 
 type StoredImageBedConfig = {
   baseUrl?: string;
@@ -176,7 +177,7 @@ export class ImageBedService {
       const buffer = await fs.readFile(file.path);
       body.set("file", new Blob([new Uint8Array(buffer)], { type: file.mimetype }), sanitizeFileName(file.originalname));
 
-      const response = await fetch(url, {
+      const response = await fetchImageBed(url, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${config.apiToken}`
@@ -210,7 +211,7 @@ export class ImageBedService {
 
   private async requestImageBedJson<T>(config: EffectiveImageBedConfig, pathAndQuery: string): Promise<T> {
     const url = new URL(pathAndQuery, config.baseUrl);
-    const response = await fetch(url, {
+    const response = await fetchImageBed(url, {
       headers: {
         Authorization: `Bearer ${config.apiToken}`,
         Accept: "application/json"
@@ -441,6 +442,22 @@ function parseJson(value: string): unknown {
     return JSON.parse(value);
   } catch {
     return value;
+  }
+}
+
+async function fetchImageBed(url: URL, init: RequestInit) {
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(IMAGE_BED_REQUEST_TIMEOUT_MS)
+    });
+  } catch (reason) {
+    const message = reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")
+      ? `Image bed request timed out after ${IMAGE_BED_REQUEST_TIMEOUT_MS}ms.`
+      : reason instanceof Error
+        ? `Image bed request failed: ${reason.message}`
+        : "Image bed request failed.";
+    throw new BadGatewayException(message);
   }
 }
 

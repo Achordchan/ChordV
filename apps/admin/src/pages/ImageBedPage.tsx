@@ -35,6 +35,7 @@ export function ImageBedPage() {
   const [saving, setSaving] = useState(false);
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fileListError, setFileListError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadConfig();
@@ -54,7 +55,10 @@ export function ImageBedPage() {
         channelName: nextConfig.channelName ?? ""
       });
       if (nextConfig.hasToken) {
-        await loadFiles();
+        void loadFiles();
+      } else {
+        setFiles([]);
+        setFileListError(null);
       }
     } catch (reason) {
       setError(readError(reason, "图床配置加载失败"));
@@ -66,6 +70,7 @@ export function ImageBedPage() {
   async function loadFiles() {
     try {
       setLoadingFiles(true);
+      setFileListError(null);
       const result = await fetchAdminImageBedFiles({
         count: 50,
         search: search.trim() || undefined,
@@ -73,10 +78,12 @@ export function ImageBedPage() {
       });
       setFiles(result.files);
     } catch (reason) {
+      const message = readError(reason, "图床文件列表加载失败");
+      setFileListError(message);
       notifications.show({
         color: "red",
         title: "图床",
-        message: readError(reason, "图床文件列表加载失败")
+        message
       });
     } finally {
       setLoadingFiles(false);
@@ -101,7 +108,10 @@ export function ImageBedPage() {
         message: "图床配置已保存"
       });
       if (nextConfig.hasToken) {
-        await loadFiles();
+        void loadFiles();
+      } else {
+        setFiles([]);
+        setFileListError(null);
       }
     } catch (reason) {
       notifications.show({
@@ -124,6 +134,7 @@ export function ImageBedPage() {
       setConfig(nextConfig);
       setForm((current) => ({ ...current, apiToken: "" }));
       setFiles([]);
+      setFileListError(null);
       notifications.show({
         color: "green",
         title: "图床",
@@ -257,6 +268,11 @@ export function ImageBedPage() {
                 请先保存图床 API Token，再查询和删除文件。
               </Alert>
             ) : null}
+            {fileListError ? (
+              <Alert color="red" variant="light">
+                {fileListError}
+              </Alert>
+            ) : null}
 
             <Table.ScrollContainer minWidth={780}>
               <Table verticalSpacing="sm">
@@ -306,7 +322,16 @@ export function ImageBedPage() {
                       </Table.Td>
                     </Table.Tr>
                   ))}
-                  {files.length === 0 ? (
+                  {loadingFiles && files.length === 0 ? (
+                    <Table.Tr>
+                      <Table.Td colSpan={6}>
+                        <Text ta="center" c="dimmed" py="xl">
+                          正在加载图床文件列表...
+                        </Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  ) : null}
+                  {!loadingFiles && files.length === 0 ? (
                     <Table.Tr>
                       <Table.Td colSpan={6}>
                         <Text ta="center" c="dimmed" py="xl">

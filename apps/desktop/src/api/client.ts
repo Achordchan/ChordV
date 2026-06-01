@@ -808,10 +808,15 @@ function normalizeUpdateCheckResult(
       })()
     : null;
   const deliveryMode = readDeliveryMode(record.deliveryMode) ?? inferDeliveryMode(fallback.platform, artifact?.fileType);
-  if (deliveryMode === "desktop_installer_download" && fallback.platform === "windows") {
+  const latestVersion = readString(record.latestVersion) ?? readString(record.currentVersion) ?? fallback.currentVersion;
+  const minimumVersion = readString(record.minimumVersion) ?? fallback.currentVersion;
+  const forceUpgrade = readBoolean(record.forceUpgrade) ?? false;
+  const hasUpdate = readBoolean(record.hasUpdate) ?? latestVersion !== fallback.currentVersion;
+  const requiresDownloadArtifact = hasUpdate || forceUpgrade;
+  if (requiresDownloadArtifact && deliveryMode === "desktop_installer_download" && fallback.platform === "windows") {
     throw new Error("Windows installer updates are disabled; use a ZIP full replacement artifact.");
   }
-  if (deliveryMode === "desktop_full_replace" && fallback.platform === "windows") {
+  if (requiresDownloadArtifact && deliveryMode === "desktop_full_replace" && fallback.platform === "windows") {
     if (!artifact || artifact.fileType !== "zip" || !artifact.downloadUrl) {
       throw new Error("Windows full replacement updates require a ZIP artifact.");
     }
@@ -820,10 +825,6 @@ function normalizeUpdateCheckResult(
     deliveryMode === "desktop_full_replace" && fallback.platform === "windows"
       ? artifact?.downloadUrl ?? null
       : artifact?.downloadUrl ?? resolvePublicUrl(readString(record.downloadUrl)) ?? null;
-  const latestVersion = readString(record.latestVersion) ?? readString(record.currentVersion) ?? fallback.currentVersion;
-  const minimumVersion = readString(record.minimumVersion) ?? fallback.currentVersion;
-  const forceUpgrade = readBoolean(record.forceUpgrade) ?? false;
-  const hasUpdate = readBoolean(record.hasUpdate) ?? latestVersion !== fallback.currentVersion;
 
   return {
     platform: readPlatform(record.platform) ?? fallback.platform,

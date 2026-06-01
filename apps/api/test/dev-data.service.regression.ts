@@ -6018,7 +6018,8 @@ function testCorsAllowsProductionAndConfiguredOrigins() {
     assert.equal(isAllowedCorsOrigin("https://panel.example.com"), true);
     assert.equal(isAllowedCorsOrigin("https://ops.example.com"), true);
     assert.equal(isAllowedCorsOrigin("http://localhost:5173"), false);
-    assert.equal(isAllowedCorsOrigin("http://tauri.localhost"), false);
+    assert.equal(isAllowedCorsOrigin("http://tauri.localhost"), true);
+    assert.equal(isAllowedCorsOrigin("https://tauri.localhost"), true);
     assert.equal(isAllowedCorsOrigin("tauri://localhost"), true);
     process.env.CHORDV_ALLOW_LOCAL_DEV_ORIGINS = "true";
     assert.equal(isAllowedCorsOrigin("http://localhost:5173"), true);

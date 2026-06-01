@@ -1,4 +1,9 @@
 const DEFAULT_CORS_ORIGINS = ["https://v.baymaxgroup.com"];
+const DESKTOP_APP_ORIGINS = new Set([
+  "tauri://localhost",
+  "http://tauri.localhost",
+  "https://tauri.localhost"
+]);
 
 export function resolveCorsOrigin(origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) {
   if (!origin || isAllowedCorsOrigin(origin)) {
@@ -16,10 +21,10 @@ export function isAllowedCorsOrigin(origin: string) {
   if (allowedCorsOrigins().has(normalized)) {
     return true;
   }
-  if (allowLocalDevOrigins() && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(normalized)) {
+  if (DESKTOP_APP_ORIGINS.has(normalized)) {
     return true;
   }
-  if (normalized === "tauri://localhost") {
+  if (allowLocalDevOrigins() && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(normalized)) {
     return true;
   }
   return allowLocalDevOrigins() && (normalized === "http://tauri.localhost" || normalized === "https://tauri.localhost");
