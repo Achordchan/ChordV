@@ -458,7 +458,7 @@ export function TicketsPage() {
                           </Text>
                         </Group>
                         <Textarea
-                          minRows={5}
+                          minRows={3}
                           placeholder={selectedTicket.status === "closed" ? "工单已关闭，请先重开再回复。" : "输入回复内容"}
                           value={replyDraft}
                           onChange={(event) => setReplyDraft(event.currentTarget.value)}

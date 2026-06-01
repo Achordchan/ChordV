@@ -160,6 +160,7 @@ export function App() {
   );
   const currentRuntimeNodeId = runtime?.node.id ?? null;
   const appVersion = resolveDesktopPlatformVersion(desktopStatus.platformTarget);
+  const appWindowTitle = `ChordV ${formatWindowVersion(appVersion)}`;
   const modeLocked = desktopStatus.status === "connecting" || desktopStatus.status === "connected" || desktopStatus.status === "disconnecting";
   const emergencyRuntimeActive =
     desktopStatus.status === "connected" ||
@@ -743,7 +744,22 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "ios" || desktopStatus.platformTarget === "web") {
+      return;
+    }
+
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(appWindowTitle))
+      .catch((error) => {
+        console.warn("[ChordV] failed to update window title", error);
+      });
+  }, [appWindowTitle, desktopStatus.platformTarget]);
+
+  useEffect(() => {
     const preventContextMenu = (event: MouseEvent) => {
+      if (isEditableContextTarget(event.target)) {
+        return;
+      }
       event.preventDefault();
     };
 
@@ -2063,4 +2079,20 @@ export function App() {
       </Modal>
     </div>
   );
+}
+
+function isEditableContextTarget(target: EventTarget | null) {
+  const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  if (!element) {
+    return false;
+  }
+  return Boolean(element.closest("input, textarea, [contenteditable]"));
+}
+
+function formatWindowVersion(version: string) {
+  const normalized = version.trim();
+  if (!normalized) {
+    return "v-";
+  }
+  return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
 }

@@ -172,9 +172,9 @@ body {
 .admin-tickets-workspace {
   display: grid;
   grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
-  gap: 24px;
+  gap: 18px;
   align-items: stretch;
-  height: clamp(620px, calc(100vh - 250px), 860px);
+  height: clamp(700px, calc(100vh - 176px), 1040px);
   min-height: 0;
 }
 
@@ -183,6 +183,10 @@ body {
   min-height: 0;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.92);
+}
+
+.admin-ticket-detail-card {
+  padding: 14px !important;
 }
 
 .admin-tickets-list {
@@ -237,12 +241,21 @@ body {
 .admin-ticket-detail-card > .mantine-Stack-root {
   height: 100%;
   min-height: 0;
+  gap: 10px !important;
 }
 
 .admin-ticket-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
+}
+
+.admin-ticket-summary .mantine-Paper-root {
+  padding: 9px 11px !important;
+}
+
+.admin-ticket-summary .mantine-Text-root {
+  line-height: 1.25;
 }
 
 .admin-ticket-conversation {
@@ -250,6 +263,7 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: 6px !important;
 }
 
 .admin-ticket-message-list {
@@ -258,10 +272,10 @@ body {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px;
+  gap: 8px;
+  padding: 10px;
   border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 14px;
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.72), rgba(255, 255, 255, 0.96));
 }
 
@@ -275,9 +289,18 @@ body {
 }
 
 .admin-ticket-message {
-  width: min(78%, 720px);
+  width: min(74%, 760px);
+  padding: 10px 12px !important;
   background: rgba(255, 255, 255, 0.96);
   border-color: rgba(148, 163, 184, 0.2);
+}
+
+.admin-ticket-message .mantine-Stack-root {
+  gap: 0 !important;
+}
+
+.admin-ticket-message .mantine-Text-root {
+  line-height: 1.38;
 }
 
 .admin-ticket-message--admin {
@@ -292,8 +315,12 @@ body {
 
 .admin-ticket-reply {
   flex: 0 0 auto;
-  padding-top: 14px;
+  padding-top: 10px;
   border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.admin-ticket-reply .mantine-Textarea-input {
+  min-height: 92px;
 }
 
 .admin-ticket-reply__toolbar {

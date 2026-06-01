@@ -33,10 +33,12 @@ type TicketCenterModalProps = {
 };
 
 type TicketStatusFilter = "all" | "waiting_user" | "replied" | "closed";
+type TicketAttachmentPreview = ClientSupportTicketDetailDto["messages"][number]["attachments"][number];
 
 export function TicketCenterModal(props: TicketCenterModalProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
+  const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const replyingDisabled =
     props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || (!props.replyBody.trim() && !props.replyAttachment);
@@ -81,7 +83,14 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
     return () => window.cancelAnimationFrame(frame);
   }, [props.opened, props.createMode, props.ticketDetail, latestMessageId]);
 
+  useEffect(() => {
+    if (!props.opened) {
+      setPreviewAttachment(null);
+    }
+  }, [props.opened]);
+
   return (
+    <>
     <Modal
       opened={props.opened}
       onClose={props.onClose}
@@ -318,16 +327,15 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                           {(message.attachments ?? []).length > 0 ? (
                             <div className="ticket-center__attachments">
                               {(message.attachments ?? []).map((attachment) => (
-                                <a
+                                <button
                                   key={attachment.id}
-                                  href={attachment.url}
-                                  target="_blank"
-                                  rel="noreferrer"
+                                  type="button"
                                   className="ticket-center__attachment"
+                                  onClick={() => setPreviewAttachment(attachment)}
                                 >
                                   <img src={attachment.url} alt={attachment.fileName} />
                                   <span>{attachment.fileName}</span>
-                                </a>
+                                </button>
                               ))}
                             </div>
                           ) : null}
@@ -410,6 +418,34 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
         </div>
       </Stack>
     </Modal>
+    <Modal
+      opened={previewAttachment !== null}
+      onClose={() => setPreviewAttachment(null)}
+      title={previewAttachment?.fileName ?? "附件预览"}
+      size="min(92vw, 980px)"
+      centered
+      classNames={{
+        content: "ticket-center__image-preview-content",
+        body: "ticket-center__image-preview-body"
+      }}
+    >
+      {previewAttachment ? (
+        <Stack gap="sm">
+          <div className="ticket-center__image-preview-frame">
+            <img src={previewAttachment.url} alt={previewAttachment.fileName} />
+          </div>
+          <Group justify="flex-end">
+            <Button component="a" href={previewAttachment.url} target="_blank" rel="noreferrer" variant="default" size="sm">
+              打开原图
+            </Button>
+            <Button size="sm" onClick={() => setPreviewAttachment(null)}>
+              关闭
+            </Button>
+          </Group>
+        </Stack>
+      ) : null}
+    </Modal>
+    </>
   );
 }
 

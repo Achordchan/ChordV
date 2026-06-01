@@ -5557,6 +5557,10 @@ fn disable_context_menu(window: &tauri::WebviewWindow) -> Result<(), String> {
         .eval(
             r#"
             window.addEventListener('contextmenu', (event) => {
+              const element = event.target instanceof Element ? event.target : event.target && event.target.parentElement;
+              if (element && element.closest("input, textarea, [contenteditable]")) {
+                return;
+              }
               event.preventDefault();
             }, { capture: true });
             "#,
