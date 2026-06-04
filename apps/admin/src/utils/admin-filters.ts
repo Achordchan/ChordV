@@ -27,7 +27,10 @@ const UNCERTAIN_REQUEST_PATTERN =
   /超时|网络|网络请求失败|timeout|timed out|aborted|aborterror|failed to fetch|networkerror|network error|unexpected end of json|unexpected token/i;
 
 export function isUncertainRequestFailure(message: string) {
-  return UNCERTAIN_REQUEST_PATTERN.test(message);
+  return (
+    UNCERTAIN_REQUEST_PATTERN.test(message) ||
+    /still being processed|retry shortly|正在处理|稍后重试|并发/i.test(message)
+  );
 }
 
 export function filterByKeyword<T>(items: T[], keyword: string, projector: (item: T) => string[]) {

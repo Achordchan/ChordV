@@ -32,6 +32,8 @@ const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
 const DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_VALIDATION_ENTRIES = 10_000;
+const DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS = 30_000;
+const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS = 120_000;
 const configuredMaxExternalReleaseArtifactBytes = Number(
   process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES
 );
@@ -801,6 +803,10 @@ export async function downloadExternalReleaseArtifactFileStrict(rawUrl: string) 
 
 async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: string) {
   const dispatcher = createDispatcher(120_000, false);
+  const timeout = createAbortTimeout(
+    readPositiveIntegerEnv("CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS", DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS),
+    "External full update ZIP request"
+  );
   let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
   try {
     const fetched = await fetchPublicHttpUrl(
@@ -808,6 +814,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
       {
         method: "GET",
         dispatcher,
+        signal: timeout.signal,
         headers: {
           "user-agent": "ChordV-Admin/1.0"
         }
@@ -862,6 +869,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
   } catch (error) {
     throw new BadRequestException(error instanceof Error ? error.message : "External full update ZIP validation failed.");
   } finally {
+    timeout.clear();
     try {
       await response?.body?.cancel();
     } catch {
@@ -891,13 +899,18 @@ async function requestExternalReleaseArtifactMetadata(
   }
 
   let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
+  const timeout = createAbortTimeout(
+    readPositiveIntegerEnv("CHORDV_RELEASE_EXTERNAL_METADATA_TIMEOUT_MS", DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS),
+    `External release artifact ${method} request`
+  );
   try {
     const fetched = await fetchPublicHttpUrl(
       rawUrl,
       {
         method,
         dispatcher,
-        headers
+        headers,
+        signal: timeout.signal
       },
       { errorPrefix: "External release artifact URL" }
     );
@@ -923,6 +936,7 @@ async function requestExternalReleaseArtifactMetadata(
     }
     throw new BadRequestException(error instanceof Error ? error.message : "外部下载地址校验失败");
   } finally {
+    timeout.clear();
     try {
       await response?.body?.cancel();
     } catch {
@@ -1120,6 +1134,26 @@ function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {
       rejectUnauthorized: !allowInsecureTls
     }
   });
+}
+
+function createAbortTimeout(timeoutMs: number, label: string) {
+  const controller = new AbortController();
+  const handle = setTimeout(() => {
+    controller.abort(new Error(`${label} timed out after ${timeoutMs}ms.`));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(handle)
+  };
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {

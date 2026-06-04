@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { ConflictException } from "@nestjs/common";
 import { Client as PgClient } from "pg";
 
 const SUBSCRIPTION_USAGE_LOCK_KEY_1 = 420_704;
@@ -148,7 +149,7 @@ async function acquirePgSubscriptionLock(
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      throw new Error(`${label} lock timed out after ${timeoutMs}ms`);
+      throw new ConflictException(`${label} is still being processed; please retry shortly.`);
     }
     await delay(Math.min(retryIntervalMs, remainingMs));
   }
@@ -159,7 +160,7 @@ async function waitForLocalSubscriptionLock(previous: Promise<void>, key: string
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => {
-      reject(new Error(`${key} lock timed out after ${timeoutMs}ms`));
+      reject(new ConflictException(`${key} is still being processed; please retry shortly.`));
     }, timeoutMs);
   });
 

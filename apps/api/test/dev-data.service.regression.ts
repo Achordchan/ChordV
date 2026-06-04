@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { ExecutionContext } from "@nestjs/common";
+import { ConflictException, type ExecutionContext } from "@nestjs/common";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
 import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
@@ -46,7 +46,7 @@ import { isAllowedCorsOrigin } from "../src/cors";
 import { normalizePanelApiBasePath } from "../src/modules/common/node-import.utils";
 import { moveUploadedFile } from "../src/modules/common/upload-file.utils";
 import { AnnouncementPolicyService } from "../src/modules/common/announcement-policy.service";
-import { runWithSubscriptionUsageLock } from "../src/modules/common/usage-lock.utils";
+import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "../src/modules/common/usage-lock.utils";
 
 const GB_IN_BYTES = 1024 ** 3;
 const ZIP_CRC32_TABLE = Array.from({ length: 256 }, (_unused, index) => {
@@ -114,14 +114,69 @@ async function testSubscriptionUsageLockTimesOutWithoutPoisoningLocalQueue() {
 
     await assert.rejects(
       () => runWithSubscriptionUsageLock("subscription_lock_timeout", async () => "late"),
-      /timed out/,
-      "local subscription locks must fail fast instead of waiting until the admin request times out"
+      (error) => error instanceof ConflictException && /retry shortly/.test(error.message),
+      "local subscription locks must fail as retryable conflict instead of waiting until the admin request times out"
     );
 
     releaseOuterLock();
     await heldLock;
     const result = await runWithSubscriptionUsageLock("subscription_lock_timeout", async () => "ok");
     assert.equal(result, "ok", "timed-out local lock waiters must not poison the lock queue");
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock.catch(() => undefined);
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl;
+    }
+    if (originalLockTimeout === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = originalLockTimeout;
+    }
+    if (originalLockRetry === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = originalLockRetry;
+    }
+  }
+}
+
+async function testSubscriptionOwnerLockTimesOutAsRetryableConflict() {
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalLockTimeout = process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+  const originalLockRetry = process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+  delete process.env.DATABASE_URL;
+  process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = "25";
+  process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = "5";
+  let releaseOuterLock!: () => void;
+
+  const heldLock = runWithSubscriptionOwnerLock(
+    "personal:user_lock_timeout",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await assert.rejects(
+      () => runWithSubscriptionOwnerLock("personal:user_lock_timeout", async () => "late"),
+      (error) => error instanceof ConflictException && /retry shortly/.test(error.message),
+      "local owner locks must fail as retryable conflict instead of waiting until the admin request times out"
+    );
+
+    releaseOuterLock();
+    await heldLock;
+    const result = await runWithSubscriptionOwnerLock("personal:user_lock_timeout", async () => "ok");
+    assert.equal(result, "ok", "timed-out local owner lock waiters must not poison the lock queue");
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -1250,6 +1305,40 @@ async function testExternalReleaseMetadataRejectsPrivateNetworkUrl() {
     /private or reserved/,
     "server-side release artifact probes must not access private network URLs"
   );
+}
+
+async function testExternalReleaseMetadataRejectsStalledResponse() {
+  const previousAllowPrivate = process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS;
+  const previousTimeout = process.env.CHORDV_RELEASE_EXTERNAL_METADATA_TIMEOUT_MS;
+  process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS = "true";
+  process.env.CHORDV_RELEASE_EXTERNAL_METADATA_TIMEOUT_MS = "25";
+  const server = createServer((_request, _response) => {
+    // Leave the response open to verify the application-level abort budget.
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const port = address && typeof address === "object" ? address.port : 0;
+
+  try {
+    await assert.rejects(
+      () => fetchExternalReleaseArtifactMetadata(`http://127.0.0.1:${port}/ChordV-full.zip`),
+      /timed out/,
+      "external release metadata probes must fail on the app timeout instead of waiting for a stalled server"
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (previousAllowPrivate === undefined) {
+      delete process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS;
+    } else {
+      process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS = previousAllowPrivate;
+    }
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_RELEASE_EXTERNAL_METADATA_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_RELEASE_EXTERNAL_METADATA_TIMEOUT_MS = previousTimeout;
+    }
+  }
 }
 
 async function testReleaseDownloadRejectsDraftArtifacts() {
@@ -13285,6 +13374,7 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
 async function main() {
   await testSubscriptionUsageLockIsReentrantForNestedPanelSync();
   await testSubscriptionUsageLockTimesOutWithoutPoisoningLocalQueue();
+  await testSubscriptionOwnerLockTimesOutAsRetryableConflict();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
   await testUpdateNodeAccessAllowsNestedPanelAccessSyncLock();
   await testClientAuthGuardRejectsAdminTokens();
@@ -13306,6 +13396,7 @@ async function main() {
   testUploadedReleaseArtifactDoesNotUseClientMirror();
   testReleaseArtifactClientUsableRequiresHashForInstallerDownloads();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
+  await testExternalReleaseMetadataRejectsStalledResponse();
   await testReleaseDownloadRejectsDraftArtifacts();
   await testReleaseDownloadRejectsUploadedArtifactWithStaleMetadata();
   await testRuntimeDownloadRejectsDisabledComponents();
