@@ -955,6 +955,49 @@ async function testAdminReleaseListAppliesFilters() {
   });
 }
 
+async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    logger: {
+      warn: () => undefined
+    },
+    assertReleasePublishable: async () => undefined,
+    clientEventsPublisher: {
+      publishVersionUpdated: async () => {
+        throw new Error("version event failed");
+      }
+    },
+    prisma: {
+      release: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "release_1",
+            platform: "windows",
+            channel: "stable",
+            version: "1.1.6",
+            displayTitle: "ChordV 1.1.6",
+            changelog: [],
+            minimumVersion: "1.1.0",
+            forceUpgrade: false,
+            status: "published",
+            publishedAt: now,
+            createdAt: now,
+            updatedAt: now,
+            artifacts: []
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.publishRelease("release_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(result.status, "published");
+}
+
 async function testCreateReleaseArtifactDelegatesToReleaseCenter() {
   const calls: Array<{ releaseId: string; input: Record<string, unknown> }> = [];
   const service = createDevDataService({
@@ -3537,6 +3580,61 @@ async function testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails() {
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+}
+
+async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 0,
+      revokeSubscriptionLeases: async () => 2
+    },
+    updateUser: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "customer",
+      status: "disabled",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      subscriptions: [],
+      teamMemberships: [],
+      panelSyncStatus: "pending",
+      panelSyncMessage: "disable account panel sync queued"
+    }),
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+  });
+
+  const result = await service.kickTeamMember("team_1", "member_1", { disableAccount: true });
+
+  assert.equal(result.disconnectedSessionCount, 2);
+  assert.equal(result.accountDisabled, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /disable account panel sync queued/);
 }
 
 async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails() {
@@ -6691,7 +6789,7 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
       renewable: true,
       isActive: true
     }),
-    closeTeamSupportTicketsForUser: async () => 0,
+    closeTeamSupportTicketsForUserBestEffort: async () => undefined,
     runtimeSessionService: {
       syncSubscriptionPanelAccess: async () => {
         throw new Error("panel add failed");
@@ -6733,10 +6831,14 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   assert.match(result.message ?? "", /订阅已创建/);
 }
 
-async function testCreateSubscriptionRollsBackWhenTicketCleanupFails() {
-  const deletedSubscriptionIds: string[] = [];
+async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
+  let createdSubscription = false;
+  let syncCalled = false;
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
     ensureUserExists: async () => ({
       id: "user_1",
       email: "user@example.com",
@@ -6753,47 +6855,52 @@ async function testCreateSubscriptionRollsBackWhenTicketCleanupFails() {
       renewable: true,
       isActive: true
     }),
-    closeTeamSupportTicketsForUser: async () => {
+    closeSupportTicketsForUser: async () => {
       throw new Error("ticket cleanup failed");
     },
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => {
+        syncCalled = true;
+        return 0;
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
     prisma: {
       subscription: {
-        create: async () => ({
-          id: "sub_1",
-          userId: "user_1",
-          teamId: null,
-          planId: "plan_1",
-          totalTrafficGb: 100,
-          usedTrafficGb: 0,
-          remainingTrafficGb: 100,
-          expireAt: new Date(Date.now() + 60_000),
-          state: "active",
-          renewable: true,
-          sourceAction: "created",
-          lastSyncedAt: now,
-          plan: { name: "Personal" },
-          user: { email: "user@example.com", displayName: "User" },
-          team: null,
-          nodeAccesses: []
-        }),
-        delete: async (payload: Record<string, any>) => {
-          deletedSubscriptionIds.push(payload.where.id);
+        create: async () => {
+          createdSubscription = true;
+          return {
+            id: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            planId: "plan_1",
+            totalTrafficGb: 100,
+            usedTrafficGb: 0,
+            remainingTrafficGb: 100,
+            expireAt: new Date(Date.now() + 60_000),
+            state: "active",
+            renewable: true,
+            sourceAction: "created",
+            lastSyncedAt: now,
+            plan: { name: "Personal" },
+            user: { email: "user@example.com", displayName: "User" },
+            team: null,
+            nodeAccesses: []
+          };
         }
       }
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.createSubscription({
-        userId: "user_1",
-        planId: "plan_1",
-        expireAt: new Date(Date.now() + 60_000).toISOString()
-      }),
-    /ticket cleanup failed/,
-    "subscription creation must not leave a new row when ticket cleanup fails"
-  );
-  assert.deepEqual(deletedSubscriptionIds, ["sub_1"]);
+  const result = await service.createSubscription({
+    userId: "user_1",
+    planId: "plan_1",
+    expireAt: new Date(Date.now() + 60_000).toISOString()
+  });
+
+  assert.equal(createdSubscription, true);
+  assert.equal(syncCalled, true, "panel sync should still run after best-effort ticket cleanup fails");
+  assert.equal(result.id, "sub_1");
 }
 
 async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
@@ -6877,6 +6984,41 @@ async function testCreateTeamMemberKeepsMemberWhenTicketCleanupFails() {
 
   assert.deepEqual(createdMemberIds, ["member_1"]);
   assert.equal((result as { id: string }).id, "team_1");
+}
+
+async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({ id: "team_1" }),
+    assertUserCanJoinTeam: async () => undefined,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active"
+    }),
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("panel sync failed");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    requireTeamRecord: async (teamId: string) => ({ id: teamId }),
+    prisma: {
+      teamMember: {
+        create: async () => ({
+          id: "member_1",
+          teamId: "team_1",
+          userId: "user_1",
+          role: "member"
+        })
+      }
+    }
+  });
+
+  const result = await service.createTeamMember("team_1", { userId: "user_1", role: "member" });
+
+  assert.equal((result as { id: string }).id, "team_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
 }
 
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
@@ -7112,6 +7254,44 @@ async function testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode() {
   assert.equal(result.countdownSeconds, 5);
 }
 
+async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      announcement: {
+        create: async () => ({
+          id: "announcement_1",
+          title: "Title",
+          body: "Body",
+          level: "info",
+          publishedAt: now,
+          isActive: true,
+          displayMode: "passive",
+          countdownSeconds: 0,
+          createdAt: now,
+          updatedAt: now
+        })
+      },
+      user: {
+        findMany: async () => {
+          throw new Error("active user lookup failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.createAnnouncement({
+    title: "Title",
+    body: "Body",
+    level: "info"
+  });
+
+  assert.equal(result.id, "announcement_1");
+}
+
 async function testUpdatePolicyRejectsDuplicateModes() {
   const service = createAnnouncementPolicyService({
     prisma: {
@@ -7173,6 +7353,40 @@ async function testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes
   assert.equal(updates.length, 1);
   assert.equal(updates[0].data.blockAds, false);
   assert.equal("modes" in updates[0].data, false, "unrelated policy edits must not fail or rewrite historical duplicate modes implicitly");
+}
+
+async function testUpdatePolicyKeepsLocalSaveWhenPublishFails() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      policyProfile: {
+        findUnique: async () => ({
+          id: "default",
+          defaultMode: "rule",
+          modes: ["rule"],
+          blockAds: false,
+          chinaDirect: true,
+          aiServicesProxy: true
+        }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+        }
+      },
+      user: {
+        findMany: async () => {
+          throw new Error("active user lookup failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.updatePolicy({ blockAds: false });
+
+  assert.equal(updates.length, 1);
+  assert.equal(result.features.blockAds, false);
 }
 
 async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
@@ -7541,6 +7755,7 @@ async function main() {
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
+  await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
   await testValidateReleaseArtifactDelegatesToReleaseCenter();
@@ -7584,6 +7799,7 @@ async function main() {
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
+  await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
@@ -7642,16 +7858,19 @@ async function main() {
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
-  await testCreateSubscriptionRollsBackWhenTicketCleanupFails();
+  await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
+  await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();
   await testCreateAnnouncementRejectsFractionalCountdown();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
+  await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testUpdatePolicyRejectsDuplicateModes();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
+  await testUpdatePolicyKeepsLocalSaveWhenPublishFails();
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();

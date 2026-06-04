@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import * as path from "node:path";
 import type {
   AdminReleaseArtifactValidationDto,
@@ -75,6 +75,8 @@ type PreparedUploadedReleaseArtifactFile = {
 
 @Injectable()
 export class ReleaseCenterService {
+  private readonly logger = new Logger(ReleaseCenterService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly clientEventsPublisher: ClientEventsPublisher
@@ -176,7 +178,7 @@ export class ReleaseCenterService {
           }
         }
       });
-      await this.clientEventsPublisher.publishVersionUpdated(
+      this.publishVersionUpdatedBestEffort(
         updated.platform as PlatformTarget,
         updated.channel as ReleaseChannel
       );
@@ -198,7 +200,7 @@ export class ReleaseCenterService {
         }
       });
       if (current.status === "published") {
-        await this.clientEventsPublisher.publishVersionUpdated(
+        this.publishVersionUpdatedBestEffort(
           updated.platform as PlatformTarget,
           updated.channel as ReleaseChannel
         );
@@ -217,7 +219,7 @@ export class ReleaseCenterService {
         }
       });
       if (current.status === "published") {
-        await this.clientEventsPublisher.publishVersionUpdated(
+        this.publishVersionUpdatedBestEffort(
           updated.platform as PlatformTarget,
           updated.channel as ReleaseChannel
         );
@@ -242,7 +244,7 @@ export class ReleaseCenterService {
         }
       }
     });
-    await this.clientEventsPublisher.publishVersionUpdated(
+    this.publishVersionUpdatedBestEffort(
       updated.platform as PlatformTarget,
       updated.channel as ReleaseChannel
     );
@@ -264,7 +266,7 @@ export class ReleaseCenterService {
         }
       }
     });
-    await this.clientEventsPublisher.publishVersionUpdated(
+    this.publishVersionUpdatedBestEffort(
       updated.platform as PlatformTarget,
       updated.channel as ReleaseChannel
     );
@@ -300,7 +302,7 @@ export class ReleaseCenterService {
     await removeReleaseArtifactDirectory(path.join(releaseArtifactStorageRoot(), releaseId));
 
     if (release.status === "published") {
-      await this.clientEventsPublisher.publishVersionUpdated(
+      this.publishVersionUpdatedBestEffort(
         release.platform as PlatformTarget,
         release.channel as ReleaseChannel
       );
@@ -310,6 +312,18 @@ export class ReleaseCenterService {
       ok: true,
       releaseId
     };
+  }
+
+  private publishVersionUpdatedBestEffort(
+    platform?: PlatformTarget | null,
+    channel: ReleaseChannel = "stable",
+    latestVersion?: string | null
+  ) {
+    void this.clientEventsPublisher.publishVersionUpdated(platform, channel, latestVersion).catch((error) => {
+      this.logger.warn(
+        `Local release change saved, but version_updated publish failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
   }
 
   async createReleaseArtifact(releaseId: string, input: CreateReleaseArtifactInputDto): Promise<AdminReleaseRecordDto> {

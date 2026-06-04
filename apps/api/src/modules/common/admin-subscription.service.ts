@@ -475,15 +475,10 @@ export class AdminSubscriptionService {
       }
     });
 
-    try {
-      await this.closeTeamSupportTicketsForUser(
-        input.userId,
-        "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
-      );
-    } catch (error) {
-      await this.prisma.subscription.delete({ where: { id: row.id } }).catch(() => undefined);
-      throw new BadGatewayException(`Subscription was not created because support ticket cleanup failed: ${readErrorMessage(error, "unknown error")}`);
-    }
+    await this.closeTeamSupportTicketsForUserBestEffort(
+      input.userId,
+      "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
+    );
 
     const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
     await this.publishSubscriptionUpdatedEvent({
@@ -1058,9 +1053,10 @@ export class AdminSubscriptionService {
       "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
     );
 
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
-      await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
+      panelSync = await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: subscription.id,
         teamId: subscription.teamId,
@@ -1068,7 +1064,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    return this.requireTeamRecord(teamId);
+    return withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, "Team 成员已添加。");
   }
 
   async updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
@@ -1212,6 +1208,7 @@ export class AdminSubscriptionService {
           userId: member.userId
         }
       );
+      disconnectedSessionCount = leaseSync.revokedCount ?? 0;
       if (!leaseSync.ok) {
         panelSyncResults.push(leaseSync);
       }
@@ -1232,6 +1229,10 @@ export class AdminSubscriptionService {
     if (input.disableAccount) {
       user = await this.updateUser(member.userId, { status: "disabled" });
       accountDisabled = true;
+      if (user.panelSyncStatus === "pending") {
+        panelSyncStatus = "pending";
+        panelSyncMessage = [panelSyncMessage, user.panelSyncMessage].filter(Boolean).join(" ");
+      }
     }
 
     let message = disconnectedSessionCount > 0 ? "已立即断开该成员会话连接" : "当前无活跃会话，未发生断开";
@@ -1746,11 +1747,12 @@ export class AdminSubscriptionService {
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
     try {
-      await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
-      return { ok: true as const };
+      const revokedCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
+      return { ok: true as const, revokedCount };
     } catch (error) {
       return {
         ok: false as const,
+        revokedCount: 0,
         errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
       };
     }
@@ -2001,6 +2003,10 @@ export class AdminSubscriptionService {
       },
       body
     );
+  }
+
+  private async closeTeamSupportTicketsForUserBestEffort(userId: string, body: string) {
+    await this.closeSupportTicketsForUserBestEffort({ userId, requireTeamOwnership: true }, body);
   }
 
   private async closeSupportTicketsForUserBestEffort(

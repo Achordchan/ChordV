@@ -28,6 +28,8 @@ import type {
 } from "@chordv/shared";
 import { request } from "./base";
 
+const IMAGE_BED_ACTION_TIMEOUT_MS = 60 * 1000;
+
 export * from "./announcements";
 export * from "./auth";
 export * from "./nodes";
@@ -452,14 +454,17 @@ export async function fetchAdminImageBedFiles(input?: FetchAdminImageBedFilesInp
   if (input?.dir?.trim()) params.set("dir", input.dir.trim());
   if (input?.recursive !== undefined) params.set("recursive", String(input.recursive));
   const query = params.toString();
-  return request<AdminImageBedFileListDto>(`/admin/image-bed/files${query ? `?${query}` : ""}`);
+  return request<AdminImageBedFileListDto>(`/admin/image-bed/files${query ? `?${query}` : ""}`, {
+    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+  });
 }
 
 export async function deleteAdminImageBedFile(path: string, folder?: boolean) {
   const params = new URLSearchParams({ path });
   if (folder) params.set("folder", "true");
   return request<DeleteAdminImageBedFileResultDto>(`/admin/image-bed/files?${params.toString()}`, {
-    method: "DELETE"
+    method: "DELETE",
+    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
   });
 }
 

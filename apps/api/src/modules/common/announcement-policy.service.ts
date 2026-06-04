@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import type {
   AdminAnnouncementRecordDto,
@@ -48,6 +48,8 @@ export function toAnnouncementDto(
 
 @Injectable()
 export class AnnouncementPolicyService {
+  private readonly logger = new Logger(AnnouncementPolicyService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
@@ -294,29 +296,41 @@ export class AnnouncementPolicyService {
   }
 
   private async publishPolicyUpdatedEvent() {
-    const rows = await this.prisma.user.findMany({
-      where: { status: "active" },
-      select: { id: true }
-    });
-    const userIds = Array.from(new Set(rows.map((row) => row.id)));
-    this.clientRuntimeEventsService.publishToUsers(userIds, {
-      type: "policy_updated",
-      occurredAt: new Date().toISOString()
-    });
+    try {
+      const rows = await this.prisma.user.findMany({
+        where: { status: "active" },
+        select: { id: true }
+      });
+      const userIds = Array.from(new Set(rows.map((row) => row.id)));
+      this.clientRuntimeEventsService.publishToUsers(userIds, {
+        type: "policy_updated",
+        occurredAt: new Date().toISOString()
+      });
+    } catch (error) {
+      this.logger.warn(`Local policy change saved, but policy_updated publish failed: ${readErrorMessage(error)}`);
+    }
   }
 
   private async publishAnnouncementUpdatedEvent(announcementId: string) {
-    const rows = await this.prisma.user.findMany({
-      where: { status: "active" },
-      select: { id: true }
-    });
-    const userIds = Array.from(new Set(rows.map((row) => row.id)));
-    this.clientRuntimeEventsService.publishToUsers(userIds, {
-      type: "announcement_updated",
-      occurredAt: new Date().toISOString(),
-      announcementId
-    });
+    try {
+      const rows = await this.prisma.user.findMany({
+        where: { status: "active" },
+        select: { id: true }
+      });
+      const userIds = Array.from(new Set(rows.map((row) => row.id)));
+      this.clientRuntimeEventsService.publishToUsers(userIds, {
+        type: "announcement_updated",
+        occurredAt: new Date().toISOString(),
+        announcementId
+      });
+    } catch (error) {
+      this.logger.warn(`Local announcement change saved, but announcement_updated publish failed: ${readErrorMessage(error)}`);
+    }
   }
+}
+
+function readErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }
 
 function createEntityId(prefix: string) {
