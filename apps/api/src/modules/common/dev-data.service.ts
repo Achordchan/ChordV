@@ -1456,7 +1456,7 @@ export class DevDataService implements OnModuleInit {
   ): Promise<SubscriptionNodeAccessDto> {
     const subscription = await this.requireSubscription(subscriptionId);
 
-    const uniqueNodeIds = [...new Set(input.nodeIds)];
+    const requestedNodeIds = [...new Set(input.nodeIds)];
     const existingRows = await this.prisma.subscriptionNodeAccess.findMany({
       where: { subscriptionId },
       select: { id: true, nodeId: true }
@@ -1469,7 +1469,7 @@ export class DevDataService implements OnModuleInit {
     let panelSyncStatus: SubscriptionNodeAccessDto["panelSyncStatus"] = "synced";
     let panelSyncMessage: string | null = null;
 
-    if (uniqueNodeIds.length === 0) {
+    if (requestedNodeIds.length === 0) {
       if (existingRows.length > 0) {
         await this.prisma.$transaction(async (tx) => {
           await tx.subscriptionNodeAccess.deleteMany({
@@ -1520,10 +1520,13 @@ export class DevDataService implements OnModuleInit {
     }
 
     const availableNodes = await this.prisma.node.findMany({
-      where: { id: { in: uniqueNodeIds } }
+      where: { id: { in: requestedNodeIds } }
     });
+    const availableNodeIds = new Set(availableNodes.map((node) => node.id));
+    const invalidAddedNodeIds = requestedNodeIds.filter((nodeId) => !availableNodeIds.has(nodeId) && !existingNodeIds.has(nodeId));
+    const uniqueNodeIds = requestedNodeIds.filter((nodeId) => availableNodeIds.has(nodeId));
 
-    if (availableNodes.length !== uniqueNodeIds.length) {
+    if (invalidAddedNodeIds.length > 0) {
       throw new BadRequestException("存在无效节点");
     }
 
@@ -1881,17 +1884,20 @@ export class DevDataService implements OnModuleInit {
     filter: { nodeIds?: string[] } | undefined,
     reason: string
   ) {
-    void this.applyNodeAccessRevocationEffectsBestEffort(subscriptionId, filter, reason)
-      .then((result) => {
-        if (result.panelSyncMessage) {
-          this.logger?.warn(`Node access revocation follow-up for ${subscriptionId}: ${result.panelSyncMessage}`);
-        }
-      })
-      .catch((error) => {
-        this.logger?.warn(
-          `Node access saved, but async revocation follow-up failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
-        );
-      });
+    const timer = setTimeout(() => {
+      void this.applyNodeAccessRevocationEffectsBestEffort(subscriptionId, filter, reason)
+        .then((result) => {
+          if (result.panelSyncMessage) {
+            this.logger?.warn(`Node access revocation follow-up for ${subscriptionId}: ${result.panelSyncMessage}`);
+          }
+        })
+        .catch((error) => {
+          this.logger?.warn(
+            `Node access saved, but async revocation follow-up failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+          );
+        });
+    }, 0);
+    timer.unref?.();
     return "3x-ui 客户端禁用和连接撤销已进入后台处理，本地授权已立即失效。";
   }
 
