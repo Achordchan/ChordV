@@ -5076,6 +5076,89 @@ async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls() {
   assert.equal(result.panelSyncStatus, "pending");
 }
 
+async function testRemoveSingleNodeAccessReturnsPendingWhenFinalizeThrowsAfterLocalSave() {
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const keepNode = {
+    ...offlineNode,
+    id: "node_keep",
+    name: "keep",
+    recommended: true
+  };
+  let accessRows = [
+    { id: "access_offline", nodeId: "node_offline" },
+    { id: "access_keep", nodeId: "node_keep" }
+  ];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({
+            ...row,
+            node: row.nodeId === "node_keep" ? keepNode : offlineNode
+          }));
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+        }
+      },
+      node: {
+        findMany: async () => [keepNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("removal-only access update must not full-sync remote panels");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+  service["publishNodeAccessUpdatedEvent"] = async () => {
+    throw new Error("finalize publish failed after local save");
+  };
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_keep"] });
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
+  assert.deepEqual(result.nodeIds, ["node_keep"]);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /finalize publish failed after local save/);
+}
+
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -12093,6 +12176,7 @@ async function main() {
   await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls();
+  await testRemoveSingleNodeAccessReturnsPendingWhenFinalizeThrowsAfterLocalSave();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();

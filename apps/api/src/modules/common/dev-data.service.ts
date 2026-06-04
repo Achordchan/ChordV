@@ -1424,12 +1424,35 @@ export class DevDataService implements OnModuleInit {
     input: UpdateSubscriptionNodeAccessInputDto
   ): Promise<SubscriptionNodeAccessDto> {
     // Admin authorization changes are DB-first and must not wait behind slow usage/panel sync work.
-    return this.updateSubscriptionNodeAccessLocked(subscriptionId, input);
+    const localSaveFallbackRef: { current?: SubscriptionNodeAccessDto } = {};
+    try {
+      return await this.updateSubscriptionNodeAccessLocked(subscriptionId, input, (fallback) => {
+        localSaveFallbackRef.current = fallback;
+      });
+    } catch (error) {
+      const localSaveFallback = localSaveFallbackRef.current;
+      if (!localSaveFallback) {
+        throw error;
+      }
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access local save completed, but finalize failed for ${subscriptionId}: ${errorMessage}`);
+      return {
+        ...localSaveFallback,
+        panelSyncStatus: "pending",
+        panelSyncMessage: [localSaveFallback.panelSyncMessage, `node access saved locally, but finalize failed: ${errorMessage}`]
+          .filter(Boolean)
+          .join(" "),
+        message:
+          localSaveFallback.message ??
+          "Node access saved locally; panel synchronization is pending background retry."
+      };
+    }
   }
 
   private async updateSubscriptionNodeAccessLocked(
     subscriptionId: string,
-    input: UpdateSubscriptionNodeAccessInputDto
+    input: UpdateSubscriptionNodeAccessInputDto,
+    markLocalSave?: (fallback: SubscriptionNodeAccessDto) => void
   ): Promise<SubscriptionNodeAccessDto> {
     const subscription = await this.requireSubscription(subscriptionId);
 
@@ -1452,6 +1475,17 @@ export class DevDataService implements OnModuleInit {
           await tx.subscriptionNodeAccess.deleteMany({
             where: { subscriptionId }
           });
+        });
+        markLocalSave?.({
+          subscriptionId,
+          nodeIds: [],
+          nodes: [],
+          revokedSessionCount,
+          reasonCode: "node_access_revoked",
+          reasonMessage: "All node access was revoked locally; panel synchronization is pending.",
+          panelSyncStatus: "pending",
+          panelSyncMessage: "local node access cleared; panel disable and lease revocation are pending background processing.",
+          message: "Node access cleared locally; panel synchronization is pending background retry."
         });
         panelSyncStatus = "pending";
         panelSyncMessage = this.startNodeAccessRevocationEffects(
@@ -1516,6 +1550,20 @@ export class DevDataService implements OnModuleInit {
           });
         }
       });
+      const fallbackNodes = uniqueNodeIds
+        .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
+        .filter((node): node is (typeof availableNodes)[number] => Boolean(node));
+      markLocalSave?.({
+        subscriptionId,
+        nodeIds: fallbackNodes.map((node) => node.id),
+        nodes: fallbackNodes.map((node) => toNodeSummary(node)),
+        revokedSessionCount,
+        reasonCode: "node_access_revoked",
+        reasonMessage: "Node access was updated locally; revoked nodes are invalid locally immediately.",
+        panelSyncStatus: "pending",
+        panelSyncMessage: "local node access saved; panel disable and lease revocation are pending background processing.",
+        message: "Node access saved locally; panel synchronization is pending background retry."
+      });
       panelSyncStatus = "pending";
       panelSyncMessage = this.startNodeAccessRevocationEffects(
         subscriptionId,
@@ -1537,6 +1585,20 @@ export class DevDataService implements OnModuleInit {
           subscriptionId,
           nodeId
         }))
+      });
+      const fallbackNodes = uniqueNodeIds
+        .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
+        .filter((node): node is (typeof availableNodes)[number] => Boolean(node));
+      markLocalSave?.({
+        subscriptionId,
+        nodeIds: fallbackNodes.map((node) => node.id),
+        nodes: fallbackNodes.map((node) => toNodeSummary(node)),
+        revokedSessionCount,
+        reasonCode,
+        reasonMessage,
+        panelSyncStatus: "pending",
+        panelSyncMessage: "local node access saved; panel ensure synchronization is pending background processing.",
+        message: "Node access saved locally; panel synchronization is pending background retry."
       });
     }
 
