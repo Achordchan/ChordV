@@ -5141,6 +5141,98 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
 }
 
+async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...oldNode,
+    id: "node_new",
+    name: "new",
+    recommended: true
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old" }];
+  let panelAccessSyncStarted = false;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({
+            ...row,
+            node: row.nodeId === "node_new" ? newNode : oldNode
+          }));
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+        },
+        createMany: async () => {
+          accessRows.push({ id: "access_new", nodeId: "node_new" });
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+            },
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new" });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      queueSubscriptionPanelAccessSync: async () => {
+        panelAccessSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node access replacement waited for stalled panel access sync")), 750);
+    })
+  ]);
+
+  assert.equal(panelAccessSyncStarted, true);
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access replacement must stay saved");
+  assert.deepEqual(result.nodeIds, ["node_new"]);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel access sync is still running in background/);
+}
+
 async function testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails() {
   const oldNode = {
     id: "node_old",
@@ -10941,6 +11033,7 @@ async function main() {
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
+  await testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();

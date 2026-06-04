@@ -1518,7 +1518,11 @@ export class DevDataService implements OnModuleInit {
           ? (this.runtimeSessionService as { queueSubscriptionPanelAccessSync: (subscriptionId: string) => Promise<number> })
               .queueSubscriptionPanelAccessSync.bind(this.runtimeSessionService)
           : this.runtimeSessionService.syncSubscriptionPanelAccess.bind(this.runtimeSessionService);
-      const queuedCount = await queuePanelAccessSync(subscriptionId);
+      const syncResult = await this.withNodeAccessPanelSyncBudget(subscriptionId, queuePanelAccessSync(subscriptionId));
+      if (!syncResult.ok) {
+        return syncResult;
+      }
+      const queuedCount = syncResult.queuedCount;
       if (queuedCount > 0) {
         return { ok: false as const, errorMessage: "3x-ui panel sync queued for background retry" };
       }
@@ -1527,6 +1531,57 @@ export class DevDataService implements OnModuleInit {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
       return { ok: false as const, errorMessage };
+    }
+  }
+
+  private async withNodeAccessPanelSyncBudget(
+    subscriptionId: string,
+    task: Promise<number>
+  ): Promise<{ ok: true; queuedCount: number } | { ok: false; errorMessage: string }> {
+    let settled = false;
+    const guardedTask = task.then(
+      (queuedCount) => {
+        settled = true;
+        return queuedCount;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Node access saved, but delayed panel access sync failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<{ ok: false; errorMessage: string }>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Node access saved for ${subscriptionId}, but panel access sync exceeded ${NODE_ACCESS_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve({
+          ok: false,
+          errorMessage: "panel access sync is still running in background; local node access is already saved."
+        });
+      }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      const queuedCount = await Promise.race([guardedTask, timeoutTask]);
+      return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but panel access sync failed for ${subscriptionId}: ${errorMessage}`);
+      return { ok: false, errorMessage };
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
