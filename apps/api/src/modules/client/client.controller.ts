@@ -16,6 +16,7 @@ import type {
 } from "@chordv/shared";
 import { ClientAuthGuard } from "../common/client-auth.guard";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
+import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
 import { ClientService } from "./client.service";
 
 type UploadedTicketAttachmentFile = {
@@ -307,6 +308,7 @@ export class ClientController {
   @Post("tickets/:ticketId/attachments")
   @UseGuards(ClientAuthGuard)
   @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
     FileInterceptor("file", {
       storage: diskStorage({
         destination: tmpdir(),

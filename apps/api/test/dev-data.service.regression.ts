@@ -29,7 +29,8 @@ import { XuiService } from "../src/modules/xui/xui.service";
 import { AuthSessionService } from "../src/modules/common/auth-session.service";
 import { ClientRuntimeEventsService } from "../src/modules/common/client-runtime-events.service";
 import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
-import { UploadedTempFileCleanupInterceptor } from "../src/modules/admin/admin.controller";
+import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
+import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import {
   UpdateAnnouncementDto,
   UpdateNodeDto,
@@ -277,6 +278,10 @@ function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
 
 function createRuntimeComponentsService(overrides: Record<string, unknown> = {}) {
   return createInstance<RuntimeComponentsService>(RuntimeComponentsService.prototype, overrides);
+}
+
+function createClientTicketService(overrides: Record<string, unknown> = {}) {
+  return createInstance<ClientTicketService>(ClientTicketService.prototype, overrides);
 }
 
 function createAdminSubscriptionService(overrides: Record<string, unknown> = {}) {
@@ -1535,6 +1540,61 @@ async function testPanelDisableJobDoesNotPreDisableBinding() {
   assert.equal(count, 1);
   assert.equal(bindingUpdateManyCalled, false, "disable queue must not mark binding disabled before 3x-ui confirms it");
   assert.equal(upserts.length, 1);
+}
+
+async function testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails() {
+  const updates: Array<Record<string, unknown>> = [];
+  const securityEvents: Array<Record<string, unknown>> = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        throw new Error("sse unavailable");
+      }
+    },
+    prisma: {
+      nodeSessionLease: {
+        findMany: async () => [
+          {
+            id: "lease_1",
+            userId: "user_1",
+            subscriptionId: "sub_1",
+            nodeId: "node_1",
+            sessionId: "session_1",
+            status: "active",
+            expiresAt: new Date(Date.now() + 60_000),
+            node: { id: "node_1", flow: "" }
+          }
+        ],
+        findUnique: async () => ({
+          id: "lease_1",
+          userId: "user_1",
+          subscriptionId: "sub_1",
+          nodeId: "node_1",
+          sessionId: "session_1",
+          status: "active"
+        }),
+        updateMany: async (payload: Record<string, unknown>) => {
+          updates.push(payload);
+          return { count: 1 };
+        }
+      },
+      securityEvent: {
+        create: async (payload: Record<string, unknown>) => {
+          securityEvents.push(payload);
+          return {};
+        }
+      }
+    }
+  });
+
+  const count = await service.revokeSubscriptionLeases("sub_1", "node_access_revoked", { nodeIds: ["node_1"] });
+
+  assert.equal(count, 1);
+  assert.equal(updates.length, 1, "lease must be locally revoked before runtime event publish");
+  assert.equal(securityEvents.length, 1, "security event must be recorded even when runtime event publish fails");
 }
 
 async function testPanelDisableJobCallsXuiEvenWhenNodeInactive() {
@@ -3353,6 +3413,84 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /disable job queued/);
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+}
+
+async function testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...oldNode,
+    id: "node_new",
+    name: "new"
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old" }];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          throw new Error("response refresh failed");
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+        },
+        createMany: async () => {
+          accessRows.push({ id: "access_new", nodeId: "node_new" });
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+            },
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new" });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => 0
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local authorization replacement must stay saved");
+  assert.deepEqual(result.nodeIds, ["node_new"], "response should fall back to requested node ids after refresh failure");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /response refresh failed/);
 }
 
 async function testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails() {
@@ -6179,6 +6317,38 @@ async function testUpdateUserSecurityReconcilesActiveLeases() {
   assert.deepEqual(enforced, [{ userId: "user_1", limit: 1 }]);
 }
 
+async function testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({ id: "user_1" }),
+    requireAdminUserRecord: async (userId: string) => ({ id: userId }),
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => {
+        throw new Error("lease enforcement failed");
+      }
+    },
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            maxConcurrentSessionsOverride: 1
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.updateUserSecurity("user_1", { maxConcurrentSessionsOverride: 1 });
+
+  assert.equal(updates.length, 1);
+  assert.equal((result as { id: string }).id, "user_1");
+}
+
 async function testUpdatePlanSecurityReconcilesUsersWithoutOverrides() {
   const enforced: Array<{ userId: string; limit: number }> = [];
   const service = createAdminSubscriptionService({
@@ -6680,30 +6850,33 @@ async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
   assert.equal(memberCreates[0].data.role, "owner");
 }
 
-async function testCreateTeamMemberRollsBackWhenTicketCleanupFails() {
-  const deletedMemberIds: string[] = [];
+async function testCreateTeamMemberKeepsMemberWhenTicketCleanupFails() {
+  const createdMemberIds: string[] = [];
   const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
     requireTeam: async () => ({ id: "team_1" }),
     assertUserCanJoinTeam: async () => undefined,
     closePersonalSupportTicketsForUser: async () => {
       throw new Error("ticket cleanup failed");
     },
+    findCurrentTeamSubscription: async () => null,
+    requireTeamRecord: async (teamId: string) => ({ id: teamId }),
     prisma: {
       teamMember: {
-        create: async () => ({ id: "member_1" }),
-        delete: async (payload: Record<string, any>) => {
-          deletedMemberIds.push(payload.where.id);
+        create: async () => {
+          createdMemberIds.push("member_1");
+          return { id: "member_1" };
         }
       }
     }
   });
 
-  await assert.rejects(
-    () => service.createTeamMember("team_1", { userId: "user_1", role: "member" }),
-    /ticket cleanup failed/,
-    "member creation must not remain committed when ownership cleanup fails"
-  );
-  assert.deepEqual(deletedMemberIds, ["member_1"]);
+  const result = await service.createTeamMember("team_1", { userId: "user_1", role: "member" });
+
+  assert.deepEqual(createdMemberIds, ["member_1"]);
+  assert.equal((result as { id: string }).id, "team_1");
 }
 
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
@@ -7002,9 +7175,12 @@ async function testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes
   assert.equal("modes" in updates[0].data, false, "unrelated policy edits must not fail or rewrite historical duplicate modes implicitly");
 }
 
-async function testDeleteTeamMemberDoesNotRevokeAccessWhenTicketCleanupFails() {
+async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
   const calls: string[] = [];
   const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
     requireTeamMember: async () => ({
       id: "member_1",
       teamId: "team_1",
@@ -7037,12 +7213,10 @@ async function testDeleteTeamMemberDoesNotRevokeAccessWhenTicketCleanupFails() {
     }
   });
 
-  await assert.rejects(
-    () => service.deleteTeamMember("team_1", "member_1"),
-    /ticket cleanup failed/,
-    "failed ticket cleanup must abort member removal before access is revoked"
-  );
-  assert.deepEqual(calls, ["close_tickets"]);
+  const result = await service.deleteTeamMember("team_1", "member_1");
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["close_tickets", "delete_member", "mark_panel_disabled", "revoke_leases"]);
 }
 
 async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails() {
@@ -7238,6 +7412,109 @@ async function testAdminReplySupportTicketWithAttachmentCreatesAttachment() {
   ]);
 }
 
+async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
+  const writes: string[] = [];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" }),
+        update: async () => {
+          writes.push("ticket");
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      },
+      supportTicketMessage: {
+        create: async () => {
+          writes.push("message");
+          return {};
+        }
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        throw new Error("sse unavailable");
+      }
+    },
+    getAdminSupportTicketDetail: async (ticketId: string) => ({ id: ticketId })
+  });
+
+  const result = await service.replyAdminSupportTicket("ticket_1", { body: "reply" }, "admin_1");
+
+  assert.deepEqual(writes.sort(), ["message", "ticket"]);
+  assert.equal((result as { id: string }).id, "ticket_1");
+}
+
+async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
+  const writes: string[] = [];
+  const service = createClientTicketService({
+    logger: {
+      warn: () => undefined
+    },
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ({ id: "ticket_1", status: "waiting_user" }),
+        update: async () => {
+          writes.push("ticket");
+          return {};
+        }
+      },
+      supportTicketMessage: {
+        create: async () => {
+          writes.push("message");
+          return {};
+        }
+      },
+      supportTicketReadState: {
+        upsert: async () => {
+          writes.push("read_state");
+          return {};
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          supportTicket: {
+            update: async () => {
+              writes.push("ticket");
+              return {};
+            }
+          },
+          supportTicketMessage: {
+            create: async () => {
+              writes.push("message");
+              return {};
+            }
+          },
+          supportTicketReadState: {
+            upsert: async () => {
+              writes.push("read_state");
+              return {};
+            }
+          }
+        })
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        throw new Error("sse unavailable");
+      }
+    },
+    getClientSupportTicketDetail: async (ticketId: string) => ({ id: ticketId })
+  });
+
+  const result = await service.replyClientSupportTicket("ticket_1", { body: "reply" }, "token");
+
+  assert.deepEqual(writes.sort(), ["message", "read_state", "ticket"]);
+  assert.equal((result as { id: string }).id, "ticket_1");
+}
+
 async function main() {
   await testSubscriptionUsageLockIsReentrantForNestedPanelSync();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
@@ -7277,6 +7554,7 @@ async function main() {
   await testDisconnectDoesNotExposeOtherUsersCachedRuntime();
   await testSweepExpiredLeasesDoesNotRevokeTooEarly();
   await testPanelDisableJobDoesNotPreDisableBinding();
+  await testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails();
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
@@ -7304,6 +7582,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
+  await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
@@ -7356,6 +7635,7 @@ async function main() {
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   testAdminPatchDtosRejectNullForNonNullableFields();
   await testUpdateUserSecurityReconcilesActiveLeases();
+  await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdatePlanSecurityReconcilesUsersWithoutOverrides();
   await testUpdatePlanReconcilesConcurrencyWhenLimitChanges();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
@@ -7364,7 +7644,7 @@ async function main() {
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
   await testCreateSubscriptionRollsBackWhenTicketCleanupFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
-  await testCreateTeamMemberRollsBackWhenTicketCleanupFails();
+  await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();
@@ -7372,9 +7652,11 @@ async function main() {
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
   await testUpdatePolicyRejectsDuplicateModes();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
-  await testDeleteTeamMemberDoesNotRevokeAccessWhenTicketCleanupFails();
+  await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
+  await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
+  await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");
 }

@@ -248,7 +248,13 @@ export class AdminSubscriptionService {
     const effectiveLimit =
       row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
     if (effectiveLimit !== null) {
-      await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
+      try {
+        await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
+      } catch (error) {
+        this.logger?.warn(
+          `Local user security change saved, but concurrent lease enforcement failed for ${userId}: ${readErrorMessage(error, "unknown error")}`
+        );
+      }
     }
     return this.requireAdminUserRecord(userId);
   }
@@ -750,7 +756,7 @@ export class AdminSubscriptionService {
         });
       }
 
-      await this.closePersonalSupportTicketsForUser(
+      await this.closePersonalSupportTicketsForUserBestEffort(
         user.id,
         "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
       );
@@ -905,44 +911,29 @@ export class AdminSubscriptionService {
     await this.assertUserCanJoinTeam(owner.id);
 
     const teamId = createId("team");
-    let teamCreated = false;
-    try {
-      await this.prisma.$transaction([
-        this.prisma.team.create({
-          data: {
-            id: teamId,
-            name: input.name.trim(),
-            ownerUserId: owner.id,
-            status: input.status ?? "active"
-          }
-        }),
-        this.prisma.teamMember.create({
-          data: {
-            id: createId("member"),
-            teamId,
-            userId: owner.id,
-            role: "owner"
-          }
-        })
-      ]);
-      teamCreated = true;
-
-      await this.closePersonalSupportTicketsForUser(
-        owner.id,
-        "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
-      );
-    } catch (error) {
-      if (teamCreated) {
-        try {
-          await this.prisma.team.delete({ where: { id: teamId } });
-        } catch (rollbackError) {
-          throw new BadGatewayException(
-            `${readErrorMessage(error, "创建 Team 失败")}；回滚 Team 时又出现问题：${readErrorMessage(rollbackError, "删除 Team 失败")}`
-          );
+    await this.prisma.$transaction([
+      this.prisma.team.create({
+        data: {
+          id: teamId,
+          name: input.name.trim(),
+          ownerUserId: owner.id,
+          status: input.status ?? "active"
         }
-      }
-      throw error;
-    }
+      }),
+      this.prisma.teamMember.create({
+        data: {
+          id: createId("member"),
+          teamId,
+          userId: owner.id,
+          role: "owner"
+        }
+      })
+    ]);
+
+    await this.closePersonalSupportTicketsForUserBestEffort(
+      owner.id,
+      "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
+    );
 
     return this.requireTeamRecord(teamId);
   }
@@ -998,31 +989,10 @@ export class AdminSubscriptionService {
       teamUpdatedInOwnerTransaction = true;
 
       if (joinsCurrentTeamAsNewOwner) {
-        try {
-          await this.closePersonalSupportTicketsForUser(
+        await this.closePersonalSupportTicketsForUserBestEffort(
           nextOwner.id,
           "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
         );
-        } catch (error) {
-          await this.prisma.$transaction([
-            this.prisma.teamMember.updateMany({
-              where: { teamId, userId: current.ownerUserId },
-              data: { role: "owner" }
-            }),
-            this.prisma.teamMember.deleteMany({
-              where: { teamId, userId: nextOwner.id }
-            }),
-            this.prisma.team.update({
-              where: { id: teamId },
-              data: {
-                ownerUserId: current.ownerUserId,
-                name: current.name,
-                status: current.status
-              }
-            })
-          ]);
-          throw new BadGatewayException(`Team owner was not changed because support ticket cleanup failed: ${readErrorMessage(error, "unknown error")}`);
-        }
       }
     }
 
@@ -1083,16 +1053,10 @@ export class AdminSubscriptionService {
       }
     });
 
-    try {
-      await this.closePersonalSupportTicketsForUser(
+    await this.closePersonalSupportTicketsForUserBestEffort(
       input.userId,
       "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
     );
-
-    } catch (error) {
-      await this.prisma.teamMember.delete({ where: { id: member.id } }).catch(() => null);
-      throw new BadGatewayException(`Team member was not added because support ticket cleanup failed: ${readErrorMessage(error, "unknown error")}`);
-    }
 
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
@@ -1159,7 +1123,7 @@ export class AdminSubscriptionService {
     }
 
     const subscription = await this.findCurrentTeamSubscription(member.teamId);
-    await this.closeSupportTicketsForUser(
+    await this.closeSupportTicketsForUserBestEffort(
       {
         userId: member.userId,
         teamId: member.teamId
@@ -2025,6 +1989,10 @@ export class AdminSubscriptionService {
     );
   }
 
+  private async closePersonalSupportTicketsForUserBestEffort(userId: string, body: string) {
+    await this.closeSupportTicketsForUserBestEffort({ userId, teamId: null }, body);
+  }
+
   private async closeTeamSupportTicketsForUser(userId: string, body: string) {
     return this.closeSupportTicketsForUser(
       {
@@ -2033,6 +2001,23 @@ export class AdminSubscriptionService {
       },
       body
     );
+  }
+
+  private async closeSupportTicketsForUserBestEffort(
+    target: {
+      userId: string;
+      teamId?: string | null;
+      requireTeamOwnership?: boolean;
+    },
+    body: string
+  ) {
+    try {
+      await this.closeSupportTicketsForUser(target, body);
+    } catch (error) {
+      this.logger?.warn(
+        `Local team membership change saved, but support ticket cleanup failed for ${target.userId}: ${readErrorMessage(error, "unknown error")}`
+      );
+    }
   }
 
   private async closeSupportTicketsForUser(

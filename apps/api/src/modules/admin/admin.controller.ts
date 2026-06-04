@@ -1,13 +1,9 @@
 import {
   Body,
-  CallHandler,
   Controller,
   Delete,
-  ExecutionContext,
   Get,
   Headers,
-  Injectable,
-  NestInterceptor,
   Param,
   Patch,
   Post,
@@ -23,12 +19,11 @@ import { diskStorage } from "multer";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { unlinkSync } from "node:fs";
-import { tap } from "rxjs";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { DevDataService } from "../common/dev-data.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "../common/image-bed.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
+import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
 import {
   ChangeSubscriptionPlanDto,
   ConvertSubscriptionToTeamDto,
@@ -82,30 +77,6 @@ type UploadedReleaseFile = {
 type MulterCallback = (error: Error | null, filename: string) => void;
 const RELEASE_ARTIFACT_MAX_UPLOAD_BYTES = Number(process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? 1024 * 1024 * 1024);
 const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = Number(process.env.CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024);
-
-@Injectable()
-export class UploadedTempFileCleanupInterceptor implements NestInterceptor {
-  intercept(context: ExecutionContext, next: CallHandler) {
-    const cleanup = () => {
-      const request = context.switchToHttp().getRequest<{ file?: UploadedReleaseFile }>();
-      const filePath = request.file?.path;
-      if (filePath) {
-        try {
-          unlinkSync(filePath);
-        } catch {
-          // The upload service may have already moved or deleted the temp file.
-        }
-      }
-    };
-
-    return next.handle().pipe(
-      tap({
-        next: cleanup,
-        error: cleanup
-      })
-    );
-  }
-}
 
 @Controller("admin")
 @UseGuards(AdminAuthGuard)

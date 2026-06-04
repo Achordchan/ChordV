@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type {
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
@@ -32,6 +32,8 @@ type ClientSubscriptionAccess = {
 
 @Injectable()
 export class ClientTicketService {
+  private readonly logger = new Logger(ClientTicketService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
@@ -141,7 +143,7 @@ export class ClientTicketService {
       }
     });
 
-    this.clientRuntimeEventsService.publishToUser(user.id, {
+    this.publishTicketEventBestEffort(user.id, {
       type: "ticket_read_state_updated",
       occurredAt: now.toISOString(),
       ticketId: row.id
@@ -201,7 +203,7 @@ export class ClientTicketService {
       }
     });
 
-    this.clientRuntimeEventsService.publishToUser(user.id, {
+    this.publishTicketEventBestEffort(user.id, {
       type: "ticket_updated",
       occurredAt: now.toISOString(),
       ticketId,
@@ -273,7 +275,7 @@ export class ClientTicketService {
       });
     });
 
-    this.clientRuntimeEventsService.publishToUser(user.id, {
+    this.publishTicketEventBestEffort(user.id, {
       type: "ticket_updated",
       occurredAt: now.toISOString(),
       ticketId,
@@ -364,7 +366,7 @@ export class ClientTicketService {
       });
     });
 
-    this.clientRuntimeEventsService.publishToUser(user.id, {
+    this.publishTicketEventBestEffort(user.id, {
       type: "ticket_updated",
       occurredAt: now.toISOString(),
       ticketId,
@@ -372,6 +374,17 @@ export class ClientTicketService {
     });
 
     return this.getClientSupportTicketDetail(ticketId, token);
+  }
+
+  private publishTicketEventBestEffort(
+    userId: string,
+    event: Parameters<ClientRuntimeEventsService["publishToUser"]>[1]
+  ) {
+    try {
+      this.clientRuntimeEventsService.publishToUser(userId, event);
+    } catch (error) {
+      this.logger.warn(`Local ticket change saved, but ticket event publish failed for ${userId}: ${readErrorMessage(error)}`);
+    }
   }
 
   private async loadLatestAdminTicketMessageMap(ticketIds: string[]) {
@@ -495,4 +508,8 @@ export class ClientTicketService {
     });
     return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
   }
+}
+
+function readErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : "unknown error";
 }

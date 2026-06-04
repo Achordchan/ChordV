@@ -221,7 +221,11 @@ export class ImageBedService {
     if (!response.ok) {
       throw new BadGatewayException(readImageBedError(rawBody) || `Image bed request failed with HTTP ${response.status}.`);
     }
-    return parseJson(rawBody) as T;
+    const payload = parseJson(rawBody);
+    if (!payload || typeof payload !== "object") {
+      throw new BadGatewayException("Image bed response was not valid JSON.");
+    }
+    return payload as T;
   }
 
   private toAdminFileDto(baseUrl: string, input: unknown): AdminImageBedFileDto | null {

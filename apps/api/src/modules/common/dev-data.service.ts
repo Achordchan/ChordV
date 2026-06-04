@@ -650,7 +650,7 @@ export class DevDataService implements OnModuleInit {
         }
       });
     }
-    this.clientRuntimeEventsService.publishToUser(current.userId, {
+    this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
       occurredAt: new Date().toISOString(),
       ticketId,
@@ -676,7 +676,7 @@ export class DevDataService implements OnModuleInit {
         }
       });
     }
-    this.clientRuntimeEventsService.publishToUser(current.userId, {
+    this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
       occurredAt: new Date().toISOString(),
       ticketId,
@@ -1336,12 +1336,26 @@ export class DevDataService implements OnModuleInit {
       teamId: subscription.teamId
     });
 
-    const rows = await this.prisma.subscriptionNodeAccess.findMany({
-      where: { subscriptionId },
-      include: { node: true },
-      orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
-    });
-    const deduped = dedupeNodeAccessRows(rows);
+    let deduped: Array<{ nodeId: string; node: (typeof availableNodes)[number] }>;
+    try {
+      const rows = await this.prisma.subscriptionNodeAccess.findMany({
+        where: { subscriptionId },
+        include: { node: true },
+        orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
+      });
+      deduped = dedupeNodeAccessRows(rows);
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but response refresh failed for ${subscriptionId}: ${errorMessage}`);
+      panelSyncStatus = "pending";
+      panelSyncMessage = [panelSyncMessage, `local node access saved, but response refresh failed: ${errorMessage}`]
+        .filter(Boolean)
+        .join(" ");
+      deduped = uniqueNodeIds
+        .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
+        .filter((node): node is (typeof availableNodes)[number] => Boolean(node))
+        .map((node) => ({ nodeId: node.id, node }));
+    }
 
     return {
       subscriptionId,

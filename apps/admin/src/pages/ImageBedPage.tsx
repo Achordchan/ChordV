@@ -157,7 +157,10 @@ export function ImageBedPage() {
     }
     try {
       setDeletingPath(file.name);
-      await deleteAdminImageBedFile(file.name);
+      const result = await deleteAdminImageBedFile(file.name);
+      if (!result.success || result.failed.length > 0) {
+        throw new Error(result.failed.length > 0 ? `删除失败：${result.failed.join("，")}` : "图床返回删除失败");
+      }
       setFiles((current) => current.filter((item) => item.name !== file.name));
       notifications.show({
         color: "green",

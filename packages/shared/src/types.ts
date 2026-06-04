@@ -383,6 +383,9 @@ export interface AdminUserRecordDto extends UserProfileDto {
   subscriptionCount: number;
   activeSubscriptionCount: number;
   currentSubscription: UserSubscriptionSummaryDto | null;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message?: string | null;
 }
 
 export interface AdminPlanRecordDto {
@@ -581,6 +584,16 @@ export interface AdminTeamRecordDto {
   usage: AdminTeamUsageRecordDto[];
   createdAt: string;
   updatedAt: string;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message?: string | null;
+}
+
+export interface DeleteTeamMemberResultDto {
+  ok: true;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message?: string | null;
 }
 
 export interface DashboardSnapshotDto {

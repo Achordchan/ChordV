@@ -490,7 +490,8 @@ export async function replyAdminSupportTicketWithAttachment(
   body.set("file", file);
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/attachments`, {
     method: "POST",
-    body
+    body,
+    timeoutMs: 10 * 60 * 1000
   });
 }
 

@@ -5,6 +5,7 @@ import type {
   CreateTeamInputDto,
   CreateTeamMemberInputDto,
   CreateTeamSubscriptionInputDto,
+  DeleteTeamMemberResultDto,
   KickTeamMemberInputDto,
   KickTeamMemberResultDto,
   UpdateTeamInputDto,
@@ -21,34 +22,39 @@ export function fetchAdminTeams() {
 export function createTeam(input: CreateTeamInputDto) {
   return request<AdminTeamRecordDto>("/admin/teams", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 
 export function updateTeam(teamId: string, input: UpdateTeamInputDto) {
   return request<AdminTeamRecordDto>(`/admin/teams/${teamId}`, {
     method: "PATCH",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 
 export function createTeamMember(teamId: string, input: CreateTeamMemberInputDto) {
   return request<AdminTeamRecordDto>(`/admin/teams/${teamId}/members`, {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 
 export function updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto) {
   return request<AdminTeamRecordDto>(`/admin/teams/${teamId}/members/${memberId}`, {
     method: "PATCH",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 
 export function deleteTeamMember(teamId: string, memberId: string) {
-  return request<{ ok: boolean }>(`/admin/teams/${teamId}/members/${memberId}`, {
-    method: "DELETE"
+  return request<DeleteTeamMemberResultDto>(`/admin/teams/${teamId}/members/${memberId}`, {
+    method: "DELETE",
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 

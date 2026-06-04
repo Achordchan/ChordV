@@ -2202,15 +2202,19 @@ export class RuntimeSessionService {
     });
 
     const details = getLeaseFailureDetails(nextStatus, reason);
-    this.clientRuntimeEventsService.publishToUser(lease.userId, {
-      type: toClientRuntimeEventType(details.reasonCode),
-      occurredAt: new Date().toISOString(),
-      sessionId: lease.sessionId,
-      subscriptionId: lease.subscriptionId,
-      nodeId: lease.nodeId,
-      reasonCode: details.reasonCode,
-      reasonMessage: details.reasonMessage
-    });
+    try {
+      this.clientRuntimeEventsService.publishToUser(lease.userId, {
+        type: toClientRuntimeEventType(details.reasonCode),
+        occurredAt: new Date().toISOString(),
+        sessionId: lease.sessionId,
+        subscriptionId: lease.subscriptionId,
+        nodeId: lease.nodeId,
+        reasonCode: details.reasonCode,
+        reasonMessage: details.reasonMessage
+      });
+    } catch (error) {
+      this.logger.warn(`Lease ${lease.id} was revoked, but runtime event publish failed: ${readRuntimeErrorMessage(error)}`);
+    }
   }
 
   private async resolveSubscriptionAccessForUser(userId: string): Promise<ResolvedSubscriptionAccess> {
@@ -2349,6 +2353,10 @@ function buildXuiRuntimeFromLease(
 
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function readRuntimeErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function assertRuntimeAccessConnectable(access: ResolvedSubscriptionAccess) {
