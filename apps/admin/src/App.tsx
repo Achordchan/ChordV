@@ -2121,7 +2121,7 @@ export function App() {
                   void handleResetSubscriptionTraffic(subscriptionId, ownerLabel, userId)
                 }
                 resetTrafficBusyKey={resetTrafficBusyKey}
-                allUsers={snapshot.users.map((item) => ({ id: item.id, status: item.status }))}
+                allUsers={snapshot.users}
                 onOpenKickMemberModal={openKickMemberModal}
                 onOpenTeamUsageDetail={setTeamUsageDetailTarget}
               />

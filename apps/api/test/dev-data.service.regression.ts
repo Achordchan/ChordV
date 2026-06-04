@@ -4058,6 +4058,98 @@ async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRe
   assert.match(result.panelSyncMessage ?? "", /old lease revoke failed/);
 }
 
+async function testAdminListsSurfacePersistentPanelSyncPendingState() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const panelSyncJobs = [
+    {
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: "team_1",
+      status: "failed",
+      lastError: "panel offline",
+      updatedAt: now
+    }
+  ];
+  const subscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 1,
+    remainingTrafficGb: 99,
+    expireAt: new Date(Date.now() + 60_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Personal" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findMany: async () => [
+          {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: "active",
+            lastSeenAt: now,
+            maxConcurrentSessionsOverride: null,
+            subscriptions: [subscription],
+            teamMemberships: []
+          }
+        ]
+      },
+      subscription: {
+        findMany: async () => [subscription]
+      },
+      team: {
+        findMany: async () => [
+          {
+            id: "team_1",
+            name: "Team",
+            ownerUserId: "user_1",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+            owner: { displayName: "User", email: "user@example.com" },
+            members: [],
+            subscriptions: []
+          }
+        ]
+      },
+      trafficLedger: {
+        groupBy: async () => []
+      },
+      node: {
+        findMany: async () => []
+      },
+      panelSyncJob: {
+        findMany: async () => panelSyncJobs
+      }
+    }
+  });
+
+  const [users, subscriptions, teams] = await Promise.all([
+    service.listAdminUsers(),
+    service.listAdminSubscriptions(),
+    service.listAdminTeams()
+  ]);
+
+  assert.equal(users[0].panelSyncStatus, "pending");
+  assert.match(users[0].panelSyncMessage ?? "", /失败 1/);
+  assert.match(users[0].panelSyncMessage ?? "", /panel offline/);
+  assert.equal(subscriptions[0].panelSyncStatus, "pending");
+  assert.match(subscriptions[0].panelSyncMessage ?? "", /失败 1/);
+  assert.equal(teams[0].panelSyncStatus, "pending");
+  assert.match(teams[0].panelSyncMessage ?? "", /失败 1/);
+}
+
 async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
   const now = new Date();
   const currentNode = {
@@ -8607,6 +8699,7 @@ async function main() {
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
+  await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testPanelDisableJobUpsertResetsStaleFailureState();

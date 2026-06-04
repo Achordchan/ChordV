@@ -74,7 +74,10 @@ export function UsersPage(props: UsersPageProps) {
                       <Badge variant="light">{translateRole(item.role)}</Badge>
                     </Table.Td>
                     <Table.Td>
-                      <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
+                      <Stack gap={4}>
+                        <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
+                        <PanelSyncInlineStatus item={item} />
+                      </Stack>
                     </Table.Td>
                     <Table.Td>
                       <RowActions>
@@ -122,7 +125,10 @@ export function UsersPage(props: UsersPageProps) {
                           <Text fw={600}>{item.memberCount}</Text>
                         </Stack>
                       </Group>
-                      <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
+                      <Stack gap={4} align="flex-end">
+                        <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
+                        <PanelSyncInlineStatus item={item} />
+                      </Stack>
                     </Group>
                   </Accordion.Control>
                   <Accordion.Panel>
@@ -244,10 +250,13 @@ export function UsersPage(props: UsersPageProps) {
                                   <Badge variant="light">{member.role === "owner" ? "负责人" : "成员"}</Badge>
                                 </Table.Td>
                                 <Table.Td>
-                                  <StatusBadge
-                                    color={userRecord?.status === "active" ? "green" : "gray"}
-                                    label={translateUserStatus(userRecord?.status ?? "disabled")}
-                                  />
+                                  <Stack gap={4}>
+                                    <StatusBadge
+                                      color={userRecord?.status === "active" ? "green" : "gray"}
+                                      label={translateUserStatus(userRecord?.status ?? "disabled")}
+                                    />
+                                    <PanelSyncInlineStatus item={userRecord} />
+                                  </Stack>
                                 </Table.Td>
                                 <Table.Td>
                                   <RowActions>
@@ -297,6 +306,26 @@ export function UsersPage(props: UsersPageProps) {
           </Tabs.Panel>
         </Tabs>
       </SectionCard>
+    </Stack>
+  );
+}
+
+function PanelSyncInlineStatus(props: {
+  item?: { panelSyncStatus?: "synced" | "pending"; panelSyncMessage?: string | null } | null;
+}) {
+  if (props.item?.panelSyncStatus !== "pending") {
+    return null;
+  }
+  return (
+    <Stack gap={2}>
+      <Badge color="yellow" variant="light">
+        面板待同步
+      </Badge>
+      {props.item.panelSyncMessage ? (
+        <Text size="xs" c="dimmed" lineClamp={2}>
+          {props.item.panelSyncMessage}
+        </Text>
+      ) : null}
     </Stack>
   );
 }

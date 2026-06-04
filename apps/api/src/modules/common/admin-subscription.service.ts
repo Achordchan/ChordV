@@ -62,6 +62,20 @@ import {
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
+type PanelSyncSummaryJob = {
+  subscriptionId: string;
+  userId: string | null;
+  teamId: string | null;
+  status: string;
+  lastError: string | null;
+  updatedAt: Date;
+};
+type PanelSyncSummary = {
+  pending: number;
+  running: number;
+  failed: number;
+  lastError: string | null;
+};
 type ResetTrafficCountersResult = {
   subscription: AdminSubscriptionEntity;
   targetUserId: string | null;
@@ -81,27 +95,31 @@ export class AdminSubscriptionService {
   ) {}
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
-    const rows = await this.prisma.user.findMany({
-      include: {
-        subscriptions: {
-          include: { plan: true },
-          orderBy: [{ createdAt: "desc" }]
-        },
-        teamMemberships: {
-          include: {
-            team: {
-              include: {
-                subscriptions: {
-                  include: { plan: true },
-                  orderBy: [{ createdAt: "desc" }]
+    const [rows, panelSyncJobs] = await Promise.all([
+      this.prisma.user.findMany({
+        include: {
+          subscriptions: {
+            include: { plan: true },
+            orderBy: [{ createdAt: "desc" }]
+          },
+          teamMemberships: {
+            include: {
+              team: {
+                include: {
+                  subscriptions: {
+                    include: { plan: true },
+                    orderBy: [{ createdAt: "desc" }]
+                  }
                 }
               }
             }
           }
-        }
-      },
-      orderBy: { createdAt: "asc" }
-    });
+        },
+        orderBy: { createdAt: "asc" }
+      }),
+      this.listActivePanelSyncJobs()
+    ]);
+    const panelSyncByUserId = buildPanelSyncSummaryMap(panelSyncJobs, "userId");
 
     return rows.map((row) => {
       const membership = row.teamMemberships[0] ?? null;
@@ -109,7 +127,7 @@ export class AdminSubscriptionService {
         ? pickCurrentSubscription(row.teamMemberships[0]?.team.subscriptions ?? [])
         : pickCurrentSubscription(row.subscriptions);
 
-      return toAdminUserRecord(row, {
+      return withPanelSyncSummary(toAdminUserRecord(row, {
         accountType: membership ? "team" : "personal",
         teamId: membership?.team.id ?? null,
         teamName: membership?.team.name ?? null,
@@ -120,7 +138,7 @@ export class AdminSubscriptionService {
         currentSubscription: currentSubscription
           ? toUserSubscriptionSummary(currentSubscription, membership?.team ?? null)
           : null
-      });
+      }), panelSyncByUserId.get(row.id));
     });
   }
 
@@ -403,16 +421,20 @@ export class AdminSubscriptionService {
   }
 
   async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
-    const rows = await this.prisma.subscription.findMany({
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      },
-      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-    });
-    return rows.map(toAdminSubscriptionRecord);
+    const [rows, panelSyncJobs] = await Promise.all([
+      this.prisma.subscription.findMany({
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        },
+        orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+      }),
+      this.listActivePanelSyncJobs()
+    ]);
+    const panelSyncBySubscriptionId = buildPanelSyncSummaryMap(panelSyncJobs, "subscriptionId");
+    return rows.map((row) => withPanelSyncSummary(toAdminSubscriptionRecord(row), panelSyncBySubscriptionId.get(row.id)));
   }
 
   async createSubscription(input: CreateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
@@ -812,26 +834,30 @@ export class AdminSubscriptionService {
   }
 
   async listAdminTeams(): Promise<AdminTeamRecordDto[]> {
-    const teams = await this.prisma.team.findMany({
-      include: {
-        owner: true,
-        members: {
-          include: { user: true },
-          orderBy: { createdAt: "asc" }
+    const [teams, panelSyncJobs] = await Promise.all([
+      this.prisma.team.findMany({
+        include: {
+          owner: true,
+          members: {
+            include: { user: true },
+            orderBy: { createdAt: "asc" }
+          },
+          subscriptions: {
+            include: { plan: true },
+            orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+          }
         },
-        subscriptions: {
-          include: { plan: true },
-          orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-        }
-      },
-      orderBy: { createdAt: "asc" }
-    });
+        orderBy: { createdAt: "asc" }
+      }),
+      this.listActivePanelSyncJobs()
+    ]);
+    const panelSyncByTeamId = buildPanelSyncSummaryMap(panelSyncJobs, "teamId");
     const usageByTeamId = await this.loadTeamUsageSummaries(teams.map((team) => team.id));
     return teams.map((team) =>
-      toAdminTeamRecord({
+      withPanelSyncSummary(toAdminTeamRecord({
         ...team,
         trafficLedgerEntries: usageByTeamId.get(team.id) ?? []
-      })
+      }), panelSyncByTeamId.get(team.id))
     );
   }
 
@@ -898,6 +924,23 @@ export class AdminSubscriptionService {
     }
 
     return result;
+  }
+
+  private async listActivePanelSyncJobs(): Promise<PanelSyncSummaryJob[]> {
+    return this.prisma.panelSyncJob.findMany({
+      where: {
+        status: { in: ["pending", "running", "failed"] }
+      },
+      select: {
+        subscriptionId: true,
+        userId: true,
+        teamId: true,
+        status: true,
+        lastError: true,
+        updatedAt: true
+      },
+      orderBy: [{ updatedAt: "desc" }]
+    });
   }
 
   async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
@@ -2155,6 +2198,56 @@ function mergePanelSyncResults(...results: PanelSyncBestEffortResult[]): PanelSy
   return {
     ok: false,
     errorMessage: failed.map((item) => item.errorMessage).join("; ")
+  };
+}
+
+function buildPanelSyncSummaryMap(
+  jobs: PanelSyncSummaryJob[],
+  key: "subscriptionId" | "userId" | "teamId"
+) {
+  const result = new Map<string, PanelSyncSummary>();
+  for (const job of jobs) {
+    const id = job[key];
+    if (!id) {
+      continue;
+    }
+    const summary = result.get(id) ?? { pending: 0, running: 0, failed: 0, lastError: null };
+    if (job.status === "failed") {
+      summary.failed += 1;
+    } else if (job.status === "running") {
+      summary.running += 1;
+    } else {
+      summary.pending += 1;
+    }
+    summary.lastError = summary.lastError ?? job.lastError;
+    result.set(id, summary);
+  }
+  return result;
+}
+
+function withPanelSyncSummary<T extends object>(record: T, summary?: PanelSyncSummary) {
+  if (!summary) {
+    return record;
+  }
+  const total = summary.pending + summary.running + summary.failed;
+  if (total === 0) {
+    return record;
+  }
+  const parts = [
+    summary.pending > 0 ? `待同步 ${summary.pending}` : null,
+    summary.running > 0 ? `执行中 ${summary.running}` : null,
+    summary.failed > 0 ? `失败 ${summary.failed}` : null
+  ].filter(Boolean);
+  const message = [
+    `存在 ${total} 个面板同步任务：${parts.join("，")}`,
+    summary.lastError ? `最近错误：${summary.lastError}` : null
+  ]
+    .filter(Boolean)
+    .join("；");
+  return {
+    ...record,
+    panelSyncStatus: "pending" as const,
+    panelSyncMessage: message
   };
 }
 

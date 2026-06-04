@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Alert, Badge, Button, Card, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Table, Tabs, Text } from "@mantine/core";
-import type { AdminPlanRecordDto, AdminSubscriptionRecordDto, AdminTeamRecordDto, AdminTeamUsageRecordDto } from "@chordv/shared";
+import type { AdminPlanRecordDto, AdminSubscriptionRecordDto, AdminTeamRecordDto, AdminTeamUsageRecordDto, AdminUserRecordDto } from "@chordv/shared";
 import { IconBolt, IconListDetails, IconMapPin, IconPencil, IconPlus, IconRefresh, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { ExpireAtController } from "../features/shared/ExpireAtController";
@@ -45,7 +45,7 @@ type SubscriptionsPageProps = {
   onSaveTeamSubscriptionInlineEditor: (teamId: string) => void;
   onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
   resetTrafficBusyKey: string | null;
-  allUsers: Array<{ id: string; status: "active" | "disabled" }>;
+  allUsers: AdminUserRecordDto[];
   onOpenKickMemberModal: (teamId: string, memberId: string, memberName: string) => void;
   onOpenTeamUsageDetail: (payload: {
     teamName: string;
@@ -122,6 +122,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                           {item.stateReasonMessage}
                         </Text>
                       ) : null}
+                      <PanelSyncInlineStatus item={item} />
                     </Stack>
                   </Table.Td>
                   <Table.Td>{translateSourceAction(item.sourceAction)}</Table.Td>
@@ -202,6 +203,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             {currentSubscription.stateReasonMessage}
                           </Text>
                         ) : null}
+                        <PanelSyncInlineStatus item={team} />
+                        <PanelSyncInlineStatus item={teamSubscriptionRecord} />
                       </Stack>
                       <StatusBadge
                         color={subscriptionStateColor(currentSubscription?.state ?? "paused")}
@@ -276,6 +279,11 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                 {currentSubscription.stateReasonMessage}
                               </Alert>
                             ) : null}
+                            {teamSubscriptionRecord?.panelSyncStatus === "pending" ? (
+                              <Alert color="yellow" variant="light" mt="md">
+                                {teamSubscriptionRecord.panelSyncMessage ?? "面板同步待重试"}
+                              </Alert>
+                            ) : null}
                           </>
                         ) : (
                           <Alert color="blue" variant="light" mt="md">
@@ -344,6 +352,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 color={userRecord?.status === "active" ? "green" : "gray"}
                                                 label={translateUserStatus(userRecord?.status ?? "disabled")}
                                               />
+                                              <PanelSyncInlineStatus item={userRecord} />
                                           </Group>
                                           <Text size="sm" c="dimmed">{member.email}</Text>
                                         </Stack>
@@ -450,5 +459,25 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
         </Tabs.Panel>
       </Tabs>
     </SectionCard>
+  );
+}
+
+function PanelSyncInlineStatus(props: {
+  item?: { panelSyncStatus?: "synced" | "pending"; panelSyncMessage?: string | null } | null;
+}) {
+  if (props.item?.panelSyncStatus !== "pending") {
+    return null;
+  }
+  return (
+    <Stack gap={2}>
+      <Badge color="yellow" variant="light">
+        面板待同步
+      </Badge>
+      {props.item.panelSyncMessage ? (
+        <Text size="xs" c="dimmed" lineClamp={2}>
+          {props.item.panelSyncMessage}
+        </Text>
+      ) : null}
+    </Stack>
   );
 }
