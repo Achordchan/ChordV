@@ -291,8 +291,16 @@ export class DevDataService implements OnModuleInit {
     this.clientEventsPublisher.publishClientEventToUsers(userIds, event);
   }
 
+  private publishClientEventToUser(userId: string, event: ClientRuntimeEventDto) {
+    try {
+      this.clientRuntimeEventsService.publishToUser(userId, event);
+    } catch (error) {
+      this.logger?.warn(`Local change saved, but user event publish failed for ${userId}: ${readPanelSyncErrorMessage(error)}`);
+    }
+  }
+
   private async publishAnnouncementUpdatedEvent(announcementId: string) {
-    await this.clientEventsPublisher.publishAnnouncementUpdated(announcementId);
+    await this.tryPublishEvent("announcement_updated", () => this.clientEventsPublisher.publishAnnouncementUpdated(announcementId));
   }
 
   private publishAnnouncementReadStateUpdatedEvent(userId: string, announcementId: string) {
@@ -313,7 +321,9 @@ export class DevDataService implements OnModuleInit {
     channel: ReleaseChannel = "stable",
     latestVersion?: string | null
   ) {
-    await this.clientEventsPublisher.publishVersionUpdated(platform, channel, latestVersion);
+    await this.tryPublishEvent("version_updated", () =>
+      this.clientEventsPublisher.publishVersionUpdated(platform, channel, latestVersion)
+    );
   }
 
   private async publishSubscriptionUpdatedEvent(target: {
@@ -322,7 +332,7 @@ export class DevDataService implements OnModuleInit {
     teamId?: string | null;
     state?: SubscriptionState | null;
   }) {
-    await this.clientEventsPublisher.publishSubscriptionUpdated(target);
+    await this.tryPublishEvent("subscription_updated", () => this.clientEventsPublisher.publishSubscriptionUpdated(target));
   }
 
   private async publishNodeAccessUpdatedEvent(target: {
@@ -330,7 +340,15 @@ export class DevDataService implements OnModuleInit {
     userId?: string | null;
     teamId?: string | null;
   }) {
-    await this.clientEventsPublisher.publishNodeAccessUpdated(target);
+    await this.tryPublishEvent("node_access_updated", () => this.clientEventsPublisher.publishNodeAccessUpdated(target));
+  }
+
+  private async tryPublishEvent(eventType: string, task: () => Promise<unknown>) {
+    try {
+      await task();
+    } catch (error) {
+      this.logger?.warn(`Local change saved, but ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
+    }
   }
 
   async pingClient(token?: string): Promise<ClientPingDto> {
@@ -533,7 +551,7 @@ export class DevDataService implements OnModuleInit {
       })
     ]);
 
-    this.clientRuntimeEventsService.publishToUser(current.userId, {
+    this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
       occurredAt: now.toISOString(),
       ticketId,
@@ -605,7 +623,7 @@ export class DevDataService implements OnModuleInit {
       });
     });
 
-    this.clientRuntimeEventsService.publishToUser(current.userId, {
+    this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
       occurredAt: now.toISOString(),
       ticketId,
@@ -1197,17 +1215,12 @@ export class DevDataService implements OnModuleInit {
 
     if (uniqueNodeIds.length === 0) {
       if (existingRows.length > 0) {
-        const queuedPanelSyncMessage = await this.prisma.$transaction(async (tx) => {
-          const queuedMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(
-            tx,
-            subscriptionId,
-            undefined
-          );
+        await this.prisma.$transaction(async (tx) => {
           await tx.subscriptionNodeAccess.deleteMany({
             where: { subscriptionId }
           });
-          return queuedMessage;
         });
+        const queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, undefined);
         const revocation = await this.tryApplyNodeAccessRevocationEffects(
           subscriptionId,
           undefined,
@@ -1261,12 +1274,7 @@ export class DevDataService implements OnModuleInit {
     const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
 
     if (removedNodeIds.length > 0) {
-      const queuedPanelSyncMessage = await this.prisma.$transaction(async (tx) => {
-        const queuedMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(
-          tx,
-          subscriptionId,
-          { nodeIds: removedNodeIds }
-        );
+      await this.prisma.$transaction(async (tx) => {
         await tx.subscriptionNodeAccess.deleteMany({
           where: {
             subscriptionId,
@@ -1282,7 +1290,9 @@ export class DevDataService implements OnModuleInit {
             }))
           });
         }
-        return queuedMessage;
+      });
+      const queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, {
+        nodeIds: removedNodeIds
       });
       const revocation = await this.tryApplyNodeAccessRevocationEffects(
         subscriptionId,
@@ -1355,7 +1365,7 @@ export class DevDataService implements OnModuleInit {
       return { ok: true as const };
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
+      this.logger?.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
       return { ok: false as const, errorMessage };
     }
   }
@@ -1364,18 +1374,38 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined
   ) {
+    const messages: string[] = [];
     try {
       const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
         subscriptionId,
         filter
       );
+      if (pendingPanelSyncCount > 0) {
+        messages.push("3x-ui disable job queued; local node access and active sessions are invalidated.");
+      }
+      try {
+        await this.prisma.$transaction((tx) =>
+          this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(
+            tx,
+            subscriptionId,
+            "node_access_revoked",
+            filter
+          )
+        );
+      } catch (error) {
+        const errorMessage = readPanelSyncErrorMessage(error);
+        this.logger?.warn(`Node access saved, but lease revocation job queueing failed for ${subscriptionId}: ${errorMessage}`);
+        messages.push(`lease revocation job queueing failed: ${errorMessage}`);
+      }
+      return messages.length > 0 ? messages.join(" ") : null;
       return pendingPanelSyncCount > 0
         ? "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。"
         : null;
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger.warn(`Node access was not saved because 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
-      throw new BadGatewayException(`Node access was not saved because 3x-ui disable job queueing failed: ${errorMessage}`);
+      this.logger?.warn(`Node access saved, but 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      messages.push(`3x-ui disable job queueing failed: ${errorMessage}`);
+      return messages.join(" ");
       throw new BadGatewayException(`节点授权未保存：3x-ui 客户端禁用任务入队失败，避免远端客户端残留。${errorMessage}`);
     }
   }
@@ -1385,6 +1415,7 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined
   ) {
+    const messages: string[] = [];
     try {
       const pendingPanelSyncCount = await this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(
         writer,
@@ -1406,8 +1437,9 @@ export class DevDataService implements OnModuleInit {
         : null;
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger.warn(`Node access was not saved because 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
-      throw new BadGatewayException(`Node access was not saved because 3x-ui disable job queueing failed: ${errorMessage}`);
+      this.logger?.warn(`Node access saved, but 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      messages.push(`3x-ui disable job queueing failed: ${errorMessage}`);
+      return messages.join(" ");
       throw new BadGatewayException(`鑺傜偣鎺堟潈鏈繚瀛橈細3x-ui 瀹㈡埛绔鐢ㄤ换鍔″叆闃熷け璐ワ紝閬垮厤杩滅瀹㈡埛绔畫鐣欍€?{errorMessage}`);
     }
   }
@@ -1429,7 +1461,7 @@ export class DevDataService implements OnModuleInit {
       revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger.warn(`Node access saved, but active lease revocation failed for ${subscriptionId}: ${errorMessage}`);
+      this.logger?.warn(`Node access saved, but active lease revocation failed for ${subscriptionId}: ${errorMessage}`);
       messages.push(`active lease revocation failed: ${errorMessage}`);
     }
 

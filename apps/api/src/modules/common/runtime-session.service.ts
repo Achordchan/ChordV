@@ -1222,8 +1222,7 @@ export class RuntimeSessionService {
       status: string;
     };
   }) {
-    return runWithSubscriptionUsageLock(job.subscriptionId, async () => {
-      try {
+    try {
       if (!isPanelSyncAction(job.action)) {
         throw new Error(`未知面板同步动作：${job.action}`);
       }
@@ -1361,8 +1360,7 @@ export class RuntimeSessionService {
         })
       ]);
       this.logger.warn(`面板同步任务失败，${retrySeconds} 秒后重试：${job.nodeId}/${job.panelClientEmail}: ${message}`);
-      }
-    });
+    }
   }
 
   private async completePanelSyncJob(job: { id: string; subscriptionId: string; nodeId: string }) {

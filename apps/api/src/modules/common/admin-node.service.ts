@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type {
   AdminNodePanelInboundDto,
   AdminNodeRecordDto,
@@ -25,6 +25,8 @@ import {
 
 @Injectable()
 export class AdminNodeService {
+  private readonly logger = new Logger(AdminNodeService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly xuiService: XuiService,
@@ -203,27 +205,39 @@ export class AdminNodeService {
     });
 
     if (current && panelConnectionChanged && !nodeWillBeDisabled) {
-      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed");
-      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
-      if (result.failed.length > 0) {
-        await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
-      }
+      await this.tryRunAfterLocalNodeSave("revoke node leases for panel config change", () =>
+        this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed")
+      );
+      await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
+        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+        if (result.failed.length > 0) {
+          await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
+        }
+      });
     }
 
     if (current && (panelWillBeDisabled || nodeWillBeDisabled)) {
-      await this.runtimeSessionService.revokeNodeLeases(
-        nodeId,
-        nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+      await this.tryRunAfterLocalNodeSave("revoke node leases after node disable", () =>
+        this.runtimeSessionService.revokeNodeLeases(
+          nodeId,
+          nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+        )
       );
-      await this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId);
+      await this.tryRunAfterLocalNodeSave("queue panel disable after node disable", () =>
+        this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId)
+      );
     }
 
     const record = await this.probeNode(row.id);
     if (current) {
       if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
-        await this.runtimeSessionService.syncPanelAccessForNode(row.id);
+        await this.tryRunAfterLocalNodeSave("queue panel access sync after node import", () =>
+          this.runtimeSessionService.syncPanelAccessForNode(row.id)
+        );
       }
-      await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(row.id);
+      await this.tryRunAfterLocalNodeSave("publish node access update after node import", () =>
+        this.clientEventsPublisher.publishNodeAccessUpdatedForNode(row.id)
+      );
     }
     return record;
   }
@@ -292,17 +306,23 @@ export class AdminNodeService {
     const nodeWillBeDisabled = current.isActive && input.isActive === false;
 
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null = null;
+    let panelRuntimeError: string | null = null;
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
       derived = await fetchSubscriptionNode(input.subscriptionUrl);
     } else if (nextPanelEnabled && panelConfigTouched) {
-      derived = await this.xuiService.getInboundRuntime({
-        id: current.id,
-        panelBaseUrl: nextPanelBaseUrl,
-        panelApiBasePath: nextPanelApiBasePath,
-        panelUsername: nextPanelUsername,
-        panelPassword: nextPanelPassword,
-        panelInboundId: nextPanelInboundId
-      });
+      try {
+        derived = await this.xuiService.getInboundRuntime({
+          id: current.id,
+          panelBaseUrl: nextPanelBaseUrl,
+          panelApiBasePath: nextPanelApiBasePath,
+          panelUsername: nextPanelUsername,
+          panelPassword: nextPanelPassword,
+          panelInboundId: nextPanelInboundId
+        });
+      } catch (error) {
+        panelRuntimeError = error instanceof Error ? error.message : String(error);
+        this.logger?.warn(`Local node panel config will be saved, but reading new panel runtime failed: ${panelRuntimeError}`);
+      }
     }
     const derivedInboundId = readRuntimeInboundId(derived);
     const shouldPersistPanelEnabledByDefault = panelConfigTouched && input.panelEnabled === undefined && nextPanelEnabled !== current.panelEnabled;
@@ -342,6 +362,7 @@ export class AdminNodeService {
             ? { panelEnabled: nextPanelEnabled }
             : {}),
         ...(input.isActive === false || !nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {}),
+        ...(panelRuntimeError ? { panelStatus: "degraded", panelError: panelRuntimeError } : {}),
         ...(derived
           ? {
               serverHost: derived.serverHost,
@@ -360,29 +381,41 @@ export class AdminNodeService {
     });
 
     if (panelConnectionChanged && !nodeWillBeDisabled) {
-      await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed");
-      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
-        panelBaseUrl: current.panelBaseUrl,
-        panelApiBasePath: current.panelApiBasePath,
-        panelUsername: current.panelUsername,
-        panelPassword: current.panelPassword
+      await this.tryRunAfterLocalNodeSave("revoke node leases for panel config change", () =>
+        this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed")
+      );
+      await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
+        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
+          panelBaseUrl: current.panelBaseUrl,
+          panelApiBasePath: current.panelApiBasePath,
+          panelUsername: current.panelUsername,
+          panelPassword: current.panelPassword
+        });
+        if (result.failed.length > 0) {
+          await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
+        }
       });
-      if (result.failed.length > 0) {
-        await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
-      }
     }
 
     if ((current.isActive && input.isActive === false) || panelWillBeDisabled) {
-      await this.runtimeSessionService.revokeNodeLeases(
-        nodeId,
-        nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+      await this.tryRunAfterLocalNodeSave("revoke node leases after node disable", () =>
+        this.runtimeSessionService.revokeNodeLeases(
+          nodeId,
+          nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
+        )
       );
-      await this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId);
+      await this.tryRunAfterLocalNodeSave("queue panel disable after node disable", () =>
+        this.runtimeSessionService.markPanelBindingsDisabledForNode(nodeId)
+      );
     } else if (!current.isActive && input.isActive === true) {
-      await this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId);
+      await this.tryRunAfterLocalNodeSave("clear pending panel disable jobs after node re-enable", () =>
+        this.runtimeSessionService.clearPendingPanelDisableJobsForNode(nodeId)
+      );
     }
     if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
-      await this.runtimeSessionService.syncPanelAccessForNode(nodeId);
+      await this.tryRunAfterLocalNodeSave("queue panel access sync after node update", () =>
+        this.runtimeSessionService.syncPanelAccessForNode(nodeId)
+      );
     }
     const shouldPublishNodeUpdated =
       (input.isActive !== undefined && current.isActive !== input.isActive) ||
@@ -395,7 +428,9 @@ export class AdminNodeService {
       panelConfigTouched ||
       Boolean(derived);
     if (shouldPublishNodeUpdated) {
-      await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId);
+      await this.tryRunAfterLocalNodeSave("publish node access update after node update", () =>
+        this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
+      );
     }
 
     return toAdminNodeRecord(row);
@@ -438,7 +473,9 @@ export class AdminNodeService {
       }
     });
 
-    await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId);
+    await this.tryRunAfterLocalNodeSave("publish node access update after node refresh", () =>
+      this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
+    );
     return toAdminNodeRecord(row);
   }
 
@@ -505,9 +542,16 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    const userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
-    await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted");
-    await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+    let userIds: string[] = [];
+    try {
+      userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
+    } catch (error) {
+      this.logger?.warn(
+        `Local node delete will continue, but resolving node access event targets failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
     await this.prisma.node.update({
       where: { id: nodeId },
       data: {
@@ -517,8 +561,26 @@ export class AdminNodeService {
         panelError: null
       }
     });
-    this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
+    await this.tryRunAfterLocalNodeSave("revoke node leases after node delete", () =>
+      this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted")
+    );
+    await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", () =>
+      this.runtimeSessionService.removePanelBindingsForNode(nodeId)
+    );
+    try {
+      this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
+    } catch (error) {
+      this.logger?.warn(`Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return { ok: true };
+  }
+
+  private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
+    try {
+      await task();
+    } catch (error) {
+      this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async resolveNodeRuntimeSource(input: ImportNodeInputDto, panelEnabled: boolean) {

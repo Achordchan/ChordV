@@ -1,14 +1,21 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Client as PgClient } from "pg";
 
 const SUBSCRIPTION_USAGE_LOCK_KEY_1 = 420_704;
 const SUBSCRIPTION_OWNER_LOCK_KEY_1 = 420_705;
 const localSubscriptionLocks = new Map<string, Promise<void>>();
+const heldSubscriptionLocks = new AsyncLocalStorage<Set<string>>();
 
 export async function runWithSubscriptionUsageLock<T>(subscriptionId: string, task: () => Promise<T>) {
+  const lockKey = `usage:${subscriptionId}`;
+  if (heldSubscriptionLocks.getStore()?.has(lockKey)) {
+    return task();
+  }
+
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
-    return runWithLocalSubscriptionLock(`usage:${subscriptionId}`, task);
+    return runWithLocalSubscriptionLock(lockKey, task);
   }
 
   const lockClient = new PgClient({ connectionString });
@@ -20,7 +27,7 @@ export async function runWithSubscriptionUsageLock<T>(subscriptionId: string, ta
       deriveSubscriptionAdvisoryLockKey(subscriptionId)
     ]);
     locked = true;
-    return await task();
+    return await runWithinHeldSubscriptionLock(lockKey, task);
   } finally {
     if (locked) {
       await lockClient
@@ -39,9 +46,14 @@ function deriveSubscriptionAdvisoryLockKey(subscriptionId: string) {
 }
 
 export async function runWithSubscriptionOwnerLock<T>(ownerKey: string, task: () => Promise<T>) {
+  const lockKey = `owner:${ownerKey}`;
+  if (heldSubscriptionLocks.getStore()?.has(lockKey)) {
+    return task();
+  }
+
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
-    return runWithLocalSubscriptionLock(`owner:${ownerKey}`, task);
+    return runWithLocalSubscriptionLock(lockKey, task);
   }
 
   const lockClient = new PgClient({ connectionString });
@@ -53,7 +65,7 @@ export async function runWithSubscriptionOwnerLock<T>(ownerKey: string, task: ()
       deriveSubscriptionAdvisoryLockKey(ownerKey)
     ]);
     locked = true;
-    return await task();
+    return await runWithinHeldSubscriptionLock(lockKey, task);
   } finally {
     if (locked) {
       await lockClient
@@ -68,6 +80,10 @@ export async function runWithSubscriptionOwnerLock<T>(ownerKey: string, task: ()
 }
 
 async function runWithLocalSubscriptionLock<T>(key: string, task: () => Promise<T>) {
+  if (heldSubscriptionLocks.getStore()?.has(key)) {
+    return task();
+  }
+
   const previous = localSubscriptionLocks.get(key) ?? Promise.resolve();
   let releaseCurrent!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -77,11 +93,18 @@ async function runWithLocalSubscriptionLock<T>(key: string, task: () => Promise<
   localSubscriptionLocks.set(key, tail);
   await previous.catch(() => undefined);
   try {
-    return await task();
+    return await runWithinHeldSubscriptionLock(key, task);
   } finally {
     releaseCurrent();
     if (localSubscriptionLocks.get(key) === tail) {
       localSubscriptionLocks.delete(key);
     }
   }
+}
+
+function runWithinHeldSubscriptionLock<T>(key: string, task: () => Promise<T>) {
+  const parentLocks = heldSubscriptionLocks.getStore();
+  const nextLocks = new Set(parentLocks ?? []);
+  nextLocks.add(key);
+  return heldSubscriptionLocks.run(nextLocks, task);
 }

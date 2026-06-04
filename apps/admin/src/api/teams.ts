@@ -12,6 +12,8 @@ import type {
 } from "@chordv/shared";
 import { request } from "./base";
 
+const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
+
 export function fetchAdminTeams() {
   return request<AdminTeamRecordDto[]>("/admin/teams");
 }
@@ -53,14 +55,16 @@ export function deleteTeamMember(teamId: string, memberId: string) {
 export function kickTeamMember(teamId: string, memberId: string, input: KickTeamMemberInputDto) {
   return request<KickTeamMemberResultDto>(`/admin/teams/${teamId}/members/${memberId}/kick`, {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 
 export function createTeamSubscription(teamId: string, input: CreateTeamSubscriptionInputDto) {
   return request<AdminSubscriptionRecordDto>(`/admin/teams/${teamId}/subscriptions`, {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 

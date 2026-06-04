@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
@@ -65,10 +66,13 @@ type ResetTrafficCountersResult = {
   subscription: AdminSubscriptionEntity;
   targetUserId: string | null;
   clearedBindingCount: number;
+  panelSync: PanelSyncBestEffortResult;
 };
 
 @Injectable()
 export class AdminSubscriptionService {
+  private readonly logger = new Logger(AdminSubscriptionService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
@@ -183,37 +187,29 @@ export class AdminSubscriptionService {
       }
     }
 
-    if (disableTargets.length > 0) {
-      await this.prisma.$transaction(async (tx) => {
-        for (const subscriptionId of disableTargets) {
-          await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId });
-          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "user_disabled", { userId });
-        }
-        await tx.user.update({
-          where: { id: userId },
-          data
-        });
-      });
-    } else {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data
-      });
-    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data
+    });
+
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
 
     if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
-      await this.authSessionService.revokeAllUserSessions(userId);
+      await this.revokeAllUserSessionsBestEffort(userId, "user credentials changed");
     }
 
     if (statusChanged) {
       if (input.status === "disabled") {
         for (const subscriptionId of disableTargets) {
-          await this.revokeSubscriptionLeasesBestEffort(subscriptionId, "user_disabled", { userId });
+          panelSync = mergePanelSyncResults(
+            panelSync,
+            await this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
+          );
         }
       } else if (input.status === "active") {
         const personalSubscription = await this.findCurrentPersonalSubscription(userId);
         if (personalSubscription) {
-          await this.syncSubscriptionPanelAccessBestEffort(personalSubscription.id);
+          panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(personalSubscription.id));
         }
         const memberships = await this.prisma.teamMember.findMany({
           where: { userId },
@@ -222,14 +218,14 @@ export class AdminSubscriptionService {
         for (const membership of memberships) {
           const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
           if (teamSubscription) {
-            await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+            panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
           }
         }
       }
 
       if (input.status === "disabled") {
-        await this.authSessionService.revokeAllUserSessions(userId);
-        this.clientRuntimeEventsService.publishToUser(userId, {
+        await this.revokeAllUserSessionsBestEffort(userId, "user disabled");
+        this.tryPublishUserEvent(userId, {
           type: "account_updated",
           occurredAt: new Date().toISOString(),
           reasonCode: "account_disabled",
@@ -238,7 +234,7 @@ export class AdminSubscriptionService {
       }
     }
 
-    return this.requireAdminUserRecord(userId);
+    return withPanelSyncStatus(await this.requireAdminUserRecord(userId), panelSync, "账号已更新。");
   }
 
   async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {
@@ -269,6 +265,7 @@ export class AdminSubscriptionService {
       requestedUserId: typeof input.userId === "string" ? input.userId : undefined,
       allowTeamWideReset: false
     });
+    const panelSyncResult = buildPanelSyncResult(reset.panelSync);
 
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: reset.subscription.id,
@@ -283,14 +280,11 @@ export class AdminSubscriptionService {
       subscriptionId: subscription.id,
       userId: reset.targetUserId,
       clearedBindingCount: reset.clearedBindingCount,
-      panelSyncStatus: reset.clearedBindingCount > 0 ? "pending" : "synced",
-      panelSyncMessage:
-        reset.clearedBindingCount > 0
-          ? "3x-ui traffic reset queued for background retry; local counters are already reset."
-          : null,
+      panelSyncStatus: panelSyncResult.panelSyncStatus,
+      panelSyncMessage: panelSyncResult.panelSyncMessage,
       message:
         reset.clearedBindingCount > 0
-          ? "已重置订阅流量，并同步清空 3x-ui 面板计量"
+          ? buildPanelSyncMessage(reset.panelSync, "已重置订阅流量，并同步清空 3x-ui 面板计量")
           : "已重置订阅流量，当前没有可同步的 3x-ui 客户端",
       subscription: toAdminSubscriptionRecord(reset.subscription),
       user
@@ -500,53 +494,55 @@ export class AdminSubscriptionService {
     const current = await this.requireSubscription(subscriptionId);
     const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
     const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
-    const row = input.resetTraffic
-      ? (
-          await this.resetSubscriptionTrafficCounters(current, {
-            allowTeamWideReset: true,
-            totalTrafficGb,
-            expireAt: nextExpireAt,
-            sourceAction: "renewed",
-            statePreference: "active"
-          })
-        ).subscription
-      : await runWithSubscriptionUsageLock(subscriptionId, async () => {
-          const lockedSubscription = await this.requireSubscription(subscriptionId);
-          const remainingTrafficGb = Math.max(0, totalTrafficGb - lockedSubscription.usedTrafficGb);
-          const state = resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt);
-          const disconnectReason = getSubscriptionDisconnectReason({
-            state,
-            remainingTrafficGb,
-            expireAt: nextExpireAt
-          });
-          const mustDisableRemoteClients = Boolean(disconnectReason);
-
-          return this.prisma.$transaction(async (tx) => {
-            if (mustDisableRemoteClients) {
-              await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId);
-              await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, disconnectReason as string);
-            }
-            return tx.subscription.update({
-              where: { id: subscriptionId },
-              data: {
-                totalTrafficGb,
-                remainingTrafficGb,
-                expireAt: nextExpireAt,
-                state,
-                sourceAction: "renewed",
-                lastSyncedAt: new Date()
-              },
-              include: {
-                plan: true,
-                user: true,
-                team: true,
-                nodeAccesses: true
-              }
-            });
-          });
+    let disconnectReason: string | null = null;
+    let resetPanelSync: PanelSyncBestEffortResult = { ok: true };
+    let row: AdminSubscriptionEntity;
+    if (input.resetTraffic) {
+      const reset = await this.resetSubscriptionTrafficCounters(current, {
+        allowTeamWideReset: true,
+        totalTrafficGb,
+        expireAt: nextExpireAt,
+        sourceAction: "renewed",
+        statePreference: "active"
+      });
+      row = reset.subscription;
+      resetPanelSync = reset.panelSync;
+    } else {
+      row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
+        const lockedSubscription = await this.requireSubscription(subscriptionId);
+        const remainingTrafficGb = Math.max(0, totalTrafficGb - lockedSubscription.usedTrafficGb);
+        const state = resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt);
+        disconnectReason = getSubscriptionDisconnectReason({
+          state,
+          remainingTrafficGb,
+          expireAt: nextExpireAt
         });
 
+        return this.prisma.$transaction(async (tx) =>
+          tx.subscription.update({
+            where: { id: subscriptionId },
+            data: {
+              totalTrafficGb,
+              remainingTrafficGb,
+              expireAt: nextExpireAt,
+              state,
+              sourceAction: "renewed",
+              lastSyncedAt: new Date()
+            },
+            include: {
+              plan: true,
+              user: true,
+              team: true,
+              nodeAccesses: true
+            }
+          })
+        );
+      });
+    }
+
     const panelSync = mergePanelSyncResults(
+      resetPanelSync,
+      disconnectReason ? await this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason) : { ok: true },
       await this.syncActiveLeasesForSubscriptionBestEffort(row),
       await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
     );
@@ -570,6 +566,7 @@ export class AdminSubscriptionService {
       throw new BadRequestException("套餐已停用，不能切换");
     }
 
+    let disconnectReason: string | null = null;
     const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
     const current = await this.requireSubscription(subscriptionId);
     assertPlanScopeMatchesSubscription(plan.scope, current);
@@ -581,17 +578,12 @@ export class AdminSubscriptionService {
     const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
     const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
     const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
-    const disconnectReason = getSubscriptionDisconnectReason({
+    disconnectReason = getSubscriptionDisconnectReason({
       state,
       remainingTrafficGb,
       expireAt
     });
-    const mustDisableRemoteClients = Boolean(disconnectReason);
     return this.prisma.$transaction(async (tx) => {
-      if (mustDisableRemoteClients) {
-        await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId);
-        await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, disconnectReason as string);
-      }
       return tx.subscription.update({
         where: { id: subscriptionId },
         data: {
@@ -615,6 +607,7 @@ export class AdminSubscriptionService {
     });
 
     const panelSync = mergePanelSyncResults(
+      disconnectReason ? await this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason) : { ok: true },
       await this.enforceSubscriptionConcurrentLeaseLimits(row),
       await this.syncActiveLeasesForSubscriptionBestEffort(row),
       await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
@@ -647,13 +640,9 @@ export class AdminSubscriptionService {
         remainingTrafficGb,
         expireAt
       });
-      const mustDisableRemoteClients = Boolean(disconnectReason);
+      void disconnectReason;
 
       return this.prisma.$transaction(async (tx) => {
-        if (mustDisableRemoteClients) {
-          await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId);
-          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, disconnectReason as string);
-        }
         return tx.subscription.update({
           where: { id: subscriptionId },
           data: {
@@ -734,14 +723,32 @@ export class AdminSubscriptionService {
       });
       membershipCreated = true;
 
-      teamPanelSync = await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
-      await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, "team_member_removed", {
+      const personalLeaseSync = await this.revokeSubscriptionLeasesBestEffort(subscriptionId, "team_member_removed", {
         userId: user.id
       });
-      const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(subscriptionId, {
-        userId: user.id
-      });
-      this.runtimeSessionService.assertPanelBindingMutation("删除个人订阅的 3x-ui 客户端失败", removeResult);
+      teamPanelSync = mergePanelSyncResults(
+        await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id),
+        personalLeaseSync
+      );
+      try {
+        const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(subscriptionId, {
+          userId: user.id
+        });
+        this.runtimeSessionService.assertPanelBindingMutation("删除个人订阅的 3x-ui 客户端失败", removeResult);
+        if (removeResult.updated > 0) {
+          teamPanelSync = mergePanelSyncResults(teamPanelSync, {
+            ok: false,
+            errorMessage: "3x-ui client delete queued for background retry"
+          });
+        }
+      } catch (error) {
+        const errorMessage = readErrorMessage(error, "unknown error");
+        this.logger?.warn(`Personal subscription converted to Team, but personal panel cleanup queueing failed for ${subscriptionId}: ${errorMessage}`);
+        teamPanelSync = mergePanelSyncResults(teamPanelSync, {
+          ok: false,
+          errorMessage: `personal panel cleanup queueing failed: ${errorMessage}`
+        });
+      }
 
       await this.closePersonalSupportTicketsForUser(
         user.id,
@@ -948,6 +955,7 @@ export class AdminSubscriptionService {
     const teamSubscription = await this.findCurrentTeamSubscription(teamId);
     const teamWillBeDisabled = Boolean(teamSubscription && input.status === "disabled" && input.status !== current.status);
     let teamUpdatedInOwnerTransaction = false;
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
 
     if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
       const nextOwner = await this.ensureUserExists(input.ownerUserId);
@@ -968,10 +976,6 @@ export class AdminSubscriptionService {
 
       data.ownerUserId = nextOwner.id;
       await this.prisma.$transaction(async (tx) => {
-        if (teamWillBeDisabled && teamSubscription) {
-          await this.queuePanelDisableJobsForSubscriptionTx(tx, teamSubscription.id);
-          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, teamSubscription.id, "team_disabled");
-        }
         await tx.teamMember.updateMany({
           where: { teamId, role: "owner" },
           data: { role: "member" }
@@ -1024,13 +1028,9 @@ export class AdminSubscriptionService {
 
     if (!teamUpdatedInOwnerTransaction) {
       if (teamWillBeDisabled && teamSubscription) {
-        await this.prisma.$transaction(async (tx) => {
-          await this.queuePanelDisableJobsForSubscriptionTx(tx, teamSubscription.id);
-          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, teamSubscription.id, "team_disabled");
-          await tx.team.update({
-            where: { id: teamId },
-            data
-          });
+        await this.prisma.team.update({
+          where: { id: teamId },
+          data
         });
       } else {
         await this.prisma.team.update({
@@ -1043,12 +1043,15 @@ export class AdminSubscriptionService {
     if (teamSubscription) {
       if (input.status !== undefined && input.status !== current.status) {
         if (input.status === "disabled") {
-          await this.revokeSubscriptionLeasesBestEffort(teamSubscription.id, "team_disabled");
+          panelSync = mergePanelSyncResults(
+            panelSync,
+            await this.queueSubscriptionDisconnectBestEffort(teamSubscription.id, "team_disabled")
+          );
         } else if (input.status === "active") {
-          await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+          panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
         }
       } else if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
-        await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+        panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
       }
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: teamSubscription.id,
@@ -1057,7 +1060,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    return this.requireTeamRecord(teamId);
+    return withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, "Team 已更新。");
   }
 
   async createTeamMember(teamId: string, input: CreateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
@@ -1164,22 +1167,13 @@ export class AdminSubscriptionService {
       "当前账号已离开原 Team，原 Team 工单已失效。如需继续咨询，请按当前归属重新创建工单。"
     );
 
-    await this.prisma.$transaction(async (tx) => {
-      if (subscription) {
-        await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id, {
-          userId: member.userId
-        });
-        await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_member_removed", {
-          userId: member.userId
-        });
-      }
-      await tx.teamMember.delete({
-        where: { id: memberId }
-      });
+    await this.prisma.teamMember.delete({
+      where: { id: memberId }
     });
 
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
     if (subscription) {
-      await this.revokeSubscriptionLeasesBestEffort(subscription.id, "team_member_removed", {
+      panelSync = await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_member_removed", {
         userId: member.userId
       });
     }
@@ -1192,7 +1186,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    this.clientRuntimeEventsService.publishToUser(member.userId, {
+    this.tryPublishUserEvent(member.userId, {
       type: "subscription_updated",
       occurredAt: new Date().toISOString(),
       subscriptionId: null,
@@ -1201,7 +1195,7 @@ export class AdminSubscriptionService {
       reasonCode: "team_access_revoked",
       reasonMessage: "你已被移出当前团队，当前不再拥有团队订阅。"
     });
-    this.clientRuntimeEventsService.publishToUser(member.userId, {
+    this.tryPublishUserEvent(member.userId, {
       type: "node_access_updated",
       occurredAt: new Date().toISOString(),
       subscriptionId: null,
@@ -1210,7 +1204,11 @@ export class AdminSubscriptionService {
       reasonMessage: "团队节点授权已被移除。"
     });
 
-    return { ok: true };
+    return {
+      ok: true,
+      ...buildPanelSyncResult(panelSync),
+      message: buildPanelSyncMessage(panelSync, "Team 成员已移除。")
+    };
   }
 
   async kickTeamMember(
@@ -1228,22 +1226,40 @@ export class AdminSubscriptionService {
     let panelSyncMessage: string | null = null;
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
-      const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
-        subscription.id,
-        {
-          userId: member.userId
-        }
-      );
-      disconnectedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(
+      const panelSyncResults: PanelSyncBestEffortResult[] = [];
+      let pendingPanelSyncCount = 0;
+      try {
+        pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
+          subscription.id,
+          {
+            userId: member.userId
+          }
+        );
+      } catch (error) {
+        panelSyncResults.push({
+          ok: false,
+          errorMessage: `3x-ui client disable queueing failed: ${readErrorMessage(error, "unknown error")}`
+        });
+      }
+      const leaseSync = await this.revokeSubscriptionLeasesBestEffort(
         subscription.id,
         "team_member_disconnected",
         {
           userId: member.userId
         }
       );
+      if (!leaseSync.ok) {
+        panelSyncResults.push(leaseSync);
+      }
       if (pendingPanelSyncCount > 0) {
+        panelSyncResults.push({ ok: false, errorMessage: "3x-ui client disable queued for background retry" });
         panelSyncStatus = "pending";
         panelSyncMessage = "3x-ui 客户端禁用已加入后台队列。";
+      }
+      const panelSync = mergePanelSyncResults(...panelSyncResults);
+      if (!panelSync.ok) {
+        panelSyncStatus = "pending";
+        panelSyncMessage = buildPanelSyncResult(panelSync).panelSyncMessage;
       }
     }
 
@@ -1396,6 +1412,7 @@ export class AdminSubscriptionService {
 
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
+    let resetPanelBindings: any[] = [];
 
     await runWithSubscriptionUsageLock(subscription.id, async () => {
       const bindings = await this.prisma.panelClientBinding.findMany({
@@ -1409,6 +1426,7 @@ export class AdminSubscriptionService {
         }
       });
       clearedBindingCount = bindings.length;
+      resetPanelBindings = bindings;
 
       const resetSampledAt = new Date();
       const baselineSamples = bindings.map((binding) => ({
@@ -1433,54 +1451,6 @@ export class AdminSubscriptionService {
         }
 
         await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
-        const panelResetQueuedAt = new Date();
-        for (const binding of bindings) {
-          const snapshot = binding.node ?? {};
-          await tx.panelSyncJob.upsert({
-            where: {
-              dedupeKey: `reset:${binding.id}`
-            },
-            create: {
-              id: randomUUID(),
-              dedupeKey: `reset:${binding.id}`,
-              action: "reset_client_traffic",
-              bindingId: binding.id,
-              subscriptionId: binding.subscriptionId,
-              userId: binding.userId,
-              teamId: binding.teamId,
-              nodeId: binding.nodeId,
-              panelClientEmail: binding.panelClientEmail,
-              panelClientId: binding.panelClientId,
-              panelInboundId: binding.panelInboundId,
-              panelBaseUrl: snapshot.panelBaseUrl ?? null,
-              panelApiBasePath: snapshot.panelApiBasePath ?? null,
-              panelUsername: snapshot.panelUsername ?? null,
-              panelPassword: snapshot.panelPassword ?? null,
-              status: "pending",
-              nextRunAt: panelResetQueuedAt
-            },
-            update: {
-              status: "pending",
-              nextRunAt: panelResetQueuedAt,
-              lockedAt: null,
-              completedAt: null,
-              attempts: 0,
-              lastError: null,
-              subscriptionId: binding.subscriptionId,
-              userId: binding.userId,
-              teamId: binding.teamId,
-              nodeId: binding.nodeId,
-              panelClientEmail: binding.panelClientEmail,
-              panelClientId: binding.panelClientId,
-              panelInboundId: binding.panelInboundId,
-              panelBaseUrl: snapshot.panelBaseUrl ?? null,
-              panelApiBasePath: snapshot.panelApiBasePath ?? null,
-              panelUsername: snapshot.panelUsername ?? null,
-              panelPassword: snapshot.panelPassword ?? null
-            }
-          });
-        }
-
         const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
         const expireAt = options.expireAt ?? new Date(lockedSubscription.expireAt);
         let usedTrafficGb = 0;
@@ -1532,11 +1502,13 @@ export class AdminSubscriptionService {
     if (!updatedSubscription) {
       throw new NotFoundException("订阅不存在");
     }
+    const panelSync = await this.queuePanelTrafficResetJobsBestEffort(resetPanelBindings);
 
     return {
       subscription: updatedSubscription,
       targetUserId,
-      clearedBindingCount
+      clearedBindingCount,
+      panelSync
     };
   }
 
@@ -1606,6 +1578,73 @@ export class AdminSubscriptionService {
     await this.prisma.$transaction(writeSamples);
   }
 
+  private async queuePanelTrafficResetJobsBestEffort(bindings: any[]): Promise<PanelSyncBestEffortResult> {
+    if (bindings.length === 0) {
+      return { ok: true };
+    }
+
+    const errors: string[] = [];
+    const panelResetQueuedAt = new Date();
+    for (const binding of bindings) {
+      const snapshot = binding.node ?? {};
+      try {
+        await this.prisma.panelSyncJob.upsert({
+          where: {
+            dedupeKey: `reset:${binding.id}`
+          },
+          create: {
+            id: randomUUID(),
+            dedupeKey: `reset:${binding.id}`,
+            action: "reset_client_traffic",
+            bindingId: binding.id,
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            nodeId: binding.nodeId,
+            panelClientEmail: binding.panelClientEmail,
+            panelClientId: binding.panelClientId,
+            panelInboundId: binding.panelInboundId,
+            panelBaseUrl: snapshot.panelBaseUrl ?? null,
+            panelApiBasePath: snapshot.panelApiBasePath ?? null,
+            panelUsername: snapshot.panelUsername ?? null,
+            panelPassword: snapshot.panelPassword ?? null,
+            status: "pending",
+            nextRunAt: panelResetQueuedAt
+          },
+          update: {
+            status: "pending",
+            nextRunAt: panelResetQueuedAt,
+            lockedAt: null,
+            completedAt: null,
+            attempts: 0,
+            lastError: null,
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            nodeId: binding.nodeId,
+            panelClientEmail: binding.panelClientEmail,
+            panelClientId: binding.panelClientId,
+            panelInboundId: binding.panelInboundId,
+            panelBaseUrl: snapshot.panelBaseUrl ?? null,
+            panelApiBasePath: snapshot.panelApiBasePath ?? null,
+            panelUsername: snapshot.panelUsername ?? null,
+            panelPassword: snapshot.panelPassword ?? null
+          }
+        });
+      } catch (error) {
+        errors.push(`traffic reset job queueing failed for ${binding.id}: ${readErrorMessage(error, "unknown error")}`);
+      }
+    }
+
+    return {
+      ok: false,
+      errorMessage:
+        errors.length > 0
+          ? errors.join("; ")
+          : "3x-ui traffic reset queued for background retry; local counters are already reset"
+    };
+  }
+
   private async resolveTargetUserIdsForSubscriptionTarget(target: {
     userId?: string | null;
     teamId?: string | null;
@@ -1626,14 +1665,36 @@ export class AdminSubscriptionService {
     teamId?: string | null;
     state?: SubscriptionState | null;
   }) {
-    const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
-    this.clientRuntimeEventsService.publishToUsers(userIds, {
-      type: "subscription_updated",
-      occurredAt: new Date().toISOString(),
-      subscriptionId: target.subscriptionId ?? null,
-      subscriptionState: target.state ?? null,
-      state: target.state ?? null
-    });
+    try {
+      const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
+      this.clientRuntimeEventsService.publishToUsers(userIds, {
+        type: "subscription_updated",
+        occurredAt: new Date().toISOString(),
+        subscriptionId: target.subscriptionId ?? null,
+        subscriptionState: target.state ?? null,
+        state: target.state ?? null
+      });
+    } catch (error) {
+      this.logger?.warn(`Local subscription change saved, but subscription_updated publish failed: ${readErrorMessage(error, "unknown error")}`);
+    }
+  }
+
+  private tryPublishUserEvent(userId: string, event: Parameters<ClientRuntimeEventsService["publishToUser"]>[1]) {
+    try {
+      this.clientRuntimeEventsService.publishToUser(userId, event);
+    } catch (error) {
+      this.logger?.warn(`Local subscription change saved, but user event publish failed for ${userId}: ${readErrorMessage(error, "unknown error")}`);
+    }
+  }
+
+  private async revokeAllUserSessionsBestEffort(userId: string, reason: string) {
+    try {
+      await this.authSessionService.revokeAllUserSessions(userId);
+    } catch (error) {
+      this.logger?.warn(
+        `Local user change saved, but auth session revocation failed for ${userId} after ${reason}: ${readErrorMessage(error, "unknown error")}`
+      );
+    }
   }
 
   private async queuePanelDisableJobsForSubscriptionTx(
@@ -1641,7 +1702,14 @@ export class AdminSubscriptionService {
     subscriptionId: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
-    return this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(writer, subscriptionId, filter);
+    try {
+      return await this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(writer, subscriptionId, filter);
+    } catch (error) {
+      this.logger?.warn(
+        `Local subscription change will continue, but panel disable job queueing failed for ${subscriptionId}: ${readErrorMessage(error, "unknown error")}`
+      );
+      return 0;
+    }
   }
 
   private async queueLeaseRevocationJobsForSubscriptionTx(
@@ -1650,7 +1718,50 @@ export class AdminSubscriptionService {
     reason: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
-    return this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(writer, subscriptionId, reason, filter);
+    try {
+      return await this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(writer, subscriptionId, reason, filter);
+    } catch (error) {
+      this.logger?.warn(
+        `Local subscription change will continue, but lease revocation job queueing failed for ${subscriptionId}: ${readErrorMessage(error, "unknown error")}`
+      );
+      return 0;
+    }
+  }
+
+  private async queueSubscriptionDisconnectBestEffort(
+    subscriptionId: string,
+    reason: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ): Promise<PanelSyncBestEffortResult> {
+    const messages: string[] = [];
+    try {
+      const queuedCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscriptionId, filter);
+      if (queuedCount > 0) {
+        messages.push("3x-ui panel disable queued for background retry");
+      }
+    } catch (error) {
+      messages.push(`3x-ui panel disable queueing failed: ${readErrorMessage(error, "unknown error")}`);
+    }
+
+    try {
+      await this.prisma.$transaction((tx) =>
+        this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, reason, filter)
+      );
+    } catch (error) {
+      messages.push(`lease revocation job queueing failed: ${readErrorMessage(error, "unknown error")}`);
+    }
+
+    const activeLeaseRevocation = await this.revokeSubscriptionLeasesBestEffort(subscriptionId, reason, filter);
+    if (!activeLeaseRevocation.ok) {
+      messages.push(activeLeaseRevocation.errorMessage);
+    }
+
+    return messages.length > 0
+      ? {
+          ok: false,
+          errorMessage: messages.join("; ")
+        }
+      : { ok: true };
   }
 
   private async syncActiveLeasesForSubscriptionBestEffort(subscription: Parameters<RuntimeSessionService["syncActiveLeasesForSubscription"]>[0]) {
@@ -1986,7 +2097,7 @@ export class AdminSubscriptionService {
     ]);
 
     for (const ticket of tickets) {
-      this.clientRuntimeEventsService.publishToUser(ticket.userId, {
+      this.tryPublishUserEvent(ticket.userId, {
         type: "ticket_updated",
         occurredAt: now.toISOString(),
         ticketId: ticket.id,
@@ -2045,7 +2156,7 @@ function mergePanelSyncResults(...results: PanelSyncBestEffortResult[]): PanelSy
   }
   return {
     ok: false,
-    errorMessage: failed.map((item) => item.errorMessage).join("；")
+    errorMessage: failed.map((item) => item.errorMessage).join("; ")
   };
 }
 

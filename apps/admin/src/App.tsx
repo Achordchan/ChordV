@@ -748,6 +748,10 @@ export function App() {
     ]);
   }
 
+  async function refreshPanelSyncJobsAfterPending() {
+    mergeSnapshot({ panelSyncJobs: await fetchAdminPanelSyncJobs() });
+  }
+
   async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm) {
     if (!form.panelBaseUrl || !form.panelUsername || !form.panelPassword) {
       notifications.show({
@@ -935,6 +939,15 @@ export function App() {
           message: readError(refreshReason, "刷新最新数据失败")
         });
       });
+      if (panelSyncPending) {
+        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
+          notifications.show({
+            color: "yellow",
+            title: "面板同步队列刷新失败",
+            message: readError(refreshReason, "同步队列刷新失败")
+          });
+        });
+      }
       return true;
     } catch (reason) {
       const message = readError(reason, "操作失败");
@@ -1002,6 +1015,15 @@ export function App() {
           message: readError(refreshReason, "刷新最新数据失败")
         });
       });
+      if (panelSyncPending) {
+        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
+          notifications.show({
+            color: "yellow",
+            title: "面板同步队列刷新失败",
+            message: readError(refreshReason, "同步队列刷新失败")
+          });
+        });
+      }
     } catch (reason) {
       const message = readError(reason, "保存节点授权失败");
       if (ensureAuthenticated(message)) {
