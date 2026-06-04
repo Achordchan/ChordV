@@ -4126,6 +4126,78 @@ async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
 }
 
+async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
+  const oldNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_offline", node: oldNode }];
+  let disableQueueStarted = false;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        },
+        deleteMany: async () => {
+          accessRows = [];
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = [];
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        disableQueueStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateSubscriptionNodeAccess("sub_1", { nodeIds: [] }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("clear node access waited for stalled revocation follow-up")), 750);
+    })
+  ]);
+
+  assert.equal(disableQueueStarted, true);
+  assert.deepEqual(accessRows, [], "local node access must be cleared before stalled follow-up finishes");
+  assert.deepEqual(result.nodeIds, []);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+}
+
 async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -4344,6 +4416,96 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
       process.env.DATABASE_URL = previousDatabaseUrl;
     }
   }
+}
+
+async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const keepNode = {
+    ...offlineNode,
+    id: "node_keep",
+    name: "keep",
+    recommended: true
+  };
+  let accessRows = [
+    { id: "access_offline", nodeId: "node_offline" },
+    { id: "access_keep", nodeId: "node_keep" }
+  ];
+  let disableFilter: { nodeIds?: string[] } | undefined;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({
+            ...row,
+            node: row.nodeId === "node_keep" ? keepNode : offlineNode
+          }));
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+        }
+      },
+      node: {
+        findMany: async () => [keepNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+        disableFilter = filter;
+        return new Promise<number>(() => undefined);
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("removal-only access update must not full-sync remote panels");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_keep"] }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("single node removal waited for stalled revocation follow-up")), 750);
+    })
+  ]);
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
+  assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] });
+  assert.deepEqual(result.nodeIds, ["node_keep"]);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
 }
 
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
@@ -10208,8 +10370,10 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
+  await testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
   await testClearNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
+  await testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();

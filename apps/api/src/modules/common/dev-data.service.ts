@@ -188,6 +188,12 @@ import {
 import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
+const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
+
+type NodeAccessRevocationEffects = {
+  revokedSessionCount: number;
+  panelSyncMessage: string | null;
+};
 
 type UploadedReleaseFile = {
   path: string;
@@ -1325,12 +1331,10 @@ export class DevDataService implements OnModuleInit {
             where: { subscriptionId }
           });
         });
-        const queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, undefined);
-        const revocation = await this.tryApplyNodeAccessRevocationEffects(
+        const revocation = await this.applyNodeAccessRevocationEffectsBestEffort(
           subscriptionId,
           undefined,
-          "node_access_revoked",
-          { queuedPanelSyncMessage }
+          "node_access_revoked"
         );
         revokedSessionCount = revocation.revokedSessionCount;
         if (revocation.panelSyncMessage) {
@@ -1396,14 +1400,10 @@ export class DevDataService implements OnModuleInit {
           });
         }
       });
-      const queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, {
-        nodeIds: removedNodeIds
-      });
-      const revocation = await this.tryApplyNodeAccessRevocationEffects(
+      const revocation = await this.applyNodeAccessRevocationEffectsBestEffort(
         subscriptionId,
         { nodeIds: removedNodeIds },
-        "node_access_revoked",
-        { queuedPanelSyncMessage }
+        "node_access_revoked"
       );
       revokedSessionCount = revocation.revokedSessionCount;
       if (revocation.panelSyncMessage) {
@@ -1570,12 +1570,78 @@ export class DevDataService implements OnModuleInit {
     }
   }
 
+  private async applyNodeAccessRevocationEffectsBestEffort(
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined,
+    reason: string
+  ): Promise<NodeAccessRevocationEffects> {
+    const task = (async () => {
+      const queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, filter);
+      return this.tryApplyNodeAccessRevocationEffects(subscriptionId, filter, reason, { queuedPanelSyncMessage });
+    })();
+
+    return this.withNodeAccessFollowUpBudget(subscriptionId, task);
+  }
+
+  private async withNodeAccessFollowUpBudget(
+    subscriptionId: string,
+    task: Promise<NodeAccessRevocationEffects>
+  ): Promise<NodeAccessRevocationEffects> {
+    let settled = false;
+    const guardedTask = task.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Node access saved, but delayed revocation follow-up failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<NodeAccessRevocationEffects>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Node access saved for ${subscriptionId}, but revocation follow-up exceeded ${NODE_ACCESS_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve({
+          revokedSessionCount: 0,
+          panelSyncMessage: "node access revocation follow-up is still running in background; local access is already saved."
+        });
+      }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but revocation follow-up failed for ${subscriptionId}: ${errorMessage}`);
+      return {
+        revokedSessionCount: 0,
+        panelSyncMessage: `node access revocation follow-up failed: ${errorMessage}`
+      };
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
   private async tryApplyNodeAccessRevocationEffects(
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined,
     reason: string,
     options: { queuedPanelSyncMessage?: string | null } = {}
-  ) {
+  ): Promise<NodeAccessRevocationEffects> {
     const messages: string[] = [];
     let revokedSessionCount = 0;
 
