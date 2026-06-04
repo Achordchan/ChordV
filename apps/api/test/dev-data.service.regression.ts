@@ -3751,6 +3751,98 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
   assert.equal(result[1]?.probeStatus, "healthy");
 }
 
+async function testProbeAllNodesContinuesWhenSingleNodeProbeStalls() {
+  const previousProbeBudget = process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+  process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = "25";
+  try {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const makeNode = (id: string) => ({
+      id,
+      name: id,
+      countryCode: "US",
+      region: "Los Angeles",
+      provider: "provider",
+      tags: [],
+      isActive: true,
+      recommended: false,
+      latencyMs: 0,
+      probeLatencyMs: null,
+      protocol: "vless",
+      security: "reality",
+      serverHost: "node.example.com",
+      serverPort: 443,
+      serverName: "node.example.com",
+      shortId: "short",
+      spiderX: "/",
+      mldsa65Verify: null,
+      subscriptionUrl: null,
+      statsLastSyncedAt: null,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 1,
+      panelEnabled: true,
+      panelStatus: "online" as const,
+      panelLastSyncedAt: null,
+      panelError: null,
+      probeStatus: "unknown" as const,
+      probeCheckedAt: null,
+      probeError: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    const nodes = [makeNode("node_stalled"), makeNode("node_good")];
+    const probed: string[] = [];
+    const service = createAdminNodeService({
+      logger: {
+        warn: () => undefined
+      },
+      probeNode: async (nodeId: string) => {
+        probed.push(nodeId);
+        if (nodeId === "node_stalled") {
+          return new Promise<never>(() => undefined);
+        }
+        return {
+          id: nodeId,
+          probeStatus: "healthy",
+          panelStatus: "online"
+        };
+      },
+      prisma: {
+        node: {
+          findMany: async () => nodes,
+          update: async (payload: Record<string, any>) => ({
+            ...nodes.find((node) => node.id === payload.where.id),
+            ...payload.data,
+            updatedAt: new Date("2026-01-01T00:01:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await Promise.race([
+      service.probeAllNodes(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("bulk probe waited for stalled node")), 750);
+      })
+    ]);
+
+    assert.deepEqual(probed, ["node_stalled", "node_good"], "bulk probe must continue after one node stalls");
+    assert.deepEqual(result.map((item) => item.id), ["node_stalled", "node_good"]);
+    assert.equal(result[0]?.probeStatus, "offline");
+    assert.equal(result[0]?.panelStatus, "degraded");
+    assert.match(result[0]?.probeError ?? "", /bulk node probe exceeded/);
+    assert.equal(result[1]?.probeStatus, "healthy");
+  } finally {
+    if (previousProbeBudget === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+  }
+}
+
 async function testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync() {
   const updates: Array<Record<string, any>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -4380,7 +4472,8 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
       revokeSubscriptionLeases: async () => {
         throw new Error("lease revoke failed");
       },
-      syncSubscriptionPanelAccess: async () => undefined
+      queueSubscriptionPanelAccessSync: async () => 0,
+      syncSubscriptionPanelAccess: async () => 0
     },
     publishNodeAccessUpdatedEvent: async () => undefined
   });
@@ -4389,7 +4482,7 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access must save even when panel disable queueing fails");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel job write failed/);
+  assert.match(result.panelSyncMessage ?? "", /后台处理/);
 }
 
 async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
@@ -4458,8 +4551,7 @@ async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.deepEqual(accessRows, [], "local node access must be cleared even when panel disable queueing fails");
   assert.deepEqual(result.nodeIds, []);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel job write failed/);
-  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+  assert.match(result.panelSyncMessage ?? "", /后台处理/);
 }
 
 async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
@@ -4531,7 +4623,7 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
   assert.deepEqual(accessRows, [], "local node access must be cleared before stalled follow-up finishes");
   assert.deepEqual(result.nodeIds, []);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+  assert.match(result.panelSyncMessage ?? "", /后台处理/);
 }
 
 async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
@@ -4740,7 +4832,7 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
     assert.equal(syncCalls, 0, "removing one node must not run full panel sync");
     assert.deepEqual(result.nodeIds, ["node_keep"]);
     assert.equal(result.panelSyncStatus, "pending");
-    assert.match(result.panelSyncMessage ?? "", /disable job queued/);
+    assert.match(result.panelSyncMessage ?? "", /后台处理/);
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -4841,7 +4933,7 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
   assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] });
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+  assert.match(result.panelSyncMessage ?? "", /后台处理/);
 }
 
 async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls() {
@@ -5051,7 +5143,7 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
     assert.equal(syncCalls, 0, "node access replacement must not use the usage-locking panel sync path");
     assert.deepEqual(result.nodeIds, ["node_new"]);
     assert.equal(result.panelSyncStatus, "pending");
-    assert.match(result.panelSyncMessage ?? "", /disable job queued/);
+    assert.match(result.panelSyncMessage ?? "", /后台处理/);
     assert.match(result.panelSyncMessage ?? "", /panel sync queued/);
   } finally {
     if (releaseOuterLock) {
@@ -5144,7 +5236,7 @@ async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
   assert.deepEqual(result.nodeIds, ["node_new"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /disable job queued/);
+  assert.match(result.panelSyncMessage ?? "", /后台处理/);
 }
 
 async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue() {
@@ -5214,7 +5306,8 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
       revokeSubscriptionLeases: async () => {
         throw new Error("lease revoke failed");
       },
-      syncSubscriptionPanelAccess: async () => undefined
+      queueSubscriptionPanelAccessSync: async () => 0,
+      syncSubscriptionPanelAccess: async () => 0
     },
     publishNodeAccessUpdatedEvent: async () => undefined
   });
@@ -5223,8 +5316,7 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access replacement can commit after disable jobs are durable");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /disable job queued/);
-  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+  assert.match(result.panelSyncMessage ?? "", /后台处理/);
 }
 
 async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
@@ -9462,6 +9554,88 @@ async function testChangeSubscriptionPlanReturnsPendingWhenConcurrencyLookupFail
   assert.match(result.panelSyncMessage ?? "", /user lookup failed/);
 }
 
+async function testChangeSubscriptionPlanReturnsPendingWhenPanelSyncStalls() {
+  const updates: Array<Record<string, any>> = [];
+  let panelSyncStarted = false;
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "subscription_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_old",
+    totalTrafficGb: 100,
+    usedTrafficGb: 1,
+    remainingTrafficGb: 99,
+    expireAt: new Date(Date.now() + 60_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Old", maxConcurrentSessions: 3 },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const nextPlan = {
+    id: "plan_new",
+    name: "New",
+    scope: "personal",
+    totalTrafficGb: 100,
+    renewable: true,
+    maxConcurrentSessions: 1,
+    isActive: true
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => current,
+    ensurePlanExists: async () => nextPlan,
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => undefined,
+      syncActiveLeasesForSubscription: async () => undefined,
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("usage-locking panel sync must not run");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                planId: nextPlan.id,
+                plan: nextPlan,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        }),
+      user: {
+        findMany: async () => [{ id: "user_1", maxConcurrentSessionsOverride: null }]
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.changeSubscriptionPlan("subscription_1", { planId: "plan_new" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("change plan waited for stalled panel sync")), 750);
+    })
+  ]);
+
+  assert.equal(panelSyncStarted, true);
+  assert.equal(updates.length, 1, "local plan change must save before panel sync follow-up finishes");
+  assert.equal(result.planId, "plan_new");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /3x-ui panel sync is still running/);
+}
+
 async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminSubscriptionService({
@@ -9897,6 +10071,84 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
   assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
   assert.match(result.panelSyncMessage ?? "", /lease job queue failed/);
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+}
+
+async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
+  const updates: Array<Record<string, any>> = [];
+  let panelSyncStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "disabled"
+    }),
+    findCurrentPersonalSubscription: async () => ({
+      id: "sub_1"
+    }),
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: new Date().toISOString(),
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 1,
+      activeSubscriptionCount: 1,
+      currentSubscription: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: payload.data.status,
+            lastSeenAt: new Date(),
+            maxConcurrentSessionsOverride: null
+          };
+        }
+      },
+      teamMember: {
+        findMany: async () => []
+      }
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("usage-locking panel sync must not run");
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateUser("user_1", { status: "active" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("enable user waited for stalled panel sync")), 750);
+    })
+  ]);
+
+  assert.equal(panelSyncStarted, true);
+  assert.equal(updates.length, 1, "user status must save before panel sync follow-up finishes");
+  assert.equal(updates[0].data.status, "active");
+  assert.equal(result.status, "active");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /3x-ui panel sync is still running/);
 }
 
 async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
@@ -11661,6 +11913,7 @@ async function main() {
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
+  await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
@@ -11764,12 +12017,14 @@ async function main() {
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
   await testChangeSubscriptionPlanReturnsPendingWhenConcurrencyLookupFails();
+  await testChangeSubscriptionPlanReturnsPendingWhenPanelSyncStalls();
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
   await testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls();
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();
+  await testEnableUserReturnsPendingWhenPanelSyncStalls();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
   await testUpdateTeamReturnsPendingWhenRecordRefreshFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();

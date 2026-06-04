@@ -24,6 +24,7 @@ import {
 } from "./node-import.utils";
 
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
+const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 
 @Injectable()
 export class AdminNodeService {
@@ -696,7 +697,7 @@ export class AdminNodeService {
     const results: AdminNodeRecordDto[] = [];
     for (const node of nodes) {
       try {
-        results.push(await this.probeNode(node.id));
+        results.push(await this.probeNodeWithBulkBudget(node.id));
       } catch (error) {
         const message = readAdminNodeErrorMessage(error);
         this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
@@ -735,6 +736,41 @@ export class AdminNodeService {
       }
     }
     return results;
+  }
+
+  private async probeNodeWithBulkBudget(nodeId: string) {
+    let settled = false;
+    const probeTask = this.probeNode(nodeId).then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void probeTask.catch((error) => {
+      this.logger.warn(`Delayed bulk probe for node ${nodeId} failed: ${readAdminNodeErrorMessage(error)}`);
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        reject(new Error(`bulk node probe exceeded ${readBulkNodeProbeBudgetMs()}ms`));
+      }, readBulkNodeProbeBudgetMs());
+    });
+
+    try {
+      return await Promise.race([probeTask, timeoutTask]);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   async deleteNode(nodeId: string) {
@@ -862,4 +898,13 @@ export class AdminNodeService {
 
 function readAdminNodeErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readBulkNodeProbeBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_BUDGET_MS);
 }

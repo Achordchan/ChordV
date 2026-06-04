@@ -1453,18 +1453,12 @@ export class DevDataService implements OnModuleInit {
             where: { subscriptionId }
           });
         });
-        const revocation = await this.applyNodeAccessRevocationEffectsBestEffort(
+        panelSyncStatus = "pending";
+        panelSyncMessage = this.startNodeAccessRevocationEffects(
           subscriptionId,
           undefined,
           "node_access_revoked"
         );
-        revokedSessionCount = revocation.revokedSessionCount;
-        if (revocation.panelSyncMessage) {
-          panelSyncStatus = "pending";
-          panelSyncMessage = revocation.panelSyncMessage;
-          panelSyncMessage = "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。";
-        }
-        panelSyncMessage = revocation.panelSyncMessage ?? panelSyncMessage;
         reasonCode = "node_access_revoked";
         reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
         message =
@@ -1522,18 +1516,12 @@ export class DevDataService implements OnModuleInit {
           });
         }
       });
-      const revocation = await this.applyNodeAccessRevocationEffectsBestEffort(
+      panelSyncStatus = "pending";
+      panelSyncMessage = this.startNodeAccessRevocationEffects(
         subscriptionId,
         { nodeIds: removedNodeIds },
         "node_access_revoked"
       );
-      revokedSessionCount = revocation.revokedSessionCount;
-      if (revocation.panelSyncMessage) {
-        panelSyncStatus = "pending";
-        panelSyncMessage = revocation.panelSyncMessage;
-        panelSyncMessage = "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。";
-      }
-      panelSyncMessage = revocation.panelSyncMessage ?? panelSyncMessage;
       reasonCode = "node_access_revoked";
       reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
       message =
@@ -1799,6 +1787,25 @@ export class DevDataService implements OnModuleInit {
     })();
 
     return this.withNodeAccessFollowUpBudget(subscriptionId, task);
+  }
+
+  private startNodeAccessRevocationEffects(
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined,
+    reason: string
+  ) {
+    void this.applyNodeAccessRevocationEffectsBestEffort(subscriptionId, filter, reason)
+      .then((result) => {
+        if (result.panelSyncMessage) {
+          this.logger?.warn(`Node access revocation follow-up for ${subscriptionId}: ${result.panelSyncMessage}`);
+        }
+      })
+      .catch((error) => {
+        this.logger?.warn(
+          `Node access saved, but async revocation follow-up failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+        );
+      });
+    return "3x-ui 客户端禁用和连接撤销已进入后台处理，本地授权已立即失效。";
   }
 
   private async withNodeAccessFollowUpBudget(
