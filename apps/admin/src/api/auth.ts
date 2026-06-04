@@ -8,6 +8,8 @@ import {
   request
 } from "./base";
 
+const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
+
 export function loginAdmin(account: string, password: string) {
   return request<AuthSessionDto>(
     "/auth/admin/login",
@@ -32,14 +34,16 @@ export function refreshAdminSession(refreshToken?: string) {
 
 export function logoutAdminSession() {
   return request<{ ok: boolean }>("/auth/logout", {
-    method: "POST"
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
 export function updateCurrentAdminSecurity(input: UpdateCurrentAdminSecurityInputDto) {
   return request<AuthSessionDto>("/admin/me/security", {
     method: "PUT",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 

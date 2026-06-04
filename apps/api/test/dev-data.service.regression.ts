@@ -3581,6 +3581,76 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.match(result.panelSyncMessage ?? "", /panel job write failed/);
 }
 
+async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old", node: oldNode }];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        },
+        deleteMany: async () => {
+          accessRows = [];
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = [];
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("panel job write failed");
+      },
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        throw new Error("panel job write failed");
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => {
+        throw new Error("lease revoke failed");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: [] });
+
+  assert.deepEqual(accessRows, [], "local node access must be cleared even when panel disable queueing fails");
+  assert.deepEqual(result.nodeIds, []);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel job write failed/);
+  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+}
+
 async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
   const oldNode = {
     id: "node_old",
@@ -8333,6 +8403,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
+  await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();

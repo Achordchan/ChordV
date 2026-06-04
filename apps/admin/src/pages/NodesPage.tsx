@@ -80,7 +80,10 @@ export function NodesPage(props: NodesPageProps) {
                     <StatusBadge color={nodePanelColor(item.panelStatus)} label={translatePanelStatus(item.panelStatus)} />
                   </Table.Td>
                   <Table.Td>
-                    {item.panelSyncPendingCount ? (
+                    {(item.panelSyncTotalCount ??
+                      ((item.panelSyncPendingCount ?? 0) +
+                        (item.panelSyncRunningCount ?? 0) +
+                        (item.panelSyncFailedCount ?? 0))) ? (
                       <Stack gap={2}>
                         <Badge color="yellow" variant="light">
                           待同步 {item.panelSyncPendingCount}
@@ -171,6 +174,7 @@ function PanelSyncQueueDrawer(props: {
             <Table.Th>次数</Table.Th>
             <Table.Th>下次执行</Table.Th>
             <Table.Th>错误</Table.Th>
+            <Table.Th>操作</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
@@ -223,14 +227,14 @@ function PanelSyncQueueDrawer(props: {
 function translatePanelSyncStatus(status: AdminPanelSyncJobDto["status"]) {
   if (status === "pending") return "等待";
   if (status === "running") return "执行中";
-  if (status === "failed") return "重试中";
+  if (status === "failed") return "失败";
   return "完成";
 }
 
 function panelSyncStatusColor(status: AdminPanelSyncJobDto["status"]) {
   if (status === "pending") return "yellow";
   if (status === "running") return "blue";
-  if (status === "failed") return "yellow";
+  if (status === "failed") return "red";
   if (status === "completed") return "green";
   return "gray";
 }

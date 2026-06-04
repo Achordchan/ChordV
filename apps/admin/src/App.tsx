@@ -751,13 +751,15 @@ export function App() {
   }
 
   async function refreshPanelSyncJobsAfterPending() {
-    mergeSnapshot({ panelSyncJobs: await fetchAdminPanelSyncJobs() });
+    const [panelSyncJobs, nodes] = await Promise.all([fetchAdminPanelSyncJobs(), fetchAdminNodes()]);
+    mergeSnapshot({ panelSyncJobs, nodes });
   }
 
   async function handleRetryPanelSyncJob(jobId: string) {
     try {
       const panelSyncJobs = await retryAdminPanelSyncJob(jobId);
-      mergeSnapshot({ panelSyncJobs });
+      const nodes = await fetchAdminNodes();
+      mergeSnapshot({ panelSyncJobs, nodes });
       notifications.show({
         color: "green",
         title: "已重新排队",
@@ -775,7 +777,8 @@ export function App() {
   async function handleRetryNodePanelSyncJobs(nodeId: string) {
     try {
       const panelSyncJobs = await retryAdminPanelSyncJobsForNode(nodeId);
-      mergeSnapshot({ panelSyncJobs });
+      const nodes = await fetchAdminNodes();
+      mergeSnapshot({ panelSyncJobs, nodes });
       notifications.show({
         color: "green",
         title: "已重新排队",

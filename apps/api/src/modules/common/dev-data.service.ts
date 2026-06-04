@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -1427,7 +1426,6 @@ export class DevDataService implements OnModuleInit {
       this.logger?.warn(`Node access saved, but 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
       messages.push(`3x-ui disable job queueing failed: ${errorMessage}`);
       return messages.join(" ");
-      throw new BadGatewayException(`节点授权未保存：3x-ui 客户端禁用任务入队失败，避免远端客户端残留。${errorMessage}`);
     }
   }
 
@@ -1461,7 +1459,6 @@ export class DevDataService implements OnModuleInit {
       this.logger?.warn(`Node access saved, but 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
       messages.push(`3x-ui disable job queueing failed: ${errorMessage}`);
       return messages.join(" ");
-      throw new BadGatewayException(`鑺傜偣鎺堟潈鏈繚瀛橈細3x-ui 瀹㈡埛绔鐢ㄤ换鍔″叆闃熷け璐ワ紝閬垮厤杩滅瀹㈡埛绔畫鐣欍€?{errorMessage}`);
     }
   }
 

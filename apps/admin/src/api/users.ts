@@ -10,7 +10,8 @@ export function fetchAdminUsers() {
 export function createUser(input: CreateUserInputDto) {
   return request<AdminUserRecordDto>("/admin/users", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
 

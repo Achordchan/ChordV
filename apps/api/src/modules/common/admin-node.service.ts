@@ -38,7 +38,18 @@ export class AdminNodeService {
     const rows = await this.prisma.node.findMany({
       orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
     });
-    const jobs = await this.listPanelSyncJobs();
+    const jobs = await this.prisma.panelSyncJob.findMany({
+      where: {
+        status: { in: ["pending", "running", "failed"] }
+      },
+      select: {
+        nodeId: true,
+        status: true,
+        lastError: true,
+        updatedAt: true
+      },
+      orderBy: [{ updatedAt: "desc" }]
+    });
     const summaryByNode = new Map<
       string,
       { pending: number; running: number; failed: number; lastError: string | null }
@@ -61,7 +72,8 @@ export class AdminNodeService {
       const summary = summaryByNode.get(row.id);
       return {
         ...record,
-        panelSyncPendingCount: summary ? summary.pending + summary.running + summary.failed : 0,
+        panelSyncTotalCount: summary ? summary.pending + summary.running + summary.failed : 0,
+        panelSyncPendingCount: summary?.pending ?? 0,
         panelSyncRunningCount: summary?.running ?? 0,
         panelSyncFailedCount: summary?.failed ?? 0,
         panelSyncLastError: summary?.lastError ?? null
@@ -123,7 +135,7 @@ export class AdminNodeService {
   }
 
   async retryPanelSyncJobsForNode(nodeId: string): Promise<AdminPanelSyncJobDto[]> {
-    await this.prisma.panelSyncJob.updateMany({
+    const updated = await this.prisma.panelSyncJob.updateMany({
       where: {
         nodeId,
         status: { in: ["pending", "running", "failed"] }
@@ -136,6 +148,9 @@ export class AdminNodeService {
         lastError: null
       }
     });
+    if (updated.count === 0) {
+      throw new NotFoundException("该节点暂无可重试的面板同步任务");
+    }
     return this.listPanelSyncJobs();
   }
 

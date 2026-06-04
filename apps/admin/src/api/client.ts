@@ -29,6 +29,7 @@ import type {
 import { request } from "./base";
 
 const IMAGE_BED_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
 const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 
 export * from "./announcements";
@@ -217,7 +218,8 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   };
   const record = await request<SharedAdminReleaseRecordDto>("/admin/releases", {
     method: "POST",
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    timeoutMs: input.status === "published" ? LONG_ADMIN_ACTION_TIMEOUT_MS : ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -234,7 +236,7 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
-    timeoutMs: input.status === "published" ? LONG_ADMIN_ACTION_TIMEOUT_MS : undefined
+    timeoutMs: input.status === "published" ? LONG_ADMIN_ACTION_TIMEOUT_MS : ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -249,21 +251,24 @@ export async function publishAdminRelease(releaseId: string) {
 
 export async function unpublishAdminRelease(releaseId: string) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/unpublish`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
 
 export async function deleteAdminRelease(releaseId: string) {
   return request<{ ok: boolean; releaseId: string }>(`/admin/releases/${releaseId}`, {
-    method: "DELETE"
+    method: "DELETE",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
 export async function createAdminReleaseArtifact(releaseId: string, input: CreateAdminReleaseArtifactInputDto) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts`, {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -275,14 +280,16 @@ export async function updateAdminReleaseArtifact(
 ) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}`, {
     method: "PATCH",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
 
 export async function deleteAdminReleaseArtifact(releaseId: string, artifactId: string) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}`, {
-    method: "DELETE"
+    method: "DELETE",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -365,7 +372,8 @@ export async function fetchAdminRuntimeComponentFailures(limit = 50) {
 export async function createAdminRuntimeComponent(input: CreateAdminRuntimeComponentInputDto) {
   return request<SharedAdminRuntimeComponentRecordDto>("/admin/runtime-components", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -415,7 +423,8 @@ export async function replaceAdminRuntimeComponentUpload(
 
 export async function deleteAdminRuntimeComponent(componentId: string) {
   return request<{ id: string; deleted: true }>(`/admin/runtime-components/${componentId}`, {
-    method: "DELETE"
+    method: "DELETE",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -448,7 +457,8 @@ export async function fetchAdminImageBedConfig() {
 export async function updateAdminImageBedConfig(input: UpdateAdminImageBedConfigInputDto) {
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
     method: "PATCH",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
   });
 }
 
@@ -485,7 +495,8 @@ export async function fetchAdminSupportTicketDetail(ticketId: string) {
 export async function replyAdminSupportTicket(ticketId: string, input: ReplyAdminSupportTicketInputDto) {
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/replies`, {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -508,12 +519,14 @@ export async function replyAdminSupportTicketWithAttachment(
 
 export async function closeAdminSupportTicket(ticketId: string) {
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/close`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
 export async function reopenAdminSupportTicket(ticketId: string) {
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/reopen`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }

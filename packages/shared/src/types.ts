@@ -466,6 +466,7 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   probeLatencyMs: number | null;
   probeCheckedAt: string | null;
   probeError: string | null;
+  panelSyncTotalCount?: number;
   panelSyncPendingCount?: number;
   panelSyncRunningCount?: number;
   panelSyncFailedCount?: number;
