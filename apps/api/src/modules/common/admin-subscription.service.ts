@@ -288,8 +288,6 @@ export class AdminSubscriptionService {
       requestedUserId: typeof input.userId === "string" ? input.userId : undefined,
       allowTeamWideReset: false
     });
-    const panelSyncResult = buildPanelSyncResult(reset.panelSync);
-
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: reset.subscription.id,
       userId: reset.subscription.userId,
@@ -297,7 +295,22 @@ export class AdminSubscriptionService {
       state: reset.subscription.state
     });
 
-    const user = reset.targetUserId ? await this.requireAdminUserRecord(reset.targetUserId) : null;
+    let user: AdminUserRecordDto | null = null;
+    let responseRefreshSync: PanelSyncBestEffortResult = { ok: true };
+    if (reset.targetUserId) {
+      try {
+        user = await this.requireAdminUserRecord(reset.targetUserId);
+      } catch (error) {
+        const errorMessage = readErrorMessage(error, "unknown error");
+        this.logger?.warn(`Traffic reset saved, but admin user response refresh failed for ${reset.targetUserId}: ${errorMessage}`);
+        responseRefreshSync = {
+          ok: false,
+          errorMessage: `admin user response refresh failed: ${errorMessage}`
+        };
+      }
+    }
+    const panelSync = mergePanelSyncResults(reset.panelSync, responseRefreshSync);
+    const panelSyncResult = buildPanelSyncResult(panelSync);
     return {
       ok: true,
       subscriptionId: subscription.id,
@@ -307,7 +320,7 @@ export class AdminSubscriptionService {
       panelSyncMessage: panelSyncResult.panelSyncMessage,
       message:
         reset.clearedBindingCount > 0
-          ? buildPanelSyncMessage(reset.panelSync, "已重置订阅流量，并同步清空 3x-ui 面板计量")
+          ? buildPanelSyncMessage(panelSync, "已重置订阅流量，并同步清空 3x-ui 面板计量")
           : "已重置订阅流量，当前没有可同步的 3x-ui 客户端",
       subscription: toAdminSubscriptionRecord(reset.subscription),
       user
@@ -1853,32 +1866,39 @@ export class AdminSubscriptionService {
     teamId?: string | null;
     plan: { maxConcurrentSessions: number };
   }) {
-    const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(subscription);
-    if (userIds.length === 0) {
-      return { ok: true as const };
-    }
-
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, maxConcurrentSessionsOverride: true }
-    });
-    const failures: string[] = [];
-    for (const user of users) {
-      const limit = user.maxConcurrentSessionsOverride ?? subscription.plan.maxConcurrentSessions;
-      try {
-        await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(user.id, limit);
-      } catch (error) {
-        failures.push(`${user.id}: ${readErrorMessage(error, "unknown error")}`);
+    try {
+      const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(subscription);
+      if (userIds.length === 0) {
+        return { ok: true as const };
       }
-    }
 
-    if (failures.length > 0) {
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, maxConcurrentSessionsOverride: true }
+      });
+      const failures: string[] = [];
+      for (const user of users) {
+        const limit = user.maxConcurrentSessionsOverride ?? subscription.plan.maxConcurrentSessions;
+        try {
+          await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(user.id, limit);
+        } catch (error) {
+          failures.push(`${user.id}: ${readErrorMessage(error, "unknown error")}`);
+        }
+      }
+
+      if (failures.length > 0) {
+        return {
+          ok: false as const,
+          errorMessage: `lease concurrency reconciliation failed: ${failures.join("; ")}`
+        };
+      }
+      return { ok: true as const };
+    } catch (error) {
       return {
         ok: false as const,
-        errorMessage: `lease concurrency reconciliation failed: ${failures.join("; ")}`
+        errorMessage: `lease concurrency reconciliation failed: ${readErrorMessage(error, "unknown error")}`
       };
     }
-    return { ok: true as const };
   }
 
   private async resolveEffectiveConcurrentLeaseLimitForUser(userId: string) {

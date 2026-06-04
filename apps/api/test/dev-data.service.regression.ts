@@ -2808,6 +2808,69 @@ async function testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsag
   assert.match(record.panelSyncMessage ?? "", /panel sync queue unavailable/);
 }
 
+async function testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 4,
+    remainingTrafficGb: 6,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Plan", maxConcurrentSessions: 3 },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => current,
+    runtimeSessionService: {
+      syncActiveLeasesForSubscription: async () => {
+        throw new Error("lease sync failed");
+      },
+      queueSubscriptionPanelAccessSync: async () => {
+        throw new Error("panel sync failed");
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("usage-locking panel sync must not run");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const record = await service.renewSubscription("sub_1", { totalTrafficGb: 20 });
+
+  assert.equal(updates.length, 1, "local renewal must save before lease/panel follow-up sync");
+  assert.equal(updates[0].data.totalTrafficGb, 20);
+  assert.equal(record.totalTrafficGb, 20);
+  assert.equal(record.remainingTrafficGb, 16);
+  assert.equal(record.panelSyncStatus, "pending");
+  assert.match(record.panelSyncMessage ?? "", /lease sync failed/);
+  assert.match(record.panelSyncMessage ?? "", /panel sync failed/);
+}
+
 async function testResetSubscriptionTrafficRejectsNonStringUserId() {
   const service = createAdminSubscriptionService({
     requireSubscription: async () => ({
@@ -2823,6 +2886,110 @@ async function testResetSubscriptionTrafficRejectsNonStringUserId() {
     /userId must be a string/,
     "reset-traffic must reject non-string userId with 400 instead of throwing TypeError later"
   );
+}
+
+async function testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail() {
+  let transactionCalled = false;
+  const subscriptionUpdates: Array<Record<string, any>> = [];
+  const lockedSubscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 8,
+    remainingTrafficGb: 2,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Plan" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => lockedSubscription,
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    requireAdminUserRecord: async () => {
+      throw new Error("user refresh failed");
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "client_1",
+            panelInboundId: 7,
+            lastUplinkBytes: 8n,
+            lastDownlinkBytes: 0n,
+            lastSyncedAt: new Date(),
+            node: {
+              id: "node_1",
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password"
+            }
+          }
+        ]
+      },
+      $transaction: async (callback: (tx: any) => Promise<any>) => {
+        transactionCalled = true;
+        return callback({
+          subscription: {
+            findUnique: async () => lockedSubscription,
+            update: async (payload: Record<string, any>) => {
+              subscriptionUpdates.push(payload);
+              return {
+                ...lockedSubscription,
+                ...payload.data
+              };
+            }
+          },
+          trafficSnapshot: {
+            upsert: async () => ({})
+          },
+          panelClientBinding: {
+            update: async () => ({})
+          },
+          trafficLedger: {
+            deleteMany: async () => ({}),
+            aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
+          }
+        });
+      },
+      panelSyncJob: {
+        upsert: async () => {
+          throw new Error("panel reset queue failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.resetSubscriptionTraffic("sub_1");
+
+  assert.equal(result.ok, true);
+  assert.equal(transactionCalled, true, "local traffic reset transaction must complete even if follow-up work fails");
+  assert.equal(subscriptionUpdates.length, 1);
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0);
+  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
+  assert.equal(result.subscription.usedTrafficGb, 0);
+  assert.equal(result.subscription.remainingTrafficGb, 10);
+  assert.equal(result.user, null, "response should fall back when refreshed admin user cannot be loaded");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel reset queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /user refresh failed/);
 }
 
 async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines() {
@@ -8035,6 +8202,79 @@ async function testChangeSubscriptionPlanReconcilesNewConcurrencyLimit() {
   assert.deepEqual(enforced, [{ userId: "user_1", limit: 1 }]);
 }
 
+async function testChangeSubscriptionPlanReturnsPendingWhenConcurrencyLookupFails() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "subscription_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_old",
+    totalTrafficGb: 100,
+    usedTrafficGb: 1,
+    remainingTrafficGb: 99,
+    expireAt: new Date(Date.now() + 60_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Old", maxConcurrentSessions: 3 },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const nextPlan = {
+    id: "plan_new",
+    name: "New",
+    scope: "personal",
+    totalTrafficGb: 100,
+    renewable: true,
+    maxConcurrentSessions: 1,
+    isActive: true
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => current,
+    ensurePlanExists: async () => nextPlan,
+    runtimeSessionService: {
+      syncActiveLeasesForSubscription: async () => undefined,
+      queueSubscriptionPanelAccessSync: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("usage-locking panel sync must not run");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                planId: nextPlan.id,
+                plan: nextPlan,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        }),
+      user: {
+        findMany: async () => {
+          throw new Error("user lookup failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.changeSubscriptionPlan("subscription_1", { planId: "plan_new" });
+
+  assert.equal(updates.length, 1, "local plan change must save before lease concurrency reconciliation");
+  assert.equal(result.planId, "plan_new");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /user lookup failed/);
+}
+
 async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminSubscriptionService({
@@ -9582,7 +9822,9 @@ async function main() {
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
   await testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsage();
+  await testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
+  await testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
@@ -9675,6 +9917,7 @@ async function main() {
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
+  await testChangeSubscriptionPlanReturnsPendingWhenConcurrencyLookupFails();
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
   await testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
