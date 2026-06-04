@@ -15,6 +15,8 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { PrismaService } from "./prisma.service";
 
+const EVENT_PUBLISH_BUDGET_MS = 300;
+
 export function toAnnouncementDto(
   row: {
     id: string;
@@ -296,7 +298,7 @@ export class AnnouncementPolicyService {
   }
 
   private async publishPolicyUpdatedEvent() {
-    try {
+    await this.runPublishEventBestEffort("policy_updated", async () => {
       const rows = await this.prisma.user.findMany({
         where: { status: "active" },
         select: { id: true }
@@ -306,13 +308,11 @@ export class AnnouncementPolicyService {
         type: "policy_updated",
         occurredAt: new Date().toISOString()
       });
-    } catch (error) {
-      this.logger.warn(`Local policy change saved, but policy_updated publish failed: ${readErrorMessage(error)}`);
-    }
+    });
   }
 
   private async publishAnnouncementUpdatedEvent(announcementId: string) {
-    try {
+    await this.runPublishEventBestEffort("announcement_updated", async () => {
       const rows = await this.prisma.user.findMany({
         where: { status: "active" },
         select: { id: true }
@@ -323,8 +323,47 @@ export class AnnouncementPolicyService {
         occurredAt: new Date().toISOString(),
         announcementId
       });
+    });
+  }
+
+  private async runPublishEventBestEffort(eventType: string, task: () => Promise<unknown>) {
+    let settled = false;
+    const guardedTask = Promise.resolve()
+      .then(task)
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
+    void guardedTask.catch((error) => {
+      this.logger.warn(`Local change saved, but delayed ${eventType} publish failed: ${readErrorMessage(error)}`);
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger.warn(
+          `Local change saved, but ${eventType} publish exceeded ${EVENT_PUBLISH_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve();
+      }, EVENT_PUBLISH_BUDGET_MS);
+    });
+
+    try {
+      await Promise.race([guardedTask, timeoutTask]);
     } catch (error) {
-      this.logger.warn(`Local announcement change saved, but announcement_updated publish failed: ${readErrorMessage(error)}`);
+      this.logger.warn(`Local change saved, but ${eventType} publish failed: ${readErrorMessage(error)}`);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 }

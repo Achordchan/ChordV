@@ -31,6 +31,7 @@ const DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 30 * 1000;
 const DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS = 300;
+const DEFAULT_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS = 300;
 
 type UploadedRuntimeComponentFile = {
   path: string;
@@ -316,9 +317,10 @@ export class RuntimeComponentsService {
     await this.prisma.runtimeComponent.delete({
       where: { id: componentId }
     });
-    if (existing.storedFilePath) {
-      await removeRuntimeComponentFile(resolveRuntimeComponentAbsolutePath(existing.storedFilePath));
-    }
+    await this.removeRuntimeComponentFileBestEffort(
+      existing.storedFilePath ? resolveRuntimeComponentAbsolutePath(existing.storedFilePath) : null,
+      "deleted runtime component upload"
+    );
     return { id: componentId, deleted: true as const };
   }
 
@@ -729,10 +731,41 @@ export class RuntimeComponentsService {
     if (!absolutePath) {
       return;
     }
+    let settled = false;
+    const cleanupTask = removeRuntimeComponentFile(absolutePath).then(
+      () => {
+        settled = true;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void cleanupTask.catch((error) => {
+      this.logger.warn(`Runtime component saved, but delayed ${label} cleanup failed: ${readErrorMessage(error)}`);
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger.warn(
+          `Runtime component saved, but ${label} cleanup exceeded ${readRuntimeComponentFileCleanupBudgetMs()}ms and will continue in background.`
+        );
+        resolve();
+      }, readRuntimeComponentFileCleanupBudgetMs());
+    });
+
     try {
-      await removeRuntimeComponentFile(absolutePath);
+      await Promise.race([cleanupTask, timeoutTask]);
     } catch (error) {
       this.logger.warn(`Runtime component saved, but ${label} cleanup failed: ${readErrorMessage(error)}`);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -1097,6 +1130,13 @@ function getRemoteRuntimeHashLimits() {
 
 function readSharedRulesetCleanupBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS", DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS);
+}
+
+function readRuntimeComponentFileCleanupBudgetMs() {
+  return readPositiveIntegerEnv(
+    "CHORDV_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS",
+    DEFAULT_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS
+  );
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

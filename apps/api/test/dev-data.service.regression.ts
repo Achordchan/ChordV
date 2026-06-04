@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { plainToInstance } from "class-transformer";
 import { validateSync } from "class-validator";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, promises as fsForPatch } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -2389,6 +2389,114 @@ async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
   );
   assert.equal(nodeUpdates.length, 1, "offline panel failure should degrade only its node");
   assert.equal(nodeUpdates[0].where.id, "node_offline");
+}
+
+async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
+  const previousTimeout = process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS;
+  process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS = "25";
+  const resetCalls: string[] = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
+  const makeJob = (id: string, email: string) => ({
+    id,
+    action: "reset_client_traffic",
+    attempts: 0,
+    bindingId: `binding_${id}`,
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: `node_${id}`,
+    panelClientEmail: email,
+    panelClientId: `client_${id}`,
+    panelInboundId: 7,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    node: {
+      id: `node_${id}`,
+      name: `node ${id}`,
+      flow: "",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    },
+    binding: {
+      status: "active"
+    }
+  });
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      resetClientTraffic: async (_node: unknown, email: string) => {
+        resetCalls.push(email);
+        if (email === "stalled@example.com") {
+          return new Promise<void>(() => undefined);
+        }
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+          return {};
+        }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return {};
+        }
+      },
+      panelSyncJob: {
+        findMany: async () => [makeJob("stalled", "stalled@example.com"), makeJob("online", "online@example.com")],
+        updateMany: async () => ({ count: 1 }),
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  try {
+    await Promise.race([
+      service.retryPendingPanelSyncJobs(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("panel sync batch waited for stalled remote job")), 250);
+      })
+    ]);
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS = previousTimeout;
+    }
+  }
+
+  assert.deepEqual(resetCalls, ["stalled@example.com", "online@example.com"]);
+  assert.equal(bindingUpdates.length, 1, "online job must still complete after stalled job times out");
+  assert.equal(bindingUpdates[0].where.id, "binding_online");
+  assert.deepEqual(
+    jobUpdates.map((item) => ({ id: item.where.id, status: item.data.status })),
+    [
+      { id: "stalled", status: "failed" },
+      { id: "online", status: "completed" }
+    ]
+  );
+  assert.equal(nodeUpdates.length, 1);
+  assert.equal(nodeUpdates[0].where.id, "node_stalled");
+  assert.match(jobUpdates[0].data.lastError, /timed out/);
 }
 
 async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
@@ -9098,6 +9206,82 @@ async function testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote() 
   }
 }
 
+async function testRuntimeComponentDeleteReturnsWhenFileCleanupStalls() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const previousCleanupBudget = process.env.CHORDV_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS;
+  const originalRm = fsForPatch.rm;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-runtime-delete-"));
+  const storedFilePath = path.join("component_1", "xray.exe");
+  let deleteCalled = false;
+  let cleanupStarted = false;
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  process.env.CHORDV_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS = "25";
+  fsForPatch.rm = async () => {
+    cleanupStarted = true;
+    return new Promise<never>(() => undefined);
+  };
+  const current = {
+    id: "component_1",
+    platform: "windows" as const,
+    architecture: "x64" as const,
+    kind: "xray" as const,
+    source: "uploaded" as const,
+    originUrl: "/api/downloads/runtime-components/component_1",
+    defaultMirrorPrefix: null,
+    allowClientMirror: false,
+    fileName: "xray.exe",
+    storedFilePath,
+    fileSizeBytes: 10n,
+    fileHash: "a".repeat(64),
+    archiveEntryName: null,
+    expectedHash: "a".repeat(64),
+    enabled: true,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z")
+  };
+
+  try {
+    const service = createRuntimeComponentsService({
+      logger: {
+        warn: () => undefined
+      },
+      ensureRuntimeComponentExists: async () => current,
+      prisma: {
+        runtimeComponent: {
+          delete: async () => {
+            deleteCalled = true;
+            return {};
+          }
+        }
+      }
+    });
+
+    const result = await Promise.race([
+      service.deleteAdminRuntimeComponent("component_1"),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("runtime component delete waited for stalled file cleanup")), 250);
+      })
+    ]);
+
+    assert.equal(deleteCalled, true);
+    assert.equal(cleanupStarted, true);
+    assert.deepEqual(result, { id: "component_1", deleted: true });
+  } finally {
+    fsForPatch.rm = originalRm;
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    if (previousCleanupBudget === undefined) {
+      delete process.env.CHORDV_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS;
+    } else {
+      process.env.CHORDV_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS = previousCleanupBudget;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function testSubscriptionNodeAccessConcurrentReplaceIsSerialized() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -11935,6 +12119,52 @@ async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {
   assert.equal(result.id, "announcement_1");
 }
 
+async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  let created = false;
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      announcement: {
+        create: async () => {
+          created = true;
+          return {
+            id: "announcement_1",
+            title: "Title",
+            body: "Body",
+            level: "info",
+            publishedAt: now,
+            isActive: true,
+            displayMode: "passive",
+            countdownSeconds: 0,
+            createdAt: now,
+            updatedAt: now
+          };
+        }
+      },
+      user: {
+        findMany: async () => new Promise<never>(() => undefined)
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.createAnnouncement({
+      title: "Title",
+      body: "Body",
+      level: "info"
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("announcement create waited for stalled publish user lookup")), 750);
+    })
+  ]);
+
+  assert.equal(created, true);
+  assert.equal(result.id, "announcement_1");
+}
+
 async function testUpdatePolicyRejectsDuplicateModes() {
   const service = createAnnouncementPolicyService({
     prisma: {
@@ -12027,6 +12257,43 @@ async function testUpdatePolicyKeepsLocalSaveWhenPublishFails() {
   });
 
   const result = await service.updatePolicy({ blockAds: false });
+
+  assert.equal(updates.length, 1);
+  assert.equal(result.features.blockAds, false);
+}
+
+async function testUpdatePolicyReturnsWhenPublishUserLookupStalls() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      policyProfile: {
+        findUnique: async () => ({
+          id: "default",
+          defaultMode: "rule",
+          modes: ["rule"],
+          blockAds: false,
+          chinaDirect: true,
+          aiServicesProxy: true
+        }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+        }
+      },
+      user: {
+        findMany: async () => new Promise<never>(() => undefined)
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updatePolicy({ blockAds: false }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("policy update waited for stalled publish user lookup")), 750);
+    })
+  ]);
 
   assert.equal(updates.length, 1);
   assert.equal(result.features.blockAds, false);
@@ -13063,6 +13330,7 @@ async function main() {
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
+  await testPanelSyncBatchContinuesAfterStalledRemoteJob();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();
@@ -13165,6 +13433,7 @@ async function main() {
   await testRuntimeComponentPatchCannotSwitchToUploadedSource();
   await testRuntimeComponentPatchInvalidatesRemoteMetadata();
   await testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote();
+  await testRuntimeComponentDeleteReturnsWhenFileCleanupStalls();
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
@@ -13224,9 +13493,11 @@ async function main() {
   await testCreateAnnouncementRejectsFractionalCountdown();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
+  await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
   await testUpdatePolicyRejectsDuplicateModes();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
   await testUpdatePolicyKeepsLocalSaveWhenPublishFails();
+  await testUpdatePolicyReturnsWhenPublishUserLookupStalls();
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();

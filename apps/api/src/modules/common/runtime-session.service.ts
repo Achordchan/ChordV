@@ -86,6 +86,7 @@ type PanelSyncAction = "ensure_client" | "disable_client" | "delete_client" | "r
 const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ?? 20);
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
+const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
 const LEASE_REVOCATION_RETRY_MAX_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_MAX_SECONDS ?? 900);
@@ -1253,11 +1254,14 @@ export class RuntimeSessionService {
       let ensuredPanelClientId: string | null = null;
       let ensuredPanelInboundId: number | null = null;
       if (job.action === "disable_client") {
-        await this.xuiService.setClientEnabled(
-          panelNodeConfig,
-          job.panelClientId,
-          job.panelClientEmail,
-          false
+        await this.runPanelSyncRemoteCallWithBudget(
+          job,
+          this.xuiService.setClientEnabled(
+            panelNodeConfig,
+            job.panelClientId,
+            job.panelClientEmail,
+            false
+          )
         );
       } else if (job.action === "ensure_client") {
         const subscription = await this.prisma.subscription.findUnique({
@@ -1267,28 +1271,37 @@ export class RuntimeSessionService {
         if (!subscription) {
           throw new Error(`Subscription not found for panel sync job: ${job.subscriptionId}`);
         }
-        const ensured = await this.xuiService.ensureClient(panelNodeConfig, {
-          id: job.panelClientId,
-          email: job.panelClientEmail,
-          enable: true,
-          flow: job.node.flow,
-          expiryTime: subscription.expireAt.getTime(),
-          limitIp: 0,
-          totalGB: 0,
-          subId: "",
-          reset: 0,
-          tgId: 0,
-          comment: job.node.name
-        });
+        const ensured = await this.runPanelSyncRemoteCallWithBudget(
+          job,
+          this.xuiService.ensureClient(panelNodeConfig, {
+            id: job.panelClientId,
+            email: job.panelClientEmail,
+            enable: true,
+            flow: job.node.flow,
+            expiryTime: subscription.expireAt.getTime(),
+            limitIp: 0,
+            totalGB: 0,
+            subId: "",
+            reset: 0,
+            tgId: 0,
+            comment: job.node.name
+          })
+        );
         ensuredPanelClientId = ensured.uuid || job.panelClientId;
         ensuredPanelInboundId = ensured.inboundId ?? panelNodeConfig.panelInboundId ?? job.panelInboundId ?? null;
       } else if (job.action === "reset_client_traffic") {
-        await this.xuiService.resetClientTraffic(panelNodeConfig, job.panelClientEmail);
+        await this.runPanelSyncRemoteCallWithBudget(
+          job,
+          this.xuiService.resetClientTraffic(panelNodeConfig, job.panelClientEmail)
+        );
       } else if (job.action === "delete_client") {
-        const removalStatus = await this.xuiService.removeClient(
-          panelNodeConfig,
-          job.panelClientId,
-          job.panelClientEmail
+        const removalStatus = await this.runPanelSyncRemoteCallWithBudget(
+          job,
+          this.xuiService.removeClient(
+            panelNodeConfig,
+            job.panelClientId,
+            job.panelClientEmail
+          )
         );
         if (removalStatus === "disabled") {
           throw new Error("3x-ui client could only be disabled, not deleted");
@@ -1364,6 +1377,49 @@ export class RuntimeSessionService {
         })
       ]);
       this.logger.warn(`面板同步任务失败，${retrySeconds} 秒后重试：${job.nodeId}/${job.panelClientEmail}: ${message}`);
+    }
+  }
+
+  private async runPanelSyncRemoteCallWithBudget<T>(
+    job: { id: string; action: string; nodeId: string; panelClientEmail: string },
+    task: Promise<T>
+  ): Promise<T> {
+    let settled = false;
+    const guardedTask = task.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger.warn(
+        `Delayed panel sync job remote call failed after timeout or retry handoff (${job.id}/${job.action}/${job.nodeId}/${job.panelClientEmail}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutMs = readPanelSyncJobTimeoutMs();
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        reject(new Error(`3x-ui panel sync job remote call timed out after ${timeoutMs}ms; retry will continue in background`));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -2398,6 +2454,11 @@ function isPrismaUniqueConstraintError(error: unknown) {
 
 function isPanelSyncAction(action: string): action is PanelSyncAction {
   return ["ensure_client", "disable_client", "delete_client", "reset_client_traffic"].includes(action);
+}
+
+function readPanelSyncJobTimeoutMs() {
+  const parsed = Number(process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS;
 }
 
 function isPanelDisableJobClearableAfterNodeReenabled(
