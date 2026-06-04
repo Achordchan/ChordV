@@ -9105,6 +9105,166 @@ async function testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChang
   assert.equal(updates[0].data.fileHash, null);
 }
 
+function makeReleaseCenterTestRelease(overrides: Record<string, any> = {}) {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  return {
+    id: "release_1",
+    platform: "windows",
+    channel: "stable",
+    version: "1.1.3",
+    displayTitle: "ChordV 1.1.3",
+    changelog: ["Full replacement"],
+    minimumVersion: "1.1.0",
+    forceUpgrade: false,
+    status: "draft",
+    publishedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    artifacts: [],
+    ...overrides
+  };
+}
+
+function makeReleaseCenterTestArtifact(overrides: Record<string, any> = {}) {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  return {
+    id: "artifact_1",
+    releaseId: "release_1",
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: "https://example.com/ChordV_1.1.3_x64-full.zip",
+    defaultMirrorPrefix: null,
+    allowClientMirror: true,
+    fileName: "ChordV_1.1.3_x64-full.zip",
+    storedFilePath: null,
+    fileSizeBytes: 1024n,
+    fileHash: "a".repeat(64),
+    isPrimary: true,
+    isFullPackage: true,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides
+  };
+}
+
+async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
+  const release = makeReleaseCenterTestRelease();
+  const createdArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_created",
+    isPrimary: true
+  });
+  let releaseFindCalls = 0;
+  let transactionCalled = false;
+  const service = createReleaseCenterService({
+    resolveExternalReleaseArtifactMetadata: async () => ({
+      resolvedUrl: createdArtifact.downloadUrl,
+      fileName: createdArtifact.fileName,
+      fileSizeBytes: createdArtifact.fileSizeBytes,
+      fileHash: createdArtifact.fileHash
+    }),
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      release: {
+        findUnique: async () => {
+          releaseFindCalls += 1;
+          if (releaseFindCalls > 1) {
+            throw new Error("release refresh failed after local artifact save");
+          }
+          return release;
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        transactionCalled = true;
+        return task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async () => createdArtifact
+          }
+        });
+      }
+    }
+  });
+
+  const result = await service.createReleaseArtifact("release_1", {
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: createdArtifact.downloadUrl,
+    fileName: createdArtifact.fileName,
+    fileSizeBytes: Number(createdArtifact.fileSizeBytes),
+    fileHash: createdArtifact.fileHash,
+    isPrimary: true
+  });
+
+  assert.equal(transactionCalled, true, "artifact must be saved before response refresh fails");
+  assert.equal(result.id, "release_1");
+  assert.equal(result.artifacts[0]?.id, "artifact_created");
+}
+
+async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
+  const artifact = makeReleaseCenterTestArtifact({
+    source: "uploaded",
+    storedFilePath: "missing-release/artifact_1/ChordV.zip",
+    allowClientMirror: false
+  });
+  const release = makeReleaseCenterTestRelease({
+    artifacts: [artifact]
+  });
+  let deleteCalled = false;
+  let deleted = false;
+  const service = createReleaseCenterService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      release: {
+        findUnique: async () => ({
+          ...release,
+          artifacts: deleted ? [] : [artifact]
+        })
+      },
+      releaseArtifact: {
+        findFirst: async () => artifact,
+        findMany: async () => [artifact]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            delete: async () => {
+              deleteCalled = true;
+              deleted = true;
+              return artifact;
+            },
+            update: async () => undefined
+          }
+        })
+    }
+  });
+
+  const result = await service.deleteReleaseArtifact("release_1", "artifact_1");
+
+  assert.equal(deleteCalled, true, "artifact delete must complete before best-effort file cleanup");
+  assert.equal(result.id, "release_1");
+  assert.deepEqual(result.artifacts, []);
+}
+
+async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
+  const service = createReleaseCenterService({
+    logger: {
+      warn: () => undefined
+    }
+  });
+
+  await Promise.race([
+    service["runReleaseCleanupBestEffort"]("stalled cleanup", async () => new Promise<never>(() => undefined)),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("release cleanup waited for stalled cleanup task")), 750);
+    })
+  ]);
+}
+
 async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => ({
@@ -12696,6 +12856,9 @@ async function main() {
   await testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote();
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
+  await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
+  await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
+  await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
   await testUpdateCheckSkipsUploadedArtifactWithStaleMetadata();

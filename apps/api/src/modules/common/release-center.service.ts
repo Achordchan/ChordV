@@ -73,6 +73,10 @@ type PreparedUploadedReleaseArtifactFile = {
   downloadUrl: string;
 };
 
+type ReleaseFallbackArtifact = ReleaseRowLike["artifacts"][number];
+
+const RELEASE_FILE_CLEANUP_BUDGET_MS = 300;
+
 @Injectable()
 export class ReleaseCenterService {
   private readonly logger = new Logger(ReleaseCenterService.name);
@@ -129,13 +133,20 @@ export class ReleaseCenterService {
             artifacts: true
           }
         });
-        await tx.releaseArtifact.create({
+        const artifact = await tx.releaseArtifact.create({
           data: preparedArtifact
         });
-        return release;
+        return { release, artifact };
       });
 
-      return this.getAdminRelease(created.id);
+      return this.getAdminReleaseBestEffort(
+        created.release.id,
+        toAdminReleaseRecord({
+          ...created.release,
+          artifacts: [created.artifact]
+        }),
+        "create release response refresh"
+      );
     }
 
     const created = await this.prisma.release.create({
@@ -294,12 +305,14 @@ export class ReleaseCenterService {
       where: { id: releaseId }
     });
 
-    await Promise.all(
-      storedFilePaths.map((storedFilePath) =>
-        removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
-      )
-    );
-    await removeReleaseArtifactDirectory(path.join(releaseArtifactStorageRoot(), releaseId));
+    await this.runReleaseCleanupBestEffort("release artifact files after release delete", async () => {
+      await Promise.all(
+        storedFilePaths.map((storedFilePath) =>
+          removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
+        )
+      );
+      await removeReleaseArtifactDirectory(path.join(releaseArtifactStorageRoot(), releaseId));
+    });
 
     if (release.status === "published") {
       this.publishVersionUpdatedBestEffort(
@@ -357,14 +370,14 @@ export class ReleaseCenterService {
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
-    await this.prisma.$transaction(async (tx) => {
+    const createdArtifact = await this.prisma.$transaction(async (tx) => {
       if (isPrimary) {
         await tx.releaseArtifact.updateMany({
           where: { releaseId },
           data: { isPrimary: false }
         });
       }
-      await tx.releaseArtifact.create({
+      return tx.releaseArtifact.create({
         data: {
           id: artifactId,
           releaseId,
@@ -383,7 +396,11 @@ export class ReleaseCenterService {
         }
       });
     });
-    return this.getAdminRelease(releaseId);
+    return this.getAdminReleaseBestEffort(
+      releaseId,
+      this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(createdArtifact)]),
+      "create release artifact response refresh"
+    );
   }
 
   async updateReleaseArtifact(
@@ -453,14 +470,14 @@ export class ReleaseCenterService {
       (metadataIdentityChanged ? null : current.fileHash);
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
-    await this.prisma.$transaction(async (tx) => {
+    const updatedArtifact = await this.prisma.$transaction(async (tx) => {
       if (isPrimary) {
         await tx.releaseArtifact.updateMany({
           where: { releaseId },
           data: { isPrimary: false }
         });
       }
-      await tx.releaseArtifact.update({
+      return tx.releaseArtifact.update({
         where: { id: artifactId },
         data: {
           ...(input.source !== undefined ? { source: input.source } : {}),
@@ -488,9 +505,13 @@ export class ReleaseCenterService {
       });
     });
     if (current.storedFilePath && input.source === "external") {
-      await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(current.storedFilePath));
+      await this.removeReleaseArtifactFileBestEffort(current.storedFilePath, "old uploaded release artifact after switching to external");
     }
-    return this.getAdminRelease(releaseId);
+    return this.getAdminReleaseBestEffort(
+      releaseId,
+      this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]),
+      "update release artifact response refresh"
+    );
   }
 
   async uploadReleaseArtifact(
@@ -520,14 +541,14 @@ export class ReleaseCenterService {
         await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
       }
       const preparedFile = prepared;
-      await this.prisma.$transaction(async (tx) => {
+      const createdArtifact = await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
             where: { releaseId },
             data: { isPrimary: false }
           });
         }
-        await tx.releaseArtifact.create({
+        return tx.releaseArtifact.create({
           data: {
             id: artifactId,
             releaseId,
@@ -546,6 +567,8 @@ export class ReleaseCenterService {
           }
         });
       });
+      const fallback = this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(createdArtifact)]);
+      return this.getAdminReleaseBestEffort(releaseId, fallback, "upload release artifact response refresh");
     } catch (error) {
       if (prepared) {
         await removeReleaseArtifactFile(prepared.absolutePath);
@@ -554,8 +577,6 @@ export class ReleaseCenterService {
       }
       throw error;
     }
-
-    return this.getAdminRelease(releaseId);
   }
 
   async replaceReleaseArtifactUpload(
@@ -592,14 +613,14 @@ export class ReleaseCenterService {
         await assertWindowsFullUpdateZipFile(prepared.absolutePath, prepared.fileName, release.version);
       }
       const preparedFile = prepared;
-      await this.prisma.$transaction(async (tx) => {
+      const updatedArtifact = await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
             where: { releaseId },
             data: { isPrimary: false }
           });
         }
-        await tx.releaseArtifact.update({
+        return tx.releaseArtifact.update({
           where: { id: artifactId },
           data: {
             source: "uploaded",
@@ -617,6 +638,11 @@ export class ReleaseCenterService {
           }
         });
       });
+      const fallback = this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]);
+      if (prepared && previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
+        await this.removeReleaseArtifactFileBestEffort(previousStoredFilePath, "old uploaded release artifact after replacement");
+      }
+      return this.getAdminReleaseBestEffort(releaseId, fallback, "replace release artifact response refresh");
     } catch (error) {
       if (prepared) {
         await removeReleaseArtifactFile(prepared.absolutePath);
@@ -625,12 +651,6 @@ export class ReleaseCenterService {
       }
       throw error;
     }
-
-    if (prepared && previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
-      await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(previousStoredFilePath));
-    }
-
-    return this.getAdminRelease(releaseId);
   }
 
   async deleteReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseRecordDto> {
@@ -659,9 +679,20 @@ export class ReleaseCenterService {
       }
     });
     if (artifact.storedFilePath) {
-      await removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(artifact.storedFilePath));
+      await this.removeReleaseArtifactFileBestEffort(artifact.storedFilePath, "deleted release artifact file");
     }
-    return this.getAdminRelease(releaseId);
+    const fallbackArtifacts = siblings
+      .filter((item) => item.id !== artifactId)
+      .map((item) =>
+        nextPrimary && item.id === nextPrimary.id
+          ? this.fallbackArtifactFromCreate({ ...item, isPrimary: true, updatedAt: new Date() })
+          : this.fallbackArtifactFromCreate(item)
+      );
+    return this.getAdminReleaseBestEffort(
+      releaseId,
+      this.buildArtifactMutationFallback(release, fallbackArtifacts, { replaceArtifacts: true }),
+      "delete release artifact response refresh"
+    );
   }
 
   async validateReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseArtifactValidationDto> {
@@ -1286,6 +1317,17 @@ export class ReleaseCenterService {
     };
   }
 
+  private async getAdminReleaseBestEffort(releaseId: string, fallback: AdminReleaseRecordDto, label: string) {
+    try {
+      return await this.getAdminRelease(releaseId);
+    } catch (error) {
+      this.logger.warn(
+        `Local release change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return fallback;
+    }
+  }
+
   private async getAdminRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
     const row = await this.prisma.release.findUnique({
       where: { id: releaseId },
@@ -1301,10 +1343,119 @@ export class ReleaseCenterService {
     return toAdminReleaseRecord(row);
   }
 
+  private buildArtifactMutationFallback(
+    release: {
+      id: string;
+      platform: string;
+      channel?: string;
+      status: string;
+      version: string;
+      displayTitle?: string;
+      changelog?: string[];
+      minimumVersion: string;
+      forceUpgrade?: boolean;
+      publishedAt?: Date | null;
+      createdAt?: Date;
+      updatedAt?: Date;
+      artifacts?: ReleaseFallbackArtifact[];
+    },
+    changedArtifacts: ReleaseFallbackArtifact[],
+    options: { replaceArtifacts?: boolean } = {}
+  ): AdminReleaseRecordDto {
+    const now = new Date();
+    const artifacts = options.replaceArtifacts
+      ? changedArtifacts
+      : mergeReleaseFallbackArtifacts(release.artifacts ?? [], changedArtifacts);
+    return toAdminReleaseRecord({
+      id: release.id,
+      platform: release.platform,
+      channel: release.channel ?? "stable",
+      version: release.version,
+      displayTitle: release.displayTitle ?? release.version,
+      changelog: release.changelog ?? [],
+      minimumVersion: release.minimumVersion,
+      forceUpgrade: release.forceUpgrade ?? false,
+      status: release.status,
+      publishedAt: release.publishedAt ?? null,
+      createdAt: release.createdAt ?? now,
+      updatedAt: release.updatedAt ?? now,
+      artifacts
+    });
+  }
+
+  private fallbackArtifactFromCreate(row: ReleaseFallbackArtifact): ReleaseFallbackArtifact {
+    return row;
+  }
+
+  private async removeReleaseArtifactFileBestEffort(storedFilePath: string, label: string) {
+    await this.runReleaseCleanupBestEffort(label, () =>
+      removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
+    );
+  }
+
+  private async runReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
+    let settled = false;
+    const cleanupTask = task().then(
+      () => {
+        settled = true;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void cleanupTask.catch((error) => {
+      this.logger.warn(
+        `Local release change saved, but delayed ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger.warn(
+          `Local release change saved, but ${label} cleanup exceeded ${RELEASE_FILE_CLEANUP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve();
+      }, RELEASE_FILE_CLEANUP_BUDGET_MS);
+    });
+
+    try {
+      await Promise.race([cleanupTask, timeoutTask]);
+    } catch (error) {
+      this.logger.warn(
+        `Local release change saved, but ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
   private async ensureReleaseExists(releaseId: string) {
     const row = await this.prisma.release.findUnique({
       where: { id: releaseId },
-      select: { id: true, platform: true, status: true, version: true, minimumVersion: true }
+      select: {
+        id: true,
+        platform: true,
+        channel: true,
+        status: true,
+        version: true,
+        displayTitle: true,
+        changelog: true,
+        minimumVersion: true,
+        forceUpgrade: true,
+        publishedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        artifacts: {
+          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+        }
+      }
     });
     if (!row) {
       throw new NotFoundException("发布记录不存在");
@@ -1317,4 +1468,27 @@ function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: st
   if (compareSemver(minimumVersion, version) > 0) {
     throw new BadRequestException("minimumVersion must not be greater than release version.");
   }
+}
+
+function mergeReleaseFallbackArtifacts(
+  currentArtifacts: ReleaseFallbackArtifact[],
+  changedArtifacts: ReleaseFallbackArtifact[]
+) {
+  const changedById = new Map(changedArtifacts.map((artifact) => [artifact.id, artifact]));
+  const changedHasPrimary = changedArtifacts.some((artifact) => artifact.isPrimary);
+  const merged = currentArtifacts.map((artifact) => {
+    const changed = changedById.get(artifact.id);
+    if (changed) {
+      changedById.delete(artifact.id);
+      return changed;
+    }
+    return changedHasPrimary ? { ...artifact, isPrimary: false } : artifact;
+  });
+  merged.push(...changedById.values());
+  return merged.sort((left, right) => {
+    if (left.isPrimary !== right.isPrimary) {
+      return left.isPrimary ? -1 : 1;
+    }
+    return left.createdAt.getTime() - right.createdAt.getTime();
+  });
 }
