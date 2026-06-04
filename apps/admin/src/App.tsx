@@ -1063,8 +1063,8 @@ export function App() {
       void refreshCurrentDataAfterAction().catch((refreshReason) => {
         notifications.show({
           color: "yellow",
-          title: "授权已保存，但刷新失败",
-          message: readError(refreshReason, "刷新最新数据失败")
+          title: "节点授权已保存，但列表刷新失败",
+          message: `${readError(refreshReason, "刷新最新数据失败")} 本次保存请求已经成功返回，可手动刷新订阅列表和同步队列确认最新状态。`
         });
       });
       if (panelSyncPending) {

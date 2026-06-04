@@ -3993,6 +3993,127 @@ async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
   }
 }
 
+async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const keepNode = {
+    ...offlineNode,
+    id: "node_keep",
+    name: "keep",
+    recommended: true
+  };
+  let releaseOuterLock!: () => void;
+  let accessRows = [
+    { id: "access_offline", nodeId: "node_offline" },
+    { id: "access_keep", nodeId: "node_keep" }
+  ];
+  let syncCalls = 0;
+  let disableFilter: { nodeIds?: string[] } | undefined;
+  const heldLock = runWithSubscriptionUsageLock(
+    "sub_held_lock",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const service = createDevDataService({
+      logger: {
+        warn: () => undefined
+      },
+      requireSubscription: async () => ({
+        id: "sub_held_lock",
+        userId: "user_1",
+        teamId: null
+      }),
+      prisma: {
+        subscriptionNodeAccess: {
+          findMany: async (payload: { select?: unknown }) => {
+            if (payload.select) {
+              return accessRows;
+            }
+            return accessRows.map((row) => ({
+              ...row,
+              node: row.nodeId === "node_keep" ? keepNode : offlineNode
+            }));
+          },
+          deleteMany: async () => {
+            accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+          }
+        },
+        node: {
+          findMany: async () => [keepNode]
+        },
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            subscriptionNodeAccess: {
+              deleteMany: async () => {
+                accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+              }
+            }
+          })
+      },
+      runtimeSessionService: {
+        markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+          disableFilter = filter;
+          return 1;
+        },
+        queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+        revokeSubscriptionLeases: async () => 0,
+        syncSubscriptionPanelAccess: async () => {
+          syncCalls += 1;
+          throw new Error("removal-only access update must not full-sync remote panels");
+        }
+      },
+      publishNodeAccessUpdatedEvent: async () => undefined
+    });
+
+    const result = await Promise.race([
+      service.updateSubscriptionNodeAccess("sub_held_lock", { nodeIds: ["node_keep"] }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("single node access removal waited for usage lock")), 250);
+      })
+    ]);
+
+    assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
+    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] });
+    assert.equal(syncCalls, 0, "removing one node must not run full panel sync");
+    assert.deepEqual(result.nodeIds, ["node_keep"]);
+    assert.equal(result.panelSyncStatus, "pending");
+    assert.match(result.panelSyncMessage ?? "", /disable job queued/);
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock;
+    if (previousDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  }
+}
+
 async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
   const oldNode = {
     id: "node_old",
@@ -9249,6 +9370,7 @@ async function main() {
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessDoesNotWaitForHeldUsageLock();
+  await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
