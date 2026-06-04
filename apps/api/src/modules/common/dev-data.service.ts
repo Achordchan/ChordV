@@ -189,6 +189,7 @@ import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
+const EVENT_PUBLISH_BUDGET_MS = 300;
 
 type NodeAccessRevocationEffects = {
   revokedSessionCount: number;
@@ -349,10 +350,41 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async tryPublishEvent(eventType: string, task: () => Promise<unknown>) {
+    let settled = false;
+    const guardedTask = task().then(
+      () => {
+        settled = true;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(`Local change saved, but delayed ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Local change saved, but ${eventType} publish exceeded ${EVENT_PUBLISH_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve();
+      }, EVENT_PUBLISH_BUDGET_MS);
+    });
+
     try {
-      await task();
+      await Promise.race([guardedTask, timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local change saved, but ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 

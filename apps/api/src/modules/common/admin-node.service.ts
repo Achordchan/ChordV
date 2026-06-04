@@ -23,6 +23,8 @@ import {
   toNodeId
 } from "./node-import.utils";
 
+const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
+
 @Injectable()
 export class AdminNodeService {
   private readonly logger = new Logger(AdminNodeService.name);
@@ -676,10 +678,43 @@ export class AdminNodeService {
   }
 
   private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
+    let settled = false;
+    const guardedTask = task().then(
+      () => {
+        settled = true;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve();
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+    });
+
     try {
-      await task();
+      await Promise.race([guardedTask, timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 

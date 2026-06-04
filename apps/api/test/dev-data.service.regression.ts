@@ -4508,6 +4508,97 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
   assert.match(result.panelSyncMessage ?? "", /still running in background/);
 }
 
+async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls() {
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const keepNode = {
+    ...offlineNode,
+    id: "node_keep",
+    name: "keep",
+    recommended: true
+  };
+  let accessRows = [
+    { id: "access_offline", nodeId: "node_offline" },
+    { id: "access_keep", nodeId: "node_keep" }
+  ];
+  let publishStarted = false;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({
+            ...row,
+            node: row.nodeId === "node_keep" ? keepNode : offlineNode
+          }));
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+        }
+      },
+      node: {
+        findMany: async () => [keepNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("removal-only access update must not full-sync remote panels");
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdated: async () => {
+        publishStarted = true;
+        return new Promise<void>(() => undefined);
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_keep"] }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("single node removal waited for stalled node access publish")), 750);
+    })
+  ]);
+
+  assert.equal(publishStarted, true);
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
+  assert.deepEqual(result.nodeIds, ["node_keep"]);
+  assert.equal(result.panelSyncStatus, "pending");
+}
+
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -5435,6 +5526,53 @@ async function testDisableNodeKeepsLocalSaveWhenEffectsFail() {
 
   assert.equal(result.isActive, false);
   assert.equal(updatedData?.isActive, false, "local node state must save even when revoke, queue, and publish fail");
+}
+
+async function testDisableNodeReturnsWhenAfterSaveFollowUpStalls() {
+  const currentNode = makeAdminNodeRow({
+    isActive: true,
+    panelEnabled: true,
+    panelStatus: "online"
+  });
+  let updatedData: Record<string, any> | null = null;
+  let panelDisableQueued = false;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    runtimeSessionService: {
+      revokeNodeLeases: async () => new Promise<number>(() => undefined),
+      markPanelBindingsDisabledForNode: async () => {
+        panelDisableQueued = true;
+        return 1;
+      },
+      clearPendingPanelDisableJobsForNode: async () => 0,
+      syncPanelAccessForNode: async () => 0
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: Record<string, any>) => {
+          updatedData = payload.data;
+          return { ...currentNode, ...payload.data, updatedAt: new Date() };
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateNode("node_1", { isActive: false }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node disable waited for stalled after-save follow-up")), 750);
+    })
+  ]);
+
+  assert.equal(result.isActive, false);
+  assert.equal(updatedData?.isActive, false, "local node disable must save before stalled follow-up finishes");
+  assert.equal(panelDisableQueued, true, "subsequent panel disable queueing should still run after the stalled lease step times out");
 }
 
 async function testPanelDisableJobUpsertResetsStaleFailureState() {
@@ -10374,6 +10512,7 @@ async function main() {
   await testClearNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
+  await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
@@ -10387,6 +10526,7 @@ async function main() {
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
+  await testDisableNodeReturnsWhenAfterSaveFollowUpStalls();
   await testPanelDisableJobUpsertResetsStaleFailureState();
   await testPanelDisableJobStoresAndUsesPanelSnapshot();
   await testPanelDisableJobCompletionDoesNotResolveUsageIncident();
