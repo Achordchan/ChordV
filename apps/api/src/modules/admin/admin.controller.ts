@@ -262,6 +262,16 @@ export class AdminController {
     return this.devDataService.listAdminPanelSyncJobs();
   }
 
+  @Post("nodes/panel-sync-jobs/:jobId/retry")
+  retryPanelSyncJob(@Param("jobId") jobId: string) {
+    return this.devDataService.retryAdminPanelSyncJob(jobId);
+  }
+
+  @Post("nodes/:nodeId/panel-sync-jobs/retry")
+  retryPanelSyncJobsForNode(@Param("nodeId") nodeId: string) {
+    return this.devDataService.retryAdminPanelSyncJobsForNode(nodeId);
+  }
+
   @Post("nodes/import")
   importNode(@Body() body: ImportNodeDto) {
     return this.devDataService.importNodeFromSubscription(body);

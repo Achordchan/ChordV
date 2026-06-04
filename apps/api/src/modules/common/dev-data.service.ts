@@ -1504,6 +1504,14 @@ export class DevDataService implements OnModuleInit {
     return this.adminNodeService.listPanelSyncJobs();
   }
 
+  async retryAdminPanelSyncJob(jobId: string) {
+    return this.adminNodeService.retryPanelSyncJob(jobId);
+  }
+
+  async retryAdminPanelSyncJobsForNode(nodeId: string) {
+    return this.adminNodeService.retryPanelSyncJobsForNode(nodeId);
+  }
+
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
     return this.adminNodeService.importNodeFromSubscription(input);
   }

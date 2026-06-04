@@ -18,6 +18,8 @@ type NodesPageProps = {
   probingNodeId: string | null;
   onOpenPanelSyncQueue: () => void;
   onClosePanelSyncQueue: () => void;
+  onRetryPanelSyncJob: (jobId: string) => void;
+  onRetryNodePanelSyncJobs: (nodeId: string) => void;
   onProbeNode: (nodeId: string) => void;
   onRefreshNode: (nodeId: string) => void;
   onOpenNodeDrawer: (nodeId: string) => void;
@@ -83,11 +85,24 @@ export function NodesPage(props: NodesPageProps) {
                         <Badge color="yellow" variant="light">
                           待同步 {item.panelSyncPendingCount}
                         </Badge>
+                        {item.panelSyncRunningCount ? (
+                          <Badge color="blue" variant="light">
+                            执行中 {item.panelSyncRunningCount}
+                          </Badge>
+                        ) : null}
+                        {item.panelSyncFailedCount ? (
+                          <Badge color="red" variant="light">
+                            失败 {item.panelSyncFailedCount}
+                          </Badge>
+                        ) : null}
                         {item.panelSyncLastError ? (
                           <Text size="xs" c="dimmed" lineClamp={1}>
                             {item.panelSyncLastError}
                           </Text>
                         ) : null}
+                        <Button size="xs" variant="light" onClick={() => props.onRetryNodePanelSyncJobs(item.id)}>
+                          重试节点
+                        </Button>
                       </Stack>
                     ) : (
                       <Badge color="green" variant="light">
@@ -131,6 +146,8 @@ export function NodesPage(props: NodesPageProps) {
         opened={props.panelSyncQueueOpened}
         jobs={props.panelSyncJobs}
         onClose={props.onClosePanelSyncQueue}
+        onRetryJob={props.onRetryPanelSyncJob}
+        onRetryNode={props.onRetryNodePanelSyncJobs}
       />
     </>
   );
@@ -140,6 +157,8 @@ function PanelSyncQueueDrawer(props: {
   opened: boolean;
   jobs: AdminPanelSyncJobDto[];
   onClose: () => void;
+  onRetryJob: (jobId: string) => void;
+  onRetryNode: (nodeId: string) => void;
 }) {
   return (
     <Drawer opened={props.opened} onClose={props.onClose} title="面板同步队列" position="right" size="xl">
@@ -157,7 +176,7 @@ function PanelSyncQueueDrawer(props: {
         <Table.Tbody>
           {props.jobs.length === 0 ? (
             <Table.Tr>
-              <Table.Td colSpan={6}>
+              <Table.Td colSpan={7}>
                 <Text c="dimmed">暂无待同步任务</Text>
               </Table.Td>
             </Table.Tr>
@@ -181,6 +200,16 @@ function PanelSyncQueueDrawer(props: {
                   <Text size="sm" c="dimmed" lineClamp={2}>
                     {job.lastError ?? "-"}
                   </Text>
+                </Table.Td>
+                <Table.Td>
+                  <Group gap="xs" wrap="nowrap">
+                    <Button size="xs" variant="light" onClick={() => props.onRetryJob(job.id)}>
+                      重试
+                    </Button>
+                    <Button size="xs" variant="subtle" onClick={() => props.onRetryNode(job.nodeId)}>
+                      重试节点
+                    </Button>
+                  </Group>
                 </Table.Td>
               </Table.Tr>
             ))

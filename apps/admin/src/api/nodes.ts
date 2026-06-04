@@ -11,6 +11,20 @@ export function fetchAdminPanelSyncJobs() {
   return request<AdminPanelSyncJobDto[]>("/admin/nodes/panel-sync-jobs");
 }
 
+export function retryAdminPanelSyncJob(jobId: string) {
+  return request<AdminPanelSyncJobDto[]>(`/admin/nodes/panel-sync-jobs/${jobId}/retry`, {
+    method: "POST",
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+export function retryAdminPanelSyncJobsForNode(nodeId: string) {
+  return request<AdminPanelSyncJobDto[]>(`/admin/nodes/${nodeId}/panel-sync-jobs/retry`, {
+    method: "POST",
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
 export function importNode(input: ImportNodeInputDto) {
   return request<AdminNodeRecordDto>("/admin/nodes/import", {
     method: "POST",

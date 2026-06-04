@@ -39,10 +39,19 @@ export class AdminNodeService {
       orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
     });
     const jobs = await this.listPanelSyncJobs();
-    const summaryByNode = new Map<string, { count: number; lastError: string | null }>();
+    const summaryByNode = new Map<
+      string,
+      { pending: number; running: number; failed: number; lastError: string | null }
+    >();
     for (const job of jobs) {
-      const summary = summaryByNode.get(job.nodeId) ?? { count: 0, lastError: null };
-      summary.count += 1;
+      const summary = summaryByNode.get(job.nodeId) ?? { pending: 0, running: 0, failed: 0, lastError: null };
+      if (job.status === "failed") {
+        summary.failed += 1;
+      } else if (job.status === "running") {
+        summary.running += 1;
+      } else {
+        summary.pending += 1;
+      }
       summary.lastError = job.lastError ?? summary.lastError;
       summaryByNode.set(job.nodeId, summary);
     }
@@ -52,7 +61,9 @@ export class AdminNodeService {
       const summary = summaryByNode.get(row.id);
       return {
         ...record,
-        panelSyncPendingCount: summary?.count ?? 0,
+        panelSyncPendingCount: summary ? summary.pending + summary.running + summary.failed : 0,
+        panelSyncRunningCount: summary?.running ?? 0,
+        panelSyncFailedCount: summary?.failed ?? 0,
         panelSyncLastError: summary?.lastError ?? null
       };
     });
@@ -89,6 +100,43 @@ export class AdminNodeService {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString()
     }));
+  }
+
+  async retryPanelSyncJob(jobId: string): Promise<AdminPanelSyncJobDto[]> {
+    const updated = await this.prisma.panelSyncJob.updateMany({
+      where: {
+        id: jobId,
+        status: { in: ["pending", "running", "failed"] }
+      },
+      data: {
+        status: "pending",
+        nextRunAt: new Date(),
+        lockedAt: null,
+        completedAt: null,
+        lastError: null
+      }
+    });
+    if (updated.count === 0) {
+      throw new NotFoundException("面板同步任务不存在或已完成");
+    }
+    return this.listPanelSyncJobs();
+  }
+
+  async retryPanelSyncJobsForNode(nodeId: string): Promise<AdminPanelSyncJobDto[]> {
+    await this.prisma.panelSyncJob.updateMany({
+      where: {
+        nodeId,
+        status: { in: ["pending", "running", "failed"] }
+      },
+      data: {
+        status: "pending",
+        nextRunAt: new Date(),
+        lockedAt: null,
+        completedAt: null,
+        lastError: null
+      }
+    });
+    return this.listPanelSyncJobs();
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {
@@ -531,7 +579,44 @@ export class AdminNodeService {
     const nodes = await this.prisma.node.findMany({ orderBy: { createdAt: "desc" } });
     const results: AdminNodeRecordDto[] = [];
     for (const node of nodes) {
-      results.push(await this.probeNode(node.id));
+      try {
+        results.push(await this.probeNode(node.id));
+      } catch (error) {
+        const message = readAdminNodeErrorMessage(error);
+        this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
+        const checkedAt = new Date();
+        const fallbackStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
+        try {
+          const row = await this.prisma.node.update({
+            where: { id: node.id },
+            data: {
+              probeStatus: "offline",
+              probeLatencyMs: null,
+              probeCheckedAt: checkedAt,
+              probeError: message,
+              panelStatus: fallbackStatus,
+              panelError: fallbackStatus === "degraded" ? message : null
+            }
+          });
+          results.push(toAdminNodeRecord(row));
+        } catch (updateError) {
+          this.logger.warn(
+            `Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`
+          );
+          results.push(
+            toAdminNodeRecord({
+              ...node,
+              probeStatus: "offline",
+              probeLatencyMs: null,
+              probeCheckedAt: checkedAt,
+              probeError: message,
+              panelStatus: fallbackStatus,
+              panelError: fallbackStatus === "degraded" ? message : null,
+              updatedAt: checkedAt
+            })
+          );
+        }
+      }
     }
     return results;
   }
@@ -624,4 +709,8 @@ export class AdminNodeService {
 
     return true;
   }
+}
+
+function readAdminNodeErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }

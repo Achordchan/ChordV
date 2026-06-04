@@ -2863,6 +2863,124 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   assert.equal(nodeDeleted, false, "node row must be kept for queued panel cleanup jobs");
 }
 
+async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const makeNode = (id: string) => ({
+    id,
+    name: id,
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "node.example.com",
+    serverPort: 443,
+    serverName: "node.example.com",
+    shortId: "short",
+    spiderX: "/",
+    mldsa65Verify: null,
+    subscriptionUrl: null,
+    statsLastSyncedAt: null,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 1,
+    panelEnabled: true,
+    panelStatus: "online" as const,
+    panelLastSyncedAt: null,
+    panelError: null,
+    probeStatus: "unknown" as const,
+    probeCheckedAt: null,
+    probeError: null,
+    createdAt: now,
+    updatedAt: now
+  });
+  const nodes = [makeNode("node_bad"), makeNode("node_good")];
+  const probed: string[] = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    probeNode: async (nodeId: string) => {
+      probed.push(nodeId);
+      if (nodeId === "node_bad") {
+        throw new Error("panel unavailable");
+      }
+      return {
+        id: nodeId,
+        probeStatus: "healthy",
+        panelStatus: "online"
+      };
+    },
+    prisma: {
+      node: {
+        findMany: async () => nodes,
+        update: async (payload: Record<string, any>) => ({
+          ...nodes.find((node) => node.id === payload.where.id),
+          ...payload.data,
+          updatedAt: new Date("2026-01-01T00:01:00.000Z")
+        })
+      }
+    }
+  });
+
+  const result = await service.probeAllNodes();
+
+  assert.deepEqual(probed, ["node_bad", "node_good"], "bulk probe must continue after one node fails");
+  assert.deepEqual(result.map((item) => item.id), ["node_bad", "node_good"]);
+  assert.equal(result[0]?.probeStatus, "offline");
+  assert.equal(result[0]?.panelStatus, "degraded");
+  assert.match(result[0]?.probeError ?? "", /panel unavailable/);
+  assert.equal(result[1]?.probeStatus, "healthy");
+}
+
+async function testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    prisma: {
+      panelSyncJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 1 };
+        },
+        findMany: async () => [
+          {
+            id: "job_1",
+            action: "disable_client",
+            status: "pending",
+            nodeId: "node_1",
+            node: { name: "Node" },
+            panelClientEmail: "user@example.com",
+            attempts: 0,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: null,
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      }
+    }
+  });
+
+  const result = await service.retryPanelSyncJob("job_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.id, "job_1");
+  assert.equal(updates[0]?.data.status, "pending");
+  assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(updates[0]?.data.lastError, null);
+  assert.deepEqual(result.map((job) => job.id), ["job_1"]);
+}
+
 async function testXuiPanelLocationDoesNotDuplicateBasePath() {
   const service = new XuiService();
   const calls: Array<{ panelBaseUrl: string; panelApiBasePath: string; path: string }> = [];
@@ -8201,6 +8319,8 @@ async function main() {
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
+  await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
+  await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
   await testXuiPanelLocationAcceptsFullUrlAsApiBasePath();

@@ -467,6 +467,8 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   probeCheckedAt: string | null;
   probeError: string | null;
   panelSyncPendingCount?: number;
+  panelSyncRunningCount?: number;
+  panelSyncFailedCount?: number;
   panelSyncLastError?: string | null;
   createdAt: string;
   updatedAt: string;

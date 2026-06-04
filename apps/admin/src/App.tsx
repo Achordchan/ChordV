@@ -105,6 +105,8 @@ import {
   refreshNode,
   resetSubscriptionTraffic,
   renewSubscription,
+  retryAdminPanelSyncJob,
+  retryAdminPanelSyncJobsForNode,
   updateAnnouncement,
   updateNode,
   updatePlan,
@@ -750,6 +752,42 @@ export function App() {
 
   async function refreshPanelSyncJobsAfterPending() {
     mergeSnapshot({ panelSyncJobs: await fetchAdminPanelSyncJobs() });
+  }
+
+  async function handleRetryPanelSyncJob(jobId: string) {
+    try {
+      const panelSyncJobs = await retryAdminPanelSyncJob(jobId);
+      mergeSnapshot({ panelSyncJobs });
+      notifications.show({
+        color: "green",
+        title: "已重新排队",
+        message: "面板同步任务已加入最近重试队列"
+      });
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "重试失败",
+        message: readError(reason, "同步任务重新排队失败")
+      });
+    }
+  }
+
+  async function handleRetryNodePanelSyncJobs(nodeId: string) {
+    try {
+      const panelSyncJobs = await retryAdminPanelSyncJobsForNode(nodeId);
+      mergeSnapshot({ panelSyncJobs });
+      notifications.show({
+        color: "green",
+        title: "已重新排队",
+        message: "该节点的面板同步任务已加入最近重试队列"
+      });
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "重试失败",
+        message: readError(reason, "节点同步任务重新排队失败")
+      });
+    }
   }
 
   async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm) {
@@ -2098,6 +2136,8 @@ export function App() {
                 probingNodeId={probingNodeId}
                 onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
                 onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
+                onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
+                onRetryNodePanelSyncJobs={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
                 onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
