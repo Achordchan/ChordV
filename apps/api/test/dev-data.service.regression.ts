@@ -3651,6 +3651,105 @@ async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
 }
 
+async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+
+  const oldNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let releaseOuterLock!: () => void;
+  let accessRows = [{ id: "access_old", nodeId: "node_offline", node: oldNode }];
+  let queuedDisableJobs = 0;
+  const heldLock = runWithSubscriptionUsageLock(
+    "sub_held_lock",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const service = createDevDataService({
+      logger: {
+        warn: () => undefined
+      },
+      requireSubscription: async () => ({
+        id: "sub_held_lock",
+        userId: "user_1",
+        teamId: null
+      }),
+      prisma: {
+        subscriptionNodeAccess: {
+          findMany: async (payload: { select?: unknown }) => {
+            if (payload.select) {
+              return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+            }
+            return accessRows;
+          },
+          deleteMany: async () => {
+            accessRows = [];
+          }
+        },
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            subscriptionNodeAccess: {
+              deleteMany: async () => {
+                accessRows = [];
+              }
+            }
+          })
+      },
+      runtimeSessionService: {
+        markPanelBindingsDisabledForSubscription: async () => {
+          queuedDisableJobs += 1;
+          return 1;
+        },
+        queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+        revokeSubscriptionLeases: async () => 0
+      },
+      publishNodeAccessUpdatedEvent: async () => undefined
+    });
+
+    const result = await Promise.race([
+      service.updateSubscriptionNodeAccess("sub_held_lock", { nodeIds: [] }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("node access update waited for usage lock")), 250);
+      })
+    ]);
+
+    assert.deepEqual(accessRows, [], "local node access must be cleared without waiting for usage sync lock");
+    assert.equal(queuedDisableJobs, 1, "offline panel disable work must be queued after local revoke");
+    assert.equal(result.panelSyncStatus, "pending");
+    assert.deepEqual(result.nodeIds, []);
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock;
+    if (previousDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  }
+}
+
 async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
   const oldNode = {
     id: "node_old",
@@ -4148,6 +4247,65 @@ async function testAdminListsSurfacePersistentPanelSyncPendingState() {
   assert.match(subscriptions[0].panelSyncMessage ?? "", /失败 1/);
   assert.equal(teams[0].panelSyncStatus, "pending");
   assert.match(teams[0].panelSyncMessage ?? "", /失败 1/);
+}
+
+async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails() {
+  const deletedMemberships: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_personal",
+      userId: "user_1",
+      teamId: null
+    }),
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("panel rollback failed");
+      },
+      revokeSubscriptionLeases: async () => 0,
+      removePanelBindingsForSubscription: async () => ({ requested: 0, updated: 0, failed: [] }),
+      assertPanelBindingMutation: () => undefined
+    },
+    prisma: {
+      teamMember: {
+        create: async () => ({}),
+        deleteMany: async (payload: Record<string, any>) => {
+          deletedMemberships.push(payload.where.id);
+          return { count: 1 };
+        }
+      },
+      subscription: {
+        update: async () => {
+          throw new Error("local archive failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
+    /local archive failed/
+  );
+  assert.equal(deletedMemberships.length, 1, "created team membership must be rolled back after local conversion failure");
 }
 
 async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
@@ -8693,6 +8851,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
+  await testClearNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
@@ -8700,6 +8859,7 @@ async function main() {
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();
+  await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testPanelDisableJobUpsertResetsStaleFailureState();

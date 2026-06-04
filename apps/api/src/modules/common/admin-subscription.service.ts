@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   ConflictException,
   Injectable,
@@ -803,8 +802,9 @@ export class AdminSubscriptionService {
           rollbackErrors.push(personalRollback.errorMessage);
         }
         if (rollbackErrors.length > 0) {
-          const baseMessage = readErrorMessage(error, "个人订阅转 Team 失败");
-          throw new BadGatewayException(`${baseMessage}；回滚时又出现问题：${rollbackErrors.join("；")}`);
+          this.logger?.warn(
+            `Personal subscription Team conversion rollback queued panel sync issues for ${subscriptionId}: ${rollbackErrors.join("; ")}`
+          );
         }
       }
       throw error;

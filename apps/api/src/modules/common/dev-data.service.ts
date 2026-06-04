@@ -1195,7 +1195,8 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     input: UpdateSubscriptionNodeAccessInputDto
   ): Promise<SubscriptionNodeAccessDto> {
-    return runWithSubscriptionUsageLock(subscriptionId, () => this.updateSubscriptionNodeAccessLocked(subscriptionId, input));
+    // Admin authorization changes are DB-first and must not wait behind slow usage/panel sync work.
+    return this.updateSubscriptionNodeAccessLocked(subscriptionId, input);
   }
 
   private async updateSubscriptionNodeAccessLocked(
