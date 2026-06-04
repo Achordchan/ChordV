@@ -793,7 +793,7 @@ export function App() {
     }
   }
 
-  async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm) {
+  async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm, options: { automatic?: boolean } = {}) {
     if (!form.panelBaseUrl || !form.panelUsername || !form.panelPassword) {
       notifications.show({
         title: "缺少面板信息",
@@ -826,14 +826,14 @@ export function App() {
         color: result.length > 0 ? "green" : "yellow"
       });
     } catch (reason) {
-      const message = readError(reason, "读取 3x-ui 入站失败");
+      const message = readError(reason, "读取 3x-ui 入站失败。该操作会直接访问面板；如果面板离线或路径错误，请先手动填写入站 ID。");
       if (ensureAuthenticated(message)) {
         return;
       }
       notifications.show({
-        title: "读取失败",
-        message,
-        color: "red"
+        title: options.automatic ? "面板入站读取失败" : "读取失败",
+        message: options.automatic ? `${message} 这不会影响保存已有节点配置，可手动填写入站 ID。` : message,
+        color: options.automatic ? "yellow" : "red"
       });
       setNodePanelInbounds([]);
     } finally {
@@ -962,18 +962,29 @@ export function App() {
     }
   }
 
-  async function runAction(action: () => Promise<unknown>, successText: string) {
+  async function runAction(
+    action: () => Promise<unknown>,
+    successText: string,
+    options: {
+      successTitle?: string;
+      failureTitle?: string;
+      failureFallback?: string;
+      refreshAfter?: boolean;
+      resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
+    } = {}
+  ) {
     try {
       setError(null);
       const result = await action();
       const resolvedMessage = extractActionMessage(result, successText);
       const panelSyncPending = hasPendingPanelSync(result);
+      const successOverride = options.resolveSuccess?.(result) ?? null;
       notifications.show({
-        color: panelSyncPending ? "yellow" : "green",
-        title: panelSyncPending ? "已保存，面板同步待重试" : "操作成功",
-        message: resolvedMessage
+        color: panelSyncPending ? "yellow" : successOverride?.color ?? "green",
+        title: panelSyncPending ? "已保存，面板同步待重试" : successOverride?.title ?? options.successTitle ?? "操作成功",
+        message: successOverride?.message ?? resolvedMessage
       });
-      void refreshCurrentDataAfterAction().catch((refreshReason) => {
+      if (options.refreshAfter ?? true) void refreshCurrentDataAfterAction().catch((refreshReason) => {
         notifications.show({
           color: "yellow",
           title: "操作已完成，但刷新失败",
@@ -991,13 +1002,13 @@ export function App() {
       }
       return true;
     } catch (reason) {
-      const message = readError(reason, "操作失败");
+      const message = readError(reason, options.failureFallback ?? "操作失败");
       if (ensureAuthenticated(message)) {
         return false;
       }
       notifications.show({
         color: "red",
-        title: "操作失败",
+        title: options.failureTitle ?? "操作失败",
         message
       });
       return false;
@@ -1229,7 +1240,7 @@ export function App() {
         setNodePanelInbounds([]);
         setNodeForm(nextForm);
         if (nextForm.panelBaseUrl && nextForm.panelUsername && nextForm.panelPassword) {
-          void handleLoadNodePanelInbounds(nextForm);
+          void handleLoadNodePanelInbounds(nextForm, { automatic: true });
         }
       } else {
         setNodePanelInbounds([]);
@@ -1476,7 +1487,7 @@ export function App() {
                 } satisfies UpdateNodeInputDto),
               "节点已更新"
             )
-          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "面板已添加");
+          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加");
         if (success) closeDrawer();
       }
 
@@ -1506,7 +1517,29 @@ export function App() {
   async function handleProbeNode(nodeId: string) {
     try {
       setProbingNodeId(nodeId);
-      await runAction(() => probeNode(nodeId), "节点已探测");
+      await runAction(() => probeNode(nodeId), "节点探测已完成", {
+        successTitle: "探测完成",
+        failureTitle: "探测失败",
+        failureFallback: "节点网络探测失败",
+        resolveSuccess: (result) => {
+          const node = result as AdminNodeRecordDto;
+          if (node.panelStatus === "degraded") {
+            return {
+              color: "yellow",
+              title: "探测完成，面板异常",
+              message: `节点连通性已探测，但 3x-ui 面板不可达：${node.panelError ?? "请检查面板地址、路径或账号密码"}`
+            };
+          }
+          if (node.probeStatus !== "healthy") {
+            return {
+              color: "yellow",
+              title: "探测完成，节点异常",
+              message: node.probeError ?? "节点网络探测未通过"
+            };
+          }
+          return null;
+        }
+      });
     } finally {
       setProbingNodeId(null);
     }
@@ -1515,14 +1548,35 @@ export function App() {
   async function handleProbeAllNodes() {
     try {
       setProbingAll(true);
-      await runAction(() => probeAllNodes(), "全部节点已探测");
+      await runAction(() => probeAllNodes(), "全部节点探测已完成", {
+        successTitle: "探测完成",
+        failureTitle: "探测失败",
+        failureFallback: "批量节点网络探测失败",
+        resolveSuccess: (result) => {
+          const nodes = Array.isArray(result) ? (result as AdminNodeRecordDto[]) : [];
+          const degradedCount = nodes.filter((node) => node.panelStatus === "degraded").length;
+          const failedProbeCount = nodes.filter((node) => node.probeStatus !== "healthy").length;
+          if (degradedCount > 0 || failedProbeCount > 0) {
+            return {
+              color: "yellow",
+              title: "探测完成，存在异常",
+              message: `已完成 ${nodes.length} 个节点探测；面板异常 ${degradedCount} 个，节点连通异常 ${failedProbeCount} 个。`
+            };
+          }
+          return null;
+        }
+      });
     } finally {
       setProbingAll(false);
     }
   }
 
   async function handleRefreshNode(nodeId: string) {
-    await runAction(() => refreshNode(nodeId), "节点已刷新");
+    await runAction(() => refreshNode(nodeId), "节点已从 3x-ui 面板刷新", {
+      successTitle: "读取面板成功",
+      failureTitle: "读取面板失败",
+      failureFallback: "读取 3x-ui 面板并刷新节点失败"
+    });
   }
 
   async function handleDeleteAnnouncement(announcementId: string) {

@@ -123,12 +123,12 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
           nothingFoundMessage="暂无入站"
         />
         <Button variant="light" onClick={props.onLoadNodePanelInbounds} loading={props.nodePanelInboundsLoading}>
-          读取入站
+          读取远端入站
         </Button>
       </Group>
       <NumberInput
         label="手动入站 ID（兜底）"
-        description="仅在无法读取面板入站时使用"
+        description="读取远端入站会直接访问 3x-ui；面板离线或路径错误时可在这里手动填写"
         min={1}
         value={props.nodeForm.panelInboundId}
         onChange={(value) => props.setNodeForm((current) => ({ ...current, panelInboundId: Number(value) || 1 }))}

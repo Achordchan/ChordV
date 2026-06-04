@@ -527,7 +527,7 @@ export class UsageSyncService {
       );
     }
 
-    await this.clientEventsPublisher.publishSubscriptionUpdated({
+    await this.publishSubscriptionUpdatedBestEffort({
       subscriptionId: input.subscriptionId,
       userId: input.userId,
       teamId: input.teamId,
@@ -705,6 +705,21 @@ export class UsageSyncService {
       await this.revokeActiveLeases(subscriptionId, reason);
     } catch (error) {
       this.logger.warn(`Usage sync saved local subscription state, but active lease revocation failed for ${subscriptionId}: ${readErrorMessage(error)}`);
+    }
+  }
+
+  private async publishSubscriptionUpdatedBestEffort(input: {
+    subscriptionId: string;
+    userId: string | null;
+    teamId: string | null;
+    state: "active" | "expired" | "exhausted" | "paused";
+  }) {
+    try {
+      await this.clientEventsPublisher.publishSubscriptionUpdated(input);
+    } catch (error) {
+      this.logger.warn(
+        `Usage sync saved local subscription state, but subscription event publish failed for ${input.subscriptionId}: ${readErrorMessage(error)}`
+      );
     }
   }
 }

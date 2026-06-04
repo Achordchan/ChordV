@@ -2357,6 +2357,96 @@ async function testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFa
   assert.match(warnings.join("\n"), /lease revoke failed/);
 }
 
+async function testUsageDeltaKeepsLocalUsageWhenPublishFails() {
+  const warnings: string[] = [];
+  const subscriptionUpdates: Array<Record<string, unknown>> = [];
+  const snapshotUpdates: Array<Record<string, unknown>> = [];
+  const bindingUpdates: Array<Record<string, unknown>> = [];
+  const service = createUsageSyncService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 0,
+      revokeSubscriptionLeases: async () => 0
+    },
+    clientEventsPublisher: {
+      publishSubscriptionUpdated: async () => {
+        throw new Error("sse publish failed");
+      }
+    },
+    prisma: {
+      $transaction: async (
+        callback: (tx: {
+          subscription: {
+            findUnique: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+            update: (payload: Record<string, unknown>) => Promise<void>;
+          };
+          trafficSnapshot: {
+            update: (payload: Record<string, unknown>) => Promise<void>;
+            upsert: (payload: Record<string, unknown>) => Promise<void>;
+          };
+          panelClientBinding: { updateMany: (payload: Record<string, unknown>) => Promise<void> };
+          trafficLedger: { create: (payload: Record<string, unknown>) => Promise<void> };
+        }) => Promise<void>
+      ) =>
+        callback({
+          subscription: {
+            findUnique: async () => ({
+              id: "sub_1",
+              state: "active",
+              expireAt: new Date(Date.now() + 60_000),
+              usedTrafficGb: 1,
+              totalTrafficGb: 10,
+              remainingTrafficGb: 9
+            }),
+            update: async (payload: Record<string, unknown>) => {
+              subscriptionUpdates.push(payload);
+            }
+          },
+          trafficSnapshot: {
+            update: async (payload: Record<string, unknown>) => {
+              snapshotUpdates.push(payload);
+            },
+            upsert: async (payload: Record<string, unknown>) => {
+              snapshotUpdates.push(payload);
+            }
+          },
+          panelClientBinding: {
+            updateMany: async (payload: Record<string, unknown>) => {
+              bindingUpdates.push(payload);
+            }
+          },
+          trafficLedger: {
+            create: async () => undefined
+          }
+        })
+    }
+  });
+
+  await service["applyUsageDelta"]({
+    nodeId: "node_1",
+    snapshotKey: "node_1:sub_1:user_1",
+    snapshotMode: "update",
+    subscriptionId: "sub_1",
+    teamId: null,
+    userId: "user_1",
+    bindingId: "binding_1",
+    uplinkBytes: 0n,
+    downlinkBytes: BigInt(GB_IN_BYTES),
+    totalBytes: BigInt(GB_IN_BYTES),
+    deltaBytes: BigInt(GB_IN_BYTES),
+    sampledAt: new Date()
+  });
+
+  assert.equal(subscriptionUpdates.length, 1);
+  assert.equal(snapshotUpdates.length, 1);
+  assert.equal(bindingUpdates.length, 1);
+  assert.equal((subscriptionUpdates[0].data as { state: string }).state, "active");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /sse publish failed/);
+}
+
 async function testInitialUsageDeltaUsesBindingCountersForUuidMapping() {
   const snapshotCreates: Array<Record<string, unknown>> = [];
   const subscriptionUpdates: Array<Record<string, unknown>> = [];
@@ -9135,6 +9225,7 @@ async function main() {
   await testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline();
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();
   await testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFail();
+  await testUsageDeltaKeepsLocalUsageWhenPublishFails();
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
   await testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsage();

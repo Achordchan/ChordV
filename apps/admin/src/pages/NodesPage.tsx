@@ -125,16 +125,25 @@ export function NodesPage(props: NodesPageProps) {
                   </Table.Td>
                   <Table.Td>
                     <RowActions>
-                      <ActionIcon variant="subtle" onClick={() => props.onProbeNode(item.id)} loading={props.probingNodeId === item.id}>
+                      <ActionIcon
+                        variant="subtle"
+                        title="探测节点连通性"
+                        onClick={() => props.onProbeNode(item.id)}
+                        loading={props.probingNodeId === item.id}
+                      >
                         <IconBolt size={16} />
                       </ActionIcon>
-                      <ActionIcon variant="subtle" onClick={() => props.onRefreshNode(item.id)}>
+                      <ActionIcon
+                        variant="subtle"
+                        title="从 3x-ui/订阅源重新读取运行参数；面板离线会失败，但不影响本地配置"
+                        onClick={() => props.onRefreshNode(item.id)}
+                      >
                         <IconRefresh size={16} />
                       </ActionIcon>
-                      <ActionIcon variant="subtle" onClick={() => props.onOpenNodeDrawer(item.id)}>
+                      <ActionIcon variant="subtle" title="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
                         <IconPencil size={16} />
                       </ActionIcon>
-                      <ActionIcon color="red" variant="subtle" onClick={() => props.onDeleteNode(item)}>
+                      <ActionIcon color="red" variant="subtle" title="删除节点" onClick={() => props.onDeleteNode(item)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </RowActions>
