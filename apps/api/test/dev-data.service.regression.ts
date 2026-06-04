@@ -4114,6 +4114,137 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
   }
 }
 
+async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...offlineNode,
+    id: "node_new",
+    name: "new",
+    recommended: true
+  };
+  let releaseOuterLock!: () => void;
+  let accessRows = [{ id: "access_offline", nodeId: "node_offline" }];
+  let queuedAccessSync = 0;
+  let syncCalls = 0;
+  let disableFilter: { nodeIds?: string[] } | undefined;
+  const heldLock = runWithSubscriptionUsageLock(
+    "sub_held_lock",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const service = createDevDataService({
+      logger: {
+        warn: () => undefined
+      },
+      requireSubscription: async () => ({
+        id: "sub_held_lock",
+        userId: "user_1",
+        teamId: null
+      }),
+      prisma: {
+        subscriptionNodeAccess: {
+          findMany: async (payload: { select?: unknown }) => {
+            if (payload.select) {
+              return accessRows;
+            }
+            return accessRows.map((row) => ({
+              ...row,
+              node: row.nodeId === "node_new" ? newNode : offlineNode
+            }));
+          },
+          deleteMany: async () => {
+            accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+          },
+          createMany: async () => {
+            accessRows.push({ id: "access_new", nodeId: "node_new" });
+          }
+        },
+        node: {
+          findMany: async () => [newNode]
+        },
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            subscriptionNodeAccess: {
+              deleteMany: async () => {
+                accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+              },
+              createMany: async () => {
+                accessRows.push({ id: "access_new", nodeId: "node_new" });
+              }
+            }
+          })
+      },
+      runtimeSessionService: {
+        markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+          disableFilter = filter;
+          return 1;
+        },
+        queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+        revokeSubscriptionLeases: async () => 0,
+        queueSubscriptionPanelAccessSync: async () => {
+          queuedAccessSync += 1;
+          return 1;
+        },
+        syncSubscriptionPanelAccess: async () => {
+          syncCalls += 1;
+          throw new Error("node access replacement must not wait for the usage lock");
+        }
+      },
+      publishNodeAccessUpdatedEvent: async () => undefined
+    });
+
+    const result = await Promise.race([
+      service.updateSubscriptionNodeAccess("sub_held_lock", { nodeIds: ["node_new"] }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("node access replacement waited for usage lock")), 250);
+      })
+    ]);
+
+    assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
+    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] });
+    assert.equal(queuedAccessSync, 1, "newly authorized nodes must queue panel access sync without taking the usage lock");
+    assert.equal(syncCalls, 0, "node access replacement must not use the usage-locking panel sync path");
+    assert.deepEqual(result.nodeIds, ["node_new"]);
+    assert.equal(result.panelSyncStatus, "pending");
+    assert.match(result.panelSyncMessage ?? "", /disable job queued/);
+    assert.match(result.panelSyncMessage ?? "", /panel sync queued/);
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock;
+    if (previousDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  }
+}
+
 async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
   const oldNode = {
     id: "node_old",
@@ -7965,6 +8096,107 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   assert.match(result.message ?? "", /订阅已创建/);
 }
 
+async function testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock() {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+
+  let releaseOuterLock!: () => void;
+  let queuedPanelSync = 0;
+  let usageLockingSyncCalls = 0;
+  const heldLock = runWithSubscriptionUsageLock(
+    "sub_held_lock",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const service = createAdminSubscriptionService({
+      ensureUserExists: async () => ({
+        id: "user_1",
+        email: "user@example.com",
+        displayName: "User",
+        status: "active"
+      }),
+      getUserMembership: async () => null,
+      findCurrentPersonalSubscription: async () => null,
+      ensurePlanExists: async () => ({
+        id: "plan_1",
+        name: "Personal",
+        scope: "personal",
+        totalTrafficGb: 100,
+        renewable: true,
+        isActive: true
+      }),
+      closeTeamSupportTicketsForUserBestEffort: async () => undefined,
+      runtimeSessionService: {
+        queueSubscriptionPanelAccessSync: async () => {
+          queuedPanelSync += 1;
+          return 1;
+        },
+        syncSubscriptionPanelAccess: async (subscriptionId: string) => {
+          usageLockingSyncCalls += 1;
+          return runWithSubscriptionUsageLock(subscriptionId, async () => 0);
+        }
+      },
+      publishSubscriptionUpdatedEvent: async () => undefined,
+      prisma: {
+        subscription: {
+          create: async () => ({
+            id: "sub_held_lock",
+            userId: "user_1",
+            teamId: null,
+            planId: "plan_1",
+            totalTrafficGb: 100,
+            usedTrafficGb: 0,
+            remainingTrafficGb: 100,
+            expireAt: new Date(Date.now() + 60_000),
+            state: "active",
+            renewable: true,
+            sourceAction: "created",
+            lastSyncedAt: now,
+            plan: { name: "Personal" },
+            user: { email: "user@example.com", displayName: "User" },
+            team: null,
+            nodeAccesses: []
+          })
+        }
+      }
+    });
+
+    const result = await Promise.race([
+      service.createSubscription({
+        userId: "user_1",
+        planId: "plan_1",
+        expireAt: new Date(Date.now() + 60_000).toISOString()
+      }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("createSubscription panel sync waited for usage lock")), 250);
+      })
+    ]);
+
+    assert.equal(queuedPanelSync, 1);
+    assert.equal(usageLockingSyncCalls, 0, "createSubscription must not use usage-locking panel sync after local save");
+    assert.equal(result.panelSyncStatus, "pending");
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock;
+    if (previousDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  }
+}
+
 async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
   let createdSubscription = false;
   let syncCalled = false;
@@ -9371,6 +9603,7 @@ async function main() {
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
+  await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
@@ -9443,6 +9676,7 @@ async function main() {
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
+  await testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();

@@ -1434,7 +1434,8 @@ export class DevDataService implements OnModuleInit {
       const panelSync = await this.trySyncSubscriptionPanelAccess(subscriptionId);
       if (!panelSync.ok) {
         panelSyncStatus = "pending";
-        panelSyncMessage = `节点授权已保存，但 3x-ui 客户端预同步失败，将在连接时重试：${panelSync.errorMessage}`;
+        const syncMessage = `节点授权已保存，但 3x-ui 客户端预同步失败，将在连接时重试：${panelSync.errorMessage}`;
+        panelSyncMessage = [panelSyncMessage, syncMessage].filter(Boolean).join(" ");
       }
     }
     await this.publishNodeAccessUpdatedEvent({
@@ -1479,7 +1480,13 @@ export class DevDataService implements OnModuleInit {
 
   private async trySyncSubscriptionPanelAccess(subscriptionId: string) {
     try {
-      const queuedCount = await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+      const queuePanelAccessSync =
+        typeof (this.runtimeSessionService as { queueSubscriptionPanelAccessSync?: unknown }).queueSubscriptionPanelAccessSync ===
+        "function"
+          ? (this.runtimeSessionService as { queueSubscriptionPanelAccessSync: (subscriptionId: string) => Promise<number> })
+              .queueSubscriptionPanelAccessSync.bind(this.runtimeSessionService)
+          : this.runtimeSessionService.syncSubscriptionPanelAccess.bind(this.runtimeSessionService);
+      const queuedCount = await queuePanelAccessSync(subscriptionId);
       if (queuedCount > 0) {
         return { ok: false as const, errorMessage: "3x-ui panel sync queued for background retry" };
       }

@@ -414,6 +414,10 @@ export class RuntimeSessionService {
     return runWithSubscriptionUsageLock(subscriptionId, () => this.syncSubscriptionPanelAccessLocked(subscriptionId));
   }
 
+  async queueSubscriptionPanelAccessSync(subscriptionId: string) {
+    return this.syncSubscriptionPanelAccessLocked(subscriptionId);
+  }
+
   private async syncSubscriptionPanelAccessLocked(subscriptionId: string) {
     const subscription = await this.prisma.subscription.findUnique({
       where: { id: subscriptionId },
