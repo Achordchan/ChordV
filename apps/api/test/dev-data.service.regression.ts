@@ -752,6 +752,35 @@ async function testImageBedAttachmentCleanupLogsDeleteFailure() {
   assert.match(warnings[0], /delete failed/);
 }
 
+async function testImageBedAttachmentCleanupReturnsWhenDeleteStalls() {
+  const warnings: string[] = [];
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    deleteAdminFile: async () => new Promise(() => undefined)
+  });
+
+  const startedAt = Date.now();
+  await Promise.race([
+    service.deleteUploadedSupportTicketAttachmentBestEffort({
+      url: "https://image.example.com/file/support-tickets/stalled.png",
+      providerFileId: "support-tickets/stalled.png",
+      fileName: "stalled.png",
+      mimeType: "image/png",
+      fileSizeBytes: 123n
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("attachment cleanup waited for stalled image bed delete")), 750);
+    })
+  ]);
+
+  assert.ok(Date.now() - startedAt < 750, "attachment cleanup must respect its short best-effort budget");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /cleanup exceeded/);
+  assert.match(warnings[0], /support-tickets\/stalled\.png/);
+}
+
 async function testUpdateUserPasswordRevokesExistingSessions() {
   const revokeCalls: string[] = [];
   const updates: Array<Record<string, unknown>> = [];
@@ -4295,6 +4324,98 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeStalls() {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
     } else {
       process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+  }
+}
+
+async function testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially() {
+  const previousProbeBudget = process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+  const previousProbeConcurrency = process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY;
+  process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = "50";
+  process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY = "10";
+  try {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const makeNode = (id: string) => ({
+      id,
+      name: id,
+      countryCode: "US",
+      region: "Los Angeles",
+      provider: "provider",
+      tags: [],
+      isActive: true,
+      recommended: false,
+      latencyMs: 0,
+      probeLatencyMs: null,
+      protocol: "vless",
+      security: "reality",
+      serverHost: "node.example.com",
+      serverPort: 443,
+      serverName: "node.example.com",
+      shortId: "short",
+      spiderX: "/",
+      mldsa65Verify: null,
+      subscriptionUrl: null,
+      statsLastSyncedAt: null,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 1,
+      panelEnabled: true,
+      panelStatus: "online" as const,
+      panelLastSyncedAt: null,
+      panelError: null,
+      probeStatus: "unknown" as const,
+      probeCheckedAt: null,
+      probeError: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    const nodes = Array.from({ length: 5 }, (_unused, index) => makeNode(`node_stalled_${index}`));
+    const probed: string[] = [];
+    const service = createAdminNodeService({
+      logger: {
+        warn: () => undefined
+      },
+      probeNode: async (nodeId: string) => {
+        probed.push(nodeId);
+        return new Promise<never>(() => undefined);
+      },
+      prisma: {
+        node: {
+          findMany: async () => nodes,
+          update: async (payload: Record<string, any>) => ({
+            ...nodes.find((node) => node.id === payload.where.id),
+            ...payload.data,
+            updatedAt: new Date("2026-01-01T00:01:00.000Z")
+          })
+        }
+      }
+    });
+
+    const startedAt = Date.now();
+    const result = await Promise.race([
+      service.probeAllNodes(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("bulk probe accumulated stalled node budgets serially")), 180);
+      })
+    ]);
+
+    assert.ok(Date.now() - startedAt < 180, "bulk probe must run stalled nodes concurrently instead of serially");
+    assert.equal(probed.length, nodes.length);
+    assert.deepEqual(result.map((item) => item.id), nodes.map((node) => node.id));
+    assert.equal(result.every((item) => item.probeStatus === "offline"), true);
+    assert.equal(result.every((item) => item.panelStatus === "degraded"), true);
+  } finally {
+    if (previousProbeBudget === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+    if (previousProbeConcurrency === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY = previousProbeConcurrency;
     }
   }
 }
@@ -13624,6 +13745,7 @@ async function main() {
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
+  await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
@@ -13728,6 +13850,7 @@ async function main() {
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
   await testImageBedAttachmentCleanupLogsDeleteFailure();
+  await testImageBedAttachmentCleanupReturnsWhenDeleteStalls();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail();

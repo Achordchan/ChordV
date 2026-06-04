@@ -19,6 +19,7 @@ const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = readPositiveIntegerEnv(
   DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
 );
 const IMAGE_BED_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", 60_000);
+const IMAGE_BED_CLEANUP_BUDGET_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_CLEANUP_BUDGET_MS", 500);
 
 type StoredImageBedConfig = {
   baseUrl?: string;
@@ -222,11 +223,32 @@ export class ImageBedService {
     if (!path) {
       return;
     }
-    await this.deleteAdminFile({ path }).catch((error) => {
-      this.logger.warn(
-        `Support ticket attachment cleanup failed for ${path}: ${error instanceof Error ? error.message : String(error)}`
-      );
+    let settled = false;
+    const cleanupTask = this.deleteAdminFile({ path })
+      .catch((error) => {
+        this.logger.warn(
+          `Support ticket attachment cleanup failed for ${path}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      })
+      .finally(() => {
+        settled = true;
+      });
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          this.logger.warn(
+            `Support ticket attachment cleanup exceeded ${IMAGE_BED_CLEANUP_BUDGET_MS}ms for ${path}; continuing in background.`
+          );
+        }
+        resolve();
+      }, IMAGE_BED_CLEANUP_BUDGET_MS);
+      timeoutHandle.unref?.();
     });
+    await Promise.race([cleanupTask, timeoutTask]);
+    if (settled && timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   private async requestImageBedJson<T>(

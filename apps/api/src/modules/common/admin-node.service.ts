@@ -25,6 +25,7 @@ import {
 
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
+const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 
 @Injectable()
 export class AdminNodeService {
@@ -766,48 +767,55 @@ export class AdminNodeService {
 
   async probeAllNodes() {
     const nodes = await this.prisma.node.findMany({ orderBy: { createdAt: "desc" } });
-    const results: AdminNodeRecordDto[] = [];
-    for (const node of nodes) {
+    const results = new Array<AdminNodeRecordDto>(nodes.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(nodes.length, readBulkNodeProbeConcurrency());
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextIndex < nodes.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await this.probeNodeForBulk(nodes[index]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  }
+
+  private async probeNodeForBulk(node: Awaited<ReturnType<PrismaService["node"]["findMany"]>>[number]) {
+    try {
+      return await this.probeNodeWithBulkBudget(node.id);
+    } catch (error) {
+      const message = readAdminNodeErrorMessage(error);
+      this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
+      const checkedAt = new Date();
+      const fallbackStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
       try {
-        results.push(await this.probeNodeWithBulkBudget(node.id));
-      } catch (error) {
-        const message = readAdminNodeErrorMessage(error);
-        this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
-        const checkedAt = new Date();
-        const fallbackStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
-        try {
-          const row = await this.prisma.node.update({
-            where: { id: node.id },
-            data: {
-              probeStatus: "offline",
-              probeLatencyMs: null,
-              probeCheckedAt: checkedAt,
-              probeError: message,
-              panelStatus: fallbackStatus,
-              panelError: fallbackStatus === "degraded" ? message : null
-            }
-          });
-          results.push(toAdminNodeRecord(row));
-        } catch (updateError) {
-          this.logger.warn(
-            `Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`
-          );
-          results.push(
-            toAdminNodeRecord({
-              ...node,
-              probeStatus: "offline",
-              probeLatencyMs: null,
-              probeCheckedAt: checkedAt,
-              probeError: message,
-              panelStatus: fallbackStatus,
-              panelError: fallbackStatus === "degraded" ? message : null,
-              updatedAt: checkedAt
-            })
-          );
-        }
+        const row = await this.prisma.node.update({
+          where: { id: node.id },
+          data: {
+            probeStatus: "offline",
+            probeLatencyMs: null,
+            probeCheckedAt: checkedAt,
+            probeError: message,
+            panelStatus: fallbackStatus,
+            panelError: fallbackStatus === "degraded" ? message : null
+          }
+        });
+        return toAdminNodeRecord(row);
+      } catch (updateError) {
+        this.logger.warn(`Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`);
+        return toAdminNodeRecord({
+          ...node,
+          probeStatus: "offline",
+          probeLatencyMs: null,
+          probeCheckedAt: checkedAt,
+          probeError: message,
+          panelStatus: fallbackStatus,
+          panelError: fallbackStatus === "degraded" ? message : null,
+          updatedAt: checkedAt
+        });
       }
     }
-    return results;
   }
 
   private async probeNodeWithBulkBudget(nodeId: string) {
@@ -1017,6 +1025,10 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
 
 function readBulkNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_BUDGET_MS);
+}
+
+function readBulkNodeProbeConcurrency() {
+  return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_CONCURRENCY", DEFAULT_BULK_NODE_PROBE_CONCURRENCY);
 }
 
 function readNodeProbeBudgetMs() {
