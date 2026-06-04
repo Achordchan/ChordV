@@ -289,6 +289,26 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
   return createInstance<AdminSubscriptionService>(AdminSubscriptionService.prototype, overrides);
 }
 
+function createBasicTeamRow(overrides: Record<string, unknown> = {}) {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  return {
+    id: "team_1",
+    name: "Team",
+    ownerUserId: "owner_1",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    owner: {
+      displayName: "Owner",
+      email: "owner@example.com"
+    },
+    members: [],
+    subscriptions: [],
+    trafficLedgerEntries: [],
+    ...overrides
+  };
+}
+
 function createAuthSessionService(overrides: Record<string, unknown> = {}) {
   return createInstance<AuthSessionService>(AuthSessionService.prototype, overrides);
 }
@@ -4742,6 +4762,36 @@ async function testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails() {
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
 }
 
+async function testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails() {
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => null,
+    requireTeamRecord: async () => {
+      throw new Error("team list refresh failed");
+    },
+    prisma: {
+      team: {
+        findUnique: async () => createBasicTeamRow()
+      }
+    }
+  });
+
+  const result = await service.kickTeamMember("team_1", "member_1", { disableAccount: false });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.team.id, "team_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
+}
+
 async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
   const service = createAdminSubscriptionService({
     requireTeamMember: async () => ({
@@ -4862,6 +4912,69 @@ async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRe
   assert.equal(archivedSubscriptions[0].data.remainingTrafficGb, 0);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /old lease revoke failed/);
+}
+
+async function testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails() {
+  const archivedSubscriptions: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_personal",
+      userId: "user_1",
+      teamId: null
+    }),
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    requireTeamRecord: async () => {
+      throw new Error("team list refresh failed");
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => 0,
+      revokeSubscriptionLeases: async () => 0,
+      removePanelBindingsForSubscription: async () => ({ requested: 0, updated: 0, failed: [] }),
+      assertPanelBindingMutation: () => undefined
+    },
+    prisma: {
+      team: {
+        findUnique: async () => createBasicTeamRow({ name: "Converted Team" })
+      },
+      teamMember: {
+        create: async () => ({}),
+        deleteMany: async () => ({ count: 0 })
+      },
+      subscription: {
+        update: async (payload: Record<string, any>) => {
+          archivedSubscriptions.push(payload);
+        }
+      }
+    }
+  });
+
+  const result = await service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" });
+
+  assert.equal(result.ok, true);
+  assert.equal(archivedSubscriptions.length, 1, "local personal subscription archive must save before team response refresh");
+  assert.equal(result.teamName, "Converted Team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
 async function testAdminListsSurfacePersistentPanelSyncPendingState() {
@@ -8785,6 +8898,42 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
 }
 
+async function testUpdateTeamReturnsPendingWhenRecordRefreshFails() {
+  const teamUpdates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => null,
+    requireTeamRecord: async () => {
+      throw new Error("team list refresh failed");
+    },
+    prisma: {
+      team: {
+        update: async (payload: Record<string, any>) => {
+          teamUpdates.push(payload);
+          return {};
+        },
+        findUnique: async () => createBasicTeamRow({ name: "Renamed Team" })
+      }
+    }
+  });
+
+  const result = await service.updateTeam("team_1", { name: "Renamed Team" });
+
+  assert.equal(teamUpdates.length, 1, "local team update must save before response refresh");
+  assert.equal(teamUpdates[0].data.name, "Renamed Team");
+  assert.equal(result.name, "Renamed Team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
+}
+
 async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
   const transactionCalls: Array<unknown[]> = [];
   const teamCreates: Array<Record<string, any>> = [];
@@ -8837,6 +8986,50 @@ async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
   assert.equal(teamCreates.length, 1);
   assert.equal(memberCreates.length, 1);
   assert.equal(memberCreates[0].data.role, "owner");
+}
+
+async function testCreateTeamReturnsPendingWhenRecordRefreshFails() {
+  const teamCreates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "owner_1",
+      status: "active"
+    }),
+    assertUserCanJoinTeam: async () => undefined,
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    requireTeamRecord: async () => {
+      throw new Error("team list refresh failed");
+    },
+    prisma: {
+      team: {
+        create: async (payload: Record<string, any>) => {
+          teamCreates.push(payload);
+          return {};
+        },
+        findUnique: async () => createBasicTeamRow({ name: "Created Team" })
+      },
+      teamMember: {
+        create: async () => ({})
+      },
+      $transaction: async (operations: unknown[]) => {
+        await Promise.all(operations as Array<Promise<unknown>>);
+      }
+    }
+  });
+
+  const result = await service.createTeam({
+    name: "Created Team",
+    ownerUserId: "owner_1"
+  });
+
+  assert.equal(teamCreates.length, 1, "local team create must commit before response refresh");
+  assert.equal(result.id, "team_1");
+  assert.equal(result.name, "Created Team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
 async function testCreateTeamMemberKeepsMemberWhenTicketCleanupFails() {
@@ -8934,6 +9127,57 @@ async function testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails() {
   assert.equal((result as { id: string }).id, "team_1");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /team subscription lookup failed/);
+}
+
+async function testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails() {
+  const memberUpdates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    requireTeamRecord: async () => {
+      throw new Error("team list refresh failed");
+    },
+    prisma: {
+      teamMember: {
+        update: async (payload: Record<string, any>) => {
+          memberUpdates.push(payload);
+          return {};
+        }
+      },
+      team: {
+        findUnique: async () =>
+          createBasicTeamRow({
+            members: [
+              {
+                id: "member_1",
+                teamId: "team_1",
+                userId: "user_1",
+                role: "member",
+                createdAt: new Date("2026-01-01T00:00:00.000Z"),
+                user: {
+                  email: "user@example.com",
+                  displayName: "User"
+                }
+              }
+            ]
+          })
+      }
+    }
+  });
+
+  const result = await service.updateTeamMember("team_1", "member_1", { role: "member" });
+
+  assert.equal(memberUpdates.length, 1, "local team member update must save before response refresh");
+  assert.equal(result.id, "team_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
@@ -9971,8 +10215,10 @@ async function main() {
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
+  await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
+  await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
@@ -10046,10 +10292,13 @@ async function main() {
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
+  await testUpdateTeamReturnsPendingWhenRecordRefreshFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
+  await testCreateTeamReturnsPendingWhenRecordRefreshFails();
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();
   await testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails();
+  await testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();

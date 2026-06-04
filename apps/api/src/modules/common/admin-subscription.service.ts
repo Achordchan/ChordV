@@ -845,15 +845,19 @@ export class AdminSubscriptionService {
       state: teamSubscription.state
     });
 
-    const teamRecord = await this.requireTeamRecord(targetTeam.id);
+    const teamRecord = await this.withTeamRecordRefreshBestEffort(targetTeam.id, teamPanelSync, "个人订阅已停用，账号已转入 Team。");
+    const conversionPanelSync: PanelSyncBestEffortResult =
+      teamRecord.panelSyncStatus === "pending"
+        ? { ok: false, errorMessage: teamRecord.panelSyncMessage ?? "team conversion sync pending" }
+        : { ok: true };
     return {
       ok: true,
       deletedSubscriptionId: subscriptionId,
       teamId: teamRecord.id,
       teamName: teamRecord.name,
       teamSubscriptionId: teamSubscription.id,
-      ...buildPanelSyncResult(teamPanelSync),
-      message: buildPanelSyncMessage(teamPanelSync, `个人订阅已停用，账号已转入 Team「${teamRecord.name}」。`)
+      ...buildPanelSyncResult(conversionPanelSync),
+      message: buildPanelSyncMessage(conversionPanelSync, `个人订阅已停用，账号已转入 Team「${teamRecord.name}」。`)
     };
   }
 
@@ -1004,7 +1008,7 @@ export class AdminSubscriptionService {
       "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
     );
 
-    return this.requireTeamRecord(teamId);
+    return this.withTeamRecordRefreshBestEffort(teamId, { ok: true }, "Team 已创建。");
   }
 
   async updateTeam(teamId: string, input: UpdateTeamInputDto): Promise<AdminTeamRecordDto> {
@@ -1099,7 +1103,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    return withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, "Team 已更新。");
+    return this.withTeamRecordRefreshBestEffort(teamId, panelSync, "Team 已更新。");
   }
 
   async createTeamMember(teamId: string, input: CreateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
@@ -1146,7 +1150,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    return withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, "Team 成员已添加。");
+    return this.withTeamRecordRefreshBestEffort(teamId, panelSync, "Team 成员已添加。");
   }
 
   async updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
@@ -1188,7 +1192,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    return this.requireTeamRecord(member.teamId);
+    return this.withTeamRecordRefreshBestEffort(member.teamId, { ok: true }, "Team 成员已更新。");
   }
 
   async deleteTeamMember(teamId: string, memberId: string) {
@@ -1321,6 +1325,13 @@ export class AdminSubscriptionService {
     if (accountDisabled) {
       message = disconnectedSessionCount > 0 ? "已立即断开会话并禁用账号" : "账号已禁用，当前无活跃会话";
     }
+    const teamRefreshSync: PanelSyncBestEffortResult =
+      panelSyncStatus === "pending"
+        ? { ok: false, errorMessage: panelSyncMessage ?? "team member disconnect sync pending" }
+        : { ok: true };
+    const team = await this.withTeamRecordRefreshBestEffort(teamId, teamRefreshSync, "Team 成员连接已处理。");
+    panelSyncStatus = team.panelSyncStatus ?? panelSyncStatus;
+    panelSyncMessage = team.panelSyncMessage ?? panelSyncMessage;
     if (panelSyncMessage) {
       message = `${message}，${panelSyncMessage}`;
     }
@@ -1335,7 +1346,7 @@ export class AdminSubscriptionService {
       message,
       reasonCode: input.disableAccount ? "account_disabled" : "admin_paused_connection",
       reasonMessage: input.disableAccount ? "当前账号已禁用，连接已失效。" : "管理员已暂停当前连接，可稍后恢复使用。",
-      team: await this.requireTeamRecord(teamId),
+      team,
       user
     };
   }
@@ -2085,6 +2096,84 @@ export class AdminSubscriptionService {
       throw new NotFoundException("团队不存在");
     }
     return row;
+  }
+
+  private async withTeamRecordRefreshBestEffort(
+    teamId: string,
+    panelSync: PanelSyncBestEffortResult,
+    syncedMessage: string
+  ): Promise<AdminTeamRecordDto> {
+    try {
+      return withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, syncedMessage);
+    } catch (error) {
+      const errorMessage = readErrorMessage(error, "unknown error");
+      this.logger?.warn(`Local team change saved, but admin team response refresh failed for ${teamId}: ${errorMessage}`);
+      const fallbackPanelSync = mergePanelSyncResults(panelSync, {
+        ok: false,
+        errorMessage: `admin team response refresh failed: ${errorMessage}`
+      });
+      let record: AdminTeamRecordDto;
+      try {
+        record = await this.loadBasicTeamRecord(teamId);
+      } catch (fallbackError) {
+        this.logger?.warn(
+          `Local team change saved, but basic team response fallback failed for ${teamId}: ${readErrorMessage(fallbackError, "unknown error")}`
+        );
+        const now = new Date().toISOString();
+        record = {
+          id: teamId,
+          name: "Team",
+          ownerUserId: "",
+          ownerDisplayName: "",
+          ownerEmail: "",
+          status: "active",
+          memberCount: 0,
+          currentSubscription: null,
+          members: [],
+          usage: [],
+          createdAt: now,
+          updatedAt: now
+        };
+      }
+      return withPanelSyncStatus(record, fallbackPanelSync, syncedMessage);
+    }
+  }
+
+  private async loadBasicTeamRecord(teamId: string): Promise<AdminTeamRecordDto> {
+    const row = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        owner: {
+          select: { displayName: true, email: true }
+        },
+        members: {
+          include: {
+            user: {
+              select: { email: true, displayName: true }
+            }
+          }
+        },
+        subscriptions: {
+          include: { plan: true },
+          orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+        },
+        trafficLedgerEntries: {
+          include: {
+            user: {
+              select: { displayName: true, email: true }
+            },
+            node: {
+              select: { id: true, name: true, region: true }
+            }
+          },
+          orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
+        }
+      }
+    });
+    if (!row) {
+      throw new NotFoundException("Team not found");
+    }
+    return toAdminTeamRecord(row);
   }
 
   private async requireTeamMember(memberId: string) {
