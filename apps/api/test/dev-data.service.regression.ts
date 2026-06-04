@@ -10833,6 +10833,355 @@ async function testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRef
   assert.match(warnings[0], /detail refresh failed/);
 }
 
+async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls() {
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "waiting_admin",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: null,
+    teamId: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User"
+    },
+    team: null
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow,
+        update: async () => ({})
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      },
+      supportTicketMessage: {
+        create: async () => ({})
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getAdminSupportTicketDetail: async () => new Promise(() => undefined)
+  });
+
+  const result = await Promise.race([
+    service.replyAdminSupportTicket("ticket_1", { body: "reply saved" }, "admin_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("admin ticket reply waited for stalled detail refresh")), 750);
+    })
+  ]);
+
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.status, "waiting_user");
+  assert.equal(result.messages[0]?.body, "reply saved");
+}
+
+async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
+  let updatedStatus: string | null = null;
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "waiting_admin",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: null,
+    teamId: null,
+    closedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User"
+    },
+    team: null
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow,
+        update: async ({ data }: { data: Record<string, unknown> }) => {
+          updatedStatus = data.status as string;
+          return {};
+        }
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getAdminSupportTicketDetail: async () => new Promise(() => undefined)
+  });
+
+  const result = await Promise.race([
+    service.closeAdminSupportTicket("ticket_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("admin ticket close waited for stalled detail refresh")), 750);
+    })
+  ]);
+
+  assert.equal(updatedStatus, "closed");
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.status, "closed");
+}
+
+async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
+  let updatedStatus: string | null = null;
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "closed",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: null,
+    teamId: null,
+    closedAt: new Date("2026-01-02T00:00:00.000Z"),
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User"
+    },
+    team: null
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow,
+        update: async ({ data }: { data: Record<string, unknown> }) => {
+          updatedStatus = data.status as string;
+          return {};
+        }
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getAdminSupportTicketDetail: async () => new Promise(() => undefined)
+  });
+
+  const result = await Promise.race([
+    service.reopenAdminSupportTicket("ticket_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("admin ticket reopen waited for stalled detail refresh")), 750);
+    })
+  ]);
+
+  assert.equal(updatedStatus, "open");
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.status, "open");
+  assert.equal(result.closedAt, null);
+}
+
+async function testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
+  let createdTicket: Record<string, any> | null = null;
+  const service = createClientTicketService({
+    logger: {
+      warn: () => undefined
+    },
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    resolveSubscriptionAccessForUser: async () => ({
+      subscription: { id: "sub_1" },
+      team: null
+    }),
+    prisma: {
+      supportTicket: {
+        create: async ({ data }: { data: Record<string, any> }) => {
+          createdTicket = data;
+          return data;
+        }
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getClientSupportTicketDetail: async () => new Promise(() => undefined)
+  });
+
+  const result = await Promise.race([
+    service.createClientSupportTicket({ title: " Need help ", body: " body saved " }, "token"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("client ticket create waited for stalled detail refresh")), 750);
+    })
+  ]);
+
+  assert.ok(createdTicket);
+  assert.equal(result.title, "Need help");
+  assert.equal(result.subscriptionId, "sub_1");
+  assert.equal(result.messages[0]?.body, "body saved");
+}
+
+async function testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls() {
+  const writes: string[] = [];
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "waiting_user",
+    subscriptionId: "sub_1",
+    teamId: null,
+    closedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    team: null
+  };
+  const service = createClientTicketService({
+    logger: {
+      warn: () => undefined
+    },
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ticketRow,
+        update: async () => {
+          writes.push("ticket");
+          return {};
+        }
+      },
+      supportTicketMessage: {
+        create: async () => {
+          writes.push("message");
+          return {};
+        }
+      },
+      supportTicketReadState: {
+        upsert: async () => {
+          writes.push("read_state");
+          return {};
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          supportTicket: {
+            update: async () => {
+              writes.push("ticket");
+              return {};
+            }
+          },
+          supportTicketMessage: {
+            create: async () => {
+              writes.push("message");
+              return {};
+            }
+          },
+          supportTicketReadState: {
+            upsert: async () => {
+              writes.push("read_state");
+              return {};
+            }
+          }
+        })
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getClientSupportTicketDetail: async () => new Promise(() => undefined)
+  });
+
+  const result = await Promise.race([
+    service.replyClientSupportTicket("ticket_1", { body: "reply saved" }, "token"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("client ticket reply waited for stalled detail refresh")), 750);
+    })
+  ]);
+
+  assert.deepEqual(writes.sort(), ["message", "read_state", "ticket"]);
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.messages[0]?.body, "reply saved");
+}
+
+async function testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls() {
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/client-fallback.png",
+    providerFileId: "support-tickets/client-fallback.png",
+    fileName: "client-fallback.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(1234)
+  };
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need attachment",
+    status: "waiting_user",
+    subscriptionId: "sub_1",
+    teamId: null,
+    closedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    team: null
+  };
+  const service = createClientTicketService({
+    logger: {
+      warn: () => undefined
+    },
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ticketRow
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<void>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => ({ id: data.id })
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => data
+          },
+          supportTicket: {
+            update: async () => ({})
+          },
+          supportTicketReadState: {
+            upsert: async () => ({})
+          }
+        })
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => uploadedFile,
+      deleteUploadedSupportTicketAttachmentBestEffort: async () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getClientSupportTicketDetail: async () => new Promise(() => undefined)
+  });
+
+  const result = await Promise.race([
+    service.replyClientSupportTicketWithAttachment(
+      "ticket_1",
+      { body: "" },
+      {
+        path: path.join(tmpdir(), "client-fallback.png"),
+        originalname: "client-fallback.png",
+        mimetype: "image/png",
+        size: 1234
+      },
+      "token"
+    ),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("client ticket attachment reply waited for stalled detail refresh")), 750);
+    })
+  ]);
+
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.messages[0]?.body, `Uploaded attachment: ${uploadedFile.fileName}`);
+  assert.equal(result.messages[0]?.attachments[0]?.url, uploadedFile.url);
+  assert.equal(result.messages[0]?.attachments[0]?.fileSizeBytes, uploadedFile.fileSizeBytes.toString());
+}
+
 async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
   const writes: string[] = [];
   const service = createClientTicketService({
@@ -11140,6 +11489,12 @@ async function main() {
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
+  await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();

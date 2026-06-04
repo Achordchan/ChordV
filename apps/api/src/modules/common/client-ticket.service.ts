@@ -14,6 +14,8 @@ import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
 import {
   hasUnreadTicketMessages,
+  readSupportTicketAuthorDisplayName,
+  summarizeSupportTicketMessage,
   toClientSupportTicketDetail,
   toClientSupportTicketSummary
 } from "./ticket.utils";
@@ -29,6 +31,8 @@ type ClientSubscriptionAccess = {
   memberRole: TeamMemberRole | null;
   memberUsedTrafficGb: number | null;
 };
+
+const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
 
 @Injectable()
 export class ClientTicketService {
@@ -174,6 +178,7 @@ export class ClientTicketService {
 
     const now = new Date();
     const ticketId = createId("ticket");
+    const messageId = createId("ticket_msg");
     await this.prisma.supportTicket.create({
       data: {
         id: ticketId,
@@ -194,7 +199,7 @@ export class ClientTicketService {
         },
         messages: {
           create: {
-            id: createId("ticket_msg"),
+            id: messageId,
             authorRole: "user",
             authorUserId: user.id,
             body
@@ -210,7 +215,25 @@ export class ClientTicketService {
       ticketStatus: "waiting_admin"
     });
 
-    return this.getClientSupportTicketDetail(ticketId, token);
+    return this.getClientSupportTicketDetailAfterWrite(ticketId, token, () =>
+      this.buildClientSupportTicketWriteFallback(
+        {
+          id: ticketId,
+          title,
+          subscriptionId: access.subscription?.id ?? null,
+          teamId: access.team?.id ?? null,
+          teamName: access.team?.name ?? null,
+          closedAt: null,
+          createdAt: now
+        },
+        now,
+        {
+          messageId,
+          body,
+          attachments: []
+        }
+      )
+    );
   }
 
   async replyClientSupportTicket(
@@ -226,7 +249,16 @@ export class ClientTicketService {
 
     const current = await this.prisma.supportTicket.findFirst({
       where: { id: ticketId, userId: user.id },
-      select: { id: true, status: true }
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        subscriptionId: true,
+        teamId: true,
+        closedAt: true,
+        createdAt: true,
+        team: { select: { name: true } }
+      }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -236,10 +268,11 @@ export class ClientTicketService {
     }
 
     const now = new Date();
+    const messageId = createId("ticket_msg");
     await this.prisma.$transaction(async (tx) => {
       await tx.supportTicketMessage.create({
         data: {
-          id: createId("ticket_msg"),
+          id: messageId,
           ticketId,
           authorRole: "user",
           authorUserId: user.id,
@@ -282,7 +315,13 @@ export class ClientTicketService {
       ticketStatus: "waiting_admin"
     });
 
-    return this.getClientSupportTicketDetail(ticketId, token);
+    return this.getClientSupportTicketDetailAfterWrite(ticketId, token, () =>
+      this.buildClientSupportTicketWriteFallback(current, now, {
+        messageId,
+        body,
+        attachments: []
+      })
+    );
   }
 
   async replyClientSupportTicketWithAttachment(
@@ -302,7 +341,16 @@ export class ClientTicketService {
 
     const current = await this.prisma.supportTicket.findFirst({
       where: { id: ticketId, userId: user.id },
-      select: { id: true, status: true }
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        subscriptionId: true,
+        teamId: true,
+        closedAt: true,
+        createdAt: true,
+        team: { select: { name: true } }
+      }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -313,21 +361,24 @@ export class ClientTicketService {
 
     const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
     const now = new Date();
+    const messageId = createId("ticket_msg");
+    const attachmentId = uploaded ? createId("ticket_att") : null;
+    const safeMessageBody = body || (uploaded ? `Uploaded attachment: ${uploaded.fileName}` : "");
     try {
       await this.prisma.$transaction(async (tx) => {
         const message = await tx.supportTicketMessage.create({
           data: {
-            id: createId("ticket_msg"),
+            id: messageId,
             ticketId,
             authorRole: "user",
             authorUserId: user.id,
-            body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
+            body: safeMessageBody
           }
         });
         if (uploaded) {
           await tx.supportTicketAttachment.create({
             data: {
-              id: createId("ticket_att"),
+              id: attachmentId!,
               ticketId,
               messageId: message.id,
               provider: "image-bed",
@@ -378,7 +429,116 @@ export class ClientTicketService {
       ticketStatus: "waiting_admin"
     });
 
-    return this.getClientSupportTicketDetail(ticketId, token);
+    return this.getClientSupportTicketDetailAfterWrite(ticketId, token, () =>
+      this.buildClientSupportTicketWriteFallback(current, now, {
+        messageId,
+        body: safeMessageBody,
+        attachments:
+          uploaded && attachmentId
+            ? [
+                {
+                  id: attachmentId,
+                  url: uploaded.url,
+                  fileName: uploaded.fileName,
+                  mimeType: uploaded.mimeType,
+                  fileSizeBytes: uploaded.fileSizeBytes.toString(),
+                  createdAt: now.toISOString()
+                }
+              ]
+            : []
+      })
+    );
+  }
+
+  private async getClientSupportTicketDetailAfterWrite(
+    ticketId: string,
+    token: string | undefined,
+    fallback: () => ClientSupportTicketDetailDto
+  ) {
+    let settled = false;
+    const detailTask = this.getClientSupportTicketDetail(ticketId, token).then(
+      (detail) => {
+        settled = true;
+        return detail;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void detailTask.catch(() => undefined);
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<ClientSupportTicketDetailDto>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger.warn(
+          `Client ticket write saved, but detail refresh exceeded ${TICKET_DETAIL_REFRESH_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve(fallback());
+      }, TICKET_DETAIL_REFRESH_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([detailTask, timeoutTask]);
+    } catch (error) {
+      this.logger.warn(`Client ticket write saved, but detail refresh failed for ${ticketId}: ${readErrorMessage(error)}`);
+      return fallback();
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private buildClientSupportTicketWriteFallback(
+    ticket: {
+      id: string;
+      title: string;
+      subscriptionId: string | null;
+      teamId: string | null;
+      teamName?: string | null;
+      team?: { name: string } | null;
+      closedAt: Date | null;
+      createdAt: Date;
+    },
+    now: Date,
+    message: {
+      messageId: string;
+      body: string;
+      attachments: ClientSupportTicketDetailDto["messages"][number]["attachments"];
+    }
+  ): ClientSupportTicketDetailDto {
+    return {
+      id: ticket.id,
+      title: ticket.title,
+      status: "waiting_admin",
+      source: "desktop",
+      subscriptionId: ticket.subscriptionId,
+      teamId: ticket.teamId,
+      teamName: ticket.teamName ?? ticket.team?.name ?? null,
+      lastMessageAt: now.toISOString(),
+      closedAt: ticket.closedAt?.toISOString() ?? null,
+      createdAt: ticket.createdAt.toISOString(),
+      updatedAt: now.toISOString(),
+      lastMessagePreview: summarizeSupportTicketMessage(message.body),
+      hasUnreadMessages: false,
+      unreadCount: 0,
+      lastReadAt: now.toISOString(),
+      messages: [
+        {
+          id: message.messageId,
+          ticketId: ticket.id,
+          authorRole: "user",
+          authorDisplayName: readSupportTicketAuthorDisplayName("user", null),
+          body: message.body,
+          attachments: message.attachments,
+          createdAt: now.toISOString()
+        }
+      ]
+    };
   }
 
   private publishTicketEventBestEffort(

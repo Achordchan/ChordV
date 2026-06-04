@@ -190,6 +190,7 @@ import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
 const EVENT_PUBLISH_BUDGET_MS = 300;
+const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
 
 type NodeAccessRevocationEffects = {
   revokedSessionCount: number;
@@ -713,12 +714,46 @@ export class DevDataService implements OnModuleInit {
     );
   }
 
-  private async getAdminSupportTicketDetailAfterReply(ticketId: string, fallback: () => AdminSupportTicketDetailDto) {
+  private async getAdminSupportTicketDetailAfterReply(
+    ticketId: string,
+    fallback: () => AdminSupportTicketDetailDto,
+    actionLabel = "Admin ticket reply saved"
+  ) {
+    let settled = false;
+    const detailTask = this.getAdminSupportTicketDetail(ticketId).then(
+      (detail) => {
+        settled = true;
+        return detail;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void detailTask.catch(() => undefined);
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<AdminSupportTicketDetailDto>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger.warn(
+          `${actionLabel}, but detail refresh exceeded ${TICKET_DETAIL_REFRESH_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve(fallback());
+      }, TICKET_DETAIL_REFRESH_BUDGET_MS);
+    });
+
     try {
-      return await this.getAdminSupportTicketDetail(ticketId);
+      return await Promise.race([detailTask, timeoutTask]);
     } catch (error) {
-      this.logger.warn(`Admin ticket reply saved, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
+      this.logger.warn(`${actionLabel}, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
       return fallback();
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -775,40 +810,91 @@ export class DevDataService implements OnModuleInit {
     };
   }
 
+  private buildAdminSupportTicketStatusFallback(
+    ticket: {
+      id: string;
+      title: string;
+      source: SupportTicketSource;
+      userId: string;
+      subscriptionId: string | null;
+      teamId: string | null;
+      createdAt: Date;
+      closedAt: Date | null;
+      user: { email: string; displayName: string };
+      team?: { name: string } | null;
+    },
+    now: Date,
+    status: SupportTicketStatus,
+    closedAt: Date | null
+  ): AdminSupportTicketDetailDto {
+    return {
+      id: ticket.id,
+      title: ticket.title,
+      status,
+      source: ticket.source,
+      ownerType: ticket.teamId ? "team" : "personal",
+      userId: ticket.userId,
+      userEmail: ticket.user.email,
+      userDisplayName: ticket.user.displayName,
+      subscriptionId: ticket.subscriptionId,
+      teamId: ticket.teamId,
+      teamName: ticket.team?.name ?? null,
+      lastMessageAt: now.toISOString(),
+      closedAt: closedAt?.toISOString() ?? null,
+      createdAt: ticket.createdAt.toISOString(),
+      updatedAt: now.toISOString(),
+      lastMessagePreview: null,
+      messages: []
+    };
+  }
+
   async closeAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true, closedAt: true, userId: true }
+      include: {
+        user: { select: { id: true, email: true, displayName: true } },
+        team: { select: { id: true, name: true } }
+      }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
+    const now = new Date();
+    const closedAt = current.status === "closed" ? current.closedAt ?? now : now;
     if (current.status !== "closed") {
       await this.prisma.supportTicket.update({
         where: { id: ticketId },
         data: {
           status: "closed",
-          closedAt: new Date()
+          closedAt
         }
       });
     }
     this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
-      occurredAt: new Date().toISOString(),
+      occurredAt: now.toISOString(),
       ticketId,
       ticketStatus: "closed"
     });
-    return this.getAdminSupportTicketDetail(ticketId);
+    return this.getAdminSupportTicketDetailAfterReply(
+      ticketId,
+      () => this.buildAdminSupportTicketStatusFallback(current, now, "closed", closedAt),
+      "Admin ticket status saved"
+    );
   }
 
   async reopenAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true, userId: true }
+      include: {
+        user: { select: { id: true, email: true, displayName: true } },
+        team: { select: { id: true, name: true } }
+      }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
+    const now = new Date();
     if (current.status === "closed") {
       await this.prisma.supportTicket.update({
         where: { id: ticketId },
@@ -820,11 +906,15 @@ export class DevDataService implements OnModuleInit {
     }
     this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
-      occurredAt: new Date().toISOString(),
+      occurredAt: now.toISOString(),
       ticketId,
       ticketStatus: "open"
     });
-    return this.getAdminSupportTicketDetail(ticketId);
+    return this.getAdminSupportTicketDetailAfterReply(
+      ticketId,
+      () => this.buildAdminSupportTicketStatusFallback(current, now, "open", null),
+      "Admin ticket status saved"
+    );
   }
 
   async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
