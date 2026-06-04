@@ -293,7 +293,7 @@ export class AdminNodeService {
       );
     }
 
-    const record = await this.probeNode(row.id);
+    const record = await this.probeNodeAfterLocalImport(row);
     if (current) {
       if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
         await this.tryRunAfterLocalNodeSave("queue panel access sync after node import", () =>
@@ -326,6 +326,51 @@ export class AdminNodeService {
     });
 
     return inbounds;
+  }
+
+  private async probeNodeAfterLocalImport(row: Parameters<typeof toAdminNodeRecord>[0]) {
+    const fallbackRecord = toAdminNodeRecord(row);
+    let settled = false;
+    const probeTask = this.probeNode(row.id).then(
+      (record) => {
+        settled = true;
+        return record;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void probeTask.catch((error) => {
+      this.logger?.warn(
+        `Local node import saved, but delayed initial probe failed for ${row.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<ReturnType<typeof toAdminNodeRecord>>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Local node import saved, but initial probe exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve(fallbackRecord);
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([probeTask, timeoutTask]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger?.warn(`Local node import saved, but initial probe failed for ${row.id}: ${message}`);
+      return fallbackRecord;
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   async updateNode(nodeId: string, input: UpdateNodeInputDto): Promise<AdminNodeRecordDto> {
@@ -375,19 +420,16 @@ export class AdminNodeService {
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
       derived = await fetchSubscriptionNode(input.subscriptionUrl);
     } else if (nextPanelEnabled && panelConfigTouched) {
-      try {
-        derived = await this.xuiService.getInboundRuntime({
+      const runtime = await this.readPanelRuntimeForNodeSaveBestEffort({
           id: current.id,
           panelBaseUrl: nextPanelBaseUrl,
           panelApiBasePath: nextPanelApiBasePath,
           panelUsername: nextPanelUsername,
           panelPassword: nextPanelPassword,
           panelInboundId: nextPanelInboundId
-        });
-      } catch (error) {
-        panelRuntimeError = error instanceof Error ? error.message : String(error);
-        this.logger?.warn(`Local node panel config will be saved, but reading new panel runtime failed: ${panelRuntimeError}`);
-      }
+      });
+      derived = runtime.derived;
+      panelRuntimeError = runtime.errorMessage;
     }
     const derivedInboundId = readRuntimeInboundId(derived);
     const shouldPersistPanelEnabledByDefault = panelConfigTouched && input.panelEnabled === undefined && nextPanelEnabled !== current.panelEnabled;
@@ -542,6 +584,63 @@ export class AdminNodeService {
       this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
     );
     return toAdminNodeRecord(row);
+  }
+
+  private async readPanelRuntimeForNodeSaveBestEffort(input: {
+    id: string;
+    panelBaseUrl: string | null;
+    panelApiBasePath: string | null;
+    panelUsername: string | null;
+    panelPassword: string | null;
+    panelInboundId: number | null;
+  }): Promise<{
+    derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
+    errorMessage: string | null;
+  }> {
+    let settled = false;
+    const runtimeTask = this.xuiService.getInboundRuntime(input).then(
+      (derived) => {
+        settled = true;
+        return { derived, errorMessage: null };
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void runtimeTask.catch((error) => {
+      this.logger?.warn(
+        `Local node panel config will be saved, but delayed panel runtime read failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        const message = "panel runtime read is still running in background";
+        this.logger?.warn(
+          `Local node panel config will be saved, but reading new panel runtime exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve({ derived: null, errorMessage: message });
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([runtimeTask, timeoutTask]);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger?.warn(`Local node panel config will be saved, but reading new panel runtime failed: ${errorMessage}`);
+      return { derived: null, errorMessage };
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {

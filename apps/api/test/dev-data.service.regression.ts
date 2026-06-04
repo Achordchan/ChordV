@@ -5707,6 +5707,71 @@ async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
   assert.equal(remoteDisableCalled, false, "node disable must queue panel sync instead of waiting for remote panel calls");
 }
 
+async function testImportNodeReturnsWhenInitialProbeStalls() {
+  const upserts: Array<Record<string, any>> = [];
+  let probeStarted = false;
+  const importedRuntime = {
+    name: "Imported Node",
+    serverHost: "node.example.com",
+    serverPort: 443,
+    uuid: "11111111-1111-4111-8111-111111111111",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "public-key",
+    shortId: "short",
+    serverName: "node.example.com",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: ""
+  };
+  const savedNode = makeAdminNodeRow({
+    id: "node_example_com_443",
+    name: "Imported Node",
+    serverHost: "node.example.com",
+    serverPort: 443,
+    uuid: importedRuntime.uuid,
+    flow: importedRuntime.flow,
+    realityPublicKey: importedRuntime.realityPublicKey,
+    shortId: importedRuntime.shortId,
+    serverName: importedRuntime.serverName,
+    fingerprint: importedRuntime.fingerprint,
+    spiderX: importedRuntime.spiderX
+  });
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    resolveNodeRuntimeSource: async () => importedRuntime,
+    probeNode: async () => {
+      probeStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    prisma: {
+      node: {
+        findUnique: async () => null,
+        upsert: async (payload: Record<string, any>) => {
+          upserts.push(payload);
+          return savedNode;
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.importNodeFromSubscription({
+      name: "Imported Node",
+      panelEnabled: false
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node import waited for stalled initial probe")), 750);
+    })
+  ]);
+
+  assert.equal(probeStarted, true);
+  assert.equal(upserts.length, 1, "local node import must save before stalled initial probe finishes");
+  assert.equal(result.id, "node_example_com_443");
+  assert.equal(result.name, "Imported Node");
+}
+
 async function testDisableNodeKeepsLocalSaveWhenEffectsFail() {
   const now = new Date();
   const currentNode = {
@@ -6617,6 +6682,60 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
   assert.equal(record.panelStatus, "degraded");
   assert.equal(updates[0].panelError, "new panel offline");
   assert.deepEqual(calls, ["revoke", "remove_old", "sync_new"]);
+}
+
+async function testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls() {
+  const currentNode = makeAdminNodeRow();
+  const updates: Array<Record<string, unknown>> = [];
+  let panelReadStarted = false;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      getInboundRuntime: async () => {
+        panelReadStarted = true;
+        return new Promise<any>(() => undefined);
+      }
+    },
+    runtimeSessionService: {
+      revokeNodeLeases: async () => 1,
+      removePanelBindingsForNode: async () => ({ requested: 1, updated: 1, failed: [] }),
+      syncPanelAccessForNode: async () => 1
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => {
+          updates.push(payload.data);
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const record = await Promise.race([
+    service.updateNode("node_1", {
+      panelBaseUrl: "https://new-panel.example.com",
+      panelApiBasePath: "/new"
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node update waited for stalled panel runtime read")), 750);
+    })
+  ]);
+
+  assert.equal(panelReadStarted, true);
+  assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
+  assert.equal(record.panelApiBasePath, "/new");
+  assert.equal(record.panelStatus, "degraded");
+  assert.equal(updates[0].panelError, "panel runtime read is still running in background");
 }
 
 async function testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFails() {
@@ -10831,6 +10950,7 @@ async function main() {
   await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
+  await testImportNodeReturnsWhenInitialProbeStalls();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testDisableNodeReturnsWhenAfterSaveFollowUpStalls();
   await testPanelDisableJobUpsertResetsStaleFailureState();
@@ -10843,6 +10963,7 @@ async function main() {
   await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
   await testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails();
   await testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails();
+  await testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls();
   await testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFails();
   await testUpdateNodeDisablingPanelForcesOfflineStatus();
   await testClientNodesRequirePanelEnabled();
