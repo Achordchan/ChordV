@@ -3992,6 +3992,7 @@ async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
 }
 
 async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails() {
+  const archivedSubscriptions: Array<Record<string, any>> = [];
   const deletedSubscriptions: string[] = [];
   const service = createAdminSubscriptionService({
     requireSubscription: async () => ({
@@ -4035,6 +4036,9 @@ async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRe
         deleteMany: async () => ({ count: 0 })
       },
       subscription: {
+        update: async (payload: Record<string, any>) => {
+          archivedSubscriptions.push(payload);
+        },
         delete: async (payload: Record<string, any>) => {
           deletedSubscriptions.push(payload.where.id);
         }
@@ -4045,7 +4049,11 @@ async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRe
   const result = await service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(deletedSubscriptions, ["sub_personal"]);
+  assert.deepEqual(deletedSubscriptions, [], "converted personal subscription must stay in DB so queued panel cleanup jobs are not cascaded away");
+  assert.equal(archivedSubscriptions.length, 1);
+  assert.equal(archivedSubscriptions[0].where.id, "sub_personal");
+  assert.equal(archivedSubscriptions[0].data.state, "expired");
+  assert.equal(archivedSubscriptions[0].data.remainingTrafficGb, 0);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /old lease revoke failed/);
 }
@@ -7415,6 +7423,195 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
   assert.equal(result.id, "sub_1");
 }
 
+async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => null,
+    ensurePlanExists: async () => ({
+      id: "plan_team",
+      name: "Team Plan",
+      scope: "team",
+      totalTrafficGb: 500,
+      renewable: true,
+      isActive: true
+    }),
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("panel sync failed");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      subscription: {
+        create: async () => ({
+          id: "sub_team",
+          userId: null,
+          teamId: "team_1",
+          planId: "plan_team",
+          totalTrafficGb: 500,
+          usedTrafficGb: 0,
+          remainingTrafficGb: 500,
+          expireAt: new Date(Date.now() + 60_000),
+          state: "active",
+          renewable: true,
+          sourceAction: "created",
+          lastSyncedAt: now,
+          plan: { name: "Team Plan" },
+          user: null,
+          team: { name: "Team" },
+          nodeAccesses: []
+        })
+      }
+    }
+  });
+
+  const result = await service.createTeamSubscription("team_1", {
+    planId: "plan_team",
+    expireAt: new Date(Date.now() + 60_000).toISOString()
+  });
+
+  assert.equal(result.id, "sub_team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
+}
+
+async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active"
+    }),
+    findCurrentPersonalSubscription: async () => ({
+      id: "sub_1"
+    }),
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "disabled",
+      lastSeenAt: new Date().toISOString(),
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 1,
+      activeSubscriptionCount: 0,
+      currentSubscription: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+        }
+      },
+      teamMember: {
+        findMany: async () => []
+      },
+      $transaction: async () => {
+        throw new Error("lease job queue failed");
+      }
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("panel queue failed");
+      },
+      revokeSubscriptionLeases: async () => {
+        throw new Error("lease revoke failed");
+      }
+    },
+    authSessionService: {
+      revokeAllUserSessions: async () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    }
+  });
+
+  const result = await service.updateUser("user_1", { status: "disabled" });
+
+  assert.equal(updates.length, 1, "user status must save before panel disconnect side effects");
+  assert.equal(updates[0].data.status, "disabled");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /lease job queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+}
+
+async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
+  const teamUpdates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active"
+    }),
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      status: "disabled",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    prisma: {
+      team: {
+        update: async (payload: Record<string, any>) => {
+          teamUpdates.push(payload);
+        }
+      },
+      $transaction: async () => {
+        throw new Error("lease job queue failed");
+      }
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("panel queue failed");
+      },
+      revokeSubscriptionLeases: async () => {
+        throw new Error("lease revoke failed");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateTeam("team_1", { status: "disabled" });
+
+  assert.equal(teamUpdates.length, 1, "team status must save before panel disconnect side effects");
+  assert.equal(teamUpdates[0].data.status, "disabled");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /lease job queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+}
+
 async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
   const transactionCalls: Array<unknown[]> = [];
   const teamCreates: Array<Record<string, any>> = [];
@@ -8473,6 +8670,9 @@ async function main() {
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
+  await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
+  await testDisableUserReturnsPendingWhenPanelDisconnectFails();
+  await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();

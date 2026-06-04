@@ -14,9 +14,12 @@ import type {
 import { request } from "./base";
 
 const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 
 export function fetchAdminTeams() {
-  return request<AdminTeamRecordDto[]>("/admin/teams");
+  return request<AdminTeamRecordDto[]>("/admin/teams", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function createTeam(input: CreateTeamInputDto) {
@@ -75,5 +78,7 @@ export function createTeamSubscription(teamId: string, input: CreateTeamSubscrip
 }
 
 export function getTeamUsage(teamId: string) {
-  return request<AdminTeamUsageRecordDto[]>(`/admin/teams/${teamId}/usage`);
+  return request<AdminTeamUsageRecordDto[]>(`/admin/teams/${teamId}/usage`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }

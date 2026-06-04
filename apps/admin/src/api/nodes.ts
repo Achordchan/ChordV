@@ -2,13 +2,18 @@ import type { AdminNodePanelInboundDto, AdminNodeRecordDto, AdminPanelSyncJobDto
 import { request } from "./base";
 
 const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 
 export function fetchAdminNodes() {
-  return request<AdminNodeRecordDto[]>("/admin/nodes");
+  return request<AdminNodeRecordDto[]>("/admin/nodes", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function fetchAdminPanelSyncJobs() {
-  return request<AdminPanelSyncJobDto[]>("/admin/nodes/panel-sync-jobs");
+  return request<AdminPanelSyncJobDto[]>("/admin/nodes/panel-sync-jobs", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function retryAdminPanelSyncJob(jobId: string) {

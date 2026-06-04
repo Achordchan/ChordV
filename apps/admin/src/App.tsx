@@ -1046,7 +1046,7 @@ export function App() {
       notifications.show({
         color: panelSyncPending ? "yellow" : "green",
         title: panelSyncPending ? "已保存，面板同步待重试" : "操作成功",
-        message: result.message ?? "节点授权已保存"
+        message: result.message ?? result.panelSyncMessage ?? "节点授权已保存"
       });
       closeNodeAccessEditor();
       void refreshCurrentDataAfterAction().catch((refreshReason) => {
@@ -1689,7 +1689,7 @@ export function App() {
     }
 
     const confirmed = window.confirm(
-      `确认把 ${convertSubscriptionTarget.ownerLabel} 的个人订阅转入 ${selectedTeam?.name ?? "目标团队"} 吗？当前个人订阅会被删除，原订阅剩余流量和历史不会继承到 Team。`
+      `确认把 ${convertSubscriptionTarget.ownerLabel} 的个人订阅转入 ${selectedTeam?.name ?? "目标团队"} 吗？当前个人订阅会被停用，并保留面板同步清理记录；原订阅剩余流量和历史不会继承到 Team。`
     );
     if (!confirmed) {
       return;
@@ -2364,6 +2364,12 @@ export function App() {
 function extractActionMessage(result: unknown, fallback: string) {
   if (result && typeof result === "object" && "message" in result) {
     const message = (result as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message;
+    }
+  }
+  if (result && typeof result === "object" && "panelSyncMessage" in result) {
+    const message = (result as { panelSyncMessage?: unknown }).panelSyncMessage;
     if (typeof message === "string" && message.trim().length > 0) {
       return message;
     }

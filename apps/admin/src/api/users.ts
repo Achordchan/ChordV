@@ -2,9 +2,12 @@ import type { AdminUserRecordDto, CreateUserInputDto, UpdateUserInputDto, Update
 import { request } from "./base";
 
 const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 
 export function fetchAdminUsers() {
-  return request<AdminUserRecordDto[]>("/admin/users");
+  return request<AdminUserRecordDto[]>("/admin/users", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function createUser(input: CreateUserInputDto) {

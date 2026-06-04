@@ -756,8 +756,15 @@ export class AdminSubscriptionService {
         "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
       );
 
-      await this.prisma.subscription.delete({
-        where: { id: subscriptionId }
+      await this.prisma.subscription.update({
+        where: { id: subscriptionId },
+        data: {
+          state: "expired",
+          expireAt: new Date(),
+          remainingTrafficGb: 0,
+          sourceAction: "adjusted",
+          lastSyncedAt: new Date()
+        }
       });
     } catch (error) {
       if (membershipCreated) {
@@ -800,7 +807,7 @@ export class AdminSubscriptionService {
       teamName: teamRecord.name,
       teamSubscriptionId: teamSubscription.id,
       ...buildPanelSyncResult(teamPanelSync),
-      message: buildPanelSyncMessage(teamPanelSync, `个人订阅已删除，账号已转入 Team「${teamRecord.name}」。`)
+      message: buildPanelSyncMessage(teamPanelSync, `个人订阅已停用，账号已转入 Team「${teamRecord.name}」。`)
     };
   }
 

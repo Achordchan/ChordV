@@ -13,9 +13,12 @@ import type {
 import { request } from "./base";
 
 const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 
 export function fetchAdminSubscriptions() {
-  return request<AdminSubscriptionRecordDto[]>("/admin/subscriptions");
+  return request<AdminSubscriptionRecordDto[]>("/admin/subscriptions", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function createSubscription(input: CreateSubscriptionInputDto) {
@@ -51,7 +54,9 @@ export function updateSubscription(subscriptionId: string, input: UpdateSubscrip
 }
 
 export function getSubscriptionNodeAccess(subscriptionId: string) {
-  return request<SubscriptionNodeAccessDto>(`/admin/subscriptions/${subscriptionId}/nodes`);
+  return request<SubscriptionNodeAccessDto>(`/admin/subscriptions/${subscriptionId}/nodes`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function updateSubscriptionNodeAccess(subscriptionId: string, input: UpdateSubscriptionNodeAccessInputDto) {
