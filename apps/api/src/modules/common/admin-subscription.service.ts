@@ -204,7 +204,7 @@ export class AdminSubscriptionService {
       }
     }
 
-    await this.prisma.user.update({
+    const updatedUser = await this.prisma.user.update({
       where: { id: userId },
       data
     });
@@ -216,28 +216,35 @@ export class AdminSubscriptionService {
     }
 
     if (statusChanged) {
-      if (input.status === "disabled") {
-        for (const subscriptionId of disableTargets) {
-          panelSync = mergePanelSyncResults(
-            panelSync,
-            await this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
-          );
-        }
-      } else if (input.status === "active") {
-        const personalSubscription = await this.findCurrentPersonalSubscription(userId);
-        if (personalSubscription) {
-          panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(personalSubscription.id));
-        }
-        const memberships = await this.prisma.teamMember.findMany({
-          where: { userId },
-          select: { teamId: true }
-        });
-        for (const membership of memberships) {
-          const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
-          if (teamSubscription) {
-            panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
+      try {
+        if (input.status === "disabled") {
+          for (const subscriptionId of disableTargets) {
+            panelSync = mergePanelSyncResults(
+              panelSync,
+              await this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
+            );
+          }
+        } else if (input.status === "active") {
+          const personalSubscription = await this.findCurrentPersonalSubscription(userId);
+          if (personalSubscription) {
+            panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(personalSubscription.id));
+          }
+          const memberships = await this.prisma.teamMember.findMany({
+            where: { userId },
+            select: { teamId: true }
+          });
+          for (const membership of memberships) {
+            const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
+            if (teamSubscription) {
+              panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
+            }
           }
         }
+      } catch (error) {
+        panelSync = mergePanelSyncResults(panelSync, {
+          ok: false,
+          errorMessage: `user status follow-up sync failed: ${readErrorMessage(error, "unknown error")}`
+        });
       }
 
       if (input.status === "disabled") {
@@ -251,7 +258,7 @@ export class AdminSubscriptionService {
       }
     }
 
-    return withPanelSyncStatus(await this.requireAdminUserRecord(userId), panelSync, "账号已更新。");
+    return this.withAdminUserRefreshBestEffort(userId, updatedUser, panelSync, "账号已更新。");
   }
 
   async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {
@@ -262,18 +269,22 @@ export class AdminSubscriptionService {
         maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
       }
     });
-    const effectiveLimit =
-      row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
-    if (effectiveLimit !== null) {
-      try {
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
+    try {
+      const effectiveLimit =
+        row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
+      if (effectiveLimit !== null) {
         await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
-      } catch (error) {
-        this.logger?.warn(
-          `Local user security change saved, but concurrent lease enforcement failed for ${userId}: ${readErrorMessage(error, "unknown error")}`
-        );
       }
+    } catch (error) {
+      const errorMessage = readErrorMessage(error, "unknown error");
+      this.logger?.warn(`Local user security change saved, but concurrent lease enforcement failed for ${userId}: ${errorMessage}`);
+      panelSync = mergePanelSyncResults(panelSync, {
+        ok: false,
+        errorMessage: `lease concurrency reconciliation failed: ${errorMessage}`
+      });
     }
-    return this.requireAdminUserRecord(userId);
+    return this.withAdminUserRefreshBestEffort(userId, row, panelSync, "账号安全策略已更新。");
   }
 
   async resetSubscriptionTraffic(
@@ -1117,7 +1128,15 @@ export class AdminSubscriptionService {
     );
 
     let panelSync: PanelSyncBestEffortResult = { ok: true };
-    const subscription = await this.findCurrentTeamSubscription(teamId);
+    let subscription: Awaited<ReturnType<AdminSubscriptionService["findCurrentTeamSubscription"]>> | null = null;
+    try {
+      subscription = await this.findCurrentTeamSubscription(teamId);
+    } catch (error) {
+      panelSync = mergePanelSyncResults(panelSync, {
+        ok: false,
+        errorMessage: `team subscription lookup failed: ${readErrorMessage(error, "unknown error")}`
+      });
+    }
     if (subscription) {
       panelSync = await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
       await this.publishSubscriptionUpdatedEvent({
@@ -1988,6 +2007,44 @@ export class AdminSubscriptionService {
       throw new NotFoundException("用户不存在");
     }
     return row;
+  }
+
+  private async withAdminUserRefreshBestEffort(
+    userId: string,
+    fallbackUser: {
+      id: string;
+      email: string;
+      displayName: string;
+      role: "user" | "admin";
+      status: "active" | "disabled";
+      lastSeenAt: Date;
+      maxConcurrentSessionsOverride: number | null;
+    },
+    panelSync: PanelSyncBestEffortResult,
+    syncedMessage: string
+  ): Promise<AdminUserRecordDto> {
+    try {
+      return withPanelSyncStatus(await this.requireAdminUserRecord(userId), panelSync, syncedMessage);
+    } catch (error) {
+      const errorMessage = readErrorMessage(error, "unknown error");
+      this.logger?.warn(`Local user change saved, but admin user response refresh failed for ${userId}: ${errorMessage}`);
+      const fallbackPanelSync = mergePanelSyncResults(panelSync, {
+        ok: false,
+        errorMessage: `admin user response refresh failed: ${errorMessage}`
+      });
+      return withPanelSyncStatus(
+        toAdminUserRecord(fallbackUser, {
+          accountType: "personal",
+          teamId: null,
+          teamName: null,
+          subscriptionCount: 0,
+          activeSubscriptionCount: 0,
+          currentSubscription: null
+        }),
+        fallbackPanelSync,
+        syncedMessage
+      );
+    }
   }
 
   private async ensurePlanExists(planId: string) {

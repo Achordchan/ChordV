@@ -613,6 +613,51 @@ async function testUpdateUserKeepsLocalSaveWhenSessionRevocationFails() {
   assert.equal(result.id, "user_1");
 }
 
+async function testUpdateUserReturnsPendingWhenResponseRefreshFails() {
+  const updates: Array<Record<string, unknown>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+      maxConcurrentSessionsOverride: null
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, unknown>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "Renamed",
+            role: "user",
+            status: "active",
+            lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+            maxConcurrentSessionsOverride: null
+          };
+        }
+      }
+    },
+    requireAdminUserRecord: async () => {
+      throw new Error("user list refresh failed");
+    }
+  });
+
+  const result = await service.updateUser("user_1", { displayName: "Renamed" });
+
+  assert.equal(updates.length, 1, "local user update must be saved before response refresh");
+  assert.equal(result.id, "user_1");
+  assert.equal(result.displayName, "Renamed");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /user list refresh failed/);
+}
+
 async function testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken() {
   const refreshUpdates: Array<Record<string, any>> = [];
   const service = createAuthSessionService({
@@ -7879,6 +7924,48 @@ async function testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails() {
   assert.equal((result as { id: string }).id, "user_1");
 }
 
+async function testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({ id: "user_1" }),
+    requireAdminUserRecord: async () => {
+      throw new Error("user refresh failed");
+    },
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => {
+        throw new Error("lease enforcement failed");
+      }
+    },
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: "active",
+            lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+            maxConcurrentSessionsOverride: 1
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.updateUserSecurity("user_1", { maxConcurrentSessionsOverride: 1 });
+
+  assert.equal(updates.length, 1, "local security update must survive lease and response refresh failures");
+  assert.equal(result.id, "user_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /lease enforcement failed/);
+  assert.match(result.panelSyncMessage ?? "", /user refresh failed/);
+}
+
 async function testUpdatePlanSecurityReconcilesUsersWithoutOverrides() {
   const enforced: Array<{ userId: string; limit: number }> = [];
   const service = createAdminSubscriptionService({
@@ -8814,6 +8901,39 @@ async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
   assert.equal((result as { id: string }).id, "team_1");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
+}
+
+async function testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails() {
+  const createdMembers: string[] = [];
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({ id: "team_1" }),
+    assertUserCanJoinTeam: async () => undefined,
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    findCurrentTeamSubscription: async () => {
+      throw new Error("team subscription lookup failed");
+    },
+    requireTeamRecord: async (teamId: string) => ({ id: teamId }),
+    prisma: {
+      teamMember: {
+        create: async () => {
+          createdMembers.push("member_1");
+          return {
+            id: "member_1",
+            teamId: "team_1",
+            userId: "user_1",
+            role: "member"
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.createTeamMember("team_1", { userId: "user_1", role: "member" });
+
+  assert.deepEqual(createdMembers, ["member_1"]);
+  assert.equal((result as { id: string }).id, "team_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup failed/);
 }
 
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
@@ -9779,6 +9899,7 @@ async function main() {
   await testUpdateUserPasswordRevokesExistingSessions();
   await testUpdateUserRoleRevokesExistingSessions();
   await testUpdateUserKeepsLocalSaveWhenSessionRevocationFails();
+  await testUpdateUserReturnsPendingWhenResponseRefreshFails();
   await testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken();
   await testAccessTokenLogoutRevokesOnlyBoundSession();
   await testAccessTokenAuthenticationRequiresActiveBoundSession();
@@ -9912,6 +10033,7 @@ async function main() {
   await testImageBedAttachmentCleanupLogsDeleteFailure();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
+  await testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail();
   await testUpdatePlanSecurityReconcilesUsersWithoutOverrides();
   await testUpdatePlanReconcilesConcurrencyWhenLimitChanges();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
@@ -9927,6 +10049,7 @@ async function main() {
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();
+  await testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();
