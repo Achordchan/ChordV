@@ -1542,6 +1542,7 @@ export class RuntimeSessionService {
       shortId: string;
       fingerprint: string;
       spiderX: string;
+      mldsa65Verify?: string | null;
       panelBaseUrl: string | null;
       panelApiBasePath: string | null;
       panelUsername: string | null;
@@ -1575,6 +1576,27 @@ export class RuntimeSessionService {
       userDisplayName: user.displayName,
       expireAt: subscription.expireAt
     });
+    const inboundRuntime = await this.xuiService.getInboundRuntime({
+      id: node.id,
+      panelBaseUrl: node.panelBaseUrl,
+      panelApiBasePath: node.panelApiBasePath,
+      panelUsername: node.panelUsername,
+      panelPassword: node.panelPassword,
+      panelInboundId: binding.panelInboundId
+    });
+    const effectiveNode = {
+      ...node,
+      serverHost: inboundRuntime.serverHost,
+      serverPort: inboundRuntime.serverPort,
+      uuid: inboundRuntime.uuid,
+      flow: inboundRuntime.flow,
+      realityPublicKey: inboundRuntime.realityPublicKey,
+      shortId: inboundRuntime.shortId,
+      serverName: inboundRuntime.serverName,
+      fingerprint: inboundRuntime.fingerprint,
+      spiderX: inboundRuntime.spiderX,
+      mldsa65Verify: inboundRuntime.mldsa65Verify
+    };
 
     await this.prisma.nodeSessionLease.create({
       data: {
@@ -1598,7 +1620,7 @@ export class RuntimeSessionService {
       leaseExpiresAt: leaseExpiresAt.toISOString(),
       leaseHeartbeatIntervalSeconds: LEASE_HEARTBEAT_INTERVAL_SECONDS,
       leaseGraceSeconds: LEASE_GRACE_SECONDS,
-      node: toNodeSummary(node),
+      node: toNodeSummary(effectiveNode),
       mode: request.mode,
       localHttpPort: 17890,
       localSocksPort: 17891,
@@ -1611,15 +1633,16 @@ export class RuntimeSessionService {
       },
       outbound: {
         protocol: "vless",
-        server: node.serverHost,
-        port: node.serverPort,
+        server: effectiveNode.serverHost,
+        port: effectiveNode.serverPort,
         uuid: binding.panelClientId,
-        flow: node.flow,
-        realityPublicKey: node.realityPublicKey,
-        shortId: node.shortId,
-        serverName: node.serverName,
-        fingerprint: node.fingerprint,
-        spiderX: node.spiderX
+        flow: effectiveNode.flow,
+        realityPublicKey: effectiveNode.realityPublicKey,
+        shortId: effectiveNode.shortId,
+        serverName: effectiveNode.serverName,
+        fingerprint: effectiveNode.fingerprint,
+        spiderX: effectiveNode.spiderX,
+        mldsa65Verify: effectiveNode.mldsa65Verify || null
       }
     };
     this.activeRuntimeUsageContext = {
@@ -1632,6 +1655,16 @@ export class RuntimeSessionService {
     await this.prisma.node.update({
       where: { id: node.id },
       data: {
+        serverHost: effectiveNode.serverHost,
+        serverPort: effectiveNode.serverPort,
+        uuid: effectiveNode.uuid,
+        flow: effectiveNode.flow,
+        realityPublicKey: effectiveNode.realityPublicKey,
+        shortId: effectiveNode.shortId,
+        serverName: effectiveNode.serverName,
+        fingerprint: effectiveNode.fingerprint,
+        spiderX: effectiveNode.spiderX,
+        mldsa65Verify: effectiveNode.mldsa65Verify,
         panelStatus: "online",
         panelError: null
       }
@@ -2183,6 +2216,7 @@ function buildXuiRuntimeFromLease(
       serverName: string;
       fingerprint: string;
       spiderX: string;
+      mldsa65Verify?: string | null;
     };
   },
   policy: {
@@ -2218,7 +2252,8 @@ function buildXuiRuntimeFromLease(
       shortId: lease.node.shortId,
       serverName: lease.node.serverName,
       fingerprint: lease.node.fingerprint,
-      spiderX: lease.node.spiderX
+      spiderX: lease.node.spiderX,
+      mldsa65Verify: lease.node.mldsa65Verify ?? null
     }
   };
 }

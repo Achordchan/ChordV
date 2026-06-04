@@ -462,18 +462,27 @@ textarea,
 
 .ticket-center__modal-content,
 .announcement-center__modal-content {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 14px;
   box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
 }
 
+.ticket-center__modal-content {
+  height: min(92vh, 940px);
+  max-height: calc(100dvh - 32px);
+}
+
 .ticket-center__modal-header,
 .announcement-center__modal-header {
+  flex: 0 0 auto;
   padding: 12px 18px 0;
 }
 
 .ticket-center__modal-body {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -482,7 +491,9 @@ textarea,
 }
 
 .ticket-center {
-  min-height: min(88vh, 900px);
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
 }
 
 .announcement-center__modal-body {
@@ -547,11 +558,12 @@ textarea,
 }
 
 .ticket-center__layout {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(320px, 34%) minmax(0, 1fr);
   gap: 0;
-  min-height: min(82vh, 860px);
-  height: min(82vh, 860px);
+  min-height: 0;
+  height: auto;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 10px;
   overflow: hidden;
@@ -674,6 +686,7 @@ textarea,
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .ticket-center__detail-head {
@@ -846,6 +859,21 @@ textarea,
 
 .ticket-center__reply-panel .ticket-center__field :is(.mantine-Textarea-input) {
   min-height: 62px;
+}
+
+.ticket-center__reply-actions {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.ticket-center__reply-buttons {
+  flex: 1 1 280px;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.ticket-center__reply-buttons .ticket-center__action-button {
+  max-width: min(100%, 240px);
 }
 
 .ticket-center__empty {

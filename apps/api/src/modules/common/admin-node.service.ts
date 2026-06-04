@@ -161,6 +161,7 @@ export class AdminNodeService {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
+        mldsa65Verify: imported.mldsa65Verify ?? "",
         subscriptionUrl: input.subscriptionUrl?.trim() || null,
         panelBaseUrl: nextPanelBaseUrl,
         panelApiBasePath: nextPanelApiBasePath,
@@ -189,6 +190,7 @@ export class AdminNodeService {
         serverName: imported.serverName,
         fingerprint: imported.fingerprint,
         spiderX: imported.spiderX,
+        mldsa65Verify: imported.mldsa65Verify ?? "",
         subscriptionUrl: input.subscriptionUrl?.trim() || null,
         panelBaseUrl: nextPanelBaseUrl,
         panelApiBasePath: nextPanelApiBasePath,
@@ -350,7 +352,8 @@ export class AdminNodeService {
               shortId: derived.shortId,
               serverName: derived.serverName,
               fingerprint: derived.fingerprint,
-              spiderX: derived.spiderX
+              spiderX: derived.spiderX,
+              mldsa65Verify: derived.mldsa65Verify ?? ""
             }
           : {})
       }
@@ -430,7 +433,8 @@ export class AdminNodeService {
         shortId: derived.shortId,
         serverName: derived.serverName,
         fingerprint: derived.fingerprint,
-        spiderX: derived.spiderX
+        spiderX: derived.spiderX,
+        mldsa65Verify: derived.mldsa65Verify ?? ""
       }
     });
 

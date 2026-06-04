@@ -184,7 +184,8 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
       shortId: "6ba85179",
       serverName: "cdn.cloudflare.com",
       fingerprint: "chrome",
-      spiderX: "/"
+      spiderX: "/",
+      mldsa65Verify: null
     }
   };
 };
@@ -283,6 +284,7 @@ export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   serverPort: 443,
   shortId: "6ba85179",
   spiderX: "/",
+  mldsa65Verify: null,
   probeStatus: "unknown",
   probeLatencyMs: null,
   probeCheckedAt: null,

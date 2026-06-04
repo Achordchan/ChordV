@@ -311,6 +311,7 @@ model Node {
   serverName       String
   fingerprint      String
   spiderX          String          @default("/")
+  mldsa65Verify    String          @default("")
   subscriptionUrl  String?
   statsLastSyncedAt DateTime?
   probeStatus      NodeProbeStatus @default(unknown)

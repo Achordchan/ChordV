@@ -2618,6 +2618,60 @@ function testXuiSettingsClientStatsTakePrecedenceOverZeroClientFallback() {
   assert.equal(stats[0].down, "456");
 }
 
+async function testXuiInboundRuntimeReadsMldsa65Verify() {
+  const service = new XuiService();
+  service["login"] = async () => undefined;
+  service["request"] = async () => ({
+    success: true,
+    obj: {
+      id: 3,
+      remark: "new 3x-ui reality",
+      port: 57794,
+      protocol: "vless",
+      listen: "",
+      settings: {
+        clients: [
+          {
+            id: "client_uuid",
+            email: "user@example.com",
+            enable: true,
+            flow: "xtls-rprx-vision"
+          }
+        ]
+      },
+      streamSettings: {
+        network: "tcp",
+        security: "reality",
+        realitySettings: {
+          target: "aws.amazon.com:443",
+          serverNames: ["aws.amazon.com"],
+          shortIds: ["67"],
+          settings: {
+            publicKey: "public_key",
+            fingerprint: "chrome",
+            serverName: "aws.amazon.com",
+            spiderX: "/",
+            mldsa65Verify: "mldsa_verify_value"
+          }
+        }
+      }
+    }
+  });
+
+  const runtime = await service.getInboundRuntime({
+    id: "node_1",
+    panelBaseUrl: "https://panel.example.com/custom",
+    panelApiBasePath: "/custom",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 3
+  });
+
+  assert.equal(runtime.mldsa65Verify, "mldsa_verify_value");
+  assert.equal(runtime.realityPublicKey, "public_key");
+  assert.equal(runtime.shortId, "67");
+}
+
 async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
   const createdRows: Array<Record<string, any>> = [];
   let published = false;
@@ -6513,6 +6567,7 @@ async function main() {
   testAdminNodePanelApiPathAcceptsFullUrl();
   await testXuiBusinessNotFoundFallsBackToInboundDelete();
   testXuiSettingsClientStatsTakePrecedenceOverZeroClientFallback();
+  await testXuiInboundRuntimeReadsMldsa65Verify();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessRejectsWhenPanelDisableQueueFails();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();

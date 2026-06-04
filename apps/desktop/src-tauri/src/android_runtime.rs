@@ -130,6 +130,7 @@ struct AndroidRuntimeBootstrap {
     server_name: String,
     fingerprint: String,
     spider_x: String,
+    mldsa65_verify: Option<String>,
     routing_profile: String,
     generated_at: String,
 }
@@ -294,6 +295,7 @@ pub fn start_android_runtime(
         server_name: config.outbound.server_name.clone(),
         fingerprint: config.outbound.fingerprint.clone(),
         spider_x: config.outbound.spider_x.clone(),
+        mldsa65_verify: config.outbound.mldsa65_verify.clone(),
         routing_profile: config.routing_profile.clone(),
         generated_at: config.generated_at.clone(),
     };

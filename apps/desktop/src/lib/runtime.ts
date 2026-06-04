@@ -514,6 +514,25 @@ export async function openDesktopInstaller(path: string) {
   return invoke("open_desktop_installer", { path });
 }
 
+export async function openExternalUrl(url: string) {
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) {
+    return { ok: false as const };
+  }
+
+  if (!isTauriApp() || isAndroidPlatform()) {
+    const opened = window.open(normalizedUrl, "_blank", "noopener,noreferrer");
+    return { ok: Boolean(opened) };
+  }
+
+  const invoke = await loadInvoke();
+  if (!invoke) {
+    const opened = window.open(normalizedUrl, "_blank", "noopener,noreferrer");
+    return { ok: Boolean(opened) };
+  }
+  return invoke("open_external_url", { url: normalizedUrl });
+}
+
 export async function applyDesktopFullUpdate(input: {
   path: string;
   expectedTotalBytes?: number | null;

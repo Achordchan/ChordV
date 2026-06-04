@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Badge, Button, FileButton, Group, Loader, Modal, Paper, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
 import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend, IconX } from "@tabler/icons-react";
+import { openExternalUrl } from "../lib/runtime";
 import { isSupportTicketUnread } from "../lib/supportTickets";
 
 type TicketCenterModalProps = {
@@ -39,6 +40,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
+  const [previewOpenError, setPreviewOpenError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const replyingDisabled =
     props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || (!props.replyBody.trim() && !props.replyAttachment);
@@ -86,8 +88,26 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
   useEffect(() => {
     if (!props.opened) {
       setPreviewAttachment(null);
+      setPreviewOpenError(null);
     }
   }, [props.opened]);
+
+  const openAttachmentPreview = (attachment: TicketAttachmentPreview) => {
+    setPreviewAttachment(attachment);
+    setPreviewOpenError(null);
+  };
+
+  const handleOpenPreviewOriginal = async () => {
+    if (!previewAttachment) {
+      return;
+    }
+    try {
+      await openExternalUrl(previewAttachment.url);
+      setPreviewOpenError(null);
+    } catch (error) {
+      setPreviewOpenError(error instanceof Error ? error.message : "打开原图失败");
+    }
+  };
 
   return (
     <>
@@ -331,7 +351,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                                   key={attachment.id}
                                   type="button"
                                   className="ticket-center__attachment"
-                                  onClick={() => setPreviewAttachment(attachment)}
+                                  onClick={() => openAttachmentPreview(attachment)}
                                 >
                                   <img src={attachment.url} alt={attachment.fileName} />
                                   <span>{attachment.fileName}</span>
@@ -362,11 +382,11 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     value={props.replyBody}
                     onChange={(event) => props.onReplyBodyChange(event.currentTarget.value)}
                   />
-                  <Group justify="space-between" align="center">
+                  <Group justify="space-between" align="center" gap="xs" className="ticket-center__reply-actions">
                     <Text size="xs" c="dimmed">
                       {props.replyBody.length} 字
                     </Text>
-                    <Group gap="xs">
+                    <Group gap="xs" className="ticket-center__reply-buttons">
                       {props.replyAttachment ? (
                         <Button
                           size="sm"
@@ -420,7 +440,10 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
     </Modal>
     <Modal
       opened={previewAttachment !== null}
-      onClose={() => setPreviewAttachment(null)}
+      onClose={() => {
+        setPreviewAttachment(null);
+        setPreviewOpenError(null);
+      }}
       title={previewAttachment?.fileName ?? "附件预览"}
       size="min(92vw, 980px)"
       centered
@@ -431,11 +454,16 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
     >
       {previewAttachment ? (
         <Stack gap="sm">
+          {previewOpenError ? (
+            <Alert color="red" variant="light">
+              {previewOpenError}
+            </Alert>
+          ) : null}
           <div className="ticket-center__image-preview-frame">
             <img src={previewAttachment.url} alt={previewAttachment.fileName} />
           </div>
           <Group justify="flex-end">
-            <Button component="a" href={previewAttachment.url} target="_blank" rel="noreferrer" variant="default" size="sm">
+            <Button variant="default" size="sm" onClick={() => void handleOpenPreviewOriginal()}>
               打开原图
             </Button>
             <Button size="sm" onClick={() => setPreviewAttachment(null)}>

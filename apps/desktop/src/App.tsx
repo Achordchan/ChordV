@@ -160,7 +160,6 @@ export function App() {
   );
   const currentRuntimeNodeId = runtime?.node.id ?? null;
   const appVersion = resolveDesktopPlatformVersion(desktopStatus.platformTarget);
-  const appWindowTitle = `ChordV ${formatWindowVersion(appVersion)}`;
   const modeLocked = desktopStatus.status === "connecting" || desktopStatus.status === "connected" || desktopStatus.status === "disconnecting";
   const emergencyRuntimeActive =
     desktopStatus.status === "connected" ||
@@ -742,18 +741,6 @@ export function App() {
   useEffect(() => {
     setRuntimeMirrorPrefix(localStorage.getItem(RUNTIME_COMPONENT_MIRROR_PREFIX_KEY) ?? "");
   }, []);
-
-  useEffect(() => {
-    if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "ios" || desktopStatus.platformTarget === "web") {
-      return;
-    }
-
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => getCurrentWindow().setTitle(appWindowTitle))
-      .catch((error) => {
-        console.warn("[ChordV] failed to update window title", error);
-      });
-  }, [appWindowTitle, desktopStatus.platformTarget]);
 
   useEffect(() => {
     const preventContextMenu = (event: MouseEvent) => {
@@ -1669,7 +1656,6 @@ export function App() {
 
                 <SubscriptionPanel
                   bootstrap={bootstrap}
-                  appVersion={appVersion}
                   hasUnreadAnnouncements={hasUnreadAnnouncements}
                   hasUnreadTickets={hasUnreadTickets}
                   refreshing={refreshing}
@@ -1744,7 +1730,6 @@ export function App() {
           <Stack gap="sm">
             <SubscriptionPanel
               bootstrap={bootstrap}
-              appVersion={appVersion}
               hasUnreadAnnouncements={hasUnreadAnnouncements}
               hasUnreadTickets={hasUnreadTickets}
               refreshing={refreshing}
@@ -2087,12 +2072,4 @@ function isEditableContextTarget(target: EventTarget | null) {
     return false;
   }
   return Boolean(element.closest("input, textarea, [contenteditable]"));
-}
-
-function formatWindowVersion(version: string) {
-  const normalized = version.trim();
-  if (!normalized) {
-    return "v-";
-  }
-  return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
 }

@@ -30,6 +30,7 @@ const minimumGeoDataBytes = 64 * 1024;
 const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
 const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.platform.conf.json`);
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
+const platformConfig = withPlatformVersion(baseConfig, version);
 const buildArgs = ["exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
 const pnpmCommand = "pnpm";
 
@@ -61,7 +62,7 @@ if (platform === "macos" && fs.existsSync(macosGuideImagePath)) {
 
 fs.writeFileSync(
   tempConfigPath,
-  `${JSON.stringify({ ...baseConfig, version, bundle: bundleConfig }, null, 2)}\n`,
+  `${JSON.stringify({ ...platformConfig, bundle: bundleConfig }, null, 2)}\n`,
   "utf8"
 );
 
@@ -116,6 +117,29 @@ function prepareBundledRuntimeResources(platform) {
       throw new Error(`准备内置运行时资源失败：${target}`);
     }
   }
+}
+
+function withPlatformVersion(config, version) {
+  const title = `ChordV ${formatWindowVersion(version)}`;
+  return {
+    ...config,
+    version,
+    app: {
+      ...config.app,
+      windows: (config.app?.windows ?? []).map((windowConfig, index) => ({
+        ...windowConfig,
+        title: index === 0 ? title : windowConfig.title
+      }))
+    }
+  };
+}
+
+function formatWindowVersion(version) {
+  const normalized = String(version ?? "").trim();
+  if (!normalized) {
+    return "v-";
+  }
+  return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
 }
 
 function buildBundledRuntimeResources(platform) {

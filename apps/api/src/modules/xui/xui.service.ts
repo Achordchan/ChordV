@@ -87,6 +87,7 @@ type XuiInboundRuntime = {
   serverName: string;
   fingerprint: string;
   spiderX: string;
+  mldsa65Verify: string;
 };
 
 type XuiInboundSummary = {
@@ -385,7 +386,11 @@ export class XuiService {
       shortId: shortIds[0] ?? "",
       serverName: readString(realityDerivedSettings?.serverName) ?? serverNames[0] ?? "",
       fingerprint: readString(realityDerivedSettings?.fingerprint) ?? "chrome",
-      spiderX: readString(realityDerivedSettings?.spiderX) ?? "/"
+      spiderX: readString(realityDerivedSettings?.spiderX) ?? "/",
+      mldsa65Verify:
+        readString(realityDerivedSettings?.mldsa65Verify) ??
+        readString(realitySettings?.mldsa65Verify) ??
+        ""
     };
   }
 

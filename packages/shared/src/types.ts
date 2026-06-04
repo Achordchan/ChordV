@@ -338,6 +338,7 @@ export interface RuntimeOutboundDto {
   serverName: string;
   fingerprint: string;
   spiderX: string;
+  mldsa65Verify?: string | null;
 }
 
 export interface GeneratedRuntimeConfigDto {
@@ -457,6 +458,7 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   serverPort: number;
   shortId: string;
   spiderX: string;
+  mldsa65Verify?: string | null;
   probeStatus: NodeProbeStatus;
   probeLatencyMs: number | null;
   probeCheckedAt: string | null;

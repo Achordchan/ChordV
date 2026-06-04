@@ -35,7 +35,6 @@ export type SubscriptionServerProbe = {
 
 type SubscriptionPanelProps = {
   bootstrap: ClientBootstrapDto;
-  appVersion: string;
   hasUnreadAnnouncements: boolean;
   hasUnreadTickets: boolean;
   refreshing: boolean;
@@ -56,7 +55,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
   const isMobile = useMediaQuery("(max-width: 760px)");
   const isTeam = props.bootstrap.subscription.ownerType === "team";
   const title = isTeam ? props.bootstrap.team?.name ?? props.bootstrap.subscription.teamName ?? "团队订阅" : props.bootstrap.user.displayName;
-  const versionLabel = formatPanelVersion(props.appVersion);
   const subtitle = isTeam ? props.bootstrap.subscription.planName : `${props.bootstrap.subscription.planName} · 个人订阅`;
   const metrics = [
     { label: isTeam ? "团队剩余流量" : "剩余流量", value: `${formatTrafficGb(props.bootstrap.subscription.remainingTrafficGb)} GB` },
@@ -82,9 +80,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
                 <Title order={2} style={{ lineHeight: 1.05 }} className="subscription-mobile__title">
                   {title}
                 </Title>
-                <Badge variant="light" color={isTeam ? "amber" : "blue"}>
-                  {versionLabel}
-                </Badge>
                 {isTeam ? (
                   <ThemeIcon variant="light" color="amber" radius="xl" size={28}>
                     <IconSparkles size={16} />
@@ -261,9 +256,6 @@ export function SubscriptionPanel(props: SubscriptionPanelProps) {
           <div className="subscription-copy">
             <Group gap="sm" align="baseline" wrap="wrap" className="subscription-title-row">
               <Title order={2}>{title}</Title>
-              <Badge variant="light" color={isTeam ? "amber" : "blue"}>
-                {versionLabel}
-              </Badge>
               <Text c={isTeam ? "rgba(255,255,255,0.82)" : "dimmed"} size="sm" className="subscription-email">
                 {props.bootstrap.user.email}
               </Text>
@@ -403,12 +395,6 @@ function probeColor(status: SubscriptionServerProbe["status"]) {
   if (status === "slow") return "yellow";
   if (status === "failed") return "red";
   return "gray";
-}
-
-function formatPanelVersion(version: string) {
-  const normalized = version.trim();
-  if (!normalized) return "v-";
-  return normalized.toLowerCase().startsWith("v") ? normalized : `v${normalized}`;
 }
 
 function MetricItem(props: { label: string; value: string; inverse?: boolean; compactValue?: boolean }) {

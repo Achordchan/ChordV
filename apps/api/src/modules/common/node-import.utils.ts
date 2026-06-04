@@ -15,6 +15,7 @@ export type ParsedVlessLink = {
   serverName: string;
   fingerprint: string;
   spiderX: string;
+  mldsa65Verify?: string | null;
 };
 
 export function normalizePanelApiBasePath(value: string | null | undefined) {
@@ -117,7 +118,8 @@ export function parseVlessLink(link: string): ParsedVlessLink {
     shortId: parsed.searchParams.get("sid") || "",
     serverName: parsed.searchParams.get("sni") || "",
     fingerprint: parsed.searchParams.get("fp") || "chrome",
-    spiderX: decodeURIComponent(parsed.searchParams.get("spx") || "/")
+    spiderX: decodeURIComponent(parsed.searchParams.get("spx") || "/"),
+    mldsa65Verify: parsed.searchParams.get("mldsa65Verify") || parsed.searchParams.get("pqv") || null
   };
 }
 
@@ -208,6 +210,7 @@ export function toAdminNodeRecord(row: {
   serverName: string;
   shortId: string;
   spiderX: string;
+  mldsa65Verify?: string | null;
   subscriptionUrl: string | null;
   statsLastSyncedAt: Date | null;
   panelBaseUrl: string | null;
@@ -243,6 +246,7 @@ export function toAdminNodeRecord(row: {
     serverPort: row.serverPort,
     shortId: row.shortId,
     spiderX: row.spiderX,
+    mldsa65Verify: row.mldsa65Verify ?? null,
     probeStatus: row.probeStatus,
     probeLatencyMs: row.probeLatencyMs,
     probeCheckedAt: row.probeCheckedAt?.toISOString() ?? null,

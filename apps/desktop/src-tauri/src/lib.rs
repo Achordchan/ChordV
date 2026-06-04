@@ -253,6 +253,7 @@ struct RuntimeOutboundDto {
     server_name: String,
     fingerprint: String,
     spider_x: String,
+    mldsa65_verify: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1214,6 +1215,22 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
 }
 
 #[tauri::command]
+fn open_external_url(url: String) -> Result<CommandResult, String> {
+    let parsed_url =
+        Url::parse(url.trim()).map_err(|error| format!("外部链接格式无效：{error}"))?;
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("只允许打开 http 或 https 外部链接".into());
+    }
+    open_external_url_with_system(parsed_url.as_str())?;
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
 fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(target_os = "android")]
     {
@@ -1992,6 +2009,7 @@ fn update_shell_summary(
 fn app_ready(_app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(not(target_os = "android"))]
     if let Some(window) = _app.get_webview_window("main") {
+        let _ = set_main_window_title(&window, &_app);
         let _ = window.show();
         let _ = window.set_focus();
         let _ = disable_context_menu(&window);
@@ -3428,6 +3446,50 @@ fn powershell_quote(value: &str) -> String {
 }
 
 #[cfg(windows)]
+fn open_external_url_with_system(url: &str) -> Result<(), String> {
+    let script = format!("Start-Process -FilePath {}", powershell_quote(url));
+    let mut command = Command::new("powershell");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("打开外部链接失败：{error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_external_url_with_system(url: &str) -> Result<(), String> {
+    Command::new("open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("打开外部链接失败：{error}"))?;
+    Ok(())
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "macos"), not(windows)))]
+fn open_external_url_with_system(url: &str) -> Result<(), String> {
+    Command::new("xdg-open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("打开外部链接失败：{error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn open_external_url_with_system(_url: &str) -> Result<(), String> {
+    Err("安卓端暂不支持打开外部链接".into())
+}
+
+#[cfg(windows)]
 fn full_update_startup_ready_marker_path(app: &AppHandle) -> Result<PathBuf, String> {
     let updater_dir = app
         .path()
@@ -4030,6 +4092,23 @@ fn build_inbounds(config: &GeneratedRuntimeConfigDto, android_runtime: bool) -> 
 }
 
 fn build_outbounds(config: &GeneratedRuntimeConfigDto) -> Value {
+    let mut reality_settings = json!({
+      "serverName": config.outbound.server_name,
+      "fingerprint": config.outbound.fingerprint,
+      "publicKey": config.outbound.reality_public_key,
+      "shortId": config.outbound.short_id,
+      "spiderX": config.outbound.spider_x
+    });
+    if let Some(mldsa65_verify) = config
+        .outbound
+        .mldsa65_verify
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        reality_settings["mldsa65Verify"] = json!(mldsa65_verify);
+    }
+
     json!([
       {
         "tag": "proxy",
@@ -4052,13 +4131,7 @@ fn build_outbounds(config: &GeneratedRuntimeConfigDto) -> Value {
         "streamSettings": {
           "network": "tcp",
           "security": "reality",
-          "realitySettings": {
-            "serverName": config.outbound.server_name,
-            "fingerprint": config.outbound.fingerprint,
-            "publicKey": config.outbound.reality_public_key,
-            "shortId": config.outbound.short_id,
-            "spiderX": config.outbound.spider_x
-          }
+          "realitySettings": reality_settings
         }
       },
       {
@@ -5587,8 +5660,30 @@ fn window_for_shell(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 }
 
 #[cfg(not(target_os = "android"))]
+fn app_window_title(app: &AppHandle) -> String {
+    let version = app.package_info().version.to_string();
+    let normalized = version.trim();
+    if normalized.is_empty() {
+        return "ChordV v-".to_string();
+    }
+    if normalized.starts_with('v') || normalized.starts_with('V') {
+        format!("ChordV {normalized}")
+    } else {
+        format!("ChordV v{normalized}")
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn set_main_window_title(window: &tauri::WebviewWindow, app: &AppHandle) -> Result<(), String> {
+    window
+        .set_title(&app_window_title(app))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
 fn show_main_window_internal(app: &AppHandle) -> Result<(), String> {
     let window = window_for_shell(app)?;
+    let _ = set_main_window_title(&window, app);
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(ActivationPolicy::Regular);
     #[cfg(windows)]
@@ -6076,6 +6171,10 @@ pub fn run() {
             cleanup_runtime_artifacts_on_startup(&app.handle());
             start_native_lease_heartbeat_loop(app.handle().clone());
             #[cfg(not(target_os = "android"))]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = set_main_window_title(&window, &app.handle());
+            }
+            #[cfg(not(target_os = "android"))]
             {
                 let _ = ensure_runtime_bin_dir(&app.handle());
                 let _ = cleanup_outdated_installer_packages(&app.handle());
@@ -6116,6 +6215,7 @@ pub fn run() {
             quit_application,
             download_desktop_installer,
             open_desktop_installer,
+            open_external_url,
             apply_desktop_full_update,
             quit_for_update,
             desktop_runtime_environment,
