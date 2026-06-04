@@ -31,7 +31,7 @@ import {
   updateAdminRuntimeComponent,
   verifyAdminRuntimeComponent
 } from "../../api/client";
-import { readError } from "../../utils/admin-filters";
+import { isUncertainRequestFailure, readError } from "../../utils/admin-filters";
 import { formatDateTime } from "../../utils/admin-format";
 import { RuntimeComponentEditorModal } from "./RuntimeComponentEditorModal";
 import {
@@ -40,6 +40,16 @@ import {
   translateRuntimeComponentKind,
   type RuntimeComponentEditorFormState
 } from "./types";
+
+function showRuntimeComponentFailure(reason: unknown, fallback: string) {
+  const message = readError(reason, fallback);
+  const uncertain = isUncertainRequestFailure(message);
+  notifications.show({
+    color: uncertain ? "yellow" : "red",
+    title: uncertain ? "内核组件请求状态不确定" : "内核组件",
+    message: uncertain ? `${message} 请求可能已被后台保存，请刷新组件列表确认最新状态。` : message
+  });
+}
 
 type RuntimeComponentsPanelProps = {
   components: AdminRuntimeComponentRecordDto[];
@@ -166,11 +176,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         message: editingId ? "内核组件已更新" : "内核组件已创建"
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "内核组件",
-        message: readError(reason, "保存内核组件失败")
-      });
+      showRuntimeComponentFailure(reason, "保存内核组件失败");
     } finally {
       onSavingChange(false);
     }
@@ -186,11 +192,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         message: result.message
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "内核组件",
-        message: readError(reason, "校验下载链接失败")
-      });
+      showRuntimeComponentFailure(reason, "校验下载链接失败");
     }
   }
 
@@ -213,11 +215,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         message: "内核组件已删除"
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "内核组件",
-        message: readError(reason, "删除内核组件失败")
-      });
+      showRuntimeComponentFailure(reason, "删除内核组件失败");
     } finally {
       onSavingChange(false);
     }

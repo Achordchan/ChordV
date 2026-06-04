@@ -3393,6 +3393,55 @@ async function testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefresh
   assert.match(result.panelSyncMessage ?? "", /user refresh failed/);
 }
 
+async function testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls() {
+  const lockedSubscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 0,
+    remainingTrafficGb: 10,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Plan" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  let refreshStarted = false;
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => lockedSubscription,
+    resetSubscriptionTrafficCounters: async () => ({
+      subscription: lockedSubscription,
+      targetUserId: "user_1",
+      clearedBindingCount: 0,
+      panelSync: { ok: true }
+    }),
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    requireAdminUserRecord: async () => {
+      refreshStarted = true;
+      return new Promise<any>(() => undefined);
+    }
+  });
+
+  const result = await Promise.race([
+    service.resetSubscriptionTraffic("sub_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("reset traffic waited for stalled user refresh")), 750);
+    })
+  ]);
+
+  assert.equal(refreshStarted, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.user, null);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+}
+
 async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines() {
   const snapshotUpserts: Array<Record<string, any>> = [];
   const bindingUpdates: Array<Record<string, any>> = [];
@@ -10148,7 +10197,73 @@ async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
   assert.equal(updates[0].data.status, "active");
   assert.equal(result.status, "active");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /3x-ui panel sync is still running/);
+  assert.match(result.panelSyncMessage ?? "", /user status follow-up sync is still running/);
+}
+
+async function testEnableUserReturnsPendingWhenSubscriptionLookupStalls() {
+  const updates: Array<Record<string, any>> = [];
+  let lookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "disabled"
+    }),
+    findCurrentPersonalSubscription: async () => {
+      lookupStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: new Date().toISOString(),
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 0,
+      activeSubscriptionCount: 0,
+      currentSubscription: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: payload.data.status,
+            lastSeenAt: new Date(),
+            maxConcurrentSessionsOverride: null
+          };
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateUser("user_1", { status: "active" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("enable user waited for stalled subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(lookupStarted, true);
+  assert.equal(updates.length, 1, "user status must save before stalled subscription lookup finishes");
+  assert.equal(result.status, "active");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /user status follow-up sync is still running/);
 }
 
 async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
@@ -10493,6 +10608,50 @@ async function testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails() {
   assert.equal((result as { id: string }).id, "team_1");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /team subscription lookup failed/);
+}
+
+async function testCreateTeamMemberReturnsPendingWhenSubscriptionLookupStalls() {
+  const createdMembers: string[] = [];
+  let lookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({ id: "team_1" }),
+    assertUserCanJoinTeam: async () => undefined,
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    findCurrentTeamSubscription: async () => {
+      lookupStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    requireTeamRecord: async (teamId: string) => ({ id: teamId }),
+    prisma: {
+      teamMember: {
+        create: async () => {
+          createdMembers.push("member_1");
+          return {
+            id: "member_1",
+            teamId: "team_1",
+            userId: "user_1",
+            role: "member"
+          };
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.createTeamMember("team_1", { userId: "user_1", role: "member" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("create team member waited for stalled subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(lookupStarted, true);
+  assert.deepEqual(createdMembers, ["member_1"]);
+  assert.equal((result as { id: string }).id, "team_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup is still running/);
 }
 
 async function testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails() {
@@ -11909,6 +12068,7 @@ async function main() {
   await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail();
+  await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
@@ -12025,6 +12185,7 @@ async function main() {
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();
   await testEnableUserReturnsPendingWhenPanelSyncStalls();
+  await testEnableUserReturnsPendingWhenSubscriptionLookupStalls();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
   await testUpdateTeamReturnsPendingWhenRecordRefreshFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
@@ -12033,6 +12194,7 @@ async function main() {
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();
   await testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails();
+  await testCreateTeamMemberReturnsPendingWhenSubscriptionLookupStalls();
   await testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();

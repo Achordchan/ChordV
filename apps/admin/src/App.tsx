@@ -1944,10 +1944,12 @@ export function App() {
         message: "策略已更新"
       });
     } catch (reason) {
+      const message = readError(reason, "策略更新失败");
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: "操作失败",
-        message: readError(reason, "策略更新失败")
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "请求状态不确定" : "操作失败",
+        message: uncertain ? `${message} 策略可能已保存，请刷新页面确认。` : message
       });
     } finally {
       setPolicySaving(false);

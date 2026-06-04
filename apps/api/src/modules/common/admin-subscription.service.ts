@@ -237,24 +237,6 @@ export class AdminSubscriptionService {
       data.maxConcurrentSessionsOverride = input.maxConcurrentSessionsOverride;
     }
 
-    const disableTargets: string[] = [];
-    if (statusChanged && input.status === "disabled") {
-      const personalSubscription = await this.findCurrentPersonalSubscription(userId);
-      if (personalSubscription) {
-        disableTargets.push(personalSubscription.id);
-      }
-      const memberships = await this.prisma.teamMember.findMany({
-        where: { userId },
-        select: { teamId: true }
-      });
-      for (const membership of memberships) {
-        const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
-        if (teamSubscription) {
-          disableTargets.push(teamSubscription.id);
-        }
-      }
-    }
-
     const updatedUser = await this.prisma.user.update({
       where: { id: userId },
       data
@@ -266,47 +248,11 @@ export class AdminSubscriptionService {
       await this.revokeAllUserSessionsBestEffort(userId, "user credentials changed");
     }
 
-    if (statusChanged) {
-      try {
-        if (input.status === "disabled") {
-          for (const subscriptionId of disableTargets) {
-            panelSync = mergePanelSyncResults(
-              panelSync,
-              await this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
-            );
-          }
-        } else if (input.status === "active") {
-          const personalSubscription = await this.findCurrentPersonalSubscription(userId);
-          if (personalSubscription) {
-            panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(personalSubscription.id));
-          }
-          const memberships = await this.prisma.teamMember.findMany({
-            where: { userId },
-            select: { teamId: true }
-          });
-          for (const membership of memberships) {
-            const teamSubscription = await this.findCurrentTeamSubscription(membership.teamId);
-            if (teamSubscription) {
-              panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
-            }
-          }
-        }
-      } catch (error) {
-        panelSync = mergePanelSyncResults(panelSync, {
-          ok: false,
-          errorMessage: `user status follow-up sync failed: ${readErrorMessage(error, "unknown error")}`
-        });
-      }
-
-      if (input.status === "disabled") {
-        await this.revokeAllUserSessionsBestEffort(userId, "user disabled");
-        this.tryPublishUserEvent(userId, {
-          type: "account_updated",
-          occurredAt: new Date().toISOString(),
-          reasonCode: "account_disabled",
-          reasonMessage: "当前账号已禁用，请重新登录。"
-        });
-      }
+    if (statusChanged && input.status) {
+      panelSync = mergePanelSyncResults(
+        panelSync,
+        await this.runUserStatusFollowUpBestEffort(userId, input.status)
+      );
     }
 
     return this.withAdminUserRefreshBestEffort(userId, updatedUser, panelSync, "账号已更新。");
@@ -369,14 +315,33 @@ export class AdminSubscriptionService {
     let user: AdminUserRecordDto | null = null;
     let responseRefreshSync: PanelSyncBestEffortResult = { ok: true };
     if (reset.targetUserId) {
-      try {
-        user = await this.requireAdminUserRecord(reset.targetUserId);
-      } catch (error) {
-        const errorMessage = readErrorMessage(error, "unknown error");
-        this.logger?.warn(`Traffic reset saved, but admin user response refresh failed for ${reset.targetUserId}: ${errorMessage}`);
+      const refresh = await this.withSubscriptionFollowUpBudget<
+        { ok: true; user: AdminUserRecordDto } | { ok: false; errorMessage: string }
+      >(
+        `traffic reset user response refresh for ${reset.targetUserId}`,
+        {
+          ok: false,
+          errorMessage: "admin user response refresh is still running in background"
+        },
+        async () => {
+          try {
+            return { ok: true, user: await this.requireAdminUserRecord(reset.targetUserId as string) };
+          } catch (error) {
+            const errorMessage = readErrorMessage(error, "unknown error");
+            this.logger?.warn(`Traffic reset saved, but admin user response refresh failed for ${reset.targetUserId}: ${errorMessage}`);
+            return {
+              ok: false,
+              errorMessage: `admin user response refresh failed: ${errorMessage}`
+            };
+          }
+        }
+      );
+      if (refresh.ok) {
+        user = refresh.user;
+      } else {
         responseRefreshSync = {
           ok: false,
-          errorMessage: `admin user response refresh failed: ${errorMessage}`
+          errorMessage: refresh.errorMessage
         };
       }
     }
@@ -1208,12 +1173,32 @@ export class AdminSubscriptionService {
 
     let panelSync: PanelSyncBestEffortResult = { ok: true };
     let subscription: Awaited<ReturnType<AdminSubscriptionService["findCurrentTeamSubscription"]>> | null = null;
-    try {
-      subscription = await this.findCurrentTeamSubscription(teamId);
-    } catch (error) {
+    const lookup = await this.withSubscriptionFollowUpBudget<
+      | { ok: true; subscription: Awaited<ReturnType<AdminSubscriptionService["findCurrentTeamSubscription"]>> | null }
+      | { ok: false; errorMessage: string }
+    >(
+      `team subscription lookup after member create for ${teamId}`,
+      {
+        ok: false,
+        errorMessage: "team subscription lookup is still running in background"
+      },
+      async () => {
+        try {
+          return { ok: true, subscription: await this.findCurrentTeamSubscription(teamId) };
+        } catch (error) {
+          return {
+            ok: false,
+            errorMessage: `team subscription lookup failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
+      }
+    );
+    if (lookup.ok) {
+      subscription = lookup.subscription;
+    } else {
       panelSync = mergePanelSyncResults(panelSync, {
         ok: false,
-        errorMessage: `team subscription lookup failed: ${readErrorMessage(error, "unknown error")}`
+        errorMessage: lookup.errorMessage
       });
     }
     if (subscription) {
@@ -1850,6 +1835,72 @@ export class AdminSubscriptionService {
     } catch (error) {
       this.logger?.warn(`Local subscription change saved, but user event publish failed for ${userId}: ${readErrorMessage(error, "unknown error")}`);
     }
+  }
+
+  private async runUserStatusFollowUpBestEffort(
+    userId: string,
+    status: "active" | "disabled"
+  ): Promise<PanelSyncBestEffortResult> {
+    return this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
+      `user status follow-up sync for ${userId}`,
+      {
+        ok: false,
+        errorMessage: "user status follow-up sync is still running in background"
+      },
+      async () => {
+        try {
+          const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
+          const syncResults =
+            status === "disabled"
+              ? await Promise.all(
+                  subscriptionIds.map((subscriptionId) =>
+                    this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
+                  )
+                )
+              : await Promise.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId)));
+          let panelSync: PanelSyncBestEffortResult = { ok: true };
+          for (const result of syncResults) {
+            panelSync = mergePanelSyncResults(panelSync, result);
+          }
+          if (status === "disabled") {
+            await this.revokeAllUserSessionsBestEffort(userId, "user disabled");
+            this.tryPublishUserEvent(userId, {
+              type: "account_updated",
+              occurredAt: new Date().toISOString(),
+              reasonCode: "account_disabled",
+              reasonMessage: "当前账号已禁用，请重新登录。"
+            });
+          }
+          return panelSync;
+        } catch (error) {
+          return {
+            ok: false,
+            errorMessage: `user status follow-up sync failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
+      }
+    );
+  }
+
+  private async findCurrentSubscriptionIdsForUser(userId: string) {
+    const subscriptionIds: string[] = [];
+    const personalSubscription = await this.findCurrentPersonalSubscription(userId);
+    if (personalSubscription) {
+      subscriptionIds.push(personalSubscription.id);
+    }
+    const memberships = await this.prisma.teamMember.findMany({
+      where: { userId },
+      select: { teamId: true }
+    });
+    const teamSubscriptions = await Promise.all(
+      memberships.map((membership) => this.findCurrentTeamSubscription(membership.teamId))
+    );
+    for (const subscription of teamSubscriptions) {
+      if (subscription) {
+        subscriptionIds.push(subscription.id);
+      }
+    }
+    return subscriptionIds;
   }
 
   private async revokeAllUserSessionsBestEffort(userId: string, reason: string) {

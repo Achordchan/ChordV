@@ -42,7 +42,7 @@ import {
   type ReleaseEditorFormState
 } from "../features/releases/types";
 import { SectionCard } from "../features/shared/SectionCard";
-import { readError } from "../utils/admin-filters";
+import { isUncertainRequestFailure, readError } from "../utils/admin-filters";
 
 type PlatformFilter = AdminReleasePlatform | "all";
 type StatusFilter = "all" | "draft" | "published" | "archived";
@@ -60,6 +60,17 @@ const statusFilterOptions = [
   { value: "draft", label: "草稿" },
   { value: "published", label: "已发布" }
 ] as const;
+
+function showReleaseRequestFailure(reason: unknown, fallback: string) {
+  const message = readError(reason, fallback);
+  const uncertain = isUncertainRequestFailure(message);
+  notifications.show({
+    color: uncertain ? "yellow" : "red",
+    title: uncertain ? "发布中心请求状态不确定" : "发布中心",
+    message: uncertain ? `${message} 请求可能已被后台保存，请刷新发布列表确认最新状态。` : message
+  });
+  return { message, uncertain };
+}
 
 export function ReleasesPage() {
   const [activeView, setActiveView] = useState<"app_releases" | "runtime_components">("app_releases");
@@ -206,11 +217,7 @@ export function ReleasesPage() {
         message: "发布记录已更新"
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "发布中心",
-        message: readError(reason, "保存发布记录失败")
-      });
+      showReleaseRequestFailure(reason, "保存发布记录失败");
     } finally {
       setSaving(false);
     }
@@ -252,11 +259,7 @@ export function ReleasesPage() {
         message: nextStatus === "published" ? "版本已发布" : "已撤回到草稿"
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "发布中心",
-        message: readError(reason, "更新发布状态失败")
-      });
+      showReleaseRequestFailure(reason, "更新发布状态失败");
     } finally {
       setSaving(false);
     }
@@ -278,11 +281,7 @@ export function ReleasesPage() {
         message: "发布记录已删除"
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "发布中心",
-        message: readError(reason, "删除发布记录失败")
-      });
+      showReleaseRequestFailure(reason, "删除发布记录失败");
     } finally {
       setSaving(false);
     }
@@ -418,7 +417,8 @@ export function ReleasesPage() {
               : "产物已新增"
       });
     } catch (reason) {
-      if (createdReleaseId && !createdViaAtomicFlow) {
+      const failure = showReleaseRequestFailure(reason, "保存产物失败");
+      if (createdReleaseId && !createdViaAtomicFlow && !failure.uncertain) {
         try {
           await deleteAdminRelease(createdReleaseId);
         } catch (cleanupReason) {
@@ -429,11 +429,6 @@ export function ReleasesPage() {
           });
         }
       }
-      notifications.show({
-        color: "red",
-        title: "发布中心",
-        message: readError(reason, "保存产物失败")
-      });
     } finally {
       setSaving(false);
     }
@@ -456,11 +451,7 @@ export function ReleasesPage() {
         message: "产物已删除"
       });
     } catch (reason) {
-      notifications.show({
-        color: "red",
-        title: "发布中心",
-        message: readError(reason, "删除产物失败")
-      });
+      showReleaseRequestFailure(reason, "删除产物失败");
     } finally {
       setSaving(false);
     }
@@ -470,17 +461,25 @@ export function ReleasesPage() {
     try {
       const result = await verifyAdminReleaseArtifact(releaseId, artifact.id);
       setArtifactValidation((current) => ({ ...current, [artifact.id]: result }));
-      await loadReleases();
+      void loadReleases().catch((refreshReason) => {
+        notifications.show({
+          color: "yellow",
+          title: "安装产物校验",
+          message: `${readError(refreshReason, "刷新发布列表失败")} 校验已完成，但列表刷新失败，请手动刷新确认。`
+        });
+      });
       notifications.show({
         color: result.status === "ready" ? "green" : "yellow",
         title: "安装产物校验",
         message: result.message
       });
     } catch (reason) {
+      const message = readError(reason, "校验安装产物失败");
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: "安装产物校验",
-        message: readError(reason, "校验安装产物失败")
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "安装产物校验状态不确定" : "安装产物校验",
+        message: uncertain ? `${message} 校验可能已完成，请刷新发布列表确认。` : message
       });
     }
   }
