@@ -963,15 +963,25 @@ export function App() {
         newPassword: "",
         confirmPassword: ""
       });
-      await loadFullSnapshot();
+      try {
+        await loadFullSnapshot();
+      } catch (refreshReason) {
+        notifications.show({
+          color: "yellow",
+          title: "账号已更新，但列表刷新失败",
+          message: `${readError(refreshReason, "后台数据刷新失败")} 账号安全保存请求已经成功返回，可手动刷新确认。`
+        });
+      }
       notifications.show({
         color: "green",
         title: "账号安全",
         message: "管理员账号安全信息已更新"
       });
     } catch (reason) {
+      const message = readError(reason, "更新管理员账号失败");
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
+        color: uncertain ? "yellow" : "red",
         title: "账号安全",
         message: readError(reason, "更新管理员账号失败")
       });

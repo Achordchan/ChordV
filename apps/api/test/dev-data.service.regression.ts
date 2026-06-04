@@ -2232,6 +2232,99 @@ async function testPanelDisableJobRechecksEligibilityBeforeRemoteDisable() {
   assert.equal((jobUpdates[0] as any)?.data?.status, "completed");
 }
 
+async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
+  const resetCalls: string[] = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
+  const makeJob = (id: string, email: string) => ({
+    id,
+    action: "reset_client_traffic",
+    attempts: 0,
+    bindingId: `binding_${id}`,
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: `node_${id}`,
+    panelClientEmail: email,
+    panelClientId: `client_${id}`,
+    panelInboundId: 7,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    node: {
+      id: `node_${id}`,
+      name: `node ${id}`,
+      flow: "",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    },
+    binding: {
+      status: "active"
+    }
+  });
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      resetClientTraffic: async (_node: unknown, email: string) => {
+        resetCalls.push(email);
+        if (email === "offline@example.com") {
+          throw new Error("panel offline");
+        }
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+          return {};
+        }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return {};
+        }
+      },
+      panelSyncJob: {
+        findMany: async () => [makeJob("online", "online@example.com"), makeJob("offline", "offline@example.com")],
+        updateMany: async () => ({ count: 1 }),
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  await service.retryPendingPanelSyncJobs();
+
+  assert.deepEqual(resetCalls, ["online@example.com", "offline@example.com"]);
+  assert.equal(bindingUpdates.length, 1, "successful reset should update only the online binding");
+  assert.equal(bindingUpdates[0].where.id, "binding_online");
+  assert.equal(jobUpdates.length, 2, "both jobs should be finalized independently");
+  assert.deepEqual(
+    jobUpdates.map((item) => ({ id: item.where.id, status: item.data.status })),
+    [
+      { id: "online", status: "completed" },
+      { id: "offline", status: "failed" }
+    ]
+  );
+  assert.equal(nodeUpdates.length, 1, "offline panel failure should degrade only its node");
+  assert.equal(nodeUpdates[0].where.id, "node_offline");
+}
+
 async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
   const upserts: Array<Record<string, any>> = [];
   const service = createRuntimeSessionService({});
@@ -3721,6 +3814,57 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   assert.equal(nodeUpdates[0].data.isActive, false, "node must be hidden locally before remote cleanup completes");
   assert.equal(nodeUpdates[0].data.panelStatus, "offline");
   assert.equal(nodeDeleted, false, "node row must be kept for queued panel cleanup jobs");
+}
+
+async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave() {
+  const calls: string[] = [];
+  let publishedUserIds: string[] | null = null;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    clientEventsPublisher: {
+      resolveUserIdsForNodeAccess: async () => {
+        calls.push("resolve_event_targets");
+        return new Promise<string[]>(() => undefined);
+      },
+      publishNodeAccessUpdatedToUsers: (userIds: string[]) => {
+        calls.push("publish_event");
+        publishedUserIds = userIds;
+      }
+    },
+    runtimeSessionService: {
+      revokeNodeLeases: async () => {
+        calls.push("revoke_leases");
+        return 1;
+      },
+      removePanelBindingsForNode: async () => {
+        calls.push("queue_panel_delete");
+        return { requested: 1, updated: 1, failed: [] };
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => ({ id: "node_1" }),
+        update: async (payload: Record<string, any>) => {
+          calls.push("local_update");
+          assert.equal(payload.data.isActive, false);
+          return {};
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.deleteNode("node_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("deleteNode waited for stalled event target resolution")), 750);
+    })
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
+  assert.deepEqual(publishedUserIds, []);
 }
 
 async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
@@ -9386,8 +9530,121 @@ async function testUpdatePlanReconcilesConcurrencyWhenLimitChanges() {
   assert.deepEqual(enforced, [{ userId: "user_1", limit: 1 }]);
 }
 
+async function testUpdatePlanReturnsWhenConcurrencyReconciliationStallsAfterSave() {
+  let planUpdated = false;
+  let reconciliationStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      name: "Personal",
+      scope: "personal",
+      totalTrafficGb: 100,
+      renewable: true,
+      maxConcurrentSessions: 3,
+      isActive: true,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z")
+    }),
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => undefined
+    },
+    prisma: {
+      plan: {
+        update: async () => {
+          planUpdated = true;
+          return {
+            id: "plan_1",
+            name: "Personal",
+            scope: "personal",
+            totalTrafficGb: 100,
+            renewable: true,
+            maxConcurrentSessions: 1,
+            isActive: true,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          };
+        }
+      },
+      subscription: {
+        count: async () => 1,
+        findMany: async () => {
+          reconciliationStarted = true;
+          return new Promise(() => undefined);
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updatePlan("plan_1", { maxConcurrentSessions: 1 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("updatePlan waited for stalled concurrency reconciliation")), 750);
+    })
+  ]);
+
+  assert.equal(planUpdated, true, "local plan update must complete before stalled reconciliation");
+  assert.equal(reconciliationStarted, true);
+  assert.equal(result.id, "plan_1");
+  assert.equal(result.maxConcurrentSessions, 1);
+}
+
+async function testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave() {
+  let planUpdated = false;
+  let reconciliationStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensurePlanExists: async () => ({ id: "plan_1" }),
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => undefined
+    },
+    prisma: {
+      plan: {
+        update: async () => {
+          planUpdated = true;
+          return {
+            id: "plan_1",
+            name: "Personal",
+            scope: "personal",
+            totalTrafficGb: 100,
+            renewable: true,
+            maxConcurrentSessions: 1,
+            isActive: true,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          };
+        }
+      },
+      subscription: {
+        count: async () => 1,
+        findMany: async () => {
+          reconciliationStarted = true;
+          return new Promise(() => undefined);
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updatePlanSecurity("plan_1", { maxConcurrentSessions: 1 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("updatePlanSecurity waited for stalled concurrency reconciliation")), 750);
+    })
+  ]);
+
+  assert.equal(planUpdated, true, "local plan security update must complete before stalled reconciliation");
+  assert.equal(reconciliationStarted, true);
+  assert.equal(result.id, "plan_1");
+  assert.equal(result.maxConcurrentSessions, 1);
+}
+
 async function testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails() {
   const updates: Array<Record<string, any>> = [];
+  const disableQueueCalls: Array<{ subscriptionId: string; filter?: { userId?: string; nodeIds?: string[] } }> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
   const current = {
     id: "subscription_1",
@@ -9410,6 +9667,14 @@ async function testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails() 
   const service = createAdminSubscriptionService({
     requireSubscription: async () => current,
     runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async (
+        subscriptionId: string,
+        filter?: { userId?: string; nodeIds?: string[] }
+      ) => {
+        disableQueueCalls.push({ subscriptionId, filter });
+        throw new Error("panel queue failed");
+      },
+      revokeSubscriptionLeases: async () => 0,
       queuePanelDisableJobsForSubscriptionTx: async () => {
         throw new Error("panel queue failed");
       },
@@ -9453,6 +9718,7 @@ async function testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails() 
   assert.equal(updates[0].data.state, "paused");
   assert.equal(result.state, "paused");
   assert.equal(result.panelSyncStatus, "pending");
+  assert.deepEqual(disableQueueCalls, [{ subscriptionId: "subscription_1", filter: undefined }]);
 }
 
 async function testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue() {
@@ -9540,6 +9806,8 @@ async function testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfter
   assert.deepEqual(calls, [
     "update_subscription",
     "revoke_leases",
+    "queue_panel_disabled",
+    "queue_lease_revocation",
     "sync_panel",
     "publish_subscription"
   ]);
@@ -12136,6 +12404,7 @@ async function main() {
   await testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails();
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
+  await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();
@@ -12155,6 +12424,7 @@ async function main() {
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
+  await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
@@ -12257,6 +12527,8 @@ async function main() {
   await testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail();
   await testUpdatePlanSecurityReconcilesUsersWithoutOverrides();
   await testUpdatePlanReconcilesConcurrencyWhenLimitChanges();
+  await testUpdatePlanReturnsWhenConcurrencyReconciliationStallsAfterSave();
+  await testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();

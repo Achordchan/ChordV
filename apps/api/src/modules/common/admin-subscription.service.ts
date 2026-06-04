@@ -428,7 +428,7 @@ export class AdminSubscriptionService {
       }
     });
     if (input.maxConcurrentSessions !== undefined && input.maxConcurrentSessions !== current.maxConcurrentSessions) {
-      await this.reconcilePlanConcurrentLeaseLimits(planId, row.maxConcurrentSessions);
+      await this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
     }
     return {
       id: row.id,
@@ -453,7 +453,7 @@ export class AdminSubscriptionService {
       }
     });
     const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
-    await this.reconcilePlanConcurrentLeaseLimits(planId, row.maxConcurrentSessions);
+    await this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
     return {
       id: row.id,
       name: row.name,
@@ -696,6 +696,7 @@ export class AdminSubscriptionService {
   async updateSubscription(subscriptionId: string, input: UpdateSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
     await this.requireSubscription(subscriptionId);
 
+    let disconnectReason: string | null = null;
     const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
       const current = await this.requireSubscription(subscriptionId);
       const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
@@ -706,12 +707,11 @@ export class AdminSubscriptionService {
       }
       const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
       const state = resolveSubscriptionState(input.state ?? current.state, remainingTrafficGb, expireAt);
-      const disconnectReason = getSubscriptionDisconnectReason({
+      disconnectReason = getSubscriptionDisconnectReason({
         state,
         remainingTrafficGb,
         expireAt
       });
-      void disconnectReason;
 
       return this.prisma.$transaction(async (tx) => {
         return tx.subscription.update({
@@ -737,6 +737,7 @@ export class AdminSubscriptionService {
 
     const leaseSync = await this.syncActiveLeasesForSubscriptionBestEffort(row);
     const panelSync = mergePanelSyncResults(
+      disconnectReason ? await this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason) : { ok: true },
       leaseSync,
       await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
     );
@@ -2081,6 +2082,14 @@ export class AdminSubscriptionService {
         // Lease enforcement is retried on subsequent security updates and normal lease validation.
       }
     }
+  }
+
+  private async reconcilePlanConcurrentLeaseLimitsBestEffort(planId: string, maxConcurrentSessions: number) {
+    await this.withSubscriptionFollowUpBudget(
+      `plan lease concurrency reconciliation for ${planId}`,
+      undefined,
+      () => this.reconcilePlanConcurrentLeaseLimits(planId, maxConcurrentSessions)
+    );
   }
 
   private async enforceSubscriptionConcurrentLeaseLimits(subscription: {

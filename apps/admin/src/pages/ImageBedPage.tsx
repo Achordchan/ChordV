@@ -9,7 +9,7 @@ import {
   updateAdminImageBedConfig
 } from "../api/client";
 import { SectionCard } from "../features/shared/SectionCard";
-import { readError } from "../utils/admin-filters";
+import { isUncertainRequestFailure, readError } from "../utils/admin-filters";
 
 type ImageBedConfigForm = {
   baseUrl: string;
@@ -23,8 +23,6 @@ type LoadFilesOptions = {
   afterSuccessfulSave?: boolean;
   silent?: boolean;
 };
-
-const REQUEST_UNCERTAIN_PATTERN = /超时|timeout|timed out|aborted|failed to fetch|network/i;
 
 export function ImageBedPage() {
   const [config, setConfig] = useState<AdminImageBedConfigDto | null>(null);
@@ -380,10 +378,6 @@ export function ImageBedPage() {
       </Stack>
     </SectionCard>
   );
-}
-
-function isUncertainRequestFailure(message: string) {
-  return REQUEST_UNCERTAIN_PATTERN.test(message);
 }
 
 function formatBytes(value: string | null) {

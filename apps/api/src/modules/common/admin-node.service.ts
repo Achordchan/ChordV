@@ -779,16 +779,6 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    let userIds: string[] = [];
-    try {
-      userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
-    } catch (error) {
-      this.logger?.warn(
-        `Local node delete will continue, but resolving node access event targets failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
     await this.prisma.node.update({
       where: { id: nodeId },
       data: {
@@ -804,12 +794,60 @@ export class AdminNodeService {
     await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", () =>
       this.runtimeSessionService.removePanelBindingsForNode(nodeId)
     );
+    const userIds = await this.runAfterLocalNodeSaveWithBudget(
+      "resolve node access event targets after node delete",
+      [] as string[],
+      () => this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId)
+    );
     try {
       this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     } catch (error) {
       this.logger?.warn(`Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     return { ok: true };
+  }
+
+  private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {
+    let settled = false;
+    const guardedTask = task().then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<T>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve(timeoutResult);
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } catch (error) {
+      this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return timeoutResult;
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
