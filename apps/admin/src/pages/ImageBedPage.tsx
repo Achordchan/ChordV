@@ -19,6 +19,13 @@ type ImageBedConfigForm = {
   channelName: string;
 };
 
+type LoadFilesOptions = {
+  afterSuccessfulSave?: boolean;
+  silent?: boolean;
+};
+
+const REQUEST_UNCERTAIN_PATTERN = /超时|timeout|timed out|aborted|failed to fetch|network/i;
+
 export function ImageBedPage() {
   const [config, setConfig] = useState<AdminImageBedConfigDto | null>(null);
   const [form, setForm] = useState<ImageBedConfigForm>({
@@ -55,7 +62,7 @@ export function ImageBedPage() {
         channelName: nextConfig.channelName ?? ""
       });
       if (nextConfig.hasToken) {
-        void loadFiles();
+        void loadFiles({ silent: true });
       } else {
         setFiles([]);
         setFileListError(null);
@@ -67,7 +74,7 @@ export function ImageBedPage() {
     }
   }
 
-  async function loadFiles() {
+  async function loadFiles(options: LoadFilesOptions = {}) {
     try {
       setLoadingFiles(true);
       setFileListError(null);
@@ -80,10 +87,13 @@ export function ImageBedPage() {
     } catch (reason) {
       const message = readError(reason, "图床文件列表加载失败");
       setFileListError(message);
+      if (options.silent) {
+        return;
+      }
       notifications.show({
-        color: "red",
-        title: "图床",
-        message
+        color: options.afterSuccessfulSave ? "yellow" : "red",
+        title: options.afterSuccessfulSave ? "配置已保存，列表刷新失败" : "图床",
+        message: options.afterSuccessfulSave ? `${message}。配置保存请求已经成功返回，可稍后手动刷新列表。` : message
       });
     } finally {
       setLoadingFiles(false);
@@ -108,16 +118,17 @@ export function ImageBedPage() {
         message: "图床配置已保存"
       });
       if (nextConfig.hasToken) {
-        void loadFiles();
+        void loadFiles({ afterSuccessfulSave: true });
       } else {
         setFiles([]);
         setFileListError(null);
       }
     } catch (reason) {
+      const message = readError(reason, "图床配置保存失败");
       notifications.show({
-        color: "red",
+        color: isUncertainRequestFailure(message) ? "yellow" : "red",
         title: "图床",
-        message: readError(reason, "图床配置保存失败")
+        message: isUncertainRequestFailure(message) ? `${message}。请求状态不确定，配置可能已保存，请刷新页面确认。` : message
       });
     } finally {
       setSaving(false);
@@ -141,10 +152,11 @@ export function ImageBedPage() {
         message: "图床 Token 已清空"
       });
     } catch (reason) {
+      const message = readError(reason, "清空 Token 失败");
       notifications.show({
-        color: "red",
+        color: isUncertainRequestFailure(message) ? "yellow" : "red",
         title: "图床",
-        message: readError(reason, "清空 Token 失败")
+        message: isUncertainRequestFailure(message) ? `${message}。请求状态不确定，Token 可能已清空，请刷新页面确认。` : message
       });
     } finally {
       setSaving(false);
@@ -158,20 +170,37 @@ export function ImageBedPage() {
     try {
       setDeletingPath(file.name);
       const result = await deleteAdminImageBedFile(file.name);
-      if (!result.success || result.failed.length > 0) {
-        throw new Error(result.failed.length > 0 ? `删除失败：${result.failed.join("，")}` : "图床返回删除失败");
+      const deleted = new Set(result.deleted.length > 0 ? result.deleted : result.success ? [file.name] : []);
+      if (deleted.size > 0) {
+        setFiles((current) => current.filter((item) => item.name !== file.name && !deleted.has(item.name)));
       }
-      setFiles((current) => current.filter((item) => item.name !== file.name));
+      if (result.failed.length > 0) {
+        notifications.show({
+          color: deleted.size > 0 ? "yellow" : "red",
+          title: deleted.size > 0 ? "图床文件部分删除" : "图床文件删除失败",
+          message: deleted.size > 0 ? `已删除 ${deleted.size} 个文件，失败：${result.failed.join("；")}` : result.failed.join("；")
+        });
+        return;
+      }
+      if (!result.success) {
+        notifications.show({
+          color: "red",
+          title: "图床",
+          message: "图床返回删除失败"
+        });
+        return;
+      }
       notifications.show({
         color: "green",
         title: "图床",
         message: "图床文件已删除"
       });
     } catch (reason) {
+      const message = readError(reason, "删除图床文件失败");
       notifications.show({
-        color: "red",
+        color: isUncertainRequestFailure(message) ? "yellow" : "red",
         title: "图床",
-        message: readError(reason, "删除图床文件失败")
+        message: isUncertainRequestFailure(message) ? `${message}。请求状态不确定，文件可能已删除，请刷新列表确认。` : message
       });
     } finally {
       setDeletingPath(null);
@@ -351,6 +380,10 @@ export function ImageBedPage() {
       </Stack>
     </SectionCard>
   );
+}
+
+function isUncertainRequestFailure(message: string) {
+  return REQUEST_UNCERTAIN_PATTERN.test(message);
 }
 
 function formatBytes(value: string | null) {

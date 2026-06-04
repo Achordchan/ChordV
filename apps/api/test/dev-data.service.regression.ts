@@ -521,6 +521,92 @@ async function testImageBedDeleteReturnsStructuredBusinessFailure() {
   }
 }
 
+async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
+  const originalFetch = globalThis.fetch;
+  let upsertPayload: Record<string, any> | null = null;
+  let storedValue: Record<string, unknown> = {
+    baseUrl: "https://old.example.com",
+    apiToken: "old-token"
+  };
+  try {
+    globalThis.fetch = (() => {
+      throw new Error("update config must not call external image bed");
+    }) as typeof fetch;
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: storedValue,
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          }),
+          upsert: async (payload: Record<string, any>) => {
+            upsertPayload = payload;
+            storedValue = payload.update.value;
+            return payload;
+          }
+        }
+      }
+    });
+
+    const result = await service.updateAdminConfig({
+      baseUrl: "https://image.achord.cn/",
+      apiToken: "imgbed_secret_token",
+      uploadFolder: "support-tickets"
+    });
+
+    assert.ok(upsertPayload, "config must be persisted locally");
+    assert.equal(result.baseUrl, "https://image.achord.cn");
+    assert.equal(result.hasToken, true);
+    assert.equal(result.tokenSource, "database");
+    assert.match(result.tokenPreview ?? "", /^imgb/);
+    assert.doesNotMatch(result.tokenPreview ?? "", /secret_token/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+async function testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray() {
+  const server = createServer((request, response) => {
+    assert.equal(request.url, "/api/manage/delete/support-tickets/missing.png");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: false,
+        fileId: "support-tickets/missing.png",
+        message: "already deleted"
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.deleteAdminFile({ path: "support-tickets/missing.png" });
+
+    assert.equal(result.success, false);
+    assert.equal(result.fileId, "support-tickets/missing.png");
+    assert.deepEqual(result.deleted, []);
+    assert.deepEqual(result.failed, ["already deleted"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedAttachmentCleanupLogsDeleteFailure() {
   const warnings: string[] = [];
   const service = createInstance<ImageBedService>(ImageBedService.prototype, {
@@ -5309,6 +5395,92 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails() {
   assert.deepEqual(result.nodeIds, ["node_new"], "response should fall back to requested node ids after refresh failure");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /response refresh failed/);
+}
+
+async function testUpdateNodeAccessReturnsPendingWhenResponseRefreshStalls() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...oldNode,
+    id: "node_new",
+    name: "new"
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old" }];
+  let responseRefreshStarted = false;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          responseRefreshStarted = true;
+          return new Promise<never>(() => undefined);
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+        },
+        createMany: async () => {
+          accessRows.push({ id: "access_new", nodeId: "node_new" });
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+            },
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new" });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => 0
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node access update waited for stalled response refresh")), 750);
+    })
+  ]);
+
+  assert.equal(responseRefreshStarted, true);
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local authorization replacement must stay saved");
+  assert.deepEqual(result.nodeIds, ["node_new"], "response should fall back to requested node ids after refresh stalls");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /response refresh is still running in background/);
 }
 
 async function testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails() {
@@ -11384,6 +11556,7 @@ async function main() {
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
+  await testUpdateNodeAccessReturnsPendingWhenResponseRefreshStalls();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
@@ -11449,6 +11622,8 @@ async function main() {
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedUploadRejectsSuccessFalsePayload();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
+  await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
+  await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
   await testImageBedAttachmentCleanupLogsDeleteFailure();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();

@@ -1566,13 +1566,20 @@ export class DevDataService implements OnModuleInit {
       teamId: subscription.teamId
     });
 
+    const fallbackDeduped = uniqueNodeIds
+      .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
+      .filter((node): node is (typeof availableNodes)[number] => Boolean(node))
+      .map((node) => ({ nodeId: node.id, node }));
     let deduped: Array<{ nodeId: string; node: (typeof availableNodes)[number] }>;
     try {
-      const rows = await this.prisma.subscriptionNodeAccess.findMany({
-        where: { subscriptionId },
-        include: { node: true },
-        orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
-      });
+      const rows = await this.withNodeAccessResponseRefreshBudget(
+        subscriptionId,
+        this.prisma.subscriptionNodeAccess.findMany({
+          where: { subscriptionId },
+          include: { node: true },
+          orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
+        })
+      );
       deduped = dedupeNodeAccessRows(rows);
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
@@ -1581,10 +1588,7 @@ export class DevDataService implements OnModuleInit {
       panelSyncMessage = [panelSyncMessage, `local node access saved, but response refresh failed: ${errorMessage}`]
         .filter(Boolean)
         .join(" ");
-      deduped = uniqueNodeIds
-        .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
-        .filter((node): node is (typeof availableNodes)[number] => Boolean(node))
-        .map((node) => ({ nodeId: node.id, node }));
+      deduped = fallbackDeduped;
     }
 
     return {
@@ -1668,6 +1672,43 @@ export class DevDataService implements OnModuleInit {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but panel access sync failed for ${subscriptionId}: ${errorMessage}`);
       return { ok: false, errorMessage };
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private async withNodeAccessResponseRefreshBudget<T>(subscriptionId: string, task: Promise<T>): Promise<T> {
+    let settled = false;
+    const guardedTask = task.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Node access saved, but delayed response refresh failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        reject(new Error("response refresh is still running in background; local node access is already saved."));
+      }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
     } finally {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);

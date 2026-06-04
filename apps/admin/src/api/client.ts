@@ -451,7 +451,9 @@ export type FetchAdminImageBedFilesInput = {
 };
 
 export async function fetchAdminImageBedConfig() {
-  return request<AdminImageBedConfigDto>("/admin/image-bed/config");
+  return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
+    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+  });
 }
 
 export async function updateAdminImageBedConfig(input: UpdateAdminImageBedConfigInputDto) {
