@@ -1770,38 +1770,19 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined
   ) {
-    const messages: string[] = [];
     try {
       const pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
         subscriptionId,
         filter
       );
       if (pendingPanelSyncCount > 0) {
-        messages.push("3x-ui disable job queued; local node access and active sessions are invalidated.");
+        return "3x-ui disable job queued; local node access and active sessions are invalidated.";
       }
-      try {
-        await this.prisma.$transaction((tx) =>
-          this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(
-            tx,
-            subscriptionId,
-            "node_access_revoked",
-            filter
-          )
-        );
-      } catch (error) {
-        const errorMessage = readPanelSyncErrorMessage(error);
-        this.logger?.warn(`Node access saved, but lease revocation job queueing failed for ${subscriptionId}: ${errorMessage}`);
-        messages.push(`lease revocation job queueing failed: ${errorMessage}`);
-      }
-      return messages.length > 0 ? messages.join(" ") : null;
-      return pendingPanelSyncCount > 0
-        ? "3x-ui 客户端禁用已加入后台队列，本地授权和当前连接已立即失效。"
-        : null;
+      return null;
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
-      messages.push(`3x-ui disable job queueing failed: ${errorMessage}`);
-      return messages.join(" ");
+      return `3x-ui disable job queueing failed: ${errorMessage}`;
     }
   }
 
@@ -1838,17 +1819,61 @@ export class DevDataService implements OnModuleInit {
     }
   }
 
+  private async queueLeaseRevocationJobsForNodeAccessRevocation(
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined
+  ) {
+    try {
+      await this.prisma.$transaction((tx) =>
+        this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(
+          tx,
+          subscriptionId,
+          "node_access_revoked",
+          filter
+        )
+      );
+      return null;
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but lease revocation job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      return `lease revocation job queueing failed: ${errorMessage}`;
+    }
+  }
+
   private async applyNodeAccessRevocationEffectsBestEffort(
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined,
     reason: string
   ): Promise<NodeAccessRevocationEffects> {
-    const task = (async () => {
-      const queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, filter);
-      return this.tryApplyNodeAccessRevocationEffects(subscriptionId, filter, reason, { queuedPanelSyncMessage });
-    })();
+    const [panelQueue, leaseQueue, activeLeaseRevoke] = await Promise.all([
+      this.withNodeAccessFollowUpBudget(
+        subscriptionId,
+        this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, filter).then((panelSyncMessage) => ({
+          revokedSessionCount: 0,
+          panelSyncMessage
+        }))
+      ),
+      this.withNodeAccessFollowUpBudget(
+        subscriptionId,
+        this.queueLeaseRevocationJobsForNodeAccessRevocation(subscriptionId, filter).then((panelSyncMessage) => ({
+          revokedSessionCount: 0,
+          panelSyncMessage
+        }))
+      ),
+      this.withNodeAccessFollowUpBudget(
+        subscriptionId,
+        this.tryApplyNodeAccessRevocationEffects(subscriptionId, filter, reason)
+      )
+    ]);
 
-    return this.withNodeAccessFollowUpBudget(subscriptionId, task);
+    const panelSyncMessage = [panelQueue.panelSyncMessage, leaseQueue.panelSyncMessage, activeLeaseRevoke.panelSyncMessage]
+      .filter(Boolean)
+      .join(" ");
+
+    return {
+      revokedSessionCount: activeLeaseRevoke.revokedSessionCount,
+      panelSyncMessage: panelSyncMessage || null
+    };
   }
 
   private startNodeAccessRevocationEffects(

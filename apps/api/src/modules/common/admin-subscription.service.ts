@@ -1057,8 +1057,6 @@ export class AdminSubscriptionService {
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = input.name.trim();
     if (input.status !== undefined) data.status = input.status;
-    const teamSubscription = await this.findCurrentTeamSubscription(teamId);
-    const teamWillBeDisabled = Boolean(teamSubscription && input.status === "disabled" && input.status !== current.status);
     let teamUpdatedInOwnerTransaction = false;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
 
@@ -1111,19 +1109,18 @@ export class AdminSubscriptionService {
     }
 
     if (!teamUpdatedInOwnerTransaction) {
-      if (teamWillBeDisabled && teamSubscription) {
-        await this.prisma.team.update({
-          where: { id: teamId },
-          data
-        });
-      } else {
-        await this.prisma.team.update({
-          where: { id: teamId },
-          data
-        });
-      }
+      await this.prisma.team.update({
+        where: { id: teamId },
+        data
+      });
     }
 
+    const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+      teamId,
+      "team subscription lookup after team update"
+    );
+    const teamSubscription = teamSubscriptionLookup.subscription;
+    panelSync = mergePanelSyncResults(panelSync, teamSubscriptionLookup.panelSync);
     if (teamSubscription) {
       if (input.status !== undefined && input.status !== current.status) {
         if (input.status === "disabled") {
@@ -1265,7 +1262,9 @@ export class AdminSubscriptionService {
       throw new BadRequestException("负责人不能直接移除，请先转移负责人");
     }
 
-    const subscription = await this.findCurrentTeamSubscription(member.teamId);
+    await this.prisma.teamMember.delete({
+      where: { id: memberId }
+    });
     await this.closeSupportTicketsForUserBestEffort(
       {
         userId: member.userId,
@@ -1274,15 +1273,20 @@ export class AdminSubscriptionService {
       "当前账号已离开原 Team，原 Team 工单已失效。如需继续咨询，请按当前归属重新创建工单。"
     );
 
-    await this.prisma.teamMember.delete({
-      where: { id: memberId }
-    });
-
     let panelSync: PanelSyncBestEffortResult = { ok: true };
+    const subscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+      member.teamId,
+      "team subscription lookup after member delete"
+    );
+    const subscription = subscriptionLookup.subscription;
+    panelSync = mergePanelSyncResults(panelSync, subscriptionLookup.panelSync);
     if (subscription) {
-      panelSync = await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_member_removed", {
-        userId: member.userId
-      });
+      panelSync = mergePanelSyncResults(
+        panelSync,
+        await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_member_removed", {
+          userId: member.userId
+        })
+      );
     }
 
     if (subscription) {
@@ -1956,32 +1960,64 @@ export class AdminSubscriptionService {
     reason: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ): Promise<PanelSyncBestEffortResult> {
-    return this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
-      `subscription disconnect follow-up for ${subscriptionId}`,
+    const panelDisable = this.withSubscriptionFollowUpBudget<
+      { ok: true; queuedCount: number } | { ok: false; errorMessage: string }
+    >(
+      `panel disable queueing for ${subscriptionId}`,
       {
         ok: false,
-        errorMessage: "subscription disconnect follow-up is still running in background"
+        errorMessage: "3x-ui panel disable queueing is still running in background"
       },
       async () => {
-    const messages: string[] = [];
-    try {
-      const queuedCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscriptionId, filter);
-      if (queuedCount > 0) {
-        messages.push("3x-ui panel disable queued for background retry");
+        try {
+          const queuedCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscriptionId, filter);
+          return { ok: true, queuedCount };
+        } catch (error) {
+          return {
+            ok: false,
+            errorMessage: `3x-ui panel disable queueing failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
       }
-    } catch (error) {
-      messages.push(`3x-ui panel disable queueing failed: ${readErrorMessage(error, "unknown error")}`);
-    }
+    );
+    const leaseJob = this.withSubscriptionFollowUpBudget<
+      { ok: true; queuedCount: number } | { ok: false; errorMessage: string }
+    >(
+      `lease revocation job queueing for ${subscriptionId}`,
+      {
+        ok: false,
+        errorMessage: "lease revocation job queueing is still running in background"
+      },
+      async () => {
+        try {
+          const queuedCount = await this.prisma.$transaction((tx) =>
+            this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, reason, filter)
+          );
+          return { ok: true, queuedCount };
+        } catch (error) {
+          return {
+            ok: false,
+            errorMessage: `lease revocation job queueing failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
+      }
+    );
+    const activeLeaseRevocationTask = this.revokeSubscriptionLeasesBestEffort(subscriptionId, reason, filter);
+    const [panelDisableResult, leaseJobResult, activeLeaseRevocation] = await Promise.all([
+      panelDisable,
+      leaseJob,
+      activeLeaseRevocationTask
+    ]);
 
-    try {
-      await this.prisma.$transaction((tx) =>
-        this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, reason, filter)
-      );
-    } catch (error) {
-      messages.push(`lease revocation job queueing failed: ${readErrorMessage(error, "unknown error")}`);
+    const messages: string[] = [];
+    if (panelDisableResult.ok && panelDisableResult.queuedCount > 0) {
+      messages.push("3x-ui panel disable queued for background retry");
+    } else if (!panelDisableResult.ok) {
+      messages.push(panelDisableResult.errorMessage);
     }
-
-    const activeLeaseRevocation = await this.revokeSubscriptionLeasesBestEffort(subscriptionId, reason, filter);
+    if (!leaseJobResult.ok) {
+      messages.push(leaseJobResult.errorMessage);
+    }
     if (!activeLeaseRevocation.ok) {
       messages.push(activeLeaseRevocation.errorMessage);
     }
@@ -1992,8 +2028,6 @@ export class AdminSubscriptionService {
           errorMessage: messages.join("; ")
         }
       : { ok: true };
-      }
-    );
   }
 
   private async syncActiveLeasesForSubscriptionBestEffort(subscription: Parameters<RuntimeSessionService["syncActiveLeasesForSubscription"]>[0]) {
@@ -2209,6 +2243,43 @@ export class AdminSubscriptionService {
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
     return pickCurrentSubscription(rows);
+  }
+
+  private async findTeamSubscriptionAfterLocalSaveBestEffort(teamId: string, label: string) {
+    const lookup = await this.withSubscriptionFollowUpBudget<
+      | { ok: true; subscription: Awaited<ReturnType<AdminSubscriptionService["findCurrentTeamSubscription"]>> | null }
+      | { ok: false; errorMessage: string }
+    >(
+      `${label} for ${teamId}`,
+      {
+        ok: false,
+        errorMessage: `${label} is still running in background`
+      },
+      async () => {
+        try {
+          return { ok: true, subscription: await this.findCurrentTeamSubscription(teamId) };
+        } catch (error) {
+          return {
+            ok: false,
+            errorMessage: `${label} failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
+      }
+    );
+
+    if (lookup.ok) {
+      return {
+        subscription: lookup.subscription,
+        panelSync: { ok: true } as PanelSyncBestEffortResult
+      };
+    }
+    return {
+      subscription: null,
+      panelSync: {
+        ok: false,
+        errorMessage: lookup.errorMessage
+      } as PanelSyncBestEffortResult
+    };
   }
 
   private async getUserMembership(userId: string) {

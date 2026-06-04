@@ -5183,6 +5183,8 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
     { id: "access_keep", nodeId: "node_keep" }
   ];
   let disableFilter: { nodeIds?: string[] } | undefined;
+  let activeLeaseRevokeStarted = false;
+  let leaseJobQueued = false;
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -5224,8 +5226,13 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
         disableFilter = filter;
         return new Promise<number>(() => undefined);
       },
-      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
-      revokeSubscriptionLeases: async () => 0,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        leaseJobQueued = true;
+      },
+      revokeSubscriptionLeases: async () => {
+        activeLeaseRevokeStarted = true;
+        return 0;
+      },
       syncSubscriptionPanelAccess: async () => {
         throw new Error("removal-only access update must not full-sync remote panels");
       }
@@ -5242,9 +5249,154 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] });
+  assert.equal(leaseJobQueued, true, "lease revocation job queueing must not wait for stalled panel disable queue");
+  assert.equal(activeLeaseRevokeStarted, true, "active lease revoke must not wait for stalled panel disable queue");
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /后台处理/);
+}
+
+async function testRemoveSingleNodeAccessQueuesDisableJobOnlyForRemovedBindingWithRuntimeService() {
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const keepNode = {
+    ...offlineNode,
+    id: "node_keep",
+    name: "keep",
+    recommended: true
+  };
+  let accessRows = [
+    { id: "access_offline", nodeId: "node_offline" },
+    { id: "access_keep", nodeId: "node_keep" }
+  ];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
+  const bindingFindCalls: Array<Record<string, any>> = [];
+  const runtimeSession = createInstance<RuntimeSessionService>(RuntimeSessionService.prototype, {
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          panelClientBinding: {
+            findMany: async (payload: Record<string, any>) => {
+              bindingFindCalls.push(payload);
+              const requestedNodeIds = payload.where?.nodeId?.in as string[] | undefined;
+              const bindings = [
+                {
+                  id: "binding_offline",
+                  subscriptionId: "sub_1",
+                  userId: "user_1",
+                  teamId: null,
+                  nodeId: "node_offline",
+                  panelClientEmail: "offline@example.com",
+                  panelClientId: "client_offline",
+                  panelInboundId: 1,
+                  status: "active",
+                  node: {
+                    panelBaseUrl: "https://offline-panel.example.com",
+                    panelApiBasePath: "/panel",
+                    panelUsername: "admin",
+                    panelPassword: "secret"
+                  }
+                },
+                {
+                  id: "binding_keep",
+                  subscriptionId: "sub_1",
+                  userId: "user_1",
+                  teamId: null,
+                  nodeId: "node_keep",
+                  panelClientEmail: "keep@example.com",
+                  panelClientId: "client_keep",
+                  panelInboundId: 1,
+                  status: "active",
+                  node: {
+                    panelBaseUrl: "https://keep-panel.example.com",
+                    panelApiBasePath: "/panel",
+                    panelUsername: "admin",
+                    panelPassword: "secret"
+                  }
+                }
+              ];
+              return requestedNodeIds ? bindings.filter((binding) => requestedNodeIds.includes(binding.nodeId)) : bindings;
+            }
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelSyncUpserts.push(payload);
+            }
+          }
+        })
+    }
+  });
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({
+            ...row,
+            node: row.nodeId === "node_keep" ? keepNode : offlineNode
+          }));
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+        }
+      },
+      node: {
+        findMany: async () => [keepNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: runtimeSession.markPanelBindingsDisabledForSubscription.bind(runtimeSession),
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("removal-only access update must not full-sync remote panels");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_keep"] });
+  for (let attempt = 0; panelSyncUpserts.length === 0 && attempt < 10; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
+  assert.deepEqual(bindingFindCalls[0]?.where?.nodeId, { in: ["node_offline"] });
+  assert.equal(panelSyncUpserts.length, 1, "only the removed node binding should get a disable job");
+  assert.equal(panelSyncUpserts[0].create.dedupeKey, "disable:binding_offline");
+  assert.equal(panelSyncUpserts[0].create.action, "disable_client");
+  assert.deepEqual(result.nodeIds, ["node_keep"]);
+  assert.equal(result.panelSyncStatus, "pending");
 }
 
 async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls() {
@@ -11061,6 +11213,115 @@ async function testUpdateTeamReturnsPendingWhenRecordRefreshFails() {
   assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
+async function testUpdateTeamReturnsPendingWhenSubscriptionLookupStallsAfterLocalSave() {
+  const teamUpdates: Array<Record<string, any>> = [];
+  let lookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => {
+      lookupStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Renamed Team",
+      status: "active"
+    }),
+    prisma: {
+      team: {
+        update: async (payload: Record<string, any>) => {
+          teamUpdates.push(payload);
+          return {};
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateTeam("team_1", { name: "Renamed Team" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("update team waited for stalled subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(lookupStarted, true);
+  assert.equal(teamUpdates.length, 1, "local team update must save before subscription lookup follow-up");
+  assert.equal(teamUpdates[0].data.name, "Renamed Team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup after team update is still running/);
+}
+
+async function testUpdateTeamDisconnectStillRevokesLeasesWhenPanelQueueStalls() {
+  const calls: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "subscription_1",
+      teamId: "team_1",
+      state: "active"
+    }),
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      status: "disabled"
+    }),
+    prisma: {
+      team: {
+        update: async () => {
+          calls.push("update_team");
+          return {};
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({})
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        calls.push("queue_panel_disable");
+        return new Promise<number>(() => undefined);
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        calls.push("queue_lease_job");
+        return 1;
+      },
+      revokeSubscriptionLeases: async () => {
+        calls.push("revoke_active_leases");
+        return 1;
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateTeam("team_1", { status: "disabled" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("team disable waited for stalled panel queue")), 750);
+    })
+  ]);
+
+  assert.ok(calls.includes("update_team"));
+  assert.ok(calls.includes("queue_panel_disable"));
+  assert.ok(calls.includes("queue_lease_job"));
+  assert.ok(calls.includes("revoke_active_leases"), "active leases must be revoked even when panel queue stalls");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel disable queueing is still running/);
+}
+
 async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
   const transactionCalls: Array<unknown[]> = [];
   const teamCreates: Array<Record<string, any>> = [];
@@ -11812,7 +12073,56 @@ async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
   const result = await service.deleteTeamMember("team_1", "member_1");
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls, ["close_tickets", "delete_member", "mark_panel_disabled", "revoke_leases"]);
+  assert.deepEqual(calls, ["delete_member", "close_tickets", "mark_panel_disabled", "revoke_leases"]);
+}
+
+async function testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete() {
+  const calls: string[] = [];
+  let lookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    closeSupportTicketsForUserBestEffort: async () => {
+      calls.push("close_tickets");
+    },
+    findCurrentTeamSubscription: async () => {
+      lookupStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        calls.push("publish_user");
+      }
+    },
+    prisma: {
+      teamMember: {
+        delete: async () => {
+          calls.push("delete_member");
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.deleteTeamMember("team_1", "member_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("delete team member waited for stalled subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(lookupStarted, true);
+  assert.equal(calls[0], "delete_member", "local member delete must save before ticket cleanup and subscription lookup");
+  assert.ok(calls.includes("close_tickets"));
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup after member delete is still running/);
 }
 
 async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails() {
@@ -11868,8 +12178,8 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
   const result = await service.deleteTeamMember("team_1", "member_1");
 
   assert.deepEqual(calls, [
-    "close_tickets",
     "delete_member",
+    "close_tickets",
     "queue_panel_disabled",
     "queue_lease_revocation",
     "revoke_leases",
@@ -12794,6 +13104,7 @@ async function main() {
   await testClearNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
+  await testRemoveSingleNodeAccessQueuesDisableJobOnlyForRemovedBindingWithRuntimeService();
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls();
   await testRemoveSingleNodeAccessReturnsPendingWhenFinalizeThrowsAfterLocalSave();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
@@ -12897,6 +13208,8 @@ async function main() {
   await testEnableUserReturnsPendingWhenSubscriptionLookupStalls();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
   await testUpdateTeamReturnsPendingWhenRecordRefreshFails();
+  await testUpdateTeamReturnsPendingWhenSubscriptionLookupStallsAfterLocalSave();
+  await testUpdateTeamDisconnectStillRevokesLeasesWhenPanelQueueStalls();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
   await testCreateTeamReturnsPendingWhenRecordRefreshFails();
   await testCreateTeamReturnsPendingWhenRecordRefreshStalls();
@@ -12915,6 +13228,7 @@ async function main() {
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
   await testUpdatePolicyKeepsLocalSaveWhenPublishFails();
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
+  await testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
