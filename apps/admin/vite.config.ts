@@ -15,6 +15,13 @@ export default defineConfig({
     }
   },
   server: {
-    port: 5174
+    port: 5174,
+    proxy: {
+      "/api": {
+        target: process.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com",
+        changeOrigin: true,
+        secure: true
+      }
+    }
   }
 });

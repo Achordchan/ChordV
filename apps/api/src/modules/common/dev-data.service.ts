@@ -1600,7 +1600,7 @@ export class DevDataService implements OnModuleInit {
       reasonMessage,
       panelSyncStatus,
       panelSyncMessage,
-      message: panelSyncMessage ? `${message ?? "节点授权已保存。"} ${panelSyncMessage}` : (message ?? "节点授权已保存。")
+      message: message ?? (panelSyncMessage ? `节点授权已保存。 ${panelSyncMessage}` : "节点授权已保存。")
     };
   }
 
