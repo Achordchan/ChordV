@@ -755,11 +755,25 @@ export function App() {
     mergeSnapshot({ panelSyncJobs, nodes });
   }
 
+  function refreshAdminNodesAfterPanelSyncRetry() {
+    void fetchAdminNodes()
+      .then((nodes) => {
+        mergeSnapshot({ nodes });
+      })
+      .catch((reason) => {
+        notifications.show({
+          color: "yellow",
+          title: "重试已提交，节点列表刷新失败",
+          message: readError(reason, "节点列表刷新失败，请稍后手动刷新确认")
+        });
+      });
+  }
+
   async function handleRetryPanelSyncJob(jobId: string) {
     try {
       const panelSyncJobs = await retryAdminPanelSyncJob(jobId);
-      const nodes = await fetchAdminNodes();
-      mergeSnapshot({ panelSyncJobs, nodes });
+      mergeSnapshot({ panelSyncJobs });
+      refreshAdminNodesAfterPanelSyncRetry();
       notifications.show({
         color: "green",
         title: "已重新排队",
@@ -777,8 +791,8 @@ export function App() {
   async function handleRetryNodePanelSyncJobs(nodeId: string) {
     try {
       const panelSyncJobs = await retryAdminPanelSyncJobsForNode(nodeId);
-      const nodes = await fetchAdminNodes();
-      mergeSnapshot({ panelSyncJobs, nodes });
+      mergeSnapshot({ panelSyncJobs });
+      refreshAdminNodesAfterPanelSyncRetry();
       notifications.show({
         color: "green",
         title: "已重新排队",

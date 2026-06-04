@@ -59,6 +59,8 @@ import {
   toUserSubscriptionSummary
 } from "./subscription.utils";
 
+const SUBSCRIPTION_FOLLOW_UP_BUDGET_MS = 300;
+
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
 type PanelSyncSummaryJob = {
@@ -92,6 +94,55 @@ export class AdminSubscriptionService {
     private readonly authSessionService: AuthSessionService,
     private readonly runtimeSessionService: RuntimeSessionService
   ) {}
+
+  private async withSubscriptionFollowUpBudget<T>(
+    label: string,
+    timeoutResult: T,
+    task: () => Promise<T>
+  ): Promise<T> {
+    let settled = false;
+    const guardedTask = Promise.resolve()
+      .then(task)
+      .then(
+        (result) => {
+          settled = true;
+          return result;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Local subscription change saved, but delayed ${label} failed: ${readErrorMessage(error, "unknown error")}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<T>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger?.warn(
+          `Local subscription change saved, but ${label} exceeded ${SUBSCRIPTION_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve(timeoutResult);
+      }, SUBSCRIPTION_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } catch (error) {
+      this.logger?.warn(`Local subscription change saved, but ${label} failed: ${readErrorMessage(error, "unknown error")}`);
+      return timeoutResult;
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
     const [rows, panelSyncJobs] = await Promise.all([
@@ -269,21 +320,30 @@ export class AdminSubscriptionService {
         maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
       }
     });
-    let panelSync: PanelSyncBestEffortResult = { ok: true };
-    try {
+    const panelSync = await this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
+      `user concurrent lease enforcement for ${userId}`,
+      {
+        ok: false,
+        errorMessage: "lease concurrency reconciliation is still running in background"
+      },
+      async () => {
+      try {
       const effectiveLimit =
         row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
       if (effectiveLimit !== null) {
         await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
       }
-    } catch (error) {
-      const errorMessage = readErrorMessage(error, "unknown error");
-      this.logger?.warn(`Local user security change saved, but concurrent lease enforcement failed for ${userId}: ${errorMessage}`);
-      panelSync = mergePanelSyncResults(panelSync, {
-        ok: false,
-        errorMessage: `lease concurrency reconciliation failed: ${errorMessage}`
-      });
-    }
+      return { ok: true };
+      } catch (error) {
+        const errorMessage = readErrorMessage(error, "unknown error");
+        this.logger?.warn(`Local user security change saved, but concurrent lease enforcement failed for ${userId}: ${errorMessage}`);
+        return {
+          ok: false,
+          errorMessage: `lease concurrency reconciliation failed: ${errorMessage}`
+        };
+      }
+      }
+    );
     return this.withAdminUserRefreshBestEffort(userId, row, panelSync, "账号安全策略已更新。");
   }
 
@@ -777,9 +837,24 @@ export class AdminSubscriptionService {
         personalLeaseSync
       );
       try {
-        const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(subscriptionId, {
-          userId: user.id
-        });
+        const removeResult = await this.withSubscriptionFollowUpBudget(
+          `personal panel cleanup for ${subscriptionId}`,
+          {
+            requested: -1,
+            updated: 0,
+            failed: []
+          },
+          () =>
+            this.runtimeSessionService.removePanelBindingsForSubscription(subscriptionId, {
+              userId: user.id
+            })
+        );
+        if (removeResult.requested < 0) {
+          teamPanelSync = mergePanelSyncResults(teamPanelSync, {
+            ok: false,
+            errorMessage: "personal panel cleanup is still running in background"
+          });
+        }
         this.runtimeSessionService.assertPanelBindingMutation("删除个人订阅的 3x-ui 客户端失败", removeResult);
         if (removeResult.updated > 0) {
           teamPanelSync = mergePanelSyncResults(teamPanelSync, {
@@ -1641,6 +1716,13 @@ export class AdminSubscriptionService {
       return { ok: true };
     }
 
+    return this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
+      "traffic reset panel job queueing",
+      {
+        ok: false,
+        errorMessage: "3x-ui traffic reset job queueing is still running in background; local counters are already reset"
+      },
+      async () => {
     const errors: string[] = [];
     const panelResetQueuedAt = new Date();
     for (const binding of bindings) {
@@ -1701,6 +1783,8 @@ export class AdminSubscriptionService {
           ? errors.join("; ")
           : "3x-ui traffic reset queued for background retry; local counters are already reset"
     };
+      }
+    );
   }
 
   private async resolveTargetUserIdsForSubscriptionTarget(target: {
@@ -1723,6 +1807,10 @@ export class AdminSubscriptionService {
     teamId?: string | null;
     state?: SubscriptionState | null;
   }) {
+    await this.withSubscriptionFollowUpBudget(
+      "subscription_updated publish",
+      undefined,
+      async () => {
     try {
       const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
       this.clientRuntimeEventsService.publishToUsers(userIds, {
@@ -1735,6 +1823,8 @@ export class AdminSubscriptionService {
     } catch (error) {
       this.logger?.warn(`Local subscription change saved, but subscription_updated publish failed: ${readErrorMessage(error, "unknown error")}`);
     }
+      }
+    );
   }
 
   private tryPublishUserEvent(userId: string, event: Parameters<ClientRuntimeEventsService["publishToUser"]>[1]) {
@@ -1746,6 +1836,10 @@ export class AdminSubscriptionService {
   }
 
   private async revokeAllUserSessionsBestEffort(userId: string, reason: string) {
+    await this.withSubscriptionFollowUpBudget(
+      `auth session revocation for ${userId}`,
+      undefined,
+      async () => {
     try {
       await this.authSessionService.revokeAllUserSessions(userId);
     } catch (error) {
@@ -1753,6 +1847,8 @@ export class AdminSubscriptionService {
         `Local user change saved, but auth session revocation failed for ${userId} after ${reason}: ${readErrorMessage(error, "unknown error")}`
       );
     }
+      }
+    );
   }
 
   private async queuePanelDisableJobsForSubscriptionTx(
@@ -1791,6 +1887,13 @@ export class AdminSubscriptionService {
     reason: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ): Promise<PanelSyncBestEffortResult> {
+    return this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
+      `subscription disconnect follow-up for ${subscriptionId}`,
+      {
+        ok: false,
+        errorMessage: "subscription disconnect follow-up is still running in background"
+      },
+      async () => {
     const messages: string[] = [];
     try {
       const queuedCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(subscriptionId, filter);
@@ -1820,9 +1923,18 @@ export class AdminSubscriptionService {
           errorMessage: messages.join("; ")
         }
       : { ok: true };
+      }
+    );
   }
 
   private async syncActiveLeasesForSubscriptionBestEffort(subscription: Parameters<RuntimeSessionService["syncActiveLeasesForSubscription"]>[0]) {
+    return this.withSubscriptionFollowUpBudget(
+      `active lease sync for ${subscription.id}`,
+      {
+        ok: false as const,
+        errorMessage: "active lease sync is still running in background"
+      },
+      async () => {
     try {
       await this.runtimeSessionService.syncActiveLeasesForSubscription(subscription);
       return { ok: true as const };
@@ -1832,6 +1944,8 @@ export class AdminSubscriptionService {
         errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
       };
     }
+      }
+    );
   }
 
   private async revokeSubscriptionLeasesBestEffort(
@@ -1839,6 +1953,14 @@ export class AdminSubscriptionService {
     reason: string,
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
+    return this.withSubscriptionFollowUpBudget(
+      `active lease revocation for ${subscriptionId}`,
+      {
+        ok: false as const,
+        revokedCount: 0,
+        errorMessage: "active lease revocation is still running in background"
+      },
+      async () => {
     try {
       const revokedCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
       return { ok: true as const, revokedCount };
@@ -1849,6 +1971,8 @@ export class AdminSubscriptionService {
         errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
       };
     }
+      }
+    );
   }
 
   private async reconcilePlanConcurrentLeaseLimits(planId: string, maxConcurrentSessions: number) {
@@ -1892,10 +2016,18 @@ export class AdminSubscriptionService {
   }
 
   private async enforceSubscriptionConcurrentLeaseLimits(subscription: {
+    id?: string | null;
     userId?: string | null;
     teamId?: string | null;
     plan: { maxConcurrentSessions: number };
   }) {
+    return this.withSubscriptionFollowUpBudget(
+      `lease concurrency reconciliation for ${subscription.id ?? subscription.userId ?? subscription.teamId ?? "subscription"}`,
+      {
+        ok: false as const,
+        errorMessage: "lease concurrency reconciliation is still running in background"
+      },
+      async () => {
     try {
       const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(subscription);
       if (userIds.length === 0) {
@@ -1929,6 +2061,8 @@ export class AdminSubscriptionService {
         errorMessage: `lease concurrency reconciliation failed: ${readErrorMessage(error, "unknown error")}`
       };
     }
+      }
+    );
   }
 
   private async resolveEffectiveConcurrentLeaseLimitForUser(userId: string) {
@@ -1949,6 +2083,13 @@ export class AdminSubscriptionService {
   }
 
   private async syncSubscriptionPanelAccessBestEffort(subscriptionId: string) {
+    return this.withSubscriptionFollowUpBudget(
+      `subscription panel access sync for ${subscriptionId}`,
+      {
+        ok: false as const,
+        errorMessage: "3x-ui panel sync is still running in background"
+      },
+      async () => {
     try {
       const queuePanelAccessSync =
         typeof (this.runtimeSessionService as { queueSubscriptionPanelAccessSync?: unknown }).queueSubscriptionPanelAccessSync ===
@@ -1969,6 +2110,8 @@ export class AdminSubscriptionService {
         errorMessage: readErrorMessage(error, "3x-ui panel sync failed")
       };
     }
+      }
+    );
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
@@ -2034,14 +2177,36 @@ export class AdminSubscriptionService {
     panelSync: PanelSyncBestEffortResult,
     syncedMessage: string
   ): Promise<AdminUserRecordDto> {
-    try {
-      return withPanelSyncStatus(await this.requireAdminUserRecord(userId), panelSync, syncedMessage);
-    } catch (error) {
-      const errorMessage = readErrorMessage(error, "unknown error");
-      this.logger?.warn(`Local user change saved, but admin user response refresh failed for ${userId}: ${errorMessage}`);
+    const refresh = await this.withSubscriptionFollowUpBudget<
+      { ok: true; record: AdminUserRecordDto } | { ok: false; errorMessage: string }
+    >(
+      `admin user response refresh for ${userId}`,
+      {
+        ok: false,
+        errorMessage: "admin user response refresh is still running in background"
+      },
+      async () => {
+        try {
+          return {
+            ok: true,
+            record: withPanelSyncStatus(await this.requireAdminUserRecord(userId), panelSync, syncedMessage)
+          };
+        } catch (error) {
+          const errorMessage = readErrorMessage(error, "unknown error");
+          this.logger?.warn(`Local user change saved, but admin user response refresh failed for ${userId}: ${errorMessage}`);
+          return {
+            ok: false,
+            errorMessage: `admin user response refresh failed: ${errorMessage}`
+          };
+        }
+      }
+    );
+    if (refresh.ok) {
+      return refresh.record;
+    }
       const fallbackPanelSync = mergePanelSyncResults(panelSync, {
         ok: false,
-        errorMessage: `admin user response refresh failed: ${errorMessage}`
+        errorMessage: refresh.errorMessage
       });
       return withPanelSyncStatus(
         toAdminUserRecord(fallbackUser, {
@@ -2055,7 +2220,6 @@ export class AdminSubscriptionService {
         fallbackPanelSync,
         syncedMessage
       );
-    }
   }
 
   private async ensurePlanExists(planId: string) {
@@ -2103,21 +2267,57 @@ export class AdminSubscriptionService {
     panelSync: PanelSyncBestEffortResult,
     syncedMessage: string
   ): Promise<AdminTeamRecordDto> {
-    try {
-      return withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, syncedMessage);
-    } catch (error) {
-      const errorMessage = readErrorMessage(error, "unknown error");
-      this.logger?.warn(`Local team change saved, but admin team response refresh failed for ${teamId}: ${errorMessage}`);
+    const refresh = await this.withSubscriptionFollowUpBudget<
+      { ok: true; record: AdminTeamRecordDto } | { ok: false; errorMessage: string }
+    >(
+      `admin team response refresh for ${teamId}`,
+      {
+        ok: false,
+        errorMessage: "admin team response refresh is still running in background"
+      },
+      async () => {
+        try {
+          return {
+            ok: true,
+            record: withPanelSyncStatus(await this.requireTeamRecord(teamId), panelSync, syncedMessage)
+          };
+        } catch (error) {
+          const errorMessage = readErrorMessage(error, "unknown error");
+          this.logger?.warn(`Local team change saved, but admin team response refresh failed for ${teamId}: ${errorMessage}`);
+          return {
+            ok: false,
+            errorMessage: `admin team response refresh failed: ${errorMessage}`
+          };
+        }
+      }
+    );
+    if (refresh.ok) {
+      return refresh.record;
+    }
       const fallbackPanelSync = mergePanelSyncResults(panelSync, {
         ok: false,
-        errorMessage: `admin team response refresh failed: ${errorMessage}`
+        errorMessage: refresh.errorMessage
       });
       let record: AdminTeamRecordDto;
-      try {
-        record = await this.loadBasicTeamRecord(teamId);
-      } catch (fallbackError) {
+      const basicRecord = await this.withSubscriptionFollowUpBudget<AdminTeamRecordDto | null>(
+        `basic team response fallback for ${teamId}`,
+        null,
+        async () => {
+          try {
+            return await this.loadBasicTeamRecord(teamId);
+          } catch (fallbackError) {
+            this.logger?.warn(
+              `Local team change saved, but basic team response fallback failed for ${teamId}: ${readErrorMessage(fallbackError, "unknown error")}`
+            );
+            return null;
+          }
+        }
+      );
+      if (basicRecord) {
+        record = basicRecord;
+      } else {
         this.logger?.warn(
-          `Local team change saved, but basic team response fallback failed for ${teamId}: ${readErrorMessage(fallbackError, "unknown error")}`
+          `Local team change saved, but basic team response fallback failed for ${teamId}: timeout`
         );
         const now = new Date().toISOString();
         record = {
@@ -2136,7 +2336,6 @@ export class AdminSubscriptionService {
         };
       }
       return withPanelSyncStatus(record, fallbackPanelSync, syncedMessage);
-    }
   }
 
   private async loadBasicTeamRecord(teamId: string): Promise<AdminTeamRecordDto> {

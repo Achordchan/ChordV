@@ -633,6 +633,65 @@ async function testUpdateUserKeepsLocalSaveWhenSessionRevocationFails() {
   assert.equal(result.id, "user_1");
 }
 
+async function testUpdateUserSecurityReturnsPendingWhenLeaseEnforcementStalls() {
+  const updates: Array<Record<string, unknown>> = [];
+  let enforcementStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      role: "user",
+      status: "active"
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, unknown>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: "active",
+            lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+            maxConcurrentSessionsOverride: 1
+          };
+        }
+      }
+    },
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => {
+        enforcementStarted = true;
+        return new Promise<void>(() => undefined);
+      }
+    },
+    requireAdminUserRecord: async (userId: string) => ({
+      id: userId,
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+      maxConcurrentSessionsOverride: 1
+    })
+  });
+
+  const result = await Promise.race([
+    service.updateUserSecurity("user_1", { maxConcurrentSessionsOverride: 1 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("user security update waited for stalled lease enforcement")), 750);
+    })
+  ]);
+
+  assert.equal(enforcementStarted, true);
+  assert.equal(updates.length, 1, "local user security update must save before stalled lease enforcement finishes");
+  assert.equal(result.id, "user_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+}
+
 async function testUpdateUserReturnsPendingWhenResponseRefreshFails() {
   const updates: Array<Record<string, unknown>> = [];
   const service = createAdminSubscriptionService({
@@ -676,6 +735,59 @@ async function testUpdateUserReturnsPendingWhenResponseRefreshFails() {
   assert.equal(result.displayName, "Renamed");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /user list refresh failed/);
+}
+
+async function testUpdateUserReturnsPendingWhenResponseRefreshStalls() {
+  const updates: Array<Record<string, unknown>> = [];
+  let refreshStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+      maxConcurrentSessionsOverride: null
+    }),
+    prisma: {
+      user: {
+        update: async (payload: Record<string, unknown>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "Renamed",
+            role: "user",
+            status: "active",
+            lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+            maxConcurrentSessionsOverride: null
+          };
+        }
+      }
+    },
+    requireAdminUserRecord: async () => {
+      refreshStarted = true;
+      return new Promise<any>(() => undefined);
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateUser("user_1", { displayName: "Renamed" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("user update waited for stalled response refresh")), 750);
+    })
+  ]);
+
+  assert.equal(refreshStarted, true);
+  assert.equal(updates.length, 1, "local user update must save before stalled response refresh finishes");
+  assert.equal(result.id, "user_1");
+  assert.equal(result.displayName, "Renamed");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
 }
 
 async function testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken() {
@@ -2934,6 +3046,144 @@ async function testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail() {
   assert.equal(record.panelSyncStatus, "pending");
   assert.match(record.panelSyncMessage ?? "", /lease sync failed/);
   assert.match(record.panelSyncMessage ?? "", /panel sync failed/);
+}
+
+async function testRenewSubscriptionReturnsPendingWhenPanelSyncStalls() {
+  const updates: Array<Record<string, any>> = [];
+  const current = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 4,
+    remainingTrafficGb: 6,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: new Date("2026-01-01T00:00:00.000Z"),
+    plan: { name: "Plan", maxConcurrentSessions: 3 },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => current,
+    runtimeSessionService: {
+      syncActiveLeasesForSubscription: async () => undefined,
+      queueSubscriptionPanelAccessSync: async () => new Promise<number>(() => undefined),
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("usage-locking panel sync must not run");
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: () => undefined
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const record = await Promise.race([
+    service.renewSubscription("sub_1", { totalTrafficGb: 20 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("renew subscription waited for stalled panel sync")), 750);
+    })
+  ]);
+
+  assert.equal(updates.length, 1, "local renewal must save before stalled panel sync finishes");
+  assert.equal(record.totalTrafficGb, 20);
+  assert.equal(record.remainingTrafficGb, 16);
+  assert.equal(record.panelSyncStatus, "pending");
+  assert.match(record.panelSyncMessage ?? "", /still running in background/);
+}
+
+async function testRenewSubscriptionReturnsWhenSubscriptionPublishStalls() {
+  const updates: Array<Record<string, any>> = [];
+  const current = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 4,
+    remainingTrafficGb: 6,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: new Date("2026-01-01T00:00:00.000Z"),
+    plan: { name: "Team Plan", maxConcurrentSessions: 3 },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+  let publishLookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => current,
+    runtimeSessionService: {
+      syncActiveLeasesForSubscription: async () => undefined,
+      queueSubscriptionPanelAccessSync: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("usage-locking panel sync must not run");
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: () => undefined
+    },
+    prisma: {
+      teamMember: {
+        findMany: async () => {
+          publishLookupStarted = true;
+          return new Promise<Array<{ userId: string }>>(() => undefined);
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const record = await Promise.race([
+    service.renewSubscription("sub_team", { totalTrafficGb: 20 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("renew subscription waited for stalled subscription_updated publish")), 750);
+    })
+  ]);
+
+  assert.equal(publishLookupStarted, true);
+  assert.equal(updates.length, 1, "local renewal must save before stalled publish finishes");
+  assert.equal(record.totalTrafficGb, 20);
+  assert.equal(record.remainingTrafficGb, 16);
 }
 
 async function testResetSubscriptionTrafficRejectsNonStringUserId() {
@@ -9332,6 +9582,58 @@ async function testCreateTeamReturnsPendingWhenRecordRefreshFails() {
   assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
+async function testCreateTeamReturnsPendingWhenRecordRefreshStalls() {
+  const teamCreates: Array<Record<string, any>> = [];
+  let refreshStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "owner_1",
+      status: "active"
+    }),
+    assertUserCanJoinTeam: async () => undefined,
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    requireTeamRecord: async () => {
+      refreshStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    prisma: {
+      team: {
+        create: async (payload: Record<string, any>) => {
+          teamCreates.push(payload);
+          return {};
+        },
+        findUnique: async () => createBasicTeamRow({ name: "Created Team" })
+      },
+      teamMember: {
+        create: async () => ({})
+      },
+      $transaction: async (operations: unknown[]) => {
+        await Promise.all(operations as Array<Promise<unknown>>);
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.createTeam({
+      name: "Created Team",
+      ownerUserId: "owner_1"
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("create team waited for stalled response refresh")), 750);
+    })
+  ]);
+
+  assert.equal(refreshStarted, true);
+  assert.equal(teamCreates.length, 1, "local team create must commit before stalled response refresh finishes");
+  assert.equal(result.id, "team_1");
+  assert.equal(result.name, "Created Team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+}
+
 async function testCreateTeamMemberKeepsMemberWhenTicketCleanupFails() {
   const createdMemberIds: string[] = [];
   const service = createAdminSubscriptionService({
@@ -10443,7 +10745,9 @@ async function main() {
   await testUpdateUserPasswordRevokesExistingSessions();
   await testUpdateUserRoleRevokesExistingSessions();
   await testUpdateUserKeepsLocalSaveWhenSessionRevocationFails();
+  await testUpdateUserSecurityReturnsPendingWhenLeaseEnforcementStalls();
   await testUpdateUserReturnsPendingWhenResponseRefreshFails();
+  await testUpdateUserReturnsPendingWhenResponseRefreshStalls();
   await testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken();
   await testAccessTokenLogoutRevokesOnlyBoundSession();
   await testAccessTokenAuthenticationRequiresActiveBoundSession();
@@ -10488,6 +10792,8 @@ async function main() {
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
   await testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsage();
   await testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail();
+  await testRenewSubscriptionReturnsPendingWhenPanelSyncStalls();
+  await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
@@ -10599,6 +10905,7 @@ async function main() {
   await testUpdateTeamReturnsPendingWhenRecordRefreshFails();
   await testCreateTeamCreatesTeamAndOwnerInSingleTransaction();
   await testCreateTeamReturnsPendingWhenRecordRefreshFails();
+  await testCreateTeamReturnsPendingWhenRecordRefreshStalls();
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();
   await testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails();
