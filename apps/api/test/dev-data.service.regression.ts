@@ -90,6 +90,61 @@ async function testSubscriptionUsageLockIsReentrantForNestedPanelSync() {
   }
 }
 
+async function testSubscriptionUsageLockTimesOutWithoutPoisoningLocalQueue() {
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalLockTimeout = process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+  const originalLockRetry = process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+  delete process.env.DATABASE_URL;
+  process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = "25";
+  process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = "5";
+  let releaseOuterLock!: () => void;
+
+  const heldLock = runWithSubscriptionUsageLock(
+    "subscription_lock_timeout",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await assert.rejects(
+      () => runWithSubscriptionUsageLock("subscription_lock_timeout", async () => "late"),
+      /timed out/,
+      "local subscription locks must fail fast instead of waiting until the admin request times out"
+    );
+
+    releaseOuterLock();
+    await heldLock;
+    const result = await runWithSubscriptionUsageLock("subscription_lock_timeout", async () => "ok");
+    assert.equal(result, "ok", "timed-out local lock waiters must not poison the lock queue");
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock.catch(() => undefined);
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl;
+    }
+    if (originalLockTimeout === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = originalLockTimeout;
+    }
+    if (originalLockRetry === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = originalLockRetry;
+    }
+  }
+}
+
 async function testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock() {
   const originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -12360,6 +12415,7 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
 
 async function main() {
   await testSubscriptionUsageLockIsReentrantForNestedPanelSync();
+  await testSubscriptionUsageLockTimesOutWithoutPoisoningLocalQueue();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
   await testUpdateNodeAccessAllowsNestedPanelAccessSyncLock();
   await testClientAuthGuardRejectsAdminTokens();
