@@ -31,7 +31,7 @@ import {
 } from "../api/client";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import { filterByKeyword, readError } from "../utils/admin-filters";
+import { filterByKeyword, isUncertainRequestFailure, readError } from "../utils/admin-filters";
 import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 
 type TicketOwnerFilter = "all" | "personal" | "team";
@@ -170,10 +170,12 @@ export function TicketsPage() {
         message: "回复已发送"
       });
     } catch (reason) {
+      const message = readError(reason, "发送回复失败");
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: "工单",
-        message: readError(reason, "发送回复失败")
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "回复状态不确定" : "工单",
+        message: uncertain ? `${message} 回复可能已发送，请刷新工单确认。` : message
       });
     } finally {
       setReplySaving(false);
@@ -194,10 +196,12 @@ export function TicketsPage() {
         message: next === "close" ? "工单已关闭" : "工单已重新打开"
       });
     } catch (reason) {
+      const message = readError(reason, next === "close" ? "关闭工单失败" : "重开工单失败");
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: "工单",
-        message: readError(reason, next === "close" ? "关闭工单失败" : "重开工单失败")
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "工单状态不确定" : "工单",
+        message: uncertain ? `${message} 操作可能已完成，请刷新工单确认。` : message
       });
     } finally {
       setStatusChanging(null);

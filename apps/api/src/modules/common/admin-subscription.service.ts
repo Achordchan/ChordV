@@ -1348,18 +1348,35 @@ export class AdminSubscriptionService {
     const subscription = await this.findCurrentTeamSubscription(teamId);
     if (subscription) {
       const panelSyncResults: PanelSyncBestEffortResult[] = [];
-      let pendingPanelSyncCount = 0;
-      try {
-        pendingPanelSyncCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
-          subscription.id,
-          {
-            userId: member.userId
+      const panelDisableQueue = await this.withSubscriptionFollowUpBudget<
+        { ok: true; queuedCount: number } | { ok: false; errorMessage: string }
+      >(
+        `team member panel disable queueing for ${subscription.id}`,
+        {
+          ok: false,
+          errorMessage: "3x-ui client disable queueing is still running in background"
+        },
+        async () => {
+          try {
+            const queuedCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
+              subscription.id,
+              {
+                userId: member.userId
+              }
+            );
+            return { ok: true, queuedCount };
+          } catch (error) {
+            return {
+              ok: false,
+              errorMessage: `3x-ui client disable queueing failed: ${readErrorMessage(error, "unknown error")}`
+            };
           }
-        );
-      } catch (error) {
+        }
+      );
+      if (!panelDisableQueue.ok) {
         panelSyncResults.push({
           ok: false,
-          errorMessage: `3x-ui client disable queueing failed: ${readErrorMessage(error, "unknown error")}`
+          errorMessage: panelDisableQueue.errorMessage
         });
       }
       const leaseSync = await this.revokeSubscriptionLeasesBestEffort(
@@ -1373,7 +1390,7 @@ export class AdminSubscriptionService {
       if (!leaseSync.ok) {
         panelSyncResults.push(leaseSync);
       }
-      if (pendingPanelSyncCount > 0) {
+      if (panelDisableQueue.ok && panelDisableQueue.queuedCount > 0) {
         panelSyncResults.push({ ok: false, errorMessage: "3x-ui client disable queued for background retry" });
         panelSyncStatus = "pending";
         panelSyncMessage = "3x-ui 客户端禁用已加入后台队列。";
@@ -2438,13 +2455,19 @@ export class AdminSubscriptionService {
     },
     body: string
   ) {
-    try {
-      await this.closeSupportTicketsForUser(target, body);
-    } catch (error) {
-      this.logger?.warn(
-        `Local team membership change saved, but support ticket cleanup failed for ${target.userId}: ${readErrorMessage(error, "unknown error")}`
-      );
-    }
+    await this.withSubscriptionFollowUpBudget(
+      `support ticket cleanup for ${target.userId}`,
+      undefined,
+      async () => {
+        try {
+          await this.closeSupportTicketsForUser(target, body);
+        } catch (error) {
+          this.logger?.warn(
+            `Local team membership change saved, but support ticket cleanup failed for ${target.userId}: ${readErrorMessage(error, "unknown error")}`
+          );
+        }
+      }
+    );
   }
 
   private async closeSupportTicketsForUser(

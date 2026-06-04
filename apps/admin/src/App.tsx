@@ -167,7 +167,7 @@ import {
   type TeamSubscriptionFormState,
   type UserFormState
 } from "./utils/admin-forms";
-import { filterByKeyword, readError } from "./utils/admin-filters";
+import { filterByKeyword, isUncertainRequestFailure, readError } from "./utils/admin-filters";
 import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
 import {
   getRenewActionDescription,
@@ -780,10 +780,12 @@ export function App() {
         message: "面板同步任务已加入最近重试队列"
       });
     } catch (reason) {
+      const retryMessage = readError(reason, "同步任务重新排队失败");
+      const retryUncertain = isUncertainRequestFailure(retryMessage);
       notifications.show({
-        color: "red",
-        title: "重试失败",
-        message: readError(reason, "同步任务重新排队失败")
+        color: retryUncertain ? "yellow" : "red",
+        title: retryUncertain ? "重试状态不确定" : "重试失败",
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
       });
     }
   }
@@ -799,10 +801,12 @@ export function App() {
         message: "该节点的面板同步任务已加入最近重试队列"
       });
     } catch (reason) {
+      const retryMessage = readError(reason, "节点同步任务重新排队失败");
+      const retryUncertain = isUncertainRequestFailure(retryMessage);
       notifications.show({
-        color: "red",
-        title: "重试失败",
-        message: readError(reason, "节点同步任务重新排队失败")
+        color: retryUncertain ? "yellow" : "red",
+        title: retryUncertain ? "重试状态不确定" : "重试失败",
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
       });
     }
   }
@@ -1020,10 +1024,11 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return false;
       }
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: options.failureTitle ?? "操作失败",
-        message
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
+        message: uncertain ? `${message} 操作可能已保存，请刷新页面或列表确认。` : message
       });
       return false;
     }
@@ -1095,10 +1100,11 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: "操作失败",
-        message
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "节点授权状态不确定" : "操作失败",
+        message: uncertain ? `${message} 节点授权可能已保存，请刷新订阅列表和同步队列确认。` : message
       });
     } finally {
       setNodeAccessSaving(false);

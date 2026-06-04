@@ -5529,6 +5529,60 @@ async function testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails() {
   assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
 }
 
+async function testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls() {
+  let leaseRevoked = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => new Promise<number>(() => undefined),
+      revokeSubscriptionLeases: async () => {
+        leaseRevoked = true;
+        return 0;
+      }
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+  });
+
+  const result = await Promise.race([
+    service.kickTeamMember("team_1", "member_1", { disableAccount: false }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("kickTeamMember waited for stalled panel disable queueing")), 750);
+    })
+  ]);
+
+  assert.equal(leaseRevoked, true, "lease revocation should continue after panel disable queue stalls");
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /disable queueing is still running in background/);
+}
+
 async function testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails() {
   const service = createAdminSubscriptionService({
     logger: {
@@ -9642,6 +9696,81 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
   assert.equal(result.id, "sub_1");
 }
 
+async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
+  let createdSubscription = false;
+  let syncCalled = false;
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentPersonalSubscription: async () => null,
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      name: "Personal",
+      scope: "personal",
+      totalTrafficGb: 100,
+      renewable: true,
+      isActive: true
+    }),
+    closeSupportTicketsForUser: async () => new Promise<number>(() => undefined),
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => {
+        syncCalled = true;
+        return 0;
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      subscription: {
+        create: async () => {
+          createdSubscription = true;
+          return {
+            id: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            planId: "plan_1",
+            totalTrafficGb: 100,
+            usedTrafficGb: 0,
+            remainingTrafficGb: 100,
+            expireAt: new Date(Date.now() + 60_000),
+            state: "active",
+            renewable: true,
+            sourceAction: "created",
+            lastSyncedAt: now,
+            plan: { name: "Personal" },
+            user: { email: "user@example.com", displayName: "User" },
+            team: null,
+            nodeAccesses: []
+          };
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.createSubscription({
+      userId: "user_1",
+      planId: "plan_1",
+      expireAt: new Date(Date.now() + 60_000).toISOString()
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("createSubscription waited for stalled ticket cleanup")), 750);
+    })
+  ]);
+
+  assert.equal(createdSubscription, true);
+  assert.equal(syncCalled, true, "panel sync should still run after stalled best-effort ticket cleanup");
+  assert.equal(result.id, "sub_1");
+}
+
 async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminSubscriptionService({
@@ -11558,6 +11687,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
   await testUpdateNodeAccessReturnsPendingWhenResponseRefreshStalls();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
+  await testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
@@ -11637,6 +11767,7 @@ async function main() {
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
   await testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
+  await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls();
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();

@@ -23,6 +23,13 @@ export function readError(reason: unknown, fallback: string) {
   return reason.message || fallback;
 }
 
+const UNCERTAIN_REQUEST_PATTERN =
+  /超时|timeout|timed out|aborted|aborterror|failed to fetch|networkerror|network error|unexpected end of json|unexpected token/i;
+
+export function isUncertainRequestFailure(message: string) {
+  return UNCERTAIN_REQUEST_PATTERN.test(message);
+}
+
 export function filterByKeyword<T>(items: T[], keyword: string, projector: (item: T) => string[]) {
   if (!keyword.trim()) return items;
   const normalized = keyword.trim().toLowerCase();
