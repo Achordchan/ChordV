@@ -459,6 +459,72 @@ async function testImageBedUploadRejectsSuccessFalsePayload() {
   }
 }
 
+async function testImageBedDeleteReturnsStructuredBusinessFailure() {
+  const server = createServer((request, response) => {
+    assert.equal(request.url, "/api/manage/delete/support-tickets/missing.png");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: false,
+        fileId: "support-tickets/missing.png",
+        deleted: [],
+        failed: ["support-tickets/missing.png"]
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.deleteAdminFile({ path: "support-tickets/missing.png" });
+
+    assert.equal(result.success, false);
+    assert.equal(result.fileId, "support-tickets/missing.png");
+    assert.deepEqual(result.failed, ["support-tickets/missing.png"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function testImageBedAttachmentCleanupLogsDeleteFailure() {
+  const warnings: string[] = [];
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    deleteAdminFile: async () => {
+      throw new Error("delete failed");
+    }
+  });
+
+  await service.deleteUploadedSupportTicketAttachmentBestEffort({
+    url: "https://image.example.com/file/support-tickets/failed.png",
+    providerFileId: "support-tickets/failed.png",
+    fileName: "failed.png",
+    mimeType: "image/png",
+    fileSizeBytes: 123n
+  });
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /support-tickets\/failed\.png/);
+  assert.match(warnings[0], /delete failed/);
+}
+
 async function testUpdateUserPasswordRevokesExistingSessions() {
   const revokeCalls: string[] = [];
   const updates: Array<Record<string, unknown>> = [];
@@ -2202,6 +2268,93 @@ async function testUsageTriggeredInvalidationUsesUnifiedRevokePath() {
   assert.deepEqual(panelQueueCalls, ["sub_1"]);
   assert.deepEqual(revokeCalls, [{ subscriptionId: "sub_1", reason: "subscription_expired" }]);
   assert.deepEqual(publishedStates, ["expired"]);
+}
+
+async function testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFail() {
+  const warnings: string[] = [];
+  const publishedStates: string[] = [];
+  const subscriptionUpdates: Array<Record<string, unknown>> = [];
+  const service = createUsageSyncService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("panel queue failed");
+      },
+      revokeSubscriptionLeases: async () => {
+        throw new Error("lease revoke failed");
+      }
+    },
+    clientEventsPublisher: {
+      publishSubscriptionUpdated: async ({ state }: { state: string }) => {
+        publishedStates.push(state);
+      }
+    },
+    prisma: {
+      $transaction: async (
+        callback: (tx: {
+          subscription: {
+            findUnique: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+            update: (payload: Record<string, unknown>) => Promise<void>;
+          };
+          trafficSnapshot: {
+            update: (payload: Record<string, unknown>) => Promise<void>;
+            upsert: (payload: Record<string, unknown>) => Promise<void>;
+          };
+          panelClientBinding: { updateMany: (payload: Record<string, unknown>) => Promise<void> };
+          trafficLedger: { create: (payload: Record<string, unknown>) => Promise<void> };
+        }) => Promise<void>
+      ) =>
+        callback({
+          subscription: {
+            findUnique: async () => ({
+              id: "sub_1",
+              state: "active",
+              expireAt: new Date(Date.now() + 60_000),
+              usedTrafficGb: 9,
+              totalTrafficGb: 10,
+              remainingTrafficGb: 1
+            }),
+            update: async (payload: Record<string, unknown>) => {
+              subscriptionUpdates.push(payload);
+            }
+          },
+          trafficSnapshot: {
+            update: async () => undefined,
+            upsert: async () => undefined
+          },
+          panelClientBinding: {
+            updateMany: async () => undefined
+          },
+          trafficLedger: {
+            create: async () => undefined
+          }
+        })
+    }
+  });
+
+  await service["applyUsageDelta"]({
+    nodeId: "node_1",
+    snapshotKey: "node_1:sub_1:user_1",
+    snapshotMode: "update",
+    subscriptionId: "sub_1",
+    teamId: null,
+    userId: "user_1",
+    bindingId: "binding_1",
+    uplinkBytes: 0n,
+    downlinkBytes: BigInt(2 * GB_IN_BYTES),
+    totalBytes: BigInt(2 * GB_IN_BYTES),
+    deltaBytes: BigInt(2 * GB_IN_BYTES),
+    sampledAt: new Date()
+  });
+
+  assert.equal(subscriptionUpdates.length, 1, "local usage/subscription state must be saved before best-effort effects");
+  assert.equal((subscriptionUpdates[0].data as { state: string }).state, "exhausted");
+  assert.deepEqual(publishedStates, ["exhausted"], "SSE publish must still happen when panel/lease side effects fail");
+  assert.equal(warnings.length, 2);
+  assert.match(warnings.join("\n"), /panel queue failed/);
+  assert.match(warnings.join("\n"), /lease revoke failed/);
 }
 
 async function testInitialUsageDeltaUsesBindingCountersForUuidMapping() {
@@ -8668,6 +8821,158 @@ async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
   assert.equal((result as { id: string }).id, "ticket_1");
 }
 
+async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails() {
+  const warnings: string[] = [];
+  const writes: string[] = [];
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "waiting_admin",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: null,
+    teamId: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User"
+    },
+    team: null
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow,
+        update: async () => {
+          writes.push("ticket");
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      },
+      supportTicketMessage: {
+        create: async () => {
+          writes.push("message");
+          return {};
+        }
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getAdminSupportTicketDetail: async () => {
+      throw new Error("detail refresh failed");
+    }
+  });
+
+  const result = await service.replyAdminSupportTicket("ticket_1", { body: "reply saved" }, "admin_1");
+
+  assert.deepEqual(writes.sort(), ["message", "ticket"]);
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.status, "waiting_user");
+  assert.equal(result.messages[0]?.body, "reply saved");
+  assert.equal(result.messages[0]?.authorRole, "admin");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /detail refresh failed/);
+}
+
+async function testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails() {
+  const warnings: string[] = [];
+  const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/fallback.png",
+    providerFileId: "support-tickets/fallback.png",
+    fileName: "fallback.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(4321)
+  };
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need attachment",
+    status: "waiting_admin",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: "sub_1",
+    teamId: "team_1",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User"
+    },
+    team: {
+      id: "team_1",
+      name: "Team"
+    }
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<void>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "message", data });
+              return { id: data.id };
+            }
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "attachment", data });
+              return data;
+            }
+          },
+          supportTicket: {
+            update: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "ticket", data });
+              return data;
+            }
+          }
+        })
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => uploadedFile
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    getAdminSupportTicketDetail: async () => {
+      throw new Error("detail refresh failed");
+    }
+  });
+
+  const result = await service.replyAdminSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "" },
+    {
+      path: path.join(tmpdir(), "fallback.png"),
+      originalname: "fallback.png",
+      mimetype: "image/png",
+      size: 4321
+    },
+    "admin_1"
+  );
+
+  assert.equal(writes.some((item) => item.kind === "message"), true);
+  assert.equal(writes.some((item) => item.kind === "attachment"), true);
+  assert.equal(result.id, "ticket_1");
+  assert.equal(result.ownerType, "team");
+  assert.equal(result.messages[0]?.attachments[0]?.url, uploadedFile.url);
+  assert.equal(result.messages[0]?.attachments[0]?.fileSizeBytes, uploadedFile.fileSizeBytes.toString());
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /detail refresh failed/);
+}
+
 async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
   const writes: string[] = [];
   const service = createClientTicketService({
@@ -8829,6 +9134,7 @@ async function main() {
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();
   await testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline();
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();
+  await testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFail();
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
   await testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsage();
@@ -8914,6 +9220,8 @@ async function main() {
   testAdminPatchDtosRejectNullForNonNullableFields();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedUploadRejectsSuccessFalsePayload();
+  await testImageBedDeleteReturnsStructuredBusinessFailure();
+  await testImageBedAttachmentCleanupLogsDeleteFailure();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdatePlanSecurityReconcilesUsersWithoutOverrides();
@@ -8943,6 +9251,8 @@ async function main() {
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
+  await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
+  await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();

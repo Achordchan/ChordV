@@ -520,7 +520,10 @@ export class DevDataService implements OnModuleInit {
 
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true, userId: true }
+      include: {
+        user: { select: { id: true, email: true, displayName: true } },
+        team: { select: { id: true, name: true } }
+      }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -530,10 +533,11 @@ export class DevDataService implements OnModuleInit {
     }
 
     const now = new Date();
+    const messageId = createId("ticket_msg");
     await this.prisma.$transaction([
       this.prisma.supportTicketMessage.create({
         data: {
-          id: createId("ticket_msg"),
+          id: messageId,
           ticketId,
           authorRole: "admin",
           authorUserId: adminUserId ?? null,
@@ -557,7 +561,15 @@ export class DevDataService implements OnModuleInit {
       ticketStatus: "waiting_user"
     });
 
-    return this.getAdminSupportTicketDetail(ticketId);
+    return this.getAdminSupportTicketDetailAfterReply(
+      ticketId,
+      () => this.buildAdminSupportTicketReplyFallback(current, now, {
+        messageId,
+        body,
+        adminUserId: adminUserId ?? null,
+        attachments: []
+      })
+    );
   }
 
   async replyAdminSupportTicketWithAttachment(
@@ -577,7 +589,10 @@ export class DevDataService implements OnModuleInit {
 
     const current = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true, userId: true }
+      include: {
+        user: { select: { id: true, email: true, displayName: true } },
+        team: { select: { id: true, name: true } }
+      }
     });
     if (!current) {
       throw new NotFoundException("工单不存在");
@@ -588,21 +603,24 @@ export class DevDataService implements OnModuleInit {
 
     const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
     const now = new Date();
+    const messageId = createId("ticket_msg");
+    const attachmentId = uploaded ? createId("ticket_att") : null;
+    const messageBody = body || (uploaded ? `上传了附件：${uploaded.fileName}` : "");
     try {
       await this.prisma.$transaction(async (tx) => {
         const message = await tx.supportTicketMessage.create({
           data: {
-            id: createId("ticket_msg"),
+            id: messageId,
             ticketId,
             authorRole: "admin",
             authorUserId: adminUserId ?? null,
-            body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
+            body: messageBody
           }
         });
         if (uploaded) {
           await tx.supportTicketAttachment.create({
             data: {
-              id: createId("ticket_att"),
+              id: attachmentId!,
               ticketId,
               messageId: message.id,
               provider: "image-bed",
@@ -634,7 +652,89 @@ export class DevDataService implements OnModuleInit {
       ticketStatus: "waiting_user"
     });
 
-    return this.getAdminSupportTicketDetail(ticketId);
+    return this.getAdminSupportTicketDetailAfterReply(
+      ticketId,
+      () => this.buildAdminSupportTicketReplyFallback(current, now, {
+        messageId,
+        body: messageBody,
+        adminUserId: adminUserId ?? null,
+        attachments:
+          uploaded && attachmentId
+            ? [
+                {
+                  id: attachmentId,
+                  url: uploaded.url,
+                  fileName: uploaded.fileName,
+                  mimeType: uploaded.mimeType,
+                  fileSizeBytes: uploaded.fileSizeBytes.toString(),
+                  createdAt: now.toISOString()
+                }
+              ]
+            : []
+      })
+    );
+  }
+
+  private async getAdminSupportTicketDetailAfterReply(ticketId: string, fallback: () => AdminSupportTicketDetailDto) {
+    try {
+      return await this.getAdminSupportTicketDetail(ticketId);
+    } catch (error) {
+      this.logger.warn(`Admin ticket reply saved, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
+      return fallback();
+    }
+  }
+
+  private buildAdminSupportTicketReplyFallback(
+    ticket: {
+      id: string;
+      title: string;
+      source: SupportTicketSource;
+      userId: string;
+      subscriptionId: string | null;
+      teamId: string | null;
+      createdAt: Date;
+      user: { email: string; displayName: string };
+      team?: { name: string } | null;
+    },
+    now: Date,
+    message: {
+      messageId: string;
+      body: string;
+      adminUserId: string | null;
+      attachments: AdminSupportTicketDetailDto["messages"][number]["attachments"];
+    }
+  ): AdminSupportTicketDetailDto {
+    return {
+      id: ticket.id,
+      title: ticket.title,
+      status: "waiting_user",
+      source: ticket.source,
+      ownerType: ticket.teamId ? "team" : "personal",
+      userId: ticket.userId,
+      userEmail: ticket.user.email,
+      userDisplayName: ticket.user.displayName,
+      subscriptionId: ticket.subscriptionId,
+      teamId: ticket.teamId,
+      teamName: ticket.team?.name ?? null,
+      lastMessageAt: now.toISOString(),
+      closedAt: null,
+      createdAt: ticket.createdAt.toISOString(),
+      updatedAt: now.toISOString(),
+      lastMessagePreview: summarizeSupportTicketMessage(message.body),
+      messages: [
+        {
+          id: message.messageId,
+          ticketId: ticket.id,
+          authorRole: "admin",
+          authorUserId: message.adminUserId,
+          authorDisplayName: readSupportTicketAuthorDisplayName("admin", null),
+          authorEmail: null,
+          body: message.body,
+          attachments: message.attachments,
+          createdAt: now.toISOString()
+        }
+      ]
+    };
   }
 
   async closeAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {

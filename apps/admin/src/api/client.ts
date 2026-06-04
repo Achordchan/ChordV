@@ -28,7 +28,7 @@ import type {
 } from "@chordv/shared";
 import { request } from "./base";
 
-const IMAGE_BED_ACTION_TIMEOUT_MS = 60 * 1000;
+const IMAGE_BED_ACTION_TIMEOUT_MS = 75 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
 const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 

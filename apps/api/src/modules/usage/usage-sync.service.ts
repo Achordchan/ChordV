@@ -516,8 +516,8 @@ export class UsageSyncService {
     }
 
     if (nextState !== "active") {
-      await this.getRuntimeSessionService().markPanelBindingsDisabledForSubscription(input.subscriptionId);
-      await this.revokeActiveLeases(
+      await this.markPanelBindingsDisabledBestEffort(input.subscriptionId);
+      await this.revokeActiveLeasesBestEffort(
         input.subscriptionId,
         nextState === "expired"
           ? "subscription_expired"
@@ -691,6 +691,26 @@ export class UsageSyncService {
   private async revokeActiveLeases(subscriptionId: string, reason: string) {
     await this.getRuntimeSessionService().revokeSubscriptionLeases(subscriptionId, reason);
   }
+
+  private async markPanelBindingsDisabledBestEffort(subscriptionId: string) {
+    try {
+      await this.getRuntimeSessionService().markPanelBindingsDisabledForSubscription(subscriptionId);
+    } catch (error) {
+      this.logger.warn(`Usage sync saved local subscription state, but panel disable queueing failed for ${subscriptionId}: ${readErrorMessage(error)}`);
+    }
+  }
+
+  private async revokeActiveLeasesBestEffort(subscriptionId: string, reason: string) {
+    try {
+      await this.revokeActiveLeases(subscriptionId, reason);
+    } catch (error) {
+      this.logger.warn(`Usage sync saved local subscription state, but active lease revocation failed for ${subscriptionId}: ${readErrorMessage(error)}`);
+    }
+  }
+}
+
+function readErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }
 
 type NodeTrafficSample = {

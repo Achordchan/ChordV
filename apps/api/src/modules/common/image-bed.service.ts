@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, Injectable } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, Injectable, Logger } from "@nestjs/common";
 import * as fs from "node:fs/promises";
 import type {
   AdminImageBedConfigDto,
@@ -55,6 +55,8 @@ export type UploadedImageBedFile = {
 
 @Injectable()
 export class ImageBedService {
+  private readonly logger = new Logger(ImageBedService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async getAdminConfig(): Promise<AdminImageBedConfigDto> {
@@ -146,14 +148,16 @@ export class ImageBedService {
     const query = input.folder ? "?folder=true" : "";
     const payload = await this.requestImageBedJson<Record<string, unknown>>(
       config,
-      `/api/manage/delete/${encodePathSegments(normalizedPath)}${query}`
+      `/api/manage/delete/${encodePathSegments(normalizedPath)}${query}`,
+      { allowBusinessFailure: true }
     );
 
+    const failed = readStringArray(payload.failed);
     return {
-      success: payload.success === true,
+      success: payload.success === true && failed.length === 0,
       fileId: readString(payload.fileId) ?? normalizedPath,
       deleted: readStringArray(payload.deleted),
-      failed: readStringArray(payload.failed)
+      failed: failed.length > 0 ? failed : payload.success === false ? [readString(payload.message) ?? readString(payload.error) ?? normalizedPath] : []
     };
   }
 
@@ -218,10 +222,18 @@ export class ImageBedService {
     if (!path) {
       return;
     }
-    await this.deleteAdminFile({ path }).catch(() => undefined);
+    await this.deleteAdminFile({ path }).catch((error) => {
+      this.logger.warn(
+        `Support ticket attachment cleanup failed for ${path}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
   }
 
-  private async requestImageBedJson<T>(config: EffectiveImageBedConfig, pathAndQuery: string): Promise<T> {
+  private async requestImageBedJson<T>(
+    config: EffectiveImageBedConfig,
+    pathAndQuery: string,
+    options: { allowBusinessFailure?: boolean } = {}
+  ): Promise<T> {
     const url = new URL(pathAndQuery, config.baseUrl);
     const response = await fetchImageBed(url, {
       headers: {
@@ -238,7 +250,7 @@ export class ImageBedService {
       throw new BadGatewayException("Image bed response was not valid JSON.");
     }
     const record = payload as Record<string, unknown>;
-    if (record.success === false) {
+    if (record.success === false && !options.allowBusinessFailure) {
       throw new BadGatewayException(readString(record.message) ?? readString(record.error) ?? "Image bed request failed.");
     }
     return payload as T;
