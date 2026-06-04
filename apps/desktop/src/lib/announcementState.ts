@@ -83,7 +83,8 @@ export function isForcedAnnouncementPending(item: AnnouncementDto) {
 }
 
 export function pickForcedAnnouncement(announcements: AnnouncementDto[]) {
-  return announcements.find((item) => isForcedAnnouncementPending(item)) ?? null;
+  const latestForcedAnnouncement = pickLatestForcedAnnouncement(announcements);
+  return latestForcedAnnouncement && isForcedAnnouncementPending(latestForcedAnnouncement) ? latestForcedAnnouncement : null;
 }
 
 export function pickPassiveAnnouncements(announcements: AnnouncementDto[]) {
@@ -94,8 +95,18 @@ export function pickUnreadPassiveAnnouncementIds(announcements: AnnouncementDto[
   return announcements.filter((item) => isPassiveAnnouncementUnread(item)).map((item) => item.id);
 }
 
+export function pickUnreadForcedAnnouncementIds(announcements: AnnouncementDto[]) {
+  return announcements.filter((item) => isForcedAnnouncementPending(item)).map((item) => item.id);
+}
+
 export function hasUnreadAnnouncements(announcements: AnnouncementDto[]) {
   return announcements.some((item) =>
     item.displayMode === "passive" ? isPassiveAnnouncementUnread(item) : isForcedAnnouncementPending(item)
   );
+}
+
+function pickLatestForcedAnnouncement(announcements: AnnouncementDto[]) {
+  return announcements
+    .filter((item) => item.displayMode !== "passive")
+    .sort((left, right) => Date.parse(right.publishedAt) - Date.parse(left.publishedAt))[0] ?? null;
 }

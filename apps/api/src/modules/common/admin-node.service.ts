@@ -74,7 +74,7 @@ export class AdminNodeService {
 
     return rows.map((row) => ({
       id: row.id,
-      action: "disable_client",
+      action: row.action as AdminPanelSyncJobDto["action"],
       status: row.status as AdminPanelSyncJobDto["status"],
       nodeId: row.nodeId,
       nodeName: row.node.name,
@@ -506,26 +506,17 @@ export class AdminNodeService {
     }
 
     const userIds = await this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId);
-    const bindingSubscriptions = await this.prisma.panelClientBinding.findMany({
-      where: {
-        nodeId,
-        status: { in: ["active", "disabled"] }
-      },
-      select: {
-        subscriptionId: true
-      },
-      distinct: ["subscriptionId"]
-    });
-
     await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted");
-    for (const bindingSubscription of bindingSubscriptions) {
-      const result = await this.runtimeSessionService.removePanelBindingsForSubscription(bindingSubscription.subscriptionId, {
-        nodeIds: [nodeId]
-      });
-      this.runtimeSessionService.assertPanelBindingMutation("Delete node", result);
-    }
-
-    await this.prisma.node.delete({ where: { id: nodeId } });
+    await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+    await this.prisma.node.update({
+      where: { id: nodeId },
+      data: {
+        isActive: false,
+        recommended: false,
+        panelStatus: "offline",
+        panelError: null
+      }
+    });
     this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     return { ok: true };
   }

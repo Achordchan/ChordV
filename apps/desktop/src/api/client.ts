@@ -25,7 +25,7 @@ import type {
 } from "../lib/runtimeComponents";
 import { loadDesktopRuntimeEnvironment } from "../lib/runtime";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com";
+const API_BASE = readApiBaseUrl();
 const DEFAULT_RELEASE_CHANNEL = "stable";
 
 export type ReleaseChannel = "stable";
@@ -74,6 +74,15 @@ type RequestResult<T> = {
 };
 
 type NativeInvoke = (command: string, payload?: unknown) => Promise<NativeApiResponse>;
+type TauriInvoke = <T = unknown>(command: string, payload?: unknown) => Promise<T>;
+
+type ParsedServerSentEvent = {
+  event: string | null;
+  id: string | null;
+  data: string | null;
+};
+
+type ClientRuntimeEventType = ClientRuntimeEventDto["type"];
 
 export class ApiRequestError extends Error {
   status: number | null;
@@ -139,6 +148,11 @@ async function request<T>(path: string, init?: RequestInit) {
   return result.data;
 }
 
+function readApiBaseUrl() {
+  const env = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env;
+  return env?.VITE_API_BASE_URL ?? "https://v.baymaxgroup.com";
+}
+
 async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestInit, "body">) {
   const startedAt = performance.now();
   const response = await fetch(`${API_BASE}/api${path}`, {
@@ -168,6 +182,31 @@ async function loadNativeInvoke(): Promise<NativeInvoke | null> {
   }
   const module = await import("@tauri-apps/api/core");
   return module.invoke as NativeInvoke;
+}
+
+async function loadTauriInvoke(): Promise<TauriInvoke | null> {
+  if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+    return null;
+  }
+  const module = await import("@tauri-apps/api/core");
+  return module.invoke as TauriInvoke;
+}
+
+export async function recordClientDiagnosticLog(category: string, message: string) {
+  try {
+    const invoke = await loadTauriInvoke();
+    if (!invoke) {
+      return;
+    }
+    await invoke("record_client_diagnostic", {
+      input: {
+        category,
+        message
+      }
+    });
+  } catch {
+    // Diagnostics must never break client runtime behavior.
+  }
 }
 
 function normalizeHeaders(headers?: HeadersInit) {
@@ -396,12 +435,23 @@ export function fetchSubscription(accessToken: string) {
   });
 }
 
-export function fetchSupportTickets(accessToken: string) {
-  return request<ClientSupportTicketSummaryDto[]>("/client/tickets", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    }
-  });
+export async function fetchSupportTickets(accessToken: string) {
+  try {
+    const tickets = await request<ClientSupportTicketSummaryDto[]>("/client/tickets", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+    const unreadCount = tickets.filter((ticket) => ticket.hasUnreadMessages || ticket.unreadCount > 0).length;
+    void recordClientDiagnosticLog("client-ticket", `loaded ${tickets.length} tickets, unread=${unreadCount}`);
+    return tickets;
+  } catch (error) {
+    void recordClientDiagnosticLog(
+      "client-ticket",
+      `list failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+    throw error;
+  }
 }
 
 export function fetchSupportTicketDetail(accessToken: string, ticketId: string) {
@@ -579,13 +629,20 @@ type ClientEventSubscriber = {
 export function subscribeClientEvents(accessToken: string, subscriber: ClientEventSubscriber) {
   let disposed = false;
   let reconnectTimer: number | null = null;
+  let fallbackRefreshTimer: number | null = null;
+  let fallbackVersionTimer: number | null = null;
   let activeController: AbortController | null = null;
+  let nativeCleanup: (() => void) | null = null;
   let lastEventId: string | null = null;
   const handshakeTimeoutMs = 25_000;
   const streamIdleTimeoutMs = 45_000;
+  const fallbackRefreshMs = 15_000;
+  const fallbackVersionRefreshMs = 60_000;
+
+  const isReplayableEventId = (eventId: string | null) => Boolean(eventId && /^\d+-\d+$/.test(eventId));
 
   const scheduleReconnect = () => {
-    if (disposed) {
+    if (disposed || reconnectTimer !== null) {
       return;
     }
     reconnectTimer = window.setTimeout(() => {
@@ -594,7 +651,194 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
     }, 3000);
   };
 
+  const connectNative = async () => {
+    const invoke = await loadTauriInvoke();
+    if (!invoke) {
+      void recordClientDiagnosticLog("client-sse-js", "native invoke unavailable");
+      return false;
+    }
+
+    const startedAt = performance.now();
+    const { listen } = await import("@tauri-apps/api/event");
+    const streamId =
+      typeof crypto.randomUUID === "function"
+        ? `client-events-${crypto.randomUUID()}`
+        : `client-events-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let opened = false;
+    let failedBeforeOpen = false;
+    let cleanup = () => undefined;
+    const unlistenOpen = await listen<{
+      streamId?: string;
+    }>("chordv://client-runtime-event-open", (event) => {
+      if (event.payload?.streamId !== streamId || opened) {
+        return;
+      }
+      opened = true;
+      subscriber.onOpen?.({
+        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
+      });
+      void recordClientDiagnosticLog("client-sse-js", "native stream opened");
+      stopFallbackRefresh();
+    });
+    const unlistenEvent = await listen<{
+      streamId?: string;
+      eventId?: string | null;
+      event?: ClientRuntimeEventDto;
+    }>("chordv://client-runtime-event", (event) => {
+      const payload = event.payload;
+      if (!payload?.event || payload.streamId !== streamId) {
+        return;
+      }
+      if (payload.event.type !== "keepalive") {
+        void recordClientDiagnosticLog(
+          "client-sse-js",
+          `native event ${payload.event.type} stream=${payload.streamId ?? "-"} id=${payload.eventId ?? "-"}`
+        );
+      }
+      if (isReplayableEventId(payload.eventId ?? null)) {
+        lastEventId = payload.eventId ?? null;
+      }
+      stopFallbackRefresh();
+      subscriber.onEvent(payload.event);
+    });
+    const unlistenError = await listen<{
+      streamId?: string;
+      message?: string;
+      status?: number | null;
+      authError?: boolean;
+    }>("chordv://client-runtime-event-error", (event) => {
+      const payload = event.payload;
+      if (!payload || payload.streamId !== streamId) {
+        return;
+      }
+      const error = new ApiRequestError(payload.status ?? null, payload.message || "事件流连接失败");
+      subscriber.onError?.(error, {
+        authError: Boolean(payload.authError) || payload.status === 401,
+        status: payload.status ?? null
+      });
+      failedBeforeOpen = true;
+      cleanup();
+      if (!payload.authError && payload.status !== 401 && payload.status !== 403) {
+        startFallbackRefresh();
+        scheduleReconnect();
+      }
+    });
+
+    cleanup = () => {
+      unlistenOpen();
+      unlistenEvent();
+      unlistenError();
+      void invoke("stop_client_event_stream", { streamId }).catch(() => null);
+      if (nativeCleanup === cleanup) {
+        nativeCleanup = null;
+      }
+    };
+    nativeCleanup = cleanup;
+
+    try {
+      const response = await invoke<{ streamId: string }>("start_client_event_stream", {
+        input: {
+          streamId,
+          accessToken,
+          lastEventId
+        }
+      });
+      if (response.streamId !== streamId) {
+        throw new Error("native SSE stream id mismatch");
+      }
+      if (disposed || failedBeforeOpen) {
+        cleanup();
+        return true;
+      }
+      return true;
+    } catch (error) {
+      cleanup();
+      subscriber.onError?.(error instanceof Error ? error : new Error("事件流连接失败"), {
+        authError: false,
+        status: null
+      });
+      return false;
+    }
+  };
+
+  const emitSyntheticEvent = (type: ClientRuntimeEventType) => {
+    subscriber.onEvent({
+      type,
+      occurredAt: new Date().toISOString(),
+      synthetic: true
+    } as ClientRuntimeEventDto);
+  };
+
+  const emitFallbackRefresh = (includeVersion: boolean) => {
+    emitSyntheticEvent("subscription_updated");
+    emitSyntheticEvent("ticket_updated");
+    if (includeVersion) {
+      emitSyntheticEvent("version_updated");
+    }
+  };
+
+  const startFallbackRefresh = () => {
+    if (disposed || fallbackRefreshTimer !== null) {
+      return;
+    }
+    emitFallbackRefresh(false);
+    fallbackRefreshTimer = window.setInterval(() => {
+      emitFallbackRefresh(false);
+    }, fallbackRefreshMs);
+    fallbackVersionTimer = window.setInterval(() => {
+      emitSyntheticEvent("version_updated");
+    }, fallbackVersionRefreshMs);
+  };
+
+  const stopFallbackRefresh = () => {
+    if (fallbackRefreshTimer !== null) {
+      window.clearInterval(fallbackRefreshTimer);
+      fallbackRefreshTimer = null;
+    }
+    if (fallbackVersionTimer !== null) {
+      window.clearInterval(fallbackVersionTimer);
+      fallbackVersionTimer = null;
+    }
+  };
+
+  const handleEventBlock = (chunk: string) => {
+    const parsedEvent = parseServerSentEventBlock(chunk);
+    if (!parsedEvent.data) {
+      if (isReplayableEventId(parsedEvent.id)) {
+        lastEventId = parsedEvent.id;
+      }
+      return;
+    }
+
+    try {
+      const payload = parseClientRuntimeEvent(parsedEvent);
+      if (isReplayableEventId(parsedEvent.id)) {
+        lastEventId = parsedEvent.id;
+      }
+      subscriber.onEvent(payload);
+    } catch (error) {
+      subscriber.onError?.(error instanceof Error ? error : new Error("事件解析失败"), {
+        authError: false,
+        status: null
+      });
+    }
+  };
+
   const connect = async () => {
+    let nativeHandled = false;
+    try {
+      nativeHandled = await connectNative();
+    } catch (error) {
+      void recordClientDiagnosticLog(
+        "client-sse-js",
+        `native connect crashed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (nativeHandled || disposed) {
+      return;
+    }
+
+    void recordClientDiagnosticLog("client-sse-js", "fetch fallback begin");
     const startedAt = performance.now();
     const controller = new AbortController();
     activeController = controller;
@@ -648,6 +892,8 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       subscriber.onOpen?.({
         elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
       });
+      void recordClientDiagnosticLog("client-sse-js", "fetch stream opened");
+      stopFallbackRefresh();
       armIdleWatchdog();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -660,37 +906,25 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
         armIdleWatchdog();
         buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split(/\r?\n\r?\n/);
+        const chunks = splitServerSentEventBlocks(buffer);
         buffer = chunks.pop() ?? "";
 
         for (const chunk of chunks) {
-          const lines = chunk
-            .split(/\r?\n/)
-            .filter(Boolean);
-          if (lines.length === 0) {
-            continue;
-          }
-
-          const dataLines: string[] = [];
-          let chunkEventId: string | null = null;
-
-          for (const line of lines) {
-            if (line.startsWith("data:")) {
-              dataLines.push(line.slice(5).trim());
-            } else if (line.startsWith("id:")) {
-              const eventId = line.slice(3).trim();
-              chunkEventId = eventId || null;
+          const parsedEvent = parseServerSentEventBlock(chunk);
+          if (!parsedEvent.data) {
+            if (isReplayableEventId(parsedEvent.id)) {
+              lastEventId = parsedEvent.id;
             }
-          }
-
-          if (dataLines.length === 0) {
             continue;
           }
 
           try {
-            const payload = JSON.parse(dataLines.join("\n")) as ClientRuntimeEventDto;
-            if (chunkEventId) {
-              lastEventId = chunkEventId;
+            const payload = parseClientRuntimeEvent(parsedEvent);
+            if (payload.type !== "keepalive") {
+              void recordClientDiagnosticLog("client-sse-js", `fetch event ${payload.type} id=${parsedEvent.id ?? "-"}`);
+            }
+            if (isReplayableEventId(parsedEvent.id)) {
+              lastEventId = parsedEvent.id;
             }
             subscriber.onEvent(payload);
           } catch (error) {
@@ -702,6 +936,10 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
         }
       }
 
+      if (buffer.trim()) {
+        handleEventBlock(buffer);
+      }
+      startFallbackRefresh();
       scheduleReconnect();
     } catch (error) {
       if (disposed) {
@@ -712,14 +950,15 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
       }
       const normalizedError = error instanceof Error ? error : new Error("事件流连接失败");
       const status = getApiErrorStatus(normalizedError);
-      const authError = isAccessTokenExpiredApiError(normalizedError);
+      const authError = isAccessTokenExpiredApiError(normalizedError) || status === 403;
       subscriber.onError?.(normalizedError, {
         authError,
         status
       });
-      if (authError || status === 403) {
+      if (authError) {
         return;
       }
+      startFallbackRefresh();
       scheduleReconnect();
     } finally {
       clearHandshakeWatchdog();
@@ -734,11 +973,63 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
   return () => {
     disposed = true;
+    stopFallbackRefresh();
+    nativeCleanup?.();
     activeController?.abort();
     if (reconnectTimer !== null) {
       window.clearTimeout(reconnectTimer);
     }
   };
+}
+
+export function splitServerSentEventBlocks(input: string) {
+  return input.split(/\r\n\r\n|\n\n|\r\r/);
+}
+
+export function parseServerSentEventBlock(block: string): ParsedServerSentEvent {
+  const dataLines: string[] = [];
+  let eventName: string | null = null;
+  let eventId: string | null = null;
+
+  for (const rawLine of block.split(/\r\n|\r|\n/)) {
+    if (!rawLine || rawLine.startsWith(":")) {
+      continue;
+    }
+
+    const separatorIndex = rawLine.indexOf(":");
+    const field = separatorIndex >= 0 ? rawLine.slice(0, separatorIndex) : rawLine;
+    const rawValue = separatorIndex >= 0 ? rawLine.slice(separatorIndex + 1) : "";
+    const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+
+    if (field === "data") {
+      dataLines.push(value);
+    } else if (field === "event") {
+      eventName = value.trim() || null;
+    } else if (field === "id") {
+      eventId = value.trim() || null;
+    }
+  }
+
+  return {
+    event: eventName,
+    id: eventId,
+    data: dataLines.length > 0 ? dataLines.join("\n") : null
+  };
+}
+
+export function parseClientRuntimeEvent(event: ParsedServerSentEvent): ClientRuntimeEventDto {
+  if (!event.data) {
+    throw new Error("事件内容为空");
+  }
+  const parsed = JSON.parse(event.data) as Partial<ClientRuntimeEventDto>;
+  const parsedType = typeof parsed.type === "string" ? (parsed.type as string) : "";
+  if (event.event && (!parsedType || parsedType === "message")) {
+    parsed.type = event.event as ClientRuntimeEventDto["type"];
+  }
+  if (!parsed.type) {
+    throw new Error("事件类型为空");
+  }
+  return parsed as ClientRuntimeEventDto;
 }
 
 function detectUpdatePlatform(): PlatformTarget | "ios" {

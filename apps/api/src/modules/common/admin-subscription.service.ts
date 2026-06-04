@@ -58,7 +58,6 @@ import {
   toAdminUserRecord,
   toUserSubscriptionSummary
 } from "./subscription.utils";
-import { XuiService } from "../xui/xui.service";
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
@@ -74,8 +73,7 @@ export class AdminSubscriptionService {
     private readonly prisma: PrismaService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly authSessionService: AuthSessionService,
-    private readonly runtimeSessionService: RuntimeSessionService,
-    private readonly xuiService: XuiService
+    private readonly runtimeSessionService: RuntimeSessionService
   ) {}
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
@@ -285,6 +283,11 @@ export class AdminSubscriptionService {
       subscriptionId: subscription.id,
       userId: reset.targetUserId,
       clearedBindingCount: reset.clearedBindingCount,
+      panelSyncStatus: reset.clearedBindingCount > 0 ? "pending" : "synced",
+      panelSyncMessage:
+        reset.clearedBindingCount > 0
+          ? "3x-ui traffic reset queued for background retry; local counters are already reset."
+          : null,
       message:
         reset.clearedBindingCount > 0
           ? "已重置订阅流量，并同步清空 3x-ui 面板计量"
@@ -1407,35 +1410,13 @@ export class AdminSubscriptionService {
       });
       clearedBindingCount = bindings.length;
 
-      let staleBindingCount = 0;
-      const baselineSamples = await Promise.all(
-        bindings.map(async (binding) => {
-          const nodeConfig = {
-            id: binding.node.id,
-            panelBaseUrl: binding.node.panelBaseUrl,
-            panelApiBasePath: binding.node.panelApiBasePath,
-            panelUsername: binding.node.panelUsername,
-            panelPassword: binding.node.panelPassword,
-            panelInboundId: binding.panelInboundId
-          };
-          const resetApplied = await this.xuiService.resetClientTraffic(nodeConfig, binding.panelClientEmail);
-          if (!resetApplied) {
-            staleBindingCount += 1;
-            return null;
-          }
-          const baseline = await this.readPanelClientBaseline(nodeConfig, binding.panelClientEmail);
-          return {
-            binding,
-            uplinkBytes: baseline.uplinkBytes,
-            downlinkBytes: baseline.downlinkBytes,
-            sampledAt: baseline.sampledAt
-          };
-        })
-      );
-      if (staleBindingCount > 0) {
-        await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)));
-        throw new BadGatewayException("Reset traffic was not applied to every 3x-ui client; local traffic counters were left unchanged.");
-      }
+      const resetSampledAt = new Date();
+      const baselineSamples = bindings.map((binding) => ({
+        binding,
+        uplinkBytes: 0n,
+        downlinkBytes: 0n,
+        sampledAt: resetSampledAt
+      }));
 
       updatedSubscription = await this.prisma.$transaction(async (tx) => {
         const lockedSubscription = await tx.subscription.findUnique({
@@ -1452,6 +1433,53 @@ export class AdminSubscriptionService {
         }
 
         await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
+        const panelResetQueuedAt = new Date();
+        for (const binding of bindings) {
+          const snapshot = binding.node ?? {};
+          await tx.panelSyncJob.upsert({
+            where: {
+              dedupeKey: `reset:${binding.id}`
+            },
+            create: {
+              id: randomUUID(),
+              dedupeKey: `reset:${binding.id}`,
+              action: "reset_client_traffic",
+              bindingId: binding.id,
+              subscriptionId: binding.subscriptionId,
+              userId: binding.userId,
+              teamId: binding.teamId,
+              nodeId: binding.nodeId,
+              panelClientEmail: binding.panelClientEmail,
+              panelClientId: binding.panelClientId,
+              panelInboundId: binding.panelInboundId,
+              panelBaseUrl: snapshot.panelBaseUrl ?? null,
+              panelApiBasePath: snapshot.panelApiBasePath ?? null,
+              panelUsername: snapshot.panelUsername ?? null,
+              panelPassword: snapshot.panelPassword ?? null,
+              status: "pending",
+              nextRunAt: panelResetQueuedAt
+            },
+            update: {
+              status: "pending",
+              nextRunAt: panelResetQueuedAt,
+              lockedAt: null,
+              completedAt: null,
+              attempts: 0,
+              lastError: null,
+              subscriptionId: binding.subscriptionId,
+              userId: binding.userId,
+              teamId: binding.teamId,
+              nodeId: binding.nodeId,
+              panelClientEmail: binding.panelClientEmail,
+              panelClientId: binding.panelClientId,
+              panelInboundId: binding.panelInboundId,
+              panelBaseUrl: snapshot.panelBaseUrl ?? null,
+              panelApiBasePath: snapshot.panelApiBasePath ?? null,
+              panelUsername: snapshot.panelUsername ?? null,
+              panelPassword: snapshot.panelPassword ?? null
+            }
+          });
+        }
 
         const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
         const expireAt = options.expireAt ?? new Date(lockedSubscription.expireAt);
@@ -1576,26 +1604,6 @@ export class AdminSubscriptionService {
       return;
     }
     await this.prisma.$transaction(writeSamples);
-  }
-
-  private async readPanelClientBaseline(
-    node: {
-      id: string;
-      panelBaseUrl: string | null;
-      panelApiBasePath: string | null;
-      panelUsername: string | null;
-      panelPassword: string | null;
-      panelInboundId: number | null;
-    },
-    panelClientEmail: string
-  ) {
-    const usage = await this.xuiService.getClientUsage(node, panelClientEmail);
-    const sampledAt = usage?.sampledAt ? new Date(usage.sampledAt) : new Date();
-    return {
-      uplinkBytes: usage?.uplinkBytes ?? 0n,
-      downlinkBytes: usage?.downlinkBytes ?? 0n,
-      sampledAt: Number.isNaN(sampledAt.getTime()) ? new Date() : sampledAt
-    };
   }
 
   private async resolveTargetUserIdsForSubscriptionTarget(target: {
@@ -1765,8 +1773,13 @@ export class AdminSubscriptionService {
 
   private async syncSubscriptionPanelAccessBestEffort(subscriptionId: string) {
     try {
-      await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
-      return { ok: true as const };
+      const queuedCount = await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+      return queuedCount > 0
+        ? {
+            ok: false as const,
+            errorMessage: "3x-ui panel sync queued for background retry"
+          }
+        : { ok: true as const };
     } catch (error) {
       return {
         ok: false as const,

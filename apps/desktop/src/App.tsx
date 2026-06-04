@@ -174,6 +174,7 @@ export function App() {
     forcedAnnouncement,
     hasUnreadAnnouncements,
     markPassiveAnnouncementsSeen,
+    acknowledgeUnreadForcedAnnouncements,
     acknowledgeAnnouncement: syncAcknowledgeAnnouncement
   } = useAnnouncements({
     accessToken: session?.accessToken ?? null,
@@ -210,6 +211,7 @@ export function App() {
     hasUnreadTickets,
     loadTicketList,
     loadTicketDetail,
+    markTicketUnread,
     openTicketCenter,
     openTicketComposer,
     closeTicketComposer,
@@ -309,8 +311,8 @@ export function App() {
   const loadTicketListForActions = async (preferredTicketId?: string | null) => {
     await loadTicketList(preferredTicketId);
   };
-  const loadTicketDetailForActions = async (ticketId: string) => {
-    await loadTicketDetail(ticketId);
+  const loadTicketDetailForActions = async (ticketId: string, options?: import("./hooks/useSupportTickets").LoadTicketDetailOptions) => {
+    await loadTicketDetail(ticketId, options);
   };
   const fallbackNode = useMemo(
     () => pickAlternativeNode(nodes, currentRuntimeNodeId ?? selectedNodeId, probeResults),
@@ -449,6 +451,7 @@ export function App() {
     mergeSubscriptionState,
     loadTicketList: loadTicketListForActions,
     loadTicketDetail: loadTicketDetailForActions,
+    markTicketUnread,
     recoverSessionAfterUnauthorized,
     getCurrentAccessToken: () => sessionRef.current?.accessToken ?? null,
     clearSession,
@@ -1494,6 +1497,7 @@ export function App() {
   function openAnnouncementDrawer() {
     setAnnouncementDrawerOpened(true);
     void markPassiveAnnouncementsSeen();
+    void acknowledgeUnreadForcedAnnouncements();
   }
 
   async function acknowledgeAnnouncement() {

@@ -81,6 +81,8 @@ type PanelBindingFilter = {
   statuses?: string[];
 };
 
+type PanelSyncAction = "ensure_client" | "disable_client" | "delete_client" | "reset_client_traffic";
+
 const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ?? 20);
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
@@ -435,8 +437,10 @@ export class RuntimeSessionService {
     });
 
     if (!subscription) {
-      return;
+      return 0;
     }
+
+    let queuedPanelSyncCount = 0;
 
     const allowedNodeIds = new Set(
       subscription.nodeAccesses
@@ -458,7 +462,7 @@ export class RuntimeSessionService {
     if (shouldDeleteAll) {
       const removeResult = await this.removePanelBindingsForSubscription(subscriptionId);
       this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
-      return;
+      return removeResult.updated;
     }
 
     for (const binding of bindings) {
@@ -469,7 +473,7 @@ export class RuntimeSessionService {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
-        await this.markPanelBindingsDisabledForSubscription(subscriptionId, {
+        queuedPanelSyncCount += await this.markPanelBindingsDisabledForSubscription(subscriptionId, {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
@@ -487,7 +491,7 @@ export class RuntimeSessionService {
             nodeIds: [binding.nodeId]
           }
         );
-        await this.markPanelBindingsDisabledForSubscription(subscriptionId, {
+        queuedPanelSyncCount += await this.markPanelBindingsDisabledForSubscription(subscriptionId, {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
@@ -495,7 +499,7 @@ export class RuntimeSessionService {
     }
 
     if (!shouldProvision) {
-      return;
+      return queuedPanelSyncCount;
     }
 
     const targets =
@@ -524,7 +528,7 @@ export class RuntimeSessionService {
         if (!access.node.isActive || !access.node.panelEnabled) {
           continue;
         }
-        await this.ensurePanelClientBinding({
+        const binding = await this.ensurePanelClientBinding({
           node: {
             id: access.node.id,
             name: access.node.name,
@@ -543,8 +547,12 @@ export class RuntimeSessionService {
           userDisplayName: target.userDisplayName,
           expireAt: subscription.expireAt
         });
+        if (binding) {
+          queuedPanelSyncCount += 1;
+        }
       }
     }
+    return queuedPanelSyncCount;
   }
 
   async revokeUserLeases(
@@ -638,64 +646,14 @@ export class RuntimeSessionService {
     subscriptionId: string,
     filter?: PanelBindingFilter
   ): Promise<PanelBindingMutationResult> {
-    const bindings = await this.prisma.panelClientBinding.findMany({
-      where: {
-        subscriptionId,
-        ...(filter?.userId ? { userId: filter.userId } : {}),
-        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
-        status: filter?.statuses ? { in: filter.statuses } : "active"
-      },
-      include: {
-        node: true
-      }
+    const requested = await this.markPanelBindingsDisabledForSubscription(subscriptionId, {
+      ...(filter?.userId ? { userId: filter.userId } : {}),
+      ...(filter?.nodeIds ? { nodeIds: filter.nodeIds } : {})
     });
-
-    const failed: PanelBindingFailure[] = [];
-    for (const binding of bindings) {
-      try {
-        await this.xuiService.setClientEnabled(
-          {
-            id: binding.node.id,
-            panelBaseUrl: binding.node.panelBaseUrl,
-            panelApiBasePath: binding.node.panelApiBasePath,
-            panelUsername: binding.node.panelUsername,
-            panelPassword: binding.node.panelPassword,
-            panelInboundId: binding.panelInboundId
-          },
-          binding.panelClientId,
-          binding.panelClientEmail,
-          false
-        );
-      } catch (error) {
-        await this.prisma.node.update({
-          where: { id: binding.nodeId },
-          data: {
-            panelStatus: "degraded",
-            panelError: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
-          }
-        });
-        failed.push({
-          bindingId: binding.id,
-          nodeId: binding.nodeId,
-          nodeName: binding.node.name,
-          panelClientEmail: binding.panelClientEmail,
-          error: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
-        });
-        continue;
-      }
-
-      await this.prisma.panelClientBinding.update({
-        where: { id: binding.id },
-        data: {
-          status: "disabled"
-        }
-      });
-    }
-
     return {
-      requested: bindings.length,
-      updated: bindings.length - failed.length,
-      failed
+      requested,
+      updated: requested,
+      failed: []
     };
   }
 
@@ -780,6 +738,105 @@ export class RuntimeSessionService {
         }
       });
     }
+
+    return bindings.length;
+  }
+
+  async queuePanelDeleteJobsForSubscriptionTx(
+    writer: any,
+    subscriptionId: string,
+    filter?: { userId?: string; nodeIds?: string[] },
+    panelConfig?: {
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+    }
+  ) {
+    const bindings = await writer.panelClientBinding.findMany({
+      where: {
+        subscriptionId,
+        ...(filter?.userId ? { userId: filter.userId } : {}),
+        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
+        status: { in: ["active", "disabled"] }
+      },
+      include: {
+        node: {
+          select: {
+            panelBaseUrl: true,
+            panelApiBasePath: true,
+            panelUsername: true,
+            panelPassword: true
+          }
+        }
+      }
+    });
+    if (bindings.length === 0) {
+      return 0;
+    }
+
+    const now = new Date();
+    for (const binding of bindings) {
+      await writer.panelSyncJob.upsert({
+        where: {
+          dedupeKey: `delete:${binding.id}`
+        },
+        create: {
+          id: randomUUID(),
+          dedupeKey: `delete:${binding.id}`,
+          action: "delete_client",
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node?.panelBaseUrl ?? null,
+          panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node?.panelApiBasePath ?? null,
+          panelUsername: panelConfig?.panelUsername ?? binding.node?.panelUsername ?? null,
+          panelPassword: panelConfig?.panelPassword ?? binding.node?.panelPassword ?? null,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          status: "pending",
+          nextRunAt: now,
+          lockedAt: null,
+          completedAt: null,
+          attempts: 0,
+          lastError: null,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node?.panelBaseUrl ?? null,
+          panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node?.panelApiBasePath ?? null,
+          panelUsername: panelConfig?.panelUsername ?? binding.node?.panelUsername ?? null,
+          panelPassword: panelConfig?.panelPassword ?? binding.node?.panelPassword ?? null
+        }
+      });
+
+      await writer.trafficSnapshot.deleteMany({
+        where: {
+          snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
+        }
+      });
+    }
+
+    await writer.panelClientBinding.updateMany({
+      where: {
+        id: { in: bindings.map((binding: { id: string }) => binding.id) },
+        status: { in: ["active", "disabled"] }
+      },
+      data: {
+        status: "deleted"
+      }
+    });
 
     return bindings.length;
   }
@@ -1054,85 +1111,13 @@ export class RuntimeSessionService {
       panelPassword: string | null;
     }
   ): Promise<PanelBindingMutationResult> {
-    const bindings = await this.prisma.panelClientBinding.findMany({
-      where: {
-        subscriptionId,
-        ...(filter?.userId ? { userId: filter.userId } : {}),
-        ...(filter?.nodeIds ? { nodeId: { in: filter.nodeIds } } : {}),
-        status: { in: ["active", "disabled"] }
-      },
-      include: {
-        node: true
-      }
-    });
-
-    const failed: PanelBindingFailure[] = [];
-    for (const binding of bindings) {
-      try {
-        const removalStatus = await this.xuiService.removeClient(
-          {
-            id: binding.node.id,
-            panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node.panelBaseUrl,
-            panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node.panelApiBasePath,
-            panelUsername: panelConfig?.panelUsername ?? binding.node.panelUsername,
-            panelPassword: panelConfig?.panelPassword ?? binding.node.panelPassword,
-            panelInboundId: binding.panelInboundId
-          },
-          binding.panelClientId,
-          binding.panelClientEmail
-        );
-        if (removalStatus === "disabled") {
-          await this.prisma.panelClientBinding.update({
-            where: { id: binding.id },
-            data: {
-              status: "disabled"
-            }
-          });
-          failed.push({
-            bindingId: binding.id,
-            nodeId: binding.nodeId,
-            nodeName: binding.node.name,
-            panelClientEmail: binding.panelClientEmail,
-            error: "3x-ui client could only be disabled, not deleted"
-          });
-          continue;
-        }
-      } catch (error) {
-        await this.prisma.node.update({
-          where: { id: binding.nodeId },
-          data: {
-            panelStatus: "degraded",
-            panelError: error instanceof Error ? error.message : "删除 3x-ui 客户端失败"
-          }
-        });
-        failed.push({
-          bindingId: binding.id,
-          nodeId: binding.nodeId,
-          nodeName: binding.node.name,
-          panelClientEmail: binding.panelClientEmail,
-          error: error instanceof Error ? error.message : "删除 3x-ui 客户端失败"
-        });
-        continue;
-      }
-
-      await this.prisma.trafficSnapshot.deleteMany({
-        where: {
-          snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
-        }
-      });
-
-      await this.prisma.panelClientBinding.update({
-        where: { id: binding.id },
-        data: {
-          status: "deleted"
-        }
-      });
-    }
-
+    const requested = await this.prisma.$transaction((tx) =>
+      this.queuePanelDeleteJobsForSubscriptionTx(tx, subscriptionId, filter, panelConfig)
+    );
     return {
-      requested: bindings.length,
-      updated: bindings.length - failed.length,
-      failed
+      requested,
+      updated: requested,
+      failed: []
     };
   }
 
@@ -1211,6 +1196,8 @@ export class RuntimeSessionService {
     attempts: number;
     bindingId: string;
     subscriptionId: string;
+    userId?: string | null;
+    teamId?: string | null;
     nodeId: string;
     panelClientEmail: string;
     panelClientId: string;
@@ -1221,6 +1208,8 @@ export class RuntimeSessionService {
     panelPassword?: string | null;
     node: {
       id: string;
+      name: string;
+      flow: string;
       isActive: boolean;
       panelEnabled: boolean;
       panelBaseUrl: string | null;
@@ -1235,11 +1224,11 @@ export class RuntimeSessionService {
   }) {
     return runWithSubscriptionUsageLock(job.subscriptionId, async () => {
       try {
-      if (job.action !== "disable_client") {
+      if (!isPanelSyncAction(job.action)) {
         throw new Error(`未知面板同步动作：${job.action}`);
       }
 
-      if (job.binding.status !== "active" || !(await this.shouldRunPanelDisableJob(job))) {
+      if (job.action === "disable_client" && (job.binding.status !== "active" || !(await this.shouldRunPanelDisableJob(job)))) {
         await this.completePanelSyncJob(job);
         return;
       }
@@ -1253,24 +1242,87 @@ export class RuntimeSessionService {
         panelInboundId: job.panelInboundId ?? job.node.panelInboundId
       };
 
-      if (!(await this.shouldRunPanelDisableJob(job))) {
+      if (job.action === "disable_client" && !(await this.shouldRunPanelDisableJob(job))) {
         await this.completePanelSyncJob(job);
         return;
       }
 
-      await this.xuiService.setClientEnabled(
-        panelNodeConfig,
-        job.panelClientId,
-        job.panelClientEmail,
-        false
-      );
+      let ensuredPanelClientId: string | null = null;
+      let ensuredPanelInboundId: number | null = null;
+      if (job.action === "disable_client") {
+        await this.xuiService.setClientEnabled(
+          panelNodeConfig,
+          job.panelClientId,
+          job.panelClientEmail,
+          false
+        );
+      } else if (job.action === "ensure_client") {
+        const subscription = await this.prisma.subscription.findUnique({
+          where: { id: job.subscriptionId },
+          select: { expireAt: true }
+        });
+        if (!subscription) {
+          throw new Error(`Subscription not found for panel sync job: ${job.subscriptionId}`);
+        }
+        const ensured = await this.xuiService.ensureClient(panelNodeConfig, {
+          id: job.panelClientId,
+          email: job.panelClientEmail,
+          enable: true,
+          flow: job.node.flow,
+          expiryTime: subscription.expireAt.getTime(),
+          limitIp: 0,
+          totalGB: 0,
+          subId: "",
+          reset: 0,
+          tgId: 0,
+          comment: job.node.name
+        });
+        ensuredPanelClientId = ensured.uuid || job.panelClientId;
+        ensuredPanelInboundId = ensured.inboundId ?? panelNodeConfig.panelInboundId ?? job.panelInboundId ?? null;
+      } else if (job.action === "reset_client_traffic") {
+        await this.xuiService.resetClientTraffic(panelNodeConfig, job.panelClientEmail);
+      } else if (job.action === "delete_client") {
+        const removalStatus = await this.xuiService.removeClient(
+          panelNodeConfig,
+          job.panelClientId,
+          job.panelClientEmail
+        );
+        if (removalStatus === "disabled") {
+          throw new Error("3x-ui client could only be disabled, not deleted");
+        }
+      } else {
+        throw new Error(`Panel sync action is not implemented yet: ${job.action}`);
+      }
 
       await this.prisma.$transaction([
+        ...(job.action === "delete_client"
+          ? [
+              this.prisma.trafficSnapshot.deleteMany({
+                where: {
+                  snapshotKey: buildSnapshotKey(job.nodeId, job.subscriptionId, job.userId ?? null)
+                }
+              })
+            ]
+          : []),
         this.prisma.panelClientBinding.update({
           where: { id: job.bindingId },
-          data: {
-            status: "disabled"
-          }
+          data:
+            job.action === "disable_client"
+              ? { status: "disabled" }
+              : job.action === "delete_client"
+                ? { status: "deleted" }
+                : job.action === "ensure_client"
+                  ? {
+                      status: "active",
+                      panelClientId: ensuredPanelClientId ?? job.panelClientId,
+                      panelInboundId: ensuredPanelInboundId ?? job.panelInboundId ?? 0,
+                      lastSyncedAt: new Date()
+                    }
+                  : {
+                      lastUplinkBytes: 0n,
+                      lastDownlinkBytes: 0n,
+                      lastSyncedAt: new Date()
+                    }
         }),
         this.prisma.panelSyncJob.update({
           where: { id: job.id },
@@ -1614,7 +1666,7 @@ export class RuntimeSessionService {
       }
     });
 
-    this.activeRuntime = {
+    const runtime: GeneratedRuntimeConfigDto = {
       sessionId,
       leaseId,
       leaseExpiresAt: leaseExpiresAt.toISOString(),
@@ -1645,6 +1697,7 @@ export class RuntimeSessionService {
         mldsa65Verify: effectiveNode.mldsa65Verify || null
       }
     };
+    this.activeRuntime = runtime;
     this.activeRuntimeUsageContext = {
       subscriptionId: subscription.id,
       nodeId: node.id,
@@ -1670,7 +1723,7 @@ export class RuntimeSessionService {
       }
     });
     await this.meteringIncidentService.resolve(subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
-    return this.activeRuntime;
+    return runtime;
   }
 
   private async ensurePanelClientBinding(input: {
@@ -1712,49 +1765,48 @@ export class RuntimeSessionService {
       existing?.status === "deleted" ? randomUUID() : existing?.panelClientId ?? randomUUID();
     const panelInboundId =
       input.node.panelInboundId ?? (existing && existing.status !== "deleted" ? existing.panelInboundId : null);
-    const nodeConfig = {
-      id: input.node.id,
-      panelBaseUrl: input.node.panelBaseUrl,
-      panelApiBasePath: input.node.panelApiBasePath,
-      panelUsername: input.node.panelUsername,
-      panelPassword: input.node.panelPassword,
-      panelInboundId
-    };
 
-    const ensured = await this.xuiService.ensureClient(nodeConfig, {
-      id: panelClientId,
-      email: panelClientEmail,
-      enable: true,
-      flow: input.node.flow,
-      expiryTime: input.expireAt.getTime(),
-      limitIp: 0,
-      totalGB: 0,
-      subId: "",
-      reset: 0,
-      tgId: 0,
-      comment: `${input.userDisplayName} · ${input.node.name}`
-    });
-    const resolvedPanelClientId = ensured.uuid || panelClientId;
-    const resolvedPanelInboundId = panelInboundId ?? ensured.inboundId;
-    const baseline = await this.readPanelClientBaseline(
-      {
-        ...nodeConfig,
-        panelInboundId: resolvedPanelInboundId
-      },
-      panelClientEmail
-    );
+    return this.ensurePanelClientBindingLocally(input, existing, panelClientEmail, panelClientId, panelInboundId);
+  }
+
+  private async ensurePanelClientBindingLocally(
+    input: {
+      node: {
+        id: string;
+        name: string;
+        flow: string;
+        panelBaseUrl: string | null;
+        panelApiBasePath: string | null;
+        panelUsername: string | null;
+        panelPassword: string | null;
+        panelInboundId: number | null;
+      };
+      subscriptionId: string;
+      userId: string;
+      teamId: string | null;
+      userDisplayName: string;
+      expireAt: Date;
+    },
+    existing: any,
+    panelClientEmail: string,
+    panelClientId: string,
+    panelInboundId: number | null
+  ) {
+    const baseline = {
+      uplinkBytes: 0n,
+      downlinkBytes: 0n,
+      sampledAt: new Date()
+    };
+    const resolvedPanelInboundId = panelInboundId ?? 0;
 
     if (existing) {
       const binding = await this.prisma.panelClientBinding.update({
         where: { id: existing.id },
         data: {
           panelClientEmail,
-          panelClientId: resolvedPanelClientId,
-          panelInboundId: resolvedPanelInboundId ?? existing.panelInboundId,
+          panelClientId,
+          panelInboundId: existing.status === "deleted" ? resolvedPanelInboundId : panelInboundId ?? existing.panelInboundId,
           status: "active",
-          lastUplinkBytes: baseline.uplinkBytes,
-          lastDownlinkBytes: baseline.downlinkBytes,
-          lastSyncedAt: baseline.sampledAt,
           teamId: input.teamId
         }
       });
@@ -1764,43 +1816,35 @@ export class RuntimeSessionService {
         }
       });
       if (existing.status === "deleted" || !snapshot) {
-        const baselineSource =
-          existing.status === "deleted"
-            ? baseline
-            : {
-                uplinkBytes: existing.lastUplinkBytes,
-                downlinkBytes: existing.lastDownlinkBytes,
-                sampledAt: existing.lastSyncedAt ?? baseline.sampledAt
-              };
         await this.ensureTrafficSnapshotBaseline({
           nodeId: binding.nodeId,
           subscriptionId: binding.subscriptionId,
           userId: binding.userId,
           teamId: binding.teamId,
-          uplinkBytes: baselineSource.uplinkBytes,
-          downlinkBytes: baselineSource.downlinkBytes,
-          sampledAt: baselineSource.sampledAt,
+          uplinkBytes: existing.status === "deleted" ? 0n : existing.lastUplinkBytes,
+          downlinkBytes: existing.status === "deleted" ? 0n : existing.lastDownlinkBytes,
+          sampledAt: existing.lastSyncedAt ?? baseline.sampledAt,
           replaceExisting: existing.status === "deleted"
         });
       }
+      await this.queuePanelEnsureJobForBinding(binding, input);
       return binding;
     }
 
-    const createData = {
+    const binding = await this.createPanelClientBindingOrRecover({
       id: createId("panel_client"),
       subscriptionId: input.subscriptionId,
       userId: input.userId,
       teamId: input.teamId,
       nodeId: input.node.id,
       panelClientEmail,
-      panelClientId: resolvedPanelClientId,
-      panelInboundId: resolvedPanelInboundId ?? 0,
+      panelClientId,
+      panelInboundId: resolvedPanelInboundId,
       lastUplinkBytes: baseline.uplinkBytes,
       lastDownlinkBytes: baseline.downlinkBytes,
       lastSyncedAt: baseline.sampledAt,
       status: "active"
-    };
-    const binding = await this.createPanelClientBindingOrRecover(createData);
+    });
     await this.ensureTrafficSnapshotBaseline({
       nodeId: binding.nodeId,
       subscriptionId: binding.subscriptionId,
@@ -1810,7 +1854,74 @@ export class RuntimeSessionService {
       downlinkBytes: baseline.downlinkBytes,
       sampledAt: baseline.sampledAt
     });
+    await this.queuePanelEnsureJobForBinding(binding, input);
     return binding;
+  }
+
+  private async queuePanelEnsureJobForBinding(
+    binding: {
+      id: string;
+      subscriptionId: string;
+      userId: string | null;
+      teamId: string | null;
+      nodeId: string;
+      panelClientEmail: string;
+      panelClientId: string;
+      panelInboundId: number;
+    },
+    input: {
+      node: {
+        panelBaseUrl: string | null;
+        panelApiBasePath: string | null;
+        panelUsername: string | null;
+        panelPassword: string | null;
+      };
+    }
+  ) {
+    const now = new Date();
+    await this.prisma.panelSyncJob.upsert({
+      where: {
+        dedupeKey: `ensure:${binding.id}`
+      },
+      create: {
+        id: randomUUID(),
+        dedupeKey: `ensure:${binding.id}`,
+        action: "ensure_client",
+        bindingId: binding.id,
+        subscriptionId: binding.subscriptionId,
+        userId: binding.userId,
+        teamId: binding.teamId,
+        nodeId: binding.nodeId,
+        panelClientEmail: binding.panelClientEmail,
+        panelClientId: binding.panelClientId,
+        panelInboundId: binding.panelInboundId,
+        panelBaseUrl: input.node.panelBaseUrl,
+        panelApiBasePath: input.node.panelApiBasePath,
+        panelUsername: input.node.panelUsername,
+        panelPassword: input.node.panelPassword,
+        status: "pending",
+        nextRunAt: now
+      },
+      update: {
+        status: "pending",
+        nextRunAt: now,
+        lockedAt: null,
+        completedAt: null,
+        attempts: 0,
+        lastError: null,
+        subscriptionId: binding.subscriptionId,
+        userId: binding.userId,
+        teamId: binding.teamId,
+        nodeId: binding.nodeId,
+        panelClientEmail: binding.panelClientEmail,
+        panelClientId: binding.panelClientId,
+        panelInboundId: binding.panelInboundId,
+        panelBaseUrl: input.node.panelBaseUrl,
+        panelApiBasePath: input.node.panelApiBasePath,
+        panelUsername: input.node.panelUsername,
+        panelPassword: input.node.panelPassword
+      }
+    });
   }
 
   private async createPanelClientBindingOrRecover(data: {
@@ -1835,7 +1946,7 @@ export class RuntimeSessionService {
       }
     }
 
-    const existing = await this.prisma.panelClientBinding.findFirst({
+    const existing: any = await this.prisma.panelClientBinding.findFirst({
       where: {
         subscriptionId: data.subscriptionId,
         nodeId: data.nodeId,
@@ -1859,26 +1970,6 @@ export class RuntimeSessionService {
         status: "active"
       }
     });
-  }
-
-  private async readPanelClientBaseline(
-    node: {
-      id: string;
-      panelBaseUrl: string | null;
-      panelApiBasePath: string | null;
-      panelUsername: string | null;
-      panelPassword: string | null;
-      panelInboundId: number | null;
-    },
-    panelClientEmail: string
-  ) {
-    const usage = await this.xuiService.getClientUsage(node, panelClientEmail);
-    const sampledAt = usage?.sampledAt ? new Date(usage.sampledAt) : new Date();
-    return {
-      uplinkBytes: usage?.uplinkBytes ?? 0n,
-      downlinkBytes: usage?.downlinkBytes ?? 0n,
-      sampledAt: Number.isNaN(sampledAt.getTime()) ? new Date() : sampledAt
-    };
   }
 
   private async ensureTrafficSnapshotBaseline(input: {
@@ -2293,6 +2384,10 @@ function buildLeaseRevocationJobKey(
 
 function isPrismaUniqueConstraintError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function isPanelSyncAction(action: string): action is PanelSyncAction {
+  return ["ensure_client", "disable_client", "delete_client", "reset_client_traffic"].includes(action);
 }
 
 function isPanelDisableJobClearableAfterNodeReenabled(

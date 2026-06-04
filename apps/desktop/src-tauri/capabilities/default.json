@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default desktop permissions for the main ChordV window.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://localhost:5173", "http://localhost:5173/*"]
+  },
+  "permissions": [
+    "core:app:default",
+    "core:window:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

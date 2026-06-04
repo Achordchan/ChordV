@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
@@ -14,7 +14,13 @@ import {
   replySupportTicket,
   replySupportTicketWithAttachment
 } from "../api/client";
-import { isSupportTicketUnread, markSupportTicketAsRead } from "../lib/supportTickets";
+import {
+  consumeSupportTicketBackgroundDetailRefresh,
+  isSupportTicketUnread,
+  markSupportTicketAsRead,
+  markSupportTicketAsUnread,
+  reconcileLocalSupportTicketUnread
+} from "../lib/supportTickets";
 
 type NoticeInput = {
   color: "green" | "yellow" | "red" | "blue";
@@ -23,6 +29,10 @@ type NoticeInput = {
 };
 
 type TicketDraft = CreateClientSupportTicketInputDto;
+
+export type LoadTicketDetailOptions = {
+  markRead?: boolean;
+};
 
 type UseSupportTicketsOptions = {
   accessToken: string | null;
@@ -58,6 +68,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
   const [ticketListBusy, setTicketListBusy] = useState(false);
   const [ticketDetailBusy, setTicketDetailBusy] = useState(false);
   const [ticketSubmitting, setTicketSubmitting] = useState(false);
+  const locallyUnreadTicketIdsRef = useRef(new Set<string>());
 
   const hasUnreadTickets = useMemo(
     () => ticketList.some((ticket) => isSupportTicketUnread(ticket)),
@@ -73,6 +84,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
 
       try {
         await markSupportTicketRead(accessToken, ticketId);
+        locallyUnreadTicketIdsRef.current.delete(ticketId);
         setTicketList((current) => current.map((ticket) => markSupportTicketAsRead(ticket, ticketId)));
         setTicketDetail((current) => (current ? markSupportTicketAsRead(current, ticketId) : current));
         return true;
@@ -86,6 +98,11 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     [options.accessToken, options.onUnauthorized]
   );
 
+  const markTicketUnread = useCallback((ticketId: string) => {
+    locallyUnreadTicketIdsRef.current.add(ticketId);
+    setTicketList((current) => current.map((ticket) => markSupportTicketAsUnread(ticket, ticketId)));
+  }, []);
+
   const loadTicketList = useCallback(
     async (preferredTicketId?: string | null) => {
       if (!options.accessToken) {
@@ -95,7 +112,9 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
       try {
         setTicketListBusy(true);
         setTicketCenterError(null);
-        const nextTickets = await fetchSupportTickets(options.accessToken);
+        const nextTickets = (await fetchSupportTickets(options.accessToken)).map((ticket) =>
+          reconcileLocalSupportTicketUnread(ticket, locallyUnreadTicketIdsRef.current)
+        );
         setTicketList(nextTickets);
         setSelectedTicketId((current) => pickTicketId(nextTickets, preferredTicketId ?? current));
         if (nextTickets.length === 0) {
@@ -117,7 +136,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
   );
 
   const loadTicketDetail = useCallback(
-    async (ticketId: string) => {
+    async (ticketId: string, loadOptions?: LoadTicketDetailOptions) => {
       if (!options.accessToken) {
         return null;
       }
@@ -125,9 +144,11 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
       try {
         setTicketDetailBusy(true);
         setTicketCenterError(null);
+        const isBackgroundRefresh = consumeSupportTicketBackgroundDetailRefresh(ticketId);
+        const shouldMarkRead = loadOptions?.markRead ?? !isBackgroundRefresh;
         const detail = await fetchSupportTicketDetail(options.accessToken, ticketId);
         setTicketDetail(detail);
-        if (isSupportTicketUnread(detail)) {
+        if (shouldMarkRead && isSupportTicketUnread(detail)) {
           void markTicketAsRead(ticketId, options.accessToken);
         }
         return detail;
@@ -270,6 +291,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     loadTicketList,
     loadTicketDetail,
     markTicketAsRead,
+    markTicketUnread,
     openTicketCenter,
     openTicketComposer,
     closeTicketComposer,

@@ -374,23 +374,68 @@ export class XuiService {
       : [];
     const firstClient = clients[0];
     const panelHost = new URL(normalizeBaseUrl(normalizeNodeConfig(node).panelBaseUrl)).hostname;
+    const serverPort = typeof inbound.port === "number" && Number.isFinite(inbound.port) ? inbound.port : null;
+    const uuid = readString(firstClient?.id);
+    const realityPublicKey =
+      readString(realityDerivedSettings?.publicKey) ??
+      readString(realitySettings?.publicKey) ??
+      readString(streamSettings?.publicKey);
+    const shortId =
+      shortIds[0] ??
+      readString(realityDerivedSettings?.shortId) ??
+      readString(realitySettings?.shortId) ??
+      readString(streamSettings?.shortId) ??
+      "";
+    const serverName =
+      readString(realityDerivedSettings?.serverName) ??
+      readString(realitySettings?.serverName) ??
+      readString(streamSettings?.serverName) ??
+      serverNames[0];
+    const fingerprint =
+      readString(realityDerivedSettings?.fingerprint) ??
+      readString(realitySettings?.fingerprint) ??
+      readString(streamSettings?.fingerprint) ??
+      "chrome";
+    const spiderX =
+      readString(realityDerivedSettings?.spiderX) ??
+      readString(realitySettings?.spiderX) ??
+      readString(streamSettings?.spiderX) ??
+      "/";
+    const mldsa65Verify =
+      readString(realityDerivedSettings?.mldsa65Verify) ??
+      readString(realityDerivedSettings?.pqv) ??
+      readString(realitySettings?.mldsa65Verify) ??
+      readString(realitySettings?.pqv) ??
+      readString(streamSettings?.mldsa65Verify) ??
+      readString(streamSettings?.pqv) ??
+      "";
+
+    if (!serverPort) {
+      throw new BadGatewayException("3x-ui 入站端口配置缺失");
+    }
+    if (!uuid) {
+      throw new BadGatewayException("3x-ui 入站客户端 UUID 缺失");
+    }
+    if (!realityPublicKey) {
+      throw new BadGatewayException("3x-ui Reality publicKey 配置缺失");
+    }
+    if (!serverName) {
+      throw new BadGatewayException("3x-ui Reality serverName 配置缺失");
+    }
 
     return {
       inboundId: inbound.id,
       name: readString(inbound.remark) ?? `${panelHost}:${inbound.port ?? 443}`,
       serverHost: resolveInboundServerHost(readString(inbound.listen), panelHost),
-      serverPort: typeof inbound.port === "number" && Number.isFinite(inbound.port) ? inbound.port : 443,
-      uuid: readString(firstClient?.id) ?? "",
+      serverPort,
+      uuid,
       flow: readString(firstClient?.flow) ?? readString(settings?.flow) ?? "xtls-rprx-vision",
-      realityPublicKey: readString(realityDerivedSettings?.publicKey) ?? "",
-      shortId: shortIds[0] ?? "",
-      serverName: readString(realityDerivedSettings?.serverName) ?? serverNames[0] ?? "",
-      fingerprint: readString(realityDerivedSettings?.fingerprint) ?? "chrome",
-      spiderX: readString(realityDerivedSettings?.spiderX) ?? "/",
-      mldsa65Verify:
-        readString(realityDerivedSettings?.mldsa65Verify) ??
-        readString(realitySettings?.mldsa65Verify) ??
-        ""
+      realityPublicKey,
+      shortId,
+      serverName,
+      fingerprint,
+      spiderX,
+      mldsa65Verify
     };
   }
 

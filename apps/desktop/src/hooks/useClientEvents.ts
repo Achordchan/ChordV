@@ -4,6 +4,7 @@ import type { Dispatch, SetStateAction } from "react";
 import {
   isAccessTokenExpiredApiError,
   probeClientServerLatency,
+  recordClientDiagnosticLog,
   subscribeClientEvents as subscribeClientEventsRequest
 } from "../api/client";
 
@@ -126,6 +127,7 @@ export function useClientEvents(options: UseClientEventsOptions) {
       openedOnceRef.current = false;
       return;
     }
+    void recordClientDiagnosticLog("client-events-hook", "starting subscription");
 
     const verifyServerReachability = async (reason: unknown) => {
       if (probeFallbackBusyRef.current) {
@@ -144,15 +146,23 @@ export function useClientEvents(options: UseClientEventsOptions) {
 
     return subscribeClientEvents(session.accessToken, {
       onEvent: (event) => {
+        if (event.type !== "keepalive") {
+          void recordClientDiagnosticLog("client-events-hook", `event ${event.type}`);
+        }
         void handleRuntimeEventRef.current(event, session.accessToken);
       },
       onOpen: (meta) => {
+        void recordClientDiagnosticLog("client-events-hook", `open elapsed=${meta.elapsedMs ?? "-"}`);
         openedOnceRef.current = true;
         setServerProbeRef.current(createOpenedServerProbeState(meta.elapsedMs));
         void syncConnectedStateRef.current?.(session.accessToken);
         void runUpdateCheckOnOpenRef.current?.();
       },
       onError: (error, meta) => {
+        void recordClientDiagnosticLog(
+          "client-events-hook",
+          `error status=${meta.status ?? "-"} auth=${meta.authError ? "true" : "false"} message=${error.message}`
+        );
         if (meta.status === 401 || meta.authError || isUnauthorizedErrorRef.current(error)) {
           void recoverSessionAfterUnauthorizedRef.current();
           return;

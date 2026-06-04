@@ -1,5 +1,7 @@
-import { Button, Checkbox, Paper, PasswordInput, TextInput } from "@mantine/core";
-import { IconLock, IconMail } from "@tabler/icons-react";
+import { useState } from "react";
+import { Button, Checkbox, Group, Modal, Paper, PasswordInput, Stack, Text, TextInput } from "@mantine/core";
+import { IconHelpCircle, IconLock, IconMail, IconSend } from "@tabler/icons-react";
+import { openExternalUrl } from "../lib/runtime";
 import "./LoginScreen.css";
 
 type LoginScreenProps = {
@@ -18,7 +20,25 @@ type LoginScreenProps = {
   onEmergencyDisconnect: () => void;
 };
 
+const SUPPORT_EMAIL = "achordchan@gmail.com";
+
 export function LoginScreen(props: LoginScreenProps) {
+  const [helpOpened, setHelpOpened] = useState(false);
+
+  const openSupportEmail = () => {
+    const subject = encodeURIComponent("ChordV 账号密码协助");
+    const body = encodeURIComponent(
+      [
+        "你好，我需要协助处理 ChordV 账号密码问题。",
+        "",
+        `登录邮箱：${props.email.trim() || "请填写你的登录邮箱"}`,
+        "问题类型：忘记密码 / 修改密码 / 登录失败",
+        "补充说明："
+      ].join("\n")
+    );
+    void openExternalUrl(`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`);
+  };
+
   return (
     <div className="auth-screen">
       <div className="auth-screen__shell">
@@ -112,7 +132,7 @@ export function LoginScreen(props: LoginScreenProps) {
                   label: "auth-screen__remember-label"
                 }}
               />
-              <button type="button" className="auth-screen__helper-action">
+              <button type="button" className="auth-screen__helper-action" onClick={() => setHelpOpened(true)}>
                 需要帮助？
               </button>
             </div>
@@ -154,6 +174,66 @@ export function LoginScreen(props: LoginScreenProps) {
           </div>
         </Paper>
       </div>
+
+      <Modal
+        opened={helpOpened}
+        onClose={() => setHelpOpened(false)}
+        title="账号帮助"
+        centered
+        size="min(92vw, 520px)"
+        classNames={{
+          content: "auth-help__modal-content",
+          header: "auth-help__modal-header",
+          body: "auth-help__modal-body"
+        }}
+      >
+        <Stack gap="md" className="auth-help">
+          <Paper withBorder radius="lg" p="md" className="auth-help__card">
+            <Group gap="sm" align="flex-start" wrap="nowrap">
+              <IconHelpCircle size={20} className="auth-help__icon" />
+              <Stack gap={6}>
+                <Text fw={700}>忘记密码</Text>
+                <Text size="sm" c="dimmed">
+                  当前版本暂不支持客户端自助找回密码。请发送你的登录邮箱和购买/团队信息，由管理员核对后重置。
+                </Text>
+              </Stack>
+            </Group>
+          </Paper>
+
+          <Paper withBorder radius="lg" p="md" className="auth-help__card">
+            <Group gap="sm" align="flex-start" wrap="nowrap">
+              <IconLock size={20} className="auth-help__icon" />
+              <Stack gap={6}>
+                <Text fw={700}>修改密码</Text>
+                <Text size="sm" c="dimmed">
+                  已登录用户可通过工单说明需求；无法登录时，直接通过联系邮箱申请重置。
+                </Text>
+              </Stack>
+            </Group>
+          </Paper>
+
+          <Paper withBorder radius="lg" p="md" className="auth-help__contact">
+            <Stack gap="xs">
+              <Text fw={700}>联系邮箱</Text>
+              <Text size="sm" className="auth-help__email">
+                {SUPPORT_EMAIL}
+              </Text>
+              <Text size="xs" c="dimmed">
+                建议在邮件里写清登录邮箱、问题类型和必要截图，方便管理员快速核对。
+              </Text>
+            </Stack>
+          </Paper>
+
+          <Group justify="flex-end" gap="xs">
+            <Button variant="default" onClick={() => setHelpOpened(false)}>
+              关闭
+            </Button>
+            <Button leftSection={<IconSend size={15} />} onClick={openSupportEmail}>
+              发送邮件
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </div>
   );
 }

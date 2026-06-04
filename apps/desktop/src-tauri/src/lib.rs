@@ -22,7 +22,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, RunEvent, State};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use url::Url;
 
 #[cfg(not(target_os = "android"))]
@@ -73,6 +73,7 @@ const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
 const DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 180;
 const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DOWNLOAD_IDLE_TIMEOUT_SECS: u64 = 20;
+const CLIENT_EVENT_STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const MIN_WINDOWS_PE_BYTES: u64 = 1024 * 1024;
 const MIN_GEO_DATA_BYTES: u64 = 64 * 1024;
 
@@ -158,6 +159,11 @@ struct NativeSessionRefreshState;
 #[derive(Default)]
 struct NativeLeaseHeartbeatSignalState {
     tx: Option<mpsc::Sender<()>>,
+}
+
+#[derive(Default)]
+struct NativeClientEventStreamState {
+    stops: HashMap<String, oneshot::Sender<()>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -370,6 +376,50 @@ struct ApiResponseOutput {
     status: u16,
     body: String,
     elapsed_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientEventStreamInput {
+    stream_id: String,
+    access_token: String,
+    last_event_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientEventStreamStartResponse {
+    stream_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientDiagnosticInput {
+    category: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NativeClientEventPayload {
+    stream_id: String,
+    event_id: Option<String>,
+    event: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NativeClientEventOpenedPayload {
+    stream_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NativeClientEventErrorPayload {
+    stream_id: String,
+    message: String,
+    status: Option<u16>,
+    auth_error: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -623,6 +673,315 @@ async fn api_request(request: ApiRequestInput) -> Result<ApiResponseOutput, Stri
         body,
         elapsed_ms,
     })
+}
+
+#[tauri::command]
+fn start_client_event_stream(
+    app: AppHandle,
+    input: ClientEventStreamInput,
+    state: State<'_, Mutex<NativeClientEventStreamState>>,
+) -> Result<ClientEventStreamStartResponse, String> {
+    let access_token = input.access_token.trim().to_string();
+    if access_token.is_empty() {
+        return Err("access token is required".into());
+    }
+    let stream_id = input.stream_id.trim().to_string();
+    if stream_id.is_empty() {
+        return Err("stream id is required".into());
+    }
+
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    {
+        let mut state = state.lock().map_err(|_| "SSE 状态异常".to_string())?;
+        if state.stops.contains_key(&stream_id) {
+            return Err("stream id already exists".into());
+        }
+        state.stops.insert(stream_id.clone(), stop_tx);
+    }
+
+    let task_stream_id = stream_id.clone();
+    tauri::async_runtime::spawn(async move {
+        run_client_event_stream(
+            app,
+            task_stream_id,
+            access_token,
+            input.last_event_id,
+            stop_rx,
+        )
+        .await;
+    });
+
+    Ok(ClientEventStreamStartResponse { stream_id })
+}
+
+#[tauri::command]
+fn stop_client_event_stream(
+    stream_id: String,
+    state: State<'_, Mutex<NativeClientEventStreamState>>,
+) -> Result<CommandResult, String> {
+    let sender = {
+        let mut state = state.lock().map_err(|_| "SSE 状态异常".to_string())?;
+        state.stops.remove(stream_id.trim())
+    };
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+#[tauri::command]
+fn record_client_diagnostic(
+    app: AppHandle,
+    input: ClientDiagnosticInput,
+) -> Result<CommandResult, String> {
+    let category = input.category.trim();
+    let message = input.message.trim();
+    if !category.is_empty() && !message.is_empty() {
+        append_download_diagnostic_log(&app, category, message);
+    }
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
+}
+
+async fn run_client_event_stream(
+    app: AppHandle,
+    stream_id: String,
+    access_token: String,
+    last_event_id: Option<String>,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    let url = format!(
+        "{}/api/client/events/stream",
+        api_base_url().trim_end_matches('/')
+    );
+    append_download_diagnostic_log(&app, "client-sse", format!("starting stream {stream_id}"));
+    let client = match Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            append_download_diagnostic_log(
+                &app,
+                "client-sse",
+                format!("stream {stream_id} client build failed: {error}"),
+            );
+            emit_client_event_stream_error(
+                &app,
+                &stream_id,
+                format!("初始化 SSE 客户端失败：{error}"),
+                None,
+            );
+            return;
+        }
+    };
+
+    let mut request = client
+        .get(url)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Accept", "text/event-stream")
+        .header("Cache-Control", "no-cache");
+    if let Some(last_event_id) = last_event_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        request = request.header("Last-Event-ID", last_event_id);
+    }
+
+    let mut response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            append_download_diagnostic_log(
+                &app,
+                "client-sse",
+                format!("stream {stream_id} connect failed: {error}"),
+            );
+            emit_client_event_stream_error(
+                &app,
+                &stream_id,
+                format!("连接 SSE 失败：{error}"),
+                None,
+            );
+            return;
+        }
+    };
+
+    let status = response.status();
+    append_download_diagnostic_log(
+        &app,
+        "client-sse",
+        format!("stream {stream_id} opened with status {}", status.as_u16()),
+    );
+    if !status.is_success() {
+        let status_code = status.as_u16();
+        let body = response.text().await.unwrap_or_default();
+        append_download_diagnostic_log(
+            &app,
+            "client-sse",
+            format!("stream {stream_id} rejected with status {status_code}: {body}"),
+        );
+        emit_client_event_stream_error(
+            &app,
+            &stream_id,
+            parse_api_error_message(&body),
+            Some(status_code),
+        );
+        return;
+    }
+    emit_client_event_stream_opened(&app, &stream_id);
+
+    let mut buffer = Vec::<u8>::new();
+    let idle_timeout = Duration::from_secs(CLIENT_EVENT_STREAM_IDLE_TIMEOUT_SECS);
+    let idle_sleep = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle_sleep);
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => {
+                append_download_diagnostic_log(&app, "client-sse", format!("stream {stream_id} stopped"));
+                return;
+            }
+            _ = &mut idle_sleep => {
+                append_download_diagnostic_log(&app, "client-sse", format!("stream {stream_id} idle timeout"));
+                emit_client_event_stream_error(&app, &stream_id, "SSE idle timeout", None);
+                return;
+            }
+            chunk = response.chunk() => {
+                match chunk {
+                    Ok(Some(bytes)) => {
+                        buffer.extend_from_slice(&bytes);
+                        drain_client_event_stream_buffer(&app, &stream_id, &mut buffer);
+                        idle_sleep
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + idle_timeout);
+                    }
+                    Ok(None) => {
+                        append_download_diagnostic_log(&app, "client-sse", format!("stream {stream_id} ended"));
+                        emit_client_event_stream_error(&app, &stream_id, "SSE 连接已结束", None);
+                        return;
+                    }
+                    Err(error) => {
+                        append_download_diagnostic_log(
+                            &app,
+                            "client-sse",
+                            format!("stream {stream_id} read failed: {error}"),
+                        );
+                        emit_client_event_stream_error(&app, &stream_id, format!("读取 SSE 失败：{error}"), None);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn drain_client_event_stream_buffer(app: &AppHandle, stream_id: &str, buffer: &mut Vec<u8>) {
+    while let Some(chunk) = take_sse_chunk(buffer) {
+        if let Some((event_id, event)) = parse_sse_event_chunk(&chunk) {
+            let event_type = event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if event_type != "keepalive" {
+                append_download_diagnostic_log(
+                    app,
+                    "client-sse",
+                    format!(
+                        "stream {stream_id} event {event_type} id {}",
+                        event_id.as_deref().unwrap_or("-")
+                    ),
+                );
+            }
+            let _ = app.emit(
+                "chordv://client-runtime-event",
+                NativeClientEventPayload {
+                    stream_id: stream_id.to_string(),
+                    event_id,
+                    event,
+                },
+            );
+        }
+    }
+}
+
+fn take_sse_chunk(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let lf_index = find_byte_sequence(buffer, b"\n\n").map(|index| (index, 2));
+    let crlf_index = find_byte_sequence(buffer, b"\r\n\r\n").map(|index| (index, 4));
+    let cr_index = find_byte_sequence(buffer, b"\r\r").map(|index| (index, 2));
+    let (index, separator_len) = [lf_index, crlf_index, cr_index]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(index, _)| *index)?;
+    let rest = buffer.split_off(index + separator_len);
+    let mut chunk = std::mem::replace(buffer, rest);
+    chunk.truncate(index);
+    Some(chunk)
+}
+
+fn find_byte_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn parse_sse_event_chunk(chunk: &[u8]) -> Option<(Option<String>, Value)> {
+    let chunk = String::from_utf8(chunk.to_vec()).ok()?;
+    let mut event_id = None;
+    let mut data_lines = Vec::new();
+    for line in chunk.lines() {
+        let line = line.trim_end_matches('\r');
+        if let Some(value) = line.strip_prefix("id:") {
+            let value = value.trim();
+            if !value.is_empty() {
+                event_id = Some(value.to_string());
+            }
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data_lines.push(value.trim().to_string());
+        }
+    }
+    if data_lines.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<Value>(&data_lines.join("\n"))
+        .ok()
+        .map(|event| (event_id, event))
+}
+
+fn emit_client_event_stream_opened(app: &AppHandle, stream_id: &str) {
+    let _ = app.emit(
+        "chordv://client-runtime-event-open",
+        NativeClientEventOpenedPayload {
+            stream_id: stream_id.to_string(),
+        },
+    );
+}
+
+fn emit_client_event_stream_error(
+    app: &AppHandle,
+    stream_id: &str,
+    message: impl Into<String>,
+    status: Option<u16>,
+) {
+    let status = status.filter(|value| *value > 0);
+    let _ = app.emit(
+        "chordv://client-runtime-event-error",
+        NativeClientEventErrorPayload {
+            stream_id: stream_id.to_string(),
+            message: message.into(),
+            status,
+            auth_error: matches!(status, Some(401 | 403)),
+        },
+    );
 }
 
 fn api_base_url() -> String {
@@ -2202,7 +2561,8 @@ fn connect_runtime(
         return Err(format!("设置系统代理失败：{error}"));
     }
 
-    if let Err(error) = verify_runtime_ready(config.local_http_port, config.local_socks_port) {
+    if let Err(error) = verify_runtime_ready(&app, config.local_http_port, config.local_socks_port)
+    {
         rollback_connect_failure(&app, &mut state, &mut child, error.clone());
         return Err(error);
     }
@@ -4718,7 +5078,7 @@ fn rollback_connect_failure(
     sync_shell_from_runtime(app, state);
 }
 
-fn verify_runtime_ready(http_port: u16, socks_port: u16) -> Result<(), String> {
+fn verify_runtime_ready(app: &AppHandle, http_port: u16, socks_port: u16) -> Result<(), String> {
     let start = Instant::now();
     let timeout = Duration::from_secs(6);
     let mut http_ready = false;
@@ -4738,7 +5098,13 @@ fn verify_runtime_ready(http_port: u16, socks_port: u16) -> Result<(), String> {
     }
 
     #[cfg(windows)]
-    verify_http_proxy_flow(http_port)?;
+    if let Err(error) = verify_http_proxy_flow(http_port) {
+        append_download_diagnostic_log(
+            app,
+            "runtime",
+            format!("windows proxy egress self-check skipped as non-fatal: {error}"),
+        );
+    }
 
     Ok(())
 }
@@ -6156,6 +6522,7 @@ pub fn run() {
         .manage(Mutex::new(PendingInstallerState::default()))
         .manage(Mutex::new(RuntimeComponentDownloadState::default()))
         .manage(Mutex::new(NativeLeaseHeartbeatSignalState::default()))
+        .manage(Mutex::new(NativeClientEventStreamState::default()))
         .manage(AsyncMutex::new(NativeSessionRefreshState::default()))
         .manage(Mutex::new(android_runtime::AndroidRuntimeState::default()));
 
@@ -6205,6 +6572,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_ready,
             api_request,
+            start_client_event_stream,
+            stop_client_event_stream,
+            record_client_diagnostic,
             refresh_session_native,
             load_session,
             save_session,

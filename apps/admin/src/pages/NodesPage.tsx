@@ -199,6 +199,7 @@ function translatePanelSyncStatus(status: AdminPanelSyncJobDto["status"]) {
 }
 
 function panelSyncStatusColor(status: AdminPanelSyncJobDto["status"]) {
+  if (status === "pending") return "yellow";
   if (status === "running") return "blue";
   if (status === "failed") return "yellow";
   if (status === "completed") return "green";

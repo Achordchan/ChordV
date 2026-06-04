@@ -470,10 +470,11 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
 }
 
 export type AdminPanelSyncJobStatus = "pending" | "running" | "failed" | "completed";
+export type AdminPanelSyncJobAction = "ensure_client" | "disable_client" | "delete_client" | "reset_client_traffic";
 
 export interface AdminPanelSyncJobDto {
   id: string;
-  action: "disable_client";
+  action: AdminPanelSyncJobAction;
   status: AdminPanelSyncJobStatus;
   nodeId: string;
   nodeName: string;
@@ -984,6 +985,8 @@ export interface ResetSubscriptionTrafficResultDto {
   subscriptionId: string;
   userId: string | null;
   clearedBindingCount: number;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
   message: string;
   subscription: AdminSubscriptionRecordDto;
   user: AdminUserRecordDto | null;

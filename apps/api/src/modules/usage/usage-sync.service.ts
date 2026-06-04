@@ -78,6 +78,14 @@ export class UsageSyncService {
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
         status: "active",
+        NOT: {
+          panelSyncJobs: {
+            some: {
+              action: "reset_client_traffic",
+              status: { in: ["pending", "running", "failed"] }
+            }
+          }
+        },
         subscription: {
           state: "active"
         },
@@ -600,7 +608,15 @@ export class UsageSyncService {
       where: {
         nodeId,
         ...(panelInboundId !== undefined ? { panelInboundId } : {}),
-        status: "active"
+        status: "active",
+        NOT: {
+          panelSyncJobs: {
+            some: {
+              action: "reset_client_traffic",
+              status: { in: ["pending", "running", "failed"] }
+            }
+          }
+        }
       },
       select: {
         id: true,
@@ -670,62 +686,6 @@ export class UsageSyncService {
     }
     this.warningTimestamps.set(key, now);
     this.logger.warn(`节点 ${nodeId} 用量同步异常: ${reason}`);
-  }
-
-  private async deactivatePanelClients(subscriptionId: string, nextStatus: "disabled" | "deleted" = "disabled") {
-    const bindings = await this.prisma.panelClientBinding.findMany({
-      where: {
-        subscriptionId,
-        status: "active"
-      },
-      include: {
-        node: {
-          select: {
-            id: true,
-            panelBaseUrl: true,
-            panelApiBasePath: true,
-            panelUsername: true,
-            panelPassword: true,
-            panelInboundId: true
-          }
-        }
-      }
-    });
-
-    for (const binding of bindings) {
-      try {
-        await this.xuiService.setClientEnabled(
-          {
-            id: binding.node.id,
-            panelBaseUrl: binding.node.panelBaseUrl,
-            panelApiBasePath: binding.node.panelApiBasePath,
-            panelUsername: binding.node.panelUsername,
-            panelPassword: binding.node.panelPassword,
-            panelInboundId: binding.panelInboundId
-          },
-          binding.panelClientId,
-          binding.panelClientEmail,
-          false
-        );
-      } catch (error) {
-        await this.prisma.node.update({
-          where: { id: binding.nodeId },
-          data: {
-            panelStatus: "degraded",
-            panelError: error instanceof Error ? error.message : "禁用 3x-ui 客户端失败"
-          }
-        });
-        // 这里不抛错，避免计量主链被节点面板异常打断，后续轮询会继续尝试修复。
-        continue;
-      }
-
-      await this.prisma.panelClientBinding.update({
-        where: { id: binding.id },
-        data: {
-          status: nextStatus
-        }
-      });
-    }
   }
 
   private async revokeActiveLeases(subscriptionId: string, reason: string) {

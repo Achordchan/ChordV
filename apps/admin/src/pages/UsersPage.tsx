@@ -33,6 +33,7 @@ type UsersPageProps = {
   onCloseTeamMemberInlineEditor: () => void;
   onSaveTeamMemberInlineEditor: () => void;
   onDeleteTeamMember: (teamId: string, memberId: string) => void;
+  onToggleUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
 };
 
@@ -76,9 +77,25 @@ export function UsersPage(props: UsersPageProps) {
                       <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
                     </Table.Td>
                     <Table.Td>
-                      <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)}>
-                        <IconPencil size={16} />
-                      </ActionIcon>
+                      <RowActions>
+                        <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号">
+                          <IconPencil size={16} />
+                        </ActionIcon>
+                        <ActionIcon
+                          variant="subtle"
+                          color={item.status === "active" ? "red" : "green"}
+                          onClick={() =>
+                            props.onToggleUserStatus(
+                              item.id,
+                              item.status === "active" ? "disabled" : "active",
+                              item.displayName
+                            )
+                          }
+                          title={item.status === "active" ? "禁用账号" : "启用账号"}
+                        >
+                          {item.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
+                        </ActionIcon>
+                      </RowActions>
                     </Table.Td>
                   </Table.Tr>
                 ))}
@@ -115,10 +132,10 @@ export function UsersPage(props: UsersPageProps) {
                           这里只处理团队组织、负责人和成员关系，不展示共享订阅、节点和流量账单。
                         </Text>
                         <RowActions>
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)}>
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)} title="编辑团队资料">
                             <IconPencil size={16} />
                           </ActionIcon>
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamMemberInlineEditor(item.id)}>
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamMemberInlineEditor(item.id)} title="添加团队成员关系">
                             <IconUsers size={16} />
                           </ActionIcon>
                         </RowActions>
@@ -244,15 +261,24 @@ export function UsersPage(props: UsersPageProps) {
                                           member.displayName
                                         )
                                       }
-                                      title={userRecord?.status === "active" ? "禁用账号" : "启用账号"}
+                                      title={userRecord?.status === "active" ? "账号级：禁用账号" : "账号级：启用账号"}
                                     >
                                       {userRecord?.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
                                     </ActionIcon>
-                                    <ActionIcon variant="subtle" onClick={() => props.onOpenTeamMemberInlineEditor(item.id, member.id)}>
+                                    <ActionIcon
+                                      variant="subtle"
+                                      onClick={() => props.onOpenTeamMemberInlineEditor(item.id, member.id)}
+                                      title="团队关系：编辑成员角色"
+                                    >
                                       <IconUsers size={16} />
                                     </ActionIcon>
                                     {member.role !== "owner" ? (
-                                      <ActionIcon color="red" variant="subtle" onClick={() => props.onDeleteTeamMember(item.id, member.id)}>
+                                      <ActionIcon
+                                        color="red"
+                                        variant="subtle"
+                                        onClick={() => props.onDeleteTeamMember(item.id, member.id)}
+                                        title="团队关系：移出团队"
+                                      >
                                         <IconTrash size={16} />
                                       </ActionIcon>
                                     ) : null}

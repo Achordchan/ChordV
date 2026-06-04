@@ -7,6 +7,7 @@ import {
   patchAnnouncementRecord,
   pickForcedAnnouncement,
   pickPassiveAnnouncements,
+  pickUnreadForcedAnnouncementIds,
   pickUnreadPassiveAnnouncementIds
 } from "../lib/announcementState";
 
@@ -82,6 +83,30 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
     }
   }, [options, passiveAnnouncements, patchAnnouncementReadState]);
 
+  const acknowledgeUnreadForcedAnnouncements = useCallback(async () => {
+    if (!options.accessToken) {
+      return false;
+    }
+    const unreadIds = pickUnreadForcedAnnouncementIds(options.announcements);
+    if (unreadIds.length === 0) {
+      return true;
+    }
+
+    try {
+      await markAnnouncementsRead(options.accessToken, {
+        announcementIds: unreadIds,
+        action: "ack"
+      });
+      patchAnnouncementReadState(unreadIds, "ack");
+      return true;
+    } catch (reason) {
+      if (isUnauthorizedApiError(reason)) {
+        await options.onUnauthorized?.();
+      }
+      return false;
+    }
+  }, [options, patchAnnouncementReadState]);
+
   const acknowledgeAnnouncement = useCallback(
     async (announcement = forcedAnnouncement) => {
       if (!announcement || !options.accessToken) {
@@ -122,6 +147,7 @@ export function useAnnouncements(options: UseAnnouncementsOptions) {
     isForcedAnnouncementPending,
     patchAnnouncementReadState,
     markPassiveAnnouncementsSeen,
+    acknowledgeUnreadForcedAnnouncements,
     acknowledgeAnnouncement
   };
 }

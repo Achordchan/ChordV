@@ -317,6 +317,36 @@
   line-height: 18px;
 }
 
+.auth-help__modal-content {
+  border-radius: 24px;
+}
+
+.auth-help__modal-header {
+  padding: 18px 22px 4px;
+}
+
+.auth-help__modal-body {
+  padding: 12px 22px 22px;
+}
+
+.auth-help__card,
+.auth-help__contact {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.auth-help__icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #2563eb;
+}
+
+.auth-help__email {
+  color: #0f172a;
+  font-weight: 700;
+  word-break: break-all;
+}
+
 .desktop-app--mobile-login .auth-screen {
   position: fixed;
   inset: max(10px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)) 12px;

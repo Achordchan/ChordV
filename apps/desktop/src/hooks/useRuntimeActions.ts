@@ -11,6 +11,7 @@ import type {
   SubscriptionStatusDto
 } from "@chordv/shared";
 import type { ServerProbeState } from "./useClientEvents";
+import type { LoadTicketDetailOptions } from "./useSupportTickets";
 import {
   connectSession,
   disconnectSession,
@@ -53,6 +54,10 @@ import {
   pickAlternativeNode,
   sameGuidance
 } from "../lib/connectionGuidance";
+import {
+  clearSupportTicketBackgroundDetailRefresh,
+  markSupportTicketBackgroundDetailRefresh
+} from "../lib/supportTickets";
 
 type NoticeInput = {
   color: "green" | "yellow" | "red" | "blue" | "cyan";
@@ -120,7 +125,8 @@ type UseRuntimeActionsOptions = {
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
   loadTicketList: (preferredTicketId?: string | null) => Promise<void>;
-  loadTicketDetail: (ticketId: string) => Promise<void>;
+  loadTicketDetail: (ticketId: string, options?: LoadTicketDetailOptions) => Promise<void>;
+  markTicketUnread: (ticketId: string) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
   getCurrentAccessToken: () => string | null;
   clearSession: (stopRuntime?: boolean) => Promise<void>;
@@ -562,18 +568,33 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
 
       if (eventType === "version_updated") {
+        const isSyntheticRefresh = Boolean((event as ClientRuntimeEventDto & { synthetic?: boolean }).synthetic);
         await options.runUpdateCheck({
           bootstrapVersion: options.bootstrap?.version ?? null,
           source: "refresh",
-          silent: false
+          silent: isSyntheticRefresh
         });
       }
 
       if (eventType === "ticket_updated" || eventType === "ticket_read_state_updated") {
         const preferredTicketId = runtimeEvent.ticketId ?? options.selectedTicketIdRef.current;
-        await options.loadTicketList(preferredTicketId);
-        if (options.ticketCenterOpenedRef.current && !options.ticketCreateModeRef.current && preferredTicketId) {
-          await options.loadTicketDetail(preferredTicketId);
+        if (eventType === "ticket_updated" && runtimeEvent.ticketId) {
+          options.markTicketUnread(runtimeEvent.ticketId);
+        }
+        const shouldRefreshDetail =
+          options.ticketCenterOpenedRef.current && !options.ticketCreateModeRef.current && Boolean(preferredTicketId);
+        if (shouldRefreshDetail && preferredTicketId) {
+          markSupportTicketBackgroundDetailRefresh(preferredTicketId);
+          try {
+            await Promise.all([
+              options.loadTicketDetail(preferredTicketId, { markRead: false }),
+              options.loadTicketList(preferredTicketId)
+            ]);
+          } finally {
+            clearSupportTicketBackgroundDetailRefresh(preferredTicketId);
+          }
+        } else {
+          await options.loadTicketList(preferredTicketId);
         }
       }
 
@@ -742,6 +763,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         options.setDesktopStatus(runtimeStatus);
       }
       await options.forceStopLocalRuntime();
+      if (runtimeStatus?.status === "error") {
+        options.setDesktopStatus(runtimeStatus);
+      }
       if (config?.sessionId) {
         await disconnectSession(configAccessToken, config.sessionId).catch(() => null);
       }

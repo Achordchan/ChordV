@@ -114,9 +114,9 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
     <Modal
       opened={props.opened}
       onClose={props.onClose}
-      title="工单中心"
       size="94%"
       centered
+      withCloseButton={false}
       classNames={{
         content: "ticket-center__modal-content",
         header: "ticket-center__modal-header",
@@ -125,15 +125,10 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
     >
       <Stack gap="xs" className="ticket-center">
         <div className="ticket-center__topbar">
-          <div className="ticket-center__headline">
-            <Text fw={700} size="sm">
-              联系邮箱：{props.email}
-            </Text>
-            <Text size="xs" c="dimmed">
-              您可以在这里查看与客服的沟通记录并继续补充信息。
-            </Text>
-          </div>
-          <Group gap="xs">
+          <Text size="xs" c="dimmed" className="ticket-center__headline">
+            联系邮箱：{props.email}
+          </Text>
+          <Group gap="xs" align="center" wrap="nowrap" className="ticket-center__toolbar">
             <Button
               size="xs"
               variant="default"
@@ -156,6 +151,15 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
               onClick={props.onOpenCreate}
             >
               新建工单
+            </Button>
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<IconX size={15} />}
+              className="ticket-center__toolbar-button"
+              onClick={props.onClose}
+            >
+              关闭窗口
             </Button>
           </Group>
         </div>
@@ -299,22 +303,14 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
             ) : props.ticketDetail ? (
               <Stack gap="md" className="ticket-center__detail-shell">
                 <div className="ticket-center__detail-head">
-                  <div>
-                    <Text fw={700} size="lg">
-                      {props.ticketDetail.title}
+                  <Group gap="xs" wrap="nowrap" className="ticket-center__detail-meta">
+                    <Text size="xs" c="dimmed">
+                      创建时间：{formatDateTime(props.ticketDetail.createdAt)}
                     </Text>
-                    <Group gap="xs" mt={4} wrap="nowrap" className="ticket-center__detail-meta">
-                      <Badge size="sm" color={statusColor(props.ticketDetail.status)} variant="light">
-                        {statusLabel(props.ticketDetail.status)}
-                      </Badge>
-                      <Text size="xs" c="dimmed">
-                        创建时间：{formatDateTime(props.ticketDetail.createdAt)}
-                      </Text>
-                      <Text size="xs" c="dimmed">
-                        工单编号：{ticketCode(props.ticketDetail)}
-                      </Text>
-                    </Group>
-                  </div>
+                    <Text size="xs" c="dimmed">
+                      工单编号：{ticketCode(props.ticketDetail)}
+                    </Text>
+                  </Group>
                 </div>
 
                 <div className="ticket-center__messages">

@@ -26,6 +26,15 @@ type AuthSessionResponse = {
 let refreshPromise: Promise<string | null> | null = null;
 let adminAccessToken: string | null = null;
 
+function parsePanelSyncPendingPayload(text: string) {
+  try {
+    const parsed = JSON.parse(text) as { panelSyncStatus?: unknown };
+    return parsed && parsed.panelSyncStatus === "pending" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getStoredAdminAccessToken() {
   return adminAccessToken ?? (import.meta.env.DEV ? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "" : "");
 }
@@ -160,6 +169,10 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
 
   if (!response.ok) {
     const text = await response.text();
+    const panelSyncPendingPayload = parsePanelSyncPendingPayload(text);
+    if (panelSyncPendingPayload) {
+      return panelSyncPendingPayload as T;
+    }
     if (useAuth && isAccessTokenError(response.status, text)) {
       const refreshedAccessToken = await refreshAdminAccessToken();
       if (refreshedAccessToken) {
@@ -175,6 +188,10 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
 
   if (!response.ok) {
     const text = await response.text();
+    const panelSyncPendingPayload = parsePanelSyncPendingPayload(text);
+    if (panelSyncPendingPayload) {
+      return panelSyncPendingPayload as T;
+    }
     if (useAuth && isAccessTokenError(response.status, text)) {
       clearStoredAdminSession({ notify: true });
       throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);

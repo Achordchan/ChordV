@@ -1610,6 +1610,7 @@ async function testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess() {
 async function testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline() {
   const snapshotUpserts: Array<Record<string, unknown>> = [];
   const bindingUpdates: Array<Record<string, unknown>> = [];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
   const service = createRuntimeSessionService({
     xuiService: {
       ensureClient: async () => ({ uuid: "panel_uuid", inboundId: 1 }),
@@ -1656,6 +1657,12 @@ async function testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline()
           snapshotUpserts.push(payload);
           return {};
         }
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelSyncUpserts.push(payload);
+          return {};
+        }
       }
     }
   });
@@ -1683,6 +1690,7 @@ async function testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline()
   assert.equal(bindingUpdates.length, 1);
   assert.equal(snapshotUpserts.length, 1);
   assert.equal((snapshotUpserts[0].create as { totalBytes: bigint }).totalBytes, BigInt(5 * GB_IN_BYTES));
+  assert.equal(panelSyncUpserts[0].create.action, "ensure_client");
 }
 
 async function testUsageTriggeredInvalidationUsesUnifiedRevokePath() {
@@ -1890,6 +1898,7 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
   const resetCalls: string[] = [];
   const snapshotUpserts: Array<Record<string, any>> = [];
   const bindingUpdates: Array<Record<string, any>> = [];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
   const ledgerDeletes: Array<Record<string, any>> = [];
   const subscriptionUpdates: Array<Record<string, any>> = [];
   let aggregateCalled = false;
@@ -2001,6 +2010,12 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
               bindingUpdates.push(payload);
             }
           },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelSyncUpserts.push(payload);
+              return {};
+            }
+          },
           trafficLedger: {
             deleteMany: async (payload: Record<string, any>) => {
               ledgerDeletes.push(payload);
@@ -2020,9 +2035,14 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
     expireAt: nextExpireAt.toISOString()
   });
 
-  assert.deepEqual(resetCalls.sort(), ["user1@example.com", "user2@example.com"]);
+  assert.deepEqual(resetCalls.sort(), [], "renew reset must queue panel resets instead of calling 3x-ui inline");
   assert.equal(snapshotUpserts.length, 2, "renew reset must rewrite traffic baselines for each panel binding");
   assert.equal(bindingUpdates.length, 2, "renew reset must update binding counters after panel reset");
+  assert.deepEqual(
+    panelSyncUpserts.map((item) => item.create.action),
+    ["reset_client_traffic", "reset_client_traffic"],
+    "renew reset must queue panel reset jobs for each binding"
+  );
   assert.equal(ledgerDeletes.length, 1, "team-wide renew reset must clear all team ledger entries for the subscription");
   assert.equal("userId" in ledgerDeletes[0].where, false, "team-wide renew reset must not keep per-user ledger remnants");
   assert.equal(aggregateCalled, false, "team-wide renew reset should not re-aggregate old member usage");
@@ -2033,7 +2053,7 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
   assert.equal(record.remainingTrafficGb, 20);
 }
 
-async function testRenewSubscriptionResetTrafficFailureDoesNotClearLocalUsage() {
+async function testRenewSubscriptionResetTrafficQueueFailureDoesNotClearLocalUsage() {
   let transactionCalled = false;
   let leaseSyncCalled = false;
   const lockedSubscription = {
@@ -2088,19 +2108,34 @@ async function testRenewSubscriptionResetTrafficFailureDoesNotClearLocalUsage() 
           }
         ]
       },
-      $transaction: async () => {
+      $transaction: async (callback: (tx: any) => Promise<any>) => {
         transactionCalled = true;
-        throw new Error("local update should not run");
+        return callback({
+          subscription: {
+            findUnique: async () => lockedSubscription
+          },
+          trafficSnapshot: {
+            upsert: async () => ({})
+          },
+          panelClientBinding: {
+            update: async () => ({})
+          },
+          panelSyncJob: {
+            upsert: async () => {
+              throw new Error("panel sync queue unavailable");
+            }
+          }
+        });
       }
     }
   });
 
   await assert.rejects(
     () => service.renewSubscription("sub_1", { resetTraffic: true }),
-    /local traffic counters were left unchanged/,
-    "renew reset must fail before clearing local usage if 3x-ui reset failed"
+    /panel sync queue unavailable/,
+    "renew reset must fail if the local panel sync queue cannot be written"
   );
-  assert.equal(transactionCalled, false, "failed panel reset must not clear local subscription traffic");
+  assert.equal(transactionCalled, true, "DB-first reset should enter the local transaction before failing on queue write");
   assert.equal(leaseSyncCalled, false, "failed renew reset must not sync leases as if renewal succeeded");
 }
 
@@ -2124,7 +2159,9 @@ async function testResetSubscriptionTrafficRejectsNonStringUserId() {
 async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines() {
   const snapshotUpserts: Array<Record<string, any>> = [];
   const bindingUpdates: Array<Record<string, any>> = [];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
   const subscriptionUpdates: Array<Record<string, any>> = [];
+  const resetCalls: string[] = [];
   const lockedSubscription = {
     id: "sub_1",
     userId: "user_1",
@@ -2147,7 +2184,10 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
   const service = createAdminSubscriptionService({
     requireSubscription: async () => lockedSubscription,
     xuiService: {
-      resetClientTraffic: async (_node: unknown, email: string) => email === "ok@example.com",
+      resetClientTraffic: async (_node: unknown, email: string) => {
+        resetCalls.push(email);
+        return email === "ok@example.com";
+      },
       getClientUsage: async () => ({
         uplinkBytes: 10n,
         downlinkBytes: 20n,
@@ -2155,10 +2195,11 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
       })
     },
     runtimeSessionService: {
-      syncActiveLeasesForSubscription: async () => {
-        throw new Error("lease sync should not run after partial reset failure");
-      },
+      syncActiveLeasesForSubscription: async () => undefined,
       syncSubscriptionPanelAccess: async () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: () => undefined
     },
     prisma: {
       panelClientBinding: {
@@ -2211,6 +2252,12 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
               bindingUpdates.push(payload);
             }
           },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelSyncUpserts.push(payload);
+              return {};
+            }
+          },
           subscription: {
             findUnique: async () => lockedSubscription,
             update: async (payload: Record<string, any>) => {
@@ -2222,15 +2269,16 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
     }
   });
 
-  await assert.rejects(
-    () => service.renewSubscription("sub_1", { resetTraffic: true }),
-    /not applied to every/,
-    "partial panel reset must still fail the renew/reset operation"
+  await service.renewSubscription("sub_1", { resetTraffic: true });
+
+  assert.equal(resetCalls.length, 0, "DB-first reset must not call remote panel reset inline");
+  assert.equal(snapshotUpserts.length, 2, "all local baselines must be rewritten before panel retry");
+  assert.equal(bindingUpdates.length, 2);
+  assert.deepEqual(
+    panelSyncUpserts.map((item) => item.create.action),
+    ["reset_client_traffic", "reset_client_traffic"]
   );
-  assert.equal(snapshotUpserts.length, 1, "successful remote reset must be persisted as a new local baseline");
-  assert.equal(bindingUpdates.length, 1);
-  assert.equal(bindingUpdates[0].where.id, "binding_ok");
-  assert.equal(subscriptionUpdates.length, 0, "partial reset failure must not clear subscription usage");
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0, "local subscription usage must reset even when a panel is offline");
 }
 
 async function testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic() {
@@ -2342,6 +2390,8 @@ async function testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic() {
 
 async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   let nodeDeleted = false;
+  let bindingsQueuedForDelete = false;
+  const nodeUpdates: Array<Record<string, any>> = [];
   const service = createAdminNodeService({
     clientEventsPublisher: {
       resolveUserIdsForNodeAccess: async () => ["user_1"],
@@ -2349,13 +2399,9 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
     },
     runtimeSessionService: {
       revokeNodeLeases: async () => 1,
-      removePanelBindingsForSubscription: async () => ({
-        requested: 1,
-        updated: 0,
-        failed: [{ bindingId: "binding_1", nodeId: "node_1", nodeName: "node", panelClientEmail: "user@example.com", error: "panel down" }]
-      }),
-      assertPanelBindingMutation: () => {
-        throw new Error("panel cleanup failed");
+      removePanelBindingsForNode: async () => {
+        bindingsQueuedForDelete = true;
+        return { requested: 1, updated: 1, failed: [] };
       }
     },
     prisma: {
@@ -2364,6 +2410,10 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
       },
       node: {
         findUnique: async () => ({ id: "node_1" }),
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return {};
+        },
         delete: async () => {
           nodeDeleted = true;
         }
@@ -2371,8 +2421,13 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
     }
   });
 
-  await assert.rejects(() => service.deleteNode("node_1"), /panel cleanup failed/);
-  assert.equal(nodeDeleted, false, "node row must not be deleted before remote panel bindings are cleaned up");
+  const result = await service.deleteNode("node_1");
+
+  assert.equal(result.ok, true);
+  assert.equal(bindingsQueuedForDelete, true, "delete must queue remote panel cleanup without waiting for the panel");
+  assert.equal(nodeUpdates[0].data.isActive, false, "node must be hidden locally before remote cleanup completes");
+  assert.equal(nodeUpdates[0].data.panelStatus, "offline");
+  assert.equal(nodeDeleted, false, "node row must be kept for queued panel cleanup jobs");
 }
 
 async function testXuiPanelLocationDoesNotDuplicateBasePath() {
@@ -2670,6 +2725,108 @@ async function testXuiInboundRuntimeReadsMldsa65Verify() {
   assert.equal(runtime.mldsa65Verify, "mldsa_verify_value");
   assert.equal(runtime.realityPublicKey, "public_key");
   assert.equal(runtime.shortId, "67");
+}
+
+async function testXuiInboundRuntimeReadsPqvAlias() {
+  const service = new XuiService();
+  service["login"] = async () => undefined;
+  service["request"] = async () => ({
+    success: true,
+    obj: {
+      id: 3,
+      remark: "new 3x-ui pq reality",
+      port: 57794,
+      protocol: "vless",
+      listen: "",
+      settings: {
+        clients: [
+          {
+            id: "client_uuid",
+            email: "user@example.com",
+            enable: true,
+            flow: "xtls-rprx-vision"
+          }
+        ]
+      },
+      streamSettings: {
+        network: "tcp",
+        security: "reality",
+        realitySettings: {
+          target: "aws.amazon.com:443",
+          serverNames: ["aws.amazon.com"],
+          shortIds: ["67"],
+          settings: {
+            publicKey: "public_key",
+            fingerprint: "chrome",
+            serverName: "aws.amazon.com",
+            spiderX: "/",
+            pqv: "pqv_verify_value"
+          }
+        }
+      }
+    }
+  });
+
+  const runtime = await service.getInboundRuntime({
+    id: "node_1",
+    panelBaseUrl: "https://panel.example.com/custom",
+    panelApiBasePath: "/custom",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 3
+  });
+
+  assert.equal(runtime.mldsa65Verify, "pqv_verify_value");
+}
+
+async function testXuiInboundRuntimeRejectsMissingRealityPublicKey() {
+  const service = new XuiService();
+  service["login"] = async () => undefined;
+  service["request"] = async () => ({
+    success: true,
+    obj: {
+      id: 3,
+      remark: "broken reality",
+      port: 57794,
+      protocol: "vless",
+      listen: "",
+      settings: {
+        clients: [
+          {
+            id: "client_uuid",
+            email: "user@example.com",
+            enable: true,
+            flow: "xtls-rprx-vision"
+          }
+        ]
+      },
+      streamSettings: {
+        network: "tcp",
+        security: "reality",
+        realitySettings: {
+          serverNames: ["aws.amazon.com"],
+          shortIds: ["67"],
+          settings: {
+            fingerprint: "chrome",
+            serverName: "aws.amazon.com"
+          }
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.getInboundRuntime({
+        id: "node_1",
+        panelBaseUrl: "https://panel.example.com/custom",
+        panelApiBasePath: "/custom",
+        panelUsername: "admin",
+        panelPassword: "password",
+        panelInboundId: 3
+      }),
+    /publicKey/
+  );
 }
 
 async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
@@ -3196,8 +3353,8 @@ async function testPanelDisableJobCompletionDoesNotResolveUsageIncident() {
 }
 
 async function testDeletedPanelBindingDoesNotReuseOldInboundId() {
-  const ensureClientCalls: Array<Record<string, any>> = [];
   const updates: Array<Record<string, any>> = [];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
   const baseline = {
     uplinkBytes: 0n,
     downlinkBytes: 0n,
@@ -3205,13 +3362,8 @@ async function testDeletedPanelBindingDoesNotReuseOldInboundId() {
   };
   const service = createRuntimeSessionService({
     xuiService: {
-      ensureClient: async (node: Record<string, any>, payload: Record<string, any>) => {
-        ensureClientCalls.push({ node, payload });
-        return {
-          email: payload.email,
-          uuid: payload.id,
-          inboundId: 9
-        };
+      ensureClient: async () => {
+        throw new Error("remote panel ensure must not run inline");
       }
     },
     readPanelClientBaseline: async () => baseline,
@@ -3254,6 +3406,12 @@ async function testDeletedPanelBindingDoesNotReuseOldInboundId() {
       },
       trafficSnapshot: {
         findUnique: async () => null
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelSyncUpserts.push(payload);
+          return {};
+        }
       }
     }
   });
@@ -3278,56 +3436,61 @@ async function testDeletedPanelBindingDoesNotReuseOldInboundId() {
     expireAt: new Date("2026-02-01T00:00:00.000Z")
   });
 
-  assert.equal(ensureClientCalls.length, 1);
-  assert.equal(
-    ensureClientCalls[0].node.panelInboundId,
-    null,
-    "deleted bindings from a previous panel config must not force the old inbound id"
-  );
-  assert.equal(updates[0].data.panelInboundId, 9, "recreated binding must store the inbound id resolved from the current panel");
-  assert.equal(binding.panelInboundId, 9);
+  assert.equal(updates[0].data.panelInboundId, 0, "locally recreated binding must not reuse the deleted binding inbound id");
+  assert.equal(binding.panelInboundId, 0);
+  assert.equal(panelSyncUpserts[0].create.action, "ensure_client");
+  assert.equal(panelSyncUpserts[0].create.panelInboundId, 0);
 }
 
 async function testDisablePanelBindingUsesStoredInboundId() {
-  const inboundIds: Array<number | null> = [];
+  const upserts: Array<Record<string, any>> = [];
+  let xuiCalled = false;
   const service = createRuntimeSessionService({
     xuiService: {
-      setClientEnabled: async (node: { panelInboundId: number | null }) => {
-        inboundIds.push(node.panelInboundId);
+      setClientEnabled: async () => {
+        xuiCalled = true;
+        throw new Error("remote panel disable must not run inline");
       }
     },
     prisma: {
-      panelClientBinding: {
-        findMany: async () => [
-          {
-            id: "binding_1",
-            subscriptionId: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            nodeId: "node_1",
-            panelClientEmail: "user@example.com",
-            panelClientId: "panel_client_1",
-            panelInboundId: 7,
-            node: {
-              id: "node_1",
-              name: "node",
-              panelBaseUrl: "https://panel.example.com",
-              panelApiBasePath: "/",
-              panelUsername: "admin",
-              panelPassword: "password",
-              panelInboundId: 99
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "panel_client_1",
+                panelInboundId: 7,
+                node: {
+                  panelBaseUrl: "https://panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ]
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              upserts.push(payload);
+              return {};
             }
           }
-        ],
-        update: async () => ({})
-      }
+        })
     }
   });
 
   const result = await service.disablePanelBindingsForSubscription("sub_1");
 
   assert.equal(result.failed.length, 0);
-  assert.deepEqual(inboundIds, [7], "disable must use the binding inbound id captured at provision time");
+  assert.equal(result.updated, 1);
+  assert.equal(xuiCalled, false, "disable must queue panel sync instead of waiting for remote panel calls");
+  assert.equal(upserts[0].create.panelInboundId, 7, "disable job must use the binding inbound id captured at provision time");
 }
 
 async function testUsageSyncUsesStoredInboundIdGroups() {
@@ -3483,53 +3646,6 @@ async function testUsageSyncKeepsNodeDegradedWhenAnyInboundFails() {
     "node status must remain degraded when any inbound sync fails"
   );
   assert.match(nodeUpdates[0].panelError, /inbound 7 failed/);
-}
-
-async function testDeactivatePanelClientsUsesStoredInboundId() {
-  const inboundIds: Array<number | null> = [];
-  const bindingUpdates: Array<Record<string, any>> = [];
-  const service = createUsageSyncService({
-    xuiService: {
-      setClientEnabled: async (node: { panelInboundId: number | null }) => {
-        inboundIds.push(node.panelInboundId);
-      }
-    },
-    prisma: {
-      panelClientBinding: {
-        findMany: async () => [
-          {
-            id: "binding_1",
-            subscriptionId: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            nodeId: "node_1",
-            panelClientEmail: "user@example.com",
-            panelClientId: "panel_client_1",
-            panelInboundId: 7,
-            node: {
-              id: "node_1",
-              panelBaseUrl: "https://panel.example.com",
-              panelApiBasePath: "/",
-              panelUsername: "admin",
-              panelPassword: "password",
-              panelInboundId: 99
-            }
-          }
-        ],
-        update: async (payload: Record<string, any>) => {
-          bindingUpdates.push(payload);
-        }
-      },
-      node: {
-        update: async () => undefined
-      }
-    }
-  });
-
-  await service["deactivatePanelClients"]("sub_1", "disabled");
-
-  assert.deepEqual(inboundIds, [7], "subscription deactivation must disable the stored binding inbound id");
-  assert.equal(bindingUpdates[0].data.status, "disabled");
 }
 
 async function testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh() {
@@ -3916,55 +4032,147 @@ async function testConnectRejectsPanelDisabledNode() {
   );
 }
 
-async function testRemovePanelBindingDisabledFallbackDoesNotMarkDeleted() {
+async function testRemovePanelBindingQueuesDeleteWithoutRemoteCall() {
+  const upserts: Array<Record<string, any>> = [];
   const bindingUpdates: Array<Record<string, any>> = [];
-  let deletedSnapshot = false;
+  const deletedSnapshots: Array<Record<string, any>> = [];
+  let xuiCalled = false;
   const service = createRuntimeSessionService({
     xuiService: {
-      removeClient: async () => "disabled"
+      removeClient: async () => {
+        xuiCalled = true;
+        throw new Error("remote panel delete must not run inline");
+      }
     },
     prisma: {
-      panelClientBinding: {
-        findMany: async () => [
-          {
-            id: "binding_1",
-            subscriptionId: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            nodeId: "node_1",
-            panelClientEmail: "user@example.com",
-            panelClientId: "panel_client_1",
-            panelInboundId: 7,
-            node: {
-              id: "node_1",
-              name: "node",
-              panelBaseUrl: "https://panel.example.com",
-              panelApiBasePath: "/",
-              panelUsername: "admin",
-              panelPassword: "password",
-              panelInboundId: 99
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "panel_client_1",
+                panelInboundId: 7,
+                node: {
+                  panelBaseUrl: "https://panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ],
+            updateMany: async (payload: Record<string, any>) => {
+              bindingUpdates.push(payload);
+              return { count: 1 };
+            }
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              upserts.push(payload);
+              return {};
+            }
+          },
+          trafficSnapshot: {
+            deleteMany: async (payload: Record<string, any>) => {
+              deletedSnapshots.push(payload);
+              return { count: 1 };
             }
           }
-        ],
-        update: async (payload: Record<string, any>) => {
-          bindingUpdates.push(payload);
-          return {};
-        }
-      },
-      trafficSnapshot: {
-        deleteMany: async () => {
-          deletedSnapshot = true;
-        }
-      }
+        })
     }
   });
 
   const result = await service.removePanelBindingsForSubscription("sub_1");
 
-  assert.equal(result.updated, 0);
-  assert.equal(result.failed.length, 1);
-  assert.equal(bindingUpdates[0].data.status, "disabled", "disabled fallback must keep local binding disabled");
-  assert.equal(deletedSnapshot, false, "disabled fallback must not delete traffic baseline as if remote deletion succeeded");
+  assert.equal(result.updated, 1);
+  assert.equal(result.failed.length, 0);
+  assert.equal(xuiCalled, false, "delete must queue panel sync instead of waiting for remote panel calls");
+  assert.equal(upserts[0].create.action, "delete_client");
+  assert.equal(upserts[0].create.panelInboundId, 7);
+  assert.equal(bindingUpdates[0].data.status, "deleted", "local binding must be deleted before remote panel cleanup completes");
+  assert.equal(deletedSnapshots.length, 1, "local traffic baseline must be cleared with the local delete");
+}
+
+async function testPanelDeleteJobUsesStoredSnapshotAndCompletes() {
+  const removedConfigs: Array<Record<string, any>> = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const deletedSnapshots: Array<Record<string, any>> = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({
+    xuiService: {
+      removeClient: async (node: Record<string, any>) => {
+        removedConfigs.push(node);
+        return "deleted";
+      }
+    },
+    prisma: {
+      trafficSnapshot: {
+        deleteMany: async (payload: Record<string, any>) => {
+          deletedSnapshots.push(payload);
+          return { count: 1 };
+        }
+      },
+      panelClientBinding: {
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+          return {};
+        }
+      },
+      panelSyncJob: {
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  await service["runPanelSyncJob"]({
+    id: "job_1",
+    action: "delete_client",
+    attempts: 0,
+    bindingId: "binding_1",
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: "node_1",
+    panelClientEmail: "user@example.com",
+    panelClientId: "panel_client_1",
+    panelInboundId: 7,
+    panelBaseUrl: "https://old-panel.example.com",
+    panelApiBasePath: "/old",
+    panelUsername: "old-user",
+    panelPassword: "old-pass",
+    node: {
+      id: "node_1",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://new-panel.example.com",
+      panelApiBasePath: "/new",
+      panelUsername: "new-user",
+      panelPassword: "new-pass",
+      panelInboundId: 9
+    },
+    binding: {
+      status: "deleted"
+    }
+  });
+
+  assert.equal(removedConfigs[0].panelBaseUrl, "https://old-panel.example.com");
+  assert.equal(removedConfigs[0].panelApiBasePath, "/old");
+  assert.equal(removedConfigs[0].panelUsername, "old-user");
+  assert.equal(removedConfigs[0].panelInboundId, 7);
+  assert.equal(bindingUpdates[0].data.status, "deleted");
+  assert.equal(deletedSnapshots.length, 1);
+  assert.equal(jobUpdates[0].data.status, "completed");
 }
 
 async function testRuntimePlanRequiresCompleteComponentSet() {
@@ -6556,7 +6764,7 @@ async function main() {
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
-  await testRenewSubscriptionResetTrafficFailureDoesNotClearLocalUsage();
+  await testRenewSubscriptionResetTrafficQueueFailureDoesNotClearLocalUsage();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
@@ -6568,6 +6776,8 @@ async function main() {
   await testXuiBusinessNotFoundFallsBackToInboundDelete();
   testXuiSettingsClientStatsTakePrecedenceOverZeroClientFallback();
   await testXuiInboundRuntimeReadsMldsa65Verify();
+  await testXuiInboundRuntimeReadsPqvAlias();
+  await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessRejectsWhenPanelDisableQueueFails();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
@@ -6579,14 +6789,14 @@ async function main() {
   await testDisablePanelBindingUsesStoredInboundId();
   await testUsageSyncUsesStoredInboundIdGroups();
   await testUsageSyncKeepsNodeDegradedWhenAnyInboundFails();
-  await testDeactivatePanelClientsUsesStoredInboundId();
   await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
   await testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails();
   await testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFails();
   await testUpdateNodeDisablingPanelForcesOfflineStatus();
   await testClientNodesRequirePanelEnabled();
   await testConnectRejectsPanelDisabledNode();
-  await testRemovePanelBindingDisabledFallbackDoesNotMarkDeleted();
+  await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
+  await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
   await testRuntimePlanRequiresCompleteComponentSet();
   await testRuntimeComponentCreateRejectsUploadedSource();
   await testRuntimeComponentCreateRequiresHttpUrl();

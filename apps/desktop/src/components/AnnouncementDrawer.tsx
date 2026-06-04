@@ -1,4 +1,5 @@
-import { Badge, Group, Modal, Paper, Stack, Text, Title } from "@mantine/core";
+import { useEffect, useState } from "react";
+import { Badge, Button, Collapse, Group, Modal, Paper, Stack, Text, Title } from "@mantine/core";
 import type { AnnouncementDto } from "@chordv/shared";
 
 type AnnouncementDrawerProps = {
@@ -8,6 +9,21 @@ type AnnouncementDrawerProps = {
 };
 
 export function AnnouncementDrawer(props: AnnouncementDrawerProps) {
+  const [expandedAnnouncements, setExpandedAnnouncements] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!props.opened) {
+      setExpandedAnnouncements({});
+    }
+  }, [props.opened]);
+
+  function toggleAnnouncement(announcementId: string) {
+    setExpandedAnnouncements((current) => ({
+      ...current,
+      [announcementId]: !current[announcementId]
+    }));
+  }
+
   return (
     <Modal
       opened={props.opened}
@@ -24,9 +40,6 @@ export function AnnouncementDrawer(props: AnnouncementDrawerProps) {
       <Stack gap="md" className="announcement-center">
         <div className="announcement-center__headline">
           <Title order={4}>历史公告</Title>
-          <Text size="sm" c="dimmed">
-            查看最近的通知、维护提醒和升级信息。
-          </Text>
         </div>
 
         <div className="announcement-center__list">
@@ -36,24 +49,47 @@ export function AnnouncementDrawer(props: AnnouncementDrawerProps) {
                 <Text c="dimmed">当前没有公告</Text>
               </Paper>
             ) : (
-              props.announcements.map((item) => (
-                <Paper key={item.id} withBorder radius="md" p="md" className="announcement-center__card">
-                  <Stack gap="xs">
-                    <Group justify="space-between" align="start" wrap="nowrap">
-                      <Text fw={700}>{item.title}</Text>
-                      <Badge variant="light" color={levelColor(item.level)}>
-                        {translateLevel(item.level)}
-                      </Badge>
-                    </Group>
-                    <Text size="sm" c="dimmed">
-                      {formatDate(item.publishedAt)}
-                    </Text>
-                    <Text size="sm" className="announcement-center__body">
-                      {item.body}
-                    </Text>
-                  </Stack>
-                </Paper>
-              ))
+              props.announcements.map((item) => {
+                const isExpanded = expandedAnnouncements[item.id] === true;
+                const bodyId = `announcement-body-${item.id}`;
+
+                return (
+                  <Paper key={item.id} withBorder radius="md" p="md" className="announcement-center__card">
+                    <Stack gap="xs">
+                      <Group justify="space-between" align="start" wrap="nowrap" className="announcement-center__summary">
+                        <Stack gap={4} className="announcement-center__summary-main">
+                          <Text fw={700} className="announcement-center__title">
+                            {item.title}
+                          </Text>
+                          <Text size="sm" c="dimmed">
+                            {formatDate(item.publishedAt)}
+                          </Text>
+                        </Stack>
+                        <Group gap="xs" wrap="nowrap" className="announcement-center__summary-actions">
+                          <Badge variant="light" color={levelColor(item.level)}>
+                            {translateLevel(item.level)}
+                          </Badge>
+                          <Button
+                            type="button"
+                            variant="subtle"
+                            size="compact-xs"
+                            onClick={() => toggleAnnouncement(item.id)}
+                            aria-expanded={isExpanded}
+                            aria-controls={bodyId}
+                          >
+                            {isExpanded ? "收起" : "展开"}
+                          </Button>
+                        </Group>
+                      </Group>
+                      <Collapse in={isExpanded}>
+                        <Text id={bodyId} size="sm" className="announcement-center__body">
+                          {item.body}
+                        </Text>
+                      </Collapse>
+                    </Stack>
+                  </Paper>
+                );
+              })
             )}
           </Stack>
         </div>

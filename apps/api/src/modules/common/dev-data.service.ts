@@ -1348,7 +1348,10 @@ export class DevDataService implements OnModuleInit {
 
   private async trySyncSubscriptionPanelAccess(subscriptionId: string) {
     try {
-      await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+      const queuedCount = await this.runtimeSessionService.syncSubscriptionPanelAccess(subscriptionId);
+      if (queuedCount > 0) {
+        return { ok: false as const, errorMessage: "3x-ui panel sync queued for background retry" };
+      }
       return { ok: true as const };
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);

@@ -923,17 +923,17 @@ export function App() {
       const result = await action();
       const resolvedMessage = extractActionMessage(result, successText);
       const panelSyncPending = hasPendingPanelSync(result);
-      await refreshCurrentDataAfterAction().catch((refreshReason) => {
+      notifications.show({
+        color: panelSyncPending ? "yellow" : "green",
+        title: panelSyncPending ? "已保存，面板同步待重试" : "操作成功",
+        message: resolvedMessage
+      });
+      void refreshCurrentDataAfterAction().catch((refreshReason) => {
         notifications.show({
           color: "yellow",
           title: "操作已完成，但刷新失败",
           message: readError(refreshReason, "刷新最新数据失败")
         });
-      });
-      notifications.show({
-        color: panelSyncPending ? "yellow" : "green",
-        title: panelSyncPending ? "操作已保存，面板同步待重试" : "操作成功",
-        message: resolvedMessage
       });
       return true;
     } catch (reason) {
@@ -991,7 +991,7 @@ export function App() {
       const panelSyncPending = result.panelSyncStatus === "pending";
       notifications.show({
         color: panelSyncPending ? "yellow" : "green",
-        title: panelSyncPending ? "授权已保存" : "操作成功",
+        title: panelSyncPending ? "已保存，面板同步待重试" : "操作成功",
         message: result.message ?? "节点授权已保存"
       });
       closeNodeAccessEditor();
@@ -1485,11 +1485,17 @@ export function App() {
     await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除");
   }
 
-  async function handleToggleTeamUserStatus(userId: string, nextStatus: "active" | "disabled", displayName: string) {
+  async function handleToggleUserStatus(
+    userId: string,
+    nextStatus: "active" | "disabled",
+    displayName: string,
+    source: "personal" | "team-member" = "personal"
+  ) {
+    const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队关系。" : "";
     const confirmed = window.confirm(
       nextStatus === "disabled"
-        ? `确认禁用 ${displayName} 的账号吗？这会立刻停止该账号的订阅连接。`
-        : `确认启用 ${displayName} 的账号吗？启用后该账号可以重新登录和连接。`
+        ? `确认禁用 ${displayName} 的账号吗？这会立刻停止该账号的订阅连接。${teamScopeHint}`
+        : `确认启用 ${displayName} 的账号吗？启用后该账号可以重新登录和连接。${teamScopeHint}`
     );
     if (!confirmed) {
       return;
@@ -2005,8 +2011,11 @@ export function App() {
                 onCloseTeamMemberInlineEditor={closeTeamMemberInlineEditor}
                 onSaveTeamMemberInlineEditor={() => void saveTeamMemberInlineEditor()}
                 onDeleteTeamMember={(teamId, memberId) => void handleDeleteTeamMember(teamId, memberId)}
+                onToggleUserStatus={(userId, nextStatus, displayName) =>
+                  void handleToggleUserStatus(userId, nextStatus, displayName)
+                }
                 onToggleTeamUserStatus={(userId, nextStatus, displayName) =>
-                  void handleToggleTeamUserStatus(userId, nextStatus, displayName)
+                  void handleToggleUserStatus(userId, nextStatus, displayName, "team-member")
                 }
               />
             ) : null}
