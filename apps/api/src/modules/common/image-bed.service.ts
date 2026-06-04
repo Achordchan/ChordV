@@ -88,7 +88,7 @@ export class ImageBedService {
     }
 
     const storedValue = compactStoredConfig(next);
-    await this.prisma.systemSetting.upsert({
+    const saved = await this.prisma.systemSetting.upsert({
       where: { key: IMAGE_BED_SETTING_KEY },
       create: {
         key: IMAGE_BED_SETTING_KEY,
@@ -99,7 +99,7 @@ export class ImageBedService {
       }
     });
 
-    return this.getAdminConfig();
+    return buildAdminImageBedConfigDto(parseStoredConfig(saved.value), saved.updatedAt ?? null);
   }
 
   async listAdminFiles(input?: {
@@ -353,6 +353,26 @@ function compactStoredConfig(value: StoredImageBedConfig): Record<string, string
     uploadFolder: value.uploadFolder ?? null,
     uploadChannel: value.uploadChannel ?? null,
     channelName: value.channelName ?? null
+  };
+}
+
+function buildAdminImageBedConfigDto(value: StoredImageBedConfig, updatedAt: Date | null): AdminImageBedConfigDto {
+  const storedToken = normalizeOptionalText(value.apiToken);
+  const envToken = normalizeOptionalText(process.env.CHORDV_IMAGE_BED_TOKEN);
+  const apiToken = storedToken ?? envToken;
+  const tokenSource = storedToken ? "database" : envToken ? "environment" : "none";
+  return {
+    baseUrl: normalizeHttpBaseUrl(value.baseUrl ?? process.env.CHORDV_IMAGE_BED_BASE_URL ?? DEFAULT_IMAGE_BED_BASE_URL, "baseUrl"),
+    uploadFolder:
+      normalizeOptionalPath(value.uploadFolder) ??
+      normalizeOptionalPath(process.env.CHORDV_IMAGE_BED_UPLOAD_FOLDER) ??
+      DEFAULT_IMAGE_BED_UPLOAD_FOLDER,
+    uploadChannel: normalizeOptionalText(value.uploadChannel ?? process.env.CHORDV_IMAGE_BED_UPLOAD_CHANNEL),
+    channelName: normalizeOptionalText(value.channelName ?? process.env.CHORDV_IMAGE_BED_CHANNEL_NAME),
+    hasToken: Boolean(apiToken),
+    tokenPreview: apiToken ? maskToken(apiToken) : null,
+    tokenSource,
+    updatedAt: updatedAt?.toISOString() ?? null
   };
 }
 

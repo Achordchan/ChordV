@@ -579,6 +579,7 @@ async function testImageBedDeleteReturnsStructuredBusinessFailure() {
 async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
   const originalFetch = globalThis.fetch;
   let upsertPayload: Record<string, any> | null = null;
+  let findUniqueCalls = 0;
   let storedValue: Record<string, unknown> = {
     baseUrl: "https://old.example.com",
     apiToken: "old-token"
@@ -590,14 +591,23 @@ async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
     const service = createInstance<ImageBedService>(ImageBedService.prototype, {
       prisma: {
         systemSetting: {
-          findUnique: async () => ({
-            value: storedValue,
-            updatedAt: new Date("2026-01-01T00:00:00.000Z")
-          }),
+          findUnique: async () => {
+            findUniqueCalls += 1;
+            if (findUniqueCalls > 1) {
+              throw new Error("config was saved but refresh failed");
+            }
+            return {
+              value: storedValue,
+              updatedAt: new Date("2026-01-01T00:00:00.000Z")
+            };
+          },
           upsert: async (payload: Record<string, any>) => {
             upsertPayload = payload;
             storedValue = payload.update.value;
-            return payload;
+            return {
+              value: storedValue,
+              updatedAt: new Date("2026-01-01T00:01:00.000Z")
+            };
           }
         }
       }
@@ -610,6 +620,7 @@ async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
     });
 
     assert.ok(upsertPayload, "config must be persisted locally");
+    assert.equal(findUniqueCalls, 1, "update must not do a second config refresh after saving");
     assert.equal(result.baseUrl, "https://image.achord.cn");
     assert.equal(result.hasToken, true);
     assert.equal(result.tokenSource, "database");
@@ -4087,6 +4098,58 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeStalls() {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
     } else {
       process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+  }
+}
+
+async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
+  const previousProbeBudget = process.env.CHORDV_NODE_PROBE_TIMEOUT_MS;
+  process.env.CHORDV_NODE_PROBE_TIMEOUT_MS = "25";
+  const currentNode = makeAdminNodeRow({
+    serverHost: "127.0.0.1",
+    serverPort: 9
+  });
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      checkNodeHealth: async () => new Promise<never>(() => undefined)
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date("2026-01-01T00:01:00.000Z")
+          };
+        }
+      }
+    }
+  });
+
+  try {
+    const result = await Promise.race([
+      service.probeNode("node_1"),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("single node probe waited for stalled panel health check")), 750);
+      })
+    ]);
+
+    assert.equal(updates.length, 1);
+    assert.equal(result.probeStatus, "offline");
+    assert.equal(result.panelStatus, "degraded");
+    assert.match(result.probeError ?? "", /node probe exceeded/);
+    assert.match(result.panelError ?? "", /node probe exceeded/);
+  } finally {
+    if (previousProbeBudget === undefined) {
+      delete process.env.CHORDV_NODE_PROBE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
     }
   }
 }
@@ -8153,6 +8216,75 @@ async function testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails() {
   assert.equal(result.kind, "geosite");
   assert.equal(result.expectedHash, expectedHash);
   assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted");
+}
+
+async function testRemoteSharedRulesetCreateReturnsWhenCleanupStalls() {
+  const previousCleanupBudget = process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS;
+  process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS = "25";
+  const expectedHash = "a".repeat(64);
+  let cleanupCalls = 0;
+  const service = createRuntimeComponentsService({
+    logger: {
+      warn: () => undefined
+    },
+    findSharedRulesetRecord: async () => ({
+      id: "component_existing"
+    }),
+    cleanupSharedRulesetDuplicates: async () => {
+      cleanupCalls += 1;
+      return new Promise<never>(() => undefined);
+    },
+    prisma: {
+      runtimeComponent: {
+        update: async (payload: Record<string, any>) => ({
+          id: payload.where.id,
+          platform: payload.data.platform,
+          architecture: payload.data.architecture,
+          kind: payload.data.kind,
+          source: payload.data.source,
+          originUrl: payload.data.originUrl,
+          defaultMirrorPrefix: payload.data.defaultMirrorPrefix,
+          allowClientMirror: payload.data.allowClientMirror,
+          fileName: payload.data.fileName,
+          storedFilePath: payload.data.storedFilePath,
+          fileSizeBytes: payload.data.fileSizeBytes,
+          fileHash: payload.data.fileHash,
+          archiveEntryName: payload.data.archiveEntryName,
+          expectedHash: payload.data.expectedHash,
+          enabled: payload.data.enabled,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-01-01T00:00:00.000Z")
+        })
+      }
+    }
+  });
+
+  try {
+    const result = await Promise.race([
+      service.createAdminRuntimeComponent({
+        platform: "windows",
+        architecture: "x64",
+        kind: "geosite",
+        source: "custom_remote",
+        originUrl: "https://example.com/geosite.dat",
+        fileName: "geosite.dat",
+        expectedHash
+      }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("runtime component create waited for stalled shared cleanup")), 750);
+      })
+    ]);
+
+    assert.equal(result.id, "component_existing");
+    assert.equal(result.kind, "geosite");
+    assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted");
+  } finally {
+    if (previousCleanupBudget === undefined) {
+      delete process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS;
+    } else {
+      process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS = previousCleanupBudget;
+    }
+  }
 }
 
 async function testRemoteRuntimeValidationChecksExpectedHashWithGet() {
@@ -12483,6 +12615,7 @@ async function main() {
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
+  await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
@@ -12548,6 +12681,7 @@ async function main() {
   await testRuntimeComponentUploadRejectsExpectedHashMismatch();
   await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
+  await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
   await testRemoteRuntimeValidationPersistsDownloadMetadata();
   await testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash();

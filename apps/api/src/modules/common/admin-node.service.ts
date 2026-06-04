@@ -446,7 +446,7 @@ export class AdminNodeService {
       : null;
 
     const row = await this.prisma.node.update({
-      where: { id: nodeId },
+      where: { id: current.id },
       data: {
         ...(input.name !== undefined ? { name: input.name.trim() } : {}),
         ...(nextCountry ? { countryCode: nextCountry.countryCode, region: nextCountry.region } : {}),
@@ -650,6 +650,45 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
+    return this.probeNodeWithRequestBudget(current);
+  }
+
+  private async probeNodeWithRequestBudget(current: any): Promise<AdminNodeRecordDto> {
+    let settled = false;
+    const probeTask = this.probeNodeUnchecked(current).then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void probeTask.catch((error) => {
+      this.logger.warn(`Delayed node probe for ${current.id} failed: ${readAdminNodeErrorMessage(error)}`);
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<AdminNodeRecordDto>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        resolve(this.markNodeProbeTimedOut(current, readNodeProbeBudgetMs()));
+      }, readNodeProbeBudgetMs());
+    });
+
+    try {
+      return await Promise.race([probeTask, timeoutTask]);
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private async probeNodeUnchecked(current: any): Promise<AdminNodeRecordDto> {
     const result = await probeNodeConnectivity(current.serverHost, current.serverPort, current.serverName, current.subscriptionUrl);
     let panelStatus = current.panelStatus;
     let panelError = current.panelError;
@@ -676,7 +715,7 @@ export class AdminNodeService {
       }
     }
     const row = await this.prisma.node.update({
-      where: { id: nodeId },
+      where: { id: current.id },
       data: {
         probeStatus: result.status,
         probeLatencyMs: result.latencyMs,
@@ -690,6 +729,39 @@ export class AdminNodeService {
     });
 
     return toAdminNodeRecord(row);
+  }
+
+  private async markNodeProbeTimedOut(current: any, timeoutMs: number) {
+    const checkedAt = new Date();
+    const message = `node probe exceeded ${timeoutMs}ms`;
+    const fallbackStatus = current.isActive && current.panelEnabled ? "degraded" : "offline";
+    this.logger.warn(`Node ${current.id} probe exceeded ${timeoutMs}ms and will continue in background.`);
+    try {
+      const row = await this.prisma.node.update({
+        where: { id: current.id },
+        data: {
+          probeStatus: "offline",
+          probeLatencyMs: null,
+          probeCheckedAt: checkedAt,
+          probeError: message,
+          panelStatus: fallbackStatus,
+          panelError: fallbackStatus === "degraded" ? message : null
+        }
+      });
+      return toAdminNodeRecord(row);
+    } catch (error) {
+      this.logger.warn(`Node ${current.id} probe timeout fallback update failed: ${readAdminNodeErrorMessage(error)}`);
+      return toAdminNodeRecord({
+        ...current,
+        probeStatus: "offline",
+        probeLatencyMs: null,
+        probeCheckedAt: checkedAt,
+        probeError: message,
+        panelStatus: fallbackStatus,
+        panelError: fallbackStatus === "degraded" ? message : null,
+        updatedAt: checkedAt
+      });
+    }
   }
 
   async probeAllNodes() {
@@ -780,7 +852,7 @@ export class AdminNodeService {
     }
 
     await this.prisma.node.update({
-      where: { id: nodeId },
+      where: { id: current.id },
       data: {
         isActive: false,
         recommended: false,
@@ -945,4 +1017,8 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
 
 function readBulkNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_BUDGET_MS);
+}
+
+function readNodeProbeBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_NODE_PROBE_TIMEOUT_MS", readBulkNodeProbeBudgetMs());
 }

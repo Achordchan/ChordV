@@ -30,6 +30,7 @@ const SHARED_RULESET_ARCHITECTURE: RuntimeComponentArchitecture = "arm64";
 const DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES = 512 * 1024 * 1024;
 const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS = 300;
 
 type UploadedRuntimeComponentFile = {
   path: string;
@@ -682,12 +683,45 @@ export class RuntimeComponentsService {
   }
 
   private async cleanupSharedRulesetDuplicatesBestEffort(kind: RuntimeComponentKind, keepId: string) {
+    let settled = false;
+    const cleanupTask = this.cleanupSharedRulesetDuplicates(kind, keepId).then(
+      () => {
+        settled = true;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void cleanupTask.catch((error) => {
+      this.logger.warn(
+        `Runtime component ${keepId} saved, but delayed shared ruleset cleanup failed: ${readErrorMessage(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        this.logger.warn(
+          `Runtime component ${keepId} saved, but shared ruleset cleanup exceeded ${readSharedRulesetCleanupBudgetMs()}ms and will continue in background.`
+        );
+        resolve();
+      }, readSharedRulesetCleanupBudgetMs());
+    });
+
     try {
-      await this.cleanupSharedRulesetDuplicates(kind, keepId);
+      await Promise.race([cleanupTask, timeoutTask]);
     } catch (error) {
       this.logger.warn(
         `Runtime component ${keepId} saved, but shared ruleset cleanup failed: ${readErrorMessage(error)}`
       );
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -1059,6 +1093,10 @@ function getRemoteRuntimeHashLimits() {
       DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS
     )
   };
+}
+
+function readSharedRulesetCleanupBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS", DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS);
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {
