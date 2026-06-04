@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type {
   AdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto,
@@ -48,6 +48,8 @@ type PreparedUploadedRuntimeComponentFile = {
 
 @Injectable()
 export class RuntimeComponentsService {
+  private readonly logger = new Logger(RuntimeComponentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService
@@ -94,7 +96,7 @@ export class RuntimeComponentsService {
             enabled: input.enabled ?? true
           }
         });
-        await this.cleanupSharedRulesetDuplicates(input.kind, updated.id);
+        await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, updated.id);
         return toAdminRuntimeComponentRecord(updated);
       }
     }
@@ -165,9 +167,7 @@ export class RuntimeComponentsService {
           enabled: input.enabled ?? true
         }
       });
-      if (isSharedRuleset(input.kind)) {
-        await this.cleanupSharedRulesetDuplicates(input.kind, created.id);
-      }
+      await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, created.id);
       return toAdminRuntimeComponentRecord(created);
     } catch (error) {
       if (prepared) {
@@ -248,12 +248,11 @@ export class RuntimeComponentsService {
           : {})
       }
     });
-    if (isSharedRuleset(updated.kind as RuntimeComponentKind)) {
-      await this.cleanupSharedRulesetDuplicates(updated.kind as RuntimeComponentKind, updated.id);
-    }
-    if (staleUploadedFilePath) {
-      await removeRuntimeComponentFile(resolveRuntimeComponentAbsolutePath(staleUploadedFilePath));
-    }
+    await this.cleanupSharedRulesetDuplicatesBestEffort(updated.kind as RuntimeComponentKind, updated.id);
+    await this.removeRuntimeComponentFileBestEffort(
+      staleUploadedFilePath ? resolveRuntimeComponentAbsolutePath(staleUploadedFilePath) : null,
+      "stale runtime component upload"
+    );
     return toAdminRuntimeComponentRecord(updated);
   }
 
@@ -293,12 +292,13 @@ export class RuntimeComponentsService {
           enabled: input.enabled ?? current.enabled
         }
       });
-      if (previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
-        await removeRuntimeComponentFile(resolveRuntimeComponentAbsolutePath(previousStoredFilePath));
-      }
-      if (isSharedRuleset(input.kind)) {
-        await this.cleanupSharedRulesetDuplicates(input.kind, updated.id);
-      }
+      await this.removeRuntimeComponentFileBestEffort(
+        previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath
+          ? resolveRuntimeComponentAbsolutePath(previousStoredFilePath)
+          : null,
+        "old runtime component upload"
+      );
+      await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, updated.id);
       return toAdminRuntimeComponentRecord(updated);
     } catch (error) {
       if (prepared) {
@@ -361,24 +361,19 @@ export class RuntimeComponentsService {
           component.archiveEntryName
         );
       }
-      const { response } = await fetchPublicHttpUrl(resolvedUrl, { method: "HEAD" }, {
-        errorPrefix: "Remote runtime component URL"
-      });
-      if (response.ok) {
+      if (!component.expectedHash) {
         return {
           componentId,
-          status: "ready",
-          message: "链接可访问，客户端可以按当前配置下载。",
-          finalUrlPreview: resolvedUrl,
-          httpStatus: response.status
+          status: "metadata_mismatch",
+          message: "远程内核组件缺少 SHA256 expectedHash，客户端不会下发该组件。请填写校验哈希后重新验证。",
+          finalUrlPreview: resolvedUrl
         };
       }
       return {
         componentId,
-        status: "unreachable",
-        message: `当前链接不可访问：HTTP ${response.status}`,
-        finalUrlPreview: resolvedUrl,
-        httpStatus: response.status
+        status: "metadata_mismatch",
+        message: "远程内核组件缺少 SHA256 expectedHash，客户端不会下发该组件。请填写校验哈希后重新验证。",
+        finalUrlPreview: resolvedUrl
       };
     } catch (error) {
       return {
@@ -683,6 +678,27 @@ export class RuntimeComponentsService {
       if (archiveDownloadPath) {
         await fs.rm(archiveDownloadPath, { force: true }).catch(() => undefined);
       }
+    }
+  }
+
+  private async cleanupSharedRulesetDuplicatesBestEffort(kind: RuntimeComponentKind, keepId: string) {
+    try {
+      await this.cleanupSharedRulesetDuplicates(kind, keepId);
+    } catch (error) {
+      this.logger.warn(
+        `Runtime component ${keepId} saved, but shared ruleset cleanup failed: ${readErrorMessage(error)}`
+      );
+    }
+  }
+
+  private async removeRuntimeComponentFileBestEffort(absolutePath: string | null, label: string) {
+    if (!absolutePath) {
+      return;
+    }
+    try {
+      await removeRuntimeComponentFile(absolutePath);
+    } catch (error) {
+      this.logger.warn(`Runtime component saved, but ${label} cleanup failed: ${readErrorMessage(error)}`);
     }
   }
 
@@ -1107,6 +1123,10 @@ function toBigInt(value: bigint | number | null | undefined) {
 
 function isValidSha256(value: string | null | undefined) {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function readErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }
 
 function translatePlatform(platform: "macos" | "windows" | "android" | "ios") {

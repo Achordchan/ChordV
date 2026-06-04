@@ -589,39 +589,44 @@ export class DevDataService implements OnModuleInit {
 
     const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      const message = await tx.supportTicketMessage.create({
-        data: {
-          id: createId("ticket_msg"),
-          ticketId,
-          authorRole: "admin",
-          authorUserId: adminUserId ?? null,
-          body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
-        }
-      });
-      if (uploaded) {
-        await tx.supportTicketAttachment.create({
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const message = await tx.supportTicketMessage.create({
           data: {
-            id: createId("ticket_att"),
+            id: createId("ticket_msg"),
             ticketId,
-            messageId: message.id,
-            provider: "image-bed",
-            url: uploaded.url,
-            fileName: uploaded.fileName,
-            mimeType: uploaded.mimeType,
-            fileSizeBytes: uploaded.fileSizeBytes
+            authorRole: "admin",
+            authorUserId: adminUserId ?? null,
+            body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
           }
         });
-      }
-      await tx.supportTicket.update({
-        where: { id: ticketId },
-        data: {
-          status: "waiting_user",
-          lastMessageAt: now,
-          closedAt: null
+        if (uploaded) {
+          await tx.supportTicketAttachment.create({
+            data: {
+              id: createId("ticket_att"),
+              ticketId,
+              messageId: message.id,
+              provider: "image-bed",
+              url: uploaded.url,
+              fileName: uploaded.fileName,
+              mimeType: uploaded.mimeType,
+              fileSizeBytes: uploaded.fileSizeBytes
+            }
+          });
         }
+        await tx.supportTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "waiting_user",
+            lastMessageAt: now,
+            closedAt: null
+          }
+        });
       });
-    });
+    } catch (error) {
+      await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
+      throw error;
+    }
 
     this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
@@ -1325,10 +1330,12 @@ export class DevDataService implements OnModuleInit {
       });
     }
 
-    const panelSync = await this.trySyncSubscriptionPanelAccess(subscriptionId);
-    if (!panelSync.ok) {
-      panelSyncStatus = "pending";
-      panelSyncMessage = `节点授权已保存，但 3x-ui 客户端预同步失败，将在连接时重试：${panelSync.errorMessage}`;
+    if (addedNodeIds.length > 0) {
+      const panelSync = await this.trySyncSubscriptionPanelAccess(subscriptionId);
+      if (!panelSync.ok) {
+        panelSyncStatus = "pending";
+        panelSyncMessage = `节点授权已保存，但 3x-ui 客户端预同步失败，将在连接时重试：${panelSync.errorMessage}`;
+      }
     }
     await this.publishNodeAccessUpdatedEvent({
       subscriptionId,

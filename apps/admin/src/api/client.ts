@@ -29,6 +29,7 @@ import type {
 import { request } from "./base";
 
 const IMAGE_BED_ACTION_TIMEOUT_MS = 60 * 1000;
+const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 
 export * from "./announcements";
 export * from "./auth";
@@ -232,14 +233,16 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
   };
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}`, {
     method: "PATCH",
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    timeoutMs: input.status === "published" ? LONG_ADMIN_ACTION_TIMEOUT_MS : undefined
   });
   return mapRelease(record);
 }
 
 export async function publishAdminRelease(releaseId: string) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/publish`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -292,7 +295,8 @@ export async function verifyAdminReleaseArtifact(releaseId: string, artifactId: 
     actualFileSizeBytes?: string | null;
     actualFileHash?: string | null;
   }>(`/admin/releases/${releaseId}/artifacts/${artifactId}/verify`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
   return {
     artifactId: result.artifactId,
@@ -321,7 +325,7 @@ export async function uploadAdminReleaseArtifact(
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/upload`, {
     method: "POST",
     body,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -345,7 +349,7 @@ export async function replaceAdminReleaseArtifactUpload(
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}/upload`, {
     method: "POST",
     body,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -377,14 +381,15 @@ export async function uploadAdminRuntimeComponent(input: UploadAdminRuntimeCompo
   return request<SharedAdminRuntimeComponentRecordDto>("/admin/runtime-components/upload", {
     method: "POST",
     body,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
 export async function updateAdminRuntimeComponent(componentId: string, input: UpdateAdminRuntimeComponentInputDto) {
   return request<SharedAdminRuntimeComponentRecordDto>(`/admin/runtime-components/${componentId}`, {
     method: "PATCH",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input),
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -404,7 +409,7 @@ export async function replaceAdminRuntimeComponentUpload(
   return request<SharedAdminRuntimeComponentRecordDto>(`/admin/runtime-components/${componentId}/upload`, {
     method: "POST",
     body,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -416,7 +421,8 @@ export async function deleteAdminRuntimeComponent(componentId: string) {
 
 export async function verifyAdminRuntimeComponent(componentId: string) {
   return request<SharedAdminRuntimeComponentValidationDto>(`/admin/runtime-components/${componentId}/verify`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
 }
 

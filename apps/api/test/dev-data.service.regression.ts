@@ -19,6 +19,7 @@ import { ClientAccessService } from "../src/modules/common/client-access.service
 import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
+import { ImageBedService } from "../src/modules/common/image-bed.service";
 import {
   assertReleaseArtifactClientUsable,
   fetchExternalReleaseArtifactMetadata,
@@ -372,6 +373,90 @@ function assertDtoRejectsFieldNull(dtoClass: new () => object, field: string) {
     errors.some((error) => error.property === field),
     `${dtoClass.name}.${field} must reject null instead of letting service code fail later`
   );
+}
+
+async function testImageBedListRejectsSuccessFalsePayload() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ success: false, message: "bad token" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.listAdminFiles(),
+      /bad token/,
+      "image bed list must reject HTTP 200 business failures instead of showing an empty list"
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function testImageBedUploadRejectsSuccessFalsePayload() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: false,
+        message: "upload rejected",
+        fileUrl: "/file/support-tickets/rejected.png"
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-upload-"));
+  const filePath = path.join(tempDir, "rejected.png");
+  await writeFile(filePath, "image");
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        service.uploadSupportTicketAttachment({
+          path: filePath,
+          originalname: "rejected.png",
+          mimetype: "image/png",
+          size: 5
+        }),
+      /upload rejected/,
+      "image bed upload must reject HTTP 200 business failures even when a URL is present"
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
 async function testUpdateUserPasswordRevokesExistingSessions() {
@@ -3378,6 +3463,87 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.match(result.panelSyncMessage ?? "", /panel job write failed/);
 }
 
+async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...oldNode,
+    id: "node_new",
+    name: "new",
+    recommended: true
+  };
+  let syncCalls = 0;
+  let accessRows = [
+    { id: "access_old", nodeId: "node_old" },
+    { id: "access_new", nodeId: "node_new" }
+  ];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return [{ nodeId: "node_new", node: newNode }];
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      revokeSubscriptionLeases: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        syncCalls += 1;
+        throw new Error("full subscription sync must not run for removal-only access updates");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
+
+  assert.equal(syncCalls, 0, "removing a node must not full-sync the subscription in the request");
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
+  assert.deepEqual(result.nodeIds, ["node_new"]);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /disable job queued/);
+}
+
 async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue() {
   const oldNode = {
     id: "node_old",
@@ -5118,6 +5284,37 @@ async function testRemoteRuntimeValidationRejectsPrivateNetworkUrl() {
   assert.match(result.message, /private or reserved/);
 }
 
+async function testRemoteRuntimeValidationRejectsMissingExpectedHash() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: null,
+          enabled: true
+        })
+      }
+    }
+  });
+
+  const result = await service.validateAdminRuntimeComponent("component_1");
+
+  assert.equal(result.status, "metadata_mismatch");
+  assert.match(result.message, /expectedHash/);
+}
+
 async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
   const service = createRuntimeComponentsService({
     prepareUploadedRuntimeComponentFile: async () => ({
@@ -5154,6 +5351,132 @@ async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
     /expectedHash/,
     "runtime upload must reject files whose actual hash differs from expectedHash"
   );
+}
+
+async function testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "runtime-cleanup-"));
+  const preparedPath = path.join(tempDir, "geoip.dat");
+  const sourcePath = path.join(tempDir, "upload.tmp");
+  await writeFile(preparedPath, "geoip");
+  await writeFile(sourcePath, "source");
+  try {
+    const fileHash = createHash("sha256").update("geoip").digest("hex");
+    const service = createRuntimeComponentsService({
+      logger: {
+        warn: () => undefined
+      },
+      findSharedRulesetRecord: async () => null,
+      prepareUploadedRuntimeComponentFile: async () => ({
+        absolutePath: preparedPath,
+        storedFilePath: "geoip/geoip.dat",
+        fileName: "geoip.dat",
+        fileSizeBytes: 5n,
+        fileHash,
+        downloadUrl: "/api/downloads/runtime-components/component_1"
+      }),
+      cleanupSharedRulesetDuplicates: async () => {
+        throw new Error("duplicate cleanup failed");
+      },
+      prisma: {
+        runtimeComponent: {
+          create: async (payload: Record<string, any>) => ({
+            id: payload.data.id,
+            platform: payload.data.platform,
+            architecture: payload.data.architecture,
+            kind: payload.data.kind,
+            source: payload.data.source,
+            originUrl: payload.data.originUrl,
+            defaultMirrorPrefix: payload.data.defaultMirrorPrefix,
+            allowClientMirror: payload.data.allowClientMirror,
+            fileName: payload.data.fileName,
+            storedFilePath: payload.data.storedFilePath,
+            fileSizeBytes: payload.data.fileSizeBytes,
+            fileHash: payload.data.fileHash,
+            archiveEntryName: payload.data.archiveEntryName,
+            expectedHash: payload.data.expectedHash,
+            enabled: payload.data.enabled,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.uploadAdminRuntimeComponent(
+      {
+        platform: "macos",
+        architecture: "arm64",
+        kind: "geoip",
+        source: "uploaded",
+        expectedHash: fileHash
+      },
+      {
+        path: sourcePath,
+        originalname: "geoip.dat",
+        size: 5
+      }
+    );
+
+    assert.equal(result.kind, "geoip");
+    assert.equal(existsSync(preparedPath), true, "saved runtime file must not be removed after DB create succeeds");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails() {
+  const expectedHash = "a".repeat(64);
+  let cleanupCalls = 0;
+  const service = createRuntimeComponentsService({
+    logger: {
+      warn: () => undefined
+    },
+    findSharedRulesetRecord: async () => ({
+      id: "component_existing"
+    }),
+    cleanupSharedRulesetDuplicates: async () => {
+      cleanupCalls += 1;
+      throw new Error("duplicate cleanup failed");
+    },
+    prisma: {
+      runtimeComponent: {
+        update: async (payload: Record<string, any>) => ({
+          id: payload.where.id,
+          platform: payload.data.platform,
+          architecture: payload.data.architecture,
+          kind: payload.data.kind,
+          source: payload.data.source,
+          originUrl: payload.data.originUrl,
+          defaultMirrorPrefix: payload.data.defaultMirrorPrefix,
+          allowClientMirror: payload.data.allowClientMirror,
+          fileName: payload.data.fileName,
+          storedFilePath: payload.data.storedFilePath,
+          fileSizeBytes: payload.data.fileSizeBytes,
+          fileHash: payload.data.fileHash,
+          archiveEntryName: payload.data.archiveEntryName,
+          expectedHash: payload.data.expectedHash,
+          enabled: payload.data.enabled,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-01-01T00:00:00.000Z")
+        })
+      }
+    }
+  });
+
+  const result = await service.createAdminRuntimeComponent({
+    platform: "windows",
+    architecture: "x64",
+    kind: "geosite",
+    source: "custom_remote",
+    originUrl: "https://example.com/geosite.dat",
+    fileName: "geosite.dat",
+    expectedHash
+  });
+
+  assert.equal(result.id, "component_existing");
+  assert.equal(result.kind, "geosite");
+  assert.equal(result.expectedHash, expectedHash);
+  assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted");
 }
 
 async function testRemoteRuntimeValidationChecksExpectedHashWithGet() {
@@ -6384,6 +6707,7 @@ function testAdminPatchDtosRejectNullForNonNullableFields() {
   assertDtoRejectsFieldNull(UpdateReleaseDto, "displayTitle");
   assertDtoRejectsFieldNull(UpdateReleaseArtifactDto, "downloadUrl");
   assertDtoRejectsFieldNull(UpdateRuntimeComponentDto, "source");
+  assertDtoRejectsFieldNull(UpdateRuntimeComponentDto, "fileName");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "defaultMode");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "blockAds");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "chinaDirect");
@@ -7626,6 +7950,51 @@ async function testAdminReplySupportTicketWithAttachmentCreatesAttachment() {
   ]);
 }
 
+async function testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails() {
+  const deletedUploads: string[] = [];
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/orphan.png",
+    providerFileId: "support-tickets/orphan.png",
+    fileName: "orphan.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(1234)
+  };
+
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
+      },
+      $transaction: async () => {
+        throw new Error("db write failed");
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => uploadedFile,
+      deleteUploadedSupportTicketAttachmentBestEffort: async (uploaded: { providerFileId: string | null; url: string }) => {
+        deletedUploads.push(uploaded.providerFileId ?? uploaded.url);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replyAdminSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "" },
+        {
+          path: path.join(tmpdir(), "orphan.png"),
+          originalname: "orphan.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "admin_1"
+      ),
+    /db write failed/
+  );
+  assert.deepEqual(deletedUploads, ["support-tickets/orphan.png"]);
+}
+
 async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
   const writes: string[] = [];
   const service = createDevDataService({
@@ -7729,6 +8098,54 @@ async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
   assert.equal((result as { id: string }).id, "ticket_1");
 }
 
+async function testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails() {
+  const deletedUploads: string[] = [];
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/client-orphan.png",
+    providerFileId: "support-tickets/client-orphan.png",
+    fileName: "client-orphan.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(1234)
+  };
+
+  const service = createClientTicketService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ({ id: "ticket_1", status: "waiting_user" })
+      },
+      $transaction: async () => {
+        throw new Error("db write failed");
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => uploadedFile,
+      deleteUploadedSupportTicketAttachmentBestEffort: async (uploaded: { providerFileId: string | null; url: string }) => {
+        deletedUploads.push(uploaded.providerFileId ?? uploaded.url);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replyClientSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "" },
+        {
+          path: path.join(tmpdir(), "client-orphan.png"),
+          originalname: "client-orphan.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "token"
+      ),
+    /db write failed/
+  );
+  assert.deepEqual(deletedUploads, ["support-tickets/client-orphan.png"]);
+}
+
 async function main() {
   await testSubscriptionUsageLockIsReentrantForNestedPanelSync();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
@@ -7796,6 +8213,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
+  await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
@@ -7825,7 +8243,10 @@ async function main() {
   await testRuntimeFailureReportLimitRejectsInvalidValues();
   await testRuntimeComponentFailureRejectsUnknownComponentId();
   await testRemoteRuntimeValidationRejectsPrivateNetworkUrl();
+  await testRemoteRuntimeValidationRejectsMissingExpectedHash();
   await testRuntimeComponentUploadRejectsExpectedHashMismatch();
+  await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
+  await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
   await testRemoteRuntimeValidationPersistsDownloadMetadata();
   await testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash();
@@ -7850,6 +8271,8 @@ async function main() {
   await testCreateTeamMemberRejectsOwnerRole();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   testAdminPatchDtosRejectNullForNonNullableFields();
+  await testImageBedListRejectsSuccessFalsePayload();
+  await testImageBedUploadRejectsSuccessFalsePayload();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdatePlanSecurityReconcilesUsersWithoutOverrides();
@@ -7874,7 +8297,9 @@ async function main() {
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
+  await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
+  await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");

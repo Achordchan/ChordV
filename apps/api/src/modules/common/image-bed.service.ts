@@ -18,7 +18,7 @@ const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = readPositiveIntegerEnv(
   "CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES",
   DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
 );
-const IMAGE_BED_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", 15_000);
+const IMAGE_BED_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", 60_000);
 
 type StoredImageBedConfig = {
   baseUrl?: string;
@@ -190,6 +190,10 @@ export class ImageBedService {
       }
 
       const payload = parseJson(rawBody);
+      if (payload && typeof payload === "object" && (payload as Record<string, unknown>).success === false) {
+        const record = payload as Record<string, unknown>;
+        throw new BadGatewayException(readString(record.message) ?? readString(record.error) ?? "Image bed upload failed.");
+      }
       const publicUrl = extractUploadedUrl(config.baseUrl, payload);
       if (!publicUrl) {
         throw new BadGatewayException("Image bed upload response did not include a file URL.");
@@ -209,6 +213,14 @@ export class ImageBedService {
     }
   }
 
+  async deleteUploadedSupportTicketAttachmentBestEffort(uploaded: UploadedImageBedFile | null | undefined) {
+    const path = uploaded?.providerFileId ?? uploaded?.url;
+    if (!path) {
+      return;
+    }
+    await this.deleteAdminFile({ path }).catch(() => undefined);
+  }
+
   private async requestImageBedJson<T>(config: EffectiveImageBedConfig, pathAndQuery: string): Promise<T> {
     const url = new URL(pathAndQuery, config.baseUrl);
     const response = await fetchImageBed(url, {
@@ -224,6 +236,10 @@ export class ImageBedService {
     const payload = parseJson(rawBody);
     if (!payload || typeof payload !== "object") {
       throw new BadGatewayException("Image bed response was not valid JSON.");
+    }
+    const record = payload as Record<string, unknown>;
+    if (record.success === false) {
+      throw new BadGatewayException(readString(record.message) ?? readString(record.error) ?? "Image bed request failed.");
     }
     return payload as T;
   }

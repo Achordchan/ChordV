@@ -313,58 +313,63 @@ export class ClientTicketService {
 
     const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      const message = await tx.supportTicketMessage.create({
-        data: {
-          id: createId("ticket_msg"),
-          ticketId,
-          authorRole: "user",
-          authorUserId: user.id,
-          body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
-        }
-      });
-      if (uploaded) {
-        await tx.supportTicketAttachment.create({
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const message = await tx.supportTicketMessage.create({
           data: {
-            id: createId("ticket_att"),
+            id: createId("ticket_msg"),
             ticketId,
-            messageId: message.id,
-            provider: "image-bed",
-            url: uploaded.url,
-            fileName: uploaded.fileName,
-            mimeType: uploaded.mimeType,
-            fileSizeBytes: uploaded.fileSizeBytes
+            authorRole: "user",
+            authorUserId: user.id,
+            body: body || (uploaded ? `上传了附件：${uploaded.fileName}` : "")
           }
         });
-      }
-      await tx.supportTicket.update({
-        where: { id: ticketId },
-        data: {
-          status: "waiting_admin",
-          lastMessageAt: now,
-          closedAt: null
+        if (uploaded) {
+          await tx.supportTicketAttachment.create({
+            data: {
+              id: createId("ticket_att"),
+              ticketId,
+              messageId: message.id,
+              provider: "image-bed",
+              url: uploaded.url,
+              fileName: uploaded.fileName,
+              mimeType: uploaded.mimeType,
+              fileSizeBytes: uploaded.fileSizeBytes
+            }
+          });
         }
-      });
-      await tx.supportTicketReadState.upsert({
-        where: {
-          ticketId_userId: {
-            ticketId,
-            userId: user.id
+        await tx.supportTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "waiting_admin",
+            lastMessageAt: now,
+            closedAt: null
           }
-        },
-        create: {
-          id: createId("ticket_read"),
-          ticketId,
-          userId: user.id,
-          lastReadMessageAt: now,
-          lastReadAt: now
-        },
-        update: {
-          lastReadMessageAt: now,
-          lastReadAt: now
-        }
+        });
+        await tx.supportTicketReadState.upsert({
+          where: {
+            ticketId_userId: {
+              ticketId,
+              userId: user.id
+            }
+          },
+          create: {
+            id: createId("ticket_read"),
+            ticketId,
+            userId: user.id,
+            lastReadMessageAt: now,
+            lastReadAt: now
+          },
+          update: {
+            lastReadMessageAt: now,
+            lastReadAt: now
+          }
+        });
       });
-    });
+    } catch (error) {
+      await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
+      throw error;
+    }
 
     this.publishTicketEventBestEffort(user.id, {
       type: "ticket_updated",

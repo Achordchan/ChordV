@@ -1030,7 +1030,7 @@ export class UpdateRuntimeComponentDto {
   })
   allowClientMirror?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   fileName?: string;
