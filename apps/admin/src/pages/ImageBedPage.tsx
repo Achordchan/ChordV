@@ -60,12 +60,8 @@ export function ImageBedPage() {
         uploadChannel: nextConfig.uploadChannel ?? "",
         channelName: nextConfig.channelName ?? ""
       });
-      if (nextConfig.hasToken) {
-        void loadFiles({ silent: true });
-      } else {
-        setFiles([]);
-        setFileListError(null);
-      }
+      setFiles([]);
+      setFileListError(null);
     } catch (reason) {
       setError(readError(reason, "图床配置加载失败"));
     } finally {

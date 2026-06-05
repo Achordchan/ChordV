@@ -169,7 +169,7 @@ import {
   type TeamSubscriptionFormState,
   type UserFormState
 } from "./utils/admin-forms";
-import { filterByKeyword, isUncertainRequestFailure, readError } from "./utils/admin-filters";
+import { filterByKeyword, isDefiniteLocalSaveFailure, isUncertainRequestFailure, readError } from "./utils/admin-filters";
 import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
 import {
   getRenewActionDescription,
@@ -1066,7 +1066,10 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return false;
       }
-      const uncertain = isUncertainRequestFailure(message) || (options.treatHttp500AsUncertain === true && /http 500/i.test(message));
+      const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
+      const uncertain =
+        !definiteLocalSaveFailure &&
+        (isUncertainRequestFailure(message) || (options.treatHttp500AsUncertain === true && /http 500/i.test(message)));
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",

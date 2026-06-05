@@ -463,6 +463,9 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   panelSyncRunningCount?: number;
   panelSyncFailedCount?: number;
   panelSyncLastError?: string | null;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -36,6 +36,10 @@ export function isUncertainRequestFailure(message: string) {
   );
 }
 
+export function isDefiniteLocalSaveFailure(message: string) {
+  return /before local .* was saved|no .* was saved|import failed and no node was saved|本地.*未保存|没有保存/i.test(message);
+}
+
 export function isPotentiallyCompletedMutationFailure(message: string) {
   return isUncertainRequestFailure(message) || /http 500/i.test(message);
 }

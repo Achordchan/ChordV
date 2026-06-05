@@ -578,7 +578,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
       if (eventType === "ticket_updated" || eventType === "ticket_read_state_updated") {
         const preferredTicketId = runtimeEvent.ticketId ?? options.selectedTicketIdRef.current;
-        if (eventType === "ticket_updated" && runtimeEvent.ticketId) {
+        if (eventType === "ticket_updated" && runtimeEvent.ticketId && runtimeEvent.ticketStatus === "waiting_user") {
           options.markTicketUnread(runtimeEvent.ticketId);
         }
         const shouldRefreshDetail =

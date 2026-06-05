@@ -5115,6 +5115,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   const result = await service.deleteNode("node_1");
 
   assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
   assert.equal(bindingsQueuedForDelete, true, "delete must queue remote panel cleanup without waiting for the panel");
   assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete"]);
   assert.equal(nodeUpdates[0].data.isActive, false, "node must be hidden locally before remote cleanup completes");
@@ -5169,6 +5170,7 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
   ]);
 
   assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
   assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
   assert.deepEqual(publishedUserIds, []);
 }
@@ -5222,6 +5224,7 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
   ]);
 
   assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
   assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
   assert.deepEqual(publishedUserIds, ["user_1"]);
 }
@@ -8693,6 +8696,7 @@ async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
   const result = await service.updateNode("node_1", { isActive: false });
 
   assert.equal(result.isActive, false);
+  assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, false, "local node state must be saved even when panel disable is pending");
   assert.equal(queuedNodeId, null, "panel disable queueing must be deferred until after the local response");
   await waitUntil(() => queuedNodeId === "node_1");
@@ -8833,6 +8837,7 @@ async function testDisableNodeKeepsLocalSaveWhenEffectsFail() {
   const result = await service.updateNode("node_1", { isActive: false });
 
   assert.equal(result.isActive, false);
+  assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, false, "local node state must save even when revoke, queue, and publish fail");
 }
 
@@ -8879,6 +8884,7 @@ async function testDisableNodeReturnsWhenAfterSaveFollowUpStalls() {
   ]);
 
   assert.equal(result.isActive, false);
+  assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, false, "local node disable must save before stalled follow-up finishes");
   assert.equal(panelDisableQueued, false, "panel disable queueing must not block the local node disable response");
   await waitUntil(() => panelDisableQueued);

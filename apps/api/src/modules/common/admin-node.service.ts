@@ -29,6 +29,7 @@ const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
 const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
+const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
 
 @Injectable()
 export class AdminNodeService {
@@ -274,7 +275,9 @@ export class AdminNodeService {
       }
     });
 
+    let panelSyncPending = false;
     if (current && panelConnectionChanged && !nodeWillBeDisabled) {
+      panelSyncPending = true;
       await this.tryRunAfterLocalNodeSave("revoke node leases for panel config change", () =>
         this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed")
       );
@@ -287,6 +290,7 @@ export class AdminNodeService {
     }
 
     if (current && (panelWillBeDisabled || nodeWillBeDisabled)) {
+      panelSyncPending = true;
       await this.tryRunAfterLocalNodeSave("revoke node leases after node disable", () =>
         this.runtimeSessionService.revokeNodeLeases(
           nodeId,
@@ -301,6 +305,7 @@ export class AdminNodeService {
     const record = await this.probeNodeAfterLocalImport(row);
     if (current) {
       if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
+        panelSyncPending = true;
         await this.tryRunAfterLocalNodeSave("queue panel access sync after node import", () =>
           this.runtimeSessionService.syncPanelAccessForNode(row.id)
         );
@@ -309,7 +314,7 @@ export class AdminNodeService {
         this.clientEventsPublisher.publishNodeAccessUpdatedForNode(row.id)
       );
     }
-    return record;
+    return panelSyncPending ? withNodePanelSyncPending(record) : record;
   }
 
   async listNodePanelInbounds(input: {
@@ -535,7 +540,9 @@ export class AdminNodeService {
       }
     });
 
+    let panelSyncPending = false;
     if (panelConnectionChanged && !nodeWillBeDisabled) {
+      panelSyncPending = true;
       await this.tryRunAfterLocalNodeSave("revoke node leases for panel config change", () =>
         this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed")
       );
@@ -553,6 +560,7 @@ export class AdminNodeService {
     }
 
     if ((current.isActive && input.isActive === false) || panelWillBeDisabled) {
+      panelSyncPending = true;
       await this.tryRunAfterLocalNodeSave("revoke node leases after node disable", () =>
         this.runtimeSessionService.revokeNodeLeases(
           nodeId,
@@ -568,6 +576,7 @@ export class AdminNodeService {
       );
     }
     if (row.isActive && row.panelEnabled && (!current.panelEnabled || panelConnectionChanged || (!current.isActive && input.isActive === true))) {
+      panelSyncPending = true;
       await this.tryRunAfterLocalNodeSave("queue panel access sync after node update", () =>
         this.runtimeSessionService.syncPanelAccessForNode(nodeId)
       );
@@ -588,7 +597,8 @@ export class AdminNodeService {
       );
     }
 
-    return toAdminNodeRecord(row);
+    const record = toAdminNodeRecord(row);
+    return panelSyncPending ? withNodePanelSyncPending(record) : record;
   }
 
   private async readSubscriptionNodeForNodeSaveBestEffort(subscriptionUrl: string): Promise<{
@@ -1017,7 +1027,12 @@ export class AdminNodeService {
     } catch (error) {
       this.logger?.warn(`Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return { ok: true };
+    return {
+      ok: true,
+      panelSyncStatus: "pending" as const,
+      panelSyncMessage: NODE_PANEL_SYNC_PENDING_MESSAGE,
+      message: NODE_PANEL_SYNC_PENDING_MESSAGE
+    };
   }
 
   private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {
@@ -1195,6 +1210,15 @@ export class AdminNodeService {
 
 function readAdminNodeErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+}
+
+function withNodePanelSyncPending(record: AdminNodeRecordDto): AdminNodeRecordDto {
+  return {
+    ...record,
+    panelSyncStatus: "pending",
+    panelSyncMessage: NODE_PANEL_SYNC_PENDING_MESSAGE,
+    message: NODE_PANEL_SYNC_PENDING_MESSAGE
+  };
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {
