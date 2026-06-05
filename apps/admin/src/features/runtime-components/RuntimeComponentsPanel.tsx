@@ -41,13 +41,15 @@ import {
   type RuntimeComponentEditorFormState
 } from "./types";
 
-function showRuntimeComponentFailure(reason: unknown, fallback: string) {
+function showRuntimeComponentFailure(reason: unknown, fallback: string, options?: { uncertainMessage?: (message: string) => string }) {
   const message = readError(reason, fallback);
   const uncertain = isUncertainRequestFailure(message);
   notifications.show({
     color: uncertain ? "yellow" : "red",
     title: uncertain ? "内核组件请求状态不确定" : "内核组件",
-    message: uncertain ? `${message} 请求可能已被后台保存，请刷新组件列表确认最新状态。` : message
+    message: uncertain
+      ? options?.uncertainMessage?.(message) ?? `${message} 请求可能已被后台保存，请刷新组件列表确认最新状态。`
+      : message
   });
 }
 
@@ -192,7 +194,9 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         message: result.message
       });
     } catch (reason) {
-      showRuntimeComponentFailure(reason, "校验下载链接失败");
+      showRuntimeComponentFailure(reason, "校验下载链接失败", {
+        uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
+      });
     }
   }
 
