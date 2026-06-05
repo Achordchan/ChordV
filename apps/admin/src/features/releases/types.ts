@@ -35,42 +35,7 @@ export const releasePlatformOptions = [
   { value: "ios", label: "iOS" }
 ] as const;
 
-export const releaseArtifactTypeOptions = [
-  { value: "dmg", label: "DMG 安装包" },
-  { value: "app", label: "APP 应用包" },
-  { value: "exe", label: "EXE 单文件" },
-  { value: "setup.exe", label: "Setup 安装器" },
-  { value: "apk", label: "APK 安装包" },
-  { value: "ipa", label: "IPA 安装包" },
-  { value: "external", label: "外部下载页" }
-] as const;
-
 export const DEFAULT_GITHUB_MIRROR_PREFIX = "";
-
-export function releaseArtifactTypeOptionsForPlatform(platform: AdminReleasePlatform, currentType?: AdminReleaseArtifactType) {
-  const allowed = new Set<AdminReleaseArtifactType>(
-    platform === "macos"
-      ? ["dmg"]
-      : platform === "windows"
-        ? ["zip", "setup.exe"]
-        : platform === "android"
-          ? ["apk"]
-          : ["ipa", "external"]
-  );
-
-  const options =
-    platform === "windows"
-      ? [...releaseArtifactTypeOptions, { value: "zip", label: "ZIP full update package" } as const]
-      : releaseArtifactTypeOptions;
-  const filtered = options.filter((item) => allowed.has(item.value as AdminReleaseArtifactType));
-  if (currentType && !allowed.has(currentType)) {
-    const legacy = releaseArtifactTypeOptions.find((item) => item.value === currentType);
-    if (legacy) {
-      return [{ ...legacy, label: `${legacy.label}（旧格式）` }, ...filtered];
-    }
-  }
-  return filtered;
-}
 
 export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos"): ReleaseEditorFormState {
   return {
@@ -122,8 +87,4 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     isFullPackage: record.isFullPackage,
     selectedFile: null
   };
-}
-
-export function isDesktopReleasePlatform(platform: AdminReleasePlatform) {
-  return platform === "macos" || platform === "windows";
 }

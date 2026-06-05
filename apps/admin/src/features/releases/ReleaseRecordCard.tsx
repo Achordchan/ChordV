@@ -56,8 +56,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
             </Group>
             <Text fw={600}>{record.title}</Text>
             <Text size="sm" c="dimmed">
-              最低可用版本 {record.minimumVersion} · {translateDeliveryMode(record.deliveryMode)} · {record.forceUpgrade ? "强制升级" : "建议升级"}
-              {record.publishedAt ? ` · 发布时间 ${formatDateTime(record.publishedAt)}` : " · 尚未发布"}
+              {record.publishedAt ? `发布时间 ${formatDateTime(record.publishedAt)}` : "尚未发布"}
             </Text>
           </Stack>
           <Group gap="xs" wrap="wrap">
@@ -69,7 +68,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               disabled={isArchived}
               title={isArchived ? "Archived releases are read-only." : undefined}
             >
-              编辑发布
+              编辑
             </Button>
             <Button
               size="xs"
@@ -77,9 +76,9 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               leftSection={<IconPlus size={14} />}
               onClick={() => props.onCreateArtifact(record.id, record.platform)}
               disabled={artifactEditingDisabled}
-              title={artifactEditingDisabled ? "请先撤回发布，再调整安装产物" : undefined}
+              title={artifactEditingDisabled ? "请先撤回发布，再调整安装包" : undefined}
             >
-              新增产物
+              新增安装包
             </Button>
             {isArchived ? (
               <Button size="xs" variant="default" disabled>
@@ -102,11 +101,11 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
 
         {record.status === "draft" ? (
           <Alert color="blue" variant="light">
-            当前还是草稿。补完至少一个安装产物后，再点击“发布版本”。
+            当前还是草稿。补完至少一个安装包后，再点击“发布版本”。
           </Alert>
         ) : (
           <Alert color="teal" variant="light">
-            当前版本已发布。若要新增、编辑或删除安装产物，请先执行“撤回发布”。
+            当前版本已发布。若要新增、编辑或删除安装包，请先执行“撤回发布”。
           </Alert>
         )}
 
@@ -134,13 +133,13 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
 
         <Stack gap="sm">
           <Group justify="space-between" wrap="wrap">
-            <Text fw={600}>安装产物</Text>
+            <Text fw={600}>安装包</Text>
             <Badge variant="light">{record.artifacts.length} 个</Badge>
           </Group>
 
           {record.artifacts.length === 0 ? (
             <Alert color="yellow" variant="light">
-              当前版本还没有挂任何安装产物，客户端不能直接拿它做更新入口。
+              当前版本还没有安装包，客户端不能直接拿它做更新入口。
             </Alert>
           ) : (
             <Stack gap="sm">
@@ -160,7 +159,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                             <Badge variant="outline">{translateArtifactType(artifact.type)}</Badge>
                             {artifact.isPrimary ? <Badge color="blue" variant="light">更新入口</Badge> : null}
                           </Group>
-                          <Text fw={600}>{artifact.fileName || "未命名产物"}</Text>
+                          <Text fw={600}>{artifact.fileName || "未命名安装包"}</Text>
                           <Text size="sm" c="dimmed">
                             下载地址：{effectiveUrl}
                           </Text>
@@ -189,7 +188,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                             <ActionIcon
                               variant="subtle"
                               onClick={() => props.onEditArtifact(record.id, artifact)}
-                              title={artifactEditingDisabled ? "请先撤回发布，再编辑产物" : "编辑产物"}
+                              title={artifactEditingDisabled ? "请先撤回发布，再编辑安装包" : "编辑安装包"}
                               disabled={artifactEditingDisabled}
                             >
                               <IconEdit size={16} />
@@ -198,7 +197,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                               color="red"
                               variant="subtle"
                               onClick={() => props.onRemoveArtifact(record.id, artifact.id)}
-                              title={artifactEditingDisabled ? "请先撤回发布，再删除产物" : "删除产物"}
+                              title={artifactEditingDisabled ? "请先撤回发布，再删除安装包" : "删除安装包"}
                               disabled={artifactEditingDisabled}
                             >
                               <IconTrash size={16} />
@@ -206,12 +205,6 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                           </Group>
                         </Stack>
                       </Group>
-
-                      {artifact.source === "external" ? (
-                        <Text size="sm" c="dimmed">
-                          {artifact.allowClientMirror ? "允许客户端覆盖默认加速前缀" : "仅使用后台默认加速前缀"}
-                        </Text>
-                      ) : null}
                     </Stack>
                   </Paper>
                 );
@@ -229,14 +222,6 @@ function translatePlatform(platform: AdminReleasePlatform) {
   if (platform === "windows") return "Windows";
   if (platform === "android") return "Android";
   return "iOS";
-}
-
-function translateDeliveryMode(mode: string) {
-  if (mode === "desktop_full_replace") return "Full replace update";
-  if (mode === "external_download") return "跳转外部链接";
-  if (mode === "apk_download") return "应用内提示 APK 下载";
-  if (mode === "none") return "不提供下载";
-  return "应用内下载";
 }
 
 function translateReleaseStatus(status: AdminReleaseRecordDto["status"]) {

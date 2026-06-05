@@ -1,6 +1,5 @@
-import { Alert, Button, FileInput, Group, Modal, Select, SegmentedControl, Stack, Switch, TextInput } from "@mantine/core";
+import { Alert, Button, FileInput, Group, Modal, SegmentedControl, Stack, TextInput } from "@mantine/core";
 import type { ArtifactEditorFormState } from "./types";
-import { releaseArtifactTypeOptionsForPlatform } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
 
 type ArtifactEditorModalProps = {
@@ -20,7 +19,6 @@ type ArtifactEditorModalProps = {
 
 export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
   const usesExternalLink = props.form.source === "external" || props.form.type === "external";
-  const typeOptions = releaseArtifactTypeOptionsForPlatform(props.platform, props.form.type);
   const defaultType = defaultArtifactTypeForPlatform(props.platform);
 
   return (
@@ -32,8 +30,10 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             props.onChange({
               ...props.form,
               source: value as ArtifactEditorFormState["source"],
-              type: props.form.type === "external" ? defaultType : props.form.type,
-              allowClientMirror: value === "external"
+              type: defaultType,
+              defaultMirrorPrefix: "",
+              allowClientMirror: false,
+              isFullPackage: true
             })
           }
           data={[
@@ -42,23 +42,9 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
           ]}
         />
 
-        <Select
-          label="产物类型"
-          data={typeOptions as unknown as { value: string; label: string }[]}
-          value={props.form.type}
-          onChange={(value) =>
-            value &&
-            props.onChange({
-              ...props.form,
-              type: value as ArtifactEditorFormState["type"],
-              source: value === "external" ? "external" : props.form.source
-            })
-          }
-        />
-
         {props.platform === "macos" || props.platform === "windows" ? (
           <Alert color="blue" variant="light">
-            桌面端发布中心：macOS 使用 DMG，Windows 使用 ZIP 全量更新包。
+            {props.platform === "windows" ? "Windows 更新包使用 ZIP。" : "macOS 安装包使用 DMG。"}
           </Alert>
         ) : null}
 
@@ -74,18 +60,6 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               value={props.form.downloadUrl}
               onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
               error={!props.form.downloadUrl.trim() ? "请填写外部安装包下载地址。" : undefined}
-            />
-            <TextInput
-              label="默认加速前缀"
-              description="可选。直接填写加速域名前缀即可，比如 https://ghfast.top/。留空时直接使用原始下载地址。"
-              placeholder="例如 https://ghfast.top/"
-              value={props.form.defaultMirrorPrefix}
-              onChange={(event) => props.onChange({ ...props.form, defaultMirrorPrefix: event.currentTarget.value })}
-            />
-            <Switch
-              checked={props.form.allowClientMirror}
-              onChange={(event) => props.onChange({ ...props.form, allowClientMirror: event.currentTarget.checked })}
-              label="允许客户端自定义加速前缀覆盖默认值"
             />
           </>
         ) : (

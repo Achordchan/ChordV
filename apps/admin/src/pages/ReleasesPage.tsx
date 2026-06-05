@@ -185,7 +185,7 @@ export function ReleasesPage() {
     try {
       setSaving(true);
       const version = releaseForm.version.trim();
-      const minimumVersion = releaseForm.minimumVersion.trim();
+      const minimumVersion = releaseForm.minimumVersion.trim() || version;
       const validationMessage = validateReleaseEditorInput(version, minimumVersion);
       if (validationMessage) {
         notifications.show({
@@ -217,7 +217,7 @@ export function ReleasesPage() {
         notifications.show({
           color: "blue",
           title: "发布中心",
-          message: "继续补充首个安装产物。只有产物保存成功，这条发布记录才会真正创建。"
+          message: "继续补充首个安装包。只有安装包保存成功，这条发布记录才会真正创建。"
         });
         return;
       }
@@ -247,7 +247,7 @@ export function ReleasesPage() {
       notifications.show({
         color: "yellow",
         title: "发布中心",
-        message: "请先补充至少一个安装产物，再发布这个版本。"
+        message: "请先补充至少一个安装包，再发布这个版本。"
       });
       return;
     }
@@ -285,7 +285,7 @@ export function ReleasesPage() {
   }
 
   async function deleteRelease(record: AdminReleaseRecordDto) {
-    const confirmed = window.confirm(`确认删除 ${record.version} 这条发布记录吗？已上传的安装产物也会一起删除。`);
+    const confirmed = window.confirm(`确认删除 ${record.version} 这条发布记录吗？已上传的安装包也会一起删除。`);
     if (!confirmed) {
       return;
     }
@@ -364,12 +364,12 @@ export function ReleasesPage() {
     const isExternal = artifactForm.source === "external" || artifactForm.type === "external";
     if (isExternal) {
       if (!artifactForm.downloadUrl.trim()) {
-        return "请先填写外链安装产物的下载地址。";
+        return "请先填写外链安装包的下载地址。";
       }
       return null;
     }
     if (isUploadFileRequired()) {
-      return "切换为上传产物时，请先选择要上传的安装包文件。";
+      return "切换为上传安装包时，请先选择要上传的文件。";
     }
     if (artifactForm.selectedFile && artifactForm.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
       return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
@@ -389,7 +389,7 @@ export function ReleasesPage() {
       if (validationMessage) {
         notifications.show({
           color: "yellow",
-          title: "安装产物信息不完整",
+          title: "安装包信息不完整",
           message: validationMessage
         });
         return;
@@ -401,17 +401,17 @@ export function ReleasesPage() {
             source: "external" as const,
             type: artifactForm.type,
             downloadUrl: artifactForm.downloadUrl.trim(),
-            defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
-            allowClientMirror: artifactForm.allowClientMirror,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
             isPrimary: artifactForm.isPrimary,
-            isFullPackage: artifactForm.isFullPackage
+            isFullPackage: true
           }
         : null;
       let record;
 
       if (!releaseId) {
         if (!pendingCreateRelease) {
-          throw new Error("缺少发布信息，无法保存安装产物");
+          throw new Error("缺少发布信息，无法保存安装包");
         }
 
         if (externalPayload) {
@@ -446,7 +446,7 @@ export function ReleasesPage() {
             defaultMirrorPrefix: null,
             allowClientMirror: false,
             isPrimary: artifactForm.isPrimary,
-            isFullPackage: artifactForm.isFullPackage
+            isFullPackage: true
           };
           record = artifactEditor.artifactId
             ? await replaceAdminReleaseArtifactUpload(releaseId!, artifactEditor.artifactId, uploadPayload, artifactForm.selectedFile)
@@ -459,7 +459,7 @@ export function ReleasesPage() {
             defaultMirrorPrefix: null,
             allowClientMirror: false,
             isPrimary: artifactForm.isPrimary,
-            isFullPackage: artifactForm.isFullPackage
+            isFullPackage: true
           };
           record = await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId!, payload);
         }
@@ -472,13 +472,13 @@ export function ReleasesPage() {
         title: "发布中心",
         message:
           artifactEditor.artifactId
-            ? "产物已更新"
+            ? "安装包已更新"
             : createdReleaseId
-              ? "发布记录和首个产物已创建"
-              : "产物已新增"
+              ? "发布记录和首个安装包已创建"
+              : "安装包已新增"
       });
     } catch (reason) {
-      const failure = showReleaseRequestFailure(reason, "保存产物失败");
+      const failure = showReleaseRequestFailure(reason, "保存安装包失败");
       if (createdReleaseId && !createdViaAtomicFlow && !failure.uncertain) {
         try {
           await deleteAdminRelease(createdReleaseId);
@@ -486,7 +486,7 @@ export function ReleasesPage() {
           notifications.show({
             color: "yellow",
             title: "发布中心",
-            message: `首个产物保存失败，而且自动清理草稿也失败了：${readError(cleanupReason, "请手动检查是否残留空白草稿")}`
+            message: `首个安装包保存失败，而且自动清理草稿也失败了：${readError(cleanupReason, "请手动检查是否残留空白草稿")}`
           });
         }
       }
@@ -496,7 +496,7 @@ export function ReleasesPage() {
   }
 
   async function removeArtifact(releaseId: string, artifactId: string) {
-    if (!window.confirm("确定删除这条产物记录吗？")) return;
+    if (!window.confirm("确定删除这个安装包吗？")) return;
     try {
       setSaving(true);
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
@@ -504,10 +504,10 @@ export function ReleasesPage() {
       notifications.show({
         color: "green",
         title: "发布中心",
-        message: "产物已删除"
+        message: "安装包已删除"
       });
     } catch (reason) {
-      showReleaseRequestFailure(reason, "删除产物失败");
+      showReleaseRequestFailure(reason, "删除安装包失败");
     } finally {
       setSaving(false);
     }
@@ -576,7 +576,7 @@ export function ReleasesPage() {
                     <Stack gap={4}>
                       <Title order={5}>安装包发布</Title>
                       <Text size="sm" c="dimmed">
-                        这里只管理应用发布产物。桌面端使用 DMG / Windows ZIP，移动端按平台使用 APK / IPA。
+                        这里只管理应用安装包。桌面端使用 DMG / Windows ZIP，移动端按平台使用 APK / IPA。
                       </Text>
                     </Stack>
                     <Group gap="sm" wrap="wrap">
@@ -612,7 +612,7 @@ export function ReleasesPage() {
                 <Text c="dimmed">正在加载发布记录…</Text>
               ) : groupedReleases.length === 0 ? (
                 <Alert color="gray" variant="light">
-                  当前筛选下还没有可见发布记录，可以先新建一条草稿，再继续补充安装产物。
+                  当前筛选下还没有可见发布记录，可以先新建一条草稿，再继续补充安装包。
                 </Alert>
               ) : (
                 <Stack gap="lg">
@@ -717,7 +717,7 @@ export function ReleasesPage() {
         editing={Boolean(releaseEditorId)}
         saving={saving}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
-        submitLabel={releaseEditorId ? "保存发布记录" : "下一步：配置首个产物"}
+        submitLabel={releaseEditorId ? "保存发布记录" : "下一步：添加安装包"}
         form={releaseForm}
         onClose={closeReleaseEditor}
         onChange={setReleaseForm}
@@ -729,15 +729,15 @@ export function ReleasesPage() {
         saving={saving}
         creatingRelease={Boolean(pendingCreateRelease)}
         platform={artifactEditor?.platform ?? "macos"}
-        title={artifactEditor?.artifactId ? "编辑安装产物" : pendingCreateRelease ? "新建发布：首个安装产物" : "新增安装产物"}
+        title={artifactEditor?.artifactId ? "编辑安装包" : pendingCreateRelease ? "新建发布：首个安装包" : "新增安装包"}
         submitLabel={
           artifactEditor?.artifactId
-            ? "保存产物"
+            ? "保存安装包"
             : pendingCreateRelease
               ? artifactForm.source === "external" || artifactForm.type === "external"
-                ? "创建发布并保存首个产物"
-                : "创建发布并上传首个产物"
-              : "保存产物"
+                ? "创建发布并保存安装包"
+                : "创建发布并上传安装包"
+              : "保存安装包"
         }
         form={artifactForm}
         uploadMaxBytes={ADMIN_RELEASE_MAX_UPLOAD_BYTES}
@@ -771,13 +771,13 @@ function validateReleaseEditorInput(version: string, minimumVersion: string) {
     return "版本号格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
   }
   if (!minimumVersion) {
-    return "请填写最低可用版本。这个值会影响客户端是否必须更新，例如 1.1.0。";
+    return "请填写版本号。";
   }
   if (!RELEASE_VERSION_PATTERN.test(minimumVersion)) {
-    return "最低可用版本格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
+    return "版本号格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
   }
   if (compareSemver(minimumVersion, version) > 0) {
-    return "最低可用版本不能高于本次发布版本。";
+    return "版本号配置不正确。";
   }
   return null;
 }

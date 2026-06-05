@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Group, Modal, Select, Stack, Switch, TextInput, Textarea, Text } from "@mantine/core";
+import { Badge, Button, Group, Modal, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -47,27 +47,25 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 正式版
               </Badge>
               <Text size="xs" c="dimmed">
-                新建记录先保存为草稿，补完安装产物后再发布。
+                新建记录先保存为草稿，补完安装包后再发布。
               </Text>
             </Stack>
           )}
         </Group>
 
-        <Group grow align="flex-start">
-          <TextInput
-            label="版本号"
-            placeholder="例如 1.0.3"
-            value={props.form.version}
-            onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
-            disabled={props.editing}
-          />
-          <TextInput
-            label="最低可用版本"
-            placeholder="例如 1.0.2"
-            value={props.form.minimumVersion}
-            onChange={(event) => props.onChange({ ...props.form, minimumVersion: event.currentTarget.value })}
-          />
-        </Group>
+        <TextInput
+          label="版本号"
+          placeholder="例如 1.0.3"
+          value={props.form.version}
+          onChange={(event) =>
+            props.onChange({
+              ...props.form,
+              version: event.currentTarget.value,
+              minimumVersion: props.editing ? props.form.minimumVersion : event.currentTarget.value
+            })
+          }
+          disabled={props.editing}
+        />
 
         <TextInput
           label="展示标题（可选）"
@@ -75,15 +73,6 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           value={props.form.title}
           onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
         />
-        <Switch
-          checked={props.form.forceUpgrade}
-          onChange={(event) => props.onChange({ ...props.form, forceUpgrade: event.currentTarget.checked })}
-          label="本版要求立即更新"
-        />
-
-        <Alert color="blue" variant="light">
-          “最低可用版本”表示低于这个版本就不能继续使用；“本版要求立即更新”表示即使没有低于最低可用版本，也必须先更新当前版本。
-        </Alert>
 
         <Textarea
           label="更新日志"
