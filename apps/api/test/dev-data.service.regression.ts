@@ -6825,6 +6825,116 @@ async function testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls() {
   assert.match(result.panelSyncMessage ?? "", /disable queueing is still running in background/);
 }
 
+async function testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls() {
+  let panelDisableCalled = false;
+  let leaseRevoked = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => new Promise<never>(() => undefined),
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        panelDisableCalled = true;
+        return 1;
+      },
+      revokeSubscriptionLeases: async () => {
+        leaseRevoked = true;
+        return 1;
+      }
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+  });
+
+  const result = await Promise.race([
+    service.kickTeamMember("team_1", "member_1", { disableAccount: false }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("kickTeamMember waited for stalled team subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(panelDisableCalled, false, "panel disable must not run without a confirmed team subscription");
+  assert.equal(leaseRevoked, false, "lease revocation must not run without a confirmed team subscription");
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup before member kick is still running in background/);
+}
+
+async function testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls() {
+  let accountDisabled = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => new Promise<never>(() => undefined),
+    updateUser: async (_userId: string, input: Record<string, unknown>) => {
+      accountDisabled = input.status === "disabled";
+      return {
+        id: "user_1",
+        email: "user@example.com",
+        displayName: "User",
+        role: "customer",
+        status: "disabled",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        subscriptions: [],
+        teamMemberships: [],
+        panelSyncStatus: "synced",
+        panelSyncMessage: null
+      };
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+  });
+
+  const result = await Promise.race([
+    service.kickTeamMember("team_1", "member_1", { disableAccount: true }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("kickTeamMember disableAccount waited for stalled team subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(accountDisabled, true, "account disabling must continue even if team subscription lookup stalls");
+  assert.equal(result.accountDisabled, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup before member kick is still running in background/);
+}
+
 async function testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails() {
   const service = createAdminSubscriptionService({
     logger: {
@@ -6908,6 +7018,66 @@ async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
   assert.equal(result.accountDisabled, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /disable account panel sync queued/);
+}
+
+async function testConvertPersonalSubscriptionToTeamRejectsWhenTeamSubscriptionLookupStalls() {
+  let teamMemberCreated = false;
+  let subscriptionArchived = false;
+  let panelCleanupQueued = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_personal",
+      userId: "user_1",
+      teamId: null
+    }),
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentTeamSubscription: async () => new Promise<never>(() => undefined),
+    runtimeSessionService: {
+      removePanelBindingsForSubscription: async () => {
+        panelCleanupQueued = true;
+        return { requested: 1, updated: 1, failed: [] };
+      }
+    },
+    prisma: {
+      teamMember: {
+        create: async () => {
+          teamMemberCreated = true;
+          return {};
+        }
+      },
+      subscription: {
+        update: async () => {
+          subscriptionArchived = true;
+          return {};
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      Promise.race([
+        service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("convertPersonalSubscriptionToTeam waited for stalled team subscription lookup")), 750);
+        })
+      ]),
+    /team subscription lookup before personal subscription conversion is still running in background/
+  );
+  assert.equal(teamMemberCreated, false, "conversion must not create membership without confirmed target team subscription");
+  assert.equal(subscriptionArchived, false, "conversion must not archive the personal subscription before lookup succeeds");
+  assert.equal(panelCleanupQueued, false, "conversion must not queue panel cleanup before local conversion succeeds");
 }
 
 async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails() {
@@ -13912,8 +14082,11 @@ async function main() {
   await testUpdateNodeAccessReturnsPendingWhenResponseRefreshStalls();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
   await testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls();
+  await testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls();
+  await testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
+  await testConvertPersonalSubscriptionToTeamRejectsWhenTeamSubscriptionLookupStalls();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
   await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();

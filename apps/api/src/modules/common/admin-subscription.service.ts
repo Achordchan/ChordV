@@ -775,7 +775,14 @@ export class AdminSubscriptionService {
       throw new BadRequestException("该账号已属于其他团队");
     }
 
-    const teamSubscription = await this.findCurrentTeamSubscription(targetTeam.id);
+    const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+      targetTeam.id,
+      "team subscription lookup before personal subscription conversion"
+    );
+    if (!teamSubscriptionLookup.panelSync.ok) {
+      throw new ConflictException(teamSubscriptionLookup.panelSync.errorMessage);
+    }
+    const teamSubscription = teamSubscriptionLookup.subscription;
     if (!teamSubscription || !isEffectiveSubscription(teamSubscription)) {
       throw new BadRequestException("目标团队当前没有可用的 Team 订阅");
     }
@@ -1335,7 +1342,15 @@ export class AdminSubscriptionService {
     let disconnectedSessionCount = 0;
     let panelSyncStatus: KickTeamMemberResultDto["panelSyncStatus"] = "synced";
     let panelSyncMessage: string | null = null;
-    const subscription = await this.findCurrentTeamSubscription(teamId);
+    const subscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+      teamId,
+      "team subscription lookup before member kick"
+    );
+    if (!subscriptionLookup.panelSync.ok) {
+      panelSyncStatus = "pending";
+      panelSyncMessage = buildPanelSyncResult(subscriptionLookup.panelSync).panelSyncMessage;
+    }
+    const subscription = subscriptionLookup.subscription;
     if (subscription) {
       const panelSyncResults: PanelSyncBestEffortResult[] = [];
       const panelDisableQueue = await this.withSubscriptionFollowUpBudget<
