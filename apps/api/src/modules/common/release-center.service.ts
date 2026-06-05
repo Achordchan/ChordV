@@ -429,6 +429,13 @@ export class ReleaseCenterService {
       nextType,
       input.deliveryMode ?? (input.type !== undefined ? undefined : (current.deliveryMode as UpdateDeliveryMode))
     );
+    if (release.platform === "windows") {
+      const nextFileNameOrUrl =
+        nextSource === "external"
+          ? input.fileName ?? nextDownloadUrl
+          : input.fileName ?? current.fileName ?? nextDownloadUrl;
+      assertWindowsReleaseZipArtifact(nextType, nextFileNameOrUrl, nextDownloadUrl);
+    }
     const metadataIdentityChanged =
       input.source !== undefined ||
       input.type !== undefined ||
@@ -501,6 +508,9 @@ export class ReleaseCenterService {
     let prepared: PreparedUploadedReleaseArtifactFile | null = null;
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+      if (release.platform === "windows") {
+        assertWindowsReleaseZipArtifact(input.type, prepared.fileName, prepared.downloadUrl);
+      }
       const preparedFile = prepared;
       const createdArtifact = await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
@@ -565,6 +575,9 @@ export class ReleaseCenterService {
     let prepared: PreparedUploadedReleaseArtifactFile | null = null;
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
+      if (release.platform === "windows") {
+        assertWindowsReleaseZipArtifact(input.type, prepared.fileName, prepared.downloadUrl);
+      }
       const preparedFile = prepared;
       const updatedArtifact = await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
@@ -839,6 +852,13 @@ export class ReleaseCenterService {
     if (!primaryArtifact) {
       throw new BadRequestException("Add at least one installer artifact before publishing.");
     }
+    if (release.platform === "windows") {
+      const zipArtifact = release.artifacts.find((item) => fromPrismaReleaseArtifactType(item.type) === "zip");
+      if (!zipArtifact) {
+        throw new BadRequestException("Windows releases require a ZIP full replacement package.");
+      }
+      assertWindowsReleaseZipFileName(zipArtifact.fileName, zipArtifact.downloadUrl);
+    }
     assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
   }
 
@@ -909,6 +929,9 @@ export class ReleaseCenterService {
     assertReleaseArtifactTypeAllowed(platform, input.type);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
+    if (platform === "windows") {
+      assertWindowsReleaseZipArtifact(input.type, input.fileName ?? input.downloadUrl, input.downloadUrl);
+    }
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     const artifactId = createId("artifact");
 
@@ -1117,6 +1140,34 @@ function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {
   const normalized = rawUrl.trim();
   if (!normalized || !/^https?:\/\//i.test(normalized)) {
     throw new BadRequestException("External release artifact download URL must be a complete http/https URL.");
+  }
+}
+
+function assertWindowsReleaseZipArtifact(type: ReleaseArtifactType, fileNameOrUrl: string | null | undefined, downloadUrl: string | null | undefined) {
+  if (type !== "zip") {
+    throw new BadRequestException("Windows releases only support ZIP full replacement packages.");
+  }
+  assertWindowsReleaseZipFileName(fileNameOrUrl, downloadUrl);
+}
+
+function assertWindowsReleaseZipFileName(fileNameOrUrl: string | null | undefined, downloadUrl: string | null | undefined) {
+  const displayName = inferReleaseFileName(fileNameOrUrl) ?? inferReleaseFileName(downloadUrl);
+  if (!displayName || !displayName.toLowerCase().endsWith(".zip")) {
+    throw new BadRequestException("Windows release packages must be .zip files.");
+  }
+}
+
+function inferReleaseFileName(value: string | null | undefined) {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return null;
+  }
+  try {
+    const pathname = new URL(normalized).pathname;
+    const fileName = path.posix.basename(pathname);
+    return fileName ? decodeURIComponent(fileName) : null;
+  } catch {
+    return path.basename(normalized);
   }
 }
 

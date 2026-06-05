@@ -21,6 +21,8 @@ const NODE_USAGE_STALE_SECONDS = Number(process.env.CHORDV_NODE_USAGE_STALE_SECO
 const NODE_USAGE_WARN_INTERVAL_MS = Number(process.env.CHORDV_NODE_USAGE_WARN_INTERVAL_SECONDS ?? 600) * 1000;
 const USAGE_SYNC_LOCK_KEY_1 = 420_701;
 const USAGE_SYNC_LOCK_KEY_2 = 917_503;
+const USAGE_SYNC_NODE_CONCURRENCY = readPositiveIntegerEnv("CHORDV_USAGE_SYNC_NODE_CONCURRENCY", 4);
+const USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS", 10_000);
 
 @Injectable()
 export class UsageSyncService {
@@ -129,6 +131,15 @@ export class UsageSyncService {
         });
       }
     }
+    const nodeGroups = new Map<string, Array<{ nodeId: string; panelInboundId: number; bindings: typeof bindings }>>();
+    for (const group of nodeMap.values()) {
+      const current = nodeGroups.get(group.nodeId);
+      if (current) {
+        current.push(group);
+      } else {
+        nodeGroups.set(group.nodeId, [group]);
+      }
+    }
 
     const nodeResults = new Map<
       string,
@@ -151,39 +162,45 @@ export class UsageSyncService {
       return result;
     };
 
-    for (const { nodeId, panelInboundId, bindings: nodeBindings } of nodeMap.values()) {
-      const subscriptionIds = Array.from(new Set(nodeBindings.map((item) => item.subscriptionId)));
-      const nodeResult = readNodeResult(nodeId);
-      for (const subscriptionId of subscriptionIds) {
-        nodeResult.subscriptionIds.add(subscriptionId);
+    await runWithConcurrency(Array.from(nodeGroups.values()), USAGE_SYNC_NODE_CONCURRENCY, async (groups) => {
+      for (const { nodeId, panelInboundId, bindings: nodeBindings } of groups) {
+        const subscriptionIds = Array.from(new Set(nodeBindings.map((item) => item.subscriptionId)));
+        const nodeResult = readNodeResult(nodeId);
+        for (const subscriptionId of subscriptionIds) {
+          nodeResult.subscriptionIds.add(subscriptionId);
+        }
+        try {
+          const allowedEmails = new Set(
+            nodeBindings.map((item) => item.panelClientEmail.trim().toLowerCase()).filter(Boolean)
+          );
+          const records = (await withTimeout(
+            this.xuiService.listNodeUsage({
+              id: nodeId,
+              panelBaseUrl: nodeBindings[0].node.panelBaseUrl,
+              panelApiBasePath: nodeBindings[0].node.panelApiBasePath,
+              panelUsername: nodeBindings[0].node.panelUsername,
+              panelPassword: nodeBindings[0].node.panelPassword,
+              panelInboundId
+            }),
+            USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS,
+            `3x-ui node ${nodeId} inbound ${panelInboundId} usage request`
+          )).filter((item) => allowedEmails.has(item.xrayUserEmail.trim().toLowerCase()));
+          const context = await this.loadNodeSyncContext(nodeId, panelInboundId);
+          await this.applyNodeSamples(nodeId, records, context);
+          nodeResult.lastSuccessfulSyncAt = new Date();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : "3x-ui 面板流量同步失败";
+          this.warnThrottled(nodeId, detail);
+          nodeResult.errors.push(detail);
+          await this.openIncidentForSubscriptions(
+            subscriptionIds,
+            nodeId,
+            METERING_REASON_NODE_UNAVAILABLE,
+            `3x-ui 面板流量同步失败：${detail}`
+          );
+        }
       }
-      try {
-        const allowedEmails = new Set(
-          nodeBindings.map((item) => item.panelClientEmail.trim().toLowerCase()).filter(Boolean)
-        );
-        const records = (await this.xuiService.listNodeUsage({
-          id: nodeId,
-          panelBaseUrl: nodeBindings[0].node.panelBaseUrl,
-          panelApiBasePath: nodeBindings[0].node.panelApiBasePath,
-          panelUsername: nodeBindings[0].node.panelUsername,
-          panelPassword: nodeBindings[0].node.panelPassword,
-          panelInboundId
-        })).filter((item) => allowedEmails.has(item.xrayUserEmail.trim().toLowerCase()));
-        const context = await this.loadNodeSyncContext(nodeId, panelInboundId);
-        await this.applyNodeSamples(nodeId, records, context);
-        nodeResult.lastSuccessfulSyncAt = new Date();
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : "3x-ui 面板流量同步失败";
-        this.warnThrottled(nodeId, detail);
-        nodeResult.errors.push(detail);
-        await this.openIncidentForSubscriptions(
-          subscriptionIds,
-          nodeId,
-          METERING_REASON_NODE_UNAVAILABLE,
-          `3x-ui 面板流量同步失败：${detail}`
-        );
-      }
-    }
+    });
 
     for (const [nodeId, result] of nodeResults) {
       if (result.errors.length > 0) {
@@ -726,6 +743,50 @@ export class UsageSyncService {
 
 function readErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+}
+
+function readPositiveIntegerEnv(key: string, fallback: number) {
+  const rawValue = process.env[key];
+  if (!rawValue) {
+    return fallback;
+  }
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  task: (item: T) => Promise<void>
+) {
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        await task(items[index]);
+      }
+    })
+  );
+}
+
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timeoutHandle.unref?.();
+  });
+  try {
+    return await Promise.race([task, timeoutTask]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 }
 
 type NodeTrafficSample = {

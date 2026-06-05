@@ -771,6 +771,8 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
 
   const emitFallbackRefresh = (includeVersion: boolean) => {
     emitSyntheticEvent("subscription_updated");
+    emitSyntheticEvent("node_access_updated");
+    emitSyntheticEvent("announcement_updated");
     emitSyntheticEvent("ticket_updated");
     if (includeVersion) {
       emitSyntheticEvent("version_updated");

@@ -1708,9 +1708,6 @@ export class DevDataService implements OnModuleInit {
         return "3x-ui disable job queued; local node access and active sessions are invalidated.";
       }
       return null;
-      return pendingPanelSyncCount > 0
-        ? "3x-ui 瀹㈡埛绔鐢ㄥ凡鍔犲叆鍚庡彴闃熷垪锛屾湰鍦版巿鏉冨拰褰撳墠杩炴帴宸茬珛鍗冲け鏁堛€?"
-        : null;
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but 3x-ui disable job queueing failed for ${subscriptionId}: ${errorMessage}`);

@@ -25,6 +25,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
           description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传需要等待，请不要重复点击。`}
           label="安装包文件"
           placeholder="选择安装包文件"
+          accept={acceptedArtifactExtensionForPlatform(props.platform)}
           value={props.form.selectedFile}
           onChange={(file) =>
             props.onChange({
@@ -68,6 +69,19 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): Artifac
     return "ipa";
   }
   return "dmg";
+}
+
+function acceptedArtifactExtensionForPlatform(platform: AdminReleasePlatform) {
+  if (platform === "windows") {
+    return ".zip";
+  }
+  if (platform === "android") {
+    return ".apk";
+  }
+  if (platform === "ios") {
+    return ".ipa";
+  }
+  return ".dmg";
 }
 
 function formatUploadBytes(value: number) {

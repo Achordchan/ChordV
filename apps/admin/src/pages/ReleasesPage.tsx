@@ -297,11 +297,17 @@ export function ReleasesPage() {
   }
 
   function validateArtifactEditorInput() {
+    if (!artifactEditor) {
+      return "缺少发布平台信息，请关闭弹窗后重试。";
+    }
     if (isUploadFileRequired()) {
       return "请先选择要上传的安装包文件。";
     }
     if (artifactForm.selectedFile && artifactForm.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
       return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
+    }
+    if (artifactForm.selectedFile && !fileNameMatchesPlatform(artifactEditor.platform, artifactForm.selectedFile.name)) {
+      return `${translatePlatformName(artifactEditor.platform)} 安装包必须是 ${expectedArtifactExtension(artifactEditor.platform)} 文件。`;
     }
     return null;
   }
@@ -652,5 +658,35 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminRe
       return "ipa";
     default:
       return "dmg";
+  }
+}
+
+function fileNameMatchesPlatform(platform: AdminReleasePlatform, fileName: string) {
+  return fileName.trim().toLowerCase().endsWith(expectedArtifactExtension(platform));
+}
+
+function expectedArtifactExtension(platform: AdminReleasePlatform) {
+  switch (platform) {
+    case "windows":
+      return ".zip";
+    case "android":
+      return ".apk";
+    case "ios":
+      return ".ipa";
+    default:
+      return ".dmg";
+  }
+}
+
+function translatePlatformName(platform: AdminReleasePlatform) {
+  switch (platform) {
+    case "windows":
+      return "Windows";
+    case "android":
+      return "Android";
+    case "ios":
+      return "iOS";
+    default:
+      return "macOS";
   }
 }

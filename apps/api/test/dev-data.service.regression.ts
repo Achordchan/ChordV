@@ -9379,6 +9379,97 @@ async function testUsageSyncKeepsNodeDegradedWhenAnyInboundFails() {
   assert.match(nodeUpdates[0].panelError, /inbound 7 failed/);
 }
 
+async function testUsageSyncDoesNotLetStalledNodesBlockHealthyNode() {
+  const delayedRejects: Array<(error: Error) => void> = [];
+  const appliedNodes: string[] = [];
+  const openedIncidents: Array<{ subscriptionIds: string[]; nodeId: string; detail: string }> = [];
+  const nodeUpdates: Array<{ nodeId: string; data: Record<string, any> }> = [];
+  const makeBinding = (nodeId: string, subscriptionId: string, email: string) => ({
+    id: `binding_${nodeId}`,
+    subscriptionId,
+    userId: `user_${nodeId}`,
+    teamId: null,
+    nodeId,
+    panelClientEmail: email,
+    panelClientId: `client_${nodeId}`,
+    panelInboundId: 7,
+    node: {
+      id: nodeId,
+      panelBaseUrl: `https://${nodeId}.example.com`,
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    }
+  });
+  const service = createUsageSyncService({
+    warningTimestamps: new Map<string, number>(),
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      listNodeUsage: async (node: { id: string }) => {
+        if (node.id !== "node_healthy") {
+          await new Promise((_resolve, reject) => {
+            delayedRejects.push(reject);
+          });
+        }
+        return [
+          {
+            xrayUserEmail: "healthy@example.com",
+            xrayUserUuid: "",
+            uplinkBytes: 0n,
+            downlinkBytes: 0n,
+            sampledAt: new Date().toISOString()
+          }
+        ];
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          makeBinding("node_stalled_1", "sub_stalled_1", "stalled-1@example.com"),
+          makeBinding("node_stalled_2", "sub_stalled_2", "stalled-2@example.com"),
+          makeBinding("node_healthy", "sub_healthy", "healthy@example.com")
+        ]
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push({ nodeId: payload.where.id, data: payload.data });
+        }
+      }
+    },
+    loadNodeSyncContext: async () => ({
+      subscriptionIds: ["sub_healthy"],
+      mappings: new Map(),
+      leaseMappingsByUuid: new Map(),
+      invalidMappings: []
+    }),
+    applyNodeSamples: async (nodeId: string) => {
+      appliedNodes.push(nodeId);
+    },
+    openIncidentForSubscriptions: async (subscriptionIds: string[], nodeId: string, _reason: string, detail: string) => {
+      openedIncidents.push({ subscriptionIds, nodeId, detail });
+    },
+    resolveIncidentForSubscriptions: async () => undefined
+  });
+
+  const syncPromise = service["syncXuiUsage"]();
+  await waitUntil(() => appliedNodes.includes("node_healthy"), 500);
+
+  assert.deepEqual(appliedNodes, ["node_healthy"], "healthy node usage must be applied while earlier nodes are still waiting");
+  assert.equal(delayedRejects.length, 2, "test must prove two earlier node requests were still pending");
+
+  for (const reject of delayedRejects) {
+    reject(new Error("panel offline"));
+  }
+  await syncPromise;
+
+  assert.equal(openedIncidents.length, 2);
+  assert.equal(nodeUpdates.filter((item) => item.data.panelStatus === "online").length, 1);
+  assert.equal(nodeUpdates.filter((item) => item.data.panelStatus === "degraded").length, 2);
+}
+
 async function testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh() {
   const capturedInboundIds: Array<number | null> = [];
   const now = new Date();
@@ -11950,6 +12041,39 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
   assert.equal(result.id, "release_1");
 }
 
+async function testUpdateWindowsExternalReleaseRejectsNonZipUrl() {
+  const artifact = makeReleaseCenterTestArtifact({
+    id: "artifact_existing",
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    fileName: "ChordV-old.zip",
+    downloadUrl: "https://example.com/ChordV-old.zip"
+  });
+  const service = createReleaseCenterService({
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => artifact
+      },
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            platform: "windows",
+            artifacts: [artifact]
+          })
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateReleaseArtifact("release_1", "artifact_existing", {
+        downloadUrl: "https://example.com/ChordV-setup.exe"
+      }),
+    /Windows release packages must be \.zip files/
+  );
+}
+
 async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
   const release = makeReleaseCenterTestRelease({
     version: "1.1.6"
@@ -12031,9 +12155,9 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "missing-prepared-release.exe",
-      storedFilePath: "release_1/artifact_1/ChordV-setup.exe",
-      fileName: "ChordV-setup.exe",
+      absolutePath: "missing-prepared-release.zip",
+      storedFilePath: "release_1/artifact_1/ChordV-full.zip",
+      fileName: "ChordV-full.zip",
       fileSizeBytes: 123n,
       fileHash: "a".repeat(64),
       downloadUrl: "/api/downloads/releases/artifact_1"
@@ -12053,20 +12177,20 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
       service.uploadReleaseArtifact(
         "release_1",
         {
-          type: "setup.exe",
-          deliveryMode: "desktop_installer_download",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
           isPrimary: true
         },
         {
-          path: "missing-upload-release.exe",
-          originalname: "ChordV-setup.exe",
+          path: "missing-upload-release.zip",
+          originalname: "ChordV-full.zip",
           size: 123
         }
       ),
     /release artifact create failed/
   );
   assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-prepared-release.exe", label: "failed release artifact upload" }
+    { absolutePath: "missing-prepared-release.zip", label: "failed release artifact upload" }
   ]);
 }
 
@@ -12074,18 +12198,18 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
   const release = makeReleaseCenterTestRelease();
   const artifact = makeReleaseCenterTestArtifact({
     id: "artifact_1",
-    type: "setup.exe",
-    deliveryMode: "installer",
-    storedFilePath: "release_1/artifact_1/old.exe"
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    storedFilePath: "release_1/artifact_1/old.zip"
   });
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "missing-prepared-replacement-release.exe",
-      storedFilePath: "release_1/artifact_1/ChordV-setup-new.exe",
-      fileName: "ChordV-setup-new.exe",
+      absolutePath: "missing-prepared-replacement-release.zip",
+      storedFilePath: "release_1/artifact_1/ChordV-full-new.zip",
+      fileName: "ChordV-full-new.zip",
       fileSizeBytes: 123n,
       fileHash: "a".repeat(64),
       downloadUrl: "/api/downloads/releases/artifact_1"
@@ -12109,20 +12233,20 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
         "release_1",
         "artifact_1",
         {
-          type: "setup.exe",
-          deliveryMode: "desktop_installer_download",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
           isPrimary: true
         },
         {
-          path: "missing-upload-replacement-release.exe",
-          originalname: "ChordV-setup-new.exe",
+          path: "missing-upload-replacement-release.zip",
+          originalname: "ChordV-full-new.zip",
           size: 123
         }
       ),
     /release artifact update failed/
   );
   assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-prepared-replacement-release.exe", label: "failed release artifact replacement upload" }
+    { absolutePath: "missing-prepared-replacement-release.zip", label: "failed release artifact replacement upload" }
   ]);
 }
 
@@ -12197,7 +12321,7 @@ async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   );
 }
 
-async function testPublishWindowsReleaseAllowsAnyInstallerArtifact() {
+async function testPublishWindowsReleaseRequiresZipArtifact() {
   const setupArtifact = makeReleaseCenterTestArtifact({
     source: "external",
     type: "setup.exe",
@@ -12219,7 +12343,56 @@ async function testPublishWindowsReleaseAllowsAnyInstallerArtifact() {
     }
   });
 
-  await service["assertReleasePublishable"]("release_1");
+  await assert.rejects(
+    () => service["assertReleasePublishable"]("release_1"),
+    /Windows releases require a ZIP full replacement package/
+  );
+}
+
+async function testUploadWindowsReleaseRejectsNonZipFileName() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            platform: "windows"
+          })
+      }
+    },
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => ({
+      absolutePath: "prepared-windows-setup.exe",
+      storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
+      fileName: "ChordV-setup.exe",
+      fileSizeBytes: 123n,
+      fileHash: null,
+      downloadUrl: "/api/downloads/releases/artifact_created"
+    }),
+    cleanupFailedReleaseArtifactUpload: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadReleaseArtifact(
+        "release_1",
+        {
+          type: "zip",
+          deliveryMode: "desktop_full_replace"
+        },
+        {
+          path: "windows-setup-upload.tmp",
+          originalname: "ChordV-setup.exe",
+          size: 123
+        }
+      ),
+    /Windows release packages must be \.zip files/
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "prepared-windows-setup.exe", label: "failed release artifact upload" }
+  ]);
 }
 
 async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
@@ -16369,6 +16542,7 @@ async function main() {
   await testDisablePanelBindingUsesStoredInboundId();
   await testUsageSyncUsesStoredInboundIdGroups();
   await testUsageSyncKeepsNodeDegradedWhenAnyInboundFails();
+  await testUsageSyncDoesNotLetStalledNodesBlockHealthyNode();
   await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
   await testUpdateNodeSubscriptionUrlFailureKeepsLocalSave();
   await testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails();
@@ -16411,12 +16585,14 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
+  await testUpdateWindowsExternalReleaseRejectsNonZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
-  await testPublishWindowsReleaseAllowsAnyInstallerArtifact();
+  await testPublishWindowsReleaseRequiresZipArtifact();
+  await testUploadWindowsReleaseRejectsNonZipFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
