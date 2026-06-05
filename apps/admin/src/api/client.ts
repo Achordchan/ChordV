@@ -405,7 +405,7 @@ export async function updateAdminRuntimeComponent(componentId: string, input: Up
   return request<SharedAdminRuntimeComponentRecordDto>(`/admin/runtime-components/${componentId}`, {
     method: "PATCH",
     body: JSON.stringify(input),
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
@@ -460,7 +460,7 @@ export type FetchAdminImageBedFilesInput = {
 
 export async function fetchAdminImageBedConfig() {
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
-    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
   });
 }
 
@@ -468,7 +468,7 @@ export async function updateAdminImageBedConfig(input: UpdateAdminImageBedConfig
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
     method: "PATCH",
     body: JSON.stringify(input),
-    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
 }
 
