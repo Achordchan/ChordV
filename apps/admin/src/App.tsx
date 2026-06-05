@@ -1113,7 +1113,7 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
-      const uncertain = isUncertainRequestFailure(message);
+      const uncertain = isUncertainRequestFailure(message) || /http 500/i.test(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "节点授权状态不确定" : "操作失败",

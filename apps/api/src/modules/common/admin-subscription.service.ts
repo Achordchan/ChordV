@@ -1289,104 +1289,36 @@ export class AdminSubscriptionService {
       throw new BadRequestException("团队成员不属于当前团队");
     }
 
-    let disconnectedSessionCount = 0;
-    let panelSyncStatus: KickTeamMemberResultDto["panelSyncStatus"] = "synced";
-    let panelSyncMessage: string | null = null;
-    const subscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
-      teamId,
-      "team subscription lookup before member kick"
-    );
-    if (!subscriptionLookup.panelSync.ok) {
-      panelSyncStatus = "pending";
-      panelSyncMessage = buildPanelSyncResult(subscriptionLookup.panelSync).panelSyncMessage;
-    }
-    const subscription = subscriptionLookup.subscription;
-    if (subscription) {
-      const panelSyncResults: PanelSyncBestEffortResult[] = [];
-      const panelDisableQueue = await this.withSubscriptionFollowUpBudget<
-        { ok: true; queuedCount: number } | { ok: false; errorMessage: string }
-      >(
-        `team member panel disable queueing for ${subscription.id}`,
-        {
-          ok: false,
-          errorMessage: "3x-ui client disable queueing is still running in background"
-        },
-        async () => {
-          try {
-            const queuedCount = await this.runtimeSessionService.markPanelBindingsDisabledForSubscription(
-              subscription.id,
-              {
-                userId: member.userId
-              }
-            );
-            return { ok: true, queuedCount };
-          } catch (error) {
-            return {
-              ok: false,
-              errorMessage: `3x-ui client disable queueing failed: ${readErrorMessage(error, "unknown error")}`
-            };
-          }
-        }
-      );
-      if (!panelDisableQueue.ok) {
-        panelSyncResults.push({
-          ok: false,
-          errorMessage: panelDisableQueue.errorMessage
-        });
-      }
-      const leaseSync = await this.revokeSubscriptionLeasesBestEffort(
-        subscription.id,
-        "team_member_disconnected",
-        {
-          userId: member.userId
-        }
-      );
-      disconnectedSessionCount = leaseSync.revokedCount ?? 0;
-      if (!leaseSync.ok) {
-        panelSyncResults.push(leaseSync);
-      }
-      if (panelDisableQueue.ok && panelDisableQueue.queuedCount > 0) {
-        panelSyncResults.push({ ok: false, errorMessage: "3x-ui client disable queued for background retry" });
-        panelSyncStatus = "pending";
-        panelSyncMessage = "3x-ui 客户端禁用已加入后台队列。";
-      }
-      const panelSync = mergePanelSyncResults(...panelSyncResults);
-      if (!panelSync.ok) {
-        panelSyncStatus = "pending";
-        panelSyncMessage = buildPanelSyncResult(panelSync).panelSyncMessage;
-      }
-    }
-
     let user: AdminUserRecordDto | null = null;
     let accountDisabled = false;
+    const disconnectPanelSync = this.startTeamMemberDisconnectFollowUpInBackground({
+      teamId,
+      userId: member.userId
+    });
+    let panelSyncStatus: KickTeamMemberResultDto["panelSyncStatus"] = "pending";
+    let panelSyncMessage: string | null = buildPanelSyncResult(disconnectPanelSync).panelSyncMessage;
     if (input.disableAccount) {
       user = await this.updateUser(member.userId, { status: "disabled" });
       accountDisabled = true;
       if (user.panelSyncStatus === "pending") {
-        panelSyncStatus = "pending";
         panelSyncMessage = [panelSyncMessage, user.panelSyncMessage].filter(Boolean).join(" ");
       }
     }
-
-    let message = disconnectedSessionCount > 0 ? "已立即断开该成员会话连接" : "当前无活跃会话，未发生断开";
-    if (accountDisabled) {
-      message = disconnectedSessionCount > 0 ? "已立即断开会话并禁用账号" : "账号已禁用，当前无活跃会话";
-    }
-    const teamRefreshSync: PanelSyncBestEffortResult =
-      panelSyncStatus === "pending"
-        ? { ok: false, errorMessage: panelSyncMessage ?? "team member disconnect sync pending" }
-        : { ok: true };
-    const team = await this.withTeamRecordRefreshBestEffort(teamId, teamRefreshSync, "Team 成员连接已处理。");
+    let message = accountDisabled ? "账号已禁用，连接断开已进入后台处理。" : "成员连接断开已进入后台处理。";
+    const team = await this.withTeamRecordRefreshBestEffort(
+      teamId,
+      { ok: false, errorMessage: panelSyncMessage ?? "team member disconnect sync queued for background processing" },
+      "Team 成员连接已处理。"
+    );
     panelSyncStatus = team.panelSyncStatus ?? panelSyncStatus;
     panelSyncMessage = team.panelSyncMessage ?? panelSyncMessage;
     if (panelSyncMessage) {
       message = `${message}，${panelSyncMessage}`;
     }
-
     return {
       ok: true,
       action: "disconnect_session",
-      disconnectedSessionCount,
+      disconnectedSessionCount: 0,
       accountDisabled,
       panelSyncStatus,
       panelSyncMessage,
@@ -1951,6 +1883,41 @@ export class AdminSubscriptionService {
       });
     } catch (error) {
       this.logger?.warn(`Team member removal follow-up failed for ${member.userId}: ${readErrorMessage(error, "unknown error")}`);
+    }
+  }
+
+  private startTeamMemberDisconnectFollowUpInBackground(member: { teamId: string; userId: string }): PanelSyncBestEffortResult {
+    const timer = setTimeout(() => {
+      void this.runTeamMemberDisconnectFollowUpInBackground(member);
+    }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
+    return {
+      ok: false,
+      errorMessage: "team member disconnect follow-up sync queued for background processing"
+    };
+  }
+
+  private async runTeamMemberDisconnectFollowUpInBackground(member: { teamId: string; userId: string }) {
+    try {
+      const lookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+        member.teamId,
+        "team subscription lookup before member kick"
+      );
+      if (!lookup.panelSync.ok) {
+        this.logger?.warn(`Team member disconnect follow-up for ${member.userId} is pending: ${lookup.panelSync.errorMessage}`);
+      }
+      const subscription = lookup.subscription;
+      if (!subscription) {
+        return;
+      }
+      const panelSync = await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_member_disconnected", {
+        userId: member.userId
+      });
+      if (!panelSync.ok) {
+        this.logger?.warn(`Team member disconnect panel follow-up for ${member.userId} is pending: ${panelSync.errorMessage}`);
+      }
+    } catch (error) {
+      this.logger?.warn(`Team member disconnect follow-up failed for ${member.userId}: ${readErrorMessage(error, "unknown error")}`);
     }
   }
 

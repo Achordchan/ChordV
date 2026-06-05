@@ -363,15 +363,17 @@ export class DevDataService implements OnModuleInit {
 
   private async tryPublishEvent(eventType: string, task: () => Promise<unknown>) {
     let settled = false;
-    const guardedTask = task().then(
-      () => {
-        settled = true;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const guardedTask = Promise.resolve()
+      .then(task)
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
     void guardedTask.catch((error) => {
       this.logger?.warn(`Local change saved, but delayed ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
     });
