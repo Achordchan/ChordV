@@ -60,6 +60,7 @@ import {
 } from "./subscription.utils";
 
 const SUBSCRIPTION_FOLLOW_UP_BUDGET_MS = 300;
+const SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS = 50;
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
@@ -251,7 +252,7 @@ export class AdminSubscriptionService {
     if (statusChanged && input.status) {
       panelSync = mergePanelSyncResults(
         panelSync,
-        await this.runUserStatusFollowUpBestEffort(userId, input.status)
+        this.startUserStatusFollowUpInBackground(userId, input.status)
       );
     }
 
@@ -1857,49 +1858,47 @@ export class AdminSubscriptionService {
     }
   }
 
-  private async runUserStatusFollowUpBestEffort(
-    userId: string,
-    status: "active" | "disabled"
-  ): Promise<PanelSyncBestEffortResult> {
-    return this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
-      `user status follow-up sync for ${userId}`,
-      {
-        ok: false,
-        errorMessage: "user status follow-up sync is still running in background"
-      },
-      async () => {
-        try {
-          const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
-          const syncResults =
-            status === "disabled"
-              ? await Promise.all(
-                  subscriptionIds.map((subscriptionId) =>
-                    this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
-                  )
-                )
-              : await Promise.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId)));
-          let panelSync: PanelSyncBestEffortResult = { ok: true };
-          for (const result of syncResults) {
-            panelSync = mergePanelSyncResults(panelSync, result);
-          }
-          if (status === "disabled") {
-            await this.revokeAllUserSessionsBestEffort(userId, "user disabled");
-            this.tryPublishUserEvent(userId, {
-              type: "account_updated",
-              occurredAt: new Date().toISOString(),
-              reasonCode: "account_disabled",
-              reasonMessage: "当前账号已禁用，请重新登录。"
-            });
-          }
-          return panelSync;
-        } catch (error) {
-          return {
-            ok: false,
-            errorMessage: `user status follow-up sync failed: ${readErrorMessage(error, "unknown error")}`
-          };
-        }
+  private startUserStatusFollowUpInBackground(userId: string, status: "active" | "disabled"): PanelSyncBestEffortResult {
+    const timer = setTimeout(() => {
+      void this.runUserStatusFollowUpInBackground(userId, status);
+    }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
+    return {
+      ok: false,
+      errorMessage: "user status follow-up sync queued for background processing"
+    };
+  }
+
+  private async runUserStatusFollowUpInBackground(userId: string, status: "active" | "disabled") {
+    try {
+      const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
+      const syncResults =
+        status === "disabled"
+          ? await Promise.all(
+              subscriptionIds.map((subscriptionId) =>
+                this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
+              )
+            )
+          : await Promise.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId)));
+      let panelSync: PanelSyncBestEffortResult = { ok: true };
+      for (const result of syncResults) {
+        panelSync = mergePanelSyncResults(panelSync, result);
       }
-    );
+      if (!panelSync.ok) {
+        this.logger?.warn(`User status follow-up for ${userId} is pending: ${panelSync.errorMessage}`);
+      }
+      if (status === "disabled") {
+        await this.revokeAllUserSessionsBestEffort(userId, "user disabled");
+        this.tryPublishUserEvent(userId, {
+          type: "account_updated",
+          occurredAt: new Date().toISOString(),
+          reasonCode: "account_disabled",
+          reasonMessage: "当前账号已禁用，请重新登录。"
+        });
+      }
+    } catch (error) {
+      this.logger?.warn(`User status follow-up failed for ${userId}: ${readErrorMessage(error, "unknown error")}`);
+    }
   }
 
   private async findCurrentSubscriptionIdsForUser(userId: string) {

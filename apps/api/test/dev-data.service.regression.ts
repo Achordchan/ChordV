@@ -12611,6 +12611,8 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
 
 async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
   const updates: Array<Record<string, any>> = [];
+  let panelQueueStarted = false;
+  let leaseRevokeStarted = false;
   const service = createAdminSubscriptionService({
     logger: {
       warn: () => undefined
@@ -12656,9 +12658,11 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
+        panelQueueStarted = true;
         throw new Error("panel queue failed");
       },
       revokeSubscriptionLeases: async () => {
+        leaseRevokeStarted = true;
         throw new Error("lease revoke failed");
       }
     },
@@ -12674,10 +12678,12 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
 
   assert.equal(updates.length, 1, "user status must save before panel disconnect side effects");
   assert.equal(updates[0].data.status, "disabled");
+  assert.equal(panelQueueStarted, false, "user disable must not run panel queueing before the local response");
+  await waitUntil(() => panelQueueStarted && leaseRevokeStarted);
+  assert.equal(panelQueueStarted, true, "user disable panel queueing should still run in background");
+  assert.equal(leaseRevokeStarted, true, "user disable lease revocation should still run in background");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
-  assert.match(result.panelSyncMessage ?? "", /lease job queue failed/);
-  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
@@ -12750,12 +12756,14 @@ async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
     })
   ]);
 
-  assert.equal(panelSyncStarted, true);
+  assert.equal(panelSyncStarted, false, "user enable panel sync must be deferred until after the local response");
+  await waitUntil(() => panelSyncStarted);
+  assert.equal(panelSyncStarted, true, "user enable panel sync should still run in background");
   assert.equal(updates.length, 1, "user status must save before panel sync follow-up finishes");
   assert.equal(updates[0].data.status, "active");
   assert.equal(result.status, "active");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /user status follow-up sync is still running/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testEnableUserReturnsPendingWhenSubscriptionLookupStalls() {
@@ -12817,11 +12825,13 @@ async function testEnableUserReturnsPendingWhenSubscriptionLookupStalls() {
     })
   ]);
 
-  assert.equal(lookupStarted, true);
+  assert.equal(lookupStarted, false, "user enable subscription lookup must be deferred until after the local response");
+  await waitUntil(() => lookupStarted);
+  assert.equal(lookupStarted, true, "user enable subscription lookup should still run in background");
   assert.equal(updates.length, 1, "user status must save before stalled subscription lookup finishes");
   assert.equal(result.status, "active");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /user status follow-up sync is still running/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {

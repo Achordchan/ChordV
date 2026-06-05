@@ -32,7 +32,7 @@ export function isUncertainRequestFailure(message: string) {
   return (
     UNCERTAIN_REQUEST_PATTERN.test(message) ||
     /http 502|http 503|http 504|bad gateway|gateway timeout|service unavailable/i.test(message) ||
-    /still being processed|retry shortly|正在处理|稍后重试|并发/i.test(message)
+    /still being processed|still running in background|running in background|background retry|queued for background|retry shortly|正在处理|稍后重试|并发/i.test(message)
   );
 }
 
