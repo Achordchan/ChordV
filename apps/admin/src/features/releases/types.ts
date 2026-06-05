@@ -19,7 +19,6 @@ export type ArtifactEditorFormState = {
   type: AdminReleaseArtifactType;
   fileName: string;
   isPrimary: boolean;
-  isFullPackage: boolean;
   selectedFile: File | null;
 };
 
@@ -56,7 +55,6 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     type,
     fileName: "",
     isPrimary: true,
-    isFullPackage: true,
     selectedFile: null
   };
 }
@@ -67,7 +65,6 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     type: record.type,
     fileName: record.fileName ?? "",
     isPrimary: record.isPrimary,
-    isFullPackage: record.isFullPackage,
     selectedFile: null
   };
 }

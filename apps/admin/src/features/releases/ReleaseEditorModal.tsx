@@ -35,7 +35,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 {props.form.status === "published" ? "已发布" : "草稿"}
               </Badge>
               <Text size="xs" c="dimmed">
-                发布和撤回请直接在列表卡片里操作，避免编辑内容和状态变更混在一起。
+                发布和撤回直接在列表卡片里操作。
               </Text>
             </Stack>
           ) : (
@@ -47,7 +47,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 正式版
               </Badge>
               <Text size="xs" c="dimmed">
-                新建记录先保存为草稿，补完安装包后再发布。
+                新建记录先保存为草稿，上传安装包后再发布。
               </Text>
             </Stack>
           )}
@@ -55,15 +55,15 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
 
         <TextInput
           label="版本号"
-          placeholder="例如 1.0.3"
+          placeholder="例如 1.1.6"
           value={props.form.version}
           onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
           disabled={props.editing}
         />
 
         <TextInput
-          label="展示标题（可选）"
-          placeholder="留空则使用版本号，例如 1.0.3"
+          label="显示标题"
+          placeholder="留空则使用版本号"
           value={props.form.title}
           onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
         />

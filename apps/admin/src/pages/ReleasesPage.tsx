@@ -344,8 +344,7 @@ export function ReleasesPage() {
             source: "uploaded" as const,
             type: artifactForm.type,
             fileName: artifactForm.fileName.trim() || artifactForm.selectedFile.name,
-            isPrimary: artifactForm.isPrimary,
-            isFullPackage: true
+            isPrimary: artifactForm.isPrimary
           };
           record = artifactEditor.artifactId
             ? await replaceAdminReleaseArtifactUpload(releaseId!, artifactEditor.artifactId, uploadPayload, artifactForm.selectedFile)

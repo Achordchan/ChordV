@@ -120,7 +120,6 @@ export type UploadAdminReleaseArtifactInputDto = {
   allowClientMirror?: boolean;
   fileName?: string | null;
   isPrimary?: boolean;
-  isFullPackage?: boolean;
 };
 export type CreateAdminRuntimeComponentInputDto = CreateRuntimeComponentInputDto;
 export type UpdateAdminRuntimeComponentInputDto = UpdateRuntimeComponentInputDto;
@@ -303,7 +302,6 @@ export async function uploadAdminReleaseArtifact(
   if (input.defaultMirrorPrefix !== undefined) body.set("defaultMirrorPrefix", input.defaultMirrorPrefix ?? "");
   if (input.allowClientMirror !== undefined) body.set("allowClientMirror", String(input.allowClientMirror));
   if (input.isPrimary !== undefined) body.set("isPrimary", String(input.isPrimary));
-  if (input.isFullPackage !== undefined) body.set("isFullPackage", String(input.isFullPackage));
   body.set("file", file);
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/upload`, {
     method: "POST",
@@ -327,7 +325,6 @@ export async function replaceAdminReleaseArtifactUpload(
   if (input.defaultMirrorPrefix !== undefined) body.set("defaultMirrorPrefix", input.defaultMirrorPrefix ?? "");
   if (input.allowClientMirror !== undefined) body.set("allowClientMirror", String(input.allowClientMirror));
   if (input.isPrimary !== undefined) body.set("isPrimary", String(input.isPrimary));
-  if (input.isFullPackage !== undefined) body.set("isFullPackage", String(input.isFullPackage));
   body.set("file", file);
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}/upload`, {
     method: "POST",

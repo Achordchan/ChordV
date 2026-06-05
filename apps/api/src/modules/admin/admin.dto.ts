@@ -831,28 +831,12 @@ export class CreateReleaseArtifactDto {
   fileName?: string | null;
 
   @IsOptional()
-  @IsString()
-  @Matches(/^[1-9]\d*$/)
-  fileSizeBytes?: string | null;
-
-  @IsOptional()
-  @IsString()
-  @Matches(/^[a-fA-F0-9]{64}$/)
-  fileHash?: string | null;
-
-  @IsOptional()
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "isPrimary must be a boolean value"
   })
   isPrimary?: boolean;
 
-  @IsOptional()
-  @Transform(({ value }) => transformOptionalBoolean(value))
-  @IsIn([true, false, "true", "false"], {
-    message: "isFullPackage must be a boolean value"
-  })
-  isFullPackage?: boolean;
 }
 
 export class UpdateReleaseArtifactDto {
@@ -890,28 +874,12 @@ export class UpdateReleaseArtifactDto {
   fileName?: string | null;
 
   @IsOptional()
-  @IsString()
-  @Matches(/^[1-9]\d*$/)
-  fileSizeBytes?: string | null;
-
-  @IsOptional()
-  @IsString()
-  @Matches(/^[a-fA-F0-9]{64}$/)
-  fileHash?: string | null;
-
-  @IsOptional()
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "isPrimary must be a boolean value"
   })
   isPrimary?: boolean;
 
-  @IsOptional()
-  @Transform(({ value }) => transformOptionalBoolean(value))
-  @IsIn([true, false, "true", "false"], {
-    message: "isFullPackage must be a boolean value"
-  })
-  isFullPackage?: boolean;
 }
 
 export class UploadReleaseArtifactDto {
@@ -948,12 +916,6 @@ export class UploadReleaseArtifactDto {
   })
   isPrimary?: boolean;
 
-  @IsOptional()
-  @Transform(({ value }) => transformOptionalBoolean(value))
-  @IsIn([true, false, "true", "false"], {
-    message: "isFullPackage must be a boolean value"
-  })
-  isFullPackage?: boolean;
 }
 
 export class CreateRuntimeComponentDto {

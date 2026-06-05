@@ -26,12 +26,10 @@ import {
   defaultDeliveryModeForPlatform,
   ensureFileReadable,
   normalizeChangelog,
-  normalizeFileSizeBytes,
   normalizeNullableText,
   normalizeOptionalBoolean,
   normalizePublishedAt,
   normalizeReleaseChannel,
-  normalizeSha256Input,
   normalizeVersion,
   pickPrimaryReleaseArtifact,
   type ReleaseRowLike,
@@ -352,11 +350,8 @@ export class ReleaseCenterService {
 
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
-    const fileSizeBytes = normalizeFileSizeBytes(input.fileSizeBytes) ?? null;
-    const fileHash = normalizeSha256Input(input.fileHash) ?? null;
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
-    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
     const createdArtifact = await this.prisma.$transaction(async (tx) => {
       if (isPrimary) {
         await tx.releaseArtifact.updateMany({
@@ -376,10 +371,10 @@ export class ReleaseCenterService {
           allowClientMirror: input.allowClientMirror ?? true,
           fileName: normalizeNullableText(input.fileName),
           storedFilePath: null,
-          fileSizeBytes,
-          fileHash,
+          fileSizeBytes: null,
+          fileHash: null,
           isPrimary: isPrimary ?? false,
-          isFullPackage: isFullPackage ?? true
+          isFullPackage: true
         }
       });
     });
@@ -442,20 +437,7 @@ export class ReleaseCenterService {
       input.defaultMirrorPrefix !== undefined;
     const nextExternalFileName =
       (input.fileName !== undefined ? normalizeNullableText(input.fileName) : metadataIdentityChanged ? null : current.fileName);
-    const nextExternalFileSizeBytes =
-      input.fileSizeBytes !== undefined
-        ? normalizeFileSizeBytes(input.fileSizeBytes)
-        : metadataIdentityChanged
-          ? null
-          : current.fileSizeBytes;
-    const nextExternalFileHash =
-      input.fileHash !== undefined
-        ? normalizeSha256Input(input.fileHash)
-        : metadataIdentityChanged
-          ? null
-          : current.fileHash;
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
-    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
     const updatedArtifact = await this.prisma.$transaction(async (tx) => {
       if (isPrimary) {
         await tx.releaseArtifact.updateMany({
@@ -476,15 +458,12 @@ export class ReleaseCenterService {
           ...(nextSource === "external"
             ? {
                 fileName: nextExternalFileName,
-                fileSizeBytes: nextExternalFileSizeBytes,
-                fileHash: nextExternalFileHash
+                fileSizeBytes: null,
+                fileHash: null
               }
             : {}),
           ...(nextSource !== "external" && input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),
-          ...(nextSource !== "external" && input.fileSizeBytes !== undefined ? { fileSizeBytes: normalizeFileSizeBytes(input.fileSizeBytes) } : {}),
-          ...(nextSource !== "external" && input.fileHash !== undefined ? { fileHash: normalizeSha256Input(input.fileHash) } : {}),
           ...(isPrimary !== undefined ? { isPrimary } : {}),
-          ...(isFullPackage !== undefined ? { isFullPackage } : {}),
           ...(input.source === "external" ? { storedFilePath: null } : {}),
           ...(input.source === "uploaded" ? { allowClientMirror: false } : {})
         }
@@ -517,7 +496,6 @@ export class ReleaseCenterService {
       throw new BadRequestException("Select an installer package file first.");
     }
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
-    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
 
     const artifactId = createId("artifact");
     let prepared: PreparedUploadedReleaseArtifactFile | null = null;
@@ -546,7 +524,7 @@ export class ReleaseCenterService {
             fileSizeBytes: preparedFile.fileSizeBytes,
             fileHash: preparedFile.fileHash,
             isPrimary: isPrimary ?? false,
-            isFullPackage: isFullPackage ?? true
+            isFullPackage: true
           }
         });
       });
@@ -584,7 +562,6 @@ export class ReleaseCenterService {
 
     const previousStoredFilePath = current.storedFilePath;
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
-    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
     let prepared: PreparedUploadedReleaseArtifactFile | null = null;
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
@@ -610,7 +587,7 @@ export class ReleaseCenterService {
             fileSizeBytes: preparedFile.fileSizeBytes,
             fileHash: preparedFile.fileHash,
             isPrimary: isPrimary ?? current.isPrimary,
-            isFullPackage: isFullPackage ?? current.isFullPackage
+            isFullPackage: true
           }
         });
       });
@@ -933,10 +910,7 @@ export class ReleaseCenterService {
     const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
-    const fileSizeBytes = normalizeFileSizeBytes(input.fileSizeBytes) ?? null;
-    const fileHash = normalizeSha256Input(input.fileHash) ?? null;
     const artifactId = createId("artifact");
-    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
 
     return {
       id: artifactId,
@@ -949,10 +923,10 @@ export class ReleaseCenterService {
       allowClientMirror: input.allowClientMirror ?? true,
       fileName: normalizeNullableText(input.fileName),
       storedFilePath: null,
-      fileSizeBytes,
-      fileHash,
+      fileSizeBytes: null,
+      fileHash: null,
       isPrimary: true,
-      isFullPackage: isFullPackage ?? true
+      isFullPackage: true
     };
   }
 

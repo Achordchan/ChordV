@@ -22,7 +22,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
     <Modal opened={props.opened} onClose={props.onClose} title={props.title} centered size="lg">
       <Stack gap="md">
         <FileInput
-          description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传可能需要数分钟，请等待按钮完成。`}
+          description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传需要等待，请不要重复点击。`}
           label="安装包文件"
           placeholder="选择安装包文件"
           value={props.form.selectedFile}
@@ -40,7 +40,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         />
         <Alert color="blue" variant="light">
           {props.creatingRelease
-            ? "保存时会创建发布记录并上传这个安装包。"
+            ? "保存后会创建发布记录，并上传这个安装包。"
             : "选择新文件后保存即可替换安装包。"}
         </Alert>
 

@@ -1039,10 +1039,7 @@ export interface CreateReleaseArtifactInputDto {
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
   fileName?: string | null;
-  fileSizeBytes?: string | null;
-  fileHash?: string | null;
   isPrimary?: boolean;
-  isFullPackage?: boolean;
 }
 
 export interface CreateRuntimeComponentInputDto {
@@ -1104,10 +1101,7 @@ export interface UpdateReleaseArtifactInputDto {
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
   fileName?: string | null;
-  fileSizeBytes?: string | null;
-  fileHash?: string | null;
   isPrimary?: boolean;
-  isFullPackage?: boolean;
 }
 
 export interface UploadReleaseArtifactInputDto {
@@ -1118,7 +1112,6 @@ export interface UploadReleaseArtifactInputDto {
   allowClientMirror?: boolean;
   fileName?: string | null;
   isPrimary?: boolean;
-  isFullPackage?: boolean;
 }
 
 export interface UpdatePolicyInputDto {
