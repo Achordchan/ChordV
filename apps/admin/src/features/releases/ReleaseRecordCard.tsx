@@ -11,21 +11,19 @@ import {
   Text,
   ThemeIcon
 } from "@mantine/core";
-import { IconCheck, IconCopy, IconEdit, IconExternalLink, IconPlus, IconShieldCheck, IconTrash } from "@tabler/icons-react";
-import type { AdminReleaseArtifactRecordDto, AdminReleaseArtifactValidationDto, AdminReleasePlatform, AdminReleaseRecordDto } from "../../api/client";
+import { IconCheck, IconCopy, IconEdit, IconExternalLink, IconPlus, IconTrash } from "@tabler/icons-react";
+import type { AdminReleaseArtifactRecordDto, AdminReleasePlatform, AdminReleaseRecordDto } from "../../api/client";
 import { formatDateTime } from "../../utils/admin-format";
 import { StatusBadge } from "../shared/StatusBadge";
 
 type ReleaseRecordCardProps = {
   record: AdminReleaseRecordDto;
   saving: boolean;
-  artifactValidation: Record<string, AdminReleaseArtifactValidationDto>;
   onEditRelease: (record: AdminReleaseRecordDto) => void;
   onCreateArtifact: (releaseId: string, platform: AdminReleasePlatform) => void;
   onPublish: (record: AdminReleaseRecordDto) => void;
   onWithdraw: (record: AdminReleaseRecordDto) => void;
   onDeleteRelease: (record: AdminReleaseRecordDto) => void;
-  onVerifyArtifact: (releaseId: string, artifact: AdminReleaseArtifactRecordDto) => void;
   onCopyDownloadUrl: (url: string) => void;
   onEditArtifact: (releaseId: string, artifact: AdminReleaseArtifactRecordDto) => void;
   onRemoveArtifact: (releaseId: string, artifactId: string) => void;
@@ -147,7 +145,6 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
           ) : (
             <Stack gap="sm">
               {record.artifacts.map((artifact) => {
-                const validation = props.artifactValidation[artifact.id];
                 const effectiveUrl = artifact.finalUrlPreview?.trim() || artifact.downloadUrl;
                 const previewUrl = artifact.finalUrlPreview?.trim() || buildPreviewDownloadUrl(artifact);
                 const originUrl = artifact.originDownloadUrl?.trim() || artifact.downloadUrl;
@@ -175,11 +172,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                         </Stack>
 
                         <Stack gap={8} align="flex-end">
-                          <StatusBadge color={artifactValidationColor(validation?.status)} label={artifactValidationLabel(validation?.status)} />
                           <Group gap={4} wrap="nowrap">
-                            <ActionIcon variant="subtle" onClick={() => props.onVerifyArtifact(record.id, artifact)} title="校验安装包">
-                              <IconShieldCheck size={16} />
-                            </ActionIcon>
                             <ActionIcon variant="subtle" onClick={() => props.onCopyDownloadUrl(effectiveUrl)} title="复制下载地址">
                               <IconCopy size={16} />
                             </ActionIcon>
@@ -214,22 +207,11 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                         </Stack>
                       </Group>
 
-                      <Group gap="md" wrap="wrap">
-                        {artifact.fileSizeBytes ? (
-                          <Text size="sm" c="dimmed">
-                            文件大小：{formatFileSize(artifact.fileSizeBytes)}
-                          </Text>
-                        ) : (
-                          <Text size="sm" c="dimmed">
-                            文件大小：未自动识别
-                          </Text>
-                        )}
-                        {artifact.source === "external" ? (
-                          <Text size="sm" c="dimmed">
-                            {artifact.allowClientMirror ? "允许客户端覆盖默认加速前缀" : "仅使用后台默认加速前缀"}
-                          </Text>
-                        ) : null}
-                      </Group>
+                      {artifact.source === "external" ? (
+                        <Text size="sm" c="dimmed">
+                          {artifact.allowClientMirror ? "允许客户端覆盖默认加速前缀" : "仅使用后台默认加速前缀"}
+                        </Text>
+                      ) : null}
                     </Stack>
                   </Paper>
                 );
@@ -288,31 +270,6 @@ function translateArtifactType(type: string) {
     default:
       return "外部链接";
   }
-}
-
-function formatFileSize(value?: string | number | null) {
-  const bytes = typeof value === "string" ? Number(value) : value;
-  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return "Unknown";
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
-function artifactValidationColor(status?: AdminReleaseArtifactValidationDto["status"]) {
-  if (status === "ready") return "green";
-  if (status === "metadata_mismatch") return "yellow";
-  if (status === "missing_file" || status === "missing_download_url" || status === "invalid_link") return "red";
-  return "gray";
-}
-
-function artifactValidationLabel(status?: AdminReleaseArtifactValidationDto["status"]) {
-  if (status === "ready") return "可发布";
-  if (status === "metadata_mismatch") return "元信息不一致";
-  if (status === "missing_file") return "文件丢失";
-  if (status === "missing_download_url") return "链接缺失";
-  if (status === "invalid_link") return "链接无效";
-  return "待校验";
 }
 
 function buildPreviewDownloadUrl(artifact: AdminReleaseArtifactRecordDto) {

@@ -23,8 +23,6 @@ export type ArtifactEditorFormState = {
   defaultMirrorPrefix: string;
   allowClientMirror: boolean;
   fileName: string;
-  fileSizeBytes: string;
-  fileHash: string;
   isPrimary: boolean;
   isFullPackage: boolean;
   selectedFile: File | null;
@@ -106,8 +104,6 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     defaultMirrorPrefix: DEFAULT_GITHUB_MIRROR_PREFIX,
     allowClientMirror: false,
     fileName: "",
-    fileSizeBytes: "",
-    fileHash: "",
     isPrimary: true,
     isFullPackage: true,
     selectedFile: null
@@ -122,8 +118,6 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     defaultMirrorPrefix: record.defaultMirrorPrefix ?? "",
     allowClientMirror: record.allowClientMirror,
     fileName: record.fileName ?? "",
-    fileSizeBytes: record.fileSizeBytes == null ? "" : String(record.fileSizeBytes),
-    fileHash: record.fileHash ?? "",
     isPrimary: record.isPrimary,
     isFullPackage: record.isFullPackage,
     selectedFile: null

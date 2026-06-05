@@ -141,14 +141,17 @@ export function normalizeBigInt(value: string | null | undefined) {
   return BigInt(value.trim());
 }
 
-export function normalizeFileSizeBytes(value: string | null | undefined) {
+export function normalizeFileSizeBytes(value: string | number | bigint | null | undefined) {
   if (value === undefined) {
     return undefined;
   }
-  if (value === null || value.trim() === "") {
+  if (value === null) {
     return null;
   }
-  const normalized = value.trim();
+  const normalized = typeof value === "string" ? value.trim() : value.toString();
+  if (normalized === "") {
+    return null;
+  }
   if (!/^[1-9]\d*$/.test(normalized)) {
     throw new BadRequestException("File size must be a positive integer byte count.");
   }
@@ -310,17 +313,15 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   assertReleaseArtifactTypeAllowed(platform, type);
   assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
 
-  if (deliveryMode !== "none") {
+  if (artifact.fileHash) {
     normalizeSha256Input(artifact.fileHash);
-    if (!artifact.fileHash) {
-      throw new BadRequestException("Client-visible release artifacts require SHA256 metadata.");
-    }
+  }
+
+  if (artifact.fileSizeBytes !== null && artifact.fileSizeBytes !== undefined && artifact.fileSizeBytes <= 0n) {
+    throw new BadRequestException("Release artifact file size metadata must be positive when provided.");
   }
 
   if (deliveryMode === "desktop_full_replace") {
-    if (!artifact.fileSizeBytes || artifact.fileSizeBytes <= 0n) {
-      throw new BadRequestException("Full replacement updates require positive file size metadata.");
-    }
     assertFullUpdateDownloadUrlAllowed(artifact.downloadUrl);
   }
 }

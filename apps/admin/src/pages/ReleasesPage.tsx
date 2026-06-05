@@ -4,7 +4,6 @@ import { notifications } from "@mantine/notifications";
 import { IconPlus, IconRefresh } from "@tabler/icons-react";
 import type {
   AdminReleaseArtifactRecordDto,
-  AdminReleaseArtifactValidationDto,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
   AdminRuntimeComponentFailureReportDto,
@@ -25,8 +24,7 @@ import {
   unpublishAdminRelease,
   updateAdminRelease,
   updateAdminReleaseArtifact,
-  uploadAdminReleaseArtifact,
-  verifyAdminReleaseArtifact
+  uploadAdminReleaseArtifact
 } from "../api/client";
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
@@ -90,7 +88,6 @@ export function ReleasesPage() {
   const [pendingCreateRelease, setPendingCreateRelease] = useState<CreateAdminReleaseInputDto | null>(null);
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
-  const [artifactValidation, setArtifactValidation] = useState<Record<string, AdminReleaseArtifactValidationDto>>({});
   const [runtimeComponents, setRuntimeComponents] = useState<AdminRuntimeComponentRecordDto[]>([]);
   const [runtimeFailures, setRuntimeFailures] = useState<AdminRuntimeComponentFailureReportDto[]>([]);
   const [runtimeValidation, setRuntimeValidation] = useState<Record<string, AdminRuntimeComponentValidationDto>>({});
@@ -404,9 +401,6 @@ export function ReleasesPage() {
             downloadUrl: artifactForm.downloadUrl.trim(),
             defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
             allowClientMirror: artifactForm.allowClientMirror,
-            fileName: artifactForm.fileName.trim() || null,
-            fileSizeBytes: artifactForm.fileSizeBytes.trim() || null,
-            fileHash: artifactForm.fileHash.trim() || null,
             isPrimary: artifactForm.isPrimary,
             isFullPackage: artifactForm.isFullPackage
           }
@@ -469,13 +463,6 @@ export function ReleasesPage() {
         }
       }
 
-      if (artifactEditor.artifactId) {
-        setArtifactValidation((current) => {
-          const next = { ...current };
-          delete next[artifactEditor.artifactId!];
-          return next;
-        });
-      }
       setReleases((current) => upsertRelease(current, record));
       closeArtifactEditor({ silent: true });
       notifications.show({
@@ -511,11 +498,6 @@ export function ReleasesPage() {
     try {
       setSaving(true);
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
-      setArtifactValidation((current) => {
-        const next = { ...current };
-        delete next[artifactId];
-        return next;
-      });
       setReleases((current) => upsertRelease(current, record));
       notifications.show({
         color: "green",
@@ -526,33 +508,6 @@ export function ReleasesPage() {
       showReleaseRequestFailure(reason, "删除产物失败");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function verifyArtifact(releaseId: string, artifact: AdminReleaseArtifactRecordDto) {
-    try {
-      const result = await verifyAdminReleaseArtifact(releaseId, artifact.id);
-      setArtifactValidation((current) => ({ ...current, [artifact.id]: result }));
-      void loadReleases().catch((refreshReason) => {
-        notifications.show({
-          color: "yellow",
-          title: "安装产物校验",
-          message: `${readError(refreshReason, "刷新发布列表失败")} 校验已完成，但列表刷新失败，请手动刷新确认。`
-        });
-      });
-      notifications.show({
-        color: result.status === "ready" ? "green" : "yellow",
-        title: "安装产物校验",
-        message: result.message
-      });
-    } catch (reason) {
-      const message = readError(reason, "校验安装产物失败");
-      const uncertain = isUncertainRequestFailure(message);
-      notifications.show({
-        color: uncertain ? "yellow" : "red",
-        title: uncertain ? "安装产物校验状态不确定" : "安装产物校验",
-        message: uncertain ? `${message} 校验可能已完成，请刷新发布列表确认。` : message
-      });
     }
   }
 
@@ -679,13 +634,11 @@ export function ReleasesPage() {
                           <ReleaseRecordCard
                             record={latest}
                             saving={saving}
-                            artifactValidation={artifactValidation}
                             onEditRelease={openEditRelease}
                             onCreateArtifact={openCreateArtifact}
                             onPublish={(record) => void publishRelease(record)}
                             onWithdraw={(record) => void withdrawRelease(record)}
                             onDeleteRelease={(record) => void deleteRelease(record)}
-                            onVerifyArtifact={(releaseId, artifact) => void verifyArtifact(releaseId, artifact)}
                             onCopyDownloadUrl={(url) => void copyDownloadUrl(url)}
                             onEditArtifact={openEditArtifact}
                             onRemoveArtifact={(releaseId, artifactId) => void removeArtifact(releaseId, artifactId)}
@@ -707,13 +660,11 @@ export function ReleasesPage() {
                                         key={record.id}
                                         record={record}
                                         saving={saving}
-                                        artifactValidation={artifactValidation}
                                         onEditRelease={openEditRelease}
                                         onCreateArtifact={openCreateArtifact}
                                         onPublish={(item) => void publishRelease(item)}
                                         onWithdraw={(item) => void withdrawRelease(item)}
                                         onDeleteRelease={(item) => void deleteRelease(item)}
-                                        onVerifyArtifact={(releaseId, artifact) => void verifyArtifact(releaseId, artifact)}
                                         onCopyDownloadUrl={(url) => void copyDownloadUrl(url)}
                                         onEditArtifact={openEditArtifact}
                                         onRemoveArtifact={(releaseId, artifactId) => void removeArtifact(releaseId, artifactId)}

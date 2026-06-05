@@ -1363,8 +1363,8 @@ function testUploadedReleaseArtifactDoesNotUseClientMirror() {
   assert.equal(resolved.allowClientMirror, false);
 }
 
-function testReleaseArtifactClientUsableRequiresHashForInstallerDownloads() {
-  assert.throws(
+function testReleaseArtifactClientUsableAllowsMissingHashForInstallerDownloads() {
+  assert.doesNotThrow(
     () =>
       assertReleaseArtifactClientUsable(
         {
@@ -1378,7 +1378,7 @@ function testReleaseArtifactClientUsableRequiresHashForInstallerDownloads() {
           defaultMirrorPrefix: null,
           allowClientMirror: false,
           fileName: "ChordV-setup.exe",
-          fileSizeBytes: 1024n,
+          fileSizeBytes: null,
           fileHash: null,
           isPrimary: true,
           isFullPackage: false,
@@ -1387,8 +1387,7 @@ function testReleaseArtifactClientUsableRequiresHashForInstallerDownloads() {
         },
         "windows"
       ),
-    /SHA256/,
-    "desktop installer artifacts must not be client-visible without SHA256 metadata"
+    "release publisher must not require SHA256 metadata for client-visible installer artifacts"
   );
 }
 
@@ -1499,7 +1498,7 @@ async function testReleaseDownloadRejectsDraftArtifacts() {
   );
 }
 
-async function testReleaseDownloadRejectsUploadedArtifactWithStaleMetadata() {
+async function testReleaseDownloadAllowsUploadedArtifactWithStaleMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-download-"));
   const storedFilePath = path.join("release_1", "artifact_1", "ChordV.zip");
@@ -1534,11 +1533,9 @@ async function testReleaseDownloadRejectsUploadedArtifactWithStaleMetadata() {
       }
     });
 
-    await assert.rejects(
-      () => service.getReleaseArtifactDownloadDescriptor("artifact_1"),
-      /metadata/,
-      "download descriptor must not serve tampered uploaded release artifacts"
-    );
+    const descriptor = await service.getReleaseArtifactDownloadDescriptor("artifact_1");
+    assert.equal(descriptor.absolutePath, absolutePath);
+    assert.equal(descriptor.fileName, "ChordV.zip");
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -1740,7 +1737,7 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   assert.equal(result.status, "published");
 }
 
-async function testAssertReleasePublishableDoesNotValidatePrimaryArtifactTwice() {
+async function testAssertReleasePublishableDoesNotValidateArtifacts() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const validationCalls: string[] = [];
   const primaryArtifact = {
@@ -1797,7 +1794,7 @@ async function testAssertReleasePublishableDoesNotValidatePrimaryArtifactTwice()
 
   await service["assertReleasePublishable"]("release_1");
 
-  assert.deepEqual(validationCalls, ["artifact_primary", "artifact_secondary"]);
+  assert.deepEqual(validationCalls, []);
 }
 
 async function testCreateReleaseArtifactDelegatesToReleaseCenter() {
@@ -4267,6 +4264,168 @@ async function testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefresh
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel reset queue failed/);
   assert.match(result.panelSyncMessage ?? "", /user refresh failed/);
+}
+
+async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
+  const subscriptionUpdates: Array<Record<string, any>> = [];
+  const ledgerDeletes: Array<Record<string, any>> = [];
+  const snapshotUpserts: Array<Record<string, any>> = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const panelJobUpserts: Array<Record<string, any>> = [];
+  const bindingQueries: Array<Record<string, any>> = [];
+  const membershipQueries: Array<Record<string, any>> = [];
+  const aggregateQueries: Array<Record<string, any>> = [];
+  const lockedSubscription = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_team",
+    totalTrafficGb: 100,
+    usedTrafficGb: 40,
+    remainingTrafficGb: 60,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Team Plan" },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => lockedSubscription,
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    requireAdminUserRecord: async (userId: string) => ({
+      id: userId,
+      email: "member@example.com",
+      displayName: "Member",
+      role: "member",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }),
+    prisma: {
+      teamMember: {
+        findFirst: async (payload: Record<string, any>) => {
+          membershipQueries.push(payload);
+          return {
+            id: "member_1",
+            teamId: "team_1",
+            userId: "member_1"
+          };
+        }
+      },
+      panelClientBinding: {
+        findMany: async (payload: Record<string, any>) => {
+          bindingQueries.push(payload);
+          return [
+            {
+              id: "binding_member",
+              subscriptionId: "sub_team",
+              userId: "member_1",
+              teamId: "team_1",
+              nodeId: "node_1",
+              panelClientEmail: "member@example.com",
+              panelClientId: "client_1",
+              panelInboundId: 7,
+              lastUplinkBytes: 123n,
+              lastDownlinkBytes: 456n,
+              lastSyncedAt: new Date(),
+              node: {
+                id: "node_1",
+                panelBaseUrl: "https://offline-panel.example.com",
+                panelApiBasePath: "/",
+                panelUsername: "admin",
+                panelPassword: "password"
+              }
+            }
+          ];
+        }
+      },
+      $transaction: async (callback: (tx: any) => Promise<any>) =>
+        callback({
+          subscription: {
+            findUnique: async () => lockedSubscription,
+            update: async (payload: Record<string, any>) => {
+              subscriptionUpdates.push(payload);
+              return {
+                ...lockedSubscription,
+                ...payload.data
+              };
+            }
+          },
+          trafficSnapshot: {
+            upsert: async (payload: Record<string, any>) => {
+              snapshotUpserts.push(payload);
+              return {};
+            }
+          },
+          panelClientBinding: {
+            update: async (payload: Record<string, any>) => {
+              bindingUpdates.push(payload);
+              return {};
+            }
+          },
+          trafficLedger: {
+            deleteMany: async (payload: Record<string, any>) => {
+              ledgerDeletes.push(payload);
+              return { count: 3 };
+            },
+            aggregate: async (payload: Record<string, any>) => {
+              aggregateQueries.push(payload);
+              return { _sum: { usedTrafficGb: 13 } };
+            }
+          }
+        }),
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelJobUpserts.push(payload);
+          throw new Error("offline panel reset queue failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.resetSubscriptionTraffic("sub_team", { userId: "member_1" });
+
+  assert.deepEqual(membershipQueries[0]?.where, {
+    teamId: "team_1",
+    userId: "member_1"
+  });
+  assert.equal(bindingQueries[0]?.where.subscriptionId, "sub_team");
+  assert.equal(bindingQueries[0]?.where.userId, "member_1");
+  assert.deepEqual(ledgerDeletes[0]?.where, {
+    teamId: "team_1",
+    subscriptionId: "sub_team",
+    userId: "member_1"
+  });
+  assert.deepEqual(aggregateQueries[0]?.where, {
+    subscriptionId: "sub_team"
+  });
+  assert.equal(snapshotUpserts.length, 1, "member traffic reset must persist a zero usage baseline for the binding");
+  assert.equal(bindingUpdates.length, 1, "member traffic reset must reset binding counters locally");
+  assert.equal(bindingUpdates[0].data.lastUplinkBytes, 0n);
+  assert.equal(bindingUpdates[0].data.lastDownlinkBytes, 0n);
+  assert.equal(subscriptionUpdates.length, 1);
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 13);
+  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 87);
+  assert.equal(result.ok, true);
+  assert.equal(result.userId, "member_1");
+  assert.equal(result.clearedBindingCount, 1);
+  assert.equal(result.subscription.usedTrafficGb, 13);
+  assert.equal(result.subscription.remainingTrafficGb, 87);
+  assert.equal(result.user?.id, "member_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /offline panel reset queue failed/);
+  assert.equal(panelJobUpserts.length, 1, "offline panel reset must be queued after local reset");
+  assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
+  assert.equal(panelJobUpserts[0].create.userId, "member_1");
+  assert.equal(panelJobUpserts[0].create.teamId, "team_1");
 }
 
 async function testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls() {
@@ -11219,13 +11378,12 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   });
   let releaseFindCalls = 0;
   let transactionCalled = false;
+  let metadataProbeCalled = false;
   const service = createReleaseCenterService({
-    resolveExternalReleaseArtifactMetadata: async () => ({
-      resolvedUrl: createdArtifact.downloadUrl,
-      fileName: createdArtifact.fileName,
-      fileSizeBytes: createdArtifact.fileSizeBytes,
-      fileHash: createdArtifact.fileHash
-    }),
+    resolveExternalReleaseArtifactMetadata: async () => {
+      metadataProbeCalled = true;
+      throw new Error("save must not probe external artifact metadata");
+    },
     logger: {
       warn: () => undefined
     },
@@ -11262,8 +11420,149 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   });
 
   assert.equal(transactionCalled, true, "artifact must be saved before response refresh fails");
+  assert.equal(metadataProbeCalled, false, "saving an external artifact must not probe or download the remote file");
   assert.equal(result.id, "release_1");
   assert.equal(result.artifacts[0]?.id, "artifact_created");
+}
+
+async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave() {
+  const release = makeReleaseCenterTestRelease();
+  const currentArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_existing",
+    downloadUrl: "https://example.com/old.zip",
+    fileName: "old.zip",
+    fileSizeBytes: 1024n,
+    fileHash: "a".repeat(64)
+  });
+  let metadataProbeCalled = false;
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    resolveExternalReleaseArtifactMetadata: async () => {
+      metadataProbeCalled = true;
+      throw new Error("save must not probe external artifact metadata");
+    },
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => currentArtifact,
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...currentArtifact,
+            ...payload.data
+          };
+        }
+      },
+      release: {
+        findUnique: async () => release
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...currentArtifact,
+                ...payload.data
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await service.updateReleaseArtifact("release_1", "artifact_existing", {
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: "https://example.com/new.zip",
+    defaultMirrorPrefix: "https://ghfast.top/",
+    allowClientMirror: true,
+    isPrimary: true
+  });
+
+  assert.equal(metadataProbeCalled, false, "editing an external artifact must not probe or download the remote file");
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.downloadUrl, "https://example.com/new.zip");
+  assert.equal(updates[0].data.defaultMirrorPrefix, "https://ghfast.top/");
+  assert.equal(updates[0].data.fileName, null);
+  assert.equal(updates[0].data.fileSizeBytes, null);
+  assert.equal(updates[0].data.fileHash, null);
+  assert.equal(result.id, "release_1");
+}
+
+async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
+  const release = makeReleaseCenterTestRelease({
+    version: "1.1.6"
+  });
+  let preparedCalled = false;
+  let createdData: Record<string, any> | null = null;
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => release,
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => {
+      preparedCalled = true;
+      return {
+        absolutePath: "prepared-not-a-real-zip.zip",
+        storedFilePath: "release_1/artifact_created/ChordV_1.1.6_x64-full.zip",
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        fileSizeBytes: 17n,
+        fileHash: null,
+        downloadUrl: "/api/downloads/releases/artifact_created"
+      };
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async (payload: Record<string, any>) => {
+              createdData = payload.data;
+              return makeReleaseCenterTestArtifact({
+                id: payload.data.id,
+                releaseId: payload.data.releaseId,
+                source: payload.data.source,
+                type: payload.data.type,
+                deliveryMode: payload.data.deliveryMode,
+                downloadUrl: payload.data.downloadUrl,
+                fileName: payload.data.fileName,
+                storedFilePath: payload.data.storedFilePath,
+                fileSizeBytes: payload.data.fileSizeBytes,
+                fileHash: payload.data.fileHash,
+                isPrimary: payload.data.isPrimary,
+                isFullPackage: payload.data.isFullPackage
+              });
+            }
+          }
+        }),
+      release: {
+        findUnique: async () => ({
+          ...release,
+          artifacts: []
+        })
+      }
+    }
+  });
+
+  const result = await service.uploadReleaseArtifact(
+    "release_1",
+    {
+      type: "zip",
+      deliveryMode: "desktop_full_replace",
+      isPrimary: true
+    },
+    {
+      path: "uploaded-not-a-real-zip.tmp",
+      originalname: "ChordV_1.1.6_x64-full.zip",
+      size: 17
+    }
+  );
+
+  assert.equal(preparedCalled, true);
+  assert.equal(createdData?.fileHash, null, "uploaded release artifacts should not require SHA256 metadata");
+  assert.equal(createdData?.fileSizeBytes, 17n);
+  assert.equal(createdData?.deliveryMode, "desktop_full_replace");
+  assert.equal(result.id, "release_1");
 }
 
 async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
@@ -11415,7 +11714,7 @@ async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
   assert.deepEqual(result.artifacts, []);
 }
 
-async function testValidateExternalReleaseArtifactReportsMetadataPersistFailure() {
+async function testValidateExternalReleaseArtifactDoesNotPersistRemoteMetadata() {
   const artifact = makeReleaseCenterTestArtifact({
     source: "external",
     type: "setup.exe",
@@ -11427,12 +11726,9 @@ async function testValidateExternalReleaseArtifactReportsMetadataPersistFailure(
   });
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => makeReleaseCenterTestRelease({ platform: "windows" }),
-    resolveExternalReleaseArtifactMetadata: async () => ({
-      resolvedUrl: artifact.downloadUrl,
-      fileName: "ChordV-setup.exe",
-      fileSizeBytes: 123n,
-      fileHash: "a".repeat(64)
-    }),
+    resolveExternalReleaseArtifactMetadata: async () => {
+      throw new Error("manual validation must not probe external artifact metadata");
+    },
     prisma: {
       releaseArtifact: {
         findFirst: async () => artifact,
@@ -11445,15 +11741,13 @@ async function testValidateExternalReleaseArtifactReportsMetadataPersistFailure(
 
   const result = await service.validateReleaseArtifact("release_1", "artifact_1");
 
-  assert.equal(result.status, "metadata_mismatch");
-  assert.match(result.message, /saving refreshed metadata failed/);
-  assert.match(result.message, /metadata write failed/);
-  assert.notEqual(result.status, "invalid_link", "local DB write failures must not be reported as bad external links");
-  assert.equal(result.actualFileSizeBytes, "123");
-  assert.equal(result.actualFileHash, "a".repeat(64));
+  assert.equal(result.status, "ready");
+  assert.match(result.message, /No remote download/);
+  assert.equal(result.actualFileSizeBytes, null);
+  assert.equal(result.actualFileHash, null);
 }
 
-async function testValidateExternalReleaseArtifactRequiresHashForClientUsableDownloads() {
+async function testValidateExternalReleaseArtifactAllowsMissingHashForClientUsableDownloads() {
   const artifact = makeReleaseCenterTestArtifact({
     source: "external",
     type: "setup.exe",
@@ -11465,12 +11759,9 @@ async function testValidateExternalReleaseArtifactRequiresHashForClientUsableDow
   });
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => makeReleaseCenterTestRelease({ platform: "windows" }),
-    resolveExternalReleaseArtifactMetadata: async () => ({
-      resolvedUrl: artifact.downloadUrl,
-      fileName: artifact.fileName,
-      fileSizeBytes: artifact.fileSizeBytes,
-      fileHash: null
-    }),
+    resolveExternalReleaseArtifactMetadata: async () => {
+      throw new Error("manual validation must not probe external artifact metadata");
+    },
     prisma: {
       releaseArtifact: {
         findFirst: async () => artifact,
@@ -11483,17 +11774,17 @@ async function testValidateExternalReleaseArtifactRequiresHashForClientUsableDow
 
   const result = await service.validateReleaseArtifact("release_1", "artifact_1");
 
-  assert.equal(result.status, "metadata_mismatch");
-  assert.match(result.message, /SHA256/);
+  assert.equal(result.status, "ready");
   assert.equal(result.actualFileSizeBytes, "123");
   assert.equal(result.actualFileHash, null);
 }
 
-async function testValidateExternalFullZipBackfillsHashFromDownloadedArtifact() {
+async function testValidateExternalFullZipDoesNotDownloadOrBackfillMetadata() {
   const zip = createStoredZipWithSingleEntry("ChordV.exe", Buffer.from("not-a-real-pe"));
-  const expectedHash = createHash("sha256").update(zip).digest("hex");
   const updates: Array<Record<string, any>> = [];
+  let requestCount = 0;
   const server = createServer((_request, response) => {
+    requestCount += 1;
     response.writeHead(200, {
       "content-type": "application/zip",
       "content-length": String(zip.byteLength)
@@ -11536,24 +11827,22 @@ async function testValidateExternalFullZipBackfillsHashFromDownloadedArtifact() 
 
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateReleaseArtifact("release_1", "artifact_1"));
 
-    assert.equal(updates.length, 1, "external full ZIP validation must backfill downloaded size/hash metadata");
-    assert.equal(updates[0].data.fileSizeBytes, BigInt(zip.byteLength));
-    assert.equal(updates[0].data.fileHash, expectedHash);
-    assert.equal(result.status, "metadata_mismatch", "the deliberately minimal ZIP should still fail later ZIP validation");
-    assert.doesNotMatch(result.message, /SHA256 metadata before publishing/);
-    assert.equal(result.actualFileSizeBytes, String(zip.byteLength));
-    assert.equal(result.actualFileHash, expectedHash);
+    assert.equal(requestCount, 0, "external full ZIP validation must not download the remote artifact");
+    assert.equal(updates.length, 0, "external full ZIP validation must not backfill size/hash metadata");
+    assert.equal(result.status, "ready");
+    assert.match(result.message, /No remote download/);
+    assert.equal(result.actualFileSizeBytes, null);
+    assert.equal(result.actualFileHash, null);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
-async function testValidateUploadedFullZipBackfillsMissingMetadataBeforePublishCheck() {
+async function testValidateUploadedFullZipDoesNotBackfillMissingMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-uploaded-release-metadata-"));
   const storedFilePath = path.join("release_1", "artifact_1", "ChordV_1.1.6_x64-full.zip");
   const zip = createStoredZipWithSingleEntry("ChordV.exe", Buffer.from("not-a-real-pe"));
-  const expectedHash = createHash("sha256").update(zip).digest("hex");
   const artifact = makeReleaseCenterTestArtifact({
     source: "uploaded",
     type: "zip",
@@ -11595,13 +11884,11 @@ async function testValidateUploadedFullZipBackfillsMissingMetadataBeforePublishC
 
     const result = await service.validateReleaseArtifact("release_1", "artifact_1");
 
-    assert.equal(updates.length, 1, "uploaded full ZIP validation must backfill missing size/hash metadata");
-    assert.equal(updates[0].data.fileSizeBytes, BigInt(zip.byteLength));
-    assert.equal(updates[0].data.fileHash, expectedHash);
-    assert.equal(result.status, "metadata_mismatch", "the deliberately minimal ZIP should still fail later ZIP validation");
-    assert.doesNotMatch(result.message, /SHA256 metadata before publishing/);
-    assert.equal(result.actualFileSizeBytes, String(zip.byteLength));
-    assert.equal(result.actualFileHash, expectedHash);
+    assert.equal(updates.length, 0, "uploaded full ZIP validation must not backfill size/hash metadata");
+    assert.equal(result.status, "ready");
+    assert.match(result.message, /No SHA or ZIP validation/);
+    assert.equal(result.actualFileSizeBytes, null);
+    assert.equal(result.actualFileHash, null);
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -11683,32 +11970,6 @@ async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
       setTimeout(() => reject(new Error("release cleanup waited for stalled cleanup task")), 750);
     })
   ]);
-}
-
-async function testExternalReleaseDownloadCleanupReturnsWhenCleanupStalls() {
-  const warnings: string[] = [];
-  const service = createReleaseCenterService({
-    logger: {
-      warn: (message: string) => warnings.push(message)
-    }
-  });
-
-  await Promise.race([
-    service["cleanupDownloadedExternalReleaseArtifact"]({
-      absolutePath: path.join(tmpdir(), "stalled-release.zip"),
-      resolvedUrl: "https://example.com/ChordV-full.zip",
-      fileName: "ChordV-full.zip",
-      fileSizeBytes: 1024n,
-      fileHash: "a".repeat(64),
-      cleanup: async () => new Promise<never>(() => undefined)
-    }),
-    new Promise<never>((_resolve, reject) => {
-      setTimeout(() => reject(new Error("external release download cleanup waited for stalled fs cleanup")), 750);
-    })
-  ]);
-
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /temporary external release artifact/);
 }
 
 async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
@@ -11806,7 +12067,7 @@ async function testUpdateCheckSkipsUploadedArtifactMissingStoredFile() {
   assert.equal(result.downloadUrl, null);
 }
 
-async function testUpdateCheckSkipsUploadedArtifactWithStaleMetadata() {
+async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-storage-"));
   const storedFilePath = path.join("release_1", "artifact_stale", "ChordV_1.1.3_x64-full.zip");
@@ -11860,9 +12121,78 @@ async function testUpdateCheckSkipsUploadedArtifactWithStaleMetadata() {
       artifactType: "zip"
     });
 
-    assert.equal(result.hasUpdate, false, "client update check must not announce stale uploaded package metadata");
-    assert.equal(result.recommendedArtifact, null);
-    assert.equal(result.downloadUrl, null);
+    assert.equal(result.hasUpdate, true, "client update check should announce uploaded packages when the file still exists");
+    assert.equal(result.recommendedArtifact?.id, "artifact_stale");
+    assert.equal(result.downloadUrl, "/api/downloads/releases/artifact_stale");
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testUpdateCheckAllowsUploadedArtifactWithoutMetadata() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-storage-null-metadata-"));
+  const storedFilePath = path.join("release_1", "artifact_null_metadata", "ChordV_1.1.3_x64-full.zip");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, "package-bytes");
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  try {
+    const service = createReleaseCenterService({
+      findLatestPublishedRelease: async () => ({
+        id: "release_1",
+        platform: "windows",
+        channel: "stable",
+        version: "1.1.3",
+        displayTitle: "ChordV 1.1.3",
+        changelog: ["Full replace"],
+        minimumVersion: "1.1.0",
+        forceUpgrade: false,
+        status: "published",
+        publishedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        artifacts: [
+          {
+            id: "artifact_null_metadata",
+            releaseId: "release_1",
+            source: "uploaded",
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            downloadUrl: "/api/downloads/releases/artifact_null_metadata",
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "ChordV_1.1.3_x64-full.zip",
+            storedFilePath,
+            fileSizeBytes: null,
+            fileHash: null,
+            isPrimary: true,
+            isFullPackage: true,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      })
+    });
+
+    const result = await service.checkClientUpdate({
+      currentVersion: "1.1.2",
+      platform: "windows",
+      channel: "stable",
+      artifactType: "zip"
+    });
+
+    assert.equal(result.hasUpdate, true, "client update check should announce uploaded packages without size/hash metadata");
+    assert.equal(result.recommendedArtifact?.id, "artifact_null_metadata");
+    assert.equal(result.downloadUrl, "/api/downloads/releases/artifact_null_metadata");
+    assert.equal(result.fileSizeBytes, null);
+    assert.equal(result.fileHash, null);
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -15641,19 +15971,19 @@ async function main() {
   await testRuntimeEventStreamPreservesOrderWithAsyncValidation();
   testReleaseArtifactPathTraversalIsRejected();
   testUploadedReleaseArtifactDoesNotUseClientMirror();
-  testReleaseArtifactClientUsableRequiresHashForInstallerDownloads();
+  testReleaseArtifactClientUsableAllowsMissingHashForInstallerDownloads();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
   await testExternalReleaseDownloadRejectsStalledBody();
   await testReleaseDownloadRejectsDraftArtifacts();
-  await testReleaseDownloadRejectsUploadedArtifactWithStaleMetadata();
+  await testReleaseDownloadAllowsUploadedArtifactWithStaleMetadata();
   await testRuntimeDownloadRejectsDisabledComponents();
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
-  await testAssertReleasePublishableDoesNotValidatePrimaryArtifactTwice();
+  await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
   await testValidateReleaseArtifactDelegatesToReleaseCenter();
@@ -15692,6 +16022,7 @@ async function main() {
   await testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail();
+  await testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
@@ -15801,20 +16132,22 @@ async function main() {
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
+  await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
+  await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
-  await testValidateExternalReleaseArtifactReportsMetadataPersistFailure();
-  await testValidateExternalReleaseArtifactRequiresHashForClientUsableDownloads();
-  await testValidateExternalFullZipBackfillsHashFromDownloadedArtifact();
-  await testValidateUploadedFullZipBackfillsMissingMetadataBeforePublishCheck();
+  await testValidateExternalReleaseArtifactDoesNotPersistRemoteMetadata();
+  await testValidateExternalReleaseArtifactAllowsMissingHashForClientUsableDownloads();
+  await testValidateExternalFullZipDoesNotDownloadOrBackfillMetadata();
+  await testValidateUploadedFullZipDoesNotBackfillMissingMetadata();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseRequiresZipFullReplaceArtifact();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
-  await testExternalReleaseDownloadCleanupReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
-  await testUpdateCheckSkipsUploadedArtifactWithStaleMetadata();
+  await testUpdateCheckAllowsUploadedArtifactWithStaleMetadata();
+  await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();
   await testWindowsUpdateCheckIgnoresInstallerArtifactRequest();
   await testCurrentSubscriptionPrefersEffectiveSubscription();

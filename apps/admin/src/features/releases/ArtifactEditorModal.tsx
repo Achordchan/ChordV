@@ -100,7 +100,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             <Alert color="blue" variant="light">
               {props.creatingRelease
                 ? "上传模式下会先创建发布记录，再上传首个安装包；如果上传失败，系统会自动清理，不会留下空白草稿。"
-                : "上传后会自动生成下载地址、文件大小和 SHA256，不需要手动填写。"}
+                : "上传后会生成下载地址，保存即可。"}
             </Alert>
           </>
         )}
