@@ -49,6 +49,7 @@ import { normalizePanelApiBasePath } from "../src/modules/common/node-import.uti
 import { moveUploadedFile } from "../src/modules/common/upload-file.utils";
 import { AnnouncementPolicyService } from "../src/modules/common/announcement-policy.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "../src/modules/common/usage-lock.utils";
+import { createOrRefreshLeaseRevocationJob, createOrRefreshPanelSyncJob } from "../src/modules/common/panel-sync-job.utils";
 
 const GB_IN_BYTES = 1024 ** 3;
 const ZIP_CRC32_TABLE = Array.from({ length: 256 }, (_unused, index) => {
@@ -5500,6 +5501,78 @@ async function testRetryPanelSyncJobDoesNotUnlockRunningJob() {
   assert.equal(updates.length, 1);
   assert.deepEqual(updates[0]?.where.status, { in: ["pending", "failed"] });
   assert.equal(updates[0]?.data.lockedAt, null, "retry payload may clear locks only for non-running jobs matched by status");
+}
+
+async function testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob() {
+  const updates: Array<Record<string, any>> = [];
+  await createOrRefreshPanelSyncJob(
+    {
+      panelSyncJob: {
+        create: async () => {
+          throw { code: "P2002" };
+        },
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 0 };
+        }
+      }
+    },
+    "ensure:binding_running",
+    {
+      create: {
+        id: "job_new",
+        dedupeKey: "ensure:binding_running",
+        status: "pending"
+      },
+      update: {
+        status: "pending",
+        lockedAt: null,
+        attempts: 0,
+        lastError: null
+      }
+    }
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.dedupeKey, "ensure:binding_running");
+  assert.deepEqual(updates[0]?.where.status, { not: "running" });
+  assert.equal(updates[0]?.data.lockedAt, null);
+}
+
+async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
+  const updates: Array<Record<string, any>> = [];
+  await createOrRefreshLeaseRevocationJob(
+    {
+      leaseRevocationJob: {
+        create: async () => {
+          throw { code: "P2002" };
+        },
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 0 };
+        }
+      }
+    },
+    "lease:subscription_running",
+    {
+      create: {
+        id: "lease_job_new",
+        dedupeKey: "lease:subscription_running",
+        status: "pending"
+      },
+      update: {
+        status: "pending",
+        lockedAt: null,
+        attempts: 0,
+        lastError: null
+      }
+    }
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.dedupeKey, "lease:subscription_running");
+  assert.deepEqual(updates[0]?.where.status, { not: "running" });
+  assert.equal(updates[0]?.data.lockedAt, null);
 }
 
 async function testXuiPanelLocationDoesNotDuplicateBasePath() {
@@ -16353,6 +16426,8 @@ async function main() {
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testRetryPanelSyncJobDoesNotUnlockRunningJob();
+  await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
+  await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
   await testXuiPanelLocationAcceptsFullUrlAsApiBasePath();

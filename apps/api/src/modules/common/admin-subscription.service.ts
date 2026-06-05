@@ -45,6 +45,7 @@ import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
+import { createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
 import {
   isEffectiveSubscription,
   normalizeOptionalString,
@@ -1632,13 +1633,11 @@ export class AdminSubscriptionService {
     for (const binding of bindings) {
       const snapshot = binding.node ?? {};
       try {
-        await this.prisma.panelSyncJob.upsert({
-          where: {
-            dedupeKey: `reset:${binding.id}`
-          },
+        const dedupeKey = `reset:${binding.id}`;
+        await createOrRefreshPanelSyncJob(this.prisma, dedupeKey, {
           create: {
             id: randomUUID(),
-            dedupeKey: `reset:${binding.id}`,
+            dedupeKey,
             action: "reset_client_traffic",
             bindingId: binding.id,
             subscriptionId: binding.subscriptionId,

@@ -58,6 +58,7 @@ import {
   IconBell,
   IconBolt,
   IconCloudDownload,
+  IconCpu,
   IconLayoutDashboard,
   IconListDetails,
   IconMapPin,
@@ -135,6 +136,7 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { ReleasesPage } from "./pages/ReleasesPage";
+import { RuntimeComponentsPage } from "./pages/RuntimeComponentsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
@@ -185,6 +187,7 @@ type SectionKey =
   | "announcements"
   | "policies"
   | "releases"
+  | "runtimeComponents"
   | "imageBed";
 type EditorState = {
   type: DrawerType;
@@ -254,8 +257,13 @@ const sectionMeta: Record<SectionKey, { label: string; description: string; icon
   },
   releases: {
     label: "发布中心",
-    description: "版本发布、渠道与安装产物",
+    description: "版本发布与安装包",
     icon: <IconCloudDownload size={18} />
+  },
+  runtimeComponents: {
+    label: "内核组件",
+    description: "管理 Xray 与规则集",
+    icon: <IconCpu size={18} />
   },
   imageBed: {
     label: "图床",
@@ -298,7 +306,7 @@ export function App() {
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
   const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
-  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases">, string>>({
+  const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents">, string>>({
     users: "",
     plans: "",
     subscriptions: "",
@@ -1707,6 +1715,15 @@ export function App() {
     );
   }
 
+  function openUserSubscriptions(user: AdminUserRecordDto) {
+    setSubscriptionTab("personal");
+    setSearch((current) => ({
+      ...current,
+      subscriptions: user.email || user.displayName || user.id
+    }));
+    selectSection("subscriptions");
+  }
+
   function openKickMemberModal(teamId: string, memberId: string, memberName: string) {
     setKickMemberTarget({ teamId, memberId, memberName });
     setKickDisableAccount(false);
@@ -2212,6 +2229,7 @@ export function App() {
                 setTeamMemberForm={setTeamMemberForm}
                 buildTeamMemberOptions={buildTeamMemberOptions}
                 onOpenUserDrawer={(userId) => openDrawer("user", userId)}
+                onOpenUserSubscriptions={openUserSubscriptions}
                 onOpenTeamInlineEditor={openTeamInlineEditor}
                 onCloseTeamInlineEditor={closeTeamInlineEditor}
                 onSaveTeamInlineEditor={(teamId) => void saveTeamInlineEditor(teamId)}
@@ -2314,6 +2332,8 @@ export function App() {
             ) : null}
 
             {section === "releases" ? <ReleasesPage /> : null}
+
+            {section === "runtimeComponents" ? <RuntimeComponentsPage /> : null}
 
             {section === "imageBed" ? <ImageBedPage /> : null}
           </Stack>

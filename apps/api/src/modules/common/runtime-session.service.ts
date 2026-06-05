@@ -43,6 +43,7 @@ import {
 } from "./runtime-session.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
+import { createOrRefreshLeaseRevocationJob, createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
 import { XuiService } from "../xui/xui.service";
 
 type ResolvedSubscriptionAccess = {
@@ -701,13 +702,11 @@ export class RuntimeSessionService {
 
     for (const binding of bindings) {
       const snapshot = binding.node ?? {};
-      await writer.panelSyncJob.upsert({
-        where: {
-          dedupeKey: `disable:${binding.id}`
-        },
+      const dedupeKey = `disable:${binding.id}`;
+      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
         create: {
           id: randomUUID(),
-          dedupeKey: `disable:${binding.id}`,
+          dedupeKey,
           action: "disable_client",
           bindingId: binding.id,
           subscriptionId: binding.subscriptionId,
@@ -784,13 +783,11 @@ export class RuntimeSessionService {
 
     const now = new Date();
     for (const binding of bindings) {
-      await writer.panelSyncJob.upsert({
-        where: {
-          dedupeKey: `delete:${binding.id}`
-        },
+      const dedupeKey = `delete:${binding.id}`;
+      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
         create: {
           id: randomUUID(),
-          dedupeKey: `delete:${binding.id}`,
+          dedupeKey,
           action: "delete_client",
           bindingId: binding.id,
           subscriptionId: binding.subscriptionId,
@@ -857,13 +854,11 @@ export class RuntimeSessionService {
     const now = new Date();
     const nodeIds = filter?.nodeIds && filter.nodeIds.length > 0 ? Array.from(new Set(filter.nodeIds)) : [null];
     for (const nodeId of nodeIds) {
-      await writer.leaseRevocationJob.upsert({
-        where: {
-          dedupeKey: buildLeaseRevocationJobKey(subscriptionId, reason, filter?.userId ?? null, nodeId)
-        },
+      const dedupeKey = buildLeaseRevocationJobKey(subscriptionId, reason, filter?.userId ?? null, nodeId);
+      await createOrRefreshLeaseRevocationJob(writer, dedupeKey, {
         create: {
           id: randomUUID(),
-          dedupeKey: buildLeaseRevocationJobKey(subscriptionId, reason, filter?.userId ?? null, nodeId),
+          dedupeKey,
           subscriptionId,
           userId: filter?.userId ?? null,
           nodeId,
@@ -1981,13 +1976,11 @@ export class RuntimeSessionService {
     }
   ) {
     const now = new Date();
-    await this.prisma.panelSyncJob.upsert({
-      where: {
-        dedupeKey: `ensure:${binding.id}`
-      },
+    const dedupeKey = `ensure:${binding.id}`;
+    await createOrRefreshPanelSyncJob(this.prisma, dedupeKey, {
       create: {
         id: randomUUID(),
-        dedupeKey: `ensure:${binding.id}`,
+        dedupeKey,
         action: "ensure_client",
         bindingId: binding.id,
         subscriptionId: binding.subscriptionId,

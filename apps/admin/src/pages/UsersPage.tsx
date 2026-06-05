@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
 import type { AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
-import { IconLock, IconLockOpen2, IconPencil, IconTrash, IconUsers } from "@tabler/icons-react";
+import { IconListDetails, IconLock, IconLockOpen2, IconPencil, IconTrash, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -26,6 +26,7 @@ type UsersPageProps = {
   setTeamMemberForm: Dispatch<SetStateAction<TeamMemberFormState>>;
   buildTeamMemberOptions: (currentUserId?: string) => Array<{ value: string; label: string }>;
   onOpenUserDrawer: (userId: string) => void;
+  onOpenUserSubscriptions: (user: AdminUserRecordDto) => void;
   onOpenTeamInlineEditor: (teamId: string) => void;
   onCloseTeamInlineEditor: () => void;
   onSaveTeamInlineEditor: (teamId: string) => void;
@@ -83,6 +84,9 @@ export function UsersPage(props: UsersPageProps) {
                       <RowActions>
                         <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号">
                           <IconPencil size={16} />
+                        </ActionIcon>
+                        <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
+                          <IconListDetails size={16} />
                         </ActionIcon>
                         <ActionIcon
                           variant="subtle"

@@ -6,9 +6,6 @@ import type {
   AdminReleaseArtifactRecordDto,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
-  AdminRuntimeComponentFailureReportDto,
-  AdminRuntimeComponentRecordDto,
-  AdminRuntimeComponentValidationDto,
   CreateAdminReleaseInputDto
 } from "../api/client";
 import {
@@ -17,8 +14,6 @@ import {
   deleteAdminRelease,
   deleteAdminReleaseArtifact,
   fetchAdminReleases,
-  fetchAdminRuntimeComponentFailures,
-  fetchAdminRuntimeComponents,
   publishAdminRelease,
   replaceAdminReleaseArtifactUpload,
   unpublishAdminRelease,
@@ -29,7 +24,6 @@ import {
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
 import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
-import { RuntimeComponentsPanel } from "../features/runtime-components/RuntimeComponentsPanel";
 import {
   emptyArtifactEditorForm,
   emptyReleaseEditorForm,
@@ -75,7 +69,6 @@ function showReleaseRequestFailure(reason: unknown, fallback: string) {
 }
 
 export function ReleasesPage() {
-  const [activeView, setActiveView] = useState<"app_releases" | "runtime_components">("app_releases");
   const [searchValue, setSearchValue] = useState("");
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -89,15 +82,9 @@ export function ReleasesPage() {
   const [pendingCreateRelease, setPendingCreateRelease] = useState<CreateAdminReleaseInputDto | null>(null);
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
-  const [runtimeComponents, setRuntimeComponents] = useState<AdminRuntimeComponentRecordDto[]>([]);
-  const [runtimeFailures, setRuntimeFailures] = useState<AdminRuntimeComponentFailureReportDto[]>([]);
-  const [runtimeValidation, setRuntimeValidation] = useState<Record<string, AdminRuntimeComponentValidationDto>>({});
-  const [runtimeLoading, setRuntimeLoading] = useState(false);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadReleases();
-    void loadRuntimeComponents();
   }, []);
 
   const visibleReleases = useMemo(
@@ -139,25 +126,6 @@ export function ReleasesPage() {
       setError(readError(reason, "发布中心接口暂不可用，请先确认后端发布中心接口是否已合并。"));
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function loadRuntimeComponents() {
-    try {
-      setRuntimeLoading(true);
-      setRuntimeError(null);
-      const [components, failures] = await Promise.all([fetchAdminRuntimeComponents(), fetchAdminRuntimeComponentFailures()]);
-      setRuntimeComponents(components);
-      setRuntimeFailures(failures);
-      setRuntimeLoading(false);
-    } catch (reason) {
-      setRuntimeError(readError(reason, "加载内核组件失败"));
-      setRuntimeLoading(false);
-      notifications.show({
-        color: "red",
-        title: "内核组件",
-        message: readError(reason, "加载内核组件失败")
-      });
     }
   }
 
@@ -538,87 +506,73 @@ export function ReleasesPage() {
             <Stack gap={4}>
               <Title order={4}>发布中心</Title>
               <Text size="sm" c="dimmed">
-                安装包发布和内核组件分开管理。发布渠道固定为正式版，页面不再展示多渠道筛选。
+                这里只做应用安装包发布。发布渠道固定为正式版，页面不再展示多渠道筛选。
               </Text>
             </Stack>
             <Group gap="xs">
-              {activeView === "app_releases" ? (
-                <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease}>
-                  新建发布
-                </Button>
-              ) : null}
+              <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease}>
+                新建发布
+              </Button>
               <Button
                 variant="light"
                 leftSection={<IconRefresh size={16} />}
-                onClick={() => void (activeView === "app_releases" ? loadReleases() : loadRuntimeComponents())}
-                loading={loading && activeView === "app_releases"}
+                onClick={() => void loadReleases()}
+                loading={loading}
               >
                 刷新
               </Button>
             </Group>
           </Group>
 
-          <SegmentedControl
-            value={activeView}
-            onChange={(value) => setActiveView(value as typeof activeView)}
-            data={[
-              { value: "app_releases", label: "安装包发布" },
-              { value: "runtime_components", label: "内核组件" }
-            ]}
-            fullWidth
-          />
-
-          {activeView === "app_releases" ? (
-            <>
-              <Card withBorder radius="xl" p="lg">
-                <Stack gap="md">
-                  <Group justify="space-between" align="flex-start" wrap="wrap">
-                    <Stack gap={4}>
-                      <Title order={5}>安装包发布</Title>
-                      <Text size="sm" c="dimmed">
-                        这里只管理应用安装包。桌面端使用 DMG / Windows ZIP，移动端按平台使用 APK / IPA。
-                      </Text>
-                    </Stack>
-                    <Group gap="sm" wrap="wrap">
-                      <Badge variant="light">{visibleReleases.length} 条可见记录</Badge>
-                      <Badge variant="outline">当前仅正式版</Badge>
-                    </Group>
-                  </Group>
-
-                  <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="sm">
-                    <SegmentedControl
-                      value={platformFilter}
-                      onChange={(value) => setPlatformFilter(value as PlatformFilter)}
-                      data={platformFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
-                      fullWidth
-                    />
-                    <SegmentedControl
-                      value={statusFilter}
-                      onChange={(value) => setStatusFilter(value as StatusFilter)}
-                      data={statusFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
-                      fullWidth
-                    />
-                  </SimpleGrid>
+          <Card withBorder radius="xl" p="lg">
+            <Stack gap="md">
+              <Group justify="space-between" align="flex-start" wrap="wrap">
+                <Stack gap={4}>
+                  <Title order={5}>安装包发布</Title>
+                  <Text size="sm" c="dimmed">
+                    这里只管理应用安装包。桌面端使用 DMG / Windows ZIP，移动端按平台使用 APK / IPA。
+                  </Text>
                 </Stack>
-              </Card>
+                <Group gap="sm" wrap="wrap">
+                  <Badge variant="light">{visibleReleases.length} 条可见记录</Badge>
+                  <Badge variant="outline">当前仅正式版</Badge>
+                </Group>
+              </Group>
 
-              {error ? (
-                <Alert color="red" variant="light">
-                  {error}
-                </Alert>
-              ) : null}
+              <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="sm">
+                <SegmentedControl
+                  value={platformFilter}
+                  onChange={(value) => setPlatformFilter(value as PlatformFilter)}
+                  data={platformFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
+                  fullWidth
+                />
+                <SegmentedControl
+                  value={statusFilter}
+                  onChange={(value) => setStatusFilter(value as StatusFilter)}
+                  data={statusFilterOptions.map((item) => ({ value: item.value, label: item.label }))}
+                  fullWidth
+                />
+              </SimpleGrid>
+            </Stack>
+          </Card>
 
-              {loading ? (
-                <Text c="dimmed">正在加载发布记录…</Text>
-              ) : groupedReleases.length === 0 ? (
-                <Alert color="gray" variant="light">
-                  当前筛选下还没有可见发布记录，可以先新建一条草稿，再继续补充安装包。
-                </Alert>
-              ) : (
-                <Stack gap="lg">
-                  {groupedReleases.map((group) => {
-                    const latest = group.records[0];
-                    const history = group.records.slice(1);
+          {error ? (
+            <Alert color="red" variant="light">
+              {error}
+            </Alert>
+          ) : null}
+
+          {loading ? (
+            <Text c="dimmed">正在加载发布记录…</Text>
+          ) : groupedReleases.length === 0 ? (
+            <Alert color="gray" variant="light">
+              当前筛选下还没有可见发布记录，可以先新建一条草稿，再继续补充安装包。
+            </Alert>
+          ) : (
+            <Stack gap="lg">
+              {groupedReleases.map((group) => {
+                const latest = group.records[0];
+                const history = group.records.slice(1);
 
                     return (
                       <Card key={group.platform} withBorder radius="xl" p="lg">
@@ -680,34 +634,8 @@ export function ReleasesPage() {
                         </Stack>
                       </Card>
                     );
-                  })}
-                </Stack>
-              )}
-            </>
-          ) : (
-            <RuntimeComponentsPanel
-              components={runtimeComponents}
-              failures={runtimeFailures}
-              validations={runtimeValidation}
-              loading={runtimeLoading}
-              error={runtimeError}
-              saving={saving}
-              onRefresh={loadRuntimeComponents}
-              onComponentsChange={setRuntimeComponents}
-              onFailuresChange={setRuntimeFailures}
-              onValidationChange={(componentId, next) =>
-                setRuntimeValidation((current) => {
-                  const updated = { ...current };
-                  if (next) {
-                    updated[componentId] = next;
-                  } else {
-                    delete updated[componentId];
-                  }
-                  return updated;
-                })
-              }
-              onSavingChange={setSaving}
-            />
+              })}
+            </Stack>
           )}
         </Stack>
       </SectionCard>
