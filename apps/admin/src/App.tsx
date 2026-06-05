@@ -2469,13 +2469,15 @@ function extractActionMessage(result: unknown, fallback: string) {
   return fallback;
 }
 
-function hasPendingPanelSync(result: unknown) {
-  return Boolean(
-    result &&
-      typeof result === "object" &&
-      "panelSyncStatus" in result &&
-      (result as { panelSyncStatus?: unknown }).panelSyncStatus === "pending"
-  );
+function hasPendingPanelSync(result: unknown): boolean {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  const record = result as Record<string, unknown>;
+  if (record.panelSyncStatus === "pending") {
+    return true;
+  }
+  return ["data", "result", "payload", "response"].some((key) => hasPendingPanelSync(record[key]));
 }
 
 function splitCsv(value: string) {

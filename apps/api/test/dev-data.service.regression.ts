@@ -8543,6 +8543,49 @@ async function testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh() {
   assert.equal(record.panelInboundId, null);
 }
 
+async function testUpdateNodeSubscriptionUrlFailureKeepsLocalSave() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: false,
+    panelStatus: "offline",
+    panelError: null,
+    subscriptionUrl: "https://old.example.com/sub"
+  });
+  let savedData: Record<string, unknown> | null = null;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => {
+          savedData = payload.data;
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const record = await service.updateNode("node_1", {
+    name: "saved despite bad subscription",
+    subscriptionUrl: "http://127.0.0.1:1/sub"
+  });
+
+  assert.equal(record.name, "saved despite bad subscription");
+  assert.equal(record.subscriptionUrl, "http://127.0.0.1:1/sub");
+  assert.equal(savedData?.serverHost, undefined, "failed subscription refresh must not overwrite runtime host");
+  assert.equal(savedData?.uuid, undefined, "failed subscription refresh must not overwrite runtime uuid");
+  assert.equal(record.panelStatus, "degraded");
+  assert.match(record.panelError ?? "", /fetch failed|ECONNREFUSED|subscription runtime read/i);
+}
+
 function makeAdminNodeRow(overrides: Record<string, any> = {}) {
   const now = new Date();
   return {
@@ -14922,6 +14965,7 @@ async function main() {
   await testUsageSyncUsesStoredInboundIdGroups();
   await testUsageSyncKeepsNodeDegradedWhenAnyInboundFails();
   await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
+  await testUpdateNodeSubscriptionUrlFailureKeepsLocalSave();
   await testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails();
   await testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails();
   await testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls();

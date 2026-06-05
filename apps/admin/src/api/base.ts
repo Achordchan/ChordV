@@ -219,5 +219,13 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
     return undefined as T;
   }
 
-  return response.json() as Promise<T>;
+  const text = await response.text();
+  const panelSyncPendingPayload = parsePanelSyncPendingPayload(text);
+  if (panelSyncPendingPayload) {
+    return panelSyncPendingPayload as T;
+  }
+  if (text.trim().length === 0) {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
 }

@@ -14,9 +14,11 @@ export function readError(reason: unknown, fallback: string) {
     return "请求超时，通常是文件较大或服务器处理较慢，请稍后重试。";
   }
   try {
-    const parsed = JSON.parse(reason.message) as { message?: string[] | string };
-    if (Array.isArray(parsed.message)) return parsed.message.join("，");
-    if (typeof parsed.message === "string") return parsed.message;
+    const parsed = JSON.parse(reason.message) as { message?: string[] | string; statusCode?: number; status?: number };
+    const status = typeof parsed.statusCode === "number" ? parsed.statusCode : parsed.status;
+    const prefix = typeof status === "number" ? `HTTP ${status}: ` : "";
+    if (Array.isArray(parsed.message)) return `${prefix}${parsed.message.join("，")}`;
+    if (typeof parsed.message === "string") return `${prefix}${parsed.message}`;
   } catch {
     return reason.message || fallback;
   }

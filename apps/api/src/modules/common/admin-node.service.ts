@@ -420,7 +420,9 @@ export class AdminNodeService {
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null = null;
     let panelRuntimeError: string | null = null;
     if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
-      derived = await fetchSubscriptionNode(input.subscriptionUrl);
+      const runtime = await this.readSubscriptionNodeForNodeSaveBestEffort(input.subscriptionUrl.trim());
+      derived = runtime.derived;
+      panelRuntimeError = runtime.errorMessage;
     } else if (nextPanelEnabled && panelConfigTouched) {
       const runtime = await this.readPanelRuntimeForNodeSaveBestEffort({
           id: current.id,
@@ -543,6 +545,54 @@ export class AdminNodeService {
     }
 
     return toAdminNodeRecord(row);
+  }
+
+  private async readSubscriptionNodeForNodeSaveBestEffort(subscriptionUrl: string): Promise<{
+    derived: ReturnType<typeof parseVlessLink> | null;
+    errorMessage: string | null;
+  }> {
+    let settled = false;
+    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then(
+      (derived) => {
+        settled = true;
+        return { derived, errorMessage: null };
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void runtimeTask.catch((error) => {
+      this.logger?.warn(
+        `Local node subscription URL will be saved, but delayed subscription runtime read failed: ${readAdminNodeErrorMessage(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        const message = "subscription runtime read is still running in background";
+        this.logger?.warn(
+          `Local node subscription URL will be saved, but reading subscription runtime exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+        resolve({ derived: null, errorMessage: message });
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([runtimeTask, timeoutTask]);
+    } catch (error) {
+      const errorMessage = readAdminNodeErrorMessage(error);
+      this.logger?.warn(`Local node subscription URL will be saved, but reading subscription runtime failed: ${errorMessage}`);
+      return { derived: null, errorMessage };
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   async refreshNode(nodeId: string): Promise<AdminNodeRecordDto> {
