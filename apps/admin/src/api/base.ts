@@ -51,6 +51,26 @@ function parsePanelSyncPendingPayload(text: string) {
   }
 }
 
+function buildHttpErrorMessage(status: number, text: string) {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return `HTTP ${status}`;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object") {
+      return JSON.stringify({
+        ...parsed,
+        statusCode: typeof parsed.statusCode === "number" ? parsed.statusCode : status,
+        status: typeof parsed.status === "number" ? parsed.status : status
+      });
+    }
+  } catch {
+    // Fall through to a plain-text error while preserving the HTTP status.
+  }
+  return `HTTP ${status}: ${trimmed}`;
+}
+
 export function getStoredAdminAccessToken() {
   return adminAccessToken ?? (import.meta.env.DEV ? import.meta.env.VITE_ADMIN_ACCESS_TOKEN ?? "" : "");
 }
@@ -198,7 +218,7 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
         throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);
       }
     } else {
-      throw new Error(text || `HTTP ${response.status}`);
+      throw new Error(buildHttpErrorMessage(response.status, text));
     }
   }
 
@@ -212,7 +232,7 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
       clearStoredAdminSession({ notify: true });
       throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);
     }
-    throw new Error(text || `HTTP ${response.status}`);
+    throw new Error(buildHttpErrorMessage(response.status, text));
   }
 
   if (response.status === 204) {
