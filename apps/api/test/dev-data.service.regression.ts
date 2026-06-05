@@ -5490,6 +5490,112 @@ async function testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially() {
   }
 }
 
+async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
+  const previousProbeBudget = process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+  const previousRequestBudget = process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS;
+  const previousProbeConcurrency = process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY;
+  process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = "50";
+  process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS = "80";
+  process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY = "1";
+  try {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const makeNode = (id: string) => ({
+      id,
+      name: id,
+      countryCode: "US",
+      region: "Los Angeles",
+      provider: "provider",
+      tags: [],
+      isActive: true,
+      recommended: false,
+      latencyMs: 0,
+      probeLatencyMs: null,
+      protocol: "vless",
+      security: "reality",
+      serverHost: "node.example.com",
+      serverPort: 443,
+      serverName: "node.example.com",
+      shortId: "short",
+      spiderX: "/",
+      mldsa65Verify: null,
+      subscriptionUrl: null,
+      statsLastSyncedAt: null,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 1,
+      panelEnabled: true,
+      panelStatus: "online" as const,
+      panelLastSyncedAt: null,
+      panelError: null,
+      probeStatus: "unknown" as const,
+      probeCheckedAt: null,
+      probeError: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    const nodes = [makeNode("node_stalled_1"), makeNode("node_stalled_2"), makeNode("node_skipped")];
+    const probed: string[] = [];
+    const updateManyCalls: Array<Record<string, any>> = [];
+    const service = createAdminNodeService({
+      logger: {
+        warn: () => undefined
+      },
+      probeNode: async (nodeId: string) => {
+        probed.push(nodeId);
+        return new Promise<never>(() => undefined);
+      },
+      prisma: {
+        node: {
+          findMany: async () => nodes,
+          update: async (payload: Record<string, any>) => ({
+            ...nodes.find((node) => node.id === payload.where.id),
+            ...payload.data,
+            updatedAt: new Date("2026-01-01T00:01:00.000Z")
+          }),
+          updateMany: async (payload: Record<string, any>) => {
+            updateManyCalls.push(payload);
+            return { count: payload.where.id.in.length };
+          }
+        }
+      }
+    });
+
+    const startedAt = Date.now();
+    const result = await Promise.race([
+      service.probeAllNodes(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("bulk probe exceeded request budget guard")), 250);
+      })
+    ]);
+
+    assert.ok(Date.now() - startedAt < 250, "bulk probe must return before the admin request timeout guard");
+    assert.deepEqual(probed, ["node_stalled_1", "node_stalled_2"]);
+    assert.deepEqual(result.map((item) => item.id), nodes.map((node) => node.id));
+    assert.match(result[2]?.probeError ?? "", /request budget 80ms exhausted/);
+    assert.equal(result[2]?.panelStatus, "degraded");
+    assert.equal(updateManyCalls.length, 1, "unstarted nodes should be marked with one bulk update");
+    assert.deepEqual(updateManyCalls[0].where.id.in, ["node_skipped"]);
+  } finally {
+    if (previousProbeBudget === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+    if (previousRequestBudget === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS = previousRequestBudget;
+    }
+    if (previousProbeConcurrency === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY = previousProbeConcurrency;
+    }
+  }
+}
+
 async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
   const previousProbeBudget = process.env.CHORDV_NODE_PROBE_TIMEOUT_MS;
   process.env.CHORDV_NODE_PROBE_TIMEOUT_MS = "25";
@@ -8284,10 +8390,9 @@ async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
   assert.match(result.panelSyncMessage ?? "", /disable account panel sync queued/);
 }
 
-async function testConvertPersonalSubscriptionToTeamRejectsWhenTeamSubscriptionLookupStalls() {
+async function testConvertPersonalSubscriptionToTeamWaitsForRequiredTeamSubscriptionLookup() {
   let teamMemberCreated = false;
   let subscriptionArchived = false;
-  let panelCleanupQueued = false;
   const service = createAdminSubscriptionService({
     logger: {
       warn: () => undefined
@@ -8306,12 +8411,29 @@ async function testConvertPersonalSubscriptionToTeamRejectsWhenTeamSubscriptionL
       status: "active"
     }),
     getUserMembership: async () => null,
-    findCurrentTeamSubscription: async () => new Promise<never>(() => undefined),
+    findCurrentTeamSubscription: async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 350));
+      return {
+        id: "sub_team",
+        teamId: "team_1",
+        state: "active",
+        remainingTrafficGb: 10,
+        expireAt: new Date(Date.now() + 86_400_000)
+      };
+    },
+    closePersonalSupportTicketsForUserBestEffort: async () => undefined,
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team"
+    }),
+    publishSubscriptionUpdatedEvent: async () => undefined,
     runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => 0,
+      revokeSubscriptionLeases: async () => 0,
       removePanelBindingsForSubscription: async () => {
-        panelCleanupQueued = true;
-        return { requested: 1, updated: 1, failed: [] };
-      }
+        return { requested: 0, updated: 0, failed: [] };
+      },
+      assertPanelBindingMutation: () => undefined
     },
     prisma: {
       teamMember: {
@@ -8329,19 +8451,54 @@ async function testConvertPersonalSubscriptionToTeamRejectsWhenTeamSubscriptionL
     }
   });
 
+  const result = await Promise.race([
+    service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("convertPersonalSubscriptionToTeam timed out waiting for required team subscription lookup")), 1_000);
+    })
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.equal(teamMemberCreated, true, "conversion should wait for the required team subscription lookup instead of using a 300ms follow-up budget");
+  assert.equal(subscriptionArchived, true, "conversion should continue after the required lookup succeeds");
+}
+
+async function testConvertPersonalSubscriptionToTeamConvertsMembershipUniqueConflict() {
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => ({
+      id: "sub_personal",
+      userId: "user_1",
+      teamId: null
+    }),
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    prisma: {
+      teamMember: {
+        create: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    }
+  });
+
   await assert.rejects(
-    () =>
-      Promise.race([
-        service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
-        new Promise<never>((_resolve, reject) => {
-          setTimeout(() => reject(new Error("convertPersonalSubscriptionToTeam waited for stalled team subscription lookup")), 750);
-        })
-      ]),
-    /team subscription lookup before personal subscription conversion is still running in background/
+    () => service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
+    /灞炰簬/
   );
-  assert.equal(teamMemberCreated, false, "conversion must not create membership without confirmed target team subscription");
-  assert.equal(subscriptionArchived, false, "conversion must not archive the personal subscription before lookup succeeds");
-  assert.equal(panelCleanupQueued, false, "conversion must not queue panel cleanup before local conversion succeeds");
 }
 
 async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails() {
@@ -16646,6 +16803,7 @@ async function main() {
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
+  await testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong();
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testRetryPanelSyncJobDoesNotUnlockRunningJob();
@@ -16693,7 +16851,8 @@ async function main() {
   await testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
-  await testConvertPersonalSubscriptionToTeamRejectsWhenTeamSubscriptionLookupStalls();
+  await testConvertPersonalSubscriptionToTeamWaitsForRequiredTeamSubscriptionLookup();
+  await testConvertPersonalSubscriptionToTeamConvertsMembershipUniqueConflict();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
   await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();

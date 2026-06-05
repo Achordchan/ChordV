@@ -757,6 +757,19 @@ export class AdminSubscriptionService {
     subscriptionId: string,
     input: ConvertSubscriptionToTeamInputDto
   ): Promise<ConvertSubscriptionToTeamResultDto> {
+    const owner = await this.requireSubscription(subscriptionId);
+    if (!owner.userId || owner.teamId) {
+      throw new BadRequestException("鍙湁涓汉璁㈤槄鎵嶈兘杞叆 Team");
+    }
+    return runWithSubscriptionOwnerLock(`personal:${owner.userId}`, () =>
+      this.convertPersonalSubscriptionToTeamLocked(subscriptionId, input)
+    );
+  }
+
+  private async convertPersonalSubscriptionToTeamLocked(
+    subscriptionId: string,
+    input: ConvertSubscriptionToTeamInputDto
+  ): Promise<ConvertSubscriptionToTeamResultDto> {
     const current = await this.requireSubscription(subscriptionId);
     if (!current.userId || current.teamId) {
       throw new BadRequestException("只有个人订阅才能转入 Team");
@@ -777,14 +790,7 @@ export class AdminSubscriptionService {
       throw new BadRequestException("该账号已属于其他团队");
     }
 
-    const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
-      targetTeam.id,
-      "team subscription lookup before personal subscription conversion"
-    );
-    if (!teamSubscriptionLookup.panelSync.ok) {
-      throw new ConflictException(teamSubscriptionLookup.panelSync.errorMessage);
-    }
-    const teamSubscription = teamSubscriptionLookup.subscription;
+    const teamSubscription = await this.findCurrentTeamSubscription(targetTeam.id);
     if (!teamSubscription || !isEffectiveSubscription(teamSubscription)) {
       throw new BadRequestException("目标团队当前没有可用的 Team 订阅");
     }
@@ -794,14 +800,21 @@ export class AdminSubscriptionService {
     let teamPanelSync: PanelSyncBestEffortResult = { ok: true };
 
     try {
-      await this.prisma.teamMember.create({
-        data: {
-          id: membershipId,
-          teamId: targetTeam.id,
-          userId: user.id,
-          role: "member"
+      try {
+        await this.prisma.teamMember.create({
+          data: {
+            id: membershipId,
+            teamId: targetTeam.id,
+            userId: user.id,
+            role: "member"
+          }
+        });
+      } catch (error) {
+        if (isPrismaUniqueConstraintError(error)) {
+          throw new ConflictException("璇ヨ处鍙峰凡灞炰簬鍏朵粬鍥㈤槦");
         }
-      });
+        throw error;
+      }
       membershipCreated = true;
 
       const personalLeaseSync = await this.revokeSubscriptionLeasesBestEffort(subscriptionId, "team_member_removed", {
@@ -2848,4 +2861,8 @@ function assertPlanScopeMatchesSubscription(
   if (subscription.teamId && planScope !== "team") {
     throw new BadRequestException("Team subscriptions can only use team plans.");
   }
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }

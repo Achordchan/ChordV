@@ -28,6 +28,7 @@ const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
 const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
 const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
+const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 55_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
 
@@ -912,21 +913,39 @@ export class AdminNodeService {
     const nodes = await this.prisma.node.findMany({ orderBy: { createdAt: "desc" } });
     const results = new Array<AdminNodeRecordDto>(nodes.length);
     let nextIndex = 0;
+    const requestBudgetMs = readBulkNodeProbeRequestBudgetMs();
+    const deadlineAt = Date.now() + requestBudgetMs;
     const workerCount = Math.min(nodes.length, readBulkNodeProbeConcurrency());
     const workers = Array.from({ length: workerCount }, async () => {
       while (nextIndex < nodes.length) {
+        const remainingBudgetMs = deadlineAt - Date.now();
+        if (remainingBudgetMs <= 0) {
+          return;
+        }
         const index = nextIndex;
         nextIndex += 1;
-        results[index] = await this.probeNodeForBulk(nodes[index]);
+        results[index] = await this.probeNodeForBulk(nodes[index], remainingBudgetMs);
       }
     });
     await Promise.all(workers);
+    const skippedNodes = nodes.filter((_node, index) => !results[index]);
+    if (skippedNodes.length > 0) {
+      const checkedAt = new Date();
+      this.logger.warn(
+        `Bulk node probe request budget ${requestBudgetMs}ms exhausted; ${skippedNodes.length} nodes were marked for retry.`
+      );
+      await this.markBulkProbeSkippedNodes(skippedNodes, requestBudgetMs, checkedAt);
+      for (const node of skippedNodes) {
+        const index = nodes.findIndex((item) => item.id === node.id);
+        results[index] = this.buildBulkProbeSkippedRecord(node, requestBudgetMs, checkedAt);
+      }
+    }
     return results;
   }
 
-  private async probeNodeForBulk(node: Awaited<ReturnType<PrismaService["node"]["findMany"]>>[number]) {
+  private async probeNodeForBulk(node: Awaited<ReturnType<PrismaService["node"]["findMany"]>>[number], budgetMs?: number) {
     try {
-      return await this.probeNodeWithBulkBudget(node.id);
+      return await this.probeNodeWithBulkBudget(node.id, budgetMs);
     } catch (error) {
       const message = readAdminNodeErrorMessage(error);
       this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
@@ -961,7 +980,7 @@ export class AdminNodeService {
     }
   }
 
-  private async probeNodeWithBulkBudget(nodeId: string) {
+  private async probeNodeWithBulkBudget(nodeId: string, budgetMs = readBulkNodeProbeBudgetMs()) {
     let settled = false;
     const probeTask = this.probeNode(nodeId).then(
       (result) => {
@@ -983,8 +1002,8 @@ export class AdminNodeService {
         if (settled) {
           return;
         }
-        reject(new Error(`bulk node probe exceeded ${readBulkNodeProbeBudgetMs()}ms`));
-      }, readBulkNodeProbeBudgetMs());
+        reject(new Error(`bulk node probe exceeded ${budgetMs}ms`));
+      }, Math.max(1, Math.min(budgetMs, readBulkNodeProbeBudgetMs())));
     });
 
     try {
@@ -994,6 +1013,66 @@ export class AdminNodeService {
         clearTimeout(timeoutHandle);
       }
     }
+  }
+
+  private async markBulkProbeSkippedNodes(
+    nodes: Awaited<ReturnType<PrismaService["node"]["findMany"]>>,
+    requestBudgetMs: number,
+    checkedAt: Date
+  ) {
+    const groups = [
+      {
+        ids: nodes.filter((node) => node.isActive && node.panelEnabled).map((node) => node.id),
+        panelStatus: "degraded" as const
+      },
+      {
+        ids: nodes.filter((node) => !(node.isActive && node.panelEnabled)).map((node) => node.id),
+        panelStatus: "offline" as const
+      }
+    ];
+    await Promise.all(
+      groups
+        .filter((group) => group.ids.length > 0)
+        .map((group) =>
+          this.prisma.node
+            .updateMany({
+              where: { id: { in: group.ids } },
+              data: {
+                probeStatus: "offline",
+                probeLatencyMs: null,
+                probeCheckedAt: checkedAt,
+                probeError: `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`,
+                panelStatus: group.panelStatus,
+                panelError:
+                  group.panelStatus === "degraded"
+                    ? `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`
+                    : null
+              }
+            })
+            .catch((error) => {
+              this.logger.warn(`Bulk probe skipped-node fallback update failed: ${readAdminNodeErrorMessage(error)}`);
+            })
+        )
+    );
+  }
+
+  private buildBulkProbeSkippedRecord(
+    node: Awaited<ReturnType<PrismaService["node"]["findMany"]>>[number],
+    requestBudgetMs: number,
+    checkedAt: Date
+  ) {
+    const message = `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`;
+    const panelStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
+    return toAdminNodeRecord({
+      ...node,
+      probeStatus: "offline",
+      probeLatencyMs: null,
+      probeCheckedAt: checkedAt,
+      probeError: message,
+      panelStatus,
+      panelError: panelStatus === "degraded" ? message : null,
+      updatedAt: checkedAt
+    });
   }
 
   async deleteNode(nodeId: string) {
@@ -1228,6 +1307,10 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
 
 function readBulkNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_BUDGET_MS);
+}
+
+function readBulkNodeProbeRequestBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS);
 }
 
 function readImportNodeRuntimeBudgetMs() {
