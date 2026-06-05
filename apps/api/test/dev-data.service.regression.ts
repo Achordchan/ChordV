@@ -12772,6 +12772,57 @@ async function testWindowsUpdateCheckIgnoresInstallerArtifactRequest() {
   assert.equal(result.fileName, "ChordV_1.1.3_x64-full.zip");
 }
 
+async function testWindowsUpdateCheckSkipsInstallerOnlyRelease() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createReleaseCenterService({
+    findLatestPublishedRelease: async () => ({
+      id: "release_1",
+      platform: "windows",
+      channel: "stable",
+      version: "1.1.3",
+      displayTitle: "ChordV 1.1.3",
+      changelog: ["Installer only"],
+      minimumVersion: "1.1.0",
+      forceUpgrade: false,
+      status: "published",
+      publishedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      artifacts: [
+        {
+          id: "artifact_setup",
+          releaseId: "release_1",
+          source: "uploaded",
+          type: "setup_exe",
+          deliveryMode: "desktop_installer_download",
+          downloadUrl: "/api/downloads/releases/artifact_setup",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "ChordV-setup.exe",
+          storedFilePath: "release_1/artifact_setup/ChordV-setup.exe",
+          fileSizeBytes: 1024n,
+          fileHash: null,
+          isPrimary: true,
+          isFullPackage: true,
+          createdAt: now,
+          updatedAt: now
+        }
+      ]
+    })
+  });
+
+  const result = await service.checkClientUpdate({
+    currentVersion: "1.1.2",
+    platform: "windows",
+    channel: "stable",
+    artifactType: "setup.exe"
+  });
+
+  assert.equal(result.hasUpdate, false);
+  assert.equal(result.recommendedArtifact, null);
+  assert.equal(result.downloadUrl, null);
+}
+
 async function testCurrentSubscriptionPrefersEffectiveSubscription() {
   const futureExpired = {
     id: "sub_expired",
@@ -15087,6 +15138,87 @@ async function testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode() {
   assert.equal(result.countdownSeconds, 5);
 }
 
+async function testAdminSnapshotCountsOnlyClientVisibleAnnouncements() {
+  const now = new Date();
+  const visiblePublishedAt = new Date(now.getTime() - 60_000).toISOString();
+  const futurePublishedAt = new Date(now.getTime() + 60_000).toISOString();
+  const makeAnnouncement = (id: string, publishedAt: string, isActive: boolean) => ({
+    id,
+    title: id,
+    body: "Body",
+    level: "info" as const,
+    publishedAt,
+    isActive,
+    displayMode: "passive" as const,
+    countdownSeconds: 0,
+    createdAt: visiblePublishedAt,
+    updatedAt: visiblePublishedAt
+  });
+  const service = createDevDataService({
+    listAdminUsers: async () => [],
+    listAdminPlans: async () => [],
+    listAdminSubscriptions: async () => [],
+    listAdminTeams: async () => [],
+    listAdminNodes: async () => [],
+    listAdminPanelSyncJobs: async () => [],
+    getAdminPolicy: async () => ({
+      defaultMode: "rule",
+      modes: ["rule"],
+      features: {
+        blockAds: false,
+        chinaDirect: true,
+        aiServicesProxy: true
+      }
+    }),
+    listAdminReleases: async () => [],
+    getSupportTicketDashboardCounts: async () => ({
+      openTickets: 0,
+      waitingAdminTickets: 0,
+      closedTickets: 0
+    }),
+    listAdminAnnouncements: async () => [
+      makeAnnouncement("visible", visiblePublishedAt, true),
+      makeAnnouncement("scheduled", futurePublishedAt, true),
+      makeAnnouncement("inactive", visiblePublishedAt, false)
+    ]
+  });
+
+  const snapshot = await service.getAdminSnapshot();
+
+  assert.equal(snapshot.dashboard.announcements, 1);
+}
+
+async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
+  const announcementCountPayloads: Array<Record<string, any>> = [];
+  const service = createDevDataService({
+    getSupportTicketDashboardCounts: async () => ({
+      openTickets: 0,
+      waitingAdminTickets: 0,
+      closedTickets: 0
+    }),
+    prisma: {
+      user: { count: async () => 0 },
+      team: { count: async () => 0 },
+      plan: { count: async () => 0 },
+      subscription: { count: async () => 0 },
+      node: { count: async () => 0 },
+      announcement: {
+        count: async (payload: Record<string, any>) => {
+          announcementCountPayloads.push(payload);
+          return 1;
+        }
+      }
+    }
+  });
+
+  const dashboard = await service.getAdminDashboard();
+
+  assert.equal(dashboard.announcements, 1);
+  assert.equal(announcementCountPayloads.length, 1);
+  assert.equal(announcementCountPayloads[0].where.isActive, true);
+  assert.ok(announcementCountPayloads[0].where.publishedAt?.lte instanceof Date);
+}
+
 async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAnnouncementPolicyService({
@@ -16635,6 +16767,7 @@ async function main() {
   await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();
   await testWindowsUpdateCheckIgnoresInstallerArtifactRequest();
+  await testWindowsUpdateCheckSkipsInstallerOnlyRelease();
   await testCurrentSubscriptionPrefersEffectiveSubscription();
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
   await testCreateTeamMemberRejectsOwnerRole();
@@ -16687,6 +16820,8 @@ async function main() {
   await testCreateAnnouncementRejectsBlankTrimmedText();
   await testCreateAnnouncementRejectsFractionalCountdown();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
+  await testAdminSnapshotCountsOnlyClientVisibleAnnouncements();
+  await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
   await testUpdatePolicyRejectsDuplicateModes();

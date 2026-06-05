@@ -455,7 +455,7 @@ export class DevDataService implements OnModuleInit {
         teams: teams.length,
         activeSubscriptions: subscriptions.filter((item) => item.state === "active").length,
         activeNodes: nodes.filter((item) => item.isActive).length,
-        announcements: announcements.filter((item) => item.isActive).length,
+        announcements: announcements.filter(isClientVisibleAdminAnnouncement).length,
         activePlans: plans.filter((item) => item.isActive).length,
         openTickets: ticketCounts.openTickets,
         waitingAdminTickets: ticketCounts.waitingAdminTickets,
@@ -474,13 +474,14 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminDashboard(): Promise<DashboardSnapshotDto> {
+    const now = new Date();
     const [users, teams, activePlans, activeSubscriptions, activeNodes, announcements, ticketCounts] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.team.count(),
       this.prisma.plan.count({ where: { isActive: true } }),
       this.prisma.subscription.count({ where: { state: "active" } }),
       this.prisma.node.count({ where: { isActive: true } }),
-      this.prisma.announcement.count({ where: { isActive: true } }),
+      this.prisma.announcement.count({ where: { isActive: true, publishedAt: { lte: now } } }),
       this.getSupportTicketDashboardCounts()
     ]);
 
@@ -1991,4 +1992,8 @@ function shouldAutoBootstrapDevData() {
 
 function readPanelSyncErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : "3x-ui 客户端预同步失败";
+}
+
+function isClientVisibleAdminAnnouncement(item: AdminAnnouncementRecordDto) {
+  return item.isActive && new Date(item.publishedAt).getTime() <= Date.now();
 }

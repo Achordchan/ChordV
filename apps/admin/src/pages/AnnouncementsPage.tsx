@@ -48,7 +48,7 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
               <Table.Td>{translateDisplayMode(item.displayMode, item.countdownSeconds)}</Table.Td>
               <Table.Td>{formatDateTime(item.publishedAt)}</Table.Td>
               <Table.Td>
-                <StatusBadge color={item.isActive ? "green" : "gray"} label={item.isActive ? "上线" : "下线"} />
+                <StatusBadge {...announcementStatus(item)} />
               </Table.Td>
               <Table.Td>
                 <Stack gap={6}>
@@ -66,4 +66,14 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
       </DataTable>
     </SectionCard>
   );
+}
+
+function announcementStatus(item: AdminAnnouncementRecordDto) {
+  if (!item.isActive) {
+    return { color: "gray", label: "下线" };
+  }
+  if (new Date(item.publishedAt).getTime() > Date.now()) {
+    return { color: "yellow", label: "待发布" };
+  }
+  return { color: "green", label: "上线" };
 }
