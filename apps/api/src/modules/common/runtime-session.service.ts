@@ -75,6 +75,8 @@ type ActiveRuntimeUsageContext = {
   teamId: string | null;
 };
 
+const NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS = 300;
+
 type PanelBindingFilter = {
   userId?: string;
   nodeIds?: string[];
@@ -1026,10 +1028,52 @@ export class RuntimeSessionService {
     });
 
     const subscriptionIds = Array.from(new Set(subscriptions.map((subscription) => subscription.id)));
-    for (const subscriptionId of subscriptionIds) {
-      await this.syncSubscriptionPanelAccess(subscriptionId);
-    }
+    await Promise.all(subscriptionIds.map((subscriptionId) => this.queuePanelAccessSyncForNodeSubscription(nodeId, subscriptionId)));
     return subscriptionIds.length;
+  }
+
+  private async queuePanelAccessSyncForNodeSubscription(nodeId: string, subscriptionId: string) {
+    let settled = false;
+    const task = Promise.resolve()
+      .then(() => this.queueSubscriptionPanelAccessSync(subscriptionId))
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
+    void task.catch((error) => {
+      this.logger.warn(
+        `Node ${nodeId} panel access sync for subscription ${subscriptionId} failed after local node save: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          this.logger.warn(
+            `Node ${nodeId} panel access sync for subscription ${subscriptionId} exceeded ${NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS}ms and will continue in background.`
+          );
+        }
+        resolve();
+      }, NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([task, timeoutTask]);
+    } catch {
+      // Individual subscription failures are logged by the guarded task and must not stop other node syncs.
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   async clearPendingPanelDisableJobsForNode(nodeId: string) {

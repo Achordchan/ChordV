@@ -999,6 +999,7 @@ export function App() {
       failureFallback?: string;
       uncertainMessage?: (message: string) => string;
       refreshAfter?: boolean;
+      treatHttp500AsUncertain?: boolean;
       resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
     } = {}
   ) {
@@ -1035,7 +1036,7 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return false;
       }
-      const uncertain = isUncertainRequestFailure(message);
+      const uncertain = isUncertainRequestFailure(message) || (options.treatHttp500AsUncertain === true && /http 500/i.test(message));
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
@@ -1327,7 +1328,7 @@ export function App() {
         } satisfies UpdateUserInputDto;
 
         const success = drawer.recordId
-          ? await runAction(() => updateUser(drawer.recordId!, payload), "用户已更新")
+          ? await runAction(() => updateUser(drawer.recordId!, payload), "用户已更新", { treatHttp500AsUncertain: true })
           : await runAction(
               () =>
                 createUser({
@@ -1338,7 +1339,8 @@ export function App() {
                   maxConcurrentSessionsOverride:
                     userForm.maxConcurrentSessionsOverride === "" ? null : Number(userForm.maxConcurrentSessionsOverride)
                 } satisfies CreateUserInputDto),
-              "用户已创建"
+              "用户已创建",
+              { treatHttp500AsUncertain: true }
             );
 
         if (success) closeDrawer();
@@ -1354,8 +1356,8 @@ export function App() {
           isActive: planForm.isActive
         };
         const success = drawer.recordId
-          ? await runAction(() => updatePlan(drawer.recordId!, payload satisfies UpdatePlanInputDto), "套餐已更新")
-          : await runAction(() => createPlan(payload satisfies CreatePlanInputDto), "套餐已创建");
+          ? await runAction(() => updatePlan(drawer.recordId!, payload satisfies UpdatePlanInputDto), "套餐已更新", { treatHttp500AsUncertain: true })
+          : await runAction(() => createPlan(payload satisfies CreatePlanInputDto), "套餐已创建", { treatHttp500AsUncertain: true });
         if (success) closeDrawer();
       }
 
@@ -1370,7 +1372,8 @@ export function App() {
               expireAt: fromDateTimeLocal(subscriptionCreateForm.expireAt) ?? new Date().toISOString(),
               state: subscriptionCreateForm.state
             } satisfies CreateSubscriptionInputDto),
-          "订阅已创建"
+          "订阅已创建",
+          { treatHttp500AsUncertain: true }
         );
         if (success) closeDrawer();
       }
@@ -1384,7 +1387,8 @@ export function App() {
               expireAt: fromDateTimeLocal(subscriptionAdjustForm.expireAt),
               state: subscriptionAdjustForm.state
             } satisfies UpdateSubscriptionInputDto),
-          "订阅已校正"
+          "订阅已校正",
+          { treatHttp500AsUncertain: true }
         );
         if (success) closeDrawer();
       }
@@ -1398,7 +1402,8 @@ export function App() {
               totalTrafficGb:
                 subscriptionRenewForm.totalTrafficGb === "" ? undefined : Number(subscriptionRenewForm.totalTrafficGb)
             } satisfies RenewSubscriptionInputDto),
-          "订阅已续期"
+          "订阅已续期",
+          { treatHttp500AsUncertain: true }
         );
         if (success) closeDrawer();
       }
@@ -1411,7 +1416,8 @@ export function App() {
               totalTrafficGb: subscriptionChangePlanForm.totalTrafficGb,
               expireAt: fromDateTimeLocal(subscriptionChangePlanForm.expireAt)
             } satisfies ChangeSubscriptionPlanInputDto),
-          "套餐已变更"
+          "套餐已变更",
+          { treatHttp500AsUncertain: true }
         );
         if (success) closeDrawer();
       }
@@ -1423,8 +1429,8 @@ export function App() {
           status: teamForm.status
         };
         const success = drawer.recordId
-          ? await runAction(() => updateTeam(drawer.recordId!, payload satisfies UpdateTeamInputDto), "团队已更新")
-          : await runAction(() => createTeam(payload satisfies CreateTeamInputDto), "团队已创建");
+          ? await runAction(() => updateTeam(drawer.recordId!, payload satisfies UpdateTeamInputDto), "团队已更新", { treatHttp500AsUncertain: true })
+          : await runAction(() => createTeam(payload satisfies CreateTeamInputDto), "团队已创建", { treatHttp500AsUncertain: true });
         if (success) closeDrawer();
       }
 
@@ -1436,11 +1442,13 @@ export function App() {
         const success = drawer.recordId
           ? await runAction(
               () => updateTeamMember(drawer.parentId!, drawer.recordId!, { role: teamMemberForm.role } satisfies UpdateTeamMemberInputDto),
-              "成员已更新"
+              "成员已更新",
+              { treatHttp500AsUncertain: true }
             )
           : await runAction(
               () => createTeamMember(drawer.parentId!, payload satisfies CreateTeamMemberInputDto),
-              "成员已加入"
+              "成员已加入",
+              { treatHttp500AsUncertain: true }
             );
         if (success) closeDrawer();
       }
@@ -1453,7 +1461,8 @@ export function App() {
               totalTrafficGb: teamSubscriptionForm.totalTrafficGb,
               expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
             } satisfies CreateTeamSubscriptionInputDto),
-          "团队套餐已分配"
+          "团队套餐已分配",
+          { treatHttp500AsUncertain: true }
         );
         if (success) closeDrawer();
       }
@@ -1518,9 +1527,10 @@ export function App() {
                   panelInboundId: updatePayload.panelInboundId,
                   panelEnabled: updatePayload.panelEnabled
                 } satisfies UpdateNodeInputDto),
-              "节点已更新"
+              "节点已更新",
+              { treatHttp500AsUncertain: true }
             )
-          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加");
+          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", { treatHttp500AsUncertain: true });
         if (success) closeDrawer();
       }
 
@@ -1625,7 +1635,7 @@ export function App() {
 
   async function handleDeleteNode() {
     if (!deleteNodeTarget) return;
-    const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已删除");
+    const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已删除", { treatHttp500AsUncertain: true });
     if (success) setDeleteNodeTarget(null);
   }
 
@@ -1635,7 +1645,7 @@ export function App() {
       return;
     }
 
-    await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除");
+    await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除", { treatHttp500AsUncertain: true });
   }
 
   async function handleToggleUserStatus(
@@ -1656,7 +1666,8 @@ export function App() {
 
     await runAction(
       () => updateUser(userId, { status: nextStatus }),
-      nextStatus === "disabled" ? "账号已禁用" : "账号已启用"
+      nextStatus === "disabled" ? "账号已禁用" : "账号已启用",
+      { treatHttp500AsUncertain: true }
     );
   }
 
@@ -1681,7 +1692,8 @@ export function App() {
           kickTeamMember(kickMemberTarget.teamId, kickMemberTarget.memberId, {
             disableAccount: kickDisableAccount
           }),
-        kickDisableAccount ? "成员已立即断网并禁用账号" : "成员已立即断网"
+        kickDisableAccount ? "成员已立即断网并禁用账号" : "成员已立即断网",
+        { treatHttp500AsUncertain: true }
       );
       if (success) {
         closeKickMemberModal();
@@ -1702,7 +1714,7 @@ export function App() {
 
     try {
       setResetTrafficBusyKey(targetKey);
-      await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置");
+      await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", { treatHttp500AsUncertain: true });
     } finally {
       setResetTrafficBusyKey(null);
     }
@@ -1792,7 +1804,8 @@ export function App() {
           convertPersonalSubscriptionToTeam(convertSubscriptionTarget.subscriptionId, {
             targetTeamId: convertTargetTeamId
           }),
-        "订阅已转入 Team"
+        "订阅已转入 Team",
+        { treatHttp500AsUncertain: true }
       );
       if (success) {
         closeConvertToTeamModal();
@@ -1831,7 +1844,8 @@ export function App() {
             ownerUserId: teamForm.ownerUserId,
             status: teamForm.status
           } satisfies UpdateTeamInputDto),
-        "团队已更新"
+        "团队已更新",
+        { treatHttp500AsUncertain: true }
       );
       if (success) {
         closeTeamInlineEditor();
@@ -1893,7 +1907,8 @@ export function App() {
             totalTrafficGb: teamSubscriptionForm.totalTrafficGb,
             expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
           } satisfies CreateTeamSubscriptionInputDto),
-        "团队套餐已分配"
+        "团队套餐已分配",
+        { treatHttp500AsUncertain: true }
       );
       if (success) {
         closeTeamSubscriptionInlineEditor();
@@ -1918,12 +1933,14 @@ export function App() {
               updateTeamMember(teamMemberInlineEditor.teamId, teamMemberInlineEditor.memberId!, {
                 role: teamMemberForm.role
               } satisfies UpdateTeamMemberInputDto),
-            "成员已更新"
+            "成员已更新",
+            { treatHttp500AsUncertain: true }
           )
         : await runAction(
             () =>
               createTeamMember(teamMemberInlineEditor.teamId, payload satisfies CreateTeamMemberInputDto),
-            "成员已加入"
+            "成员已加入",
+            { treatHttp500AsUncertain: true }
           );
       if (success) {
         closeTeamMemberInlineEditor();

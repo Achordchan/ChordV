@@ -303,6 +303,44 @@ async function testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock() {
   }
 }
 
+async function testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscriptionStalls() {
+  const startedSubscriptionIds: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      subscription: {
+        findMany: async () => [{ id: "subscription_stalled" }, { id: "subscription_online" }]
+      }
+    },
+    queueSubscriptionPanelAccessSync: async (subscriptionId: string) => {
+      startedSubscriptionIds.push(subscriptionId);
+      if (subscriptionId === "subscription_stalled") {
+        return new Promise<number>(() => undefined);
+      }
+      return 1;
+    },
+    syncSubscriptionPanelAccess: async () => {
+      throw new Error("node panel access sync must use queueSubscriptionPanelAccessSync without the usage lock");
+    }
+  });
+
+  const result = await Promise.race([
+    service.syncPanelAccessForNode("node_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node panel access sync waited for stalled subscription")), 750);
+    })
+  ]);
+
+  assert.equal(result, 2);
+  assert.deepEqual(
+    startedSubscriptionIds.sort(),
+    ["subscription_online", "subscription_stalled"],
+    "node panel access sync must start every subscription even when one stalls"
+  );
+}
+
 async function testUpdateNodeAccessAllowsNestedPanelAccessSyncLock() {
   const originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -3782,7 +3820,9 @@ async function testRenewSubscriptionReturnsWhenSubscriptionPublishStalls() {
     })
   ]);
 
-  assert.equal(publishLookupStarted, true);
+  assert.equal(publishLookupStarted, false, "renewal response must return before subscription_updated publish starts");
+  await waitUntil(() => publishLookupStarted);
+  assert.equal(publishLookupStarted, true, "subscription_updated publish should still start in background");
   assert.equal(updates.length, 1, "local renewal must save before stalled publish finishes");
   assert.equal(record.totalTrafficGb, 20);
   assert.equal(record.remainingTrafficGb, 16);
@@ -3863,7 +3903,9 @@ async function testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls() 
     })
   ]);
 
-  assert.equal(publishLookupStarted, true);
+  assert.equal(publishLookupStarted, false, "change plan response must return before subscription_updated publish starts");
+  await waitUntil(() => publishLookupStarted);
+  assert.equal(publishLookupStarted, true, "subscription_updated publish should still start in background");
   assert.equal(updates.length, 1, "local plan change must save before stalled publish finishes");
   assert.equal(result.planId, "plan_new");
   assert.equal(result.totalTrafficGb, 200);
@@ -4095,7 +4137,9 @@ async function testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls(
   ]);
 
   assert.equal(resetCalled, true, "local traffic reset must complete before stalled publish finishes");
-  assert.equal(publishLookupStarted, true);
+  assert.equal(publishLookupStarted, false, "traffic reset response must return before subscription_updated publish starts");
+  await waitUntil(() => publishLookupStarted);
+  assert.equal(publishLookupStarted, true, "subscription_updated publish should still start in background");
   assert.equal(result.ok, true);
   assert.equal(result.subscriptionId, "sub_team");
   assert.equal(result.subscription.usedTrafficGb, 0);
@@ -11950,7 +11994,9 @@ async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
     })
   ]);
 
-  assert.equal(publishLookupStarted, true);
+  assert.equal(publishLookupStarted, false, "subscription update response must return before subscription_updated publish starts");
+  await waitUntil(() => publishLookupStarted);
+  assert.equal(publishLookupStarted, true, "subscription_updated publish should still start in background");
   assert.equal(updates.length, 1, "local subscription update must save before stalled publish finishes");
   assert.equal(result.totalTrafficGb, 120);
   assert.equal(result.remainingTrafficGb, 116);
@@ -15072,6 +15118,7 @@ async function main() {
   await testSubscriptionUsageLockTimesOutWithoutPoisoningLocalQueue();
   await testSubscriptionOwnerLockTimesOutAsRetryableConflict();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
+  await testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscriptionStalls();
   await testUpdateNodeAccessAllowsNestedPanelAccessSyncLock();
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();

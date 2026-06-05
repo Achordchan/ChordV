@@ -1711,22 +1711,34 @@ export class AdminSubscriptionService {
     teamId?: string | null;
     state?: SubscriptionState | null;
   }) {
+    const timer = setTimeout(() => {
+      void this.runSubscriptionUpdatedPublishInBackground(target);
+    }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
+  }
+
+  private async runSubscriptionUpdatedPublishInBackground(target: {
+    subscriptionId?: string | null;
+    userId?: string | null;
+    teamId?: string | null;
+    state?: SubscriptionState | null;
+  }) {
     await this.withSubscriptionFollowUpBudget(
       "subscription_updated publish",
       undefined,
       async () => {
-    try {
-      const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
-      this.clientRuntimeEventsService.publishToUsers(userIds, {
-        type: "subscription_updated",
-        occurredAt: new Date().toISOString(),
-        subscriptionId: target.subscriptionId ?? null,
-        subscriptionState: target.state ?? null,
-        state: target.state ?? null
-      });
-    } catch (error) {
-      this.logger?.warn(`Local subscription change saved, but subscription_updated publish failed: ${readErrorMessage(error, "unknown error")}`);
-    }
+        try {
+          const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
+          this.clientRuntimeEventsService.publishToUsers(userIds, {
+            type: "subscription_updated",
+            occurredAt: new Date().toISOString(),
+            subscriptionId: target.subscriptionId ?? null,
+            subscriptionState: target.state ?? null,
+            state: target.state ?? null
+          });
+        } catch (error) {
+          this.logger?.warn(`Local subscription change saved, but subscription_updated publish failed: ${readErrorMessage(error, "unknown error")}`);
+        }
       }
     );
   }
