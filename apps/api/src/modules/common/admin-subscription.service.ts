@@ -1268,56 +1268,10 @@ export class AdminSubscriptionService {
     await this.prisma.teamMember.delete({
       where: { id: memberId }
     });
-    await this.closeSupportTicketsForUserBestEffort(
-      {
-        userId: member.userId,
-        teamId: member.teamId
-      },
-      "当前账号已离开原 Team，原 Team 工单已失效。如需继续咨询，请按当前归属重新创建工单。"
-    );
-
-    let panelSync: PanelSyncBestEffortResult = { ok: true };
-    const subscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
-      member.teamId,
-      "team subscription lookup after member delete"
-    );
-    const subscription = subscriptionLookup.subscription;
-    panelSync = mergePanelSyncResults(panelSync, subscriptionLookup.panelSync);
-    if (subscription) {
-      panelSync = mergePanelSyncResults(
-        panelSync,
-        await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_member_removed", {
-          userId: member.userId
-        })
-      );
-    }
-
-    if (subscription) {
-      await this.publishSubscriptionUpdatedEvent({
-        subscriptionId: subscription.id,
-        teamId: subscription.teamId,
-        state: subscription.state
-      });
-    }
-
-    this.tryPublishUserEvent(member.userId, {
-      type: "subscription_updated",
-      occurredAt: new Date().toISOString(),
-      subscriptionId: null,
-      subscriptionState: null,
-      state: null,
-      reasonCode: "team_access_revoked",
-      reasonMessage: "你已被移出当前团队，当前不再拥有团队订阅。"
+    const panelSync = this.startTeamMemberRemovedFollowUpInBackground({
+      teamId: member.teamId,
+      userId: member.userId
     });
-    this.tryPublishUserEvent(member.userId, {
-      type: "node_access_updated",
-      occurredAt: new Date().toISOString(),
-      subscriptionId: null,
-      nodeId: null,
-      reasonCode: "team_access_revoked",
-      reasonMessage: "团队节点授权已被移除。"
-    });
-
     return {
       ok: true,
       ...buildPanelSyncResult(panelSync),
@@ -1934,6 +1888,69 @@ export class AdminSubscriptionService {
       });
     } catch (error) {
       this.logger?.warn(`Team status follow-up failed for ${teamId}: ${readErrorMessage(error, "unknown error")}`);
+    }
+  }
+
+  private startTeamMemberRemovedFollowUpInBackground(member: { teamId: string; userId: string }): PanelSyncBestEffortResult {
+    const timer = setTimeout(() => {
+      void this.runTeamMemberRemovedFollowUpInBackground(member);
+    }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
+    return {
+      ok: false,
+      errorMessage: "team member removal follow-up sync queued for background processing"
+    };
+  }
+
+  private async runTeamMemberRemovedFollowUpInBackground(member: { teamId: string; userId: string }) {
+    try {
+      await this.closeSupportTicketsForUserBestEffort(
+        {
+          userId: member.userId,
+          teamId: member.teamId
+        },
+        "当前账号已离开原 Team，原 Team 工单已失效。如需继续咨询，请按当前归属重新创建工单。"
+      );
+      const lookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+        member.teamId,
+        "team subscription lookup after member delete"
+      );
+      if (!lookup.panelSync.ok) {
+        this.logger?.warn(`Team member removal follow-up for ${member.userId} is pending: ${lookup.panelSync.errorMessage}`);
+      }
+      const subscription = lookup.subscription;
+      if (subscription) {
+        const panelSync = await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_member_removed", {
+          userId: member.userId
+        });
+        if (!panelSync.ok) {
+          this.logger?.warn(`Team member removal panel follow-up for ${member.userId} is pending: ${panelSync.errorMessage}`);
+        }
+        await this.publishSubscriptionUpdatedEvent({
+          subscriptionId: subscription.id,
+          teamId: subscription.teamId,
+          state: subscription.state
+        });
+      }
+      this.tryPublishUserEvent(member.userId, {
+        type: "subscription_updated",
+        occurredAt: new Date().toISOString(),
+        subscriptionId: null,
+        subscriptionState: null,
+        state: null,
+        reasonCode: "team_access_revoked",
+        reasonMessage: "你已被移出当前团队，当前不再拥有团队订阅。"
+      });
+      this.tryPublishUserEvent(member.userId, {
+        type: "node_access_updated",
+        occurredAt: new Date().toISOString(),
+        subscriptionId: null,
+        nodeId: null,
+        reasonCode: "team_access_revoked",
+        reasonMessage: "团队节点授权已被移除。"
+      });
+    } catch (error) {
+      this.logger?.warn(`Team member removal follow-up failed for ${member.userId}: ${readErrorMessage(error, "unknown error")}`);
     }
   }
 

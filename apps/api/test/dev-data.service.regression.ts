@@ -13883,7 +13883,13 @@ async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
   const result = await service.deleteTeamMember("team_1", "member_1");
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls, ["delete_member", "close_tickets", "mark_panel_disabled", "revoke_leases"]);
+  assert.deepEqual(calls, ["delete_member"], "team member delete must return before ticket cleanup and panel sync follow-up");
+  await waitUntil(() => calls.includes("close_tickets") && calls.includes("mark_panel_disabled") && calls.includes("revoke_leases"));
+  assert.ok(calls.includes("close_tickets"));
+  assert.ok(calls.includes("mark_panel_disabled"));
+  assert.ok(calls.includes("revoke_leases"));
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete() {
@@ -13927,12 +13933,14 @@ async function testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAft
     })
   ]);
 
-  assert.equal(lookupStarted, true);
+  assert.equal(lookupStarted, false, "subscription lookup must be deferred until after the local member delete response");
   assert.equal(calls[0], "delete_member", "local member delete must save before ticket cleanup and subscription lookup");
-  assert.ok(calls.includes("close_tickets"));
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /team subscription lookup after member delete is still running/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  await waitUntil(() => lookupStarted);
+  assert.equal(lookupStarted, true, "subscription lookup should still run in background");
+  assert.ok(calls.includes("close_tickets"));
 }
 
 async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails() {
@@ -13987,18 +13995,21 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
 
   const result = await service.deleteTeamMember("team_1", "member_1");
 
-  assert.deepEqual(calls, [
-    "delete_member",
-    "close_tickets",
-    "queue_panel_disabled",
-    "queue_lease_revocation",
-    "revoke_leases",
-    "publish_subscription",
-    "publish_user",
-    "publish_user"
-  ]);
+  assert.deepEqual(calls, ["delete_member"], "team member delete must not wait for panel and lease follow-up");
+  await waitUntil(
+    () =>
+      calls.includes("close_tickets") &&
+      calls.includes("queue_panel_disabled") &&
+      calls.includes("queue_lease_revocation") &&
+      calls.includes("revoke_leases") &&
+      calls.includes("publish_subscription") &&
+      calls.filter((item) => item === "publish_user").length === 2
+  );
+  assert.ok(calls.includes("queue_panel_disabled"));
+  assert.ok(calls.includes("queue_lease_revocation"));
+  assert.ok(calls.includes("revoke_leases"));
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testUploadedTempFileCleanupInterceptorDeletesTempFileOnError() {
