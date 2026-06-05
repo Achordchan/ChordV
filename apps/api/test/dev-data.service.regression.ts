@@ -8981,6 +8981,7 @@ async function testRemoteRuntimeValidationRejectsMissingExpectedHash() {
 }
 
 async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createRuntimeComponentsService({
     prepareUploadedRuntimeComponentFile: async () => ({
       absolutePath: "missing-prepared-runtime.bin",
@@ -8996,6 +8997,9 @@ async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
           throw new Error("create should not be called");
         }
       }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
     }
   });
 
@@ -9016,6 +9020,71 @@ async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
     /expectedHash/,
     "runtime upload must reject files whose actual hash differs from expectedHash"
   );
+  assert.deepEqual(cleanupCalls, [{ absolutePath: "missing-prepared-runtime.bin", label: "failed runtime component upload" }]);
+}
+
+async function testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "uploaded",
+      originUrl: "/api/downloads/runtime-components/component_1",
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
+      fileName: "xray.exe",
+      storedFilePath: "component_1/xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      archiveEntryName: null,
+      expectedHash: "a".repeat(64),
+      enabled: true
+    }),
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "missing-replacement-runtime.bin",
+      storedFilePath: "component_1/xray-new.exe",
+      fileName: "xray-new.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw new Error("update should not be called");
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceAdminRuntimeComponentUpload(
+        "component_1",
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          expectedHash: "b".repeat(64)
+        },
+        {
+          path: "missing-replacement-upload-runtime.bin",
+          originalname: "xray-new.exe",
+          size: 1
+        }
+      ),
+    /expectedHash/,
+    "runtime replacement upload must reject files whose actual hash differs from expectedHash"
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "missing-replacement-runtime.bin", label: "failed runtime component replacement upload" }
+  ]);
 }
 
 async function testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails() {
@@ -9363,6 +9432,61 @@ async function testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash() {
     assert.equal(updates[0].data.fileSizeBytes, BigInt(zip.byteLength));
     assert.equal(updates[0].data.fileHash, entryHash);
     assert.equal(updates[0].data.expectedHash, entryHash);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
+async function testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup() {
+  const entry = Buffer.from("runtime-entry-binary");
+  const zip = createStoredZipWithSingleEntry("xray.exe", entry);
+  const entryHash = createHash("sha256").update(entry).digest("hex");
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const server = createServer((_request, response) => {
+    response.writeHead(200, {
+      "content-type": "application/zip",
+      "content-length": String(zip.byteLength)
+    });
+    response.end(zip);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const service = createRuntimeComponentsService({
+      removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+        cleanupCalls.push({ absolutePath, label });
+      },
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            id: "component_1",
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            source: "custom_remote",
+            originUrl: `http://127.0.0.1:${address.port}/xray.zip`,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "xray.exe",
+            archiveEntryName: "xray.exe",
+            storedFilePath: null,
+            fileSizeBytes: null,
+            fileHash: null,
+            expectedHash: entryHash,
+            enabled: true
+          }),
+          update: async (payload: Record<string, any>) => payload
+        }
+      }
+    });
+
+    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
+
+    assert.equal(result.status, "ready");
+    assert.equal(cleanupCalls.length, 1);
+    assert.equal(cleanupCalls[0].label, "temporary remote runtime archive");
+    assert.match(cleanupCalls[0].absolutePath ?? "", /chordv-runtime-component-/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -14120,12 +14244,14 @@ async function main() {
   await testRemoteRuntimeValidationRejectsPrivateNetworkUrl();
   await testRemoteRuntimeValidationRejectsMissingExpectedHash();
   await testRuntimeComponentUploadRejectsExpectedHashMismatch();
+  await testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup();
   await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
   await testRemoteRuntimeValidationPersistsDownloadMetadata();
   await testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash();
+  await testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup();
   await testRemoteRuntimeValidationRejectsOversizeExpectedHashResponse();
   await testRemoteRuntimeValidationRejectsIdleTimeoutExpectedHashResponse();
   await testRemoteRuntimeValidationRejectsTotalTimeoutExpectedHashResponse();

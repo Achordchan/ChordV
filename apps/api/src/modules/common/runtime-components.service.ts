@@ -172,11 +172,10 @@ export class RuntimeComponentsService {
       await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, created.id);
       return toAdminRuntimeComponentRecord(created);
     } catch (error) {
-      if (prepared) {
-        await removeRuntimeComponentFile(prepared.absolutePath);
-      } else {
-        await removeRuntimeComponentFile(file.path);
-      }
+      await this.removeRuntimeComponentFileBestEffort(
+        prepared ? prepared.absolutePath : file.path,
+        "failed runtime component upload"
+      );
       throw error;
     }
   }
@@ -303,11 +302,10 @@ export class RuntimeComponentsService {
       await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, updated.id);
       return toAdminRuntimeComponentRecord(updated);
     } catch (error) {
-      if (prepared) {
-        await removeRuntimeComponentFile(prepared.absolutePath);
-      } else {
-        await removeRuntimeComponentFile(file.path);
-      }
+      await this.removeRuntimeComponentFileBestEffort(
+        prepared ? prepared.absolutePath : file.path,
+        "failed runtime component replacement upload"
+      );
       throw error;
     }
   }
@@ -679,7 +677,7 @@ export class RuntimeComponentsService {
     } finally {
       clearTimeout(totalTimeout);
       if (archiveDownloadPath) {
-        await fs.rm(archiveDownloadPath, { force: true }).catch(() => undefined);
+        await this.removeRuntimeComponentFileBestEffort(archiveDownloadPath, "temporary remote runtime archive");
       }
     }
   }
