@@ -12232,7 +12232,7 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
   assert.equal(result.id, "release_1");
 }
 
-async function testUpdateWindowsExternalReleaseRejectsNonZipUrl() {
+async function testUpdateWindowsExternalReleaseKeepsSaveForNonZipUrl() {
   const artifact = makeReleaseCenterTestArtifact({
     id: "artifact_existing",
     source: "external",
@@ -12241,10 +12241,18 @@ async function testUpdateWindowsExternalReleaseRejectsNonZipUrl() {
     fileName: "ChordV-old.zip",
     downloadUrl: "https://example.com/ChordV-old.zip"
   });
+  const updates: Array<Record<string, any>> = [];
   const service = createReleaseCenterService({
     prisma: {
       releaseArtifact: {
-        findFirst: async () => artifact
+        findFirst: async () => artifact,
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...artifact,
+            ...payload.data
+          };
+        }
       },
       release: {
         findUnique: async () =>
@@ -12252,17 +12260,30 @@ async function testUpdateWindowsExternalReleaseRejectsNonZipUrl() {
             platform: "windows",
             artifacts: [artifact]
           })
-      }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...artifact,
+                ...payload.data
+              };
+            }
+          }
+        })
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.updateReleaseArtifact("release_1", "artifact_existing", {
-        downloadUrl: "https://example.com/ChordV-setup.exe"
-      }),
-    /Windows release packages must be \.zip files/
-  );
+  const result = await service.updateReleaseArtifact("release_1", "artifact_existing", {
+    downloadUrl: "https://example.com/ChordV-setup.exe"
+  });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.downloadUrl, "https://example.com/ChordV-setup.exe");
+  assert.equal(result.id, "release_1");
 }
 
 async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
@@ -12512,7 +12533,7 @@ async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   );
 }
 
-async function testPublishWindowsReleaseRequiresZipArtifact() {
+async function testPublishWindowsReleaseAllowsAnySavedArtifact() {
   const setupArtifact = makeReleaseCenterTestArtifact({
     source: "external",
     type: "setup.exe",
@@ -12534,14 +12555,12 @@ async function testPublishWindowsReleaseRequiresZipArtifact() {
     }
   });
 
-  await assert.rejects(
-    () => service["assertReleasePublishable"]("release_1"),
-    /Windows releases require a ZIP full replacement package/
-  );
+  await service["assertReleasePublishable"]("release_1");
 }
 
-async function testUploadWindowsReleaseRejectsNonZipFileName() {
+async function testUploadWindowsReleaseSavesNonZipFileName() {
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  let createdData: Record<string, any> | null = null;
   const service = createReleaseCenterService({
     prisma: {
       release: {
@@ -12549,7 +12568,30 @@ async function testUploadWindowsReleaseRejectsNonZipFileName() {
           makeReleaseCenterTestRelease({
             platform: "windows"
           })
-      }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async (payload: Record<string, any>) => {
+              createdData = payload.data;
+              return makeReleaseCenterTestArtifact({
+                id: payload.data.id,
+                releaseId: payload.data.releaseId,
+                source: payload.data.source,
+                type: payload.data.type,
+                deliveryMode: payload.data.deliveryMode,
+                downloadUrl: payload.data.downloadUrl,
+                fileName: payload.data.fileName,
+                storedFilePath: payload.data.storedFilePath,
+                fileSizeBytes: payload.data.fileSizeBytes,
+                fileHash: payload.data.fileHash,
+                isPrimary: payload.data.isPrimary,
+                isFullPackage: payload.data.isFullPackage
+              });
+            }
+          }
+        })
     },
     assertReleaseArtifactsMutable: () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
@@ -12565,25 +12607,22 @@ async function testUploadWindowsReleaseRejectsNonZipFileName() {
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.uploadReleaseArtifact(
-        "release_1",
-        {
-          type: "zip",
-          deliveryMode: "desktop_full_replace"
-        },
-        {
-          path: "windows-setup-upload.tmp",
-          originalname: "ChordV-setup.exe",
-          size: 123
-        }
-      ),
-    /Windows release packages must be \.zip files/
+  const result = await service.uploadReleaseArtifact(
+    "release_1",
+    {
+      type: "zip",
+      deliveryMode: "desktop_full_replace"
+    },
+    {
+      path: "windows-setup-upload.tmp",
+      originalname: "ChordV-setup.exe",
+      size: 123
+    }
   );
-  assert.deepEqual(cleanupCalls, [
-    { absolutePath: "prepared-windows-setup.exe", label: "failed release artifact upload" }
-  ]);
+
+  assert.equal(result.id, "release_1");
+  assert.equal(createdData?.fileName, "ChordV-setup.exe");
+  assert.deepEqual(cleanupCalls, []);
 }
 
 async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
@@ -15936,20 +15975,39 @@ async function testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionF
   assert.deepEqual(deletedUploads, ["support-tickets/orphan.png"]);
 }
 
-async function testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteReply() {
-  let transactionCalls = 0;
+async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
+  const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   let cleanupCalls = 0;
-  let detailCalls = 0;
   const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
     prisma: {
       supportTicket: {
         findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
       },
-      $transaction: async () => {
-        transactionCalls += 1;
-        throw new Error("transaction must not run after upload failure");
-      }
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "message", data });
+              return { id: data.id };
+            }
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "attachment", data });
+              return data;
+            }
+          },
+          supportTicket: {
+            update: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "ticket", data });
+              return data;
+            }
+          }
+        })
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
@@ -15965,8 +16023,51 @@ async function testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteRep
       }
     },
     getAdminSupportTicketDetail: async () => {
-      detailCalls += 1;
       return { id: "ticket_1" };
+    }
+  });
+
+  const result = await service.replyAdminSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "please see attachment" },
+    {
+      path: path.join(tmpdir(), "upload-failure.png"),
+      originalname: "upload-failure.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "admin_1"
+  );
+
+  assert.equal((result as { id: string }).id, "ticket_1");
+  const message = writes.find((item) => item.kind === "message")?.data;
+  assert.match(String(message?.body), /please see attachment/);
+  assert.match(String(message?.body), /附件上传失败/);
+  assert.equal(writes.some((item) => item.kind === "attachment"), false);
+  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_user");
+  assert.equal(publishCalls, 1, "admin ticket reply should still publish after text reply is saved");
+  assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
+}
+
+async function testAdminReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply() {
+  let transactionCalls = 0;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
+      },
+      $transaction: async () => {
+        transactionCalls += 1;
+        throw new Error("transaction must not run after upload failure");
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => {
+        throw new Error("image bed upload failed");
+      }
     }
   });
 
@@ -15974,7 +16075,7 @@ async function testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteRep
     () =>
       service.replyAdminSupportTicketWithAttachment(
         "ticket_1",
-        { body: "please see attachment" },
+        { body: "" },
         {
           path: path.join(tmpdir(), "upload-failure.png"),
           originalname: "upload-failure.png",
@@ -15986,10 +16087,7 @@ async function testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteRep
     /image bed upload failed/
   );
 
-  assert.equal(transactionCalls, 0, "admin ticket reply must not write DB rows when attachment upload fails");
-  assert.equal(publishCalls, 0, "admin ticket reply must not publish when attachment upload fails");
-  assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
-  assert.equal(detailCalls, 0, "admin ticket reply must not refresh detail when attachment upload fails");
+  assert.equal(transactionCalls, 0, "attachment-only admin reply must not write an empty DB message when upload fails");
 }
 
 async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
@@ -16644,12 +16742,105 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
   assert.deepEqual(deletedUploads, ["support-tickets/client-orphan.png"]);
 }
 
-async function testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteReply() {
-  let transactionCalls = 0;
+async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
+  const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   let cleanupCalls = 0;
-  let detailCalls = 0;
   const service = createClientTicketService({
+    logger: {
+      warn: () => undefined
+    },
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ({
+          id: "ticket_1",
+          title: "Need help",
+          status: "waiting_user",
+          subscriptionId: "sub_1",
+          teamId: null,
+          closedAt: null,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          team: null
+        })
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "message", data });
+              return { id: data.id };
+            }
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "attachment", data });
+              return data;
+            }
+          },
+          supportTicket: {
+            update: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "ticket", data });
+              return data;
+            }
+          },
+          supportTicketReadState: {
+            upsert: async ({ update }: { update: Record<string, unknown> }) => {
+              writes.push({ kind: "read", data: update });
+              return update;
+            }
+          }
+        })
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => {
+        throw new Error("image bed upload failed");
+      },
+      deleteUploadedSupportTicketAttachmentBestEffort: async () => {
+        cleanupCalls += 1;
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        publishCalls += 1;
+      }
+    },
+    getClientSupportTicketDetail: async () => {
+      return { id: "ticket_1" };
+    }
+  });
+
+  const result = await service.replyClientSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "please see attachment" },
+    {
+      path: path.join(tmpdir(), "client-upload-failure.png"),
+      originalname: "client-upload-failure.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "token"
+  );
+
+  assert.equal((result as { id: string }).id, "ticket_1");
+  const message = writes.find((item) => item.kind === "message")?.data;
+  assert.match(String(message?.body), /please see attachment/);
+  assert.match(String(message?.body), /Attachment upload failed/);
+  assert.equal(writes.some((item) => item.kind === "attachment"), false);
+  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_admin");
+  assert.equal(writes.some((item) => item.kind === "read"), true);
+  assert.equal(publishCalls, 1, "client ticket reply should still publish after text reply is saved");
+  assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
+}
+
+async function testClientReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply() {
+  let transactionCalls = 0;
+  const service = createClientTicketService({
+    logger: {
+      warn: () => undefined
+    },
     authSessionService: {
       authenticateAccessToken: async () => ({ id: "user_1" })
     },
@@ -16674,19 +16865,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteRe
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
         throw new Error("image bed upload failed");
-      },
-      deleteUploadedSupportTicketAttachmentBestEffort: async () => {
-        cleanupCalls += 1;
       }
-    },
-    clientRuntimeEventsService: {
-      publishToUser: () => {
-        publishCalls += 1;
-      }
-    },
-    getClientSupportTicketDetail: async () => {
-      detailCalls += 1;
-      return { id: "ticket_1" };
     }
   });
 
@@ -16694,7 +16873,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteRe
     () =>
       service.replyClientSupportTicketWithAttachment(
         "ticket_1",
-        { body: "please see attachment" },
+        { body: "" },
         {
           path: path.join(tmpdir(), "client-upload-failure.png"),
           originalname: "client-upload-failure.png",
@@ -16706,10 +16885,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteRe
     /image bed upload failed/
   );
 
-  assert.equal(transactionCalls, 0, "client ticket reply must not write DB rows when attachment upload fails");
-  assert.equal(publishCalls, 0, "client ticket reply must not publish when attachment upload fails");
-  assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
-  assert.equal(detailCalls, 0, "client ticket reply must not refresh detail when attachment upload fails");
+  assert.equal(transactionCalls, 0, "attachment-only client reply must not write an empty DB message when upload fails");
 }
 
 async function main() {
@@ -16911,14 +17087,14 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
-  await testUpdateWindowsExternalReleaseRejectsNonZipUrl();
+  await testUpdateWindowsExternalReleaseKeepsSaveForNonZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
-  await testPublishWindowsReleaseRequiresZipArtifact();
-  await testUploadWindowsReleaseRejectsNonZipFileName();
+  await testPublishWindowsReleaseAllowsAnySavedArtifact();
+  await testUploadWindowsReleaseSavesNonZipFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
@@ -16992,7 +17168,8 @@ async function main() {
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
-  await testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteReply();
+  await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
+  await testAdminReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
@@ -17003,7 +17180,8 @@ async function main() {
   await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
-  await testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteReply();
+  await testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply();
+  await testClientReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");

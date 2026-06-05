@@ -620,11 +620,27 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("当前工单已关闭，请先重新打开。");
     }
 
-    const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
+    let uploaded = null as Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null;
+    let attachmentUploadError: string | null = null;
+    if (file) {
+      try {
+        uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
+      } catch (error) {
+        attachmentUploadError = readPanelSyncErrorMessage(error);
+        this.logger.warn(`Admin ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
+        if (!body) {
+          throw error;
+        }
+      }
+    }
     const now = new Date();
     const messageId = createId("ticket_msg");
     const attachmentId = uploaded ? createId("ticket_att") : null;
-    const messageBody = body || (uploaded ? `上传了附件：${uploaded.fileName}` : "");
+    const messageBody = buildSupportTicketAttachmentReplyBody(
+      body,
+      uploaded ? `上传了附件：${uploaded.fileName}` : "",
+      attachmentUploadError
+    );
     try {
       await this.prisma.$transaction(async (tx) => {
         const message = await tx.supportTicketMessage.create({
@@ -1992,6 +2008,14 @@ function shouldAutoBootstrapDevData() {
 
 function readPanelSyncErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : "3x-ui 客户端预同步失败";
+}
+
+function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
+  const baseBody = body || attachmentFallbackBody;
+  if (!attachmentUploadError) {
+    return baseBody;
+  }
+  return `${baseBody}\n\n附件上传失败，已先保存文字回复：${attachmentUploadError}`;
 }
 
 function isClientVisibleAdminAnnouncement(item: AdminAnnouncementRecordDto) {

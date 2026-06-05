@@ -359,11 +359,27 @@ export class ClientTicketService {
       throw new BadRequestException("当前工单已关闭，请等待管理员重新打开。");
     }
 
-    const uploaded = file ? await this.imageBedService.uploadSupportTicketAttachment(file) : null;
+    let uploaded = null as Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null;
+    let attachmentUploadError: string | null = null;
+    if (file) {
+      try {
+        uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
+      } catch (error) {
+        attachmentUploadError = readErrorMessage(error);
+        this.logger.warn(`Client ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
+        if (!body) {
+          throw error;
+        }
+      }
+    }
     const now = new Date();
     const messageId = createId("ticket_msg");
     const attachmentId = uploaded ? createId("ticket_att") : null;
-    const safeMessageBody = body || (uploaded ? `Uploaded attachment: ${uploaded.fileName}` : "");
+    const safeMessageBody = buildSupportTicketAttachmentReplyBody(
+      body,
+      uploaded ? `Uploaded attachment: ${uploaded.fileName}` : "",
+      attachmentUploadError
+    );
     try {
       await this.prisma.$transaction(async (tx) => {
         const message = await tx.supportTicketMessage.create({
@@ -677,4 +693,12 @@ export class ClientTicketService {
 
 function readErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : "unknown error";
+}
+
+function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
+  const baseBody = body || attachmentFallbackBody;
+  if (!attachmentUploadError) {
+    return baseBody;
+  }
+  return `${baseBody}\n\nAttachment upload failed; text reply was saved first: ${attachmentUploadError}`;
 }

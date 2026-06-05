@@ -45,7 +45,23 @@ async function bootstrap() {
 
   const port = Number(process.env.CHORDV_API_PORT ?? 3000);
   await app.listen(port);
+  configureHttpServerTimeouts(app.getHttpServer());
   console.log(`ChordV API listening on http://localhost:${port}/api`);
+}
+
+function configureHttpServerTimeouts(server: {
+  requestTimeout?: number;
+  headersTimeout?: number;
+  keepAliveTimeout?: number;
+}) {
+  const requestTimeoutMs = readPositiveIntegerEnv("CHORDV_API_REQUEST_TIMEOUT_MS", 11 * 60 * 1000);
+  server.requestTimeout = requestTimeoutMs;
+  server.headersTimeout = Math.min(requestTimeoutMs, Math.max(server.headersTimeout ?? 0, 60 * 1000));
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 bootstrap();

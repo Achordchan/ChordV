@@ -662,7 +662,9 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminRe
 }
 
 function fileNameMatchesPlatform(platform: AdminReleasePlatform, fileName: string) {
-  return fileName.trim().toLowerCase().endsWith(expectedArtifactExtension(platform));
+  void platform;
+  void fileName;
+  return true;
 }
 
 function expectedArtifactExtension(platform: AdminReleasePlatform) {
