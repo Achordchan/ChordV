@@ -26,6 +26,7 @@ import {
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
 const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
+const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 
@@ -124,7 +125,7 @@ export class AdminNodeService {
     const updated = await this.prisma.panelSyncJob.updateMany({
       where: {
         id: jobId,
-        status: { in: ["pending", "running", "failed"] }
+        status: { in: ["pending", "failed"] }
       },
       data: {
         status: "pending",
@@ -144,7 +145,7 @@ export class AdminNodeService {
     const updated = await this.prisma.panelSyncJob.updateMany({
       where: {
         nodeId,
-        status: { in: ["pending", "running", "failed"] }
+        status: { in: ["pending", "failed"] }
       },
       data: {
         status: "pending",
@@ -317,19 +318,60 @@ export class AdminNodeService {
     panelUsername: string;
     panelPassword: string;
   }): Promise<AdminNodePanelInboundDto[]> {
-    const inbounds = await this.xuiService.listInbounds({
-      id: createId("panel"),
-      panelBaseUrl: input.panelBaseUrl,
-      panelApiBasePath: input.panelApiBasePath ?? "/",
-      panelUsername: input.panelUsername,
-      panelPassword: input.panelPassword,
-      panelInboundId: null
-    }, {
-      forceRelogin: true,
-      strictCredentialCheck: true
-    });
+    const inbounds = await this.readNodePanelInboundsWithBudget(
+      this.xuiService.listInbounds({
+        id: createId("panel"),
+        panelBaseUrl: input.panelBaseUrl,
+        panelApiBasePath: input.panelApiBasePath ?? "/",
+        panelUsername: input.panelUsername,
+        panelPassword: input.panelPassword,
+        panelInboundId: null
+      }, {
+        forceRelogin: true,
+        strictCredentialCheck: true
+      })
+    );
 
     return inbounds;
+  }
+
+  private async readNodePanelInboundsWithBudget(runtimeTask: Promise<AdminNodePanelInboundDto[]>) {
+    let settled = false;
+    const guardedTask = runtimeTask.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(`Delayed 3x-ui inbound list read failed: ${readAdminNodeErrorMessage(error)}`);
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        reject(
+          new BadRequestException(
+            `3x-ui inbound list read timed out after ${readListNodePanelInboundsBudgetMs()}ms; panel may be offline or too slow`
+          )
+        );
+      }, readListNodePanelInboundsBudgetMs());
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private async probeNodeAfterLocalImport(row: Parameters<typeof toAdminNodeRecord>[0]) {
@@ -1166,6 +1208,10 @@ function readBulkNodeProbeBudgetMs() {
 
 function readImportNodeRuntimeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_IMPORT_NODE_RUNTIME_READ_TIMEOUT_MS", DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS);
+}
+
+function readListNodePanelInboundsBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_LIST_NODE_PANEL_INBOUNDS_TIMEOUT_MS", DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS);
 }
 
 function readBulkNodeProbeConcurrency() {

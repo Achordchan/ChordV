@@ -11,6 +11,7 @@ type ArtifactEditorModalProps = {
   submitLabel: string;
   platform: AdminReleasePlatform;
   form: ArtifactEditorFormState;
+  uploadMaxBytes: number;
   uploadFileRequired: boolean;
   onClose: () => void;
   onChange: (value: ArtifactEditorFormState) => void;
@@ -90,6 +91,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         ) : (
           <>
             <FileInput
+              description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传可能需要数分钟，请等待按钮完成。`}
               label="安装包文件"
               placeholder="选择安装包文件"
               value={props.form.selectedFile}
@@ -129,4 +131,14 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): Artifac
     return "ipa";
   }
   return "dmg";
+}
+
+function formatUploadBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "")} GB`;
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
+  }
+  return `${value} B`;
 }

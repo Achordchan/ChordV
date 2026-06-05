@@ -61,6 +61,7 @@ const statusFilterOptions = [
 
 const RELEASE_VERSION_PATTERN =
   /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const ADMIN_RELEASE_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 function showReleaseRequestFailure(reason: unknown, fallback: string) {
   const message = readError(reason, fallback);
@@ -91,6 +92,8 @@ export function ReleasesPage() {
   const [runtimeComponents, setRuntimeComponents] = useState<AdminRuntimeComponentRecordDto[]>([]);
   const [runtimeFailures, setRuntimeFailures] = useState<AdminRuntimeComponentFailureReportDto[]>([]);
   const [runtimeValidation, setRuntimeValidation] = useState<Record<string, AdminRuntimeComponentValidationDto>>({});
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadReleases();
@@ -141,10 +144,15 @@ export function ReleasesPage() {
 
   async function loadRuntimeComponents() {
     try {
+      setRuntimeLoading(true);
+      setRuntimeError(null);
       const [components, failures] = await Promise.all([fetchAdminRuntimeComponents(), fetchAdminRuntimeComponentFailures()]);
       setRuntimeComponents(components);
       setRuntimeFailures(failures);
+      setRuntimeLoading(false);
     } catch (reason) {
+      setRuntimeError(readError(reason, "加载内核组件失败"));
+      setRuntimeLoading(false);
       notifications.show({
         color: "red",
         title: "内核组件",
@@ -362,6 +370,9 @@ export function ReleasesPage() {
     }
     if (isUploadFileRequired()) {
       return "切换为上传产物时，请先选择要上传的安装包文件。";
+    }
+    if (artifactForm.selectedFile && artifactForm.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
+      return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
     }
     return null;
   }
@@ -678,7 +689,8 @@ export function ReleasesPage() {
               components={runtimeComponents}
               failures={runtimeFailures}
               validations={runtimeValidation}
-              loading={loading}
+              loading={runtimeLoading}
+              error={runtimeError}
               saving={saving}
               onRefresh={loadRuntimeComponents}
               onComponentsChange={setRuntimeComponents}
@@ -728,6 +740,7 @@ export function ReleasesPage() {
               : "保存产物"
         }
         form={artifactForm}
+        uploadMaxBytes={ADMIN_RELEASE_MAX_UPLOAD_BYTES}
         uploadFileRequired={isUploadFileRequired()}
         onClose={closeArtifactEditor}
         onChange={setArtifactForm}
@@ -801,6 +814,16 @@ function normalizeVersionParts(version: string) {
     .split(/[.-]/)
     .map((item) => Number.parseInt(item, 10))
     .map((item) => (Number.isFinite(item) ? item : 0));
+}
+
+function formatUploadBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "")} GB`;
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
+  }
+  return `${value} B`;
 }
 
 function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminReleaseArtifactRecordDto["type"] {

@@ -12,13 +12,14 @@ type RuntimeComponentEditorModalProps = {
   editing: boolean;
   saving: boolean;
   value: RuntimeComponentEditorFormState;
+  uploadMaxBytes: number;
   onChange: (next: RuntimeComponentEditorFormState) => void;
   onClose: () => void;
   onSubmit: () => void;
 };
 
 export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalProps) {
-  const { opened, editing, saving, value, onChange, onClose, onSubmit } = props;
+  const { opened, editing, saving, value, uploadMaxBytes, onChange, onClose, onSubmit } = props;
   const usesUploadedSource = value.source === "uploaded";
   const supportsLegacyRemote = value.source === "github_remote";
   const isRuleset = value.kind === "geoip" || value.kind === "geosite";
@@ -98,6 +99,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
         {usesUploadedSource ? (
           <>
             <FileInput
+              description={`单文件最大 ${formatUploadBytes(uploadMaxBytes)}。大文件上传可能需要数分钟，请等待按钮完成。`}
               label="组件文件"
               placeholder="选择要上传的文件"
               value={value.selectedFile}
@@ -184,4 +186,14 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
       </Stack>
     </Modal>
   );
+}
+
+function formatUploadBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "")} GB`;
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
+  }
+  return `${value} B`;
 }

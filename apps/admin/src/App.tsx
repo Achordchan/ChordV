@@ -327,6 +327,7 @@ export function App() {
   } | null>(null);
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
+  const [panelSyncRetryBusyKey, setPanelSyncRetryBusyKey] = useState<string | null>(null);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -777,7 +778,12 @@ export function App() {
   }
 
   async function handleRetryPanelSyncJob(jobId: string) {
+    const busyKey = `job:${jobId}`;
+    if (panelSyncRetryBusyKey === busyKey) {
+      return;
+    }
     try {
+      setPanelSyncRetryBusyKey(busyKey);
       const panelSyncJobs = await retryAdminPanelSyncJob(jobId);
       mergeSnapshot({ panelSyncJobs });
       refreshAdminNodesAfterPanelSyncRetry();
@@ -794,11 +800,18 @@ export function App() {
         title: retryUncertain ? "重试状态不确定" : "重试失败",
         message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
       });
+    } finally {
+      setPanelSyncRetryBusyKey(null);
     }
   }
 
   async function handleRetryNodePanelSyncJobs(nodeId: string) {
+    const busyKey = `node:${nodeId}`;
+    if (panelSyncRetryBusyKey === busyKey) {
+      return;
+    }
     try {
+      setPanelSyncRetryBusyKey(busyKey);
       const panelSyncJobs = await retryAdminPanelSyncJobsForNode(nodeId);
       mergeSnapshot({ panelSyncJobs });
       refreshAdminNodesAfterPanelSyncRetry();
@@ -815,6 +828,8 @@ export function App() {
         title: retryUncertain ? "重试状态不确定" : "重试失败",
         message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
       });
+    } finally {
+      setPanelSyncRetryBusyKey(null);
     }
   }
 
@@ -2266,6 +2281,7 @@ export function App() {
                 nodes={nodes}
                 panelSyncJobs={snapshot.panelSyncJobs}
                 panelSyncQueueOpened={panelSyncQueueOpened}
+                panelSyncRetryBusyKey={panelSyncRetryBusyKey}
                 probingNodeId={probingNodeId}
                 onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
                 onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}

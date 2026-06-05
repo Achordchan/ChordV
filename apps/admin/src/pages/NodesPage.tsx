@@ -15,6 +15,7 @@ type NodesPageProps = {
   nodes: AdminNodeRecordDto[];
   panelSyncJobs: AdminPanelSyncJobDto[];
   panelSyncQueueOpened: boolean;
+  panelSyncRetryBusyKey: string | null;
   probingNodeId: string | null;
   onOpenPanelSyncQueue: () => void;
   onClosePanelSyncQueue: () => void;
@@ -103,7 +104,13 @@ export function NodesPage(props: NodesPageProps) {
                             {item.panelSyncLastError}
                           </Text>
                         ) : null}
-                        <Button size="xs" variant="light" onClick={() => props.onRetryNodePanelSyncJobs(item.id)}>
+                        <Button
+                          size="xs"
+                          variant="light"
+                          loading={props.panelSyncRetryBusyKey === `node:${item.id}`}
+                          disabled={props.panelSyncRetryBusyKey !== null && props.panelSyncRetryBusyKey !== `node:${item.id}`}
+                          onClick={() => props.onRetryNodePanelSyncJobs(item.id)}
+                        >
                           重试节点
                         </Button>
                       </Stack>
@@ -157,6 +164,7 @@ export function NodesPage(props: NodesPageProps) {
       <PanelSyncQueueDrawer
         opened={props.panelSyncQueueOpened}
         jobs={props.panelSyncJobs}
+        retryBusyKey={props.panelSyncRetryBusyKey}
         onClose={props.onClosePanelSyncQueue}
         onRetryJob={props.onRetryPanelSyncJob}
         onRetryNode={props.onRetryNodePanelSyncJobs}
@@ -168,6 +176,7 @@ export function NodesPage(props: NodesPageProps) {
 function PanelSyncQueueDrawer(props: {
   opened: boolean;
   jobs: AdminPanelSyncJobDto[];
+  retryBusyKey: string | null;
   onClose: () => void;
   onRetryJob: (jobId: string) => void;
   onRetryNode: (nodeId: string) => void;
@@ -216,10 +225,22 @@ function PanelSyncQueueDrawer(props: {
                 </Table.Td>
                 <Table.Td>
                   <Group gap="xs" wrap="nowrap">
-                    <Button size="xs" variant="light" onClick={() => props.onRetryJob(job.id)}>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      loading={props.retryBusyKey === `job:${job.id}`}
+                      disabled={props.retryBusyKey !== null && props.retryBusyKey !== `job:${job.id}`}
+                      onClick={() => props.onRetryJob(job.id)}
+                    >
                       重试
                     </Button>
-                    <Button size="xs" variant="subtle" onClick={() => props.onRetryNode(job.nodeId)}>
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      loading={props.retryBusyKey === `node:${job.nodeId}`}
+                      disabled={props.retryBusyKey !== null && props.retryBusyKey !== `node:${job.nodeId}`}
+                      onClick={() => props.onRetryNode(job.nodeId)}
+                    >
                       重试节点
                     </Button>
                   </Group>

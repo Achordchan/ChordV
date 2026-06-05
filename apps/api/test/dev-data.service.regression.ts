@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { ConflictException, type ExecutionContext } from "@nestjs/common";
+import { ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
 import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
@@ -1691,6 +1691,58 @@ async function testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank() {
 
   assert.equal(createdPayloads.length, 1);
   assert.equal(createdPayloads[0].data.displayTitle, "1.1.6");
+  assert.equal(result.displayTitle, "1.1.6");
+}
+
+async function testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => ({
+          id: "release_1",
+          platform: "windows",
+          channel: "stable",
+          version: "1.1.6",
+          displayTitle: "ChordV 1.1.6",
+          changelog: [],
+          minimumVersion: "1.1.0",
+          forceUpgrade: false,
+          status: "draft",
+          publishedAt: null,
+          createdAt: now,
+          updatedAt: now,
+          artifacts: []
+        }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "release_1",
+            platform: "windows",
+            channel: "stable",
+            version: "1.1.6",
+            displayTitle: payload.data.displayTitle,
+            changelog: [],
+            minimumVersion: "1.1.0",
+            forceUpgrade: false,
+            status: "draft",
+            publishedAt: null,
+            createdAt: now,
+            updatedAt: now,
+            artifacts: []
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.updateRelease("release_1", {
+    displayTitle: "   "
+  });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.displayTitle, "1.1.6");
   assert.equal(result.displayTitle, "1.1.6");
 }
 
@@ -5382,6 +5434,30 @@ async function testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync() {
   assert.equal(updates[0]?.data.lockedAt, null);
   assert.equal(updates[0]?.data.lastError, null);
   assert.deepEqual(result.map((job) => job.id), ["job_1"]);
+}
+
+async function testRetryPanelSyncJobDoesNotUnlockRunningJob() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminNodeService({
+    prisma: {
+      panelSyncJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 0 };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.retryPanelSyncJob("job_running"),
+    (error) => error instanceof NotFoundException,
+    "running panel sync jobs must not be unlocked by manual retry"
+  );
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0]?.where.status, { in: ["pending", "failed"] });
+  assert.equal(updates[0]?.data.lockedAt, null, "retry payload may clear locks only for non-running jobs matched by status");
 }
 
 async function testXuiPanelLocationDoesNotDuplicateBasePath() {
@@ -9311,6 +9387,45 @@ async function testListNodePanelInboundsPropagatesOfflinePanelError() {
   );
 }
 
+async function testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout() {
+  const previousTimeout = process.env.CHORDV_LIST_NODE_PANEL_INBOUNDS_TIMEOUT_MS;
+  process.env.CHORDV_LIST_NODE_PANEL_INBOUNDS_TIMEOUT_MS = "25";
+  let listStarted = false;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      listInbounds: async () => {
+        listStarted = true;
+        return new Promise<any>(() => undefined);
+      }
+    }
+  });
+
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      () =>
+        service.listNodePanelInbounds({
+          panelBaseUrl: "https://panel.example.com",
+          panelApiBasePath: "/",
+          panelUsername: "admin",
+          panelPassword: "password"
+        }),
+      /inbound list read timed out/
+    );
+    assert.equal(listStarted, true, "3x-ui inbound list read should still be attempted");
+    assert.equal(Date.now() - startedAt < 1000, true, "inbound list should fail on the admin budget instead of the xui default timeout");
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_LIST_NODE_PANEL_INBOUNDS_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_LIST_NODE_PANEL_INBOUNDS_TIMEOUT_MS = previousTimeout;
+    }
+  }
+}
+
 async function testImportNodeFromOfflinePanelFailsBeforeLocalSave() {
   let upsertCalled = false;
   const service = createAdminNodeService({
@@ -12608,6 +12723,11 @@ function testAdminPatchDtosRejectNullForNonNullableFields() {
   assertDtoRejectsFieldNull(UpdatePolicyDto, "blockAds");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "chinaDirect");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "aiServicesProxy");
+}
+
+function testUpdateReleaseDtoAllowsBlankDisplayTitle() {
+  const errors = validateSync(plainToInstance(UpdateReleaseDto, { displayTitle: "" }));
+  assert.equal(errors.length, 0, "blank displayTitle should be accepted and normalized to the version by the release service");
 }
 
 async function testUpdateUserSecurityReconcilesActiveLeases() {
@@ -16134,6 +16254,7 @@ async function main() {
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
+  await testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow();
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
@@ -16189,6 +16310,7 @@ async function main() {
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
+  await testRetryPanelSyncJobDoesNotUnlockRunningJob();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
   await testXuiPanelLocationAcceptsFullUrlAsApiBasePath();
@@ -16199,6 +16321,7 @@ async function main() {
   await testXuiInboundRuntimeReadsPqvAlias();
   await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
   await testListNodePanelInboundsPropagatesOfflinePanelError();
+  await testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout();
   await testImportNodeFromOfflinePanelFailsBeforeLocalSave();
   await testImportNodeFromSlowPanelFailsBeforeLocalSave();
   await testRefreshNodeOfflinePanelKeepsLocalRuntime();
@@ -16310,6 +16433,7 @@ async function main() {
   await testCreateTeamMemberRejectsOwnerRole();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   testAdminPatchDtosRejectNullForNonNullableFields();
+  testUpdateReleaseDtoAllowsBlankDisplayTitle();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedUploadRejectsSuccessFalsePayload();
   await testImageBedDeleteReturnsStructuredBusinessFailure();

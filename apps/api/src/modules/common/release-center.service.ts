@@ -162,7 +162,7 @@ export class ReleaseCenterService {
     assertMinimumVersionNotAboveRelease(current.version, nextMinimumVersion);
 
     const baseData = {
-      ...(input.displayTitle !== undefined ? { displayTitle: input.displayTitle.trim() } : {}),
+      ...(input.displayTitle !== undefined ? { displayTitle: input.displayTitle.trim() || current.version } : {}),
       ...(input.changelog !== undefined ? { changelog: normalizeChangelog(input.changelog) } : {}),
       ...(input.minimumVersion !== undefined ? { minimumVersion: nextMinimumVersion } : {}),
       ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),

@@ -41,6 +41,8 @@ import {
   type RuntimeComponentEditorFormState
 } from "./types";
 
+const ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+
 function showRuntimeComponentFailure(reason: unknown, fallback: string, options?: { uncertainMessage?: (message: string) => string }) {
   const message = readError(reason, fallback);
   const uncertain = isUncertainRequestFailure(message);
@@ -58,6 +60,7 @@ type RuntimeComponentsPanelProps = {
   failures: AdminRuntimeComponentFailureReportDto[];
   validations: Record<string, AdminRuntimeComponentValidationDto>;
   loading: boolean;
+  error: string | null;
   saving: boolean;
   onRefresh: () => Promise<void>;
   onComponentsChange: (next: AdminRuntimeComponentRecordDto[]) => void;
@@ -72,6 +75,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     failures,
     validations,
     loading,
+    error,
     saving,
     onRefresh,
     onComponentsChange,
@@ -133,8 +137,14 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           if (!form.selectedFile) {
             throw new Error("请先选择要上传的组件文件");
           }
+          if (form.selectedFile.size > ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES) {
+            throw new Error(`内核组件文件不能超过 ${formatBytes(String(ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES))}。`);
+          }
           record = await uploadAdminRuntimeComponent(uploadPayload, form.selectedFile);
         } else if (form.selectedFile) {
+          if (form.selectedFile.size > ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES) {
+            throw new Error(`内核组件文件不能超过 ${formatBytes(String(ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES))}。`);
+          }
           record = await replaceAdminRuntimeComponentUpload(editingId, uploadPayload, form.selectedFile);
         } else {
           if (!currentRecord || currentRecord.source !== "uploaded") {
@@ -245,6 +255,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         editing={Boolean(editingId)}
         saving={saving}
         value={form}
+        uploadMaxBytes={ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES}
         onChange={setForm}
         onClose={closeEditor}
         onSubmit={() => void saveComponent()}
@@ -284,6 +295,18 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           <Alert color="blue" variant="light">
             安装包更新走“应用版本发布”。这里专门管理 `Xray / GeoIP / GeoSite` 组件，优先推荐直接上传到你自己的服务器，只有特殊情况才使用远程直链。
           </Alert>
+
+          {error ? (
+            <Alert color="red" variant="light">
+              {error}
+            </Alert>
+          ) : null}
+
+          {loading ? (
+            <Alert color="blue" variant="light">
+              正在加载内核组件，请稍候。
+            </Alert>
+          ) : null}
 
           <RuntimeComponentSection
             title="内核主体"

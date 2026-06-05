@@ -761,7 +761,6 @@ export class CreateReleaseDto {
 export class UpdateReleaseDto {
   @ValidateIf((_object, value) => value !== undefined)
   @IsString()
-  @IsNotEmpty()
   displayTitle?: string;
 
   @ValidateIf((_object, value) => value !== undefined)
