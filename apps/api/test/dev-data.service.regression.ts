@@ -3781,6 +3781,87 @@ async function testRenewSubscriptionReturnsWhenSubscriptionPublishStalls() {
   assert.equal(record.remainingTrafficGb, 16);
 }
 
+async function testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_old",
+    totalTrafficGb: 100,
+    usedTrafficGb: 4,
+    remainingTrafficGb: 96,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Old Team", maxConcurrentSessions: 3 },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+  const nextPlan = {
+    id: "plan_new",
+    name: "New Team",
+    scope: "team",
+    totalTrafficGb: 200,
+    renewable: true,
+    maxConcurrentSessions: 5,
+    isActive: true
+  };
+  let publishLookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => current,
+    ensurePlanExists: async () => nextPlan,
+    enforceSubscriptionConcurrentLeaseLimits: async () => ({ ok: true }),
+    syncActiveLeasesForSubscriptionBestEffort: async () => ({ ok: true }),
+    syncSubscriptionPanelAccessBestEffort: async () => ({ ok: true }),
+    clientRuntimeEventsService: {
+      publishToUsers: () => undefined
+    },
+    prisma: {
+      teamMember: {
+        findMany: async () => {
+          publishLookupStarted = true;
+          return new Promise<Array<{ userId: string }>>(() => undefined);
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                planId: nextPlan.id,
+                plan: nextPlan,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await Promise.race([
+    service.changeSubscriptionPlan("sub_team", { planId: "plan_new" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("change plan waited for stalled subscription_updated publish")), 750);
+    })
+  ]);
+
+  assert.equal(publishLookupStarted, true);
+  assert.equal(updates.length, 1, "local plan change must save before stalled publish finishes");
+  assert.equal(result.planId, "plan_new");
+  assert.equal(result.totalTrafficGb, 200);
+}
+
 async function testResetSubscriptionTrafficRejectsNonStringUserId() {
   const service = createAdminSubscriptionService({
     requireSubscription: async () => ({
@@ -3949,6 +4030,68 @@ async function testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls()
   assert.equal(result.user, null);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /still running in background/);
+}
+
+async function testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls() {
+  const lockedSubscription = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 0,
+    remainingTrafficGb: 100,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Team Plan" },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+  let resetCalled = false;
+  let publishLookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => lockedSubscription,
+    resetSubscriptionTrafficCounters: async () => {
+      resetCalled = true;
+      return {
+        subscription: lockedSubscription,
+        targetUserId: null,
+        clearedBindingCount: 0,
+        panelSync: { ok: true }
+      };
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: () => undefined
+    },
+    prisma: {
+      teamMember: {
+        findMany: async () => {
+          publishLookupStarted = true;
+          return new Promise<Array<{ userId: string }>>(() => undefined);
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.resetSubscriptionTraffic("sub_team"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("reset traffic waited for stalled subscription_updated publish")), 750);
+    })
+  ]);
+
+  assert.equal(resetCalled, true, "local traffic reset must complete before stalled publish finishes");
+  assert.equal(publishLookupStarted, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.subscriptionId, "sub_team");
+  assert.equal(result.subscription.usedTrafficGb, 0);
 }
 
 async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines() {
@@ -11478,6 +11621,74 @@ async function testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsA
   assert.equal(result.maxConcurrentSessions, 1);
 }
 
+async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 4,
+    remainingTrafficGb: 96,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Team Plan", maxConcurrentSessions: 3 },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+  let publishLookupStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => current,
+    syncActiveLeasesForSubscriptionBestEffort: async () => ({ ok: true }),
+    syncSubscriptionPanelAccessBestEffort: async () => ({ ok: true }),
+    clientRuntimeEventsService: {
+      publishToUsers: () => undefined
+    },
+    prisma: {
+      teamMember: {
+        findMany: async () => {
+          publishLookupStarted = true;
+          return new Promise<Array<{ userId: string }>>(() => undefined);
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateSubscription("sub_team", { totalTrafficGb: 120 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("update subscription waited for stalled subscription_updated publish")), 750);
+    })
+  ]);
+
+  assert.equal(publishLookupStarted, true);
+  assert.equal(updates.length, 1, "local subscription update must save before stalled publish finishes");
+  assert.equal(result.totalTrafficGb, 120);
+  assert.equal(result.remainingTrafficGb, 116);
+}
+
 async function testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails() {
   const updates: Array<Record<string, any>> = [];
   const disableQueueCalls: Array<{ subscriptionId: string; filter?: { userId?: string; nodeIds?: string[] } }> = [];
@@ -14626,9 +14837,11 @@ async function main() {
   await testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail();
   await testRenewSubscriptionReturnsPendingWhenPanelSyncStalls();
   await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
+  await testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail();
   await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
+  await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
@@ -14761,6 +14974,7 @@ async function main() {
   await testUpdatePlanReconcilesConcurrencyWhenLimitChanges();
   await testUpdatePlanReturnsWhenConcurrencyReconciliationStallsAfterSave();
   await testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave();
+  await testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
