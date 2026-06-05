@@ -10329,6 +10329,108 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   assert.equal(result.artifacts[0]?.id, "artifact_created");
 }
 
+async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
+  const release = makeReleaseCenterTestRelease();
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => release,
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => ({
+      absolutePath: "missing-prepared-release.exe",
+      storedFilePath: "release_1/artifact_1/ChordV-setup.exe",
+      fileName: "ChordV-setup.exe",
+      fileSizeBytes: 123n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/releases/artifact_1"
+    }),
+    cleanupFailedReleaseArtifactUpload: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    },
+    prisma: {
+      $transaction: async () => {
+        throw new Error("release artifact create failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadReleaseArtifact(
+        "release_1",
+        {
+          type: "setup.exe",
+          deliveryMode: "desktop_installer_download",
+          isPrimary: true
+        },
+        {
+          path: "missing-upload-release.exe",
+          originalname: "ChordV-setup.exe",
+          size: 123
+        }
+      ),
+    /release artifact create failed/
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "missing-prepared-release.exe", label: "failed release artifact upload" }
+  ]);
+}
+
+async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
+  const release = makeReleaseCenterTestRelease();
+  const artifact = makeReleaseCenterTestArtifact({
+    id: "artifact_1",
+    type: "setup.exe",
+    deliveryMode: "installer",
+    storedFilePath: "release_1/artifact_1/old.exe"
+  });
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => release,
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => ({
+      absolutePath: "missing-prepared-replacement-release.exe",
+      storedFilePath: "release_1/artifact_1/ChordV-setup-new.exe",
+      fileName: "ChordV-setup-new.exe",
+      fileSizeBytes: 123n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/releases/artifact_1"
+    }),
+    cleanupFailedReleaseArtifactUpload: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    },
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => artifact
+      },
+      $transaction: async () => {
+        throw new Error("release artifact update failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceReleaseArtifactUpload(
+        "release_1",
+        "artifact_1",
+        {
+          type: "setup.exe",
+          deliveryMode: "desktop_installer_download",
+          isPrimary: true
+        },
+        {
+          path: "missing-upload-replacement-release.exe",
+          originalname: "ChordV-setup-new.exe",
+          size: 123
+        }
+      ),
+    /release artifact update failed/
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "missing-prepared-replacement-release.exe", label: "failed release artifact replacement upload" }
+  ]);
+}
+
 async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
   const artifact = makeReleaseCenterTestArtifact({
     source: "uploaded",
@@ -14265,6 +14367,8 @@ async function main() {
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
+  await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
+  await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testExternalReleaseDownloadCleanupReturnsWhenCleanupStalls();

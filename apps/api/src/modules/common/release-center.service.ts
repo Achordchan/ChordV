@@ -570,11 +570,7 @@ export class ReleaseCenterService {
       const fallback = this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(createdArtifact)]);
       return this.getAdminReleaseBestEffort(releaseId, fallback, "upload release artifact response refresh");
     } catch (error) {
-      if (prepared) {
-        await removeReleaseArtifactFile(prepared.absolutePath);
-      } else {
-        await removeReleaseArtifactFile(file.path);
-      }
+      await this.cleanupFailedReleaseArtifactUpload(prepared ? prepared.absolutePath : file.path, "failed release artifact upload");
       throw error;
     }
   }
@@ -644,11 +640,10 @@ export class ReleaseCenterService {
       }
       return this.getAdminReleaseBestEffort(releaseId, fallback, "replace release artifact response refresh");
     } catch (error) {
-      if (prepared) {
-        await removeReleaseArtifactFile(prepared.absolutePath);
-      } else {
-        await removeReleaseArtifactFile(file.path);
-      }
+      await this.cleanupFailedReleaseArtifactUpload(
+        prepared ? prepared.absolutePath : file.path,
+        "failed release artifact replacement upload"
+      );
       throw error;
     }
   }
@@ -1399,6 +1394,12 @@ export class ReleaseCenterService {
     downloaded: Awaited<ReturnType<typeof downloadExternalReleaseArtifactFileStrict>>
   ) {
     await this.runReleaseCleanupBestEffort("temporary external release artifact", downloaded.cleanup);
+  }
+
+  private async cleanupFailedReleaseArtifactUpload(absolutePath: string | null, label: string) {
+    await this.runReleaseCleanupBestEffort(label, () =>
+      absolutePath ? removeReleaseArtifactFile(absolutePath) : Promise.resolve()
+    );
   }
 
   private async runReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
