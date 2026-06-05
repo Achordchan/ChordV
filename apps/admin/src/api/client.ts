@@ -223,7 +223,7 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const record = await request<SharedAdminReleaseRecordDto>("/admin/releases", {
     method: "POST",
     body: JSON.stringify(payload),
-    timeoutMs: input.status === "published" ? LONG_ADMIN_ACTION_TIMEOUT_MS : ADMIN_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -240,7 +240,7 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
-    timeoutMs: input.status === "published" ? LONG_ADMIN_ACTION_TIMEOUT_MS : ADMIN_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -248,7 +248,7 @@ export async function updateAdminRelease(releaseId: string, input: UpdateAdminRe
 export async function publishAdminRelease(releaseId: string) {
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/publish`, {
     method: "POST",
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
 }
@@ -307,7 +307,7 @@ export async function verifyAdminReleaseArtifact(releaseId: string, artifactId: 
     actualFileHash?: string | null;
   }>(`/admin/releases/${releaseId}/artifacts/${artifactId}/verify`, {
     method: "POST",
-    timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return {
     artifactId: result.artifactId,

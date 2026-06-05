@@ -18,7 +18,8 @@ const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = readPositiveIntegerEnv(
   "CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES",
   DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
 );
-const IMAGE_BED_REQUEST_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", 60_000);
+const DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS = 15_000;
 const IMAGE_BED_CLEANUP_BUDGET_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_CLEANUP_BUDGET_MS", 500);
 
 type StoredImageBedConfig = {
@@ -182,13 +183,17 @@ export class ImageBedService {
       const buffer = await fs.readFile(file.path);
       body.set("file", new Blob([new Uint8Array(buffer)], { type: file.mimetype }), sanitizeFileName(file.originalname));
 
-      const response = await fetchImageBed(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.apiToken}`
+      const response = await fetchImageBed(
+        url,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${config.apiToken}`
+          },
+          body
         },
-        body
-      });
+        readImageBedUploadTimeoutMs()
+      );
       const rawBody = await response.text();
       if (!response.ok) {
         throw new BadGatewayException(readImageBedError(rawBody) || `Image bed upload failed with HTTP ${response.status}.`);
@@ -257,12 +262,16 @@ export class ImageBedService {
     options: { allowBusinessFailure?: boolean } = {}
   ): Promise<T> {
     const url = new URL(pathAndQuery, config.baseUrl);
-    const response = await fetchImageBed(url, {
-      headers: {
-        Authorization: `Bearer ${config.apiToken}`,
-        Accept: "application/json"
-      }
-    });
+    const response = await fetchImageBed(
+      url,
+      {
+        headers: {
+          Authorization: `Bearer ${config.apiToken}`,
+          Accept: "application/json"
+        }
+      },
+      readImageBedManageTimeoutMs()
+    );
     const rawBody = await response.text();
     if (!response.ok) {
       throw new BadGatewayException(readImageBedError(rawBody) || `Image bed request failed with HTTP ${response.status}.`);
@@ -519,20 +528,34 @@ function parseJson(value: string): unknown {
   }
 }
 
-async function fetchImageBed(url: URL, init: RequestInit) {
+async function fetchImageBed(url: URL, init: RequestInit, timeoutMs: number) {
   try {
     return await fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(IMAGE_BED_REQUEST_TIMEOUT_MS)
+      signal: AbortSignal.timeout(timeoutMs)
     });
   } catch (reason) {
     const message = reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")
-      ? `Image bed request timed out after ${IMAGE_BED_REQUEST_TIMEOUT_MS}ms.`
+      ? `Image bed request timed out after ${timeoutMs}ms.`
       : reason instanceof Error
         ? `Image bed request failed: ${reason.message}`
         : "Image bed request failed.";
     throw new BadGatewayException(message);
   }
+}
+
+function readImageBedUploadTimeoutMs() {
+  return readPositiveIntegerEnv(
+    "CHORDV_IMAGE_BED_UPLOAD_TIMEOUT_MS",
+    readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS)
+  );
+}
+
+function readImageBedManageTimeoutMs() {
+  return readPositiveIntegerEnv(
+    "CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS",
+    readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS)
+  );
 }
 
 function readRecord(value: unknown) {

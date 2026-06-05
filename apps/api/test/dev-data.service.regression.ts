@@ -603,6 +603,48 @@ async function testImageBedListRejectsSuccessFalsePayload() {
   }
 }
 
+async function testImageBedListUsesShortManageTimeout() {
+  const previousTimeout = process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS;
+  process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS = "25";
+  const server = createServer(() => {
+    // Intentionally never respond; admin file management should fail on its own short budget.
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => service.listAdminFiles(),
+      /timed out after 25ms/,
+      "image bed file list should use the short management timeout"
+    );
+    assert.equal(Date.now() - startedAt < 1000, true, "image bed file list must not wait on the long upload timeout");
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS = previousTimeout;
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedUploadRejectsSuccessFalsePayload() {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -16435,6 +16477,7 @@ async function main() {
   testAdminPatchDtosRejectNullForNonNullableFields();
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
   await testImageBedListRejectsSuccessFalsePayload();
+  await testImageBedListUsesShortManageTimeout();
   await testImageBedUploadRejectsSuccessFalsePayload();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
