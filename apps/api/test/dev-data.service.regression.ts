@@ -8358,6 +8358,86 @@ function makeAdminNodeRow(overrides: Record<string, any> = {}) {
   };
 }
 
+async function testListNodePanelInboundsPropagatesOfflinePanelError() {
+  const service = createAdminNodeService({
+    xuiService: {
+      listInbounds: async () => {
+        throw new Error("panel offline");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.listNodePanelInbounds({
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "password"
+      }),
+    /panel offline/
+  );
+}
+
+async function testImportNodeFromOfflinePanelFailsBeforeLocalSave() {
+  let upsertCalled = false;
+  const service = createAdminNodeService({
+    xuiService: {
+      getInboundRuntime: async () => {
+        throw new Error("panel runtime unavailable");
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => null,
+        upsert: async () => {
+          upsertCalled = true;
+          return makeAdminNodeRow();
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.importNodeFromSubscription({
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "password",
+        panelEnabled: true
+      }),
+    /panel runtime unavailable/
+  );
+  assert.equal(upsertCalled, false, "offline panel import must not write a node without runtime data");
+}
+
+async function testRefreshNodeOfflinePanelFailsBeforeLocalUpdate() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: true
+  });
+  let updateCalled = false;
+  const service = createAdminNodeService({
+    xuiService: {
+      getInboundRuntime: async () => {
+        throw new Error("panel refresh unavailable");
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async () => {
+          updateCalled = true;
+          return currentNode;
+        }
+      }
+    }
+  });
+
+  await assert.rejects(() => service.refreshNode("node_1"), /panel refresh unavailable/);
+  assert.equal(updateCalled, false, "offline panel refresh must not overwrite local node runtime");
+}
+
 async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails() {
   const currentNode = makeAdminNodeRow();
   const updates: Array<Record<string, unknown>> = [];
@@ -14371,6 +14451,9 @@ async function main() {
   await testXuiInboundRuntimeReadsMldsa65Verify();
   await testXuiInboundRuntimeReadsPqvAlias();
   await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
+  await testListNodePanelInboundsPropagatesOfflinePanelError();
+  await testImportNodeFromOfflinePanelFailsBeforeLocalSave();
+  await testRefreshNodeOfflinePanelFailsBeforeLocalUpdate();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
