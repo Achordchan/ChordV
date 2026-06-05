@@ -61,6 +61,9 @@ const statusFilterOptions = [
   { value: "published", label: "已发布" }
 ] as const;
 
+const RELEASE_VERSION_PATTERN =
+  /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
 function showReleaseRequestFailure(reason: unknown, fallback: string) {
   const message = readError(reason, fallback);
   const uncertain = isUncertainRequestFailure(message);
@@ -176,13 +179,24 @@ export function ReleasesPage() {
   async function saveRelease() {
     try {
       setSaving(true);
+      const version = releaseForm.version.trim();
+      const minimumVersion = releaseForm.minimumVersion.trim();
+      const validationMessage = validateReleaseEditorInput(version, minimumVersion);
+      if (validationMessage) {
+        notifications.show({
+          color: "yellow",
+          title: "发布记录信息不完整",
+          message: validationMessage
+        });
+        return;
+      }
       const payload: CreateAdminReleaseInputDto = {
         platform: releaseForm.platform,
         status: "draft",
-        version: releaseForm.version.trim(),
-        minimumVersion: releaseForm.minimumVersion.trim(),
+        version,
+        minimumVersion,
         forceUpgrade: releaseForm.forceUpgrade,
-        title: releaseForm.title.trim() || releaseForm.version.trim(),
+        title: releaseForm.title.trim() || version,
         changelog: splitLines(releaseForm.changelog)
       };
 
@@ -733,6 +747,25 @@ function splitLines(value: string) {
     .split("\n")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function validateReleaseEditorInput(version: string, minimumVersion: string) {
+  if (!version) {
+    return "请填写版本号，例如 1.1.6。";
+  }
+  if (!RELEASE_VERSION_PATTERN.test(version)) {
+    return "版本号格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
+  }
+  if (!minimumVersion) {
+    return "请填写最低可用版本。这个值会影响客户端是否必须更新，例如 1.1.0。";
+  }
+  if (!RELEASE_VERSION_PATTERN.test(minimumVersion)) {
+    return "最低可用版本格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
+  }
+  if (compareSemver(minimumVersion, version) > 0) {
+    return "最低可用版本不能高于本次发布版本。";
+  }
+  return null;
 }
 
 function compareReleaseRecord(left: AdminReleaseRecordDto, right: AdminReleaseRecordDto) {
