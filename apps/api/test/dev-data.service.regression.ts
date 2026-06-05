@@ -6178,7 +6178,7 @@ async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls() {
   assert.equal(result.panelSyncStatus, "pending");
 }
 
-async function testRemoveSingleNodeAccessReturnsPendingWhenFinalizeThrowsAfterLocalSave() {
+async function testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure() {
   const offlineNode = {
     id: "node_offline",
     name: "offline",
@@ -6258,7 +6258,7 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenFinalizeThrowsAfterLo
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /finalize publish failed after local save/);
+  assert.doesNotMatch(result.panelSyncMessage ?? "", /finalize publish failed after local save/);
 }
 
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
@@ -14467,7 +14467,7 @@ async function main() {
   await testRemoveNodeAccessIgnoresStaleAddedSelection();
   await testRemoveSingleNodeAccessQueuesDisableJobOnlyForRemovedBindingWithRuntimeService();
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls();
-  await testRemoveSingleNodeAccessReturnsPendingWhenFinalizeThrowsAfterLocalSave();
+  await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();

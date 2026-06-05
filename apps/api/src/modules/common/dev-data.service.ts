@@ -350,6 +350,16 @@ export class DevDataService implements OnModuleInit {
     await this.tryPublishEvent("node_access_updated", () => this.clientEventsPublisher.publishNodeAccessUpdated(target));
   }
 
+  private publishNodeAccessUpdatedEventInBackground(target: {
+    subscriptionId?: string | null;
+    userId?: string | null;
+    teamId?: string | null;
+  }) {
+    void this.publishNodeAccessUpdatedEvent(target).catch((error) => {
+      this.logger?.warn(`Local node access change saved, but async node access publish failed: ${readPanelSyncErrorMessage(error)}`);
+    });
+  }
+
   private async tryPublishEvent(eventType: string, task: () => Promise<unknown>) {
     let settled = false;
     const guardedTask = task().then(
@@ -1501,7 +1511,7 @@ export class DevDataService implements OnModuleInit {
             : `节点授权已清空，当前没有活跃连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
       }
 
-      await this.publishNodeAccessUpdatedEvent({
+      this.publishNodeAccessUpdatedEventInBackground({
         subscriptionId,
         userId: subscription.userId,
         teamId: subscription.teamId
@@ -1586,6 +1596,24 @@ export class DevDataService implements OnModuleInit {
         revokedSessionCount > 0
           ? `节点授权已保存，已断开 ${revokedSessionCount} 条受影响连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`
           : `节点授权已保存。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
+      if (addedNodeIds.length === 0) {
+        this.publishNodeAccessUpdatedEventInBackground({
+          subscriptionId,
+          userId: subscription.userId,
+          teamId: subscription.teamId
+        });
+        return {
+          subscriptionId,
+          nodeIds: fallbackNodes.map((node) => node.id),
+          nodes: fallbackNodes.map((node) => toNodeSummary(node)),
+          revokedSessionCount,
+          reasonCode,
+          reasonMessage,
+          panelSyncStatus,
+          panelSyncMessage,
+          message
+        };
+      }
     }
 
     if (removedNodeIds.length === 0 && addedNodeIds.length > 0) {
