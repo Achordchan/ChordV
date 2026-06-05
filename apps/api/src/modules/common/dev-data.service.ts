@@ -1527,7 +1527,13 @@ export class DevDataService implements OnModuleInit {
     const uniqueNodeIds = requestedNodeIds.filter((nodeId) => availableNodeIds.has(nodeId));
 
     if (invalidAddedNodeIds.length > 0) {
-      throw new BadRequestException("存在无效节点");
+      panelSyncStatus = "pending";
+      panelSyncMessage = [
+        panelSyncMessage,
+        `ignored stale node selections that are no longer available: ${invalidAddedNodeIds.join(", ")}`
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
 
     const removedNodeIds = existingRows
@@ -1568,11 +1574,12 @@ export class DevDataService implements OnModuleInit {
         message: "Node access saved locally; panel synchronization is pending background retry."
       });
       panelSyncStatus = "pending";
-      panelSyncMessage = this.startNodeAccessRevocationEffects(
-        subscriptionId,
-        { nodeIds: removedNodeIds },
-        "node_access_revoked"
-      );
+      panelSyncMessage = [
+        panelSyncMessage,
+        this.startNodeAccessRevocationEffects(subscriptionId, { nodeIds: removedNodeIds }, "node_access_revoked")
+      ]
+        .filter(Boolean)
+        .join(" ");
       reasonCode = "node_access_revoked";
       reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
       message =
