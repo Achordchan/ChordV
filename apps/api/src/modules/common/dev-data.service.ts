@@ -189,6 +189,7 @@ import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
+const NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS = 50;
 const EVENT_PUBLISH_BUDGET_MS = 300;
 const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
 
@@ -1727,7 +1728,7 @@ export class DevDataService implements OnModuleInit {
             `Node access saved, but async panel access sync failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
           );
         });
-    }, 0);
+    }, NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return "panel access synchronization queued for background processing; local node access is already saved.";
   }
@@ -1947,7 +1948,7 @@ export class DevDataService implements OnModuleInit {
             `Node access saved, but async revocation follow-up failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
           );
         });
-    }, 0);
+    }, NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return "3x-ui 客户端禁用和连接撤销已进入后台处理，本地授权已立即失效。";
   }

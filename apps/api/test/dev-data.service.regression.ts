@@ -381,6 +381,13 @@ function createRuntimeSessionService(overrides: Record<string, unknown> = {}) {
   return createInstance<RuntimeSessionService>(RuntimeSessionService.prototype, overrides);
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function createUsageSyncService(overrides: Record<string, unknown> = {}) {
   return createInstance<UsageSyncService>(UsageSyncService.prototype, overrides);
 }
@@ -5991,6 +5998,10 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
 
   assert.equal(followUpStartedInline, false, "revocation follow-up must be deferred until after the response is built");
   assert.ok(Date.now() - startedAt < 150, "local node access update must return before deferred follow-up work starts");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(followUpStartedInline, false, "revocation follow-up must leave a small response-flush window before starting");
+  await waitUntil(() => followUpStartedInline);
+  assert.equal(followUpStartedInline, true, "revocation follow-up should still run after the response-flush window");
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
@@ -6295,9 +6306,7 @@ async function testRemoveSingleNodeAccessQueuesDisableJobOnlyForRemovedBindingWi
   });
 
   const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_keep"] });
-  for (let attempt = 0; panelSyncUpserts.length === 0 && attempt < 10; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  await waitUntil(() => panelSyncUpserts.length > 0);
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(bindingFindCalls[0]?.where?.nodeId, { in: ["node_offline"] });
@@ -6600,9 +6609,7 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
     assert.equal(result.panelSyncStatus, "pending");
     assert.match(result.panelSyncMessage ?? "", /后台处理/);
     assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
-    for (let attempt = 0; queuedAccessSync === 0 && attempt < 10; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
+    await waitUntil(() => queuedAccessSync > 0);
     assert.equal(queuedAccessSync, 1, "deferred panel access sync should still be started after the response");
   } finally {
     if (releaseOuterLock) {
@@ -6868,9 +6875,7 @@ async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
   assert.deepEqual(result.nodeIds, ["node_new"]);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
-  for (let attempt = 0; !panelAccessSyncStarted && attempt < 10; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  await waitUntil(() => panelAccessSyncStarted);
   assert.equal(panelAccessSyncStarted, true, "deferred panel access sync should still start after the response");
 }
 
