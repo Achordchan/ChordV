@@ -4,19 +4,27 @@ import { isIP } from "node:net";
 import { fetch as undiciFetch } from "undici";
 
 const DEFAULT_MAX_REDIRECTS = 5;
+const DEFAULT_DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 type FetchOptions = NonNullable<Parameters<typeof undiciFetch>[1]>;
+type DnsLookup = typeof lookup;
+type FetchPublicHttpUrlSettings = {
+  maxRedirects?: number;
+  errorPrefix?: string;
+  dnsLookupTimeoutMs?: number;
+  dnsLookup?: DnsLookup;
+};
 
 export async function fetchPublicHttpUrl(
   rawUrl: string,
   options: FetchOptions = {},
-  settings: { maxRedirects?: number; errorPrefix?: string } = {}
+  settings: FetchPublicHttpUrlSettings = {}
 ) {
   let currentUrl = parseHttpUrl(rawUrl, settings.errorPrefix);
   const maxRedirects = settings.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
-    await assertPublicHttpUrl(currentUrl, settings.errorPrefix);
+    await assertPublicHttpUrl(currentUrl, settings.errorPrefix, settings);
     const response = await undiciFetch(currentUrl, {
       ...options,
       redirect: "manual"
@@ -40,9 +48,13 @@ export async function fetchPublicHttpUrl(
   throw new BadRequestException(`${settings.errorPrefix ?? "Remote URL"} redirected too many times.`);
 }
 
-export async function assertPublicHttpUrl(rawUrl: string | URL, errorPrefix = "Remote URL") {
+export async function assertPublicHttpUrl(
+  rawUrl: string | URL,
+  errorPrefix = "Remote URL",
+  settings: Pick<FetchPublicHttpUrlSettings, "dnsLookupTimeoutMs" | "dnsLookup"> = {}
+) {
   const url = typeof rawUrl === "string" ? parseHttpUrl(rawUrl, errorPrefix) : rawUrl;
-  await assertPublicHostname(url.hostname, errorPrefix);
+  await assertPublicHostname(url.hostname, errorPrefix, settings);
 }
 
 function parseHttpUrl(rawUrl: string, errorPrefix = "Remote URL") {
@@ -58,7 +70,11 @@ function parseHttpUrl(rawUrl: string, errorPrefix = "Remote URL") {
   return url;
 }
 
-async function assertPublicHostname(hostname: string, errorPrefix: string) {
+async function assertPublicHostname(
+  hostname: string,
+  errorPrefix: string,
+  settings: Pick<FetchPublicHttpUrlSettings, "dnsLookupTimeoutMs" | "dnsLookup"> = {}
+) {
   if (allowsPrivateRemoteUrlsForTests()) {
     return;
   }
@@ -69,12 +85,50 @@ async function assertPublicHostname(hostname: string, errorPrefix: string) {
     return;
   }
 
-  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  const addresses = await lookupHostnameWithTimeout(
+    hostname,
+    errorPrefix,
+    settings.dnsLookup ?? lookup,
+    readDnsLookupTimeoutMs(settings.dnsLookupTimeoutMs)
+  );
   if (addresses.length === 0) {
     throw new BadRequestException(`${errorPrefix} host did not resolve.`);
   }
   for (const address of addresses) {
     assertPublicIp(address.address, errorPrefix);
+  }
+}
+
+async function lookupHostnameWithTimeout(hostname: string, errorPrefix: string, dnsLookup: DnsLookup, timeoutMs: number) {
+  let settled = false;
+  const lookupTask = dnsLookup(hostname, { all: true, verbatim: true }).then(
+    (addresses) => {
+      settled = true;
+      return addresses;
+    },
+    (error) => {
+      settled = true;
+      throw error;
+    }
+  );
+  void lookupTask.catch(() => undefined);
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      reject(new BadRequestException(`${errorPrefix} DNS lookup timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([lookupTask, timeoutTask]);
+  } finally {
+    if (settled && timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
 }
 
@@ -128,4 +182,12 @@ function isRedirectStatus(status: number) {
 
 function allowsPrivateRemoteUrlsForTests() {
   return process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS === "true";
+}
+
+function readDnsLookupTimeoutMs(override?: number) {
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+  const parsed = Number(process.env.CHORDV_REMOTE_DNS_LOOKUP_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_DNS_LOOKUP_TIMEOUT_MS;
 }

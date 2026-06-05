@@ -27,6 +27,7 @@ import {
   resolveReleaseArtifactAbsolutePath,
   resolveReleaseArtifactForClient
 } from "../src/modules/common/release-center.utils";
+import { fetchPublicHttpUrl } from "../src/modules/common/remote-url.utils";
 import { XuiService } from "../src/modules/xui/xui.service";
 import { AuthSessionService } from "../src/modules/common/auth-session.service";
 import { ClientRuntimeEventsService } from "../src/modules/common/client-runtime-events.service";
@@ -503,6 +504,23 @@ function assertDtoRejectsFieldNull(dtoClass: new () => object, field: string) {
   assert(
     errors.some((error) => error.property === field),
     `${dtoClass.name}.${field} must reject null instead of letting service code fail later`
+  );
+}
+
+async function testPublicRemoteUrlDnsLookupRespectsTimeout() {
+  await assert.rejects(
+    () =>
+      Promise.race([
+        fetchPublicHttpUrl("https://download.example.com/runtime.zip", {}, {
+          errorPrefix: "Runtime component",
+          dnsLookupTimeoutMs: 20,
+          dnsLookup: async () => new Promise(() => undefined)
+        }),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("public remote URL DNS lookup ignored timeout")), 500);
+        })
+      ]),
+    /Runtime component DNS lookup timed out after 20ms/
   );
 }
 
@@ -4263,6 +4281,59 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
   assert.deepEqual(publishedUserIds, []);
+}
+
+async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
+  const calls: string[] = [];
+  let publishedUserIds: string[] | null = null;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    clientEventsPublisher: {
+      resolveUserIdsForNodeAccess: async () => {
+        calls.push("resolve_event_targets");
+        return ["user_1"];
+      },
+      publishNodeAccessUpdatedToUsers: (userIds: string[]) => {
+        calls.push("publish_event");
+        publishedUserIds = userIds;
+      }
+    },
+    runtimeSessionService: {
+      revokeNodeLeases: async () => {
+        calls.push("revoke_leases");
+        return 1;
+      },
+      removePanelBindingsForNode: async () => {
+        calls.push("queue_panel_delete");
+        return new Promise(() => undefined);
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => ({ id: "node_1" }),
+        update: async (payload: Record<string, any>) => {
+          calls.push("local_update");
+          assert.equal(payload.data.isActive, false);
+          assert.equal(payload.data.recommended, false);
+          assert.equal(payload.data.panelStatus, "offline");
+          return {};
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.deleteNode("node_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("deleteNode waited for stalled panel cleanup")), 750);
+    })
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
+  assert.deepEqual(publishedUserIds, ["user_1"]);
 }
 
 async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
@@ -14497,6 +14568,7 @@ async function main() {
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();
   testCorsAllowsProductionAndConfiguredOrigins();
+  await testPublicRemoteUrlDnsLookupRespectsTimeout();
   await testUpdateUserPasswordRevokesExistingSessions();
   await testUpdateUserRoleRevokesExistingSessions();
   await testUpdateUserKeepsLocalSaveWhenSessionRevocationFails();
@@ -14561,6 +14633,7 @@ async function main() {
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
+  await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
