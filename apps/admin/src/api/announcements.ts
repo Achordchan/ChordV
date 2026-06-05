@@ -2,9 +2,12 @@ import type { AdminAnnouncementRecordDto, CreateAnnouncementInputDto, UpdateAnno
 import { request } from "./base";
 
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 
 export function fetchAdminAnnouncements() {
-  return request<AdminAnnouncementRecordDto[]>("/admin/announcements");
+  return request<AdminAnnouncementRecordDto[]>("/admin/announcements", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function createAnnouncement(input: CreateAnnouncementInputDto) {

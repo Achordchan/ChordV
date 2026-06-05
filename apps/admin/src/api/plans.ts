@@ -2,9 +2,12 @@ import type { AdminPlanRecordDto, CreatePlanInputDto, UpdatePlanInputDto, Update
 import { request } from "./base";
 
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 
 export function fetchAdminPlans() {
-  return request<AdminPlanRecordDto[]>("/admin/plans");
+  return request<AdminPlanRecordDto[]>("/admin/plans", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export function createPlan(input: CreatePlanInputDto) {
