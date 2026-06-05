@@ -9816,6 +9816,57 @@ async function testRemoteRuntimeValidationPersistsDownloadMetadata() {
   }
 }
 
+async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
+  const body = Buffer.from("runtime-binary");
+  const expectedHash = createHash("sha256").update(body).digest("hex");
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/octet-stream" });
+    response.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            id: "component_1",
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            source: "custom_remote",
+            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "xray.exe",
+            archiveEntryName: null,
+            storedFilePath: null,
+            fileSizeBytes: null,
+            fileHash: null,
+            expectedHash,
+            enabled: true
+          }),
+          update: async () => {
+            throw new Error("runtime metadata write failed");
+          }
+        }
+      }
+    });
+
+    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
+
+    assert.equal(result.status, "metadata_mismatch");
+    assert.match(result.message, /saving refreshed metadata failed/);
+    assert.match(result.message, /runtime metadata write failed/);
+    assert.notEqual(result.status, "unreachable", "local DB write failures must not be reported as unreachable remote URLs");
+    assert.equal(result.actualFileSizeBytes, String(body.byteLength));
+    assert.equal(result.actualFileHash, expectedHash);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
 async function testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash() {
   const entry = Buffer.from("runtime-entry-binary");
   const zip = createStoredZipWithSingleEntry("xray.exe", entry);
@@ -10912,6 +10963,44 @@ async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
   assert.equal(deleteCalled, true, "artifact delete must complete before best-effort file cleanup");
   assert.equal(result.id, "release_1");
   assert.deepEqual(result.artifacts, []);
+}
+
+async function testValidateExternalReleaseArtifactReportsMetadataPersistFailure() {
+  const artifact = makeReleaseCenterTestArtifact({
+    source: "external",
+    type: "setup.exe",
+    deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://example.com/ChordV-setup.exe",
+    fileName: "old.exe",
+    fileSizeBytes: null,
+    fileHash: null
+  });
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => makeReleaseCenterTestRelease({ platform: "windows" }),
+    resolveExternalReleaseArtifactMetadata: async () => ({
+      resolvedUrl: artifact.downloadUrl,
+      fileName: "ChordV-setup.exe",
+      fileSizeBytes: 123n,
+      fileHash: "a".repeat(64)
+    }),
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => artifact,
+        update: async () => {
+          throw new Error("metadata write failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.validateReleaseArtifact("release_1", "artifact_1");
+
+  assert.equal(result.status, "metadata_mismatch");
+  assert.match(result.message, /saving refreshed metadata failed/);
+  assert.match(result.message, /metadata write failed/);
+  assert.notEqual(result.status, "invalid_link", "local DB write failures must not be reported as bad external links");
+  assert.equal(result.actualFileSizeBytes, "123");
+  assert.equal(result.actualFileHash, "a".repeat(64));
 }
 
 async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
@@ -14989,6 +15078,7 @@ async function main() {
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
   await testRemoteRuntimeValidationPersistsDownloadMetadata();
+  await testRemoteRuntimeValidationReportsMetadataPersistFailure();
   await testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash();
   await testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup();
   await testRemoteRuntimeValidationRejectsOversizeExpectedHashResponse();
@@ -15007,6 +15097,7 @@ async function main() {
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
+  await testValidateExternalReleaseArtifactReportsMetadataPersistFailure();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testExternalReleaseDownloadCleanupReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();

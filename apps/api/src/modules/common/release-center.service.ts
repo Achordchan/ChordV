@@ -740,14 +740,26 @@ export class ReleaseCenterService {
           nextFileSizeBytes?.toString() !== artifact.fileSizeBytes?.toString() ||
           nextFileHash !== artifact.fileHash
         ) {
-          await this.prisma.releaseArtifact.update({
-            where: { id: artifactId },
-            data: {
-              fileName: nextFileName,
-              fileSizeBytes: nextFileSizeBytes,
-              fileHash: nextFileHash
-            }
-          });
+          try {
+            await this.prisma.releaseArtifact.update({
+              where: { id: artifactId },
+              data: {
+                fileName: nextFileName,
+                fileSizeBytes: nextFileSizeBytes,
+                fileHash: nextFileHash
+              }
+            });
+          } catch (error) {
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: `External artifact is reachable, but saving refreshed metadata failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              actualFileSizeBytes,
+              actualFileHash
+            };
+          }
         }
 
         if (artifactDeliveryMode === "desktop_full_replace") {

@@ -638,14 +638,26 @@ export class RuntimeComponentsService {
         };
       }
 
-      await this.prisma.runtimeComponent.update({
-        where: { id: componentId },
-        data: {
-          fileSizeBytes: metadata.fileSizeBytes,
-          fileHash: actualFileHash,
-          expectedHash
-        }
-      });
+      try {
+        await this.prisma.runtimeComponent.update({
+          where: { id: componentId },
+          data: {
+            fileSizeBytes: metadata.fileSizeBytes,
+            fileHash: actualFileHash,
+            expectedHash
+          }
+        });
+      } catch (error) {
+        return {
+          componentId,
+          status: "metadata_mismatch",
+          message: `Remote runtime component is reachable and expectedHash matches, but saving refreshed metadata failed: ${readErrorMessage(error)}`,
+          finalUrlPreview: resolvedUrl,
+          httpStatus: response.status,
+          actualFileSizeBytes: metadata.fileSizeBytes.toString(),
+          actualFileHash
+        };
+      }
 
       return {
         componentId,

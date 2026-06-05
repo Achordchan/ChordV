@@ -29,6 +29,7 @@ import type {
 import { request } from "./base";
 
 const IMAGE_BED_ACTION_TIMEOUT_MS = 75 * 1000;
+const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
 const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -200,7 +201,9 @@ function mapRelease(record: SharedAdminReleaseRecordDto): AdminReleaseRecordDto 
 }
 
 export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
-  const records = await request<SharedAdminReleaseRecordDto[]>(`/admin/releases${buildReleaseQuery(filters)}`);
+  const records = await request<SharedAdminReleaseRecordDto[]>(`/admin/releases${buildReleaseQuery(filters)}`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
   return records.map(mapRelease);
 }
 
@@ -362,11 +365,15 @@ export async function replaceAdminReleaseArtifactUpload(
 }
 
 export async function fetchAdminRuntimeComponents() {
-  return request<SharedAdminRuntimeComponentRecordDto[]>("/admin/runtime-components");
+  return request<SharedAdminRuntimeComponentRecordDto[]>("/admin/runtime-components", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export async function fetchAdminRuntimeComponentFailures(limit = 50) {
-  return request<SharedAdminRuntimeComponentFailureReportDto[]>(`/admin/runtime-components/failures?limit=${limit}`);
+  return request<SharedAdminRuntimeComponentFailureReportDto[]>(`/admin/runtime-components/failures?limit=${limit}`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export async function createAdminRuntimeComponent(input: CreateAdminRuntimeComponentInputDto) {
@@ -487,11 +494,15 @@ export async function deleteAdminImageBedFile(path: string, folder?: boolean) {
 }
 
 export async function fetchAdminSupportTickets() {
-  return request<SharedAdminSupportTicketSummaryDto[]>("/admin/tickets");
+  return request<SharedAdminSupportTicketSummaryDto[]>("/admin/tickets", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export async function fetchAdminSupportTicketDetail(ticketId: string) {
-  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}`);
+  return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}`, {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
 }
 
 export async function replyAdminSupportTicket(ticketId: string, input: ReplyAdminSupportTicketInputDto) {
