@@ -1641,14 +1641,12 @@ export class DevDataService implements OnModuleInit {
     }
 
     if (addedNodeIds.length > 0) {
-      const panelSync = await this.trySyncSubscriptionPanelAccess(subscriptionId);
-      if (!panelSync.ok) {
-        panelSyncStatus = "pending";
-        const syncMessage = `节点授权已保存，但 3x-ui 客户端预同步失败，将在连接时重试：${panelSync.errorMessage}`;
-        panelSyncMessage = [panelSyncMessage, syncMessage].filter(Boolean).join(" ");
-      }
+      panelSyncStatus = "pending";
+      panelSyncMessage = [panelSyncMessage, this.startSubscriptionPanelAccessSync(subscriptionId)]
+        .filter(Boolean)
+        .join(" ");
     }
-    await this.publishNodeAccessUpdatedEvent({
+    this.publishNodeAccessUpdatedEventInBackground({
       subscriptionId,
       userId: subscription.userId,
       teamId: subscription.teamId
@@ -1714,6 +1712,24 @@ export class DevDataService implements OnModuleInit {
       this.logger?.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
       return { ok: false as const, errorMessage };
     }
+  }
+
+  private startSubscriptionPanelAccessSync(subscriptionId: string) {
+    const timer = setTimeout(() => {
+      void this.trySyncSubscriptionPanelAccess(subscriptionId)
+        .then((result) => {
+          if (!result.ok) {
+            this.logger?.warn(`Node access saved, but async panel access sync is pending for ${subscriptionId}: ${result.errorMessage}`);
+          }
+        })
+        .catch((error) => {
+          this.logger?.warn(
+            `Node access saved, but async panel access sync failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+          );
+        });
+    }, 0);
+    timer.unref?.();
+    return "panel access synchronization queued for background processing; local node access is already saved.";
   }
 
   private async withNodeAccessPanelSyncBudget(

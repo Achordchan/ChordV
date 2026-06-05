@@ -5235,6 +5235,7 @@ async function testXuiInboundRuntimeRejectsMissingRealityPublicKey() {
 async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
   const createdRows: Array<Record<string, any>> = [];
   let published = false;
+  let panelSyncStarted = false;
   const node = {
     id: "node_1",
     name: "node",
@@ -5276,6 +5277,7 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
     },
     runtimeSessionService: {
       syncSubscriptionPanelAccess: async () => {
+        panelSyncStarted = true;
         throw new Error("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
       }
     },
@@ -5287,10 +5289,15 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
   const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] });
 
   assert.equal(createdRows.length, 1, "local node authorization must be saved before panel pre-sync");
+  assert.equal(panelSyncStarted, false, "panel pre-sync must be deferred until after the local response");
   assert.equal(published, true, "clients must still be notified after local authorization changes");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /面板接口路径错误/);
+  assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
   assert.match(result.message ?? "", /节点授权已保存/);
+  for (let attempt = 0; !panelSyncStarted && attempt < 10; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(panelSyncStarted, true, "deferred panel pre-sync should still start after the response");
 }
 
 async function testUpdateNodeAccessKeepsLocalSaveWhenPublishFails() {
@@ -6587,12 +6594,16 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
 
     assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
     assert.equal(disableFilter, undefined, "offline panel disable work must be deferred until after the local response");
-    assert.equal(queuedAccessSync, 1, "newly authorized nodes must queue panel access sync without taking the usage lock");
+    assert.equal(queuedAccessSync, 0, "newly authorized nodes must defer panel access sync until after the local response");
     assert.equal(syncCalls, 0, "node access replacement must not use the usage-locking panel sync path");
     assert.deepEqual(result.nodeIds, ["node_new"]);
     assert.equal(result.panelSyncStatus, "pending");
     assert.match(result.panelSyncMessage ?? "", /后台处理/);
-    assert.match(result.panelSyncMessage ?? "", /panel sync queued/);
+    assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
+    for (let attempt = 0; queuedAccessSync === 0 && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(queuedAccessSync, 1, "deferred panel access sync should still be started after the response");
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -6852,11 +6863,15 @@ async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
     })
   ]);
 
-  assert.equal(panelAccessSyncStarted, true);
+  assert.equal(panelAccessSyncStarted, false, "panel access sync must be deferred until after the local response");
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access replacement must stay saved");
   assert.deepEqual(result.nodeIds, ["node_new"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel access sync is still running in background/);
+  assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
+  for (let attempt = 0; !panelAccessSyncStarted && attempt < 10; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(panelAccessSyncStarted, true, "deferred panel access sync should still start after the response");
 }
 
 async function testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails() {

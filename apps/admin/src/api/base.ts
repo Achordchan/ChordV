@@ -26,10 +26,26 @@ type AuthSessionResponse = {
 let refreshPromise: Promise<string | null> | null = null;
 let adminAccessToken: string | null = null;
 
+function findPanelSyncPendingPayload(value: unknown): unknown | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.panelSyncStatus === "pending") {
+    return value;
+  }
+  for (const key of ["data", "result", "payload", "error", "response"]) {
+    const nested = findPanelSyncPendingPayload(record[key]);
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
+}
+
 function parsePanelSyncPendingPayload(text: string) {
   try {
-    const parsed = JSON.parse(text) as { panelSyncStatus?: unknown };
-    return parsed && parsed.panelSyncStatus === "pending" ? parsed : null;
+    return findPanelSyncPendingPayload(JSON.parse(text));
   } catch {
     return null;
   }
