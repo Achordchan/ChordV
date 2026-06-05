@@ -1,4 +1,4 @@
-import { Badge, Button, Group, Modal, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { Button, Group, Modal, Select, Stack, TextInput, Textarea } from "@mantine/core";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -18,40 +18,13 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
   return (
     <Modal opened={props.opened} onClose={props.onClose} title={props.title} centered size="lg">
       <Stack gap="md">
-        <Group grow align="flex-start">
-          <Select
-            label="平台"
-            data={releasePlatformOptions as unknown as { value: string; label: string }[]}
-            value={props.form.platform}
-            onChange={(value) => value && props.onChange({ ...props.form, platform: value as ReleaseEditorFormState["platform"] })}
-            disabled={props.editing}
-          />
-          {props.editing ? (
-            <Stack gap={6}>
-              <Text size="sm" fw={500}>
-                当前状态
-              </Text>
-              <Badge variant="light" size="lg" color={props.form.status === "published" ? "green" : "blue"} style={{ width: "fit-content" }}>
-                {props.form.status === "published" ? "已发布" : "草稿"}
-              </Badge>
-              <Text size="xs" c="dimmed">
-                发布和撤回直接在列表卡片里操作。
-              </Text>
-            </Stack>
-          ) : (
-            <Stack gap={6}>
-              <Text size="sm" fw={500}>
-                发布渠道
-              </Text>
-              <Badge variant="light" size="lg" style={{ width: "fit-content" }}>
-                正式版
-              </Badge>
-              <Text size="xs" c="dimmed">
-                新建记录先保存为草稿，上传安装包后再发布。
-              </Text>
-            </Stack>
-          )}
-        </Group>
+        <Select
+          label="平台"
+          data={releasePlatformOptions as unknown as { value: string; label: string }[]}
+          value={props.form.platform}
+          onChange={(value) => value && props.onChange({ ...props.form, platform: value as ReleaseEditorFormState["platform"] })}
+          disabled={props.editing}
+        />
 
         <TextInput
           label="版本号"
@@ -59,13 +32,6 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           value={props.form.version}
           onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
           disabled={props.editing}
-        />
-
-        <TextInput
-          label="显示标题"
-          placeholder="留空则使用版本号"
-          value={props.form.title}
-          onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
         />
 
         <Textarea

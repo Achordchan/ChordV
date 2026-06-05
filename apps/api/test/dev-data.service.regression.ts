@@ -1984,6 +1984,34 @@ async function testAssertReleasePublishableDoesNotValidateArtifacts() {
   await service["assertReleasePublishable"]("release_1");
 }
 
+async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
+  const release = makeReleaseCenterTestRelease({
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        source: "uploaded",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        downloadUrl: "/api/downloads/releases/artifact_1",
+        storedFilePath: "release_1/artifact_1/ChordV_1.1.6_x64-full.zip",
+        fileSizeBytes: null,
+        fileHash: null,
+        allowClientMirror: false
+      })
+    ]
+  });
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => release
+      }
+    },
+    assertReleaseRecordMutable: () => undefined
+  });
+
+  await service["assertReleasePublishable"]("release_1");
+}
+
 async function testCreateReleaseArtifactDelegatesToReleaseCenter() {
   const calls: Array<{ releaseId: string; input: Record<string, unknown> }> = [];
   const service = createDevDataService({
@@ -16430,6 +16458,7 @@ async function main() {
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testAssertReleasePublishableDoesNotValidateArtifacts();
+  await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
   await testHeartbeatWithinTtlSucceeds();

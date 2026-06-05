@@ -121,7 +121,7 @@ export function ReleasesPage() {
   function openCreateRelease() {
     setPendingCreateRelease(null);
     setReleaseEditorId(null);
-    setReleaseForm(emptyReleaseEditorForm(platformFilter === "all" ? "macos" : platformFilter));
+    setReleaseForm(emptyReleaseEditorForm(platformFilter === "all" ? "windows" : platformFilter));
     setReleaseEditorOpened(true);
   }
 
@@ -157,7 +157,7 @@ export function ReleasesPage() {
         version,
         minimumVersion: version,
         forceUpgrade: false,
-        title: releaseForm.title.trim() || version,
+        title: version,
         changelog: splitLines(releaseForm.changelog)
       };
 
