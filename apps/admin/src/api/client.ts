@@ -527,7 +527,7 @@ export async function replyAdminSupportTicketWithAttachment(
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/attachments`, {
     method: "POST",
     body,
-    timeoutMs: 10 * 60 * 1000
+    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
   });
 }
 
