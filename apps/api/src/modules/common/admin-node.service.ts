@@ -24,6 +24,7 @@ import {
 } from "./node-import.utils";
 
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
+const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 
@@ -939,7 +940,10 @@ export class AdminNodeService {
 
   private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {
     let settled = false;
-    const guardedTask = task().then(
+    const guardedTask = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS);
+      timer.unref?.();
+    }).then(task).then(
       (result) => {
         settled = true;
         return result;
@@ -981,44 +985,40 @@ export class AdminNodeService {
   }
 
   private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
-    let settled = false;
-    const guardedTask = task().then(
-      () => {
-        settled = true;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
-    void guardedTask.catch((error) => {
-      this.logger?.warn(
-        `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
-
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
+    const timer = setTimeout(() => {
+      let settled = false;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const guardedTask = task().then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
         }
+      );
+      void guardedTask.catch((error) => {
         this.logger?.warn(
-          `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+          `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
         );
-        resolve();
+      });
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          this.logger?.warn(
+            `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+          );
+        }
       }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
-    });
-
-    try {
-      await Promise.race([guardedTask, timeoutTask]);
-    } catch (error) {
-      this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
+      timeoutHandle.unref?.();
+      void guardedTask
+        .finally(() => {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+          }
+        })
+        .catch(() => undefined);
+    }, NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
   }
 
   private async resolveNodeRuntimeSource(input: ImportNodeInputDto, panelEnabled: boolean) {

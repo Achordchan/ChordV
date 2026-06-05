@@ -7751,6 +7751,8 @@ async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
 
   assert.equal(result.isActive, false);
   assert.equal(updatedData?.isActive, false, "local node state must be saved even when panel disable is pending");
+  assert.equal(queuedNodeId, null, "panel disable queueing must be deferred until after the local response");
+  await waitUntil(() => queuedNodeId === "node_1");
   assert.equal(queuedNodeId, "node_1", "failed remote disable must leave a retry job instead of blocking the save");
   assert.equal(remoteDisableCalled, false, "node disable must queue panel sync instead of waiting for remote panel calls");
 }
@@ -7935,6 +7937,8 @@ async function testDisableNodeReturnsWhenAfterSaveFollowUpStalls() {
 
   assert.equal(result.isActive, false);
   assert.equal(updatedData?.isActive, false, "local node disable must save before stalled follow-up finishes");
+  assert.equal(panelDisableQueued, false, "panel disable queueing must not block the local node disable response");
+  await waitUntil(() => panelDisableQueued);
   assert.equal(panelDisableQueued, true, "subsequent panel disable queueing should still run after the stalled lease step times out");
 }
 
@@ -8792,6 +8796,8 @@ async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails(
 
   assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
   assert.equal(record.panelApiBasePath, "/new");
+  assert.deepEqual(calls, [], "panel migration cleanup and resync must be deferred until after the local response");
+  await waitUntil(() => calls.length >= 4);
   assert.deepEqual(calls, ["revoke", "remove_old", "mark_deleted", "sync_new"]);
   assert.equal(updates[0].panelBaseUrl, "https://new-panel.example.com");
   assert.equal(cleanupPanelConfig?.panelBaseUrl, "https://old-panel.example.com");
@@ -8852,6 +8858,8 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
   assert.equal(record.panelApiBasePath, "/new");
   assert.equal(record.panelStatus, "degraded");
   assert.equal(updates[0].panelError, "new panel offline");
+  assert.deepEqual(calls, [], "panel migration cleanup and resync must be deferred until after the local response");
+  await waitUntil(() => calls.length >= 3);
   assert.deepEqual(calls, ["revoke", "remove_old", "sync_new"]);
 }
 
