@@ -1694,6 +1694,110 @@ async function testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank() {
   assert.equal(result.displayTitle, "1.1.6");
 }
 
+async function testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        create: async () => {
+          throw new Error("published release create should be rejected before DB write");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createRelease({
+        platform: "windows",
+        channel: "stable",
+        version: "1.1.6",
+        displayTitle: "ChordV 1.1.6",
+        changelog: [],
+        minimumVersion: "1.1.0",
+        forceUpgrade: false,
+        status: "published"
+      }),
+    /draft release/i,
+    "release center should force drafts before publishing"
+  );
+}
+
+async function testCreateReleaseWithInitialArtifactUsesSingleTransaction() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const calls: string[] = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        calls.push("transaction");
+        return task({
+          release: {
+            create: async (payload: Record<string, any>) => {
+              calls.push("release.create");
+              return {
+                ...payload.data,
+                createdAt: now,
+                updatedAt: now,
+                artifacts: []
+              };
+            }
+          },
+          releaseArtifact: {
+            create: async (payload: Record<string, any>) => {
+              calls.push("artifact.create");
+              return makeReleaseCenterTestArtifact({
+                id: payload.data.id,
+                releaseId: payload.data.releaseId,
+                source: payload.data.source,
+                type: payload.data.type,
+                deliveryMode: payload.data.deliveryMode,
+                downloadUrl: payload.data.downloadUrl,
+                defaultMirrorPrefix: payload.data.defaultMirrorPrefix,
+                allowClientMirror: payload.data.allowClientMirror,
+                fileName: payload.data.fileName,
+                fileSizeBytes: payload.data.fileSizeBytes,
+                fileHash: payload.data.fileHash,
+                isPrimary: payload.data.isPrimary,
+                isFullPackage: payload.data.isFullPackage
+              });
+            }
+          }
+        });
+      },
+      release: {
+        findUnique: async () => {
+          throw new Error("force fallback response to prove transaction result is usable");
+        }
+      }
+    },
+    logger: {
+      warn: () => undefined
+    }
+  });
+
+  const result = await service.createRelease({
+    platform: "windows",
+    channel: "stable",
+    version: "1.1.6",
+    displayTitle: "ChordV 1.1.6",
+    changelog: ["Full replacement"],
+    minimumVersion: "1.1.0",
+    forceUpgrade: false,
+    status: "draft",
+    initialArtifact: {
+      source: "external",
+      type: "zip",
+      deliveryMode: "desktop_full_replace",
+      downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.zip",
+      isPrimary: true
+    }
+  });
+
+  assert.deepEqual(calls, ["transaction", "release.create", "artifact.create"]);
+  assert.equal(result.artifacts.length, 1);
+  assert.equal(result.artifacts[0]?.isPrimary, true);
+  assert.equal(result.artifacts[0]?.fileHash, null);
+}
+
 async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
@@ -15982,6 +16086,8 @@ async function main() {
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
+  await testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow();
+  await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();

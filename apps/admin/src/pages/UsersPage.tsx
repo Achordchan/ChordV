@@ -262,6 +262,13 @@ export function UsersPage(props: UsersPageProps) {
                                   <RowActions>
                                     <ActionIcon
                                       variant="subtle"
+                                      onClick={() => props.onOpenUserDrawer(member.userId)}
+                                      title="账号级：编辑账号资料"
+                                    >
+                                      <IconPencil size={16} />
+                                    </ActionIcon>
+                                    <ActionIcon
+                                      variant="subtle"
                                       color={userRecord?.status === "active" ? "red" : "green"}
                                       onClick={() =>
                                         props.onToggleTeamUserStatus(

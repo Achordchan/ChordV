@@ -142,12 +142,19 @@ export function ImageBedPage() {
       const nextConfig = await updateAdminImageBedConfig({ apiToken: null });
       setConfig(nextConfig);
       setForm((current) => ({ ...current, apiToken: "" }));
-      setFiles([]);
-      setFileListError(null);
+      if (nextConfig.hasToken) {
+        void loadFiles({ afterSuccessfulSave: true });
+      } else {
+        setFiles([]);
+        setFileListError(null);
+      }
       notifications.show({
         color: "green",
         title: "图床",
-        message: "图床 Token 已清空"
+        message:
+          nextConfig.tokenSource === "environment"
+            ? "数据库 Token 已清空，当前仍使用环境变量 Token。"
+            : "图床 Token 已清空。"
       });
     } catch (reason) {
       const message = readError(reason, "清空 Token 失败");

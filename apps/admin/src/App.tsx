@@ -519,7 +519,14 @@ export function App() {
     [snapshot?.announcements, search.announcements]
   );
   const eligiblePersonalUsers = useMemo(
-    () => (snapshot?.users ?? []).filter((item) => item.role === "user" && item.accountType === "personal" && item.currentSubscription === null),
+    () =>
+      (snapshot?.users ?? []).filter(
+        (item) =>
+          item.role === "user" &&
+          item.accountType === "personal" &&
+          item.status === "active" &&
+          item.currentSubscription === null
+      ),
     [snapshot?.users]
   );
   const buildTeamMemberOptions = (currentUserId?: string) => {
