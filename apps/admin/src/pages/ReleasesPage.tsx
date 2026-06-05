@@ -32,7 +32,7 @@ import {
   type ReleaseEditorFormState
 } from "../features/releases/types";
 import { SectionCard } from "../features/shared/SectionCard";
-import { isUncertainRequestFailure, readError } from "../utils/admin-filters";
+import { isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
 
 type PlatformFilter = AdminReleasePlatform | "all";
 
@@ -50,7 +50,7 @@ const ADMIN_RELEASE_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 function showReleaseRequestFailure(reason: unknown, fallback: string) {
   const message = readError(reason, fallback);
-  const uncertain = isUncertainRequestFailure(message);
+  const uncertain = isPotentiallyCompletedMutationFailure(message);
   notifications.show({
     color: uncertain ? "yellow" : "red",
     title: uncertain ? "发布中心请求状态不确定" : "发布中心",

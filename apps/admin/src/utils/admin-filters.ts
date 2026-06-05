@@ -36,6 +36,10 @@ export function isUncertainRequestFailure(message: string) {
   );
 }
 
+export function isPotentiallyCompletedMutationFailure(message: string) {
+  return isUncertainRequestFailure(message) || /http 500/i.test(message);
+}
+
 export function isSupportTicketAttachmentUploadFailure(message: string) {
   return /image bed|图床|attachment|附件|upload|上传|file exceeds|file too large|payload too large|multererror|too large|文件过大|Only image attachments|Attachment file/i.test(message);
 }

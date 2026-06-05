@@ -3175,16 +3175,121 @@ async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
   assert.deepEqual(resetCalls, ["stalled@example.com", "online@example.com"]);
   assert.equal(bindingUpdates.length, 1, "online job must still complete after stalled job times out");
   assert.equal(bindingUpdates[0].where.id, "binding_online");
-  assert.deepEqual(
-    jobUpdates.map((item) => ({ id: item.where.id, status: item.data.status })),
-    [
-      { id: "stalled", status: "failed" },
-      { id: "online", status: "completed" }
-    ]
-  );
+  const statusById = new Map(jobUpdates.map((item) => [item.where.id, item.data.status]));
+  assert.equal(statusById.get("stalled"), "failed");
+  assert.equal(statusById.get("online"), "completed");
   assert.equal(nodeUpdates.length, 1);
   assert.equal(nodeUpdates[0].where.id, "node_stalled");
-  assert.match(jobUpdates[0].data.lastError, /timed out/);
+  const stalledUpdate = jobUpdates.find((item) => item.where.id === "stalled");
+  assert.match(stalledUpdate?.data.lastError ?? "", /timed out/);
+}
+
+async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
+  const previousTimeout = process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS;
+  const previousConcurrency = process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY;
+  process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS = "100";
+  process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY = "3";
+  const resetCalls: string[] = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const makeJob = (id: string, email: string) => ({
+    id,
+    action: "reset_client_traffic",
+    attempts: 0,
+    bindingId: `binding_${id}`,
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: `node_${id}`,
+    panelClientEmail: email,
+    panelClientId: `client_${id}`,
+    panelInboundId: 7,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    node: {
+      id: `node_${id}`,
+      name: `node ${id}`,
+      flow: "",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    },
+    binding: {
+      status: "active"
+    }
+  });
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      resetClientTraffic: async (_node: unknown, email: string) => {
+        resetCalls.push(email);
+        if (email.startsWith("stalled")) {
+          return new Promise<void>(() => undefined);
+        }
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async () => ({})
+      },
+      node: {
+        update: async () => ({})
+      },
+      panelSyncJob: {
+        findMany: async () => [
+          makeJob("stalled_a", "stalled-a@example.com"),
+          makeJob("stalled_b", "stalled-b@example.com"),
+          makeJob("online", "online@example.com")
+        ],
+        updateMany: async () => ({ count: 1 }),
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  try {
+    const startedAt = Date.now();
+    await Promise.race([
+      service.retryPendingPanelSyncJobs(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("panel sync batch accumulated stalled remote job timeouts serially")), 170);
+      })
+    ]);
+    assert.ok(Date.now() - startedAt < 170, "multiple stalled jobs should be processed concurrently, not serially");
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS = previousTimeout;
+    }
+    if (previousConcurrency === undefined) {
+      delete process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY;
+    } else {
+      process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY = previousConcurrency;
+    }
+  }
+
+  assert.deepEqual(
+    new Set(resetCalls),
+    new Set(["stalled-a@example.com", "stalled-b@example.com", "online@example.com"])
+  );
+  const statusById = new Map(jobUpdates.map((item) => [item.where.id, item.data.status]));
+  assert.equal(statusById.get("online"), "completed");
+  assert.equal(statusById.get("stalled_a"), "failed");
+  assert.equal(statusById.get("stalled_b"), "failed");
 }
 
 async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
@@ -16173,6 +16278,7 @@ async function main() {
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
   await testPanelSyncBatchContinuesAfterStalledRemoteJob();
+  await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();

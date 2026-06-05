@@ -33,6 +33,7 @@ import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import {
   filterByKeyword,
+  isPotentiallyCompletedMutationFailure,
   isSupportTicketAttachmentUploadFailure,
   isUncertainRequestFailure,
   readError
@@ -261,7 +262,7 @@ export function TicketsPage() {
     } catch (reason) {
       const message = readError(reason, "发送回复失败");
       const attachmentUploadFailed = Boolean(replyAttachment) && isSupportTicketAttachmentUploadFailure(message);
-      const uncertain = !attachmentUploadFailed && isUncertainRequestFailure(message);
+      const uncertain = !attachmentUploadFailed && isPotentiallyCompletedMutationFailure(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "回复状态不确定" : attachmentUploadFailed ? "附件上传失败" : "工单",
@@ -291,7 +292,7 @@ export function TicketsPage() {
       });
     } catch (reason) {
       const message = readError(reason, next === "close" ? "关闭工单失败" : "重开工单失败");
-      const uncertain = isUncertainRequestFailure(message);
+      const uncertain = isPotentiallyCompletedMutationFailure(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "工单状态不确定" : "工单",

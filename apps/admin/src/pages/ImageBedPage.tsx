@@ -9,7 +9,7 @@ import {
   updateAdminImageBedConfig
 } from "../api/client";
 import { SectionCard } from "../features/shared/SectionCard";
-import { isUncertainRequestFailure, readError } from "../utils/admin-filters";
+import { isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
 
 type ImageBedConfigForm = {
   baseUrl: string;
@@ -41,6 +41,7 @@ export function ImageBedPage() {
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileListError, setFileListError] = useState<string | null>(null);
+  const [fileListErrorColor, setFileListErrorColor] = useState<"red" | "yellow">("red");
 
   useEffect(() => {
     void loadConfig();
@@ -76,6 +77,7 @@ export function ImageBedPage() {
     try {
       setLoadingFiles(true);
       setFileListError(null);
+      setFileListErrorColor("red");
       const result = await fetchAdminImageBedFiles({
         count: 50,
         search: search.trim() || undefined,
@@ -84,6 +86,7 @@ export function ImageBedPage() {
       setFiles(result.files);
     } catch (reason) {
       const message = readError(reason, "图床文件列表加载失败");
+      setFileListErrorColor(options.afterSuccessfulSave ? "yellow" : "red");
       setFileListError(message);
       if (options.silent) {
         return;
@@ -123,10 +126,11 @@ export function ImageBedPage() {
       }
     } catch (reason) {
       const message = readError(reason, "图床配置保存失败");
+      const uncertain = isPotentiallyCompletedMutationFailure(message);
       notifications.show({
-        color: isUncertainRequestFailure(message) ? "yellow" : "red",
+        color: uncertain ? "yellow" : "red",
         title: "图床",
-        message: isUncertainRequestFailure(message) ? `${message}。请求状态不确定，配置可能已保存，请刷新页面确认。` : message
+        message: uncertain ? `${message}。请求状态不确定，配置可能已保存，请刷新页面确认。` : message
       });
     } finally {
       setSaving(false);
@@ -158,10 +162,11 @@ export function ImageBedPage() {
       });
     } catch (reason) {
       const message = readError(reason, "清空 Token 失败");
+      const uncertain = isPotentiallyCompletedMutationFailure(message);
       notifications.show({
-        color: isUncertainRequestFailure(message) ? "yellow" : "red",
+        color: uncertain ? "yellow" : "red",
         title: "图床",
-        message: isUncertainRequestFailure(message) ? `${message}。请求状态不确定，Token 可能已清空，请刷新页面确认。` : message
+        message: uncertain ? `${message}。请求状态不确定，Token 可能已清空，请刷新页面确认。` : message
       });
     } finally {
       setSaving(false);
@@ -202,10 +207,11 @@ export function ImageBedPage() {
       });
     } catch (reason) {
       const message = readError(reason, "删除图床文件失败");
+      const uncertain = isPotentiallyCompletedMutationFailure(message);
       notifications.show({
-        color: isUncertainRequestFailure(message) ? "yellow" : "red",
+        color: uncertain ? "yellow" : "red",
         title: "图床",
-        message: isUncertainRequestFailure(message) ? `${message}。请求状态不确定，文件可能已删除，请刷新列表确认。` : message
+        message: uncertain ? `${message}。请求状态不确定，文件可能已删除，请刷新列表确认。` : message
       });
     } finally {
       setDeletingPath(null);
@@ -306,8 +312,10 @@ export function ImageBedPage() {
               </Alert>
             ) : null}
             {fileListError ? (
-              <Alert color="red" variant="light">
-                {fileListError}
+              <Alert color={fileListErrorColor} variant="light">
+                {fileListErrorColor === "yellow"
+                  ? `${fileListError}。上一次配置保存已经成功返回，可稍后手动刷新列表。`
+                  : fileListError}
               </Alert>
             ) : null}
 

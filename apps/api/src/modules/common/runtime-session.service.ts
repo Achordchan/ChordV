@@ -87,6 +87,7 @@ type PanelBindingFilter = {
 type PanelSyncAction = "ensure_client" | "disable_client" | "delete_client" | "reset_client_traffic";
 
 const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ?? 20);
+const DEFAULT_PANEL_SYNC_JOB_CONCURRENCY = 4;
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
 const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
@@ -1205,33 +1206,43 @@ export class RuntimeSessionService {
       take: PANEL_SYNC_BATCH_SIZE
     });
 
-    for (const job of jobs) {
-      const locked = await this.prisma.panelSyncJob.updateMany({
-        where: {
-          id: job.id,
-          OR: [
-            {
-              status: { in: ["pending", "failed"] },
-              nextRunAt: { lte: now },
-              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
-            },
-            {
-              status: "running",
-              lockedAt: { lt: staleLockBefore }
-            }
-          ]
-        },
-        data: {
-          status: "running",
-          lockedAt: new Date()
+    let nextIndex = 0;
+    const workerCount = Math.min(jobs.length, readPanelSyncJobConcurrency());
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const job = jobs[nextIndex];
+        nextIndex += 1;
+        if (!job) {
+          return;
         }
-      });
-      if (locked.count === 0) {
-        continue;
-      }
+        const locked = await this.prisma.panelSyncJob.updateMany({
+          where: {
+            id: job.id,
+            OR: [
+              {
+                status: { in: ["pending", "failed"] },
+                nextRunAt: { lte: now },
+                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+              },
+              {
+                status: "running",
+                lockedAt: { lt: staleLockBefore }
+              }
+            ]
+          },
+          data: {
+            status: "running",
+            lockedAt: new Date()
+          }
+        });
+        if (locked.count === 0) {
+          continue;
+        }
 
-      await this.runPanelSyncJob(job);
-    }
+        await this.runPanelSyncJob(job);
+      }
+    });
+    await Promise.all(workers);
   }
 
   private async runPanelSyncJob(job: {
@@ -2496,6 +2507,11 @@ function isPanelSyncAction(action: string): action is PanelSyncAction {
 function readPanelSyncJobTimeoutMs() {
   const parsed = Number(process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS;
+}
+
+function readPanelSyncJobConcurrency() {
+  const parsed = Number(process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : DEFAULT_PANEL_SYNC_JOB_CONCURRENCY;
 }
 
 function isPanelDisableJobClearableAfterNodeReenabled(
