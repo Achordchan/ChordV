@@ -57,13 +57,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           label="版本号"
           placeholder="例如 1.0.3"
           value={props.form.version}
-          onChange={(event) =>
-            props.onChange({
-              ...props.form,
-              version: event.currentTarget.value,
-              minimumVersion: props.editing ? props.form.minimumVersion : event.currentTarget.value
-            })
-          }
+          onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
           disabled={props.editing}
         />
 

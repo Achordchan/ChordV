@@ -19,16 +19,13 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { PrismaService } from "./prisma.service";
 import {
-  assertReleaseArtifactClientUsable,
   assertReleaseArtifactDeliveryAllowed,
-  assertExternalReleaseArtifactUrlMatchesType,
   assertReleaseArtifactTypeAllowed,
   buildReleaseArtifactDownloadUrl,
   compareSemver,
   createId,
   defaultDeliveryModeForArtifact,
   defaultDeliveryModeForPlatform,
-  downloadExternalReleaseArtifactFile,
   ensureFileReadable,
   normalizeChangelog,
   normalizeFileSizeBytes,
@@ -355,8 +352,8 @@ export class ReleaseCenterService {
     }
     const source = "external";
 
+    assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
-    assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
     const fileSizeBytes = normalizeFileSizeBytes(input.fileSizeBytes) ?? null;
     const fileHash = normalizeSha256Input(input.fileHash) ?? null;
     const artifactId = createId("artifact");
@@ -432,7 +429,7 @@ export class ReleaseCenterService {
     }
 
     if (nextSource === "external") {
-      assertExternalReleaseArtifactUrlMatchesType(nextType, nextDownloadUrl);
+      assertExternalReleaseArtifactDownloadUrl(nextDownloadUrl);
     }
     const nextDeliveryMode = resolveReleaseArtifactDeliveryMode(
       release.platform as PlatformTarget,
@@ -708,9 +705,6 @@ export class ReleaseCenterService {
         };
       }
       try {
-        assertExternalReleaseArtifactUrlMatchesType(artifactType, url);
-        const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
-        assertReleaseArtifactClientUsable(resolvedArtifact, releasePlatform);
         return {
           artifactId,
           status: "ready",
@@ -746,11 +740,6 @@ export class ReleaseCenterService {
     }
 
     try {
-      const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
-      assertReleaseArtifactClientUsable(resolvedArtifact, releasePlatform);
-      if (artifactDeliveryMode === "desktop_full_replace" && artifact.defaultMirrorPrefix) {
-        throw new BadRequestException("Uploaded full replacement artifacts cannot use a default mirror prefix.");
-      }
       return {
         artifactId,
         status: "ready",
@@ -982,14 +971,12 @@ export class ReleaseCenterService {
       try {
         await this.assertStoredReleaseArtifactReadable(artifact);
         const resolvedArtifact = resolveReleaseArtifactForClient(artifact, clientMirrorPrefix ?? null);
-        assertReleaseArtifactClientUsable(resolvedArtifact, platform);
         return resolvedArtifact;
       } catch {
         if (clientMirrorPrefix?.trim()) {
           try {
             await this.assertStoredReleaseArtifactReadable(artifact);
             const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
-            assertReleaseArtifactClientUsable(resolvedArtifact, platform);
             return resolvedArtifact;
           } catch {
           }
@@ -1033,8 +1020,7 @@ export class ReleaseCenterService {
     }
     assertReleaseArtifactTypeAllowed(platform, input.type);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
-    assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
-
+    assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
     const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     const fileSizeBytes = normalizeFileSizeBytes(input.fileSizeBytes) ?? null;
     const fileHash = normalizeSha256Input(input.fileHash) ?? null;
@@ -1239,6 +1225,13 @@ export class ReleaseCenterService {
 function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: string) {
   if (compareSemver(minimumVersion, version) > 0) {
     throw new BadRequestException("minimumVersion must not be greater than release version.");
+  }
+}
+
+function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {
+  const normalized = rawUrl.trim();
+  if (!normalized || !/^https?:\/\//i.test(normalized)) {
+    throw new BadRequestException("External release artifact download URL must be a complete http/https URL.");
   }
 }
 

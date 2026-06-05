@@ -10,18 +10,13 @@ export type ReleaseEditorFormState = {
   platform: AdminReleasePlatform;
   status: AdminReleaseStatus;
   version: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
   title: string;
   changelog: string;
 };
 
 export type ArtifactEditorFormState = {
-  source: "uploaded" | "external";
+  source: "uploaded";
   type: AdminReleaseArtifactType;
-  downloadUrl: string;
-  defaultMirrorPrefix: string;
-  allowClientMirror: boolean;
   fileName: string;
   isPrimary: boolean;
   isFullPackage: boolean;
@@ -35,15 +30,11 @@ export const releasePlatformOptions = [
   { value: "ios", label: "iOS" }
 ] as const;
 
-export const DEFAULT_GITHUB_MIRROR_PREFIX = "";
-
 export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos"): ReleaseEditorFormState {
   return {
     platform,
     status: "draft",
     version: "",
-    minimumVersion: "",
-    forceUpgrade: false,
     title: "",
     changelog: ""
   };
@@ -54,8 +45,6 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     platform: record.platform,
     status: record.status,
     version: record.version,
-    minimumVersion: record.minimumVersion,
-    forceUpgrade: record.forceUpgrade,
     title: record.title,
     changelog: record.changelog.join("\n")
   };
@@ -65,9 +54,6 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
   return {
     source: "uploaded",
     type,
-    downloadUrl: "",
-    defaultMirrorPrefix: DEFAULT_GITHUB_MIRROR_PREFIX,
-    allowClientMirror: false,
     fileName: "",
     isPrimary: true,
     isFullPackage: true,
@@ -77,11 +63,8 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
 
 export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): ArtifactEditorFormState {
   return {
-    source: record.source,
+    source: "uploaded",
     type: record.type,
-    downloadUrl: record.downloadUrl,
-    defaultMirrorPrefix: record.defaultMirrorPrefix ?? "",
-    allowClientMirror: record.allowClientMirror,
     fileName: record.fileName ?? "",
     isPrimary: record.isPrimary,
     isFullPackage: record.isFullPackage,

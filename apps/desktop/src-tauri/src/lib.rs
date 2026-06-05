@@ -1240,14 +1240,6 @@ async fn download_desktop_installer(
             let package_label = desktop_update_package_label(input.package_kind.as_deref());
             let file_name = resolve_installer_file_name(&url, input.file_name.as_deref(), input.package_kind.as_deref());
             let expected_hash = normalize_optional_sha256(input.expected_hash.as_deref());
-            if is_full_update {
-                if input.expected_total_bytes.filter(|value| *value > 0).is_none() {
-                    return Err("full update package size metadata is required".into());
-                }
-                if expected_hash.as_deref().filter(|value| is_valid_sha256(value)).is_none() {
-                    return Err("full update package SHA256 metadata is required".into());
-                }
-            }
             append_download_diagnostic_log(
                 &app,
                 "update-download",
@@ -1381,11 +1373,7 @@ async fn download_desktop_installer(
                     }
                 }
             }
-            let total_bytes = if is_full_update {
-                input.expected_total_bytes
-            } else {
-                response_content_length.or(input.expected_total_bytes)
-            };
+            let total_bytes = response_content_length.or(input.expected_total_bytes);
             let mut downloaded_bytes = 0_u64;
             let mut last_logged_bytes = 0_u64;
             let mut last_emitted_bytes = 0_u64;
@@ -1634,8 +1622,8 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
 fn apply_desktop_full_update(
     app: AppHandle,
     path: String,
-    expected_hash: String,
-    expected_total_bytes: u64,
+    expected_hash: Option<String>,
+    expected_total_bytes: Option<u64>,
 ) -> Result<CommandResult, String> {
     #[cfg(not(windows))]
     {
@@ -1651,25 +1639,37 @@ fn apply_desktop_full_update(
             if !package_path.exists() {
                 return Err("update package file does not exist".to_string());
             }
+            let expected_total_bytes = expected_total_bytes.unwrap_or(0);
             if expected_total_bytes == 0 {
-                return Err("full update package size metadata is required".into());
-            }
-            let expected_hash = normalize_sha256(&expected_hash);
-            if !is_valid_sha256(&expected_hash) {
-                return Err("full update package SHA256 metadata is required".into());
+                let metadata = fs::metadata(&package_path)
+                    .map_err(|error| format!("failed to read update package metadata: {error}"))?;
+                if metadata.len() == 0 {
+                    return Err("full update package is empty".into());
+                }
             }
             let source_metadata = fs::metadata(&package_path)
                 .map_err(|error| format!("failed to read update package metadata: {error}"))?;
-            if source_metadata.len() != expected_total_bytes {
+            let effective_total_bytes = if expected_total_bytes > 0 {
+                expected_total_bytes
+            } else {
+                source_metadata.len()
+            };
+            if source_metadata.len() != effective_total_bytes {
                 return Err(format!(
-                    "full update package size mismatch: expected {expected_total_bytes}, got {}",
+                    "full update package size mismatch: expected {effective_total_bytes}, got {}",
                     source_metadata.len()
                 ));
             }
             let source_hash = sha256_file_plain(&package_path)?;
-            if source_hash != expected_hash {
-                return Err("full update package SHA256 mismatch".into());
-            }
+            let expected_hash = normalize_optional_sha256(expected_hash.as_deref()).unwrap_or_default();
+            let package_hash = if is_valid_sha256(&expected_hash) {
+                if source_hash != expected_hash {
+                    return Err("full update package SHA256 mismatch".into());
+                }
+                expected_hash
+            } else {
+                source_hash
+            };
 
             let current_exe = std::env::current_exe()
                 .map_err(|error| format!("failed to resolve current executable path: {error}"))?;
@@ -1693,7 +1693,6 @@ fn apply_desktop_full_update(
                 .join("updater");
             fs::create_dir_all(&updater_dir)
                 .map_err(|error| format!("failed to create updater directory: {error}"))?;
-            let package_hash = expected_hash;
             let private_package_path = updater_dir.join(format!(
                 "full-update-package-{}.zip",
                 chrono::Utc::now().timestamp_millis()
@@ -1703,7 +1702,7 @@ fn apply_desktop_full_update(
             let staged_metadata = fs::metadata(&private_package_path).map_err(|error| {
                 format!("failed to read staged update package metadata: {error}")
             })?;
-            if staged_metadata.len() != expected_total_bytes {
+            if staged_metadata.len() != effective_total_bytes {
                 let _ = fs::remove_file(&private_package_path);
                 return Err("staged update package size mismatch".into());
             }
@@ -1725,7 +1724,7 @@ fn apply_desktop_full_update(
                 &script_path,
                 &private_package_path,
                 &package_hash,
-                expected_total_bytes,
+                effective_total_bytes,
                 &install_dir,
                 &exe_name,
                 std::process::id(),

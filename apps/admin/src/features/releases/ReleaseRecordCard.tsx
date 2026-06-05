@@ -144,10 +144,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
           ) : (
             <Stack gap="sm">
               {record.artifacts.map((artifact) => {
-                const effectiveUrl = artifact.finalUrlPreview?.trim() || artifact.downloadUrl;
-                const previewUrl = artifact.finalUrlPreview?.trim() || buildPreviewDownloadUrl(artifact);
-                const originUrl = artifact.originDownloadUrl?.trim() || artifact.downloadUrl;
-                const showPreview = Boolean(previewUrl && previewUrl !== originUrl);
+                const downloadUrl = artifact.downloadUrl;
 
                 return (
                   <Paper key={artifact.id} withBorder radius="lg" p="md">
@@ -161,23 +158,18 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                           </Group>
                           <Text fw={600}>{artifact.fileName || "未命名安装包"}</Text>
                           <Text size="sm" c="dimmed">
-                            下载地址：{effectiveUrl}
+                            下载地址：{downloadUrl}
                           </Text>
-                          {showPreview ? (
-                            <Text size="sm" c="dimmed">
-                              原始地址：{originUrl}
-                            </Text>
-                          ) : null}
                         </Stack>
 
                         <Stack gap={8} align="flex-end">
                           <Group gap={4} wrap="nowrap">
-                            <ActionIcon variant="subtle" onClick={() => props.onCopyDownloadUrl(effectiveUrl)} title="复制下载地址">
+                            <ActionIcon variant="subtle" onClick={() => props.onCopyDownloadUrl(downloadUrl)} title="复制下载地址">
                               <IconCopy size={16} />
                             </ActionIcon>
                             <ActionIcon
                               component="a"
-                              href={effectiveUrl}
+                              href={downloadUrl}
                               target="_blank"
                               rel="noreferrer"
                               variant="subtle"
@@ -255,15 +247,4 @@ function translateArtifactType(type: string) {
     default:
       return "外部链接";
   }
-}
-
-function buildPreviewDownloadUrl(artifact: AdminReleaseArtifactRecordDto) {
-  const prefix = artifact.defaultMirrorPrefix?.trim();
-  if (!prefix || artifact.source !== "external") {
-    return null;
-  }
-  if (prefix.includes("{url}")) {
-    return prefix.replaceAll("{url}", artifact.downloadUrl);
-  }
-  return `${prefix}${artifact.downloadUrl}`;
 }
