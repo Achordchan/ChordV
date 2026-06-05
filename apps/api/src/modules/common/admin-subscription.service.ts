@@ -1123,30 +1123,25 @@ export class AdminSubscriptionService {
       });
     }
 
-    const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
-      teamId,
-      "team subscription lookup after team update"
-    );
-    const teamSubscription = teamSubscriptionLookup.subscription;
-    panelSync = mergePanelSyncResults(panelSync, teamSubscriptionLookup.panelSync);
-    if (teamSubscription) {
-      if (input.status !== undefined && input.status !== current.status) {
-        if (input.status === "disabled") {
-          panelSync = mergePanelSyncResults(
-            panelSync,
-            await this.queueSubscriptionDisconnectBestEffort(teamSubscription.id, "team_disabled")
-          );
-        } else if (input.status === "active") {
+    if (input.status !== undefined && input.status !== current.status) {
+      panelSync = mergePanelSyncResults(panelSync, this.startTeamStatusFollowUpInBackground(teamId, input.status));
+    } else {
+      const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+        teamId,
+        "team subscription lookup after team update"
+      );
+      const teamSubscription = teamSubscriptionLookup.subscription;
+      panelSync = mergePanelSyncResults(panelSync, teamSubscriptionLookup.panelSync);
+      if (teamSubscription) {
+        if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
           panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
         }
-      } else if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
-        panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
+        await this.publishSubscriptionUpdatedEvent({
+          subscriptionId: teamSubscription.id,
+          teamId,
+          state: teamSubscription.state
+        });
       }
-      await this.publishSubscriptionUpdatedEvent({
-        subscriptionId: teamSubscription.id,
-        teamId,
-        state: teamSubscription.state
-      });
     }
 
     return this.withTeamRecordRefreshBestEffort(teamId, panelSync, "Team 已更新。");
@@ -1898,6 +1893,47 @@ export class AdminSubscriptionService {
       }
     } catch (error) {
       this.logger?.warn(`User status follow-up failed for ${userId}: ${readErrorMessage(error, "unknown error")}`);
+    }
+  }
+
+  private startTeamStatusFollowUpInBackground(teamId: string, status: "active" | "disabled"): PanelSyncBestEffortResult {
+    const timer = setTimeout(() => {
+      void this.runTeamStatusFollowUpInBackground(teamId, status);
+    }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
+    return {
+      ok: false,
+      errorMessage: "team status follow-up sync queued for background processing"
+    };
+  }
+
+  private async runTeamStatusFollowUpInBackground(teamId: string, status: "active" | "disabled") {
+    try {
+      const lookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+        teamId,
+        "team subscription lookup after team status update"
+      );
+      if (!lookup.panelSync.ok) {
+        this.logger?.warn(`Team status follow-up for ${teamId} is pending: ${lookup.panelSync.errorMessage}`);
+      }
+      const subscription = lookup.subscription;
+      if (!subscription) {
+        return;
+      }
+      const panelSync =
+        status === "disabled"
+          ? await this.queueSubscriptionDisconnectBestEffort(subscription.id, "team_disabled")
+          : await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
+      if (!panelSync.ok) {
+        this.logger?.warn(`Team status panel follow-up for ${teamId} is pending: ${panelSync.errorMessage}`);
+      }
+      await this.publishSubscriptionUpdatedEvent({
+        subscriptionId: subscription.id,
+        teamId,
+        state: subscription.state
+      });
+    } catch (error) {
+      this.logger?.warn(`Team status follow-up failed for ${teamId}: ${readErrorMessage(error, "unknown error")}`);
     }
   }
 

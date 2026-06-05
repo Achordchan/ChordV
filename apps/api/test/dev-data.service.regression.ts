@@ -12836,6 +12836,8 @@ async function testEnableUserReturnsPendingWhenSubscriptionLookupStalls() {
 
 async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
   const teamUpdates: Array<Record<string, any>> = [];
+  let panelQueueStarted = false;
+  let leaseRevokeStarted = false;
   const service = createAdminSubscriptionService({
     logger: {
       warn: () => undefined
@@ -12876,9 +12878,11 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
+        panelQueueStarted = true;
         throw new Error("panel queue failed");
       },
       revokeSubscriptionLeases: async () => {
+        leaseRevokeStarted = true;
         throw new Error("lease revoke failed");
       }
     },
@@ -12889,10 +12893,12 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
 
   assert.equal(teamUpdates.length, 1, "team status must save before panel disconnect side effects");
   assert.equal(teamUpdates[0].data.status, "disabled");
+  assert.equal(panelQueueStarted, false, "team disable must not run panel queueing before the local response");
+  await waitUntil(() => panelQueueStarted && leaseRevokeStarted);
+  assert.equal(panelQueueStarted, true, "team disable panel queueing should still run in background");
+  assert.equal(leaseRevokeStarted, true, "team disable lease revocation should still run in background");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
-  assert.match(result.panelSyncMessage ?? "", /lease job queue failed/);
-  assert.match(result.panelSyncMessage ?? "", /lease revoke failed/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testUpdateTeamReturnsPendingWhenRecordRefreshFails() {
@@ -13033,11 +13039,14 @@ async function testUpdateTeamDisconnectStillRevokesLeasesWhenPanelQueueStalls() 
   ]);
 
   assert.ok(calls.includes("update_team"));
+  assert.ok(!calls.includes("queue_panel_disable"), "team disable follow-up must be deferred until after the local response");
+  await waitUntil(() => calls.includes("queue_panel_disable"));
   assert.ok(calls.includes("queue_panel_disable"));
+  await waitUntil(() => calls.includes("queue_lease_job") && calls.includes("revoke_active_leases"));
   assert.ok(calls.includes("queue_lease_job"));
   assert.ok(calls.includes("revoke_active_leases"), "active leases must be revoked even when panel queue stalls");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel disable queueing is still running/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testCreateTeamCreatesTeamAndOwnerInSingleTransaction() {
