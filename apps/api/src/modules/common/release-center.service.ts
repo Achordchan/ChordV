@@ -963,16 +963,6 @@ export class ReleaseCenterService {
       throw new BadRequestException("Add at least one installer artifact before publishing.");
     }
     assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
-    if (release.platform === "windows") {
-      const windowsFullReplaceArtifact = release.artifacts.find(
-        (artifact) =>
-          fromPrismaReleaseArtifactType(artifact.type) === "zip" &&
-          (artifact.deliveryMode as UpdateDeliveryMode) === "desktop_full_replace"
-      );
-      if (!windowsFullReplaceArtifact) {
-        throw new BadRequestException("Windows releases require a ZIP full replacement artifact before publishing.");
-      }
-    }
   }
 
   private async pickClientUsableArtifact(

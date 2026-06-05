@@ -12027,7 +12027,7 @@ async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   );
 }
 
-async function testPublishWindowsReleaseRequiresZipFullReplaceArtifact() {
+async function testPublishWindowsReleaseAllowsAnyInstallerArtifact() {
   const setupArtifact = makeReleaseCenterTestArtifact({
     source: "external",
     type: "setup.exe",
@@ -12054,11 +12054,7 @@ async function testPublishWindowsReleaseRequiresZipFullReplaceArtifact() {
     })
   });
 
-  await assert.rejects(
-    () => service["assertReleasePublishable"]("release_1"),
-    /ZIP full replacement/,
-    "Windows releases must not publish without zip + desktop_full_replace"
-  );
+  await service["assertReleasePublishable"]("release_1");
 }
 
 async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
@@ -16248,7 +16244,7 @@ async function main() {
   await testValidateExternalFullZipDoesNotDownloadOrBackfillMetadata();
   await testValidateUploadedFullZipDoesNotBackfillMissingMetadata();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
-  await testPublishWindowsReleaseRequiresZipFullReplaceArtifact();
+  await testPublishWindowsReleaseAllowsAnyInstallerArtifact();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();

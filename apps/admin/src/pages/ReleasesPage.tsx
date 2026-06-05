@@ -244,15 +244,6 @@ export function ReleasesPage() {
       return;
     }
 
-    if (record.platform === "windows" && !hasWindowsFullReplaceArtifact(record)) {
-      notifications.show({
-        color: "yellow",
-        title: "发布中心",
-        message: "Windows 发布前必须包含 ZIP 全量替换包（zip + desktop_full_replace）。"
-      });
-      return;
-    }
-
     if (!window.confirm(`Publish ${record.version}? This immediately changes the client update channel.`)) {
       return;
     }
@@ -750,10 +741,6 @@ function upsertRelease(current: AdminReleaseRecordDto[], next: AdminReleaseRecor
   const existing = current.some((item) => item.id === next.id);
   if (!existing) return [next, ...current];
   return current.map((item) => (item.id === next.id ? next : item));
-}
-
-function hasWindowsFullReplaceArtifact(record: AdminReleaseRecordDto) {
-  return record.artifacts.some((artifact) => artifact.type === "zip" && artifact.deliveryMode === "desktop_full_replace");
 }
 
 function splitLines(value: string) {
