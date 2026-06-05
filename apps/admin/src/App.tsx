@@ -1631,7 +1631,18 @@ export function App() {
       successTitle: "读取面板成功",
       failureTitle: "读取面板失败",
       failureFallback: "读取 3x-ui 面板并刷新节点失败",
-      uncertainMessage: (message) => `${message} 面板读取状态不确定，请刷新节点列表确认节点运行时是否已更新。`
+      uncertainMessage: (message) => `${message} 面板读取状态不确定，请刷新节点列表确认节点运行时是否已更新。`,
+      resolveSuccess: (result) => {
+        const node = result as AdminNodeRecordDto;
+        if (node.panelStatus === "degraded") {
+          return {
+            color: "yellow",
+            title: "面板读取失败，本地配置已保留",
+            message: node.panelError ?? "3x-ui 面板暂不可用，节点本地运行参数未被覆盖。"
+          };
+        }
+        return null;
+      }
     });
   }
 

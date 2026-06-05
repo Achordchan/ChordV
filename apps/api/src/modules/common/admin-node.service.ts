@@ -602,21 +602,36 @@ export class AdminNodeService {
     if (!current) {
       throw new NotFoundException("节点不存在");
     }
+    if (!current.panelEnabled && !current.subscriptionUrl) {
+      throw new BadRequestException("当前节点没有订阅地址");
+    }
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>>;
-    if (current.panelEnabled) {
-      derived = await this.xuiService.getInboundRuntime({
-        id: current.id,
-        panelBaseUrl: current.panelBaseUrl,
-        panelApiBasePath: current.panelApiBasePath,
-        panelUsername: current.panelUsername,
-        panelPassword: current.panelPassword,
-        panelInboundId: current.panelInboundId
-      });
-    } else {
-      if (!current.subscriptionUrl) {
-        throw new BadRequestException("当前节点没有订阅地址");
+    try {
+      if (current.panelEnabled) {
+        const runtime = await this.readPanelRuntimeForNodeSaveBestEffort({
+          id: current.id,
+          panelBaseUrl: current.panelBaseUrl,
+          panelApiBasePath: current.panelApiBasePath,
+          panelUsername: current.panelUsername,
+          panelPassword: current.panelPassword,
+          panelInboundId: current.panelInboundId
+        });
+        if (!runtime.derived) {
+          return this.markNodeRuntimeRefreshDegraded(current, runtime.errorMessage ?? "panel runtime refresh is still running in background");
+        }
+        derived = runtime.derived;
+      } else {
+        const runtime = await this.readSubscriptionNodeForNodeSaveBestEffort(current.subscriptionUrl!);
+        if (!runtime.derived) {
+          return this.markNodeRuntimeRefreshDegraded(
+            current,
+            runtime.errorMessage ?? "subscription runtime refresh is still running in background"
+          );
+        }
+        derived = runtime.derived;
       }
-      derived = await fetchSubscriptionNode(current.subscriptionUrl);
+    } catch (error) {
+      return this.markNodeRuntimeRefreshDegraded(current, readAdminNodeErrorMessage(error));
     }
     const row = await this.prisma.node.update({
       where: { id: nodeId },
@@ -638,6 +653,30 @@ export class AdminNodeService {
       this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
     );
     return toAdminNodeRecord(row);
+  }
+
+  private async markNodeRuntimeRefreshDegraded(current: any, errorMessage: string): Promise<AdminNodeRecordDto> {
+    const checkedAt = new Date();
+    const message = errorMessage || "node runtime refresh failed";
+    this.logger?.warn(`Node ${current.id} runtime refresh failed; keeping local runtime unchanged: ${message}`);
+    try {
+      const row = await this.prisma.node.update({
+        where: { id: current.id },
+        data: {
+          panelStatus: "degraded",
+          panelError: message
+        }
+      });
+      return toAdminNodeRecord(row);
+    } catch (error) {
+      this.logger?.warn(`Node ${current.id} runtime refresh fallback update failed: ${readAdminNodeErrorMessage(error)}`);
+      return toAdminNodeRecord({
+        ...current,
+        panelStatus: "degraded",
+        panelError: message,
+        updatedAt: checkedAt
+      });
+    }
   }
 
   private async readPanelRuntimeForNodeSaveBestEffort(input: {

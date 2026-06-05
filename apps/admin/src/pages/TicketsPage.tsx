@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Anchor,
@@ -42,6 +42,10 @@ import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 type TicketOwnerFilter = "all" | "personal" | "team";
 type TicketStatusFilter = "all" | SupportTicketStatus;
 
+const TICKET_AUTO_REFRESH_INTERVAL_MS = 20_000;
+const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
+const ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
 const ticketStatusOptions = [
   { value: "all", label: "全部状态" },
   { value: "open", label: "处理中" },
@@ -72,9 +76,38 @@ export function TicketsPage() {
   const [replyAttachment, setReplyAttachment] = useState<File | null>(null);
   const [replySaving, setReplySaving] = useState(false);
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
+  const selectedTicketIdRef = useRef<string | null>(null);
+  const detailRequestSeqRef = useRef(0);
 
   useEffect(() => {
     void loadTickets();
+  }, []);
+
+  useEffect(() => {
+    selectedTicketIdRef.current = selectedTicketId;
+  }, [selectedTicketId]);
+
+  useEffect(() => {
+    const refreshVisibleTickets = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      void loadTickets({ silent: true }).then(() => {
+        const ticketId = selectedTicketIdRef.current;
+        if (ticketId) {
+          void loadTicketDetail(ticketId, { silent: true });
+        }
+      });
+    };
+
+    const timer = window.setInterval(refreshVisibleTickets, TICKET_AUTO_REFRESH_INTERVAL_MS);
+    window.addEventListener("focus", refreshVisibleTickets);
+    document.addEventListener("visibilitychange", refreshVisibleTickets);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshVisibleTickets);
+      document.removeEventListener("visibilitychange", refreshVisibleTickets);
+    };
   }, []);
 
   useEffect(() => {
@@ -111,10 +144,12 @@ export function TicketsPage() {
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }, [keyword, ownerFilter, statusFilter, tickets, userEmailFilter]);
 
-  async function loadTickets() {
+  async function loadTickets(options?: { silent?: boolean }) {
     try {
-      setLoading(true);
-      setError(null);
+      if (!options?.silent) {
+        setLoading(true);
+        setError(null);
+      }
       const records = await fetchAdminSupportTickets();
       const sorted = [...records].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
       setTickets(sorted);
@@ -125,24 +160,39 @@ export function TicketsPage() {
         return sorted[0]?.id ?? null;
       });
     } catch (reason) {
-      setError(readError(reason, "工单接口暂不可用，请先确认后端工单接口是否已合并。"));
+      if (!options?.silent) {
+        setError(readError(reason, "工单接口暂不可用，请先确认后端工单接口是否已合并。"));
+      }
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }
 
-  async function loadTicketDetail(ticketId: string) {
+  async function loadTicketDetail(ticketId: string, options?: { silent?: boolean }) {
+    const requestSeq = ++detailRequestSeqRef.current;
     try {
-      setDetailLoading(true);
-      setDetailError(null);
+      if (!options?.silent) {
+        setDetailLoading(true);
+        setDetailError(null);
+      }
       const detail = await fetchAdminSupportTicketDetail(ticketId);
+      if (requestSeq !== detailRequestSeqRef.current || selectedTicketIdRef.current !== ticketId) {
+        return;
+      }
       setSelectedTicket(detail);
       upsertTicketSummary(detail);
     } catch (reason) {
+      if (requestSeq !== detailRequestSeqRef.current || selectedTicketIdRef.current !== ticketId) {
+        return;
+      }
       setSelectedTicket(null);
       setDetailError(readError(reason, "加载工单详情失败"));
     } finally {
-      setDetailLoading(false);
+      if (requestSeq === detailRequestSeqRef.current && !options?.silent) {
+        setDetailLoading(false);
+      }
     }
   }
 
@@ -154,9 +204,43 @@ export function TicketsPage() {
     );
   }
 
+  function handleReplyAttachmentChange(file: File | null) {
+    if (!file) {
+      setReplyAttachment(null);
+      return;
+    }
+    if (!file.type.startsWith("image/")) {
+      notifications.show({
+        color: "yellow",
+        title: "附件格式不支持",
+        message: "工单附件只支持图片文件。"
+      });
+      setReplyAttachment(null);
+      return;
+    }
+    if (file.size > ADMIN_TICKET_ATTACHMENT_MAX_BYTES) {
+      notifications.show({
+        color: "yellow",
+        title: "附件过大",
+        message: "工单附件不能超过 10MB。"
+      });
+      setReplyAttachment(null);
+      return;
+    }
+    setReplyAttachment(file);
+  }
+
   async function handleReply() {
     const body = replyDraft.trim();
     if (!selectedTicket || (!body && !replyAttachment)) {
+      return;
+    }
+    if (body.length > ADMIN_TICKET_REPLY_MAX_BODY_LENGTH) {
+      notifications.show({
+        color: "yellow",
+        title: "回复内容过长",
+        message: `回复内容不能超过 ${ADMIN_TICKET_REPLY_MAX_BODY_LENGTH} 字。`
+      });
       return;
     }
 
@@ -491,7 +575,7 @@ export function TicketsPage() {
                                 {replyAttachment.name}
                               </Button>
                             ) : null}
-                            <FileButton onChange={setReplyAttachment} accept="image/png,image/jpeg,image/webp,image/gif">
+                            <FileButton onChange={handleReplyAttachmentChange} accept="image/png,image/jpeg,image/webp,image/gif">
                               {(fileButtonProps) => (
                                 <Button
                                   {...fileButtonProps}

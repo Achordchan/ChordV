@@ -9393,12 +9393,15 @@ async function testImportNodeFromSlowPanelFailsBeforeLocalSave() {
   }
 }
 
-async function testRefreshNodeOfflinePanelFailsBeforeLocalUpdate() {
+async function testRefreshNodeOfflinePanelKeepsLocalRuntime() {
   const currentNode = makeAdminNodeRow({
     panelEnabled: true
   });
-  let updateCalled = false;
+  let savedData: Record<string, unknown> | null = null;
   const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
     xuiService: {
       getInboundRuntime: async () => {
         throw new Error("panel refresh unavailable");
@@ -9407,16 +9410,65 @@ async function testRefreshNodeOfflinePanelFailsBeforeLocalUpdate() {
     prisma: {
       node: {
         findUnique: async () => currentNode,
-        update: async () => {
-          updateCalled = true;
-          return currentNode;
+        update: async (payload: { data: Record<string, unknown> }) => {
+          savedData = payload.data;
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
         }
       }
     }
   });
 
-  await assert.rejects(() => service.refreshNode("node_1"), /panel refresh unavailable/);
-  assert.equal(updateCalled, false, "offline panel refresh must not overwrite local node runtime");
+  const record = await service.refreshNode("node_1");
+
+  assert.equal(record.panelStatus, "degraded");
+  assert.match(record.panelError ?? "", /panel refresh unavailable/);
+  assert.equal(savedData?.serverHost, undefined, "offline panel refresh must not overwrite local node host");
+  assert.equal(savedData?.uuid, undefined, "offline panel refresh must not overwrite local node uuid");
+}
+
+async function testRefreshNodeSlowPanelReturnsDegradedWithinBudget() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: true
+  });
+  let runtimeReadStarted = false;
+  let savedData: Record<string, unknown> | null = null;
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      getInboundRuntime: async () => {
+        runtimeReadStarted = true;
+        return new Promise<any>(() => undefined);
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => {
+          savedData = payload.data;
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const startedAt = Date.now();
+  const record = await service.refreshNode("node_1");
+
+  assert.equal(runtimeReadStarted, true, "panel runtime read should still be attempted");
+  assert.equal(record.panelStatus, "degraded");
+  assert.match(record.panelError ?? "", /panel runtime read is still running in background/);
+  assert.equal(savedData?.serverHost, undefined, "slow panel refresh must not overwrite local node host");
+  assert.equal(Date.now() - startedAt < 1500, true, "slow panel refresh should return inside the local follow-up budget");
 }
 
 async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails() {
@@ -16149,7 +16201,8 @@ async function main() {
   await testListNodePanelInboundsPropagatesOfflinePanelError();
   await testImportNodeFromOfflinePanelFailsBeforeLocalSave();
   await testImportNodeFromSlowPanelFailsBeforeLocalSave();
-  await testRefreshNodeOfflinePanelFailsBeforeLocalUpdate();
+  await testRefreshNodeOfflinePanelKeepsLocalRuntime();
+  await testRefreshNodeSlowPanelReturnsDegradedWithinBudget();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
