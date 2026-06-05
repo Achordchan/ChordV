@@ -13712,6 +13712,62 @@ async function testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionF
   assert.deepEqual(deletedUploads, ["support-tickets/orphan.png"]);
 }
 
+async function testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteReply() {
+  let transactionCalls = 0;
+  let publishCalls = 0;
+  let cleanupCalls = 0;
+  let detailCalls = 0;
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
+      },
+      $transaction: async () => {
+        transactionCalls += 1;
+        throw new Error("transaction must not run after upload failure");
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => {
+        throw new Error("image bed upload failed");
+      },
+      deleteUploadedSupportTicketAttachmentBestEffort: async () => {
+        cleanupCalls += 1;
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        publishCalls += 1;
+      }
+    },
+    getAdminSupportTicketDetail: async () => {
+      detailCalls += 1;
+      return { id: "ticket_1" };
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replyAdminSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "please see attachment" },
+        {
+          path: path.join(tmpdir(), "upload-failure.png"),
+          originalname: "upload-failure.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "admin_1"
+      ),
+    /image bed upload failed/
+  );
+
+  assert.equal(transactionCalls, 0, "admin ticket reply must not write DB rows when attachment upload fails");
+  assert.equal(publishCalls, 0, "admin ticket reply must not publish when attachment upload fails");
+  assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
+  assert.equal(detailCalls, 0, "admin ticket reply must not refresh detail when attachment upload fails");
+}
+
 async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
   const writes: string[] = [];
   const service = createDevDataService({
@@ -14364,6 +14420,74 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
   assert.deepEqual(deletedUploads, ["support-tickets/client-orphan.png"]);
 }
 
+async function testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteReply() {
+  let transactionCalls = 0;
+  let publishCalls = 0;
+  let cleanupCalls = 0;
+  let detailCalls = 0;
+  const service = createClientTicketService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ({
+          id: "ticket_1",
+          title: "Need help",
+          status: "waiting_user",
+          subscriptionId: "sub_1",
+          teamId: null,
+          closedAt: null,
+          createdAt: new Date("2026-01-01T00:00:00.000Z"),
+          team: null
+        })
+      },
+      $transaction: async () => {
+        transactionCalls += 1;
+        throw new Error("transaction must not run after upload failure");
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => {
+        throw new Error("image bed upload failed");
+      },
+      deleteUploadedSupportTicketAttachmentBestEffort: async () => {
+        cleanupCalls += 1;
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        publishCalls += 1;
+      }
+    },
+    getClientSupportTicketDetail: async () => {
+      detailCalls += 1;
+      return { id: "ticket_1" };
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replyClientSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "please see attachment" },
+        {
+          path: path.join(tmpdir(), "client-upload-failure.png"),
+          originalname: "client-upload-failure.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "token"
+      ),
+    /image bed upload failed/
+  );
+
+  assert.equal(transactionCalls, 0, "client ticket reply must not write DB rows when attachment upload fails");
+  assert.equal(publishCalls, 0, "client ticket reply must not publish when attachment upload fails");
+  assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
+  assert.equal(detailCalls, 0, "client ticket reply must not refresh detail when attachment upload fails");
+}
+
 async function main() {
   await testSubscriptionUsageLockIsReentrantForNestedPanelSync();
   await testSubscriptionUsageLockTimesOutWithoutPoisoningLocalQueue();
@@ -14605,6 +14729,7 @@ async function main() {
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
+  await testAdminReplySupportTicketAttachmentUploadFailureDoesNotWriteReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
@@ -14615,6 +14740,7 @@ async function main() {
   await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
+  await testClientReplySupportTicketAttachmentUploadFailureDoesNotWriteReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");

@@ -45,6 +45,10 @@ function defaultReadError(message: string) {
   return message;
 }
 
+function isSupportTicketAttachmentUploadFailure(message: string) {
+  return /image bed|图床|attachment|附件|upload|上传|file exceeds|file too large|payload too large|multererror|too large|文件过大|Only image attachments|Attachment file/i.test(message);
+}
+
 function pickTicketId(
   tickets: ClientSupportTicketSummaryDto[],
   preferredId: string | null | undefined
@@ -258,7 +262,12 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
         await options.onUnauthorized?.();
         return null;
       }
-      setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "发送回复失败");
+      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "发送回复失败";
+      setTicketCenterError(
+        ticketReplyAttachment && isSupportTicketAttachmentUploadFailure(message)
+          ? `${message} 附件上传失败，工单回复未保存，请稍后重试或先发送纯文字回复。`
+          : message
+      );
       return null;
     } finally {
       setTicketSubmitting(false);

@@ -31,7 +31,12 @@ import {
 } from "../api/client";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import { filterByKeyword, isUncertainRequestFailure, readError } from "../utils/admin-filters";
+import {
+  filterByKeyword,
+  isSupportTicketAttachmentUploadFailure,
+  isUncertainRequestFailure,
+  readError
+} from "../utils/admin-filters";
 import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 
 type TicketOwnerFilter = "all" | "personal" | "team";
@@ -171,11 +176,16 @@ export function TicketsPage() {
       });
     } catch (reason) {
       const message = readError(reason, "发送回复失败");
-      const uncertain = isUncertainRequestFailure(message);
+      const attachmentUploadFailed = Boolean(replyAttachment) && isSupportTicketAttachmentUploadFailure(message);
+      const uncertain = !attachmentUploadFailed && isUncertainRequestFailure(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
-        title: uncertain ? "回复状态不确定" : "工单",
-        message: uncertain ? `${message} 回复可能已发送，请刷新工单确认。` : message
+        title: uncertain ? "回复状态不确定" : attachmentUploadFailed ? "附件上传失败" : "工单",
+        message: uncertain
+          ? `${message} 回复可能已发送，请刷新工单确认。`
+          : attachmentUploadFailed
+            ? `${message} 附件上传失败，工单回复未保存，请稍后重试或先发送纯文字回复。`
+            : message
       });
     } finally {
       setReplySaving(false);
