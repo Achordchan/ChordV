@@ -182,7 +182,7 @@ export function ReleasesPage() {
         version: releaseForm.version.trim(),
         minimumVersion: releaseForm.minimumVersion.trim(),
         forceUpgrade: releaseForm.forceUpgrade,
-        title: releaseForm.title.trim(),
+        title: releaseForm.title.trim() || releaseForm.version.trim(),
         changelog: splitLines(releaseForm.changelog)
       };
 

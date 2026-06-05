@@ -1021,7 +1021,7 @@ export interface CreateReleaseInputDto {
   platform: PlatformTarget;
   channel: ReleaseChannel;
   version: string;
-  displayTitle: string;
+  displayTitle?: string;
   changelog?: string[];
   minimumVersion: string;
   forceUpgrade?: boolean;

@@ -725,9 +725,9 @@ export class CreateReleaseDto {
   @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   version!: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  displayTitle!: string;
+  displayTitle?: string;
 
   @IsOptional()
   @IsArray()

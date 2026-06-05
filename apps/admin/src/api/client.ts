@@ -208,11 +208,12 @@ export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
 }
 
 export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
+  const version = input.version.trim();
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
     channel: "stable",
-    version: input.version,
-    displayTitle: input.title,
+    version,
+    displayTitle: input.title.trim() || version,
     changelog: input.changelog,
     minimumVersion: input.minimumVersion,
     forceUpgrade: input.forceUpgrade,

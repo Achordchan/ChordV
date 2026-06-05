@@ -70,8 +70,8 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
         </Group>
 
         <TextInput
-          label="展示标题"
-          placeholder="例如 1.0.3 日常更新"
+          label="展示标题（可选）"
+          placeholder="留空则使用版本号，例如 1.0.3"
           value={props.form.title}
           onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
         />

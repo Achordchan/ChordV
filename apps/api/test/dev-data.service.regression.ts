@@ -1662,6 +1662,41 @@ async function testAdminReleaseListAppliesFilters() {
   });
 }
 
+async function testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const createdPayloads: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        create: async (payload: Record<string, any>) => {
+          createdPayloads.push(payload);
+          return {
+            ...payload.data,
+            createdAt: now,
+            updatedAt: now,
+            artifacts: []
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.createRelease({
+    platform: "windows",
+    channel: "stable",
+    version: "1.1.6",
+    displayTitle: "   ",
+    changelog: [],
+    minimumVersion: "1.1.0",
+    forceUpgrade: false,
+    status: "draft"
+  });
+
+  assert.equal(createdPayloads.length, 1);
+  assert.equal(createdPayloads[0].data.displayTitle, "1.1.6");
+  assert.equal(result.displayTitle, "1.1.6");
+}
+
 async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
@@ -15148,6 +15183,7 @@ async function main() {
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
+  await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testAssertReleasePublishableDoesNotValidatePrimaryArtifactTwice();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();

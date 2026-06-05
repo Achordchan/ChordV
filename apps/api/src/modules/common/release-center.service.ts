@@ -110,13 +110,14 @@ export class ReleaseCenterService {
     const releaseId = createId("release");
     const version = normalizeVersion(input.version);
     const minimumVersion = normalizeVersion(input.minimumVersion);
+    const displayTitle = input.displayTitle?.trim() || version;
     assertMinimumVersionNotAboveRelease(version, minimumVersion);
     const baseReleaseData = {
       id: releaseId,
       platform: input.platform,
       channel: normalizeReleaseChannel(input.channel),
       version,
-      displayTitle: input.displayTitle.trim(),
+      displayTitle,
       changelog: normalizeChangelog(input.changelog),
       minimumVersion,
       forceUpgrade: input.forceUpgrade ?? false,
