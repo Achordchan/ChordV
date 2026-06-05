@@ -34,6 +34,7 @@ const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_VALIDATION_ENTRIES = 10_000;
 const DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS = 120_000;
+const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_IDLE_TIMEOUT_MS = 15_000;
 const configuredMaxExternalReleaseArtifactBytes = Number(
   process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES
 );
@@ -840,14 +841,34 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
         throw new BadRequestException("External full update ZIP response body is empty.");
       }
       fileHandle = await fs.open(absolutePath, "wx");
-      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-        const buffer = Buffer.from(chunk);
-        fileSizeBytes += BigInt(buffer.byteLength);
-        if (fileSizeBytes > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
-          throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
+      const reader = (response.body as {
+        getReader?: () => {
+          read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+          releaseLock?: () => void;
+        };
+      }).getReader?.();
+      if (!reader) {
+        throw new BadRequestException("External full update ZIP response body is not readable.");
+      }
+      try {
+        while (true) {
+          const { done, value } = await readExternalReleaseBodyChunkWithIdleTimeout(reader);
+          if (done) {
+            break;
+          }
+          if (!value) {
+            continue;
+          }
+          const buffer = Buffer.from(value);
+          fileSizeBytes += BigInt(buffer.byteLength);
+          if (fileSizeBytes > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
+            throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
+          }
+          hash.update(buffer);
+          await fileHandle.write(buffer);
         }
-        hash.update(buffer);
-        await fileHandle.write(buffer);
+      } finally {
+        reader.releaseLock?.();
       }
       await fileHandle.close();
       fileHandle = null;
@@ -873,6 +894,29 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
     try {
       await response?.body?.cancel();
     } catch {
+    }
+  }
+}
+
+async function readExternalReleaseBodyChunkWithIdleTimeout(reader: {
+  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+}) {
+  const idleTimeoutMs = readPositiveIntegerEnv(
+    "CHORDV_RELEASE_EXTERNAL_DOWNLOAD_IDLE_TIMEOUT_MS",
+    DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_IDLE_TIMEOUT_MS
+  );
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`External full update ZIP body stalled for ${idleTimeoutMs}ms.`));
+    }, idleTimeoutMs);
+    timeoutHandle.unref?.();
+  });
+  try {
+    return await Promise.race([reader.read(), timeoutTask]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
     }
   }
 }

@@ -847,7 +847,7 @@ export class ReleaseCenterService {
               actualFileHash: downloaded.fileHash
             };
           } finally {
-            await downloaded.cleanup();
+            await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
           }
         }
 
@@ -1161,13 +1161,15 @@ export class ReleaseCenterService {
         throw new BadRequestException("Windows releases require a ZIP full replacement artifact before publishing.");
       }
     }
+    const validationByArtifactId = new Map<string, AdminReleaseArtifactValidationDto>();
     for (const artifact of release.artifacts) {
       const artifactValidation = await this.validateReleaseArtifact(releaseId, artifact.id);
+      validationByArtifactId.set(artifact.id, artifactValidation);
       if (artifactValidation.status !== "ready") {
         throw new BadRequestException(`Release artifact ${artifact.fileName ?? artifact.id} is not publishable: ${artifactValidation.message}`);
       }
     }
-    const validation = await this.validateReleaseArtifact(releaseId, primaryArtifact.id);
+    const validation = validationByArtifactId.get(primaryArtifact.id) ?? (await this.validateReleaseArtifact(releaseId, primaryArtifact.id));
     if (validation.status !== "ready") {
       throw new BadRequestException(`主下载产物当前不可发布：${validation.message}`);
     }
@@ -1391,6 +1393,12 @@ export class ReleaseCenterService {
     await this.runReleaseCleanupBestEffort(label, () =>
       removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
     );
+  }
+
+  private async cleanupDownloadedExternalReleaseArtifact(
+    downloaded: Awaited<ReturnType<typeof downloadExternalReleaseArtifactFileStrict>>
+  ) {
+    await this.runReleaseCleanupBestEffort("temporary external release artifact", downloaded.cleanup);
   }
 
   private async runReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {

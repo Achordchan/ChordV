@@ -22,6 +22,7 @@ import { RuntimeComponentsService } from "../src/modules/common/runtime-componen
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import {
   assertReleaseArtifactClientUsable,
+  downloadExternalReleaseArtifactFileStrict,
   fetchExternalReleaseArtifactMetadata,
   resolveReleaseArtifactAbsolutePath,
   resolveReleaseArtifactForClient
@@ -1370,6 +1371,51 @@ async function testExternalReleaseMetadataRejectsStalledResponse() {
   }
 }
 
+async function testExternalReleaseDownloadRejectsStalledBody() {
+  const previousAllowPrivate = process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS;
+  const previousTotalTimeout = process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS;
+  const previousIdleTimeout = process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_IDLE_TIMEOUT_MS;
+  process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS = "true";
+  process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS = "5000";
+  process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_IDLE_TIMEOUT_MS = "25";
+  const server = createServer((_request, response) => {
+    response.writeHead(200, {
+      "content-type": "application/zip",
+      "content-length": "1024"
+    });
+    response.write(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const port = address && typeof address === "object" ? address.port : 0;
+
+  try {
+    await assert.rejects(
+      () => downloadExternalReleaseArtifactFileStrict(`http://127.0.0.1:${port}/ChordV-full.zip`),
+      /body stalled/,
+      "external release full ZIP downloads must fail on idle body timeout instead of waiting for total timeout"
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (previousAllowPrivate === undefined) {
+      delete process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS;
+    } else {
+      process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS = previousAllowPrivate;
+    }
+    if (previousTotalTimeout === undefined) {
+      delete process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS = previousTotalTimeout;
+    }
+    if (previousIdleTimeout === undefined) {
+      delete process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_IDLE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_IDLE_TIMEOUT_MS = previousIdleTimeout;
+    }
+  }
+}
+
 async function testReleaseDownloadRejectsDraftArtifacts() {
   const service = createReleaseCenterService({
     prisma: {
@@ -1594,6 +1640,66 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
 
   assert.equal(updates.length, 1);
   assert.equal(result.status, "published");
+}
+
+async function testAssertReleasePublishableDoesNotValidatePrimaryArtifactTwice() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const validationCalls: string[] = [];
+  const primaryArtifact = {
+    id: "artifact_primary",
+    releaseId: "release_1",
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    isPrimary: true,
+    fileName: "ChordV_1.1.6_windows.zip",
+    downloadUrl: "https://example.com/ChordV_1.1.6_windows.zip",
+    externalUrl: "https://example.com/ChordV_1.1.6_windows.zip",
+    storagePath: null,
+    clientSha256: "a".repeat(64),
+    clientSizeBytes: BigInt(1234),
+    createdAt: now,
+    updatedAt: now
+  };
+  const secondaryArtifact = {
+    ...primaryArtifact,
+    id: "artifact_secondary",
+    isPrimary: false,
+    fileName: "ChordV_1.1.6_x64-setup.exe",
+    type: "setup.exe",
+    deliveryMode: "installer",
+    downloadUrl: "https://example.com/ChordV_1.1.6_x64-setup.exe",
+    externalUrl: "https://example.com/ChordV_1.1.6_x64-setup.exe"
+  };
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => ({
+          id: "release_1",
+          platform: "windows",
+          channel: "stable",
+          version: "1.1.6",
+          minimumVersion: "1.1.0",
+          status: "draft",
+          artifacts: [primaryArtifact, secondaryArtifact]
+        })
+      }
+    },
+    validateReleaseArtifact: async (_releaseId: string, artifactId: string) => {
+      validationCalls.push(artifactId);
+      return {
+        status: "ready",
+        releaseId: "release_1",
+        artifactId,
+        message: "ready"
+      };
+    },
+    assertReleaseRecordMutable: () => undefined
+  });
+
+  await service["assertReleasePublishable"]("release_1");
+
+  assert.deepEqual(validationCalls, ["artifact_primary", "artifact_secondary"]);
 }
 
 async function testCreateReleaseArtifactDelegatesToReleaseCenter() {
@@ -9991,6 +10097,32 @@ async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
   ]);
 }
 
+async function testExternalReleaseDownloadCleanupReturnsWhenCleanupStalls() {
+  const warnings: string[] = [];
+  const service = createReleaseCenterService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    }
+  });
+
+  await Promise.race([
+    service["cleanupDownloadedExternalReleaseArtifact"]({
+      absolutePath: path.join(tmpdir(), "stalled-release.zip"),
+      resolvedUrl: "https://example.com/ChordV-full.zip",
+      fileName: "ChordV-full.zip",
+      fileSizeBytes: 1024n,
+      fileHash: "a".repeat(64),
+      cleanup: async () => new Promise<never>(() => undefined)
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("external release download cleanup waited for stalled fs cleanup")), 750);
+    })
+  ]);
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /temporary external release artifact/);
+}
+
 async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => ({
@@ -13698,6 +13830,7 @@ async function main() {
   testReleaseArtifactClientUsableRequiresHashForInstallerDownloads();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
+  await testExternalReleaseDownloadRejectsStalledBody();
   await testReleaseDownloadRejectsDraftArtifacts();
   await testReleaseDownloadRejectsUploadedArtifactWithStaleMetadata();
   await testRuntimeDownloadRejectsDisabledComponents();
@@ -13705,6 +13838,7 @@ async function main() {
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
+  await testAssertReleasePublishableDoesNotValidatePrimaryArtifactTwice();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
   await testValidateReleaseArtifactDelegatesToReleaseCenter();
@@ -13834,6 +13968,7 @@ async function main() {
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
+  await testExternalReleaseDownloadCleanupReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
   await testUpdateCheckSkipsUploadedArtifactWithStaleMetadata();
