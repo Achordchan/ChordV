@@ -67,14 +67,6 @@ export type AdminReleaseArtifactRecordDto = {
   updatedAt?: string | null;
 };
 
-export type AdminReleaseArtifactValidationDto = {
-  artifactId: string;
-  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
-  message: string;
-  actualFileSizeBytes?: string | null;
-  actualFileHash?: string | null;
-};
-
 export type AdminReleaseRecordDto = {
   id: string;
   platform: AdminReleasePlatform;
@@ -296,26 +288,6 @@ export async function deleteAdminReleaseArtifact(releaseId: string, artifactId: 
     timeoutMs: ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
-}
-
-export async function verifyAdminReleaseArtifact(releaseId: string, artifactId: string) {
-  const result = await request<{
-    artifactId: string;
-    status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
-    message: string;
-    actualFileSizeBytes?: string | null;
-    actualFileHash?: string | null;
-  }>(`/admin/releases/${releaseId}/artifacts/${artifactId}/verify`, {
-    method: "POST",
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
-  });
-  return {
-    artifactId: result.artifactId,
-    status: result.status,
-    message: result.message,
-    actualFileSizeBytes: result.actualFileSizeBytes ?? null,
-    actualFileHash: result.actualFileHash ?? null
-  } satisfies AdminReleaseArtifactValidationDto;
 }
 
 export async function uploadAdminReleaseArtifact(

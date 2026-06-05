@@ -534,11 +534,6 @@ export class AdminController {
     return this.devDataService.deleteReleaseArtifact(releaseId, artifactId);
   }
 
-  @Post("releases/:releaseId/artifacts/:artifactId/verify")
-  verifyReleaseArtifact(@Param("releaseId") releaseId: string, @Param("artifactId") artifactId: string) {
-    return this.devDataService.validateReleaseArtifact(releaseId, artifactId);
-  }
-
   @Post("releases/:releaseId/artifacts/:artifactId/upload")
   @UseInterceptors(
     UploadedTempFileCleanupInterceptor,

@@ -1,7 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import * as path from "node:path";
 import type {
-  AdminReleaseArtifactValidationDto,
   AdminReleaseRecordDto,
   ClientUpdateCheckDto,
   ClientUpdateCheckResultDto,
@@ -19,7 +18,6 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { PrismaService } from "./prisma.service";
 import {
-  assertReleaseArtifactDeliveryAllowed,
   assertReleaseArtifactTypeAllowed,
   buildReleaseArtifactDownloadUrl,
   compareSemver,
@@ -671,93 +669,6 @@ export class ReleaseCenterService {
       "delete release artifact response refresh"
     );
   }
-
-  async validateReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseArtifactValidationDto> {
-    const artifact = await this.prisma.releaseArtifact.findFirst({
-      where: { id: artifactId, releaseId }
-    });
-    if (!artifact) {
-      throw new NotFoundException("Release artifact does not exist.");
-    }
-
-    const release = await this.ensureReleaseExists(releaseId);
-    const releasePlatform = release.platform as PlatformTarget;
-    const artifactType = fromPrismaReleaseArtifactType(artifact.type);
-    const artifactDeliveryMode = artifact.deliveryMode as UpdateDeliveryMode;
-    try {
-      assertReleaseArtifactTypeAllowed(releasePlatform, artifactType);
-      assertReleaseArtifactDeliveryAllowed(releasePlatform, artifactType, artifactDeliveryMode);
-    } catch (error) {
-      return {
-        artifactId,
-        status: "metadata_mismatch",
-        message: error instanceof Error ? error.message : "Release artifact protocol is invalid."
-      };
-    }
-
-    if (artifact.source === "external") {
-      const url = artifact.downloadUrl.trim();
-      if (!url || !/^https?:\/\//i.test(url)) {
-        return {
-          artifactId,
-          status: "missing_download_url",
-          message: "External download URL must be a complete http/https URL."
-        };
-      }
-      try {
-        return {
-          artifactId,
-          status: "ready",
-          message: "External download URL is configured. No remote download or SHA/ZIP validation is required.",
-          actualFileSizeBytes: artifact.fileSizeBytes?.toString() ?? null,
-          actualFileHash: artifact.fileHash ?? null
-        };
-      } catch (error) {
-        return {
-          artifactId,
-          status: "invalid_link",
-          message: error instanceof Error ? error.message : "External download URL is invalid."
-        };
-      }
-    }
-
-    if (!artifact.storedFilePath) {
-      return {
-        artifactId,
-        status: "missing_file",
-        message: "Uploaded artifact file is missing. Please upload the package again."
-      };
-    }
-
-    try {
-      await ensureFileReadable(resolveReleaseArtifactAbsolutePath(artifact.storedFilePath));
-    } catch (error) {
-      return {
-        artifactId,
-        status: "missing_file",
-        message: error instanceof Error ? error.message : "Uploaded artifact file is missing. Please upload it again."
-      };
-    }
-
-    try {
-      return {
-        artifactId,
-        status: "ready",
-        message: "Uploaded file exists. No SHA or ZIP validation is required.",
-        actualFileSizeBytes: artifact.fileSizeBytes?.toString() ?? null,
-        actualFileHash: artifact.fileHash ?? null
-      };
-    } catch (error) {
-      return {
-        artifactId,
-        status: "metadata_mismatch",
-        message: error instanceof Error ? error.message : "Uploaded artifact settings are invalid.",
-        actualFileSizeBytes: artifact.fileSizeBytes?.toString() ?? null,
-        actualFileHash: artifact.fileHash ?? null
-      };
-    }
-  }
-
 
   async getReleaseArtifactDownloadDescriptor(artifactId: string) {
     const artifact = await this.prisma.releaseArtifact.findUnique({

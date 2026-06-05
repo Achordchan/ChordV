@@ -1938,7 +1938,6 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
 
 async function testAssertReleasePublishableDoesNotValidateArtifacts() {
   const now = new Date("2026-01-01T00:00:00.000Z");
-  const validationCalls: string[] = [];
   const primaryArtifact = {
     id: "artifact_primary",
     releaseId: "release_1",
@@ -1979,21 +1978,10 @@ async function testAssertReleasePublishableDoesNotValidateArtifacts() {
         })
       }
     },
-    validateReleaseArtifact: async (_releaseId: string, artifactId: string) => {
-      validationCalls.push(artifactId);
-      return {
-        status: "ready",
-        releaseId: "release_1",
-        artifactId,
-        message: "ready"
-      };
-    },
     assertReleaseRecordMutable: () => undefined
   });
 
   await service["assertReleasePublishable"]("release_1");
-
-  assert.deepEqual(validationCalls, []);
 }
 
 async function testCreateReleaseArtifactDelegatesToReleaseCenter() {
@@ -2043,26 +2031,6 @@ async function testConvertToTeamDelegatesToAdminSubscriptionService() {
     }
   ]);
   assert.equal(result.sourceSubscriptionId, "sub_personal");
-}
-
-async function testValidateReleaseArtifactDelegatesToReleaseCenter() {
-  const calls: Array<{ releaseId: string; artifactId: string }> = [];
-  const service = createDevDataService({
-    releaseCenterService: {
-      validateReleaseArtifact: async (releaseId: string, artifactId: string) => {
-        calls.push({ releaseId, artifactId });
-        return {
-          status: "ready",
-          artifactId,
-          releaseId
-        };
-      }
-    }
-  });
-
-  const result = await service.validateReleaseArtifact("release_1", "artifact_1");
-  assert.equal(result.status, "ready");
-  assert.deepEqual(calls, [{ releaseId: "release_1", artifactId: "artifact_1" }]);
 }
 
 async function testHeartbeatWithinTtlSucceeds() {
@@ -12100,191 +12068,6 @@ async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
   assert.deepEqual(result.artifacts, []);
 }
 
-async function testValidateExternalReleaseArtifactDoesNotPersistRemoteMetadata() {
-  const artifact = makeReleaseCenterTestArtifact({
-    source: "external",
-    type: "setup.exe",
-    deliveryMode: "desktop_installer_download",
-    downloadUrl: "https://example.com/ChordV-setup.exe",
-    fileName: "old.exe",
-    fileSizeBytes: null,
-    fileHash: null
-  });
-  const service = createReleaseCenterService({
-    ensureReleaseExists: async () => makeReleaseCenterTestRelease({ platform: "windows" }),
-    resolveExternalReleaseArtifactMetadata: async () => {
-      throw new Error("manual validation must not probe external artifact metadata");
-    },
-    prisma: {
-      releaseArtifact: {
-        findFirst: async () => artifact,
-        update: async () => {
-          throw new Error("metadata write failed");
-        }
-      }
-    }
-  });
-
-  const result = await service.validateReleaseArtifact("release_1", "artifact_1");
-
-  assert.equal(result.status, "ready");
-  assert.match(result.message, /No remote download/);
-  assert.equal(result.actualFileSizeBytes, null);
-  assert.equal(result.actualFileHash, null);
-}
-
-async function testValidateExternalReleaseArtifactAllowsMissingHashForClientUsableDownloads() {
-  const artifact = makeReleaseCenterTestArtifact({
-    source: "external",
-    type: "setup.exe",
-    deliveryMode: "desktop_installer_download",
-    downloadUrl: "https://example.com/ChordV-setup.exe",
-    fileName: "ChordV-setup.exe",
-    fileSizeBytes: 123n,
-    fileHash: null
-  });
-  const service = createReleaseCenterService({
-    ensureReleaseExists: async () => makeReleaseCenterTestRelease({ platform: "windows" }),
-    resolveExternalReleaseArtifactMetadata: async () => {
-      throw new Error("manual validation must not probe external artifact metadata");
-    },
-    prisma: {
-      releaseArtifact: {
-        findFirst: async () => artifact,
-        update: async () => {
-          throw new Error("metadata should not need refresh");
-        }
-      }
-    }
-  });
-
-  const result = await service.validateReleaseArtifact("release_1", "artifact_1");
-
-  assert.equal(result.status, "ready");
-  assert.equal(result.actualFileSizeBytes, "123");
-  assert.equal(result.actualFileHash, null);
-}
-
-async function testValidateExternalFullZipDoesNotDownloadOrBackfillMetadata() {
-  const zip = createStoredZipWithSingleEntry("ChordV.exe", Buffer.from("not-a-real-pe"));
-  const updates: Array<Record<string, any>> = [];
-  let requestCount = 0;
-  const server = createServer((_request, response) => {
-    requestCount += 1;
-    response.writeHead(200, {
-      "content-type": "application/zip",
-      "content-length": String(zip.byteLength)
-    });
-    response.end(zip);
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const artifact = makeReleaseCenterTestArtifact({
-      source: "external",
-      type: "zip",
-      deliveryMode: "desktop_full_replace",
-      downloadUrl: `http://127.0.0.1:${address.port}/ChordV_1.1.6_x64-full.zip`,
-      fileName: "ChordV_1.1.6_x64-full.zip",
-      fileSizeBytes: null,
-      fileHash: null
-    });
-    const service = createReleaseCenterService({
-      ensureReleaseExists: async () =>
-        makeReleaseCenterTestRelease({
-          platform: "windows",
-          version: "1.1.6"
-        }),
-      prisma: {
-        releaseArtifact: {
-          findFirst: async () => artifact,
-          update: async (payload: Record<string, any>) => {
-            updates.push(payload);
-            return {
-              ...artifact,
-              ...payload.data
-            };
-          }
-        }
-      }
-    });
-
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateReleaseArtifact("release_1", "artifact_1"));
-
-    assert.equal(requestCount, 0, "external full ZIP validation must not download the remote artifact");
-    assert.equal(updates.length, 0, "external full ZIP validation must not backfill size/hash metadata");
-    assert.equal(result.status, "ready");
-    assert.match(result.message, /No remote download/);
-    assert.equal(result.actualFileSizeBytes, null);
-    assert.equal(result.actualFileHash, null);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-}
-
-async function testValidateUploadedFullZipDoesNotBackfillMissingMetadata() {
-  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
-  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-uploaded-release-metadata-"));
-  const storedFilePath = path.join("release_1", "artifact_1", "ChordV_1.1.6_x64-full.zip");
-  const zip = createStoredZipWithSingleEntry("ChordV.exe", Buffer.from("not-a-real-pe"));
-  const artifact = makeReleaseCenterTestArtifact({
-    source: "uploaded",
-    type: "zip",
-    deliveryMode: "desktop_full_replace",
-    downloadUrl: "/api/downloads/releases/artifact_1",
-    allowClientMirror: false,
-    fileName: "ChordV_1.1.6_x64-full.zip",
-    storedFilePath,
-    fileSizeBytes: null,
-    fileHash: null
-  });
-  const updates: Array<Record<string, any>> = [];
-
-  try {
-    process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
-    const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, zip);
-
-    const service = createReleaseCenterService({
-      ensureReleaseExists: async () =>
-        makeReleaseCenterTestRelease({
-          platform: "windows",
-          version: "1.1.6"
-        }),
-      prisma: {
-        releaseArtifact: {
-          findFirst: async () => artifact,
-          update: async (payload: Record<string, any>) => {
-            updates.push(payload);
-            return {
-              ...artifact,
-              ...payload.data
-            };
-          }
-        }
-      }
-    });
-
-    const result = await service.validateReleaseArtifact("release_1", "artifact_1");
-
-    assert.equal(updates.length, 0, "uploaded full ZIP validation must not backfill size/hash metadata");
-    assert.equal(result.status, "ready");
-    assert.match(result.message, /No SHA or ZIP validation/);
-    assert.equal(result.actualFileSizeBytes, null);
-    assert.equal(result.actualFileHash, null);
-  } finally {
-    if (previousReleaseStorageRoot === undefined) {
-      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
-    } else {
-      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
-    }
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
-
 async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   const service = createReleaseCenterService({
     prisma: {
@@ -12328,12 +12111,7 @@ async function testPublishWindowsReleaseAllowsAnyInstallerArtifact() {
             artifacts: [setupArtifact]
           })
       }
-    },
-    validateReleaseArtifact: async () => ({
-      artifactId: "artifact_1",
-      status: "ready",
-      message: "ready"
-    })
+    }
   });
 
   await service["assertReleasePublishable"]("release_1");
@@ -16376,7 +16154,6 @@ async function main() {
   await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
-  await testValidateReleaseArtifactDelegatesToReleaseCenter();
   await testHeartbeatWithinTtlSucceeds();
   await testHeartbeatWithinGraceStillSucceeds();
   await testHeartbeatBeyondGraceFailsWithLeaseExpired();
@@ -16532,10 +16309,6 @@ async function main() {
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
-  await testValidateExternalReleaseArtifactDoesNotPersistRemoteMetadata();
-  await testValidateExternalReleaseArtifactAllowsMissingHashForClientUsableDownloads();
-  await testValidateExternalFullZipDoesNotDownloadOrBackfillMetadata();
-  await testValidateUploadedFullZipDoesNotBackfillMissingMetadata();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseAllowsAnyInstallerArtifact();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();

@@ -9,16 +9,12 @@ import {
   UnauthorizedException
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
-import { promises as fs } from "node:fs";
-import * as path from "node:path";
 import type {
   AdminAnnouncementRecordDto,
   AdminNodeRecordDto,
   AdminNodePanelInboundDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
-  AdminReleaseArtifactDto,
-  AdminReleaseArtifactValidationDto,
   AdminReleaseRecordDto,
   AdminSnapshotDto,
   AdminSupportTicketDetailDto,
@@ -67,7 +63,6 @@ import type {
   DashboardSnapshotDto,
   PlatformTarget,
   PolicyBundleDto,
-  ReleaseArtifactType,
   ReleaseChannel,
   ReleaseStatus,
   ReplyClientSupportTicketInputDto,
@@ -81,7 +76,6 @@ import type {
   TeamMemberRole,
   TeamStatus,
   UploadReleaseArtifactInputDto,
-  UpdateDeliveryMode,
   UpdateAnnouncementInputDto,
   UpdateNodeInputDto,
   UpdatePlanInputDto,
@@ -128,35 +122,7 @@ import {
   toNodeSummary
 } from "./node-import.utils";
 import { PrismaService } from "./prisma.service";
-import {
-  assertExternalReleaseArtifactUrlMatchesType,
-  buildReleaseArtifactDownloadUrl,
-  buildReleaseArtifactDownloadUrlForClient,
-  calculateFileSha256,
-  compareSemver,
-  createId,
-  defaultDeliveryModeForPlatform,
-  fetchExternalReleaseArtifactMetadata,
-  fromPrismaReleaseArtifactType,
-  normalizeReleaseChannel,
-  releaseArtifactStorageRoot,
-  resolveReleaseArtifactAbsolutePath,
-  sanitizeReleaseArtifactFileName,
-  normalizeBigInt,
-  normalizeChangelog,
-  normalizeNullableText,
-  normalizeOptionalBoolean,
-  normalizePublishedAt,
-  normalizeVersion,
-  assertReleaseArtifactTypeAllowed as assertReleaseArtifactTypeAllowedForRelease,
-  defaultDeliveryModeForArtifact,
-  ensureFileReadable,
-  removeReleaseArtifactDirectory,
-  removeReleaseArtifactFile,
-  toAdminReleaseArtifactRecord,
-  toAdminReleaseRecord,
-  toPrismaReleaseArtifactType
-} from "./release-center.utils";
+import { createId } from "./release-center.utils";
 import { ReleaseCenterService } from "./release-center.service";
 import {
   isEffectiveSubscription,
@@ -987,51 +953,8 @@ export class DevDataService implements OnModuleInit {
     return this.releaseCenterService.deleteReleaseArtifact(releaseId, artifactId);
   }
 
-  async validateReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseArtifactValidationDto> {
-    return this.releaseCenterService.validateReleaseArtifact(releaseId, artifactId);
-  }
-
   async getReleaseArtifactDownloadDescriptor(artifactId: string) {
     return this.releaseCenterService.getReleaseArtifactDownloadDescriptor(artifactId);
-  }
-
-  private async prepareUploadedReleaseArtifactFile(
-    releaseId: string,
-    artifactId: string,
-    file: UploadedReleaseFile,
-    preferredFileName?: string | null
-  ) {
-    const finalFileName = sanitizeReleaseArtifactFileName(preferredFileName?.trim() || file.originalname || `${artifactId}.bin`);
-    const storedFilePath = path.join(releaseId, artifactId, finalFileName);
-    const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
-
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.rm(absolutePath, { force: true });
-    await fs.rename(file.path, absolutePath);
-
-    return {
-      absolutePath,
-      storedFilePath,
-      fileName: finalFileName,
-      fileSizeBytes: BigInt(file.size),
-      fileHash: await calculateFileSha256(absolutePath),
-      downloadUrl: buildReleaseArtifactDownloadUrl(artifactId)
-    };
-  }
-
-  private async getAdminRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
-    const row = await this.prisma.release.findUnique({
-      where: { id: releaseId },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-        }
-      }
-    });
-    if (!row) {
-      throw new NotFoundException("发布记录不存在");
-    }
-    return toAdminReleaseRecord(row);
   }
 
   private async ensureReleaseExists(releaseId: string) {
@@ -1041,20 +964,6 @@ export class DevDataService implements OnModuleInit {
     });
     if (!row) {
       throw new NotFoundException("发布记录不存在");
-    }
-    return row;
-  }
-
-  private async ensureReleaseArtifactExists(releaseId: string, artifactId: string) {
-    const row = await this.prisma.releaseArtifact.findFirst({
-      where: {
-        id: artifactId,
-        releaseId
-      },
-      select: { id: true }
-    });
-    if (!row) {
-      throw new NotFoundException("发布产物不存在");
     }
     return row;
   }
@@ -1316,72 +1225,6 @@ export class DevDataService implements OnModuleInit {
     input: ConvertSubscriptionToTeamInputDto
   ): Promise<ConvertSubscriptionToTeamResultDto> {
     return this.adminSubscriptionService.convertPersonalSubscriptionToTeam(subscriptionId, input);
-  }
-
-  private async assertReleasePublishable(releaseId: string) {
-    const release = await this.prisma.release.findUnique({
-      where: { id: releaseId },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-        }
-      }
-    });
-    if (!release) {
-      throw new NotFoundException("发布记录不存在");
-    }
-    const primaryArtifact = release.artifacts.find((item) => item.isPrimary) ?? release.artifacts[0];
-    if (!primaryArtifact) {
-      throw new BadRequestException("请先上传或配置至少一个安装产物，再发布版本");
-    }
-    const validation = await this.validateReleaseArtifact(releaseId, primaryArtifact.id);
-    if (validation.status !== "ready") {
-      throw new BadRequestException(`主下载产物当前不可发布：${validation.message}`);
-    }
-  }
-
-  private assertReleaseArtifactsMutable(release: { status: string }) {
-    if (release.status === "published") {
-      throw new BadRequestException("请先撤回发布，再调整安装产物。");
-    }
-  }
-
-  private async prepareInitialExternalReleaseArtifact(
-    platform: PlatformTarget,
-    releaseId: string,
-    input: CreateReleaseArtifactInputDto
-  ) {
-    const source = input.source ?? "external";
-    if (source !== "external") {
-      throw new BadRequestException("首个安装产物只支持外部链接，请先创建草稿后再走上传接口。");
-    }
-    assertReleaseArtifactTypeAllowedForRelease(platform, input.type);
-    assertExternalReleaseArtifactUrlMatchesType(input.type, input.downloadUrl);
-
-    const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
-    const externalMetadata = await fetchExternalReleaseArtifactMetadata(
-      input.downloadUrl,
-      defaultMirrorPrefix
-    );
-    const artifactId = createId("artifact");
-    const isFullPackage = normalizeOptionalBoolean(input.isFullPackage);
-
-    return {
-      id: artifactId,
-      releaseId,
-      source,
-      type: toPrismaReleaseArtifactType(input.type),
-      deliveryMode: input.deliveryMode ?? defaultDeliveryModeForArtifact(input.type),
-      downloadUrl: input.downloadUrl.trim(),
-      defaultMirrorPrefix,
-      allowClientMirror: input.allowClientMirror ?? true,
-      fileName: externalMetadata?.fileName ?? normalizeNullableText(input.fileName),
-      storedFilePath: null,
-      fileSizeBytes: externalMetadata?.fileSizeBytes ?? normalizeBigInt(input.fileSizeBytes),
-      fileHash: externalMetadata?.fileHash ?? normalizeNullableText(input.fileHash),
-      isPrimary: true,
-      isFullPackage: isFullPackage ?? true
-    };
   }
 
   async listAdminTeams(): Promise<AdminTeamRecordDto[]> {

@@ -183,14 +183,6 @@ export interface AdminReleaseArtifactDto {
   updatedAt: string;
 }
 
-export interface AdminReleaseArtifactValidationDto {
-  artifactId: string;
-  status: "ready" | "missing_file" | "metadata_mismatch" | "missing_download_url" | "invalid_link";
-  message: string;
-  actualFileSizeBytes?: string | null;
-  actualFileHash?: string | null;
-}
-
 export interface AdminReleaseRecordDto {
   id: string;
   platform: PlatformTarget;
