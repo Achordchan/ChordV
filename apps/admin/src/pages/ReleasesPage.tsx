@@ -247,6 +247,15 @@ export function ReleasesPage() {
       return;
     }
 
+    if (record.platform === "windows" && !hasWindowsFullReplaceArtifact(record)) {
+      notifications.show({
+        color: "yellow",
+        title: "发布中心",
+        message: "Windows 发布前必须包含 ZIP 全量替换包（zip + desktop_full_replace）。"
+      });
+      return;
+    }
+
     if (!window.confirm(`Publish ${record.version}? This immediately changes the client update channel.`)) {
       return;
     }
@@ -330,15 +339,64 @@ export function ReleasesPage() {
     }
   }
 
+  function getEditingArtifact() {
+    if (!artifactEditor?.releaseId || !artifactEditor.artifactId) {
+      return null;
+    }
+    return (
+      releases
+        .find((item) => item.id === artifactEditor.releaseId)
+        ?.artifacts.find((item) => item.id === artifactEditor.artifactId) ?? null
+    );
+  }
+
+  function isUploadFileRequired() {
+    if (!artifactEditor) {
+      return false;
+    }
+    const isExternal = artifactForm.source === "external" || artifactForm.type === "external";
+    if (isExternal || artifactForm.selectedFile) {
+      return false;
+    }
+    if (!artifactEditor.artifactId) {
+      return true;
+    }
+    return getEditingArtifact()?.source !== "uploaded";
+  }
+
+  function validateArtifactEditorInput() {
+    const isExternal = artifactForm.source === "external" || artifactForm.type === "external";
+    if (isExternal) {
+      if (!artifactForm.downloadUrl.trim()) {
+        return "请先填写外链安装产物的下载地址。";
+      }
+      return null;
+    }
+    if (isUploadFileRequired()) {
+      return "切换为上传产物时，请先选择要上传的安装包文件。";
+    }
+    return null;
+  }
+
   async function saveArtifact() {
     if (!artifactEditor) return;
 
     let createdReleaseId: string | null = null;
     let createdViaAtomicFlow = false;
     try {
-      setSaving(true);
       let releaseId = artifactEditor.releaseId;
       const isExternal = artifactForm.source === "external" || artifactForm.type === "external";
+      const validationMessage = validateArtifactEditorInput();
+      if (validationMessage) {
+        notifications.show({
+          color: "yellow",
+          title: "安装产物信息不完整",
+          message: validationMessage
+        });
+        return;
+      }
+
+      setSaving(true);
       const externalPayload = isExternal
         ? {
             source: "external" as const,
@@ -728,6 +786,7 @@ export function ReleasesPage() {
               : "保存产物"
         }
         form={artifactForm}
+        uploadFileRequired={isUploadFileRequired()}
         onClose={closeArtifactEditor}
         onChange={setArtifactForm}
         onSubmit={() => void saveArtifact()}
@@ -740,6 +799,10 @@ function upsertRelease(current: AdminReleaseRecordDto[], next: AdminReleaseRecor
   const existing = current.some((item) => item.id === next.id);
   if (!existing) return [next, ...current];
   return current.map((item) => (item.id === next.id ? next : item));
+}
+
+function hasWindowsFullReplaceArtifact(record: AdminReleaseRecordDto) {
+  return record.artifacts.some((artifact) => artifact.type === "zip" && artifact.deliveryMode === "desktop_full_replace");
 }
 
 function splitLines(value: string) {

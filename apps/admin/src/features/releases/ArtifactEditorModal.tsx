@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, FileInput, Group, Modal, Select, SegmentedControl, Stack, Switch, Text, TextInput } from "@mantine/core";
+import { Alert, Button, FileInput, Group, Modal, Select, SegmentedControl, Stack, Switch, TextInput } from "@mantine/core";
 import type { ArtifactEditorFormState } from "./types";
 import { releaseArtifactTypeOptionsForPlatform } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
@@ -11,6 +11,7 @@ type ArtifactEditorModalProps = {
   submitLabel: string;
   platform: AdminReleasePlatform;
   form: ArtifactEditorFormState;
+  uploadFileRequired: boolean;
   onClose: () => void;
   onChange: (value: ArtifactEditorFormState) => void;
   onSubmit: () => void;
@@ -35,8 +36,8 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             })
           }
           data={[
-            { label: "上传安装器", value: "uploaded" },
-            { label: "外部安装器链接", value: "external" }
+            { label: "上传安装包", value: "uploaded" },
+            { label: "外部安装包链接", value: "external" }
           ]}
         />
 
@@ -62,35 +63,20 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
 
         {usesExternalLink ? (
           <>
-            <Alert color="blue" variant="light">
-              {props.creatingRelease
-                ? "保存后会一次性创建发布记录和首个外部安装产物，不会留下空白草稿。文件大小由后端探测后再回填。"
-                : "这里先只保留外链本身和加速前缀。文件大小由后端探测后再回填，前端不再摆空字段。"}
-            </Alert>
-            {(props.form.fileSizeBytes !== "" || props.form.fileName.trim()) ? (
-              <Stack gap={6}>
-                <Text size="sm" fw={500}>
-                  已回填的元信息
-                </Text>
-                <Group gap="xs" wrap="wrap">
-                  {props.form.fileName.trim() ? <Badge variant="light">文件名：{props.form.fileName.trim()}</Badge> : null}
-                  {props.form.fileSizeBytes !== "" ? <Badge variant="light">大小：{props.form.fileSizeBytes} 字节</Badge> : null}
-                </Group>
-              </Stack>
-            ) : null}
             <TextInput
               label="下载地址"
               placeholder={
                 props.platform === "windows"
                   ? "https://github.com/your/repo/releases/download/v1.0.2/ChordV_1.0.2_x64-full.zip"
-                  : "https://github.com/你的仓库/releases/download/v1.0.2/ChordV_1.0.2.dmg"
+                  : "https://github.com/your/repo/releases/download/v1.0.2/ChordV_1.0.2.dmg"
               }
               value={props.form.downloadUrl}
               onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+              error={!props.form.downloadUrl.trim() ? "请填写外部安装包下载地址。" : undefined}
             />
             <TextInput
               label="默认加速前缀"
-              description="可选。直接填写加速域名前缀即可，比如 https://ghfast.top/ 。留空时就直接使用原始下载地址。"
+              description="可选。直接填写加速域名前缀即可，比如 https://ghfast.top/。留空时直接使用原始下载地址。"
               placeholder="例如 https://ghfast.top/"
               value={props.form.defaultMirrorPrefix}
               onChange={(event) => props.onChange({ ...props.form, defaultMirrorPrefix: event.currentTarget.value })}
@@ -100,26 +86,6 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               onChange={(event) => props.onChange({ ...props.form, allowClientMirror: event.currentTarget.checked })}
               label="允许客户端自定义加速前缀覆盖默认值"
             />
-            <TextInput
-              label="文件名"
-              placeholder="可选，用于展示安装器名称"
-              value={props.form.fileName}
-              onChange={(event) => props.onChange({ ...props.form, fileName: event.currentTarget.value })}
-            />
-            <TextInput
-              label="File size bytes"
-              description="Required for Windows ZIP full replacement updates when the server cannot infer Content-Length."
-              placeholder="Example: 52428800"
-              value={props.form.fileSizeBytes}
-              onChange={(event) => props.onChange({ ...props.form, fileSizeBytes: event.currentTarget.value.trim() })}
-            />
-            <TextInput
-              label="SHA256"
-              description="Required for Windows ZIP full replacement updates."
-              placeholder="64-character SHA256 hex"
-              value={props.form.fileHash}
-              onChange={(event) => props.onChange({ ...props.form, fileHash: event.currentTarget.value.trim() })}
-            />
           </>
         ) : (
           <>
@@ -128,33 +94,14 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               placeholder="选择安装包文件"
               value={props.form.selectedFile}
               onChange={(file) => props.onChange({ ...props.form, selectedFile: file, fileName: file?.name ?? props.form.fileName })}
+              error={props.uploadFileRequired && !props.form.selectedFile ? "请先选择要上传的安装包文件。" : undefined}
               clearable
             />
             <Alert color="blue" variant="light">
               {props.creatingRelease
                 ? "上传模式下会先创建发布记录，再上传首个安装包；如果上传失败，系统会自动清理，不会留下空白草稿。"
-                : "上传后会自动生成下载地址和文件大小。这里只需要确认更新入口。"}
+                : "上传后会自动生成下载地址、文件大小和 SHA256，不需要手动填写。"}
             </Alert>
-            {props.form.downloadUrl ? (
-              <Stack gap={4}>
-                <Text size="sm" fw={500}>
-                  系统生成的下载地址
-                </Text>
-                <Text size="sm" c="dimmed">
-                  {props.form.downloadUrl}
-                </Text>
-              </Stack>
-            ) : null}
-            {props.form.fileSizeBytes !== "" ? (
-              <Group grow align="flex-start">
-                <Stack gap={4}>
-                  <Text size="sm" fw={500}>
-                    文件大小
-                  </Text>
-                  <Badge variant="light">{props.form.fileSizeBytes} 字节</Badge>
-                </Stack>
-              </Group>
-            ) : null}
           </>
         )}
 

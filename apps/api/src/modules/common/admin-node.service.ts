@@ -25,6 +25,7 @@ import {
 
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
+const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 
@@ -1023,21 +1024,68 @@ export class AdminNodeService {
 
   private async resolveNodeRuntimeSource(input: ImportNodeInputDto, panelEnabled: boolean) {
     if (input.subscriptionUrl?.trim()) {
-      return fetchSubscriptionNode(input.subscriptionUrl.trim());
+      return this.readImportRuntimeWithBudget(
+        fetchSubscriptionNode(input.subscriptionUrl.trim()),
+        "subscription runtime read"
+      );
     }
 
     if (panelEnabled && input.panelBaseUrl && input.panelUsername && input.panelPassword) {
-      return this.xuiService.getInboundRuntime({
-        id: createId("panel_runtime"),
-        panelBaseUrl: input.panelBaseUrl,
-        panelApiBasePath: input.panelApiBasePath ?? "/",
-        panelUsername: input.panelUsername,
-        panelPassword: input.panelPassword,
-        panelInboundId: input.panelInboundId ?? null
-      });
+      return this.readImportRuntimeWithBudget(
+        this.xuiService.getInboundRuntime({
+          id: createId("panel_runtime"),
+          panelBaseUrl: input.panelBaseUrl,
+          panelApiBasePath: input.panelApiBasePath ?? "/",
+          panelUsername: input.panelUsername,
+          panelPassword: input.panelPassword,
+          panelInboundId: input.panelInboundId ?? null
+        }),
+        "3x-ui panel runtime read"
+      );
     }
 
     throw new BadRequestException("请填写订阅地址，或完整配置 3x-ui 面板账号后读取入站并添加面板");
+  }
+
+  private async readImportRuntimeWithBudget<T>(runtimeTask: Promise<T>, label: string): Promise<T> {
+    let settled = false;
+    const guardedTask = runtimeTask.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Local node import failed before save because ${label} failed: ${readAdminNodeErrorMessage(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        reject(
+          new BadRequestException(
+            `${label} timed out before local node import was saved; import failed and no node was saved`
+          )
+        );
+      }, readImportNodeRuntimeBudgetMs());
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private async resolveNodePanelEnabled(input: {
@@ -1075,6 +1123,10 @@ function readPositiveIntegerEnv(name: string, fallback: number) {
 
 function readBulkNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_BUDGET_MS);
+}
+
+function readImportNodeRuntimeBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_IMPORT_NODE_RUNTIME_READ_TIMEOUT_MS", DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS);
 }
 
 function readBulkNodeProbeConcurrency() {

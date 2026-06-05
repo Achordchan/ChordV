@@ -737,9 +737,12 @@ export class ReleaseCenterService {
         const nextFileHash = metadata?.fileHash ?? artifact.fileHash ?? null;
 
         if (
+          artifactDeliveryMode !== "desktop_full_replace" &&
+          (
           nextFileName !== artifact.fileName ||
           nextFileSizeBytes?.toString() !== artifact.fileSizeBytes?.toString() ||
           nextFileHash !== artifact.fileHash
+          )
         ) {
           try {
             await this.prisma.releaseArtifact.update({
@@ -763,37 +766,107 @@ export class ReleaseCenterService {
           }
         }
 
+        const clientResolvedArtifact = resolveReleaseArtifactForClient(
+          {
+            ...artifact,
+            fileName: nextFileName,
+            fileSizeBytes: nextFileSizeBytes,
+            fileHash: nextFileHash
+          },
+          null
+        );
+        if (artifactDeliveryMode !== "desktop_full_replace") {
+          try {
+            assertReleaseArtifactClientUsable(clientResolvedArtifact, releasePlatform);
+          } catch (error) {
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: error instanceof Error ? error.message : "Release artifact is not client-usable.",
+              actualFileSizeBytes,
+              actualFileHash
+            };
+          }
+        }
+
         if (artifactDeliveryMode === "desktop_full_replace") {
+          const downloadUrl = clientResolvedArtifact.downloadUrl;
+          const downloaded = await downloadExternalReleaseArtifactFileStrict(downloadUrl);
+          const requiredFileSizeBytes = nextFileSizeBytes ?? downloaded.fileSizeBytes;
+          const requiredFileHash = normalizeSha256Input(nextFileHash ?? downloaded.fileHash);
+          if (nextFileSizeBytes && nextFileSizeBytes !== downloaded.fileSizeBytes) {
+            await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: `Full replacement ZIP size mismatch: expected ${nextFileSizeBytes.toString()}, got ${downloaded.fileSizeBytes.toString()}.`,
+              actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+              actualFileHash: downloaded.fileHash
+            };
+          }
+          if (nextFileHash && nextFileHash !== downloaded.fileHash) {
+            await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
+            return {
+              artifactId,
+              status: "metadata_mismatch",
+              message: "Full replacement ZIP SHA256 does not match metadata.",
+              actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+              actualFileHash: downloaded.fileHash
+            };
+          }
+          if (!nextFileSizeBytes || !nextFileHash || downloaded.fileName !== nextFileName) {
+            try {
+              await this.prisma.releaseArtifact.update({
+                where: { id: artifactId },
+                data: {
+                  fileName: downloaded.fileName ?? nextFileName,
+                  fileSizeBytes: requiredFileSizeBytes,
+                  fileHash: requiredFileHash
+                }
+              });
+            } catch (error) {
+              await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
+              return {
+                artifactId,
+                status: "metadata_mismatch",
+                message: `External artifact is reachable, but saving refreshed metadata failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+                actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+                actualFileHash: downloaded.fileHash
+              };
+            }
+          }
           let metadataError: string | null = null;
-          if (!nextFileSizeBytes || nextFileSizeBytes <= 0n) {
+          if (!requiredFileSizeBytes || requiredFileSizeBytes <= 0n) {
             metadataError = "Full replacement updates require positive file size metadata before publishing.";
-          } else if (!nextFileHash) {
+          } else if (!requiredFileHash) {
             metadataError = "Full replacement updates require SHA256 metadata before publishing.";
           } else {
             try {
-              normalizeSha256Input(nextFileHash);
+              normalizeSha256Input(requiredFileHash);
             } catch (error) {
               metadataError = error instanceof Error ? error.message : "Full replacement update SHA256 metadata is invalid.";
             }
           }
           if (metadataError) {
+            await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
             return {
               artifactId,
               status: "metadata_mismatch",
               message: metadataError,
-              actualFileSizeBytes,
-              actualFileHash
+              actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+              actualFileHash: downloaded.fileHash
             };
           }
-          const requiredFileSizeBytes = nextFileSizeBytes;
-          const requiredFileHash = normalizeSha256Input(nextFileHash);
           if (!requiredFileSizeBytes || !requiredFileHash) {
+            await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
             return {
               artifactId,
               status: "metadata_mismatch",
               message: "Full replacement updates require positive size and SHA256 metadata.",
-              actualFileSizeBytes,
-              actualFileHash
+              actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+              actualFileHash: downloaded.fileHash
             };
           }
           const resolvedArtifact = resolveReleaseArtifactForClient(
@@ -807,16 +880,16 @@ export class ReleaseCenterService {
           try {
             assertReleaseArtifactClientUsable(resolvedArtifact, releasePlatform);
           } catch (error) {
+            await this.cleanupDownloadedExternalReleaseArtifact(downloaded);
             return {
               artifactId,
               status: "metadata_mismatch",
               message: error instanceof Error ? error.message : "Full replacement update URL is invalid.",
-              actualFileSizeBytes,
-              actualFileHash
+              actualFileSizeBytes: downloaded.fileSizeBytes.toString(),
+              actualFileHash: downloaded.fileHash
             };
           }
 
-          const downloaded = await downloadExternalReleaseArtifactFileStrict(resolvedArtifact.downloadUrl);
           try {
             assertReleaseArtifactClientUsable(
               {
@@ -897,53 +970,9 @@ export class ReleaseCenterService {
       };
     }
 
-    if (artifactDeliveryMode === "desktop_full_replace") {
-      if (artifact.defaultMirrorPrefix) {
-        return {
-          artifactId,
-          status: "metadata_mismatch",
-          message: "Uploaded full replacement artifacts cannot use a default mirror prefix."
-        };
-      }
-      try {
-        const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
-        assertReleaseArtifactClientUsable(resolvedArtifact, releasePlatform);
-        await assertWindowsFullUpdateZipFile(absolutePath, artifact.fileName, release.version);
-      } catch (error) {
-        return {
-          artifactId,
-          status: "metadata_mismatch",
-          message: error instanceof Error ? error.message : "Windows full replacement ZIP is invalid."
-        };
-      }
-    }
-
     const stat = await import("node:fs/promises").then((module) => module.stat(absolutePath));
     const actualFileHash = await calculateFileSha256(absolutePath);
     const actualFileSizeBytes = stat.size.toString();
-    if (artifactDeliveryMode === "desktop_full_replace") {
-      let metadataError: string | null = null;
-      if (!artifact.fileSizeBytes || artifact.fileSizeBytes <= 0n) {
-        metadataError = "Full replacement updates require positive file size metadata before publishing.";
-      } else if (!artifact.fileHash) {
-        metadataError = "Full replacement updates require SHA256 metadata before publishing.";
-      } else {
-        try {
-          normalizeSha256Input(artifact.fileHash);
-        } catch (error) {
-          metadataError = error instanceof Error ? error.message : "Full replacement update SHA256 metadata is invalid.";
-        }
-      }
-      if (metadataError) {
-        return {
-          artifactId,
-          status: "metadata_mismatch",
-          message: metadataError,
-          actualFileSizeBytes,
-          actualFileHash
-        };
-      }
-    }
     const hashMatches = !artifact.fileHash || artifact.fileHash === actualFileHash;
     const sizeMatches = !artifact.fileSizeBytes || artifact.fileSizeBytes.toString() === actualFileSizeBytes;
 
@@ -955,6 +984,73 @@ export class ReleaseCenterService {
         actualFileSizeBytes,
         actualFileHash
       };
+    }
+
+    const nextFileSizeBytes = artifact.fileSizeBytes ?? BigInt(actualFileSizeBytes);
+    const nextFileHash = artifact.fileHash ?? actualFileHash;
+    if (!artifact.fileSizeBytes || !artifact.fileHash) {
+      try {
+        await this.prisma.releaseArtifact.update({
+          where: { id: artifactId },
+          data: {
+            fileSizeBytes: nextFileSizeBytes,
+            fileHash: nextFileHash
+          }
+        });
+      } catch (error) {
+        return {
+          artifactId,
+          status: "metadata_mismatch",
+          message: `Uploaded artifact is readable, but saving refreshed metadata failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          actualFileSizeBytes,
+          actualFileHash
+        };
+      }
+    }
+
+    const resolvedUploadedArtifact = resolveReleaseArtifactForClient(
+      {
+        ...artifact,
+        fileSizeBytes: nextFileSizeBytes,
+        fileHash: nextFileHash
+      },
+      null
+    );
+    try {
+      assertReleaseArtifactClientUsable(resolvedUploadedArtifact, releasePlatform);
+    } catch (error) {
+      return {
+        artifactId,
+        status: "metadata_mismatch",
+        message: error instanceof Error ? error.message : "Release artifact is not client-usable.",
+        actualFileSizeBytes,
+        actualFileHash
+      };
+    }
+
+    if (artifactDeliveryMode === "desktop_full_replace") {
+      if (artifact.defaultMirrorPrefix) {
+        return {
+          artifactId,
+          status: "metadata_mismatch",
+          message: "Uploaded full replacement artifacts cannot use a default mirror prefix.",
+          actualFileSizeBytes,
+          actualFileHash
+        };
+      }
+      try {
+        await assertWindowsFullUpdateZipFile(absolutePath, artifact.fileName, release.version);
+      } catch (error) {
+        return {
+          artifactId,
+          status: "metadata_mismatch",
+          message: error instanceof Error ? error.message : "Windows full replacement ZIP is invalid.",
+          actualFileSizeBytes,
+          actualFileHash
+        };
+      }
     }
 
     return {

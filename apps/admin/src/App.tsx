@@ -1530,7 +1530,10 @@ export function App() {
               "节点已更新",
               { treatHttp500AsUncertain: true }
             )
-          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", { treatHttp500AsUncertain: true });
+          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", {
+              failureTitle: "节点导入失败，未保存",
+              failureFallback: "导入失败，未保存。请检查订阅地址或 3x-ui 面板连接后重试。"
+            });
         if (success) closeDrawer();
       }
 
