@@ -346,6 +346,7 @@ async function testUpdateNodeAccessAllowsNestedPanelAccessSyncLock() {
   const originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
   const createdRows: Array<Record<string, any>> = [];
+  let transactionEnsureQueued = false;
   const node = {
     id: "node_1",
     name: "node",
@@ -385,9 +386,21 @@ async function testUpdateNodeAccessAllowsNestedPanelAccessSyncLock() {
         },
         node: {
           findMany: async () => [node]
-        }
+        },
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            subscriptionNodeAccess: {
+              createMany: async (payload: Record<string, any>) => {
+                createdRows.push(payload);
+              }
+            }
+          })
       },
       runtimeSessionService: {
+        queueSubscriptionPanelAccessSyncTx: async () => {
+          transactionEnsureQueued = true;
+          return 1;
+        },
         syncSubscriptionPanelAccess: async (subscriptionId: string) =>
           runWithSubscriptionUsageLock(subscriptionId, async () => 0)
       },
@@ -402,6 +415,7 @@ async function testUpdateNodeAccessAllowsNestedPanelAccessSyncLock() {
     ]);
 
     assert.equal(createdRows.length, 1);
+    assert.equal(transactionEnsureQueued, true, "new node access should queue panel ensure jobs inside the local transaction");
     assert.deepEqual(result.nodeIds, ["node_1"]);
   } finally {
     if (originalDatabaseUrl === undefined) {
@@ -3512,7 +3526,7 @@ async function testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline()
     }
   });
 
-  await service["ensurePanelClientBinding"]({
+  await service["ensurePanelClientBinding"](service["prisma"], {
     node: {
       id: "node_1",
       name: "node",
@@ -6326,9 +6340,18 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
       },
       node: {
         findMany: async () => [node]
-      }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            createMany: async (payload: Record<string, any>) => {
+              createdRows.push(payload);
+            }
+          }
+        })
     },
     runtimeSessionService: {
+      queueSubscriptionPanelAccessSyncTx: async () => 1,
       syncSubscriptionPanelAccess: async () => {
         panelSyncStarted = true;
         throw new Error("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
@@ -6392,9 +6415,18 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPublishFails() {
       },
       node: {
         findMany: async () => [node]
-      }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            createMany: async (payload: Record<string, any>) => {
+              createdRows.push(payload);
+            }
+          }
+        })
     },
     runtimeSessionService: {
+      queueSubscriptionPanelAccessSyncTx: async () => 0,
       syncSubscriptionPanelAccess: async () => undefined
     },
     clientEventsPublisher: {
@@ -6488,6 +6520,7 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
       revokeSubscriptionLeases: async () => {
         throw new Error("lease revoke failed");
       },
+      queueSubscriptionPanelAccessSyncTx: async () => 0,
       queueSubscriptionPanelAccessSync: async () => 0,
       syncSubscriptionPanelAccess: async () => 0
     },
@@ -7813,8 +7846,12 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
         },
         queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
         revokeSubscriptionLeases: async () => 0,
-        queueSubscriptionPanelAccessSync: async () => {
+        queueSubscriptionPanelAccessSyncTx: async () => {
           queuedAccessSync += 1;
+          return 1;
+        },
+        queueSubscriptionPanelAccessSync: async () => {
+          syncCalls += 1;
           return 1;
         },
         syncSubscriptionPanelAccess: async () => {
@@ -7834,14 +7871,12 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
 
     assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
     assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs must be queued with the local response");
-    assert.equal(queuedAccessSync, 0, "newly authorized nodes must defer panel access sync until after the local response");
+    assert.equal(queuedAccessSync, 1, "newly authorized nodes must queue panel ensure jobs inside the local transaction");
     assert.equal(syncCalls, 0, "node access replacement must not use the usage-locking panel sync path");
     assert.deepEqual(result.nodeIds, ["node_new"]);
     assert.equal(result.panelSyncStatus, "pending");
     assert.match(result.panelSyncMessage ?? "", /后台处理/);
     assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
-    await waitUntil(() => queuedAccessSync > 0);
-    assert.equal(queuedAccessSync, 1, "deferred panel access sync should still be started after the response");
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -8003,6 +8038,7 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
       revokeSubscriptionLeases: async () => {
         throw new Error("lease revoke failed");
       },
+      queueSubscriptionPanelAccessSyncTx: async () => 0,
       queueSubscriptionPanelAccessSync: async () => 0,
       syncSubscriptionPanelAccess: async () => 0
     },
@@ -8086,6 +8122,7 @@ async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
       queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
+      queueSubscriptionPanelAccessSyncTx: async () => 1,
       queueSubscriptionPanelAccessSync: async () => {
         panelAccessSyncStarted = true;
         return new Promise<number>(() => undefined);
@@ -8175,6 +8212,7 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails() {
       queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
+      queueSubscriptionPanelAccessSyncTx: async () => 0,
       syncSubscriptionPanelAccess: async () => 0
     },
     publishNodeAccessUpdatedEvent: async () => undefined
@@ -8255,6 +8293,7 @@ async function testUpdateNodeAccessReturnsPendingWhenResponseRefreshStalls() {
       queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
+      queueSubscriptionPanelAccessSyncTx: async () => 0,
       syncSubscriptionPanelAccess: async () => 0
     },
     publishNodeAccessUpdatedEvent: async () => undefined
@@ -9541,7 +9580,7 @@ async function testDeletedPanelBindingDoesNotReuseOldInboundId() {
     }
   });
 
-  const binding = await service["ensurePanelClientBinding"]({
+  const binding = await service["ensurePanelClientBinding"](service["prisma"], {
     node: {
       id: "node_1",
       name: "Node 1",
@@ -12196,6 +12235,7 @@ async function testSubscriptionNodeAccessConcurrentReplaceIsSerialized() {
       },
       runtimeSessionService: {
         syncSubscriptionPanelAccess: async () => undefined,
+        queueSubscriptionPanelAccessSyncTx: async () => 0,
         queuePanelDisableJobsForSubscriptionTx: async () => 0,
         queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
         revokeSubscriptionLeases: async () => 0

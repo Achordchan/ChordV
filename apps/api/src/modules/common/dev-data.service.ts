@@ -1445,6 +1445,14 @@ export class DevDataService implements OnModuleInit {
         queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(tx, subscriptionId, {
           nodeIds: removedNodeIds
         });
+        if (addedNodeIds.length > 0) {
+          const pendingEnsureCount = await this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId);
+          if (pendingEnsureCount > 0) {
+            queuedPanelSyncMessage = [queuedPanelSyncMessage, "3x-ui ensure job queued for newly authorized nodes."]
+              .filter(Boolean)
+              .join(" ");
+          }
+        }
       });
       const fallbackNodes = uniqueNodeIds
         .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
@@ -1495,12 +1503,19 @@ export class DevDataService implements OnModuleInit {
     }
 
     if (removedNodeIds.length === 0 && addedNodeIds.length > 0) {
-      await this.prisma.subscriptionNodeAccess.createMany({
-        data: addedNodeIds.map((nodeId) => ({
-          id: createId("subscription_node"),
-          subscriptionId,
-          nodeId
-        }))
+      let queuedPanelSyncMessage: string | null = null;
+      await this.prisma.$transaction(async (tx) => {
+        await tx.subscriptionNodeAccess.createMany({
+          data: addedNodeIds.map((nodeId) => ({
+            id: createId("subscription_node"),
+            subscriptionId,
+            nodeId
+          }))
+        });
+        const pendingEnsureCount = await this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId);
+        if (pendingEnsureCount > 0) {
+          queuedPanelSyncMessage = "3x-ui ensure job queued for newly authorized nodes.";
+        }
       });
       const fallbackNodes = uniqueNodeIds
         .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
@@ -1516,6 +1531,9 @@ export class DevDataService implements OnModuleInit {
         panelSyncMessage: "local node access saved; panel ensure synchronization is pending background processing.",
         message: "Node access saved locally; panel synchronization is pending background retry."
       });
+      panelSyncMessage = [panelSyncMessage, queuedPanelSyncMessage]
+        .filter(Boolean)
+        .join(" ");
     }
 
     if (addedNodeIds.length > 0) {
@@ -1590,6 +1608,16 @@ export class DevDataService implements OnModuleInit {
       this.logger?.warn(`节点授权已保存，但 3x-ui 客户端预同步失败：${subscriptionId}: ${errorMessage}`);
       return { ok: false as const, errorMessage };
     }
+  }
+
+  private async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
+    const queuePanelAccessSyncTx = (this.runtimeSessionService as {
+      queueSubscriptionPanelAccessSyncTx?: (writer: any, subscriptionId: string) => Promise<number>;
+    }).queueSubscriptionPanelAccessSyncTx;
+    if (typeof queuePanelAccessSyncTx !== "function") {
+      throw new Error("runtime session service does not support transaction-scoped panel access queueing");
+    }
+    return queuePanelAccessSyncTx.call(this.runtimeSessionService, writer, subscriptionId);
   }
 
   private startSubscriptionPanelAccessSync(subscriptionId: string) {

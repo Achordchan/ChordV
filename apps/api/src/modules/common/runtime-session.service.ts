@@ -423,8 +423,23 @@ export class RuntimeSessionService {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId);
   }
 
-  private async syncSubscriptionPanelAccessLocked(subscriptionId: string) {
-    const subscription = await this.prisma.subscription.findUnique({
+  async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
+    return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+      writer,
+      ensureOnly: true
+    });
+  }
+
+  private async syncSubscriptionPanelAccessLocked(
+    subscriptionId: string,
+    options?: {
+      writer?: any;
+      ensureOnly?: boolean;
+    }
+  ) {
+    const writer = options?.writer ?? this.prisma;
+    const ensureOnly = options?.ensureOnly ?? false;
+    const subscription = await writer.subscription.findUnique({
       where: { id: subscriptionId },
       include: {
         user: true,
@@ -453,22 +468,27 @@ export class RuntimeSessionService {
 
     const allowedNodeIds = new Set(
       subscription.nodeAccesses
-        .filter((item) => item.node.isActive && item.node.panelEnabled)
-        .map((item) => item.nodeId)
+        .filter((item: any) => item.node.isActive && item.node.panelEnabled)
+        .map((item: any) => item.nodeId)
     );
-    const bindings = await this.prisma.panelClientBinding.findMany({
-      where: {
-        subscriptionId
-      }
-    });
+    const bindings = ensureOnly
+      ? []
+      : await writer.panelClientBinding.findMany({
+          where: {
+            subscriptionId
+          }
+        });
     const activeTeamMemberIds =
       subscription.teamId && subscription.team
-        ? new Set(subscription.team.members.filter((item) => item.user.status === "active").map((item) => item.userId))
+        ? new Set(subscription.team.members.filter((item: any) => item.user.status === "active").map((item: any) => item.userId))
         : null;
     const shouldProvision = shouldProvisionPanelClients(subscription);
     const shouldDeleteAll = shouldDeletePanelClients(subscription);
 
     if (shouldDeleteAll) {
+      if (ensureOnly) {
+        return 0;
+      }
       const removeResult = await this.removePanelBindingsForSubscription(subscriptionId);
       this.assertPanelBindingMutation("删除 3x-ui 客户端失败", removeResult);
       return removeResult.updated;
@@ -514,8 +534,8 @@ export class RuntimeSessionService {
     const targets =
       subscription.teamId && subscription.team
         ? subscription.team.members
-            .filter((item) => item.user.status === "active")
-            .map((item) => ({
+            .filter((item: any) => item.user.status === "active")
+            .map((item: any) => ({
               userId: item.userId,
               userEmail: item.user.email,
               userDisplayName: item.user.displayName,
@@ -537,7 +557,7 @@ export class RuntimeSessionService {
         if (!access.node.isActive || !access.node.panelEnabled) {
           continue;
         }
-        const binding = await this.ensurePanelClientBinding({
+        const binding = await this.ensurePanelClientBinding(writer, {
           node: {
             id: access.node.id,
             name: access.node.name,
@@ -1758,7 +1778,7 @@ export class RuntimeSessionService {
     if (!subscription) {
       throw new NotFoundException("当前没有可用订阅");
     }
-    const binding = await this.ensurePanelClientBinding({
+    const binding = await this.ensurePanelClientBinding(this.prisma, {
       node,
       subscriptionId: subscription.id,
       userId: user.id,
@@ -1865,7 +1885,7 @@ export class RuntimeSessionService {
     return runtime;
   }
 
-  private async ensurePanelClientBinding(input: {
+  private async ensurePanelClientBinding(writer: any, input: {
     node: {
       id: string;
       name: string;
@@ -1888,7 +1908,7 @@ export class RuntimeSessionService {
       throw new BadRequestException("节点未启用 3x-ui 面板接入");
     }
 
-    const existing = await this.prisma.panelClientBinding.findFirst({
+    const existing = await writer.panelClientBinding.findFirst({
       where: {
         subscriptionId: input.subscriptionId,
         nodeId: input.node.id,
@@ -1905,10 +1925,11 @@ export class RuntimeSessionService {
     const panelInboundId =
       input.node.panelInboundId ?? (existing && existing.status !== "deleted" ? existing.panelInboundId : null);
 
-    return this.ensurePanelClientBindingLocally(input, existing, panelClientEmail, panelClientId, panelInboundId);
+    return this.ensurePanelClientBindingLocally(writer, input, existing, panelClientEmail, panelClientId, panelInboundId);
   }
 
   private async ensurePanelClientBindingLocally(
+    writer: any,
     input: {
       node: {
         id: string;
@@ -1939,7 +1960,7 @@ export class RuntimeSessionService {
     const resolvedPanelInboundId = panelInboundId ?? 0;
 
     if (existing) {
-      const binding = await this.prisma.panelClientBinding.update({
+      const binding = await writer.panelClientBinding.update({
         where: { id: existing.id },
         data: {
           panelClientEmail,
@@ -1949,13 +1970,13 @@ export class RuntimeSessionService {
           teamId: input.teamId
         }
       });
-      const snapshot = await this.prisma.trafficSnapshot.findUnique({
+      const snapshot = await writer.trafficSnapshot.findUnique({
         where: {
           snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
         }
       });
       if (existing.status === "deleted" || !snapshot) {
-        await this.ensureTrafficSnapshotBaseline({
+        await this.ensureTrafficSnapshotBaseline(writer, {
           nodeId: binding.nodeId,
           subscriptionId: binding.subscriptionId,
           userId: binding.userId,
@@ -1966,11 +1987,11 @@ export class RuntimeSessionService {
           replaceExisting: existing.status === "deleted"
         });
       }
-      await this.queuePanelEnsureJobForBinding(binding, input);
+      await this.queuePanelEnsureJobForBinding(writer, binding, input);
       return binding;
     }
 
-    const binding = await this.createPanelClientBindingOrRecover({
+    const binding = await this.createPanelClientBindingOrRecover(writer, {
       id: createId("panel_client"),
       subscriptionId: input.subscriptionId,
       userId: input.userId,
@@ -1984,7 +2005,7 @@ export class RuntimeSessionService {
       lastSyncedAt: baseline.sampledAt,
       status: "active"
     });
-    await this.ensureTrafficSnapshotBaseline({
+    await this.ensureTrafficSnapshotBaseline(writer, {
       nodeId: binding.nodeId,
       subscriptionId: binding.subscriptionId,
       userId: binding.userId,
@@ -1993,11 +2014,12 @@ export class RuntimeSessionService {
       downlinkBytes: baseline.downlinkBytes,
       sampledAt: baseline.sampledAt
     });
-    await this.queuePanelEnsureJobForBinding(binding, input);
+    await this.queuePanelEnsureJobForBinding(writer, binding, input);
     return binding;
   }
 
   private async queuePanelEnsureJobForBinding(
+    writer: any,
     binding: {
       id: string;
       subscriptionId: string;
@@ -2019,7 +2041,7 @@ export class RuntimeSessionService {
   ) {
     const now = new Date();
     const dedupeKey = `ensure:${binding.id}`;
-    await createOrRefreshPanelSyncJob(this.prisma, dedupeKey, {
+    await createOrRefreshPanelSyncJob(writer, dedupeKey, {
       create: {
         id: randomUUID(),
         dedupeKey,
@@ -2061,7 +2083,7 @@ export class RuntimeSessionService {
     });
   }
 
-  private async createPanelClientBindingOrRecover(data: {
+  private async createPanelClientBindingOrRecover(writer: any, data: {
     id: string;
     subscriptionId: string;
     userId: string;
@@ -2076,14 +2098,14 @@ export class RuntimeSessionService {
     status: string;
   }) {
     try {
-      return await this.prisma.panelClientBinding.create({ data });
+      return await writer.panelClientBinding.create({ data });
     } catch (error) {
       if (!isPrismaUniqueConstraintError(error)) {
         throw error;
       }
     }
 
-    const existing: any = await this.prisma.panelClientBinding.findFirst({
+    const existing: any = await writer.panelClientBinding.findFirst({
       where: {
         subscriptionId: data.subscriptionId,
         nodeId: data.nodeId,
@@ -2094,7 +2116,7 @@ export class RuntimeSessionService {
     if (!existing) {
       throw new BadGatewayException("Panel client binding was created concurrently but could not be reloaded.");
     }
-    return this.prisma.panelClientBinding.update({
+    return writer.panelClientBinding.update({
       where: { id: existing.id },
       data: {
         teamId: data.teamId,
@@ -2109,7 +2131,7 @@ export class RuntimeSessionService {
     });
   }
 
-  private async ensureTrafficSnapshotBaseline(input: {
+  private async ensureTrafficSnapshotBaseline(writer: any, input: {
     nodeId: string;
     subscriptionId: string;
     userId: string | null;
@@ -2122,13 +2144,13 @@ export class RuntimeSessionService {
     const snapshotKey = buildSnapshotKey(input.nodeId, input.subscriptionId, input.userId);
     const sampledAt = input.sampledAt ?? new Date();
     const totalBytes = input.uplinkBytes + input.downlinkBytes;
-    const current = await this.prisma.trafficSnapshot.findUnique({
+    const current = await writer.trafficSnapshot.findUnique({
       where: { snapshotKey }
     });
     if (current && !input.replaceExisting) {
       return;
     }
-    await this.prisma.trafficSnapshot.upsert({
+    await writer.trafficSnapshot.upsert({
       where: { snapshotKey },
       update: {
         uplinkBytes: input.uplinkBytes,
