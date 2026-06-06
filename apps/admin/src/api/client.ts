@@ -88,8 +88,8 @@ export type AdminRuntimeComponentValidationDto = SharedAdminRuntimeComponentVali
 export type AdminRuntimeComponentFailureReportDto = SharedAdminRuntimeComponentFailureReportDto;
 export type AdminSupportTicketSummaryDto = SharedAdminSupportTicketSummaryDto;
 export type AdminSupportTicketDetailDto = SharedAdminSupportTicketDetailDto;
-export type CreateAdminReleaseArtifactInputDto = CreateReleaseArtifactInputDto;
-export type UpdateAdminReleaseArtifactInputDto = UpdateReleaseArtifactInputDto;
+export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
+export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 
 export type CreateAdminReleaseInputDto = {
@@ -116,8 +116,6 @@ export type UploadAdminReleaseArtifactInputDto = {
   source?: "uploaded";
   type: AdminReleaseArtifactType;
   deliveryMode?: UpdateDeliveryMode;
-  defaultMirrorPrefix?: string | null;
-  allowClientMirror?: boolean;
   fileName?: string | null;
   isPrimary?: boolean;
 };
@@ -299,8 +297,6 @@ export async function uploadAdminReleaseArtifact(
   if (input.source) body.set("source", input.source);
   if (input.deliveryMode) body.set("deliveryMode", input.deliveryMode);
   if (input.fileName) body.set("fileName", input.fileName);
-  if (input.defaultMirrorPrefix !== undefined) body.set("defaultMirrorPrefix", input.defaultMirrorPrefix ?? "");
-  if (input.allowClientMirror !== undefined) body.set("allowClientMirror", String(input.allowClientMirror));
   if (input.isPrimary !== undefined) body.set("isPrimary", String(input.isPrimary));
   body.set("file", file);
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/upload`, {
@@ -322,8 +318,6 @@ export async function replaceAdminReleaseArtifactUpload(
   if (input.source) body.set("source", input.source);
   if (input.deliveryMode) body.set("deliveryMode", input.deliveryMode);
   if (input.fileName) body.set("fileName", input.fileName);
-  if (input.defaultMirrorPrefix !== undefined) body.set("defaultMirrorPrefix", input.defaultMirrorPrefix ?? "");
-  if (input.allowClientMirror !== undefined) body.set("allowClientMirror", String(input.allowClientMirror));
   if (input.isPrimary !== undefined) body.set("isPrimary", String(input.isPrimary));
   body.set("file", file);
   const record = await request<SharedAdminReleaseRecordDto>(`/admin/releases/${releaseId}/artifacts/${artifactId}/upload`, {

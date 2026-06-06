@@ -169,8 +169,6 @@ export function ReleasesPage() {
               type: defaultArtifactTypeForPlatform(releaseForm.platform),
               deliveryMode: defaultDeliveryModeForArtifact(defaultArtifactTypeForPlatform(releaseForm.platform)),
               downloadUrl: releaseForm.downloadUrl.trim(),
-              defaultMirrorPrefix: null,
-              allowClientMirror: false,
               isPrimary: true
             }
       };
@@ -349,8 +347,6 @@ export function ReleasesPage() {
             type: artifactForm.type,
             deliveryMode: defaultDeliveryModeForArtifact(artifactForm.type),
             downloadUrl: artifactForm.downloadUrl.trim(),
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
             fileName: null,
             isPrimary: artifactForm.isPrimary
           };

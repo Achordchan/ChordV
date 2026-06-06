@@ -19,8 +19,6 @@ export type ArtifactEditorFormState = {
   source: "uploaded" | "external";
   type: AdminReleaseArtifactType;
   downloadUrl: string;
-  defaultMirrorPrefix: string;
-  allowClientMirror: boolean;
   fileName: string;
   isPrimary: boolean;
   selectedFile: File | null;
@@ -60,8 +58,6 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     source: "external",
     type,
     downloadUrl: "",
-    defaultMirrorPrefix: "",
-    allowClientMirror: false,
     fileName: "",
     isPrimary: true,
     selectedFile: null
@@ -73,8 +69,6 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     source: record.source,
     type: record.type,
     downloadUrl: record.source === "external" ? record.originDownloadUrl ?? record.downloadUrl : "",
-    defaultMirrorPrefix: record.defaultMirrorPrefix ?? "",
-    allowClientMirror: record.allowClientMirror,
     fileName: record.fileName ?? "",
     isPrimary: record.isPrimary,
     selectedFile: null
