@@ -12449,6 +12449,7 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   let releaseFindCalls = 0;
   let transactionCalled = false;
   let metadataProbeCalled = false;
+  let createdData: Record<string, any> | null = null;
   const service = createReleaseCenterService({
     resolveExternalReleaseArtifactMetadata: async () => {
       metadataProbeCalled = true;
@@ -12472,7 +12473,13 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
         return task({
           releaseArtifact: {
             updateMany: async () => ({ count: 0 }),
-            create: async () => createdArtifact
+            create: async (payload: Record<string, any>) => {
+              createdData = payload.data;
+              return {
+                ...createdArtifact,
+                ...payload.data
+              };
+            }
           }
         });
       }
@@ -12483,6 +12490,8 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
     type: "zip",
     deliveryMode: "desktop_full_replace",
     downloadUrl: createdArtifact.downloadUrl,
+    defaultMirrorPrefix: "https://ghfast.top/",
+    allowClientMirror: true,
     fileName: createdArtifact.fileName,
     fileSizeBytes: Number(createdArtifact.fileSizeBytes),
     fileHash: createdArtifact.fileHash,
@@ -12491,8 +12500,10 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
 
   assert.equal(transactionCalled, true, "artifact must be saved before response refresh fails");
   assert.equal(metadataProbeCalled, false, "saving an external artifact must not probe or download the remote file");
+  assert.equal(createdData?.defaultMirrorPrefix, null, "external release artifacts must keep the origin URL without default mirrors");
+  assert.equal(createdData?.allowClientMirror, false, "external release artifacts must not enable client mirror rewriting");
   assert.equal(result.id, "release_1");
-  assert.equal(result.artifacts[0]?.id, "artifact_created");
+  assert.equal(result.artifacts[0]?.id, createdData?.id);
 }
 
 async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave() {
