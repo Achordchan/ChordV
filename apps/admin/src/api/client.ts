@@ -159,7 +159,7 @@ function mapArtifact(record: SharedAdminReleaseArtifactDto): AdminReleaseArtifac
     originDownloadUrl: record.originDownloadUrl ?? record.downloadUrl,
     finalUrlPreview: record.finalUrlPreview ?? record.downloadUrl,
     defaultMirrorPrefix: record.defaultMirrorPrefix ?? null,
-    allowClientMirror: record.allowClientMirror ?? true,
+    allowClientMirror: record.allowClientMirror ?? false,
     fileName: record.fileName ?? null,
     fileSizeBytes: record.fileSizeBytes ?? null,
     fileHash: record.fileHash ?? null,

@@ -91,6 +91,7 @@ const DEFAULT_PANEL_SYNC_JOB_CONCURRENCY = 4;
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
 const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
+const PANEL_SYNC_MANUAL_RETRY_PAUSE_MS = 365 * 24 * 60 * 60 * 1000;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
 const LEASE_REVOCATION_RETRY_MAX_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_MAX_SECONDS ?? 900);
@@ -1433,11 +1434,14 @@ export class RuntimeSessionService {
       ]);
     } catch (error) {
       const nextAttempts = job.attempts + 1;
+      const resetTimeoutNeedsManualRetry = job.action === "reset_client_traffic" && error instanceof PanelSyncRemoteCallTimeoutError;
       const retrySeconds = Math.min(
         PANEL_SYNC_RETRY_MAX_SECONDS,
         PANEL_SYNC_RETRY_BASE_SECONDS * 2 ** Math.min(nextAttempts - 1, 6)
       );
-      const message = error instanceof Error ? error.message : "3x-ui 客户端同步失败";
+      const message = resetTimeoutNeedsManualRetry
+        ? `${error.message}; 远端重置请求可能仍会完成，为避免重复清零新产生的流量，已暂停自动重试。请检查面板后手动重试。`
+        : error instanceof Error ? error.message : "3x-ui 客户端同步失败";
       await this.prisma.$transaction([
         this.prisma.node.update({
           where: { id: job.nodeId },
@@ -1453,11 +1457,17 @@ export class RuntimeSessionService {
             attempts: nextAttempts,
             lockedAt: null,
             lastError: message,
-            nextRunAt: new Date(Date.now() + retrySeconds * 1000)
+            nextRunAt: resetTimeoutNeedsManualRetry
+              ? new Date(Date.now() + PANEL_SYNC_MANUAL_RETRY_PAUSE_MS)
+              : new Date(Date.now() + retrySeconds * 1000)
           }
         })
       ]);
-      this.logger.warn(`面板同步任务失败，${retrySeconds} 秒后重试：${job.nodeId}/${job.panelClientEmail}: ${message}`);
+      this.logger.warn(
+        resetTimeoutNeedsManualRetry
+          ? `面板流量重置任务超时，已暂停自动重试等待人工确认：${job.nodeId}/${job.panelClientEmail}: ${message}`
+          : `面板同步任务失败，${retrySeconds} 秒后重试：${job.nodeId}/${job.panelClientEmail}: ${message}`
+      );
     }
   }
 
@@ -1491,7 +1501,7 @@ export class RuntimeSessionService {
         if (settled) {
           return;
         }
-        reject(new Error(`3x-ui panel sync job remote call timed out after ${timeoutMs}ms; retry will continue in background`));
+        reject(new PanelSyncRemoteCallTimeoutError(timeoutMs));
       }, timeoutMs);
     });
 
@@ -2590,6 +2600,13 @@ function isPrismaUniqueConstraintError(error: unknown) {
 
 function isPanelSyncAction(action: string): action is PanelSyncAction {
   return ["ensure_client", "disable_client", "delete_client", "reset_client_traffic"].includes(action);
+}
+
+class PanelSyncRemoteCallTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`3x-ui panel sync job remote call timed out after ${timeoutMs}ms; retry will continue in background`);
+    this.name = "PanelSyncRemoteCallTimeoutError";
+  }
 }
 
 function readPanelSyncJobTimeoutMs() {

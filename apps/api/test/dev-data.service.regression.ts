@@ -3284,6 +3284,12 @@ async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
   assert.equal(nodeUpdates[0].where.id, "node_stalled");
   const stalledUpdate = jobUpdates.find((item) => item.where.id === "stalled");
   assert.match(stalledUpdate?.data.lastError ?? "", /timed out/);
+  assert.match(stalledUpdate?.data.lastError ?? "", /已暂停自动重试/);
+  assert.ok(
+    stalledUpdate?.data.nextRunAt instanceof Date &&
+      stalledUpdate.data.nextRunAt.getTime() - Date.now() > 300 * 24 * 60 * 60 * 1000,
+    "timed-out traffic reset must not be scheduled for automatic near-term retry"
+  );
 }
 
 async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
@@ -3392,6 +3398,15 @@ async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
   assert.equal(statusById.get("online"), "completed");
   assert.equal(statusById.get("stalled_a"), "failed");
   assert.equal(statusById.get("stalled_b"), "failed");
+  for (const stalledId of ["stalled_a", "stalled_b"]) {
+    const stalledUpdate = jobUpdates.find((item) => item.where.id === stalledId);
+    assert.match(stalledUpdate?.data.lastError ?? "", /已暂停自动重试/);
+    assert.ok(
+      stalledUpdate?.data.nextRunAt instanceof Date &&
+        stalledUpdate.data.nextRunAt.getTime() - Date.now() > 300 * 24 * 60 * 60 * 1000,
+      "timed-out traffic reset must wait for manual retry instead of automatic retry"
+    );
+  }
 }
 
 async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
@@ -16799,13 +16814,32 @@ async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails(
     userId: "user_1",
     subscriptionId: null,
     teamId: null,
+    lastMessageAt: new Date("2026-01-01T00:00:30.000Z"),
+    closedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:30.000Z"),
     user: {
       id: "user_1",
       email: "user@example.com",
       displayName: "User"
     },
-    team: null
+    team: null,
+    messages: [
+      {
+        id: "ticket_msg_existing",
+        ticketId: "ticket_1",
+        authorRole: "user",
+        authorUserId: "user_1",
+        body: "original question",
+        createdAt: new Date("2026-01-01T00:00:30.000Z"),
+        attachments: [],
+        authorUser: {
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User"
+        }
+      }
+    ]
   };
   const service = createDevDataService({
     logger: {
@@ -16842,8 +16876,10 @@ async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails(
   assert.deepEqual(writes.sort(), ["message", "ticket"]);
   assert.equal(result.id, "ticket_1");
   assert.equal(result.status, "waiting_user");
-  assert.equal(result.messages[0]?.body, "reply saved");
-  assert.equal(result.messages[0]?.authorRole, "admin");
+  assert.equal(result.messages.length, 2);
+  assert.equal(result.messages[0]?.body, "original question");
+  assert.equal(result.messages[1]?.body, "reply saved");
+  assert.equal(result.messages[1]?.authorRole, "admin");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /detail refresh failed/);
 }
@@ -16866,7 +16902,10 @@ async function testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRef
     userId: "user_1",
     subscriptionId: "sub_1",
     teamId: "team_1",
+    lastMessageAt: new Date("2026-01-01T00:00:30.000Z"),
+    closedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:30.000Z"),
     user: {
       id: "user_1",
       email: "user@example.com",
@@ -16875,7 +16914,23 @@ async function testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRef
     team: {
       id: "team_1",
       name: "Team"
-    }
+    },
+    messages: [
+      {
+        id: "ticket_msg_existing",
+        ticketId: "ticket_1",
+        authorRole: "user",
+        authorUserId: "user_1",
+        body: "original attachment question",
+        createdAt: new Date("2026-01-01T00:00:30.000Z"),
+        attachments: [],
+        authorUser: {
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User"
+        }
+      }
+    ]
   };
   const service = createDevDataService({
     logger: {
@@ -16934,8 +16989,10 @@ async function testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRef
   assert.equal(writes.some((item) => item.kind === "attachment"), true);
   assert.equal(result.id, "ticket_1");
   assert.equal(result.ownerType, "team");
-  assert.equal(result.messages[0]?.attachments[0]?.url, uploadedFile.url);
-  assert.equal(result.messages[0]?.attachments[0]?.fileSizeBytes, uploadedFile.fileSizeBytes.toString());
+  assert.equal(result.messages.length, 2);
+  assert.equal(result.messages[0]?.body, "original attachment question");
+  assert.equal(result.messages[1]?.attachments[0]?.url, uploadedFile.url);
+  assert.equal(result.messages[1]?.attachments[0]?.fileSizeBytes, uploadedFile.fileSizeBytes.toString());
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /detail refresh failed/);
 }
@@ -16949,13 +17006,32 @@ async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls
     userId: "user_1",
     subscriptionId: null,
     teamId: null,
+    lastMessageAt: new Date("2026-01-01T00:00:30.000Z"),
+    closedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:30.000Z"),
     user: {
       id: "user_1",
       email: "user@example.com",
       displayName: "User"
     },
-    team: null
+    team: null,
+    messages: [
+      {
+        id: "ticket_msg_existing",
+        ticketId: "ticket_1",
+        authorRole: "user",
+        authorUserId: "user_1",
+        body: "original question",
+        createdAt: new Date("2026-01-01T00:00:30.000Z"),
+        attachments: [],
+        authorUser: {
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User"
+        }
+      }
+    ]
   };
   const service = createDevDataService({
     logger: {
@@ -16988,7 +17064,9 @@ async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls
 
   assert.equal(result.id, "ticket_1");
   assert.equal(result.status, "waiting_user");
-  assert.equal(result.messages[0]?.body, "reply saved");
+  assert.equal(result.messages.length, 2);
+  assert.equal(result.messages[0]?.body, "original question");
+  assert.equal(result.messages[1]?.body, "reply saved");
 }
 
 async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls() {

@@ -544,7 +544,14 @@ export class DevDataService implements OnModuleInit {
       where: { id: ticketId },
       include: {
         user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } }
+        team: { select: { id: true, name: true } },
+        messages: {
+          include: {
+            authorUser: { select: { id: true, email: true, displayName: true } },
+            attachments: { orderBy: { createdAt: "asc" } }
+          },
+          orderBy: { createdAt: "asc" }
+        }
       }
     });
     if (!current) {
@@ -613,7 +620,14 @@ export class DevDataService implements OnModuleInit {
       where: { id: ticketId },
       include: {
         user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } }
+        team: { select: { id: true, name: true } },
+        messages: {
+          include: {
+            authorUser: { select: { id: true, email: true, displayName: true } },
+            attachments: { orderBy: { createdAt: "asc" } }
+          },
+          orderBy: { createdAt: "asc" }
+        }
       }
     });
     if (!current) {
@@ -760,13 +774,34 @@ export class DevDataService implements OnModuleInit {
     ticket: {
       id: string;
       title: string;
+      status: SupportTicketStatus;
       source: SupportTicketSource;
       userId: string;
       subscriptionId: string | null;
       teamId: string | null;
+      lastMessageAt: Date;
+      closedAt: Date | null;
       createdAt: Date;
-      user: { email: string; displayName: string };
+      updatedAt: Date;
+      user: { id: string; email: string; displayName: string };
       team?: { name: string } | null;
+      messages?: Array<{
+        id: string;
+        ticketId: string;
+        authorRole: SupportTicketAuthorRole;
+        authorUserId: string | null;
+        body: string;
+        createdAt: Date;
+        attachments?: Array<{
+          id: string;
+          url: string;
+          fileName: string;
+          mimeType: string;
+          fileSizeBytes: bigint | number | null;
+          createdAt: Date;
+        }>;
+        authorUser?: { id: string; email: string; displayName: string } | null;
+      }>;
     },
     now: Date,
     message: {
@@ -776,36 +811,34 @@ export class DevDataService implements OnModuleInit {
       attachments: AdminSupportTicketDetailDto["messages"][number]["attachments"];
     }
   ): AdminSupportTicketDetailDto {
+    const existingDetail = toAdminSupportTicketDetail({
+      ...ticket,
+      status: ticket.status,
+      lastMessageAt: ticket.lastMessageAt,
+      closedAt: ticket.closedAt,
+      updatedAt: ticket.updatedAt,
+      team: ticket.team ? { id: ticket.teamId ?? "", name: ticket.team.name } : null,
+      messages: ticket.messages ?? []
+    });
+    const newMessage = {
+      id: message.messageId,
+      ticketId: ticket.id,
+      authorRole: "admin" as const,
+      authorUserId: message.adminUserId,
+      authorDisplayName: readSupportTicketAuthorDisplayName("admin", null),
+      authorEmail: null,
+      body: message.body,
+      attachments: message.attachments,
+      createdAt: now.toISOString()
+    };
     return {
-      id: ticket.id,
-      title: ticket.title,
+      ...existingDetail,
       status: "waiting_user",
-      source: ticket.source,
-      ownerType: ticket.teamId ? "team" : "personal",
-      userId: ticket.userId,
-      userEmail: ticket.user.email,
-      userDisplayName: ticket.user.displayName,
-      subscriptionId: ticket.subscriptionId,
-      teamId: ticket.teamId,
-      teamName: ticket.team?.name ?? null,
       lastMessageAt: now.toISOString(),
       closedAt: null,
-      createdAt: ticket.createdAt.toISOString(),
       updatedAt: now.toISOString(),
       lastMessagePreview: summarizeSupportTicketMessage(message.body),
-      messages: [
-        {
-          id: message.messageId,
-          ticketId: ticket.id,
-          authorRole: "admin",
-          authorUserId: message.adminUserId,
-          authorDisplayName: readSupportTicketAuthorDisplayName("admin", null),
-          authorEmail: null,
-          body: message.body,
-          attachments: message.attachments,
-          createdAt: now.toISOString()
-        }
-      ]
+      messages: [...existingDetail.messages, newMessage]
     };
   }
 
