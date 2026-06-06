@@ -222,7 +222,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         <PanelSyncInlineStatus item={teamSubscriptionRecord} />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) =>
-                            currentSubscription?.id ? job.subscriptionId === currentSubscription.id : false
+                            currentSubscription?.id ? job.subscriptionId === currentSubscription.id && job.userId === null : false
                           )}
                           retryBusyKey={props.leaseRevocationRetryBusyKey}
                           onRetryJob={props.onRetryLeaseRevocationJob}

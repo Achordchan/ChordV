@@ -142,7 +142,7 @@ export function UsersPage(props: UsersPageProps) {
                         <PanelSyncInlineStatus item={item} />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) =>
-                            item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id : false
+                            item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id && job.userId === null : false
                           )}
                           retryBusyKey={props.leaseRevocationRetryBusyKey}
                           onRetryJob={props.onRetryLeaseRevocationJob}
@@ -276,7 +276,11 @@ export function UsersPage(props: UsersPageProps) {
                                     />
                                     <PanelSyncInlineStatus item={userRecord} />
                                     <LeaseRevocationInlineStatus
-                                      jobs={props.leaseRevocationJobs.filter((job) => job.userId === member.userId)}
+                                      jobs={props.leaseRevocationJobs.filter(
+                                        (job) =>
+                                          job.userId === member.userId &&
+                                          (item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id || job.subscriptionId === null : true)
+                                      )}
                                       retryBusyKey={props.leaseRevocationRetryBusyKey}
                                       onRetryJob={props.onRetryLeaseRevocationJob}
                                     />

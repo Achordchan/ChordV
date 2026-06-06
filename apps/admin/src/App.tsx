@@ -722,18 +722,23 @@ export function App() {
         const [subscriptions, nodes] = await Promise.all([fetchAdminSubscriptions(), fetchAdminNodes()]);
         mergeSnapshot({ subscriptions, nodes });
       } else if (targetSection === "users") {
-        const [users, teams] = await Promise.all([fetchAdminUsers(), fetchAdminTeams()]);
-        mergeSnapshot({ users, teams });
+        const [users, teams, leaseRevocationJobs] = await Promise.all([
+          fetchAdminUsers(),
+          fetchAdminTeams(),
+          fetchAdminLeaseRevocationJobs()
+        ]);
+        mergeSnapshot({ users, teams, leaseRevocationJobs });
       } else if (targetSection === "plans") {
         applyListPatch("plans", await fetchAdminPlans());
       } else if (targetSection === "subscriptions") {
-        const [users, plans, subscriptions, teams] = await Promise.all([
+        const [users, plans, subscriptions, teams, leaseRevocationJobs] = await Promise.all([
           fetchAdminUsers(),
           fetchAdminPlans(),
           fetchAdminSubscriptions(),
-          fetchAdminTeams()
+          fetchAdminTeams(),
+          fetchAdminLeaseRevocationJobs()
         ]);
-        mergeSnapshot({ users, plans, subscriptions, teams });
+        mergeSnapshot({ users, plans, subscriptions, teams, leaseRevocationJobs });
       } else if (targetSection === "nodes") {
         const [nodes, panelSyncJobs, leaseRevocationJobs] = await Promise.all([
           fetchAdminNodes(),
