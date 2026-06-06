@@ -735,8 +735,8 @@ export function resolveReleaseArtifactForClient(
   artifact: ReleaseArtifactRowLike,
   clientMirrorPrefix: string | null
 ) {
-  const defaultMirrorPrefix = artifact.source === "external" ? artifact.defaultMirrorPrefix : null;
-  const allowClientMirror = artifact.source === "uploaded" ? false : artifact.allowClientMirror;
+  const defaultMirrorPrefix = null;
+  const allowClientMirror = false;
   const resolvedUrl = buildReleaseArtifactDownloadUrlForClient(
     artifact.downloadUrl,
     defaultMirrorPrefix,
@@ -1138,12 +1138,12 @@ export function toAdminReleaseArtifactRecord(row: ReleaseArtifactRowLike): Admin
     originDownloadUrl: row.originDownloadUrl ?? row.downloadUrl,
     finalUrlPreview: buildReleaseArtifactDownloadUrlForClient(
       row.originDownloadUrl ?? row.downloadUrl,
-      row.defaultMirrorPrefix,
       null,
-      row.allowClientMirror
+      null,
+      false
     ),
-    defaultMirrorPrefix: row.defaultMirrorPrefix,
-    allowClientMirror: row.source === "uploaded" ? false : row.allowClientMirror,
+    defaultMirrorPrefix: null,
+    allowClientMirror: false,
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes?.toString() ?? null,
     fileHash: row.fileHash,

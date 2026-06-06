@@ -505,7 +505,17 @@ function createClientRuntimeEventsService(overrides: Record<string, unknown> = {
 }
 
 function createAdminNodeService(overrides: Record<string, unknown> = {}) {
-  return createInstance<AdminNodeService>(AdminNodeService.prototype, overrides);
+  const runtimeSessionOverride =
+    typeof overrides.runtimeSessionService === "object" && overrides.runtimeSessionService !== null
+      ? (overrides.runtimeSessionService as Record<string, unknown>)
+      : {};
+  return createInstance<AdminNodeService>(AdminNodeService.prototype, {
+    ...overrides,
+    runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => undefined,
+      ...runtimeSessionOverride
+    }
+  });
 }
 
 function createAnnouncementPolicyService(overrides: Record<string, unknown> = {}) {
@@ -5223,8 +5233,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
         calls.push("queue_lease_revocation");
       },
       revokeNodeLeases: async () => {
-        calls.push("revoke_leases");
-        return 1;
+        throw new Error("node delete should queue lease revocation instead of direct active revoke");
       },
       removePanelBindingsForNode: async () => {
         calls.push("queue_panel_delete");
@@ -5255,7 +5264,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.equal(bindingsQueuedForDelete, true, "delete must queue remote panel cleanup without waiting for the panel");
-  assert.deepEqual(calls, ["local_update", "queue_lease_revocation", "revoke_leases", "queue_panel_delete"]);
+  assert.deepEqual(calls, ["local_update", "queue_lease_revocation", "queue_panel_delete"]);
   assert.equal(nodeUpdates[0].data.isActive, false, "node must be hidden locally before remote cleanup completes");
   assert.equal(nodeUpdates[0].data.panelStatus, "offline");
   assert.equal(nodeDeleted, false, "node row must be kept for queued panel cleanup jobs");
@@ -5283,8 +5292,7 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
         calls.push("queue_lease_revocation");
       },
       revokeNodeLeases: async () => {
-        calls.push("revoke_leases");
-        return 1;
+        throw new Error("node delete should queue lease revocation instead of direct active revoke");
       },
       removePanelBindingsForNode: async () => {
         calls.push("queue_panel_delete");
@@ -5315,7 +5323,6 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
   assert.deepEqual(calls, [
     "local_update",
     "queue_lease_revocation",
-    "revoke_leases",
     "queue_panel_delete",
     "resolve_event_targets",
     "publish_event"
@@ -5345,8 +5352,7 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
         calls.push("queue_lease_revocation");
       },
       revokeNodeLeases: async () => {
-        calls.push("revoke_leases");
-        return 1;
+        throw new Error("node delete should queue lease revocation instead of direct active revoke");
       },
       removePanelBindingsForNode: async () => {
         calls.push("queue_panel_delete");
@@ -5379,7 +5385,6 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
   assert.deepEqual(calls, [
     "local_update",
     "queue_lease_revocation",
-    "revoke_leases",
     "queue_panel_delete",
     "resolve_event_targets",
     "publish_event"
@@ -9121,7 +9126,10 @@ async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
   let remoteDisableCalled = false;
   const service = createAdminNodeService({
     runtimeSessionService: {
-      revokeNodeLeases: async () => 1,
+      queueLeaseRevocationJobForNode: async () => 1,
+      revokeNodeLeases: async () => {
+        throw new Error("node disable should queue lease revocation instead of direct active revoke");
+      },
       disablePanelBindingsForNode: async () => {
         remoteDisableCalled = true;
         throw new Error("remote panel disable must not run inline");
@@ -9263,8 +9271,11 @@ async function testDisableNodeKeepsLocalSaveWhenEffectsFail() {
   let updatedData: Record<string, any> | null = null;
   const service = createAdminNodeService({
     runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        throw new Error("lease job queue failed");
+      },
       revokeNodeLeases: async () => {
-        throw new Error("lease revoke failed");
+        throw new Error("node disable should queue lease revocation instead of direct active revoke");
       },
       markPanelBindingsDisabledForNode: async () => {
         throw new Error("panel queue failed");
@@ -9303,12 +9314,19 @@ async function testDisableNodeReturnsWhenAfterSaveFollowUpStalls() {
   });
   let updatedData: Record<string, any> | null = null;
   let panelDisableQueued = false;
+  let leaseJobQueueStarted = false;
   const service = createAdminNodeService({
     logger: {
       warn: () => undefined
     },
     runtimeSessionService: {
-      revokeNodeLeases: async () => new Promise<number>(() => undefined),
+      queueLeaseRevocationJobForNode: async () => {
+        leaseJobQueueStarted = true;
+        return new Promise<void>(() => undefined);
+      },
+      revokeNodeLeases: async () => {
+        throw new Error("node disable should queue lease revocation instead of direct active revoke");
+      },
       markPanelBindingsDisabledForNode: async () => {
         panelDisableQueued = true;
         return 1;
@@ -9340,8 +9358,11 @@ async function testDisableNodeReturnsWhenAfterSaveFollowUpStalls() {
   assert.equal(result.isActive, false);
   assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, false, "local node disable must save before stalled follow-up finishes");
+  assert.equal(leaseJobQueueStarted, false, "lease job queueing must not block the local node disable response");
   assert.equal(panelDisableQueued, false, "panel disable queueing must not block the local node disable response");
-  await waitUntil(() => panelDisableQueued);
+  await waitUntil(() => leaseJobQueueStarted);
+  assert.equal(leaseJobQueueStarted, true, "lease job queueing should still run after the response");
+  await waitUntil(() => panelDisableQueued, 1000);
   assert.equal(panelDisableQueued, true, "subsequent panel disable queueing should still run after the stalled lease step times out");
 }
 
@@ -10378,9 +10399,11 @@ async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails(
       })
     },
     runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
       revokeNodeLeases: async () => {
-        calls.push("revoke");
-        return 1;
+        throw new Error("panel migration should queue lease revocation instead of direct active revoke");
       },
       removePanelBindingsForNode: async (_nodeId: string, panelConfig: Record<string, unknown>) => {
         cleanupPanelConfig = panelConfig;
@@ -10435,7 +10458,7 @@ async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails(
   assert.equal(record.panelApiBasePath, "/new");
   assert.deepEqual(calls, [], "panel migration cleanup and resync must be deferred until after the local response");
   await waitUntil(() => calls.length >= 4);
-  assert.deepEqual(calls, ["revoke", "remove_old", "mark_deleted", "sync_new"]);
+  assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "mark_deleted", "sync_new"]);
   assert.equal(updates[0].panelBaseUrl, "https://new-panel.example.com");
   assert.equal(cleanupPanelConfig?.panelBaseUrl, "https://old-panel.example.com");
   assert.equal(cleanupPanelConfig?.panelApiBasePath, "/old");
@@ -10455,9 +10478,11 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
       }
     },
     runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
       revokeNodeLeases: async () => {
-        calls.push("revoke");
-        return 1;
+        throw new Error("panel migration should queue lease revocation instead of direct active revoke");
       },
       removePanelBindingsForNode: async () => {
         calls.push("remove_old");
@@ -10497,7 +10522,7 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
   assert.equal(updates[0].panelError, "new panel offline");
   assert.deepEqual(calls, [], "panel migration cleanup and resync must be deferred until after the local response");
   await waitUntil(() => calls.length >= 3);
-  assert.deepEqual(calls, ["revoke", "remove_old", "sync_new"]);
+  assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "sync_new"]);
 }
 
 async function testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls() {
@@ -10515,7 +10540,10 @@ async function testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls() {
       }
     },
     runtimeSessionService: {
-      revokeNodeLeases: async () => 1,
+      queueLeaseRevocationJobForNode: async () => undefined,
+      revokeNodeLeases: async () => {
+        throw new Error("panel migration should queue lease revocation instead of direct active revoke");
+      },
       removePanelBindingsForNode: async () => ({ requested: 1, updated: 1, failed: [] }),
       syncPanelAccessForNode: async () => 1
     },
@@ -12526,7 +12554,8 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
   assert.equal(metadataProbeCalled, false, "editing an external artifact must not probe or download the remote file");
   assert.equal(updates.length, 1);
   assert.equal(updates[0].data.downloadUrl, "https://example.com/new.zip");
-  assert.equal(updates[0].data.defaultMirrorPrefix, "https://ghfast.top/");
+  assert.equal(updates[0].data.defaultMirrorPrefix, null);
+  assert.equal(updates[0].data.allowClientMirror, false);
   assert.equal(updates[0].data.fileName, null);
   assert.equal(updates[0].data.fileSizeBytes, null);
   assert.equal(updates[0].data.fileHash, null);

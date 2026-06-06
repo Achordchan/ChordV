@@ -357,8 +357,8 @@ export class AdminNodeService {
     let panelSyncPending = false;
     if (current && panelConnectionChanged && !nodeWillBeDisabled) {
       panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("revoke node leases for panel config change", () =>
-        this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed")
+      await this.tryRunAfterLocalNodeSave("queue node lease revocation for panel config change", () =>
+        this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_panel_config_changed")
       );
       await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
         const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
@@ -370,8 +370,8 @@ export class AdminNodeService {
 
     if (current && (panelWillBeDisabled || nodeWillBeDisabled)) {
       panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("revoke node leases after node disable", () =>
-        this.runtimeSessionService.revokeNodeLeases(
+      await this.tryRunAfterLocalNodeSave("queue node lease revocation after node disable", () =>
+        this.runtimeSessionService.queueLeaseRevocationJobForNode(
           nodeId,
           nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
         )
@@ -622,8 +622,8 @@ export class AdminNodeService {
     let panelSyncPending = false;
     if (panelConnectionChanged && !nodeWillBeDisabled) {
       panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("revoke node leases for panel config change", () =>
-        this.runtimeSessionService.revokeNodeLeases(nodeId, "node_panel_config_changed")
+      await this.tryRunAfterLocalNodeSave("queue node lease revocation for panel config change", () =>
+        this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_panel_config_changed")
       );
       await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
         const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
@@ -640,8 +640,8 @@ export class AdminNodeService {
 
     if ((current.isActive && input.isActive === false) || panelWillBeDisabled) {
       panelSyncPending = true;
-      await this.tryRunAfterLocalNodeSave("revoke node leases after node disable", () =>
-        this.runtimeSessionService.revokeNodeLeases(
+      await this.tryRunAfterLocalNodeSave("queue node lease revocation after node disable", () =>
+        this.runtimeSessionService.queueLeaseRevocationJobForNode(
           nodeId,
           nodeWillBeDisabled ? "node_disabled" : "node_panel_disabled"
         )
@@ -1171,9 +1171,6 @@ export class AdminNodeService {
     await this.tryRunAfterLocalNodeSave("queue lease revocation after node delete", () =>
       this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
     );
-    await this.tryRunAfterLocalNodeSave("revoke node leases after node delete", () =>
-      this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted")
-    );
     await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", () =>
       this.runtimeSessionService.removePanelBindingsForNode(nodeId)
     );
@@ -1245,15 +1242,17 @@ export class AdminNodeService {
     const timer = setTimeout(() => {
       let settled = false;
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      const guardedTask = task().then(
-        () => {
-          settled = true;
-        },
-        (error) => {
-          settled = true;
-          throw error;
-        }
-      );
+      const guardedTask = Promise.resolve()
+        .then(task)
+        .then(
+          () => {
+            settled = true;
+          },
+          (error) => {
+            settled = true;
+            throw error;
+          }
+        );
       void guardedTask.catch((error) => {
         this.logger?.warn(
           `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`

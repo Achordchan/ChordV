@@ -61,7 +61,7 @@ export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"):
     type,
     downloadUrl: "",
     defaultMirrorPrefix: "",
-    allowClientMirror: true,
+    allowClientMirror: false,
     fileName: "",
     isPrimary: true,
     selectedFile: null

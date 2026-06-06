@@ -350,7 +350,6 @@ export class ReleaseCenterService {
 
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
     assertDesktopReleaseArtifactUsesHttps(release.platform as PlatformTarget, input.downloadUrl);
-    const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     const createdArtifact = await this.prisma.$transaction(async (tx) => {
@@ -368,8 +367,8 @@ export class ReleaseCenterService {
           type: toPrismaReleaseArtifactType(input.type),
           deliveryMode,
           downloadUrl: input.downloadUrl.trim(),
-          defaultMirrorPrefix,
-          allowClientMirror: input.allowClientMirror ?? true,
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
           fileName: normalizeNullableText(input.fileName),
           storedFilePath: null,
           fileSizeBytes: null,
@@ -405,12 +404,6 @@ export class ReleaseCenterService {
     const nextSource = input.source ?? current.source;
     const nextType = input.type ?? fromPrismaReleaseArtifactType(current.type);
     const nextDownloadUrl = input.downloadUrl ?? current.downloadUrl;
-    const nextDefaultMirrorPrefix =
-      nextSource === "external"
-        ? input.defaultMirrorPrefix !== undefined
-          ? normalizeNullableText(input.defaultMirrorPrefix)
-          : current.defaultMirrorPrefix
-        : null;
     if (input.source === "uploaded" && current.source !== "uploaded") {
       throw new BadRequestException("Use the upload endpoint to switch to an uploaded artifact.");
     }
@@ -435,8 +428,7 @@ export class ReleaseCenterService {
       input.source !== undefined ||
       input.type !== undefined ||
       input.deliveryMode !== undefined ||
-      input.downloadUrl !== undefined ||
-      input.defaultMirrorPrefix !== undefined;
+      input.downloadUrl !== undefined;
     const nextExternalFileName =
       (input.fileName !== undefined ? normalizeNullableText(input.fileName) : metadataIdentityChanged ? null : current.fileName);
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
@@ -454,9 +446,8 @@ export class ReleaseCenterService {
           ...(input.type !== undefined ? { type: toPrismaReleaseArtifactType(input.type) } : {}),
           ...(input.deliveryMode !== undefined || input.type !== undefined ? { deliveryMode: nextDeliveryMode } : {}),
           ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
-          ...(nextSource === "external" && input.defaultMirrorPrefix !== undefined ? { defaultMirrorPrefix: nextDefaultMirrorPrefix } : {}),
+          ...(nextSource === "external" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
           ...(nextSource !== "external" ? { defaultMirrorPrefix: null } : {}),
-          ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
           ...(nextSource === "external"
             ? {
                 fileName: nextExternalFileName,
@@ -912,7 +903,6 @@ export class ReleaseCenterService {
     const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
     assertDesktopReleaseArtifactUsesHttps(platform, input.downloadUrl);
-    const defaultMirrorPrefix = normalizeNullableText(input.defaultMirrorPrefix);
     const artifactId = createId("artifact");
 
     return {
@@ -922,8 +912,8 @@ export class ReleaseCenterService {
       type: toPrismaReleaseArtifactType(input.type),
       deliveryMode,
       downloadUrl: input.downloadUrl.trim(),
-      defaultMirrorPrefix,
-      allowClientMirror: input.allowClientMirror ?? true,
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
       fileName: normalizeNullableText(input.fileName),
       storedFilePath: null,
       fileSizeBytes: null,
