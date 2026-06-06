@@ -13211,6 +13211,61 @@ async function testWindowsUpdateCheckIgnoresInstallerArtifactRequest() {
   assert.equal(result.fileName, "ChordV_1.1.3_x64-full.zip");
 }
 
+async function testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createReleaseCenterService({
+    findLatestPublishedRelease: async () => ({
+      id: "release_1",
+      platform: "windows",
+      channel: "stable",
+      version: "1.1.3",
+      displayTitle: "ChordV 1.1.3",
+      changelog: ["Full replace"],
+      minimumVersion: "1.1.0",
+      forceUpgrade: false,
+      status: "published",
+      publishedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      artifacts: [
+        {
+          id: "artifact_external_zip",
+          releaseId: "release_1",
+          source: "external",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          downloadUrl: "https://cdn.example.com/ChordV_1.1.3_x64-full.zip",
+          defaultMirrorPrefix: null,
+          allowClientMirror: true,
+          fileName: "ChordV_1.1.3_x64-full.zip",
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          isPrimary: true,
+          isFullPackage: true,
+          createdAt: now,
+          updatedAt: now
+        }
+      ]
+    })
+  });
+
+  const result = await service.checkClientUpdate({
+    currentVersion: "1.1.2",
+    platform: "windows",
+    channel: "stable",
+    artifactType: "zip"
+  });
+
+  assert.equal(result.hasUpdate, true);
+  assert.equal(result.deliveryMode, "desktop_full_replace");
+  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.3_x64-full.zip");
+  assert.equal(result.recommendedArtifact?.source, "external");
+  assert.equal(result.recommendedArtifact?.type, "zip");
+  assert.equal(result.fileSizeBytes, null);
+  assert.equal(result.fileHash, null);
+}
+
 async function testWindowsUpdateCheckSkipsInstallerOnlyRelease() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createReleaseCenterService({
@@ -17345,6 +17400,7 @@ async function main() {
   await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();
   await testWindowsUpdateCheckIgnoresInstallerArtifactRequest();
+  await testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata();
   await testWindowsUpdateCheckSkipsInstallerOnlyRelease();
   await testCurrentSubscriptionPrefersEffectiveSubscription();
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
