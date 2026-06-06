@@ -946,10 +946,14 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        title: options.automatic ? "面板入站读取失败" : "读取失败",
-        message: options.automatic ? `${message} 这不会影响保存已有节点配置，可手动填写入站 ID。` : message,
-        color: options.automatic ? "yellow" : "red"
+        title: options.automatic || uncertain ? "面板入站暂不可用" : "读取失败",
+        message:
+          options.automatic || uncertain
+            ? `${message} 这不会影响保存已有节点配置，可手动填写入站 ID。`
+            : message,
+        color: options.automatic || uncertain ? "yellow" : "red"
       });
       setNodePanelInbounds([]);
     } finally {
