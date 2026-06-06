@@ -54,7 +54,7 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
 
 export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"): ArtifactEditorFormState {
   return {
-    source: "uploaded",
+    source: "external",
     type,
     downloadUrl: "",
     defaultMirrorPrefix: "",

@@ -489,6 +489,23 @@ export interface AdminPanelSyncJobDto {
   updatedAt: string;
 }
 
+export interface AdminLeaseRevocationJobDto {
+  id: string;
+  reason: string;
+  status: AdminPanelSyncJobStatus;
+  subscriptionId: string | null;
+  userId: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+  attempts: number;
+  nextRunAt: string;
+  lockedAt: string | null;
+  lastError: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AdminNodePanelInboundDto {
   id: number;
   remark: string;
@@ -614,6 +631,7 @@ export interface AdminSnapshotDto {
   teams: AdminTeamRecordDto[];
   nodes: AdminNodeRecordDto[];
   panelSyncJobs: AdminPanelSyncJobDto[];
+  leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   announcements: AdminAnnouncementRecordDto[];
   policy: AdminPolicyRecordDto;
   releases: AdminReleaseRecordDto[];

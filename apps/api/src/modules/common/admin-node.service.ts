@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type {
+  AdminLeaseRevocationJobDto,
   AdminNodePanelInboundDto,
   AdminNodeRecordDto,
   AdminPanelSyncJobDto,
@@ -161,6 +162,82 @@ export class AdminNodeService {
       throw new NotFoundException("该节点暂无可重试的面板同步任务");
     }
     return this.listPanelSyncJobs();
+  }
+
+  async listLeaseRevocationJobs(): Promise<AdminLeaseRevocationJobDto[]> {
+    const rows = await this.prisma.leaseRevocationJob.findMany({
+      where: {
+        status: { in: ["pending", "running", "failed"] }
+      },
+      orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
+      take: 200
+    });
+    const nodeIds = Array.from(new Set(rows.map((row) => row.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId))));
+    const nodes =
+      nodeIds.length > 0
+        ? await this.prisma.node.findMany({
+            where: { id: { in: nodeIds } },
+            select: { id: true, name: true }
+          })
+        : [];
+    const nodeNameById = new Map(nodes.map((node) => [node.id, node.name]));
+
+    return rows.map((row) => ({
+      id: row.id,
+      reason: row.reason,
+      status: row.status as AdminLeaseRevocationJobDto["status"],
+      subscriptionId: row.subscriptionId,
+      userId: row.userId,
+      nodeId: row.nodeId,
+      nodeName: row.nodeId ? nodeNameById.get(row.nodeId) ?? null : null,
+      attempts: row.attempts,
+      nextRunAt: row.nextRunAt.toISOString(),
+      lockedAt: row.lockedAt?.toISOString() ?? null,
+      lastError: row.lastError,
+      completedAt: row.completedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString()
+    }));
+  }
+
+  async retryLeaseRevocationJob(jobId: string): Promise<AdminLeaseRevocationJobDto[]> {
+    const updated = await this.prisma.leaseRevocationJob.updateMany({
+      where: {
+        id: jobId,
+        status: { in: ["pending", "failed"] }
+      },
+      data: {
+        status: "pending",
+        nextRunAt: new Date(),
+        lockedAt: null,
+        completedAt: null,
+        lastError: null
+      }
+    });
+    if (updated.count === 0) {
+      throw new NotFoundException("连接撤销任务不存在或已完成");
+    }
+    return this.listLeaseRevocationJobs();
+  }
+
+  async retryLeaseRevocationJobsForNode(nodeId: string): Promise<AdminLeaseRevocationJobDto[]> {
+    const updated = await this.prisma.leaseRevocationJob.updateMany({
+      where: {
+        nodeId,
+        status: { in: ["pending", "failed"] }
+      },
+      data: {
+        status: "pending",
+        nextRunAt: new Date(),
+        lockedAt: null,
+        completedAt: null,
+        lastError: null
+      }
+    });
+    if (updated.count === 0) {
+      throw new NotFoundException("该节点暂无可重试的连接撤销任务");
+    }
+    return this.listLeaseRevocationJobs();
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {

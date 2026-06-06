@@ -8,6 +8,7 @@ export const ADMIN_REFRESH_TOKEN_KEY = "chordv_admin_refresh_token";
 export const ADMIN_PROFILE_KEY = "chordv_admin_profile";
 export const ADMIN_SESSION_EXPIRED_EVENT = "chordv:admin-session-expired";
 export const ADMIN_SESSION_EXPIRED_MESSAGE = "登录态已失效，请重新登录";
+const DEFAULT_REQUEST_TIMEOUT_MS = 60 * 1000;
 
 type RequestOptions = RequestInit & {
   timeoutMs?: number;
@@ -139,7 +140,7 @@ function isAccessTokenError(status: number, message: string) {
 
 async function requestOnce(path: string, init?: RequestOptions, useAuth = true, accessTokenOverride?: string) {
   const controller = new AbortController();
-  const timeoutMs = init?.timeoutMs ?? 15000;
+  const timeoutMs = init?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const timer = window.setTimeout(() => controller.abort(new Error("请求超时")), timeoutMs);
   const adminAccessToken = useAuth ? accessTokenOverride ?? getStoredAdminAccessToken() : "";
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;

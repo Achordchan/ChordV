@@ -436,13 +436,15 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [users, plans, subscriptions, teams, nodes, panelSyncJobs, announcements, policy, releases, ticketCounts] = await Promise.all([
+    const [users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements, policy, releases, ticketCounts] =
+      await Promise.all([
       this.listAdminUsers(),
       this.listAdminPlans(),
       this.listAdminSubscriptions(),
       this.listAdminTeams(),
       this.listAdminNodes(),
       this.listAdminPanelSyncJobs(),
+      this.listAdminLeaseRevocationJobs(),
       this.listAdminAnnouncements(),
       this.getAdminPolicy(),
       this.listAdminReleases(),
@@ -467,6 +469,7 @@ export class DevDataService implements OnModuleInit {
       teams,
       nodes,
       panelSyncJobs,
+      leaseRevocationJobs,
       announcements,
       policy,
       releases
@@ -1910,6 +1913,18 @@ export class DevDataService implements OnModuleInit {
 
   async retryAdminPanelSyncJobsForNode(nodeId: string) {
     return this.adminNodeService.retryPanelSyncJobsForNode(nodeId);
+  }
+
+  async listAdminLeaseRevocationJobs() {
+    return this.adminNodeService.listLeaseRevocationJobs();
+  }
+
+  async retryAdminLeaseRevocationJob(jobId: string) {
+    return this.adminNodeService.retryLeaseRevocationJob(jobId);
+  }
+
+  async retryAdminLeaseRevocationJobsForNode(nodeId: string) {
+    return this.adminNodeService.retryLeaseRevocationJobsForNode(nodeId);
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {

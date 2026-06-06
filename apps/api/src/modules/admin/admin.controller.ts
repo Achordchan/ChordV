@@ -272,6 +272,21 @@ export class AdminController {
     return this.devDataService.retryAdminPanelSyncJobsForNode(nodeId);
   }
 
+  @Get("nodes/lease-revocation-jobs")
+  getLeaseRevocationJobs() {
+    return this.devDataService.listAdminLeaseRevocationJobs();
+  }
+
+  @Post("nodes/lease-revocation-jobs/:jobId/retry")
+  retryLeaseRevocationJob(@Param("jobId") jobId: string) {
+    return this.devDataService.retryAdminLeaseRevocationJob(jobId);
+  }
+
+  @Post("nodes/:nodeId/lease-revocation-jobs/retry")
+  retryLeaseRevocationJobsForNode(@Param("nodeId") nodeId: string) {
+    return this.devDataService.retryAdminLeaseRevocationJobsForNode(nodeId);
+  }
+
   @Post("nodes/import")
   importNode(@Body() body: ImportNodeDto) {
     return this.devDataService.importNodeFromSubscription(body);

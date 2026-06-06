@@ -413,7 +413,10 @@ async function testUpdateNodeAccessAllowsNestedPanelAccessSyncLock() {
 }
 
 function createDevDataService(overrides: Record<string, unknown> = {}) {
-  return createInstance<DevDataService>(DevDataService.prototype, overrides);
+  return createInstance<DevDataService>(DevDataService.prototype, {
+    listAdminLeaseRevocationJobs: async () => [],
+    ...overrides
+  });
 }
 
 function createRuntimeSessionService(overrides: Record<string, unknown> = {}) {

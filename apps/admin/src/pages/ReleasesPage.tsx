@@ -454,7 +454,7 @@ export function ReleasesPage() {
             <Stack gap={4}>
               <Title order={4}>发布中心</Title>
               <Text size="sm" c="dimmed">
-                这里只做应用安装包发布：新建版本、上传安装包、发布或撤回。
+                这里只做应用安装包发布：新建版本、填写外链或上传安装包、发布或撤回。
               </Text>
             </Stack>
             <Group gap="xs">
@@ -587,7 +587,7 @@ export function ReleasesPage() {
           artifactEditor?.artifactId
             ? "保存安装包"
             : pendingCreateRelease
-              ? "创建发布并上传安装包"
+              ? "创建发布并保存安装包"
               : "保存安装包"
         }
         form={artifactForm}

@@ -1,4 +1,11 @@
-import type { AdminNodePanelInboundDto, AdminNodeRecordDto, AdminPanelSyncJobDto, ImportNodeInputDto, UpdateNodeInputDto } from "@chordv/shared";
+import type {
+  AdminLeaseRevocationJobDto,
+  AdminNodePanelInboundDto,
+  AdminNodeRecordDto,
+  AdminPanelSyncJobDto,
+  ImportNodeInputDto,
+  UpdateNodeInputDto
+} from "@chordv/shared";
 import { request } from "./base";
 
 const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
@@ -25,6 +32,26 @@ export function retryAdminPanelSyncJob(jobId: string) {
 
 export function retryAdminPanelSyncJobsForNode(nodeId: string) {
   return request<AdminPanelSyncJobDto[]>(`/admin/nodes/${nodeId}/panel-sync-jobs/retry`, {
+    method: "POST",
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+export function fetchAdminLeaseRevocationJobs() {
+  return request<AdminLeaseRevocationJobDto[]>("/admin/nodes/lease-revocation-jobs", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
+}
+
+export function retryAdminLeaseRevocationJob(jobId: string) {
+  return request<AdminLeaseRevocationJobDto[]>(`/admin/nodes/lease-revocation-jobs/${jobId}/retry`, {
+    method: "POST",
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+export function retryAdminLeaseRevocationJobsForNode(nodeId: string) {
+  return request<AdminLeaseRevocationJobDto[]>(`/admin/nodes/${nodeId}/lease-revocation-jobs/retry`, {
     method: "POST",
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });

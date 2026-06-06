@@ -89,6 +89,7 @@ import {
   deleteTeamMember,
   fetchAdminAnnouncements,
   fetchAdminDashboard,
+  fetchAdminLeaseRevocationJobs,
   fetchAdminNodes,
   fetchAdminPanelSyncJobs,
   fetchAdminPlans,
@@ -106,6 +107,8 @@ import {
   refreshNode,
   resetSubscriptionTraffic,
   renewSubscription,
+  retryAdminLeaseRevocationJob,
+  retryAdminLeaseRevocationJobsForNode,
   retryAdminPanelSyncJob,
   retryAdminPanelSyncJobsForNode,
   updateAnnouncement,
@@ -633,6 +636,7 @@ export function App() {
         teams: [],
         nodes: [],
         panelSyncJobs: [],
+        leaseRevocationJobs: [],
         announcements: [],
         policy: patch.policy as AdminPolicyRecordDto,
         releases: []
@@ -664,7 +668,8 @@ export function App() {
     try {
       setLoading(true);
       setError(null);
-      const [dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, announcements] = await Promise.all([
+      const [dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements] =
+        await Promise.all([
         fetchAdminDashboard(),
         fetchAdminPolicy(),
         fetchAdminUsers(),
@@ -673,9 +678,10 @@ export function App() {
         fetchAdminTeams(),
         fetchAdminNodes(),
         fetchAdminPanelSyncJobs(),
+        fetchAdminLeaseRevocationJobs(),
         fetchAdminAnnouncements()
       ]);
-      mergeSnapshot({ dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, announcements });
+      mergeSnapshot({ dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements });
       setLoadedSections(new Set(Object.keys(sectionMeta) as SectionKey[]));
     } catch (reason) {
       const message = readError(reason, "加载失败");
@@ -729,8 +735,12 @@ export function App() {
         ]);
         mergeSnapshot({ users, plans, subscriptions, teams });
       } else if (targetSection === "nodes") {
-        const [nodes, panelSyncJobs] = await Promise.all([fetchAdminNodes(), fetchAdminPanelSyncJobs()]);
-        mergeSnapshot({ nodes, panelSyncJobs });
+        const [nodes, panelSyncJobs, leaseRevocationJobs] = await Promise.all([
+          fetchAdminNodes(),
+          fetchAdminPanelSyncJobs(),
+          fetchAdminLeaseRevocationJobs()
+        ]);
+        mergeSnapshot({ nodes, panelSyncJobs, leaseRevocationJobs });
       } else if (targetSection === "announcements") {
         applyListPatch("announcements", await fetchAdminAnnouncements());
       } else if (targetSection === "policies") {
@@ -767,8 +777,12 @@ export function App() {
   }
 
   async function refreshPanelSyncJobsAfterPending() {
-    const [panelSyncJobs, nodes] = await Promise.all([fetchAdminPanelSyncJobs(), fetchAdminNodes()]);
-    mergeSnapshot({ panelSyncJobs, nodes });
+    const [panelSyncJobs, leaseRevocationJobs, nodes] = await Promise.all([
+      fetchAdminPanelSyncJobs(),
+      fetchAdminLeaseRevocationJobs(),
+      fetchAdminNodes()
+    ]);
+    mergeSnapshot({ panelSyncJobs, leaseRevocationJobs, nodes });
   }
 
   function refreshAdminNodesAfterPanelSyncRetry() {
@@ -830,6 +844,60 @@ export function App() {
       });
     } catch (reason) {
       const retryMessage = readError(reason, "节点同步任务重新排队失败");
+      const retryUncertain = isUncertainRequestFailure(retryMessage);
+      notifications.show({
+        color: retryUncertain ? "yellow" : "red",
+        title: retryUncertain ? "重试状态不确定" : "重试失败",
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
+      });
+    } finally {
+      setPanelSyncRetryBusyKey(null);
+    }
+  }
+
+  async function handleRetryLeaseRevocationJob(jobId: string) {
+    const busyKey = `lease-job:${jobId}`;
+    if (panelSyncRetryBusyKey === busyKey) {
+      return;
+    }
+    try {
+      setPanelSyncRetryBusyKey(busyKey);
+      const leaseRevocationJobs = await retryAdminLeaseRevocationJob(jobId);
+      mergeSnapshot({ leaseRevocationJobs });
+      notifications.show({
+        color: "green",
+        title: "已重新排队",
+        message: "连接撤销任务已加入最近重试队列"
+      });
+    } catch (reason) {
+      const retryMessage = readError(reason, "连接撤销任务重新排队失败");
+      const retryUncertain = isUncertainRequestFailure(retryMessage);
+      notifications.show({
+        color: retryUncertain ? "yellow" : "red",
+        title: retryUncertain ? "重试状态不确定" : "重试失败",
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
+      });
+    } finally {
+      setPanelSyncRetryBusyKey(null);
+    }
+  }
+
+  async function handleRetryNodeLeaseRevocationJobs(nodeId: string) {
+    const busyKey = `lease-node:${nodeId}`;
+    if (panelSyncRetryBusyKey === busyKey) {
+      return;
+    }
+    try {
+      setPanelSyncRetryBusyKey(busyKey);
+      const leaseRevocationJobs = await retryAdminLeaseRevocationJobsForNode(nodeId);
+      mergeSnapshot({ leaseRevocationJobs });
+      notifications.show({
+        color: "green",
+        title: "已重新排队",
+        message: "该节点的连接撤销任务已加入最近重试队列"
+      });
+    } catch (reason) {
+      const retryMessage = readError(reason, "节点连接撤销任务重新排队失败");
       const retryUncertain = isUncertainRequestFailure(retryMessage);
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
@@ -1565,7 +1633,8 @@ export function App() {
             )
           : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", {
               failureTitle: "节点导入失败，未保存",
-              failureFallback: "导入失败，未保存。请检查订阅地址或 3x-ui 面板连接后重试。"
+              failureFallback: "导入失败，未保存。请检查订阅地址或 3x-ui 面板连接后重试。",
+              treatHttp500AsUncertain: true
             });
         if (success) closeDrawer();
       }
@@ -2301,6 +2370,7 @@ export function App() {
                 onSearchChange={(value) => setSearch((current) => ({ ...current, nodes: value }))}
                 nodes={nodes}
                 panelSyncJobs={snapshot.panelSyncJobs}
+                leaseRevocationJobs={snapshot.leaseRevocationJobs}
                 panelSyncQueueOpened={panelSyncQueueOpened}
                 panelSyncRetryBusyKey={panelSyncRetryBusyKey}
                 probingNodeId={probingNodeId}
@@ -2308,6 +2378,8 @@ export function App() {
                 onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
                 onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
                 onRetryNodePanelSyncJobs={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
+                onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
+                onRetryNodeLeaseRevocationJobs={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
                 onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
