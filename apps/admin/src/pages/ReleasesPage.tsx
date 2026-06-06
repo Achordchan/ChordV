@@ -166,8 +166,8 @@ export function ReleasesPage() {
           ? undefined
           : {
               source: "external",
-              type: defaultArtifactTypeForPlatform(releaseForm.platform),
-              deliveryMode: defaultDeliveryModeForArtifact(defaultArtifactTypeForPlatform(releaseForm.platform)),
+              type: "external",
+              deliveryMode: "external_download",
               downloadUrl: releaseForm.downloadUrl.trim(),
               isPrimary: true
             }
@@ -344,8 +344,8 @@ export function ReleasesPage() {
         if (artifactForm.source === "external") {
           const externalPayload = {
             source: "external" as const,
-            type: artifactForm.type,
-            deliveryMode: defaultDeliveryModeForArtifact(artifactForm.type),
+            type: "external" as const,
+            deliveryMode: "external_download" as const,
             downloadUrl: artifactForm.downloadUrl.trim(),
             fileName: null,
             isPrimary: artifactForm.isPrimary
@@ -654,28 +654,6 @@ function formatUploadBytes(value: number) {
   return `${value} B`;
 }
 
-function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminReleaseArtifactRecordDto["type"] {
-  switch (platform) {
-    case "windows":
-      return "zip";
-    case "android":
-      return "apk";
-    case "ios":
-      return "ipa";
-    default:
-      return "dmg";
-  }
-}
-
-function defaultDeliveryModeForArtifact(type: AdminReleaseArtifactRecordDto["type"]): AdminReleaseArtifactRecordDto["deliveryMode"] {
-  if (type === "zip") {
-    return "desktop_full_replace";
-  }
-  if (type === "apk") {
-    return "apk_download";
-  }
-  if (type === "external" || type === "ipa") {
-    return "external_download";
-  }
-  return "desktop_installer_download";
+function defaultArtifactTypeForPlatform(_platform: AdminReleasePlatform): AdminReleaseArtifactRecordDto["type"] {
+  return "external";
 }

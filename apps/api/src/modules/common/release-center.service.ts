@@ -842,9 +842,15 @@ export class ReleaseCenterService {
     clientMirrorPrefix?: string | null
   ) {
     const scopedArtifacts = preferredType
-      ? artifacts.filter((item) => fromPrismaReleaseArtifactType(item.type) === preferredType)
+      ? artifacts.filter((item) => {
+          const artifactType = fromPrismaReleaseArtifactType(item.type);
+          return artifactType === preferredType || artifactType === "external";
+        })
       : artifacts;
-    const preferred = pickPrimaryReleaseArtifact(scopedArtifacts, preferredType);
+    const preferredExternalArtifact = preferredType
+      ? scopedArtifacts.find((item) => fromPrismaReleaseArtifactType(item.type) === "external" && item.isPrimary)
+      : null;
+    const preferred = preferredExternalArtifact ?? pickPrimaryReleaseArtifact(scopedArtifacts, preferredType);
     const candidates = preferred
       ? [preferred, ...scopedArtifacts.filter((item) => item.id !== preferred.id)]
       : scopedArtifacts;
