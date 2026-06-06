@@ -37,26 +37,12 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         />
 
         {props.form.source === "external" ? (
-          <>
-            <TextInput
-              label="下载地址"
-              placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
-              value={props.form.downloadUrl}
-              onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-            />
-            <TextInput
-              label="默认加速前缀"
-              placeholder="例如 https://ghfast.top/，可留空"
-              value={props.form.defaultMirrorPrefix}
-              onChange={(event) => props.onChange({ ...props.form, defaultMirrorPrefix: event.currentTarget.value })}
-            />
-            <TextInput
-              label="文件名"
-              placeholder="可留空，系统会从下载地址推断"
-              value={props.form.fileName}
-              onChange={(event) => props.onChange({ ...props.form, fileName: event.currentTarget.value })}
-            />
-          </>
+          <TextInput
+            label="外链下载地址"
+            placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+            value={props.form.downloadUrl}
+            onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+          />
         ) : (
           <FileInput
             description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传需要等待，请不要重复点击。`}
@@ -80,7 +66,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
 
         <Alert color="blue" variant="light">
           {props.form.source === "external"
-            ? "外链会直接下发给客户端，不经过本地服务器中转下载。适合 GitHub Release、CDN 或对象存储。"
+            ? "外链会直接下发给客户端，不经过本地服务器中转下载。"
             : props.creatingRelease
               ? "保存后会创建发布记录，并上传这个安装包。"
               : "选择新文件后保存即可替换安装包。"}

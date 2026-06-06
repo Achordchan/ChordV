@@ -71,7 +71,6 @@ export function ReleasesPage() {
   const [releaseEditorId, setReleaseEditorId] = useState<string | null>(null);
   const [releaseEditorOpened, setReleaseEditorOpened] = useState(false);
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
-  const [pendingCreateRelease, setPendingCreateRelease] = useState<CreateAdminReleaseInputDto | null>(null);
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
 
@@ -121,14 +120,12 @@ export function ReleasesPage() {
   }
 
   function openCreateRelease() {
-    setPendingCreateRelease(null);
     setReleaseEditorId(null);
     setReleaseForm(emptyReleaseEditorForm(platformFilter === "all" ? "windows" : platformFilter));
     setReleaseEditorOpened(true);
   }
 
   function openEditRelease(record: AdminReleaseRecordDto) {
-    setPendingCreateRelease(null);
     setReleaseEditorId(record.id);
     setReleaseForm(toReleaseEditorForm(record));
     setReleaseEditorOpened(true);
@@ -144,7 +141,11 @@ export function ReleasesPage() {
     try {
       setSaving("release-editor");
       const version = releaseForm.version.trim();
-      const validationMessage = validateReleaseEditorInput(version);
+      const validationMessage = validateReleaseEditorInput(
+        version,
+        releaseEditorId ? undefined : releaseForm.downloadUrl,
+        releaseForm.platform
+      );
       if (validationMessage) {
         notifications.show({
           color: "yellow",
@@ -160,22 +161,28 @@ export function ReleasesPage() {
         minimumVersion: version,
         forceUpgrade: false,
         title: releaseForm.title.trim() || version,
-        changelog: splitLines(releaseForm.changelog)
+        changelog: splitLines(releaseForm.changelog),
+        initialArtifact: releaseEditorId
+          ? undefined
+          : {
+              source: "external",
+              type: defaultArtifactTypeForPlatform(releaseForm.platform),
+              deliveryMode: defaultDeliveryModeForArtifact(defaultArtifactTypeForPlatform(releaseForm.platform)),
+              downloadUrl: releaseForm.downloadUrl.trim(),
+              defaultMirrorPrefix: null,
+              allowClientMirror: false,
+              isPrimary: true
+            }
       };
 
       if (!releaseEditorId) {
-        setPendingCreateRelease(payload);
-        setReleaseEditorOpened(false);
-        setArtifactEditor({
-          releaseId: null,
-          artifactId: null,
-          platform: payload.platform
-        });
-        setArtifactForm(emptyArtifactEditorForm(defaultArtifactTypeForPlatform(payload.platform)));
+        const record = await createAdminRelease(payload);
+        setReleases((current) => upsertRelease(current, record));
+        closeReleaseEditor();
         notifications.show({
-          color: "blue",
+          color: "green",
           title: "发布中心",
-          message: "继续补充首个安装包。只有安装包保存成功，这条发布记录才会真正创建。"
+          message: "发布记录和外链安装包已创建"
         });
         return;
       }
@@ -263,7 +270,6 @@ export function ReleasesPage() {
   }
 
   function openCreateArtifact(releaseId: string, releasePlatform?: AdminReleasePlatform) {
-    setPendingCreateRelease(null);
     const release = releases.find((item) => item.id === releaseId);
     const platform = releasePlatform ?? release?.platform ?? "macos";
     setArtifactEditor({ releaseId, artifactId: null, platform });
@@ -271,24 +277,14 @@ export function ReleasesPage() {
   }
 
   function openEditArtifact(releaseId: string, artifact: AdminReleaseArtifactRecordDto) {
-    setPendingCreateRelease(null);
     const release = releases.find((item) => item.id === releaseId);
     setArtifactEditor({ releaseId, artifactId: artifact.id, platform: release?.platform ?? "macos" });
     setArtifactForm(toArtifactEditorForm(artifact));
   }
 
-  function closeArtifactEditor(options?: { silent?: boolean }) {
-    const shouldNotifyDiscard = Boolean(pendingCreateRelease) && !options?.silent;
-    setPendingCreateRelease(null);
+  function closeArtifactEditor() {
     setArtifactEditor(null);
     setArtifactForm(emptyArtifactEditorForm());
-    if (shouldNotifyDiscard) {
-      notifications.show({
-        color: "blue",
-        title: "发布中心",
-        message: "你已取消这次新建发布，系统不会保留空白发布记录。"
-      });
-    }
   }
 
   function isUploadFileRequired() {
@@ -327,7 +323,6 @@ export function ReleasesPage() {
   async function saveArtifact() {
     if (!artifactEditor) return;
 
-    let createdReleaseId: string | null = null;
     try {
       let releaseId = artifactEditor.releaseId;
       const validationMessage = validateArtifactEditorInput();
@@ -344,13 +339,7 @@ export function ReleasesPage() {
       let record: AdminReleaseRecordDto | null = null;
 
       if (!releaseId) {
-        if (!pendingCreateRelease) {
-          throw new Error("缺少发布信息，无法保存安装包");
-        }
-
-        const createdRelease = await createAdminRelease(pendingCreateRelease);
-        createdReleaseId = createdRelease.id;
-        releaseId = createdRelease.id;
+        throw new Error("缺少发布记录，无法保存安装包");
       }
 
       if (!record) {
@@ -360,9 +349,9 @@ export function ReleasesPage() {
             type: artifactForm.type,
             deliveryMode: defaultDeliveryModeForArtifact(artifactForm.type),
             downloadUrl: artifactForm.downloadUrl.trim(),
-            defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
-            allowClientMirror: artifactForm.allowClientMirror,
-            fileName: artifactForm.fileName.trim() || null,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: null,
             isPrimary: artifactForm.isPrimary
           };
           record = artifactEditor.artifactId
@@ -389,30 +378,14 @@ export function ReleasesPage() {
         throw new Error("安装包没有保存成功，请重新选择文件后再试。");
       }
       setReleases((current) => upsertRelease(current, record));
-      closeArtifactEditor({ silent: true });
+      closeArtifactEditor();
       notifications.show({
         color: "green",
         title: "发布中心",
-        message:
-          artifactEditor.artifactId
-            ? "安装包已更新"
-            : createdReleaseId
-              ? "发布记录和首个安装包已创建"
-              : "安装包已新增"
+        message: artifactEditor.artifactId ? "安装包已更新" : "安装包已新增"
       });
     } catch (reason) {
-      const failure = showReleaseRequestFailure(reason, "保存安装包失败");
-      if (createdReleaseId && !failure.uncertain) {
-        try {
-          await deleteAdminRelease(createdReleaseId);
-        } catch (cleanupReason) {
-          notifications.show({
-            color: "yellow",
-            title: "发布中心",
-            message: `首个安装包保存失败，而且自动清理草稿也失败了：${readError(cleanupReason, "请手动检查是否残留空白草稿")}`
-          });
-        }
-      }
+      showReleaseRequestFailure(reason, "保存安装包失败");
     } finally {
       setSaving(null);
     }
@@ -584,7 +557,7 @@ export function ReleasesPage() {
         editing={Boolean(releaseEditorId)}
         saving={saving === "release-editor"}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
-        submitLabel={releaseEditorId ? "保存发布记录" : "下一步：添加安装包"}
+        submitLabel={releaseEditorId ? "保存发布记录" : "创建发布"}
         form={releaseForm}
         onClose={closeReleaseEditor}
         onChange={setReleaseForm}
@@ -594,16 +567,10 @@ export function ReleasesPage() {
       <ArtifactEditorModal
         opened={artifactEditor !== null}
         saving={saving?.startsWith("artifact:") ?? false}
-        creatingRelease={Boolean(pendingCreateRelease)}
+        creatingRelease={false}
         platform={artifactEditor?.platform ?? "macos"}
-        title={artifactEditor?.artifactId ? "编辑安装包" : pendingCreateRelease ? "新建发布：首个安装包" : "新增安装包"}
-        submitLabel={
-          artifactEditor?.artifactId
-            ? "保存安装包"
-            : pendingCreateRelease
-              ? "创建发布并保存安装包"
-              : "保存安装包"
-        }
+        title={artifactEditor?.artifactId ? "编辑安装包" : "新增安装包"}
+        submitLabel={artifactEditor?.artifactId ? "保存安装包" : "保存安装包"}
         form={artifactForm}
         uploadMaxBytes={ADMIN_RELEASE_MAX_UPLOAD_BYTES}
         uploadFileRequired={isUploadFileRequired()}
@@ -628,12 +595,21 @@ function splitLines(value: string) {
     .filter(Boolean);
 }
 
-function validateReleaseEditorInput(version: string) {
+function validateReleaseEditorInput(version: string, downloadUrl?: string, platform?: AdminReleasePlatform) {
   if (!version) {
     return "请填写版本号，例如 1.1.6。";
   }
   if (!RELEASE_VERSION_PATTERN.test(version)) {
     return "版本号格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
+  }
+  if (downloadUrl !== undefined && !downloadUrl.trim()) {
+    return "请填写外链下载地址。";
+  }
+  if (downloadUrl !== undefined && !/^https?:\/\//i.test(downloadUrl.trim())) {
+    return "外链下载地址必须是完整的 http/https 地址。";
+  }
+  if (downloadUrl !== undefined && (platform === "windows" || platform === "macos") && !/^https:\/\//i.test(downloadUrl.trim())) {
+    return "桌面端安装包外链必须使用 HTTPS 地址。";
   }
   return null;
 }

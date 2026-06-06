@@ -31,6 +31,7 @@ const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 55_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
+const BULK_NODE_PROBE_START_GUARD_MS = 5;
 const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
 
 @Injectable()
@@ -996,7 +997,7 @@ export class AdminNodeService {
     const workers = Array.from({ length: workerCount }, async () => {
       while (nextIndex < nodes.length) {
         const remainingBudgetMs = deadlineAt - Date.now();
-        if (remainingBudgetMs <= 0) {
+        if (remainingBudgetMs <= BULK_NODE_PROBE_START_GUARD_MS) {
           return;
         }
         const index = nextIndex;

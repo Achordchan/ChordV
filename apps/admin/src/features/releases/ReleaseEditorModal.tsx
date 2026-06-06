@@ -41,6 +41,15 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
         />
 
+        {!props.editing ? (
+          <TextInput
+            label="外链下载地址"
+            placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+            value={props.form.downloadUrl}
+            onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+          />
+        ) : null}
+
         <Textarea
           label="更新日志"
           minRows={6}

@@ -11,6 +11,7 @@ export type ReleaseEditorFormState = {
   status: AdminReleaseStatus;
   version: string;
   title: string;
+  downloadUrl: string;
   changelog: string;
 };
 
@@ -38,6 +39,7 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     status: "draft",
     version: "",
     title: "",
+    downloadUrl: "",
     changelog: ""
   };
 }
@@ -48,6 +50,7 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     status: record.status,
     version: record.version,
     title: record.title,
+    downloadUrl: record.artifacts.find((artifact) => artifact.isPrimary)?.originDownloadUrl ?? "",
     changelog: record.changelog.join("\n")
   };
 }

@@ -149,6 +149,23 @@ export class AdminSubscriptionService {
     }
   }
 
+  private startSubscriptionFollowUpInBackground(label: string, task: () => Promise<unknown>): PanelSyncBestEffortResult {
+    const timer = setTimeout(() => {
+      void this.withSubscriptionFollowUpBudget(label, undefined, async () => {
+        try {
+          await task();
+        } catch (error) {
+          this.logger?.warn(`Local subscription change saved, but ${label} failed: ${readErrorMessage(error, "unknown error")}`);
+        }
+      });
+    }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
+    timer.unref?.();
+    return {
+      ok: false,
+      errorMessage: `${label} queued for background processing`
+    };
+  }
+
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
     const [rows, panelSyncJobs] = await Promise.all([
       this.prisma.user.findMany({
@@ -290,30 +307,13 @@ export class AdminSubscriptionService {
         maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
       }
     });
-    const panelSync = await this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
-      `user concurrent lease enforcement for ${userId}`,
-      {
-        ok: false,
-        errorMessage: "lease concurrency reconciliation is still running in background"
-      },
-      async () => {
-      try {
-      const effectiveLimit =
-        row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
-      if (effectiveLimit !== null) {
-        await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
-      }
-      return { ok: true };
-      } catch (error) {
-        const errorMessage = readErrorMessage(error, "unknown error");
-        this.logger?.warn(`Local user security change saved, but concurrent lease enforcement failed for ${userId}: ${errorMessage}`);
-        return {
-          ok: false,
-          errorMessage: `lease concurrency reconciliation failed: ${errorMessage}`
-        };
-      }
-      }
-    );
+    const effectiveLimit = row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
+    const panelSync =
+      effectiveLimit !== null
+        ? this.startSubscriptionFollowUpInBackground(`user concurrent lease enforcement for ${userId}`, () =>
+            this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit)
+          )
+        : { ok: true as const };
     return this.withAdminUserRefreshBestEffort(userId, row, panelSync, "账号安全策略已更新。");
   }
 
@@ -663,42 +663,43 @@ export class AdminSubscriptionService {
 
     let disconnectReason: string | null = null;
     const row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
-    const current = await this.requireSubscription(subscriptionId);
-    assertPlanScopeMatchesSubscription(plan.scope, current);
-    const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
-    if (Number.isNaN(expireAt.getTime())) {
-      throw new BadRequestException("到期时间无效");
-    }
+      const current = await this.requireSubscription(subscriptionId);
+      assertPlanScopeMatchesSubscription(plan.scope, current);
+      const expireAt = input.expireAt ? new Date(input.expireAt) : current.expireAt;
+      if (Number.isNaN(expireAt.getTime())) {
+        throw new BadRequestException("到期时间无效");
+      }
 
-    const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
-    const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
-    const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
-    disconnectReason = getSubscriptionDisconnectReason({
-      state,
-      remainingTrafficGb,
-      expireAt
-    });
-    return this.prisma.$transaction(async (tx) => {
-      return tx.subscription.update({
-        where: { id: subscriptionId },
-        data: {
-          planId: plan.id,
-          totalTrafficGb,
-          remainingTrafficGb,
-          expireAt,
-          renewable: plan.renewable,
-          state,
-          sourceAction: "plan_changed",
-          lastSyncedAt: new Date()
-        },
-        include: {
-          plan: true,
-          user: true,
-          team: true,
-          nodeAccesses: true
-        }
+      const totalTrafficGb = input.totalTrafficGb ?? plan.totalTrafficGb;
+      const remainingTrafficGb = Math.max(0, totalTrafficGb - current.usedTrafficGb);
+      const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
+      disconnectReason = getSubscriptionDisconnectReason({
+        state,
+        remainingTrafficGb,
+        expireAt
       });
-    });
+
+      return this.prisma.$transaction(async (tx) => {
+        return tx.subscription.update({
+          where: { id: subscriptionId },
+          data: {
+            planId: plan.id,
+            totalTrafficGb,
+            remainingTrafficGb,
+            expireAt,
+            renewable: plan.renewable,
+            state,
+            sourceAction: "plan_changed",
+            lastSyncedAt: new Date()
+          },
+          include: {
+            plan: true,
+            user: true,
+            team: true,
+            nodeAccesses: true
+          }
+        });
+      });
     });
 
     const panelSync = mergePanelSyncResults(
@@ -2126,11 +2127,9 @@ export class AdminSubscriptionService {
         }
       }
     );
-    const activeLeaseRevocationTask = this.revokeSubscriptionLeasesBestEffort(subscriptionId, reason, filter);
-    const [panelDisableResult, leaseJobResult, activeLeaseRevocation] = await Promise.all([
+    const [panelDisableResult, leaseJobResult] = await Promise.all([
       panelDisable,
-      leaseJob,
-      activeLeaseRevocationTask
+      leaseJob
     ]);
 
     const messages: string[] = [];
@@ -2141,9 +2140,8 @@ export class AdminSubscriptionService {
     }
     if (!leaseJobResult.ok) {
       messages.push(leaseJobResult.errorMessage);
-    }
-    if (!activeLeaseRevocation.ok) {
-      messages.push(activeLeaseRevocation.errorMessage);
+    } else if (leaseJobResult.queuedCount > 0) {
+      messages.push("lease revocation queued for background retry");
     }
 
     return messages.length > 0
@@ -2159,18 +2157,23 @@ export class AdminSubscriptionService {
       `active lease sync for ${subscription.id}`,
       {
         ok: false as const,
-        errorMessage: "active lease sync is still running in background"
+        errorMessage: "active lease revocation queueing is still running in background"
       },
       async () => {
-    try {
-      await this.runtimeSessionService.syncActiveLeasesForSubscription(subscription);
-      return { ok: true as const };
-    } catch (error) {
-      return {
-        ok: false as const,
-        errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
-      };
-    }
+        try {
+          const queuedCount = await this.runtimeSessionService.queueActiveLeaseSyncForSubscription(subscription);
+          return queuedCount > 0
+            ? {
+                ok: false as const,
+                errorMessage: "active lease revocation queued for background retry"
+              }
+            : { ok: true as const };
+        } catch (error) {
+          return {
+            ok: false as const,
+            errorMessage: `active lease revocation queueing failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
       }
     );
   }
@@ -2185,19 +2188,25 @@ export class AdminSubscriptionService {
       {
         ok: false as const,
         revokedCount: 0,
-        errorMessage: "active lease revocation is still running in background"
+        errorMessage: "active lease revocation queueing is still running in background"
       },
       async () => {
-    try {
-      const revokedCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
-      return { ok: true as const, revokedCount };
-    } catch (error) {
-      return {
-        ok: false as const,
-        revokedCount: 0,
-        errorMessage: `active lease revocation failed: ${readErrorMessage(error, "unknown error")}`
-      };
-    }
+        try {
+          const queuedCount = await this.runtimeSessionService.queueLeaseRevocationJobsForSubscription(subscriptionId, reason, filter);
+          return queuedCount > 0
+            ? {
+                ok: false as const,
+                revokedCount: 0,
+                errorMessage: "active lease revocation queued for background retry"
+              }
+            : { ok: true as const, revokedCount: 0 };
+        } catch (error) {
+          return {
+            ok: false as const,
+            revokedCount: 0,
+            errorMessage: `active lease revocation queueing failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
       }
     );
   }
@@ -2243,9 +2252,8 @@ export class AdminSubscriptionService {
   }
 
   private async reconcilePlanConcurrentLeaseLimitsBestEffort(planId: string, maxConcurrentSessions: number) {
-    await this.withSubscriptionFollowUpBudget(
+    this.startSubscriptionFollowUpInBackground(
       `plan lease concurrency reconciliation for ${planId}`,
-      undefined,
       () => this.reconcilePlanConcurrentLeaseLimits(planId, maxConcurrentSessions)
     );
   }
@@ -2256,46 +2264,18 @@ export class AdminSubscriptionService {
     teamId?: string | null;
     plan: { maxConcurrentSessions: number };
   }) {
-    return this.withSubscriptionFollowUpBudget(
+    return this.startSubscriptionFollowUpInBackground(
       `lease concurrency reconciliation for ${subscription.id ?? subscription.userId ?? subscription.teamId ?? "subscription"}`,
-      {
-        ok: false as const,
-        errorMessage: "lease concurrency reconciliation is still running in background"
-      },
       async () => {
-    try {
-      const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(subscription);
-      if (userIds.length === 0) {
-        return { ok: true as const };
-      }
-
-      const users = await this.prisma.user.findMany({
-        where: { id: { in: userIds } },
-        select: { id: true, maxConcurrentSessionsOverride: true }
-      });
-      const failures: string[] = [];
-      for (const user of users) {
-        const limit = user.maxConcurrentSessionsOverride ?? subscription.plan.maxConcurrentSessions;
-        try {
+        const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(subscription);
+        const users = await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, maxConcurrentSessionsOverride: true }
+        });
+        for (const user of users) {
+          const limit = user.maxConcurrentSessionsOverride ?? subscription.plan.maxConcurrentSessions;
           await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(user.id, limit);
-        } catch (error) {
-          failures.push(`${user.id}: ${readErrorMessage(error, "unknown error")}`);
         }
-      }
-
-      if (failures.length > 0) {
-        return {
-          ok: false as const,
-          errorMessage: `lease concurrency reconciliation failed: ${failures.join("; ")}`
-        };
-      }
-      return { ok: true as const };
-    } catch (error) {
-      return {
-        ok: false as const,
-        errorMessage: `lease concurrency reconciliation failed: ${readErrorMessage(error, "unknown error")}`
-      };
-    }
       }
     );
   }

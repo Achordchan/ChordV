@@ -498,7 +498,7 @@ export class RuntimeSessionService {
       const invalidByNode = !allowedNodeIds.has(binding.nodeId);
       const invalidByUser = activeTeamMemberIds ? !activeTeamMemberIds.has(binding.userId ?? "") : false;
       if (invalidByUser) {
-        await this.revokeSubscriptionLeases(subscriptionId, "team_member_removed", {
+        await this.queueLeaseRevocationJobsForSubscriptionTx(writer, subscriptionId, "team_member_removed", {
           userId: binding.userId ?? undefined,
           nodeIds: [binding.nodeId]
         });
@@ -512,7 +512,8 @@ export class RuntimeSessionService {
         if (binding.status !== "active") {
           continue;
         }
-        await this.revokeSubscriptionLeases(
+        await this.queueLeaseRevocationJobsForSubscriptionTx(
+          writer,
           subscriptionId,
           invalidByNode ? "node_access_revoked" : "subscription_inactive",
           {
@@ -866,6 +867,14 @@ export class RuntimeSessionService {
     });
 
     return bindings.length;
+  }
+
+  async queueLeaseRevocationJobsForSubscription(
+    subscriptionId: string,
+    reason: string,
+    filter?: { userId?: string; nodeIds?: string[] }
+  ) {
+    return this.prisma.$transaction((tx) => this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, reason, filter));
   }
 
   async queueLeaseRevocationJobsForSubscriptionTx(
@@ -1675,6 +1684,28 @@ export class RuntimeSessionService {
     }
 
     return this.revokeSubscriptionLeases(subscription.id, reason);
+  }
+
+  async queueActiveLeaseSyncForSubscription(subscription: {
+    id: string;
+    state: "active" | "expired" | "exhausted" | "paused";
+    remainingTrafficGb: number;
+    expireAt: Date;
+  }) {
+    const reason =
+      subscription.expireAt.getTime() <= Date.now() || subscription.state === "expired"
+        ? "subscription_expired"
+        : subscription.remainingTrafficGb <= 0 || subscription.state === "exhausted"
+          ? "subscription_exhausted"
+          : subscription.state === "paused"
+            ? "subscription_paused"
+            : null;
+
+    if (!reason) {
+      return 0;
+    }
+
+    return this.queueLeaseRevocationJobsForSubscription(subscription.id, reason);
   }
 
   @Cron("*/30 * * * * *")
