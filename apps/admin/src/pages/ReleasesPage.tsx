@@ -67,7 +67,7 @@ export function ReleasesPage() {
   const [releases, setReleases] = useState<AdminReleaseRecordDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
   const [releaseEditorId, setReleaseEditorId] = useState<string | null>(null);
   const [releaseEditorOpened, setReleaseEditorOpened] = useState(false);
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
@@ -142,7 +142,7 @@ export function ReleasesPage() {
 
   async function saveRelease() {
     try {
-      setSaving(true);
+      setSaving("release-editor");
       const version = releaseForm.version.trim();
       const validationMessage = validateReleaseEditorInput(version);
       if (validationMessage) {
@@ -194,7 +194,7 @@ export function ReleasesPage() {
     } catch (reason) {
       showReleaseRequestFailure(reason, "保存发布记录失败");
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   }
 
@@ -225,7 +225,7 @@ export function ReleasesPage() {
 
   async function updateReleaseStatus(record: AdminReleaseRecordDto, nextStatus: "draft" | "published") {
     try {
-      setSaving(true);
+      setSaving(`release-status:${record.id}`);
       const nextRecord = nextStatus === "published" ? await publishAdminRelease(record.id) : await unpublishAdminRelease(record.id);
       setReleases((current) => upsertRelease(current, nextRecord));
       notifications.show({
@@ -236,7 +236,7 @@ export function ReleasesPage() {
     } catch (reason) {
       showReleaseRequestFailure(reason, "更新发布状态失败");
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   }
 
@@ -247,7 +247,7 @@ export function ReleasesPage() {
     }
 
     try {
-      setSaving(true);
+      setSaving(`release-delete:${record.id}`);
       await deleteAdminRelease(record.id);
       setReleases((current) => current.filter((item) => item.id !== record.id));
       notifications.show({
@@ -258,7 +258,7 @@ export function ReleasesPage() {
     } catch (reason) {
       showReleaseRequestFailure(reason, "删除发布记录失败");
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   }
 
@@ -340,7 +340,7 @@ export function ReleasesPage() {
         return;
       }
 
-      setSaving(true);
+      setSaving(`artifact:${artifactEditor.releaseId ?? "new"}`);
       let record: AdminReleaseRecordDto | null = null;
 
       if (!releaseId) {
@@ -414,14 +414,14 @@ export function ReleasesPage() {
         }
       }
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   }
 
   async function removeArtifact(releaseId: string, artifactId: string) {
     if (!window.confirm("确定删除这个安装包吗？")) return;
     try {
-      setSaving(true);
+      setSaving(`artifact:${releaseId}`);
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
       setReleases((current) => upsertRelease(current, record));
       notifications.show({
@@ -432,7 +432,7 @@ export function ReleasesPage() {
     } catch (reason) {
       showReleaseRequestFailure(reason, "删除安装包失败");
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   }
 
@@ -451,6 +451,13 @@ export function ReleasesPage() {
         message: "复制失败，请手动复制下载地址"
       });
     }
+  }
+
+  function getReleaseBusyAction(recordId: string) {
+    if (saving === `release-status:${recordId}`) return "status" as const;
+    if (saving === `release-delete:${recordId}`) return "delete" as const;
+    if (saving === `artifact:${recordId}`) return "artifact" as const;
+    return null;
   }
 
   return (
@@ -521,7 +528,7 @@ export function ReleasesPage() {
 
                           <ReleaseRecordCard
                             record={latest}
-                            saving={saving}
+                            busyAction={getReleaseBusyAction(latest.id)}
                             onEditRelease={openEditRelease}
                             onCreateArtifact={openCreateArtifact}
                             onPublish={(record) => void publishRelease(record)}
@@ -547,7 +554,7 @@ export function ReleasesPage() {
                                       <ReleaseRecordCard
                                         key={record.id}
                                         record={record}
-                                        saving={saving}
+                                        busyAction={getReleaseBusyAction(record.id)}
                                         onEditRelease={openEditRelease}
                                         onCreateArtifact={openCreateArtifact}
                                         onPublish={(item) => void publishRelease(item)}
@@ -575,7 +582,7 @@ export function ReleasesPage() {
       <ReleaseEditorModal
         opened={releaseEditorOpened}
         editing={Boolean(releaseEditorId)}
-        saving={saving}
+        saving={saving === "release-editor"}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
         submitLabel={releaseEditorId ? "保存发布记录" : "下一步：添加安装包"}
         form={releaseForm}
@@ -586,7 +593,7 @@ export function ReleasesPage() {
 
       <ArtifactEditorModal
         opened={artifactEditor !== null}
-        saving={saving}
+        saving={saving?.startsWith("artifact:") ?? false}
         creatingRelease={Boolean(pendingCreateRelease)}
         platform={artifactEditor?.platform ?? "macos"}
         title={artifactEditor?.artifactId ? "编辑安装包" : pendingCreateRelease ? "新建发布：首个安装包" : "新增安装包"}

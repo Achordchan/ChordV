@@ -62,15 +62,17 @@ export function nodeProbeColor(status: AdminNodeRecordDto["probeStatus"]) {
   return "gray";
 }
 
-export function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"]) {
+export function translatePanelStatus(status: AdminNodeRecordDto["panelStatus"], panelEnabled = true) {
   if (status === "online") return "在线";
   if (status === "degraded") return "异常";
+  if (status === "offline" && panelEnabled) return "面板失联";
   return "未配置";
 }
 
-export function nodePanelColor(status: AdminNodeRecordDto["panelStatus"]) {
+export function nodePanelColor(status: AdminNodeRecordDto["panelStatus"], panelEnabled = true) {
   if (status === "online") return "green";
   if (status === "degraded") return "yellow";
+  if (status === "offline" && panelEnabled) return "orange";
   return "gray";
 }
 

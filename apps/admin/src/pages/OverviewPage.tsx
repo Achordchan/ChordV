@@ -123,7 +123,7 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
                   </Text>
                 </Group>
                 <Text size="xs" c="dimmed" lineClamp={1}>
-                  3x-ui：{translatePanelStatus(item.panelStatus)} · 探测：{translateProbeStatus(item.probeStatus)}
+                  3x-ui：{translatePanelStatus(item.panelStatus, item.panelEnabled)} · 探测：{translateProbeStatus(item.probeStatus)}
                   {item.panelSyncPendingCount ? ` · 待同步 ${item.panelSyncPendingCount}` : ""}
                 </Text>
               </div>
@@ -146,7 +146,11 @@ function compactNodeStatus(item: AdminNodeRecordDto) {
   }
 
   if (item.panelStatus === "degraded") {
-    return { color: nodePanelColor(item.panelStatus), label: "面板异常" };
+    return { color: nodePanelColor(item.panelStatus, item.panelEnabled), label: "面板异常" };
+  }
+
+  if (item.panelEnabled && item.panelStatus === "offline") {
+    return { color: nodePanelColor(item.panelStatus, item.panelEnabled), label: "面板失联" };
   }
 
   return { color: nodeProbeColor(item.probeStatus), label: translateProbeStatus(item.probeStatus) };

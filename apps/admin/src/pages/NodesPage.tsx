@@ -83,11 +83,15 @@ export function NodesPage(props: NodesPageProps) {
                   </Table.Td>
                   <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
                   <Table.Td>
-                    <StatusBadge color={nodePanelColor(item.panelStatus)} label={translatePanelStatus(item.panelStatus)} />
+                    <StatusBadge
+                      color={nodePanelColor(item.panelStatus, item.panelEnabled)}
+                      label={translatePanelStatus(item.panelStatus, item.panelEnabled)}
+                    />
                   </Table.Td>
                   <Table.Td>
                     <NodeSyncQueueCell
                       node={item}
+                      panelSyncJobs={props.panelSyncJobs}
                       leaseRevocationJobs={props.leaseRevocationJobs}
                       retryBusyKey={props.panelSyncRetryBusyKey}
                       onRetryNodePanelSyncJobs={props.onRetryNodePanelSyncJobs}
@@ -152,15 +156,17 @@ export function NodesPage(props: NodesPageProps) {
 
 function NodeSyncQueueCell(props: {
   node: AdminNodeRecordDto;
+  panelSyncJobs: AdminPanelSyncJobDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   retryBusyKey: string | null;
   onRetryNodePanelSyncJobs: (nodeId: string) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
-  const panelPending = props.node.panelSyncPendingCount ?? 0;
-  const panelRunning = props.node.panelSyncRunningCount ?? 0;
-  const panelFailed = props.node.panelSyncFailedCount ?? 0;
-  const panelTotal = props.node.panelSyncTotalCount ?? panelPending + panelRunning + panelFailed;
+  const panelSummary = summarizePanelSyncJobsForNode(props.panelSyncJobs, props.node.id);
+  const panelPending = panelSummary.pending;
+  const panelRunning = panelSummary.running;
+  const panelFailed = panelSummary.failed;
+  const panelTotal = panelSummary.total;
   const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
 
   if (panelTotal <= 0 && leaseSummary.total <= 0) {
@@ -203,9 +209,9 @@ function NodeSyncQueueCell(props: {
           连接撤销失败 {leaseSummary.failed}
         </Badge>
       ) : null}
-      {props.node.panelSyncLastError ? (
+      {panelSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
-          {props.node.panelSyncLastError}
+          {panelSummary.lastError}
         </Text>
       ) : null}
       {leaseSummary.lastError ? (
@@ -239,6 +245,17 @@ function NodeSyncQueueCell(props: {
       </Group>
     </Stack>
   );
+}
+
+function summarizePanelSyncJobsForNode(jobs: AdminPanelSyncJobDto[], nodeId: string) {
+  const related = jobs.filter((job) => job.nodeId === nodeId && job.status !== "completed");
+  return {
+    total: related.length,
+    pending: related.filter((job) => job.status === "pending").length,
+    running: related.filter((job) => job.status === "running").length,
+    failed: related.filter((job) => job.status === "failed").length,
+    lastError: related.find((job) => job.lastError)?.lastError ?? null
+  };
 }
 
 function PanelSyncQueueDrawer(props: {
