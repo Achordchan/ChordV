@@ -4027,8 +4027,54 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
             }
           },
           panelClientBinding: {
+            findMany: async (payload: Record<string, any>) => {
+              assert.equal(payload.where.subscriptionId, "sub_team");
+              assert.equal("userId" in payload.where, false, "team-wide renew reset must not filter by a single user");
+              return [
+                {
+                  id: "binding_1",
+                  subscriptionId: "sub_team",
+                  userId: "user_1",
+                  teamId: "team_1",
+                  nodeId: "node_1",
+                  panelClientEmail: "user1@example.com",
+                  panelClientId: "client_1",
+                  panelInboundId: 7,
+                  node: {
+                    id: "node_1",
+                    panelBaseUrl: "https://panel.example.com",
+                    panelApiBasePath: "/",
+                    panelUsername: "admin",
+                    panelPassword: "password"
+                  }
+                },
+                {
+                  id: "binding_2",
+                  subscriptionId: "sub_team",
+                  userId: "user_2",
+                  teamId: "team_1",
+                  nodeId: "node_1",
+                  panelClientEmail: "user2@example.com",
+                  panelClientId: "client_2",
+                  panelInboundId: 7,
+                  node: {
+                    id: "node_1",
+                    panelBaseUrl: "https://panel.example.com",
+                    panelApiBasePath: "/",
+                    panelUsername: "admin",
+                    panelPassword: "password"
+                  }
+                }
+              ];
+            },
             update: async (payload: Record<string, any>) => {
               bindingUpdates.push(payload);
+            }
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelSyncUpserts.push(payload);
+              return {};
             }
           },
           trafficLedger: {
@@ -4068,9 +4114,10 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
   assert.equal(record.remainingTrafficGb, 20);
 }
 
-async function testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsage() {
+async function testRenewSubscriptionResetTrafficQueueFailureRollsBackLocalUsage() {
   let transactionCalled = false;
   let leaseSyncCalled = false;
+  let subscriptionUpdateCalled = false;
   const lockedSubscription = {
     id: "sub_1",
     userId: "user_1",
@@ -4128,16 +4175,47 @@ async function testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsag
         return callback({
           subscription: {
             findUnique: async () => lockedSubscription,
-            update: async (payload: Record<string, any>) => ({
-              ...lockedSubscription,
-              ...payload.data
-            })
+            update: async (payload: Record<string, any>) => {
+              subscriptionUpdateCalled = true;
+              return {
+                ...lockedSubscription,
+                ...payload.data
+              };
+            }
           },
           trafficSnapshot: {
             upsert: async () => ({})
           },
           panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "client_1",
+                panelInboundId: 7,
+                node: {
+                  id: "node_1",
+                  panelBaseUrl: "https://panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ],
             update: async () => ({})
+          },
+          panelSyncJob: {
+            upsert: async () => {
+              throw new Error("panel sync queue unavailable");
+            }
+          },
+          trafficLedger: {
+            deleteMany: async () => ({}),
+            aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
           }
         });
       },
@@ -4149,14 +4227,14 @@ async function testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsag
     }
   });
 
-  const record = await service.renewSubscription("sub_1", { resetTraffic: true });
+  await assert.rejects(
+    () => service.renewSubscription("sub_1", { resetTraffic: true }),
+    /panel sync queue unavailable/
+  );
 
-  assert.equal(transactionCalled, true, "DB-first reset should enter the local transaction even if queue write later fails");
-  assert.equal(leaseSyncCalled, true, "successful local renewal should continue best-effort lease reconciliation");
-  assert.equal(record.usedTrafficGb, 0);
-  assert.equal(record.remainingTrafficGb, 10);
-  assert.equal(record.panelSyncStatus, "pending");
-  assert.match(record.panelSyncMessage ?? "", /panel sync queue unavailable/);
+  assert.equal(transactionCalled, true, "reset should attempt one atomic local transaction");
+  assert.equal(subscriptionUpdateCalled, false, "local counters must not be cleared when reset job cannot be queued atomically");
+  assert.equal(leaseSyncCalled, false, "failed local reset must not continue follow-up lease reconciliation");
 }
 
 async function testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail() {
@@ -4462,9 +4540,10 @@ async function testResetSubscriptionTrafficRejectsNonStringUserId() {
   );
 }
 
-async function testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail() {
+async function testResetSubscriptionTrafficRollsBackWhenPanelQueueFails() {
   let transactionCalled = false;
   const subscriptionUpdates: Array<Record<string, any>> = [];
+  const panelJobUpserts: Array<Record<string, any>> = [];
   const lockedSubscription = {
     id: "sub_1",
     userId: "user_1",
@@ -4489,35 +4568,13 @@ async function testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefresh
       warn: () => undefined
     },
     requireSubscription: async () => lockedSubscription,
-    publishSubscriptionUpdatedEvent: async () => undefined,
+    publishSubscriptionUpdatedEvent: async () => {
+      throw new Error("publish should not run when panel reset queue fails");
+    },
     requireAdminUserRecord: async () => {
-      throw new Error("user refresh failed");
+      throw new Error("user refresh should not run when panel reset queue fails");
     },
     prisma: {
-      panelClientBinding: {
-        findMany: async () => [
-          {
-            id: "binding_1",
-            subscriptionId: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            nodeId: "node_1",
-            panelClientEmail: "user@example.com",
-            panelClientId: "client_1",
-            panelInboundId: 7,
-            lastUplinkBytes: 8n,
-            lastDownlinkBytes: 0n,
-            lastSyncedAt: new Date(),
-            node: {
-              id: "node_1",
-              panelBaseUrl: "https://panel.example.com",
-              panelApiBasePath: "/",
-              panelUsername: "admin",
-              panelPassword: "password"
-            }
-          }
-        ]
-      },
       $transaction: async (callback: (tx: any) => Promise<any>) => {
         transactionCalled = true;
         return callback({
@@ -4535,38 +4592,53 @@ async function testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefresh
             upsert: async () => ({})
           },
           panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "client_1",
+                panelInboundId: 7,
+                lastUplinkBytes: 8n,
+                lastDownlinkBytes: 0n,
+                lastSyncedAt: new Date(),
+                node: {
+                  id: "node_1",
+                  panelBaseUrl: "https://panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ],
             update: async () => ({})
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelJobUpserts.push(payload);
+              throw new Error("panel reset queue failed");
+            }
           },
           trafficLedger: {
             deleteMany: async () => ({}),
             aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
           }
         });
-      },
-      panelSyncJob: {
-        upsert: async () => {
-          throw new Error("panel reset queue failed");
-        }
       }
     }
   });
 
-  const result = await service.resetSubscriptionTraffic("sub_1");
+  await assert.rejects(() => service.resetSubscriptionTraffic("sub_1"), /panel reset queue failed/);
 
-  assert.equal(result.ok, true);
-  assert.equal(transactionCalled, true, "local traffic reset transaction must complete even if follow-up work fails");
-  assert.equal(subscriptionUpdates.length, 1);
-  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0);
-  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
-  assert.equal(result.subscription.usedTrafficGb, 0);
-  assert.equal(result.subscription.remainingTrafficGb, 10);
-  assert.equal(result.user, null, "response should fall back when refreshed admin user cannot be loaded");
-  assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel reset queue failed/);
-  assert.match(result.panelSyncMessage ?? "", /user refresh failed/);
+  assert.equal(transactionCalled, true, "traffic reset must attempt the atomic reset transaction");
+  assert.equal(panelJobUpserts.length, 1, "panel reset must be queued inside the reset transaction");
+  assert.equal(subscriptionUpdates.length, 0, "subscription counters must not be saved when queue write fails");
 }
 
-async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
+async function testResetTeamMemberTrafficRollsBackWhenPanelQueueFails() {
   const subscriptionUpdates: Array<Record<string, any>> = [];
   const ledgerDeletes: Array<Record<string, any>> = [];
   const snapshotUpserts: Array<Record<string, any>> = [];
@@ -4620,33 +4692,6 @@ async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
           };
         }
       },
-      panelClientBinding: {
-        findMany: async (payload: Record<string, any>) => {
-          bindingQueries.push(payload);
-          return [
-            {
-              id: "binding_member",
-              subscriptionId: "sub_team",
-              userId: "member_1",
-              teamId: "team_1",
-              nodeId: "node_1",
-              panelClientEmail: "member@example.com",
-              panelClientId: "client_1",
-              panelInboundId: 7,
-              lastUplinkBytes: 123n,
-              lastDownlinkBytes: 456n,
-              lastSyncedAt: new Date(),
-              node: {
-                id: "node_1",
-                panelBaseUrl: "https://offline-panel.example.com",
-                panelApiBasePath: "/",
-                panelUsername: "admin",
-                panelPassword: "password"
-              }
-            }
-          ];
-        }
-      },
       $transaction: async (callback: (tx: any) => Promise<any>) =>
         callback({
           subscription: {
@@ -4666,9 +4711,40 @@ async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
             }
           },
           panelClientBinding: {
+            findMany: async (payload: Record<string, any>) => {
+              bindingQueries.push(payload);
+              return [
+                {
+                  id: "binding_member",
+                  subscriptionId: "sub_team",
+                  userId: "member_1",
+                  teamId: "team_1",
+                  nodeId: "node_1",
+                  panelClientEmail: "member@example.com",
+                  panelClientId: "client_1",
+                  panelInboundId: 7,
+                  lastUplinkBytes: 123n,
+                  lastDownlinkBytes: 456n,
+                  lastSyncedAt: new Date(),
+                  node: {
+                    id: "node_1",
+                    panelBaseUrl: "https://offline-panel.example.com",
+                    panelApiBasePath: "/",
+                    panelUsername: "admin",
+                    panelPassword: "password"
+                  }
+                }
+              ];
+            },
             update: async (payload: Record<string, any>) => {
               bindingUpdates.push(payload);
               return {};
+            }
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelJobUpserts.push(payload);
+              throw new Error("offline panel reset queue failed");
             }
           },
           trafficLedger: {
@@ -4681,17 +4757,14 @@ async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
               return { _sum: { usedTrafficGb: 13 } };
             }
           }
-        }),
-      panelSyncJob: {
-        upsert: async (payload: Record<string, any>) => {
-          panelJobUpserts.push(payload);
-          throw new Error("offline panel reset queue failed");
-        }
-      }
+        })
     }
   });
 
-  const result = await service.resetSubscriptionTraffic("sub_team", { userId: "member_1" });
+  await assert.rejects(
+    () => service.resetSubscriptionTraffic("sub_team", { userId: "member_1" }),
+    /offline panel reset queue failed/
+  );
 
   assert.deepEqual(membershipQueries[0]?.where, {
     teamId: "team_1",
@@ -4711,18 +4784,8 @@ async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
   assert.equal(bindingUpdates.length, 1, "member traffic reset must reset binding counters locally");
   assert.equal(bindingUpdates[0].data.lastUplinkBytes, 0n);
   assert.equal(bindingUpdates[0].data.lastDownlinkBytes, 0n);
-  assert.equal(subscriptionUpdates.length, 1);
-  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 13);
-  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 87);
-  assert.equal(result.ok, true);
-  assert.equal(result.userId, "member_1");
-  assert.equal(result.clearedBindingCount, 1);
-  assert.equal(result.subscription.usedTrafficGb, 13);
-  assert.equal(result.subscription.remainingTrafficGb, 87);
-  assert.equal(result.user?.id, "member_1");
-  assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /offline panel reset queue failed/);
-  assert.equal(panelJobUpserts.length, 1, "offline panel reset must be queued after local reset");
+  assert.equal(subscriptionUpdates.length, 0, "subscription counters must not be saved when queue write fails");
+  assert.equal(panelJobUpserts.length, 1, "offline panel reset must be queued inside the reset transaction");
   assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
   assert.equal(panelJobUpserts[0].create.userId, "member_1");
   assert.equal(panelJobUpserts[0].create.teamId, "team_1");
@@ -4865,6 +4928,42 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
     team: null,
     nodeAccesses: []
   };
+  const panelBindings = [
+    {
+      id: "binding_ok",
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: null,
+      nodeId: "node_1",
+      panelClientEmail: "ok@example.com",
+      panelClientId: "client_ok",
+      panelInboundId: 7,
+      node: {
+        id: "node_1",
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "password"
+      }
+    },
+    {
+      id: "binding_failed",
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: null,
+      nodeId: "node_2",
+      panelClientEmail: "failed@example.com",
+      panelClientId: "client_failed",
+      panelInboundId: 8,
+      node: {
+        id: "node_2",
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "password"
+      }
+    }
+  ];
 
   const service = createAdminSubscriptionService({
     requireSubscription: async () => lockedSubscription,
@@ -4888,42 +4987,7 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
     },
     prisma: {
       panelClientBinding: {
-        findMany: async () => [
-          {
-            id: "binding_ok",
-            subscriptionId: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            nodeId: "node_1",
-            panelClientEmail: "ok@example.com",
-            panelClientId: "client_ok",
-            panelInboundId: 7,
-            node: {
-              id: "node_1",
-              panelBaseUrl: "https://panel.example.com",
-              panelApiBasePath: "/",
-              panelUsername: "admin",
-              panelPassword: "password"
-            }
-          },
-          {
-            id: "binding_failed",
-            subscriptionId: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            nodeId: "node_2",
-            panelClientEmail: "failed@example.com",
-            panelClientId: "client_failed",
-            panelInboundId: 8,
-            node: {
-              id: "node_2",
-              panelBaseUrl: "https://panel.example.com",
-              panelApiBasePath: "/",
-              panelUsername: "admin",
-              panelPassword: "password"
-            }
-          }
-        ]
+        findMany: async () => panelBindings
       },
       panelSyncJob: {
         upsert: async (payload: Record<string, any>) => {
@@ -4939,8 +5003,15 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
             }
           },
           panelClientBinding: {
+            findMany: async () => panelBindings,
             update: async (payload: Record<string, any>) => {
               bindingUpdates.push(payload);
+            }
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelSyncUpserts.push(payload);
+              return {};
             }
           },
           subscription: {
@@ -16961,14 +17032,14 @@ async function main() {
   await testUsageDeltaKeepsLocalUsageWhenPublishFails();
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
-  await testRenewSubscriptionResetTrafficQueueFailureStillClearsLocalUsage();
+  await testRenewSubscriptionResetTrafficQueueFailureRollsBackLocalUsage();
   await testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail();
   await testRenewSubscriptionReturnsPendingWhenPanelSyncStalls();
   await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
-  await testResetSubscriptionTrafficReturnsPendingWhenQueueAndUserRefreshFail();
-  await testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails();
+  await testResetSubscriptionTrafficRollsBackWhenPanelQueueFails();
+  await testResetTeamMemberTrafficRollsBackWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();

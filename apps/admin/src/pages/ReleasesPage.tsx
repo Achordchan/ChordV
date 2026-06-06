@@ -10,6 +10,7 @@ import type {
 } from "../api/client";
 import {
   createAdminRelease,
+  createAdminReleaseArtifact,
   deleteAdminRelease,
   deleteAdminReleaseArtifact,
   fetchAdminReleases,
@@ -17,6 +18,7 @@ import {
   replaceAdminReleaseArtifactUpload,
   unpublishAdminRelease,
   updateAdminRelease,
+  updateAdminReleaseArtifact,
   uploadAdminReleaseArtifact
 } from "../api/client";
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
@@ -293,7 +295,7 @@ export function ReleasesPage() {
     if (!artifactEditor) {
       return false;
     }
-    return !artifactForm.selectedFile;
+    return artifactForm.source === "uploaded" && !artifactEditor.artifactId && !artifactForm.selectedFile;
   }
 
   function validateArtifactEditorInput() {
@@ -306,8 +308,11 @@ export function ReleasesPage() {
     if (artifactForm.selectedFile && artifactForm.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
       return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
     }
-    if (artifactForm.selectedFile && !fileNameMatchesPlatform(artifactEditor.platform, artifactForm.selectedFile.name)) {
-      return `${translatePlatformName(artifactEditor.platform)} 安装包必须是 ${expectedArtifactExtension(artifactEditor.platform)} 文件。`;
+    if (artifactForm.source === "external" && !artifactForm.downloadUrl.trim()) {
+      return "请填写外链下载地址。";
+    }
+    if (artifactForm.source === "external" && !/^https?:\/\//i.test(artifactForm.downloadUrl.trim())) {
+      return "外链下载地址必须是完整的 http/https 地址。";
     }
     return null;
   }
@@ -342,10 +347,25 @@ export function ReleasesPage() {
       }
 
       if (!record) {
-        if (!artifactForm.selectedFile && !artifactEditor.artifactId) {
+        if (artifactForm.source === "external") {
+          const externalPayload = {
+            source: "external" as const,
+            type: artifactForm.type,
+            deliveryMode: defaultDeliveryModeForArtifact(artifactForm.type),
+            downloadUrl: artifactForm.downloadUrl.trim(),
+            defaultMirrorPrefix: artifactForm.defaultMirrorPrefix.trim() || null,
+            allowClientMirror: artifactForm.allowClientMirror,
+            fileName: artifactForm.fileName.trim() || null,
+            isPrimary: artifactForm.isPrimary
+          };
+          record = artifactEditor.artifactId
+            ? await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId, externalPayload)
+            : await createAdminReleaseArtifact(releaseId!, externalPayload);
+        }
+        if (!record && !artifactForm.selectedFile && !artifactEditor.artifactId) {
           throw new Error("请先选择要上传的安装包文件");
         }
-        if (artifactForm.selectedFile) {
+        if (!record && artifactForm.selectedFile) {
           const uploadPayload = {
             source: "uploaded" as const,
             type: artifactForm.type,
@@ -661,34 +681,15 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminRe
   }
 }
 
-function fileNameMatchesPlatform(platform: AdminReleasePlatform, fileName: string) {
-  void platform;
-  void fileName;
-  return true;
-}
-
-function expectedArtifactExtension(platform: AdminReleasePlatform) {
-  switch (platform) {
-    case "windows":
-      return ".zip";
-    case "android":
-      return ".apk";
-    case "ios":
-      return ".ipa";
-    default:
-      return ".dmg";
+function defaultDeliveryModeForArtifact(type: AdminReleaseArtifactRecordDto["type"]): AdminReleaseArtifactRecordDto["deliveryMode"] {
+  if (type === "zip") {
+    return "desktop_full_replace";
   }
-}
-
-function translatePlatformName(platform: AdminReleasePlatform) {
-  switch (platform) {
-    case "windows":
-      return "Windows";
-    case "android":
-      return "Android";
-    case "ios":
-      return "iOS";
-    default:
-      return "macOS";
+  if (type === "apk") {
+    return "apk_download";
   }
+  if (type === "external" || type === "ipa") {
+    return "external_download";
+  }
+  return "desktop_installer_download";
 }

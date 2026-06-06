@@ -86,6 +86,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
   const [editorOpened, setEditorOpened] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [form, setForm] = useState<RuntimeComponentEditorFormState>(emptyRuntimeComponentEditorForm());
 
   const groupedSummary = useMemo(() => {
@@ -195,7 +196,11 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }
 
   async function verifyComponent(record: AdminRuntimeComponentRecordDto) {
+    if (verifyingId) {
+      return;
+    }
     try {
+      setVerifyingId(record.id);
       const result = await verifyAdminRuntimeComponent(record.id);
       onValidationChange(record.id, result);
       notifications.show({
@@ -207,6 +212,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       showRuntimeComponentFailure(reason, "校验下载链接失败", {
         uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
       });
+    } finally {
+      setVerifyingId(null);
     }
   }
 
@@ -314,6 +321,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
             records={groupedSummary.runtimeCore}
             validations={validations}
             saving={saving}
+            verifyingId={verifyingId}
             onEdit={openEdit}
             onVerify={(record) => void verifyComponent(record)}
             onRemove={(record) => void removeComponent(record)}
@@ -325,6 +333,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
             records={groupedSummary.rulesets}
             validations={validations}
             saving={saving}
+            verifyingId={verifyingId}
             onEdit={openEdit}
             onVerify={(record) => void verifyComponent(record)}
             onRemove={(record) => void removeComponent(record)}
@@ -387,13 +396,14 @@ type RuntimeComponentSectionProps = {
   records: AdminRuntimeComponentRecordDto[];
   validations: Record<string, AdminRuntimeComponentValidationDto>;
   saving: boolean;
+  verifyingId: string | null;
   onEdit: (record: AdminRuntimeComponentRecordDto) => void;
   onVerify: (record: AdminRuntimeComponentRecordDto) => void;
   onRemove: (record: AdminRuntimeComponentRecordDto) => void;
 };
 
 function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
-  const { title, description, records, validations, saving, onEdit, onVerify, onRemove } = props;
+  const { title, description, records, validations, saving, verifyingId, onEdit, onVerify, onRemove } = props;
 
   return (
     <Stack gap="sm">
@@ -487,7 +497,14 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                       <ActionIcon variant="light" color="blue" onClick={() => onEdit(record)} aria-label="编辑">
                         <IconEdit size={16} />
                       </ActionIcon>
-                      <ActionIcon variant="light" color="green" onClick={() => onVerify(record)} aria-label="校验">
+                      <ActionIcon
+                        variant="light"
+                        color="green"
+                        onClick={() => onVerify(record)}
+                        aria-label="校验"
+                        loading={verifyingId === record.id}
+                        disabled={saving || (verifyingId !== null && verifyingId !== record.id)}
+                      >
                         <IconCheck size={16} />
                       </ActionIcon>
                       <ActionIcon

@@ -564,17 +564,15 @@ export class AdminSubscriptionService {
   }
 
   async renewSubscription(subscriptionId: string, input: RenewSubscriptionInputDto): Promise<AdminSubscriptionRecordDto> {
-    const current = await this.requireSubscription(subscriptionId);
-    const nextExpireAt = resolveRenewExpireAt(current.expireAt, input.expireAt);
-    const totalTrafficGb = input.totalTrafficGb ?? current.totalTrafficGb;
     let disconnectReason: string | null = null;
     let resetPanelSync: PanelSyncBestEffortResult = { ok: true };
     let row: AdminSubscriptionEntity;
     if (input.resetTraffic) {
+      const current = await this.requireSubscription(subscriptionId);
       const reset = await this.resetSubscriptionTrafficCounters(current, {
         allowTeamWideReset: true,
-        totalTrafficGb,
-        expireAt: nextExpireAt,
+        totalTrafficGb: input.totalTrafficGb,
+        renewExpireAt: input.expireAt,
         sourceAction: "renewed",
         statePreference: "active"
       });
@@ -583,6 +581,8 @@ export class AdminSubscriptionService {
     } else {
       row = await runWithSubscriptionUsageLock(subscriptionId, async () => {
         const lockedSubscription = await this.requireSubscription(subscriptionId);
+        const nextExpireAt = resolveRenewExpireAt(lockedSubscription.expireAt, input.expireAt);
+        const totalTrafficGb = input.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
         const remainingTrafficGb = Math.max(0, totalTrafficGb - lockedSubscription.usedTrafficGb);
         const state = resolveSubscriptionState("active", remainingTrafficGb, nextExpireAt);
         disconnectReason = getSubscriptionDisconnectReason({
@@ -1427,6 +1427,7 @@ export class AdminSubscriptionService {
       allowTeamWideReset: boolean;
       totalTrafficGb?: number;
       expireAt?: Date;
+      renewExpireAt?: string | null;
       sourceAction?: "renewed";
       statePreference?: SubscriptionState;
     }
@@ -1463,31 +1464,30 @@ export class AdminSubscriptionService {
 
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
-    let resetPanelBindings: any[] = [];
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
 
     await runWithSubscriptionUsageLock(subscription.id, async () => {
-      const bindings = await this.prisma.panelClientBinding.findMany({
-        where: {
-          subscriptionId: subscription.id,
-          ...(targetUserId ? { userId: targetUserId } : {}),
-          status: { in: ["active", "disabled"] }
-        },
-        include: {
-          node: true
-        }
-      });
-      clearedBindingCount = bindings.length;
-      resetPanelBindings = bindings;
-
       const resetSampledAt = new Date();
-      const baselineSamples = bindings.map((binding) => ({
-        binding,
-        uplinkBytes: 0n,
-        downlinkBytes: 0n,
-        sampledAt: resetSampledAt
-      }));
 
       updatedSubscription = await this.prisma.$transaction(async (tx) => {
+        const bindings = await tx.panelClientBinding.findMany({
+          where: {
+            subscriptionId: subscription.id,
+            ...(targetUserId ? { userId: targetUserId } : {}),
+            status: { in: ["active", "disabled"] }
+          },
+          include: {
+            node: true
+          }
+        });
+        clearedBindingCount = bindings.length;
+        const baselineSamples = bindings.map((binding: any) => ({
+          binding,
+          uplinkBytes: 0n,
+          downlinkBytes: 0n,
+          sampledAt: resetSampledAt
+        }));
+
         const lockedSubscription = await tx.subscription.findUnique({
           where: { id: subscription.id },
           include: {
@@ -1503,7 +1503,10 @@ export class AdminSubscriptionService {
 
         await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
         const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
-        const expireAt = options.expireAt ?? new Date(lockedSubscription.expireAt);
+        const expireAt =
+          options.renewExpireAt !== undefined
+            ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
+            : options.expireAt ?? new Date(lockedSubscription.expireAt);
         let usedTrafficGb = 0;
 
         if (lockedSubscription.teamId) {
@@ -1523,6 +1526,15 @@ export class AdminSubscriptionService {
             usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
           }
         }
+
+        await this.queuePanelTrafficResetJobsTx(tx, bindings, resetSampledAt);
+        panelSync =
+          bindings.length > 0
+            ? {
+                ok: false,
+                errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
+              }
+            : { ok: true };
 
         const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
         return tx.subscription.update({
@@ -1553,8 +1565,6 @@ export class AdminSubscriptionService {
     if (!updatedSubscription) {
       throw new NotFoundException("订阅不存在");
     }
-    const panelSync = await this.queuePanelTrafficResetJobsBestEffort(resetPanelBindings);
-
     return {
       subscription: updatedSubscription,
       targetUserId,
@@ -1629,78 +1639,55 @@ export class AdminSubscriptionService {
     await this.prisma.$transaction(writeSamples);
   }
 
-  private async queuePanelTrafficResetJobsBestEffort(bindings: any[]): Promise<PanelSyncBestEffortResult> {
+  private async queuePanelTrafficResetJobsTx(writer: any, bindings: any[], panelResetQueuedAt: Date) {
     if (bindings.length === 0) {
-      return { ok: true };
+      return;
     }
 
-    return this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
-      "traffic reset panel job queueing",
-      {
-        ok: false,
-        errorMessage: "3x-ui traffic reset job queueing is still running in background; local counters are already reset"
-      },
-      async () => {
-    const errors: string[] = [];
-    const panelResetQueuedAt = new Date();
     for (const binding of bindings) {
       const snapshot = binding.node ?? {};
-      try {
-        const dedupeKey = `reset:${binding.id}`;
-        await createOrRefreshPanelSyncJob(this.prisma, dedupeKey, {
-          create: {
-            id: randomUUID(),
-            dedupeKey,
-            action: "reset_client_traffic",
-            bindingId: binding.id,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            panelBaseUrl: snapshot.panelBaseUrl ?? null,
-            panelApiBasePath: snapshot.panelApiBasePath ?? null,
-            panelUsername: snapshot.panelUsername ?? null,
-            panelPassword: snapshot.panelPassword ?? null,
-            status: "pending",
-            nextRunAt: panelResetQueuedAt
-          },
-          update: {
-            status: "pending",
-            nextRunAt: panelResetQueuedAt,
-            lockedAt: null,
-            completedAt: null,
-            attempts: 0,
-            lastError: null,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            panelBaseUrl: snapshot.panelBaseUrl ?? null,
-            panelApiBasePath: snapshot.panelApiBasePath ?? null,
-            panelUsername: snapshot.panelUsername ?? null,
-            panelPassword: snapshot.panelPassword ?? null
-          }
-        });
-      } catch (error) {
-        errors.push(`traffic reset job queueing failed for ${binding.id}: ${readErrorMessage(error, "unknown error")}`);
-      }
+      const dedupeKey = `reset:${binding.id}`;
+      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
+        create: {
+          id: randomUUID(),
+          dedupeKey,
+          action: "reset_client_traffic",
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: snapshot.panelBaseUrl ?? null,
+          panelApiBasePath: snapshot.panelApiBasePath ?? null,
+          panelUsername: snapshot.panelUsername ?? null,
+          panelPassword: snapshot.panelPassword ?? null,
+          status: "pending",
+          nextRunAt: panelResetQueuedAt
+        },
+        update: {
+          status: "pending",
+          nextRunAt: panelResetQueuedAt,
+          lockedAt: null,
+          completedAt: null,
+          attempts: 0,
+          lastError: null,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: snapshot.panelBaseUrl ?? null,
+          panelApiBasePath: snapshot.panelApiBasePath ?? null,
+          panelUsername: snapshot.panelUsername ?? null,
+          panelPassword: snapshot.panelPassword ?? null
+        }
+      });
     }
-
-    return {
-      ok: false,
-      errorMessage:
-        errors.length > 0
-          ? errors.join("; ")
-          : "3x-ui traffic reset queued for background retry; local counters are already reset"
-    };
-      }
-    );
   }
 
   private async resolveTargetUserIdsForSubscriptionTarget(target: {
