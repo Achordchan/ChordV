@@ -34,6 +34,13 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           disabled={props.editing}
         />
 
+        <TextInput
+          label="发布标题"
+          placeholder="例如 ChordV 1.1.6 · Windows"
+          value={props.form.title}
+          onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
+        />
+
         <Textarea
           label="更新日志"
           minRows={6}

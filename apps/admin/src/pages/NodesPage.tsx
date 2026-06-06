@@ -253,7 +253,7 @@ function PanelSyncQueueDrawer(props: {
   onRetryLeaseNode: (nodeId: string) => void;
 }) {
   return (
-    <Drawer opened={props.opened} onClose={props.onClose} title="面板同步队列" position="right" size="xl">
+    <Drawer opened={props.opened} onClose={props.onClose} title="后台同步队列" position="right" size="xl">
       <Stack gap="lg">
         <Stack gap="xs">
           <Text fw={600}>面板客户端同步</Text>

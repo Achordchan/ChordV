@@ -746,6 +746,8 @@ export class RuntimeSessionService {
       });
     }
 
+    await markPanelBindingsDisabledLocally(writer, bindings.map((binding: { id: string }) => binding.id));
+
     return bindings.length;
   }
 
@@ -1282,7 +1284,7 @@ export class RuntimeSessionService {
         throw new Error(`未知面板同步动作：${job.action}`);
       }
 
-      if (job.action === "disable_client" && (job.binding.status !== "active" || !(await this.shouldRunPanelDisableJob(job)))) {
+      if (job.action === "disable_client" && !(await this.shouldRunPanelDisableJob(job))) {
         await this.completePanelSyncJob(job);
         return;
       }
@@ -1509,7 +1511,7 @@ export class RuntimeSessionService {
       }
     });
 
-    if (!freshJob || freshJob.binding.status !== "active") {
+    if (!freshJob || (freshJob.binding.status !== "active" && freshJob.binding.status !== "disabled")) {
       return false;
     }
 
@@ -1680,6 +1682,35 @@ export class RuntimeSessionService {
         });
       }
     }
+  }
+
+  async queueLeaseRevocationJobForNode(nodeId: string, reason: string) {
+    const now = new Date();
+    const dedupeKey = buildNodeLeaseRevocationJobKey(nodeId, reason);
+    await createOrRefreshLeaseRevocationJob(this.prisma, dedupeKey, {
+      create: {
+        id: randomUUID(),
+        dedupeKey,
+        subscriptionId: null,
+        userId: null,
+        nodeId,
+        reason,
+        status: "pending",
+        nextRunAt: now
+      },
+      update: {
+        subscriptionId: null,
+        userId: null,
+        nodeId,
+        reason,
+        status: "pending",
+        nextRunAt: now,
+        lockedAt: null,
+        completedAt: null,
+        attempts: 0,
+        lastError: null
+      }
+    });
   }
 
   private async connectWithXui(
@@ -2496,6 +2527,10 @@ function buildLeaseRevocationJobKey(
   return `lease:${subscriptionId}:${reason}:${userId ?? "*"}:${nodeId ?? "*"}`;
 }
 
+function buildNodeLeaseRevocationJobKey(nodeId: string, reason: string) {
+  return `lease-node:${nodeId}:${reason}`;
+}
+
 function isPrismaUniqueConstraintError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }
@@ -2539,7 +2574,7 @@ function isPanelDisableJobClearableAfterNodeReenabled(
   },
   activeMemberships: Set<string>
 ) {
-  if (job.binding.status !== "active") {
+  if (job.binding.status !== "active" && job.binding.status !== "disabled") {
     return false;
   }
   if (!job.node.isActive || !job.node.panelEnabled) {
@@ -2566,4 +2601,32 @@ function isPanelDisableJobClearableAfterNodeReenabled(
     return activeMemberships.has(`${job.teamId}:${job.userId}`);
   }
   return false;
+}
+
+async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[]) {
+  if (bindingIds.length === 0) {
+    return;
+  }
+  if (typeof writer.panelClientBinding.updateMany === "function") {
+    await writer.panelClientBinding.updateMany({
+      where: {
+        id: { in: bindingIds },
+        status: "active"
+      },
+      data: {
+        status: "disabled"
+      }
+    });
+    return;
+  }
+  if (typeof writer.panelClientBinding.update === "function") {
+    await Promise.all(
+      bindingIds.map((id) =>
+        writer.panelClientBinding.update({
+          where: { id },
+          data: { status: "disabled" }
+        })
+      )
+    );
+  }
 }

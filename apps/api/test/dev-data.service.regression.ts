@@ -2722,7 +2722,7 @@ async function testSweepExpiredLeasesDoesNotRevokeTooEarly() {
   assert.deepEqual(revokedLeaseIds, ["lease_hard"], "sweepExpiredLeases 只能回收超过 TTL + grace 的租约");
 }
 
-async function testPanelDisableJobDoesNotPreDisableBinding() {
+async function testPanelDisableJobPreDisablesBindingLocally() {
   let bindingUpdateManyCalled = false;
   const upserts: Array<Record<string, unknown>> = [];
   const service = createRuntimeSessionService({
@@ -2765,7 +2765,11 @@ async function testPanelDisableJobDoesNotPreDisableBinding() {
                 panelClientId: "panel_client_1",
                 panelInboundId: 1
               }
-            ]
+            ],
+            updateMany: async () => {
+              bindingUpdateManyCalled = true;
+              return { count: 1 };
+            }
           },
           panelSyncJob: {
             upsert: async (payload: Record<string, unknown>) => {
@@ -2780,7 +2784,7 @@ async function testPanelDisableJobDoesNotPreDisableBinding() {
   const count = await service.markPanelBindingsDisabledForSubscription("sub_1");
 
   assert.equal(count, 1);
-  assert.equal(bindingUpdateManyCalled, false, "disable queue must not mark binding disabled before 3x-ui confirms it");
+  assert.equal(bindingUpdateManyCalled, true, "disable queue must mark binding disabled locally before 3x-ui confirms it");
   assert.equal(upserts.length, 1);
 }
 
@@ -5158,6 +5162,9 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
       publishNodeAccessUpdatedToUsers: () => undefined
     },
     runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
       revokeNodeLeases: async () => {
         calls.push("revoke_leases");
         return 1;
@@ -5191,7 +5198,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.equal(bindingsQueuedForDelete, true, "delete must queue remote panel cleanup without waiting for the panel");
-  assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete"]);
+  assert.deepEqual(calls, ["local_update", "queue_lease_revocation", "revoke_leases", "queue_panel_delete"]);
   assert.equal(nodeUpdates[0].data.isActive, false, "node must be hidden locally before remote cleanup completes");
   assert.equal(nodeUpdates[0].data.panelStatus, "offline");
   assert.equal(nodeDeleted, false, "node row must be kept for queued panel cleanup jobs");
@@ -5215,6 +5222,9 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
       }
     },
     runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
       revokeNodeLeases: async () => {
         calls.push("revoke_leases");
         return 1;
@@ -5245,7 +5255,14 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
 
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
+  assert.deepEqual(calls, [
+    "local_update",
+    "queue_lease_revocation",
+    "revoke_leases",
+    "queue_panel_delete",
+    "resolve_event_targets",
+    "publish_event"
+  ]);
   assert.deepEqual(publishedUserIds, []);
 }
 
@@ -5267,6 +5284,9 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
       }
     },
     runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
       revokeNodeLeases: async () => {
         calls.push("revoke_leases");
         return 1;
@@ -5299,7 +5319,14 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
 
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.deepEqual(calls, ["local_update", "revoke_leases", "queue_panel_delete", "resolve_event_targets", "publish_event"]);
+  assert.deepEqual(calls, [
+    "local_update",
+    "queue_lease_revocation",
+    "revoke_leases",
+    "queue_panel_delete",
+    "resolve_event_targets",
+    "publish_event"
+  ]);
   assert.deepEqual(publishedUserIds, ["user_1"]);
 }
 
@@ -9160,7 +9187,8 @@ async function testPanelDisableJobUpsertResetsStaleFailureState() {
                 panelClientId: "panel_client_1",
                 panelInboundId: 7
               }
-            ]
+            ],
+            updateMany: async () => ({ count: 1 })
           },
           panelSyncJob: {
             upsert: async (payload: Record<string, any>) => {
@@ -9211,7 +9239,8 @@ async function testPanelDisableJobStoresAndUsesPanelSnapshot() {
             }
           }
         ],
-        update: async () => ({})
+        update: async () => ({}),
+        updateMany: async () => ({ count: 1 })
       },
       panelSyncJob: {
         findUnique: async () => ({
@@ -9264,7 +9293,8 @@ async function testPanelDisableJobStoresAndUsesPanelSnapshot() {
                     panelPassword: "old-pass"
                   }
                 }
-              ]
+              ],
+              updateMany: async () => ({ count: 1 })
             },
             panelSyncJob: {
               upsert: async (payload: Record<string, any>) => {
@@ -17019,7 +17049,7 @@ async function main() {
   await testDisconnectDoesNotExposeOtherUsersCachedRuntime();
   await testDisconnectRevokesOwnActiveLeaseAndClearsCachedRuntime();
   await testSweepExpiredLeasesDoesNotRevokeTooEarly();
-  await testPanelDisableJobDoesNotPreDisableBinding();
+  await testPanelDisableJobPreDisablesBindingLocally();
   await testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails();
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();

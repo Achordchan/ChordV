@@ -1167,6 +1167,9 @@ export class AdminNodeService {
         panelError: null
       }
     });
+    await this.tryRunAfterLocalNodeSave("queue lease revocation after node delete", () =>
+      this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
+    );
     await this.tryRunAfterLocalNodeSave("revoke node leases after node delete", () =>
       this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted")
     );

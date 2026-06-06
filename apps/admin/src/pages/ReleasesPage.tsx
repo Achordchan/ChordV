@@ -159,7 +159,7 @@ export function ReleasesPage() {
         version,
         minimumVersion: version,
         forceUpgrade: false,
-        title: version,
+        title: releaseForm.title.trim() || version,
         changelog: splitLines(releaseForm.changelog)
       };
 
@@ -313,6 +313,13 @@ export function ReleasesPage() {
     }
     if (artifactForm.source === "external" && !/^https?:\/\//i.test(artifactForm.downloadUrl.trim())) {
       return "外链下载地址必须是完整的 http/https 地址。";
+    }
+    if (
+      artifactForm.source === "external" &&
+      (artifactEditor.platform === "windows" || artifactEditor.platform === "macos") &&
+      !/^https:\/\//i.test(artifactForm.downloadUrl.trim())
+    ) {
+      return "桌面端安装包外链必须使用 HTTPS 地址，否则客户端会拒绝下载。";
     }
     return null;
   }
