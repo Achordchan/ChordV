@@ -1,6 +1,13 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Alert, Badge, Button, Card, Group, NumberInput, Paper, Select, SimpleGrid, Stack, Table, Tabs, Text } from "@mantine/core";
-import type { AdminPlanRecordDto, AdminSubscriptionRecordDto, AdminTeamRecordDto, AdminTeamUsageRecordDto, AdminUserRecordDto } from "@chordv/shared";
+import type {
+  AdminLeaseRevocationJobDto,
+  AdminPlanRecordDto,
+  AdminSubscriptionRecordDto,
+  AdminTeamRecordDto,
+  AdminTeamUsageRecordDto,
+  AdminUserRecordDto
+} from "@chordv/shared";
 import { IconBolt, IconListDetails, IconMapPin, IconPencil, IconPlus, IconRefresh, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { ExpireAtController } from "../features/shared/ExpireAtController";
@@ -46,7 +53,10 @@ type SubscriptionsPageProps = {
   onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
   resetTrafficBusyKey: string | null;
   allUsers: AdminUserRecordDto[];
+  leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  leaseRevocationRetryBusyKey: string | null;
   onOpenKickMemberModal: (teamId: string, memberId: string, memberName: string) => void;
+  onRetryLeaseRevocationJob: (jobId: string) => void;
   onOpenTeamUsageDetail: (payload: {
     teamName: string;
     userDisplayName: string;
@@ -123,6 +133,11 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         </Text>
                       ) : null}
                       <PanelSyncInlineStatus item={item} />
+                      <LeaseRevocationInlineStatus
+                        jobs={props.leaseRevocationJobs.filter((job) => job.subscriptionId === item.id)}
+                        retryBusyKey={props.leaseRevocationRetryBusyKey}
+                        onRetryJob={props.onRetryLeaseRevocationJob}
+                      />
                     </Stack>
                   </Table.Td>
                   <Table.Td>{translateSourceAction(item.sourceAction)}</Table.Td>
@@ -205,6 +220,13 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         ) : null}
                         <PanelSyncInlineStatus item={team} />
                         <PanelSyncInlineStatus item={teamSubscriptionRecord} />
+                        <LeaseRevocationInlineStatus
+                          jobs={props.leaseRevocationJobs.filter((job) =>
+                            currentSubscription?.id ? job.subscriptionId === currentSubscription.id : false
+                          )}
+                          retryBusyKey={props.leaseRevocationRetryBusyKey}
+                          onRetryJob={props.onRetryLeaseRevocationJob}
+                        />
                       </Stack>
                       <StatusBadge
                         color={subscriptionStateColor(currentSubscription?.state ?? "paused")}
@@ -353,6 +375,13 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 label={translateUserStatus(userRecord?.status ?? "disabled")}
                                               />
                                               <PanelSyncInlineStatus item={userRecord} />
+                                              <LeaseRevocationInlineStatus
+                                                jobs={props.leaseRevocationJobs.filter(
+                                                  (job) => job.subscriptionId === currentSubscription?.id && job.userId === member.userId
+                                                )}
+                                                retryBusyKey={props.leaseRevocationRetryBusyKey}
+                                                onRetryJob={props.onRetryLeaseRevocationJob}
+                                              />
                                           </Group>
                                           <Text size="sm" c="dimmed">{member.email}</Text>
                                         </Stack>
@@ -476,6 +505,54 @@ function PanelSyncInlineStatus(props: {
       {props.item.panelSyncMessage ? (
         <Text size="xs" c="dimmed" lineClamp={2}>
           {props.item.panelSyncMessage}
+        </Text>
+      ) : null}
+    </Stack>
+  );
+}
+
+function LeaseRevocationInlineStatus(props: {
+  jobs: AdminLeaseRevocationJobDto[];
+  retryBusyKey: string | null;
+  onRetryJob: (jobId: string) => void;
+}) {
+  const activeJobs = props.jobs.filter((job) => job.status === "pending" || job.status === "running" || job.status === "failed");
+  if (activeJobs.length === 0) {
+    return null;
+  }
+  const failed = activeJobs.filter((job) => job.status === "failed");
+  const running = activeJobs.filter((job) => job.status === "running");
+  const retryable = failed[0] ?? activeJobs.find((job) => job.status === "pending") ?? null;
+  const color = failed.length > 0 ? "red" : running.length > 0 ? "blue" : "yellow";
+  const label = failed.length > 0 ? `连接撤销失败 ${failed.length}` : running.length > 0 ? "连接撤销执行中" : `连接撤销待同步 ${activeJobs.length}`;
+  const lastError = failed.find((job) => job.lastError)?.lastError ?? activeJobs.find((job) => job.lastError)?.lastError ?? null;
+
+  return (
+    <Stack gap={2}>
+      <Group gap={4} wrap="nowrap">
+        <Badge color={color} variant="light">
+          {label}
+        </Badge>
+        {retryable ? (
+          <ActionIcon
+            size="xs"
+            variant="subtle"
+            color={color}
+            loading={props.retryBusyKey === `lease-job:${retryable.id}`}
+            disabled={props.retryBusyKey !== null && props.retryBusyKey !== `lease-job:${retryable.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onRetryJob(retryable.id);
+            }}
+            title="重试连接撤销"
+          >
+            <IconRefresh size={12} />
+          </ActionIcon>
+        ) : null}
+      </Group>
+      {lastError ? (
+        <Text size="xs" c="dimmed" lineClamp={2}>
+          {lastError}
         </Text>
       ) : null}
     </Stack>

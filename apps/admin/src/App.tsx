@@ -2296,6 +2296,8 @@ export function App() {
                 users={users}
                 filteredTeams={filteredTeams}
                 allUsers={snapshot.users}
+                leaseRevocationJobs={snapshot.leaseRevocationJobs}
+                leaseRevocationRetryBusyKey={panelSyncRetryBusyKey}
                 teamInlineEditorId={teamInlineEditorId}
                 teamMemberInlineEditor={teamMemberInlineEditor}
                 teamInlineBusy={teamInlineBusy}
@@ -2319,6 +2321,7 @@ export function App() {
                 onToggleTeamUserStatus={(userId, nextStatus, displayName) =>
                   void handleToggleUserStatus(userId, nextStatus, displayName, "team-member")
                 }
+                onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
               />
             ) : null}
 
@@ -2361,7 +2364,10 @@ export function App() {
                 }
                 resetTrafficBusyKey={resetTrafficBusyKey}
                 allUsers={snapshot.users}
+                leaseRevocationJobs={snapshot.leaseRevocationJobs}
+                leaseRevocationRetryBusyKey={panelSyncRetryBusyKey}
                 onOpenKickMemberModal={openKickMemberModal}
+                onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onOpenTeamUsageDetail={setTeamUsageDetailTarget}
               />
             ) : null}

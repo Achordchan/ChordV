@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
-import type { AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
-import { IconListDetails, IconLock, IconLockOpen2, IconPencil, IconTrash, IconUsers } from "@tabler/icons-react";
+import type { AdminLeaseRevocationJobDto, AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
+import { IconListDetails, IconLock, IconLockOpen2, IconPencil, IconRefresh, IconTrash, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -17,6 +17,8 @@ type UsersPageProps = {
   users: AdminUserRecordDto[];
   filteredTeams: AdminTeamRecordDto[];
   allUsers: AdminUserRecordDto[];
+  leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  leaseRevocationRetryBusyKey: string | null;
   teamInlineEditorId: string | null;
   teamMemberInlineEditor: { teamId: string; memberId: string | null } | null;
   teamInlineBusy: boolean;
@@ -36,6 +38,7 @@ type UsersPageProps = {
   onDeleteTeamMember: (teamId: string, memberId: string) => void;
   onToggleUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
+  onRetryLeaseRevocationJob: (jobId: string) => void;
 };
 
 export function UsersPage(props: UsersPageProps) {
@@ -78,6 +81,11 @@ export function UsersPage(props: UsersPageProps) {
                       <Stack gap={4}>
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
                         <PanelSyncInlineStatus item={item} />
+                        <LeaseRevocationInlineStatus
+                          jobs={props.leaseRevocationJobs.filter((job) => job.userId === item.id)}
+                          retryBusyKey={props.leaseRevocationRetryBusyKey}
+                          onRetryJob={props.onRetryLeaseRevocationJob}
+                        />
                       </Stack>
                     </Table.Td>
                     <Table.Td>
@@ -132,6 +140,13 @@ export function UsersPage(props: UsersPageProps) {
                       <Stack gap={4} align="flex-end">
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
                         <PanelSyncInlineStatus item={item} />
+                        <LeaseRevocationInlineStatus
+                          jobs={props.leaseRevocationJobs.filter((job) =>
+                            item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id : false
+                          )}
+                          retryBusyKey={props.leaseRevocationRetryBusyKey}
+                          onRetryJob={props.onRetryLeaseRevocationJob}
+                        />
                       </Stack>
                     </Group>
                   </Accordion.Control>
@@ -260,6 +275,11 @@ export function UsersPage(props: UsersPageProps) {
                                       label={translateUserStatus(userRecord?.status ?? "disabled")}
                                     />
                                     <PanelSyncInlineStatus item={userRecord} />
+                                    <LeaseRevocationInlineStatus
+                                      jobs={props.leaseRevocationJobs.filter((job) => job.userId === member.userId)}
+                                      retryBusyKey={props.leaseRevocationRetryBusyKey}
+                                      onRetryJob={props.onRetryLeaseRevocationJob}
+                                    />
                                   </Stack>
                                 </Table.Td>
                                 <Table.Td>
@@ -335,6 +355,54 @@ function PanelSyncInlineStatus(props: {
       {props.item.panelSyncMessage ? (
         <Text size="xs" c="dimmed" lineClamp={2}>
           {props.item.panelSyncMessage}
+        </Text>
+      ) : null}
+    </Stack>
+  );
+}
+
+function LeaseRevocationInlineStatus(props: {
+  jobs: AdminLeaseRevocationJobDto[];
+  retryBusyKey: string | null;
+  onRetryJob: (jobId: string) => void;
+}) {
+  const activeJobs = props.jobs.filter((job) => job.status === "pending" || job.status === "running" || job.status === "failed");
+  if (activeJobs.length === 0) {
+    return null;
+  }
+  const failed = activeJobs.filter((job) => job.status === "failed");
+  const running = activeJobs.filter((job) => job.status === "running");
+  const retryable = failed[0] ?? activeJobs.find((job) => job.status === "pending") ?? null;
+  const color = failed.length > 0 ? "red" : running.length > 0 ? "blue" : "yellow";
+  const label = failed.length > 0 ? `连接撤销失败 ${failed.length}` : running.length > 0 ? "连接撤销执行中" : `连接撤销待同步 ${activeJobs.length}`;
+  const lastError = failed.find((job) => job.lastError)?.lastError ?? activeJobs.find((job) => job.lastError)?.lastError ?? null;
+
+  return (
+    <Stack gap={2}>
+      <Group gap={4} wrap="nowrap">
+        <Badge color={color} variant="light">
+          {label}
+        </Badge>
+        {retryable ? (
+          <ActionIcon
+            size="xs"
+            variant="subtle"
+            color={color}
+            loading={props.retryBusyKey === `lease-job:${retryable.id}`}
+            disabled={props.retryBusyKey !== null && props.retryBusyKey !== `lease-job:${retryable.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onRetryJob(retryable.id);
+            }}
+            title="重试连接撤销"
+          >
+            <IconRefresh size={12} />
+          </ActionIcon>
+        ) : null}
+      </Group>
+      {lastError ? (
+        <Text size="xs" c="dimmed" lineClamp={2}>
+          {lastError}
         </Text>
       ) : null}
     </Stack>
