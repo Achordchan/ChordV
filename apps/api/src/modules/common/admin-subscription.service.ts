@@ -85,6 +85,9 @@ type ResetTrafficCountersResult = {
   clearedBindingCount: number;
   panelSync: PanelSyncBestEffortResult;
 };
+type SubscriptionWithSecurityPlan = AdminSubscriptionEntity & {
+  plan: AdminSubscriptionEntity["plan"] & { maxConcurrentSessions: number };
+};
 
 @Injectable()
 export class AdminSubscriptionService {
@@ -239,12 +242,31 @@ export class AdminSubscriptionService {
       data.maxConcurrentSessionsOverride = input.maxConcurrentSessionsOverride;
     }
 
-    const updatedUser = await this.prisma.user.update({
-      where: { id: userId },
-      data
-    });
-
     let panelSync: PanelSyncBestEffortResult = { ok: true };
+    let updatedUser: Awaited<ReturnType<PrismaService["user"]["update"]>>;
+
+    if (statusChanged && input.status === "disabled") {
+      const saved = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.update({
+          where: { id: userId },
+          data
+        });
+        const subscriptionIds = await this.findCurrentSubscriptionIdsForUserTx(tx, userId);
+        let queuedCount = 0;
+        for (const subscriptionId of subscriptionIds) {
+          queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId });
+          queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "user_disabled", { userId });
+        }
+        return { user, queuedCount };
+      });
+      updatedUser = saved.user;
+      panelSync = mergePanelSyncResults(panelSync, buildQueuedPanelSyncResult(saved.queuedCount, "user disable"));
+    } else {
+      updatedUser = await this.prisma.user.update({
+        where: { id: userId },
+        data
+      });
+    }
 
     if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
       await this.revokeAllUserSessionsBestEffort(userId, "user credentials changed");
@@ -1130,16 +1152,36 @@ export class AdminSubscriptionService {
       }
     }
 
-    if (!teamUpdatedInOwnerTransaction) {
-      await this.prisma.team.update({
-        where: { id: teamId },
-        data
-      });
-    }
-
     if (input.status !== undefined && input.status !== current.status) {
+      if (!teamUpdatedInOwnerTransaction && input.status === "disabled") {
+        const saved = await this.prisma.$transaction(async (tx) => {
+          await tx.team.update({
+            where: { id: teamId },
+            data
+          });
+          const subscription = await this.findCurrentTeamSubscriptionTx(tx, teamId);
+          let queuedCount = 0;
+          if (subscription) {
+            queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id);
+            queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_disabled");
+          }
+          return { queuedCount };
+        });
+        panelSync = mergePanelSyncResults(panelSync, buildQueuedPanelSyncResult(saved.queuedCount, "team disable"));
+      } else if (!teamUpdatedInOwnerTransaction) {
+        await this.prisma.team.update({
+          where: { id: teamId },
+          data
+        });
+      }
       panelSync = mergePanelSyncResults(panelSync, this.startTeamStatusFollowUpInBackground(teamId, input.status));
     } else {
+      if (!teamUpdatedInOwnerTransaction) {
+        await this.prisma.team.update({
+          where: { id: teamId },
+          data
+        });
+      }
       const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
         teamId,
         "team subscription lookup after team update"
@@ -1279,13 +1321,29 @@ export class AdminSubscriptionService {
       throw new BadRequestException("负责人不能直接移除，请先转移负责人");
     }
 
-    await this.prisma.teamMember.delete({
-      where: { id: memberId }
+    const saved = await this.prisma.$transaction(async (tx) => {
+      await tx.teamMember.delete({
+        where: { id: memberId }
+      });
+      const subscription = await this.findCurrentTeamSubscriptionTx(tx, member.teamId);
+      let queuedCount = 0;
+      if (subscription) {
+        queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id, {
+          userId: member.userId
+        });
+        queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_member_removed", {
+          userId: member.userId
+        });
+      }
+      return { queuedCount };
     });
-    const panelSync = this.startTeamMemberRemovedFollowUpInBackground({
-      teamId: member.teamId,
-      userId: member.userId
-    });
+    const panelSync = mergePanelSyncResults(
+      buildQueuedPanelSyncResult(saved.queuedCount, "team member removal"),
+      this.startTeamMemberRemovedFollowUpInBackground({
+        teamId: member.teamId,
+        userId: member.userId
+      })
+    );
     return {
       ok: true,
       ...buildPanelSyncResult(panelSync),
@@ -1953,6 +2011,27 @@ export class AdminSubscriptionService {
     return subscriptionIds;
   }
 
+  private async findCurrentSubscriptionIdsForUserTx(writer: any, userId: string) {
+    const subscriptionIds: string[] = [];
+    const personalSubscription = await this.findCurrentPersonalSubscriptionTx(writer, userId);
+    if (personalSubscription) {
+      subscriptionIds.push(personalSubscription.id);
+    }
+    const memberships = await writer.teamMember.findMany({
+      where: { userId },
+      select: { teamId: true }
+    });
+    const teamSubscriptions = await Promise.all(
+      memberships.map((membership: { teamId: string }) => this.findCurrentTeamSubscriptionTx(writer, membership.teamId))
+    );
+    for (const subscription of teamSubscriptions) {
+      if (subscription) {
+        subscriptionIds.push(subscription.id);
+      }
+    }
+    return Array.from(new Set(subscriptionIds));
+  }
+
   private async revokeAllUserSessionsBestEffort(userId: string, reason: string) {
     await this.withSubscriptionFollowUpBudget(
       `auth session revocation for ${userId}`,
@@ -2278,7 +2357,18 @@ export class AdminSubscriptionService {
       include: { plan: true, user: true, team: true, nodeAccesses: true },
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
-    return pickCurrentSubscription(rows);
+    return pickCurrentSubscription(rows as SubscriptionWithSecurityPlan[]);
+  }
+
+  private async findCurrentPersonalSubscriptionTx(writer: any, userId: string) {
+    const rows = await writer.subscription.findMany({
+      where: {
+        userId
+      },
+      include: { plan: true, user: true, team: true, nodeAccesses: true },
+      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+    });
+    return pickCurrentSubscription(rows as AdminSubscriptionEntity[]);
   }
 
   private async findCurrentTeamSubscription(teamId: string) {
@@ -2288,6 +2378,15 @@ export class AdminSubscriptionService {
       orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
     });
     return pickCurrentSubscription(rows);
+  }
+
+  private async findCurrentTeamSubscriptionTx(writer: any, teamId: string) {
+    const rows = await writer.subscription.findMany({
+      where: { teamId },
+      include: { plan: true, user: true, team: true, nodeAccesses: true },
+      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+    });
+    return pickCurrentSubscription(rows as AdminSubscriptionEntity[]);
   }
 
   private async findTeamSubscriptionAfterLocalSaveBestEffort(teamId: string, label: string) {
@@ -2758,6 +2857,15 @@ function buildPanelSyncMessage(panelSync: PanelSyncBestEffortResult, syncedMessa
     return syncedMessage;
   }
   return `${syncedMessage} ${buildPanelSyncResult(panelSync).panelSyncMessage}`;
+}
+
+function buildQueuedPanelSyncResult(queuedCount: number, label: string): PanelSyncBestEffortResult {
+  return queuedCount > 0
+    ? {
+        ok: false,
+        errorMessage: `${label} panel and lease jobs queued for background retry`
+      }
+    : { ok: true };
 }
 
 function mergePanelSyncResults(...results: PanelSyncBestEffortResult[]): PanelSyncBestEffortResult {

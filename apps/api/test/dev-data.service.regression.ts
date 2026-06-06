@@ -14619,7 +14619,9 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
 
 async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
   const updates: Array<Record<string, any>> = [];
-  let panelQueueStarted = false;
+  let durablePanelQueued = false;
+  let durableLeaseQueued = false;
+  let backgroundPanelQueueStarted = false;
   let leaseRevokeStarted = false;
   const service = createAdminSubscriptionService({
     logger: {
@@ -14655,18 +14657,96 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
       user: {
         update: async (payload: Record<string, any>) => {
           updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: payload.data.status,
+            lastSeenAt: new Date(),
+            maxConcurrentSessionsOverride: null
+          };
         }
       },
       teamMember: {
         findMany: async () => []
       },
-      $transaction: async () => {
-        throw new Error("lease job queue failed");
-      }
+      subscription: {
+        findMany: async () => [
+          {
+            id: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            planId: "plan_1",
+            totalTrafficGb: 100,
+            usedTrafficGb: 0,
+            remainingTrafficGb: 100,
+            expireAt: new Date(Date.now() + 60_000),
+            state: "active",
+            renewable: true,
+            sourceAction: "created",
+            lastSyncedAt: new Date(),
+            plan: { name: "Plan" },
+            user: null,
+            team: null,
+            nodeAccesses: []
+          }
+        ]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          user: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                id: "user_1",
+                email: "user@example.com",
+                displayName: "User",
+                role: "user",
+                status: payload.data.status,
+                lastSeenAt: new Date(),
+                maxConcurrentSessionsOverride: null
+              };
+            }
+          },
+          subscription: {
+            findMany: async () => [
+              {
+                id: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                planId: "plan_1",
+                totalTrafficGb: 100,
+                usedTrafficGb: 0,
+                remainingTrafficGb: 100,
+                expireAt: new Date(Date.now() + 60_000),
+                state: "active",
+                renewable: true,
+                sourceAction: "created",
+                lastSyncedAt: new Date(),
+                plan: { name: "Plan" },
+                user: null,
+                team: null,
+                nodeAccesses: []
+              }
+            ]
+          },
+          teamMember: {
+            findMany: async () => []
+          }
+        })
     },
     runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        durablePanelQueued = true;
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        durableLeaseQueued = true;
+        return 1;
+      },
       markPanelBindingsDisabledForSubscription: async () => {
-        panelQueueStarted = true;
+        backgroundPanelQueueStarted = true;
         throw new Error("panel queue failed");
       },
       revokeSubscriptionLeases: async () => {
@@ -14686,12 +14766,13 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
 
   assert.equal(updates.length, 1, "user status must save before panel disconnect side effects");
   assert.equal(updates[0].data.status, "disabled");
-  assert.equal(panelQueueStarted, false, "user disable must not run panel queueing before the local response");
-  await waitUntil(() => panelQueueStarted && leaseRevokeStarted);
-  assert.equal(panelQueueStarted, true, "user disable panel queueing should still run in background");
+  assert.equal(durablePanelQueued, true, "user disable must queue panel jobs in the local transaction");
+  assert.equal(durableLeaseQueued, true, "user disable must queue lease revocation jobs in the local transaction");
+  await waitUntil(() => backgroundPanelQueueStarted && leaseRevokeStarted);
+  assert.equal(backgroundPanelQueueStarted, true, "user disable panel queueing should still run in background as a fallback");
   assert.equal(leaseRevokeStarted, true, "user disable lease revocation should still run in background");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /queued/);
 }
 
 async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
@@ -14844,7 +14925,9 @@ async function testEnableUserReturnsPendingWhenSubscriptionLookupStalls() {
 
 async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
   const teamUpdates: Array<Record<string, any>> = [];
-  let panelQueueStarted = false;
+  let durablePanelQueued = false;
+  let durableLeaseQueued = false;
+  let backgroundPanelQueueStarted = false;
   let leaseRevokeStarted = false;
   const service = createAdminSubscriptionService({
     logger: {
@@ -14878,15 +14961,74 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
       team: {
         update: async (payload: Record<string, any>) => {
           teamUpdates.push(payload);
+          return {};
         }
       },
-      $transaction: async () => {
-        throw new Error("lease job queue failed");
-      }
+      subscription: {
+        findMany: async () => [
+          {
+            id: "sub_team",
+            userId: null,
+            teamId: "team_1",
+            planId: "plan_team",
+            totalTrafficGb: 100,
+            usedTrafficGb: 0,
+            remainingTrafficGb: 100,
+            expireAt: new Date(Date.now() + 60_000),
+            state: "active",
+            renewable: true,
+            sourceAction: "created",
+            lastSyncedAt: new Date(),
+            plan: { name: "Team Plan" },
+            user: null,
+            team: { name: "Team" },
+            nodeAccesses: []
+          }
+        ]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          team: {
+            update: async (payload: Record<string, any>) => {
+              teamUpdates.push(payload);
+              return {};
+            }
+          },
+          subscription: {
+            findMany: async () => [
+              {
+                id: "sub_team",
+                userId: null,
+                teamId: "team_1",
+                planId: "plan_team",
+                totalTrafficGb: 100,
+                usedTrafficGb: 0,
+                remainingTrafficGb: 100,
+                expireAt: new Date(Date.now() + 60_000),
+                state: "active",
+                renewable: true,
+                sourceAction: "created",
+                lastSyncedAt: new Date(),
+                plan: { name: "Team Plan" },
+                user: null,
+                team: { name: "Team" },
+                nodeAccesses: []
+              }
+            ]
+          }
+        })
     },
     runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        durablePanelQueued = true;
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        durableLeaseQueued = true;
+        return 1;
+      },
       markPanelBindingsDisabledForSubscription: async () => {
-        panelQueueStarted = true;
+        backgroundPanelQueueStarted = true;
         throw new Error("panel queue failed");
       },
       revokeSubscriptionLeases: async () => {
@@ -14901,12 +15043,13 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
 
   assert.equal(teamUpdates.length, 1, "team status must save before panel disconnect side effects");
   assert.equal(teamUpdates[0].data.status, "disabled");
-  assert.equal(panelQueueStarted, false, "team disable must not run panel queueing before the local response");
-  await waitUntil(() => panelQueueStarted && leaseRevokeStarted);
-  assert.equal(panelQueueStarted, true, "team disable panel queueing should still run in background");
+  assert.equal(durablePanelQueued, true, "team disable must queue panel jobs in the local transaction");
+  assert.equal(durableLeaseQueued, true, "team disable must queue lease revocation jobs in the local transaction");
+  await waitUntil(() => backgroundPanelQueueStarted && leaseRevokeStarted);
+  assert.equal(backgroundPanelQueueStarted, true, "team disable panel queueing should still run in background as a fallback");
   assert.equal(leaseRevokeStarted, true, "team disable lease revocation should still run in background");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /queued/);
 }
 
 async function testUpdateTeamReturnsPendingWhenRecordRefreshFails() {
@@ -15020,9 +15163,42 @@ async function testUpdateTeamDisconnectStillRevokesLeasesWhenPanelQueueStalls() 
         }
       },
       $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-        task({})
+        task({
+          team: {
+            update: async () => {
+              calls.push("update_team");
+              return {};
+            }
+          },
+          subscription: {
+            findMany: async () => [
+              {
+                id: "subscription_1",
+                userId: null,
+                teamId: "team_1",
+                planId: "plan_team",
+                totalTrafficGb: 100,
+                usedTrafficGb: 0,
+                remainingTrafficGb: 100,
+                expireAt: new Date(Date.now() + 60_000),
+                state: "active",
+                renewable: true,
+                sourceAction: "created",
+                lastSyncedAt: new Date(),
+                plan: { name: "Team Plan" },
+                user: null,
+                team: { name: "Team" },
+                nodeAccesses: []
+              }
+            ]
+          }
+        })
     },
     runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        calls.push("queue_panel_disable_tx");
+        return 1;
+      },
       markPanelBindingsDisabledForSubscription: async () => {
         calls.push("queue_panel_disable");
         return new Promise<number>(() => undefined);
@@ -15047,7 +15223,9 @@ async function testUpdateTeamDisconnectStillRevokesLeasesWhenPanelQueueStalls() 
   ]);
 
   assert.ok(calls.includes("update_team"));
-  assert.ok(!calls.includes("queue_panel_disable"), "team disable follow-up must be deferred until after the local response");
+  assert.ok(calls.includes("queue_panel_disable_tx"), "team disable must persist panel jobs before the local response");
+  assert.ok(calls.includes("queue_lease_job"), "team disable must persist lease jobs before the local response");
+  assert.ok(!calls.includes("queue_panel_disable"), "remote-facing panel follow-up must still be deferred");
   await waitUntil(() => calls.includes("queue_panel_disable"));
   assert.ok(calls.includes("queue_panel_disable"));
   await waitUntil(() => calls.includes("queue_lease_job") && calls.includes("revoke_active_leases"));
@@ -15953,6 +16131,14 @@ async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
       throw new Error("ticket cleanup failed");
     },
     runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        calls.push("queue_panel_disabled_tx");
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        calls.push("queue_lease_revocation_tx");
+        return 1;
+      },
       revokeSubscriptionLeases: async () => {
         calls.push("revoke_leases");
       },
@@ -15961,6 +16147,36 @@ async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
       }
     },
     prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          teamMember: {
+            delete: async () => {
+              calls.push("delete_member");
+            }
+          },
+          subscription: {
+            findMany: async () => [
+              {
+                id: "subscription_1",
+                userId: null,
+                teamId: "team_1",
+                planId: "plan_team",
+                totalTrafficGb: 100,
+                usedTrafficGb: 0,
+                remainingTrafficGb: 100,
+                expireAt: new Date(Date.now() + 60_000),
+                state: "active",
+                renewable: true,
+                sourceAction: "created",
+                lastSyncedAt: new Date(),
+                plan: { name: "Team Plan" },
+                user: null,
+                team: { name: "Team" },
+                nodeAccesses: []
+              }
+            ]
+          }
+        }),
       teamMember: {
         delete: async () => {
           calls.push("delete_member");
@@ -15972,7 +16188,11 @@ async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
   const result = await service.deleteTeamMember("team_1", "member_1");
 
   assert.equal(result.ok, true);
-  assert.deepEqual(calls, ["delete_member"], "team member delete must return before ticket cleanup and panel sync follow-up");
+  assert.deepEqual(
+    calls,
+    ["delete_member", "queue_panel_disabled_tx", "queue_lease_revocation_tx"],
+    "team member delete must persist local delete and durable queues before ticket cleanup follow-up"
+  );
   await waitUntil(() => calls.includes("close_tickets") && calls.includes("mark_panel_disabled") && calls.includes("revoke_leases"));
   assert.ok(calls.includes("close_tickets"));
   assert.ok(calls.includes("mark_panel_disabled"));
@@ -16007,6 +16227,17 @@ async function testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAft
       }
     },
     prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          teamMember: {
+            delete: async () => {
+              calls.push("delete_member");
+            }
+          },
+          subscription: {
+            findMany: async () => []
+          }
+        }),
       teamMember: {
         delete: async () => {
           calls.push("delete_member");
@@ -16050,6 +16281,10 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
       calls.push("close_tickets");
     },
     runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        calls.push("queue_panel_disabled_tx");
+        return 1;
+      },
       markPanelBindingsDisabledForSubscription: async () => {
         calls.push("queue_panel_disabled");
         return 1;
@@ -16073,7 +16308,35 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
     },
     prisma: {
       $transaction: async (task: (tx: Record<string, any>) => Promise<void>) =>
-        task({}),
+        task({
+          teamMember: {
+            delete: async () => {
+              calls.push("delete_member");
+            }
+          },
+          subscription: {
+            findMany: async () => [
+              {
+                id: "subscription_1",
+                userId: null,
+                teamId: "team_1",
+                planId: "plan_team",
+                totalTrafficGb: 100,
+                usedTrafficGb: 0,
+                remainingTrafficGb: 100,
+                expireAt: new Date(Date.now() + 60_000),
+                state: "active",
+                renewable: true,
+                sourceAction: "created",
+                lastSyncedAt: new Date(),
+                plan: { name: "Team Plan" },
+                user: null,
+                team: { name: "Team" },
+                nodeAccesses: []
+              }
+            ]
+          }
+        }),
       teamMember: {
         delete: async () => {
           calls.push("delete_member");
@@ -16084,7 +16347,11 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
 
   const result = await service.deleteTeamMember("team_1", "member_1");
 
-  assert.deepEqual(calls, ["delete_member"], "team member delete must not wait for panel and lease follow-up");
+  assert.deepEqual(
+    calls,
+    ["delete_member", "queue_panel_disabled_tx", "queue_lease_revocation"],
+    "team member delete must queue durable panel and lease jobs with the local delete"
+  );
   await waitUntil(
     () =>
       calls.includes("close_tickets") &&
