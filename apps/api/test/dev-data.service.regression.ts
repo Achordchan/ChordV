@@ -3598,7 +3598,7 @@ async function testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline()
 async function testUsageTriggeredInvalidationUsesUnifiedRevokePath() {
   let updateManyCalled = false;
   const panelQueueCalls: string[] = [];
-  const revokeCalls: Array<{ subscriptionId: string; reason: string }> = [];
+  const leaseJobCalls: Array<{ subscriptionId: string; reason: string }> = [];
   const publishedStates: string[] = [];
 
   const service = createUsageSyncService({
@@ -3607,8 +3607,8 @@ async function testUsageTriggeredInvalidationUsesUnifiedRevokePath() {
         panelQueueCalls.push(subscriptionId);
         return 1;
       },
-      revokeSubscriptionLeases: async (subscriptionId: string, reason: string) => {
-        revokeCalls.push({ subscriptionId, reason });
+      queueLeaseRevocationJobsForSubscription: async (subscriptionId: string, reason: string) => {
+        leaseJobCalls.push({ subscriptionId, reason });
         return 1;
       }
     },
@@ -3681,7 +3681,7 @@ async function testUsageTriggeredInvalidationUsesUnifiedRevokePath() {
 
   assert.equal(updateManyCalled, false, "usage 失效不应该再裸调用 nodeSessionLease.updateMany");
   assert.deepEqual(panelQueueCalls, ["sub_1"]);
-  assert.deepEqual(revokeCalls, [{ subscriptionId: "sub_1", reason: "subscription_expired" }]);
+  assert.deepEqual(leaseJobCalls, [{ subscriptionId: "sub_1", reason: "subscription_expired" }]);
   assert.deepEqual(publishedStates, ["expired"]);
 }
 
@@ -3697,8 +3697,8 @@ async function testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFa
       markPanelBindingsDisabledForSubscription: async () => {
         throw new Error("panel queue failed");
       },
-      revokeSubscriptionLeases: async () => {
-        throw new Error("lease revoke failed");
+      queueLeaseRevocationJobsForSubscription: async () => {
+        throw new Error("lease job queue failed");
       }
     },
     clientEventsPublisher: {
@@ -3769,7 +3769,7 @@ async function testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFa
   assert.deepEqual(publishedStates, ["exhausted"], "SSE publish must still happen when panel/lease side effects fail");
   assert.equal(warnings.length, 2);
   assert.match(warnings.join("\n"), /panel queue failed/);
-  assert.match(warnings.join("\n"), /lease revoke failed/);
+  assert.match(warnings.join("\n"), /lease job queue failed/);
 }
 
 async function testUsageDeltaKeepsLocalUsageWhenPublishFails() {
@@ -3783,7 +3783,7 @@ async function testUsageDeltaKeepsLocalUsageWhenPublishFails() {
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 0,
-      revokeSubscriptionLeases: async () => 0
+      queueLeaseRevocationJobsForSubscription: async () => 0
     },
     clientEventsPublisher: {
       publishSubscriptionUpdated: async () => {
@@ -6668,7 +6668,7 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
   };
   let accessRows = [{ id: "access_old", nodeId: "node_offline", node: oldNode }];
   let disableQueueQueued = false;
-  let activeLeaseRevokeStarted = false;
+  let leaseJobQueueFollowUpStarted = false;
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -6708,9 +6708,12 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
         return 1;
       },
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      queueLeaseRevocationJobsForSubscription: async () => {
+        leaseJobQueueFollowUpStarted = true;
+        return 1;
+      },
       revokeSubscriptionLeases: async () => {
-        activeLeaseRevokeStarted = true;
-        return 0;
+        throw new Error("node access revocation should queue lease jobs instead of direct active revoke");
       }
     },
     publishNodeAccessUpdatedEvent: async () => undefined
@@ -6724,7 +6727,7 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
   ]);
 
   assert.equal(disableQueueQueued, true, "panel disable jobs must be queued with the local access update");
-  assert.equal(activeLeaseRevokeStarted, false, "active lease revocation must be deferred until after the local response");
+  assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must be deferred until after the local response");
   assert.deepEqual(accessRows, [], "local node access must be cleared before stalled follow-up finishes");
   assert.deepEqual(result.nodeIds, []);
   assert.equal(result.panelSyncStatus, "pending");
@@ -6983,7 +6986,7 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
     { id: "access_keep", nodeId: "node_keep" }
   ];
   let disableFilter: { nodeIds?: string[] } | undefined;
-  let activeLeaseRevokeStarted = false;
+  let leaseJobQueueFollowUpStarted = false;
   let leaseJobQueued = false;
   const service = createDevDataService({
     logger: {
@@ -7032,9 +7035,12 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
       queueLeaseRevocationJobsForSubscriptionTx: async () => {
         leaseJobQueued = true;
       },
-      revokeSubscriptionLeases: async () => {
-        activeLeaseRevokeStarted = true;
+      queueLeaseRevocationJobsForSubscription: async () => {
+        leaseJobQueueFollowUpStarted = true;
         return 0;
+      },
+      revokeSubscriptionLeases: async () => {
+        throw new Error("node access removal should queue lease jobs instead of direct active revoke");
       },
       syncSubscriptionPanelAccess: async () => {
         throw new Error("removal-only access update must not full-sync remote panels");
@@ -7053,7 +7059,7 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "panel disable jobs must be queued for only the removed node");
   assert.equal(leaseJobQueued, true, "lease revocation jobs must be queued with the local access update");
-  assert.equal(activeLeaseRevokeStarted, false, "active lease revoke must be deferred after the local response");
+  assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must be deferred after the local response");
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /后台处理/);
@@ -7086,7 +7092,7 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
   ];
   let panelDisableQueuedInTransaction = false;
   let leaseJobQueuedInTransaction = false;
-  let activeLeaseRevokeStarted = false;
+  let leaseJobQueueFollowUpStarted = false;
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -7134,8 +7140,8 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
       queueLeaseRevocationJobsForSubscriptionTx: async () => {
         leaseJobQueuedInTransaction = true;
       },
-      revokeSubscriptionLeases: async () => {
-        activeLeaseRevokeStarted = true;
+      queueLeaseRevocationJobsForSubscription: async () => {
+        leaseJobQueueFollowUpStarted = true;
         const deadline = Date.now() + 500;
         while (Date.now() < deadline) {
           // Simulate a bad follow-up implementation that blocks before yielding.
@@ -7159,12 +7165,12 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
 
   assert.equal(panelDisableQueuedInTransaction, true, "panel disable jobs must be queued with the local access update");
   assert.equal(leaseJobQueuedInTransaction, true, "lease revocation jobs must be queued with the local access update");
-  assert.equal(activeLeaseRevokeStarted, false, "active lease revocation must be deferred until after the response is built");
+  assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must be deferred until after the response is built");
   assert.ok(Date.now() - startedAt < 150, "local node access update must return before deferred follow-up work starts");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(activeLeaseRevokeStarted, false, "active lease revocation must leave a small response-flush window before starting");
-  await waitUntil(() => activeLeaseRevokeStarted);
-  assert.equal(activeLeaseRevokeStarted, true, "active lease revocation should still run after the response-flush window");
+  assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must leave a small response-flush window before starting");
+  await waitUntil(() => leaseJobQueueFollowUpStarted);
+  assert.equal(leaseJobQueueFollowUpStarted, true, "lease revocation queue follow-up should still run after the response-flush window");
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");

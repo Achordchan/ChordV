@@ -442,114 +442,114 @@ export class UsageSyncService {
 
   private async applyUsageDelta(input: UsageDeltaInput) {
     const apply = async () => {
-    const deltaGb = Number(input.deltaBytes) / GB_IN_BYTES;
-    let nextState: "active" | "expired" | "exhausted" | "paused" | null = null;
+      const deltaGb = Number(input.deltaBytes) / GB_IN_BYTES;
+      let nextState: "active" | "expired" | "exhausted" | "paused" | null = null;
 
-    await this.prisma.$transaction(async (tx) => {
-      const current = await tx.subscription.findUnique({
-        where: { id: input.subscriptionId }
-      });
+      await this.prisma.$transaction(async (tx) => {
+        const current = await tx.subscription.findUnique({
+          where: { id: input.subscriptionId }
+        });
 
-      if (!current) {
-        return;
-      }
+        if (!current) {
+          return;
+        }
 
-      const nextUsedTrafficGb = roundTrafficGb(current.usedTrafficGb + deltaGb);
-      const nextRemainingTrafficGb = roundTrafficGb(Math.max(0, current.totalTrafficGb - nextUsedTrafficGb));
-      nextState =
-        current.state !== "active"
-          ? current.state
-          : current.expireAt.getTime() <= input.sampledAt.getTime()
-          ? "expired"
-          : nextRemainingTrafficGb <= 0
-            ? "exhausted"
-            : "active";
+        const nextUsedTrafficGb = roundTrafficGb(current.usedTrafficGb + deltaGb);
+        const nextRemainingTrafficGb = roundTrafficGb(Math.max(0, current.totalTrafficGb - nextUsedTrafficGb));
+        nextState =
+          current.state !== "active"
+            ? current.state
+            : current.expireAt.getTime() <= input.sampledAt.getTime()
+              ? "expired"
+              : nextRemainingTrafficGb <= 0
+                ? "exhausted"
+                : "active";
 
-      const snapshotData = {
+        const snapshotData = {
           uplinkBytes: input.uplinkBytes,
           downlinkBytes: input.downlinkBytes,
           totalBytes: input.totalBytes,
           sampledAt: input.sampledAt
-      };
-      if (input.snapshotMode === "create") {
-        await tx.trafficSnapshot.upsert({
-          where: { snapshotKey: input.snapshotKey },
-          update: snapshotData,
-          create: {
-            id: randomUUID(),
-            snapshotKey: input.snapshotKey,
-            nodeId: input.nodeId,
-            subscriptionId: input.subscriptionId,
-            userId: input.userId,
-            teamId: input.teamId,
-            ...snapshotData
-          }
-        });
-      } else {
-        await tx.trafficSnapshot.update({
-          where: { snapshotKey: input.snapshotKey },
-          data: snapshotData
-        });
-      }
+        };
+        if (input.snapshotMode === "create") {
+          await tx.trafficSnapshot.upsert({
+            where: { snapshotKey: input.snapshotKey },
+            update: snapshotData,
+            create: {
+              id: randomUUID(),
+              snapshotKey: input.snapshotKey,
+              nodeId: input.nodeId,
+              subscriptionId: input.subscriptionId,
+              userId: input.userId,
+              teamId: input.teamId,
+              ...snapshotData
+            }
+          });
+        } else {
+          await tx.trafficSnapshot.update({
+            where: { snapshotKey: input.snapshotKey },
+            data: snapshotData
+          });
+        }
 
-      if (input.bindingId) {
-        await tx.panelClientBinding.updateMany({
-          where: { id: input.bindingId },
+        if (input.bindingId) {
+          await tx.panelClientBinding.updateMany({
+            where: { id: input.bindingId },
+            data: {
+              lastUplinkBytes: input.uplinkBytes,
+              lastDownlinkBytes: input.downlinkBytes,
+              lastSyncedAt: input.sampledAt
+            }
+          });
+        }
+
+        await tx.subscription.update({
+          where: { id: input.subscriptionId },
           data: {
-            lastUplinkBytes: input.uplinkBytes,
-            lastDownlinkBytes: input.downlinkBytes,
+            usedTrafficGb: nextUsedTrafficGb,
+            remainingTrafficGb: nextRemainingTrafficGb,
+            state: nextState,
             lastSyncedAt: input.sampledAt
           }
         });
-      }
 
-      await tx.subscription.update({
-        where: { id: input.subscriptionId },
-        data: {
-          usedTrafficGb: nextUsedTrafficGb,
-          remainingTrafficGb: nextRemainingTrafficGb,
-          state: nextState,
-          lastSyncedAt: input.sampledAt
+        if (input.teamId && input.userId) {
+          await tx.trafficLedger.create({
+            data: {
+              id: randomUUID(),
+              teamId: input.teamId,
+              userId: input.userId,
+              subscriptionId: input.subscriptionId,
+              nodeId: input.nodeId,
+              usedTrafficGb: roundTrafficGb(deltaGb),
+              recordedAt: input.sampledAt
+            }
+          });
         }
       });
 
-      if (input.teamId && input.userId) {
-        await tx.trafficLedger.create({
-          data: {
-            id: randomUUID(),
-            teamId: input.teamId,
-            userId: input.userId,
-            subscriptionId: input.subscriptionId,
-            nodeId: input.nodeId,
-            usedTrafficGb: roundTrafficGb(deltaGb),
-            recordedAt: input.sampledAt
-          }
-        });
+      if (!nextState) {
+        return;
       }
-    });
 
-    if (!nextState) {
-      return;
-    }
+      if (nextState !== "active") {
+        await this.markPanelBindingsDisabledBestEffort(input.subscriptionId);
+        await this.queueLeaseRevocationBestEffort(
+          input.subscriptionId,
+          nextState === "expired"
+            ? "subscription_expired"
+            : nextState === "exhausted"
+              ? "subscription_exhausted"
+              : "subscription_paused"
+        );
+      }
 
-    if (nextState !== "active") {
-      await this.markPanelBindingsDisabledBestEffort(input.subscriptionId);
-      await this.revokeActiveLeasesBestEffort(
-        input.subscriptionId,
-        nextState === "expired"
-          ? "subscription_expired"
-          : nextState === "exhausted"
-            ? "subscription_exhausted"
-            : "subscription_paused"
-      );
-    }
-
-    await this.publishSubscriptionUpdatedBestEffort({
-      subscriptionId: input.subscriptionId,
-      userId: input.userId,
-      teamId: input.teamId,
-      state: nextState
-    });
+      await this.publishSubscriptionUpdatedBestEffort({
+        subscriptionId: input.subscriptionId,
+        userId: input.userId,
+        teamId: input.teamId,
+        state: nextState
+      });
     };
     if (input.lockHeld) {
       return apply();
@@ -705,10 +705,6 @@ export class UsageSyncService {
     this.logger.warn(`节点 ${nodeId} 用量同步异常: ${reason}`);
   }
 
-  private async revokeActiveLeases(subscriptionId: string, reason: string) {
-    await this.getRuntimeSessionService().revokeSubscriptionLeases(subscriptionId, reason);
-  }
-
   private async markPanelBindingsDisabledBestEffort(subscriptionId: string) {
     try {
       await this.getRuntimeSessionService().markPanelBindingsDisabledForSubscription(subscriptionId);
@@ -717,11 +713,13 @@ export class UsageSyncService {
     }
   }
 
-  private async revokeActiveLeasesBestEffort(subscriptionId: string, reason: string) {
+  private async queueLeaseRevocationBestEffort(subscriptionId: string, reason: string) {
     try {
-      await this.revokeActiveLeases(subscriptionId, reason);
+      await this.getRuntimeSessionService().queueLeaseRevocationJobsForSubscription(subscriptionId, reason);
     } catch (error) {
-      this.logger.warn(`Usage sync saved local subscription state, but active lease revocation failed for ${subscriptionId}: ${readErrorMessage(error)}`);
+      this.logger.warn(
+        `Usage sync saved local subscription state, but lease revocation job queueing failed for ${subscriptionId}: ${readErrorMessage(error)}`
+      );
     }
   }
 

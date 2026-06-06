@@ -1794,7 +1794,7 @@ export class DevDataService implements OnModuleInit {
     filter: { nodeIds?: string[] } | undefined,
     reason: string
   ): Promise<NodeAccessRevocationEffects> {
-    const [panelQueue, leaseQueue, activeLeaseRevoke] = await Promise.all([
+    const [panelQueue, leaseQueue, leaseQueueFollowUp] = await Promise.all([
       this.withNodeAccessFollowUpBudget(
         subscriptionId,
         this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, filter).then((panelSyncMessage) => ({
@@ -1815,12 +1815,12 @@ export class DevDataService implements OnModuleInit {
       )
     ]);
 
-    const panelSyncMessage = [panelQueue.panelSyncMessage, leaseQueue.panelSyncMessage, activeLeaseRevoke.panelSyncMessage]
+    const panelSyncMessage = [panelQueue.panelSyncMessage, leaseQueue.panelSyncMessage, leaseQueueFollowUp.panelSyncMessage]
       .filter(Boolean)
       .join(" ");
 
     return {
-      revokedSessionCount: activeLeaseRevoke.revokedSessionCount,
+      revokedSessionCount: leaseQueueFollowUp.revokedSessionCount,
       panelSyncMessage: panelSyncMessage || null
     };
   }
@@ -1859,12 +1859,12 @@ export class DevDataService implements OnModuleInit {
       )
         .then((result) => {
           if (result.panelSyncMessage) {
-            this.logger?.warn(`Node access active lease revocation follow-up for ${subscriptionId}: ${result.panelSyncMessage}`);
+            this.logger?.warn(`Node access lease revocation queue follow-up for ${subscriptionId}: ${result.panelSyncMessage}`);
           }
         })
         .catch((error) => {
           this.logger?.warn(
-            `Node access saved, but async active lease revocation failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
+            `Node access saved, but async lease revocation queueing failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`
           );
         });
     }, NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS);
@@ -1939,11 +1939,18 @@ export class DevDataService implements OnModuleInit {
     }
 
     try {
-      revokedSessionCount = await this.runtimeSessionService.revokeSubscriptionLeases(subscriptionId, reason, filter);
+      const queuedLeaseRevocationCount = await this.runtimeSessionService.queueLeaseRevocationJobsForSubscription(
+        subscriptionId,
+        reason,
+        filter
+      );
+      if (queuedLeaseRevocationCount > 0) {
+        messages.push("lease revocation queued for background retry.");
+      }
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger?.warn(`Node access saved, but active lease revocation failed for ${subscriptionId}: ${errorMessage}`);
-      messages.push(`active lease revocation failed: ${errorMessage}`);
+      this.logger?.warn(`Node access saved, but lease revocation job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      messages.push(`lease revocation job queueing failed: ${errorMessage}`);
     }
 
     return {
