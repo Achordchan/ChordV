@@ -363,19 +363,33 @@ export function UsersPage(props: UsersPageProps) {
 }
 
 function PanelSyncInlineStatus(props: {
-  item?: { panelSyncStatus?: "synced" | "pending"; panelSyncMessage?: string | null } | null;
+  item?: {
+    panelSyncStatus?: "synced" | "pending";
+    panelSyncMessage?: string | null;
+    panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
+  } | null;
 }) {
   if (props.item?.panelSyncStatus !== "pending") {
     return null;
   }
+  const summary = props.item.panelSyncSummary;
+  const color = summary?.failed ? "red" : summary?.running ? "blue" : "yellow";
+  const label = summary
+    ? summary.failed > 0
+      ? `面板同步失败 ${summary.failed}`
+      : summary.running > 0
+        ? `面板同步执行中 ${summary.running}`
+        : `面板待同步 ${summary.pending}`
+    : "面板待同步";
+  const detail = summary?.lastError ?? props.item.panelSyncMessage;
   return (
     <Stack gap={2}>
-      <Badge color="yellow" variant="light">
-        面板待同步
+      <Badge color={color} variant="light">
+        {label}
       </Badge>
-      {props.item.panelSyncMessage ? (
+      {detail ? (
         <Text size="xs" c="dimmed" lineClamp={2}>
-          {props.item.panelSyncMessage}
+          {detail}
         </Text>
       ) : null}
     </Stack>

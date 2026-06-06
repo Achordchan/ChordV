@@ -9105,11 +9105,20 @@ async function testAdminListsSurfacePersistentPanelSyncPendingState() {
   ]);
 
   assert.equal(users[0].panelSyncStatus, "pending");
+  assert.deepEqual(users[0].panelSyncSummary, {
+    pending: 0,
+    running: 0,
+    failed: 1,
+    total: 1,
+    lastError: "panel offline"
+  });
   assert.match(users[0].panelSyncMessage ?? "", /失败 1/);
   assert.match(users[0].panelSyncMessage ?? "", /panel offline/);
   assert.equal(subscriptions[0].panelSyncStatus, "pending");
+  assert.equal(subscriptions[0].panelSyncSummary?.failed, 1);
   assert.match(subscriptions[0].panelSyncMessage ?? "", /失败 1/);
   assert.equal(teams[0].panelSyncStatus, "pending");
+  assert.equal(teams[0].panelSyncSummary?.failed, 1);
   assert.match(teams[0].panelSyncMessage ?? "", /失败 1/);
 }
 

@@ -2938,7 +2938,14 @@ function withPanelSyncSummary<T extends object>(record: T, summary?: PanelSyncSu
   return {
     ...record,
     panelSyncStatus: "pending" as const,
-    panelSyncMessage: message
+    panelSyncMessage: message,
+    panelSyncSummary: {
+      pending: summary.pending,
+      running: summary.running,
+      failed: summary.failed,
+      total,
+      lastError: summary.lastError
+    }
   };
 }
 
