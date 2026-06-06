@@ -6458,17 +6458,24 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
       node: {
         findMany: async () => [newNode]
       },
-      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-        task({
-          subscriptionNodeAccess: {
-            deleteMany: async () => {
-              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
-            },
-            createMany: async () => {
-              accessRows.push({ id: "access_new", nodeId: "node_new" });
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        const before = [...accessRows];
+        try {
+          return await task({
+            subscriptionNodeAccess: {
+              deleteMany: async () => {
+                accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+              },
+              createMany: async () => {
+                accessRows.push({ id: "access_new", nodeId: "node_new" });
+              }
             }
-          }
-        })
+          });
+        } catch (error) {
+          accessRows = before;
+          throw error;
+        }
+      }
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
@@ -6487,11 +6494,12 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
     publishNodeAccessUpdatedEvent: async () => undefined
   });
 
-  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
+  await assert.rejects(
+    () => service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] }),
+    /panel job write failed/
+  );
 
-  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access must save even when panel disable queueing fails");
-  assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /后台处理/);
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_old"], "local node access must roll back when queue write fails");
 }
 
 async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
@@ -6531,14 +6539,21 @@ async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
           accessRows = [];
         }
       },
-      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-        task({
-          subscriptionNodeAccess: {
-            deleteMany: async () => {
-              accessRows = [];
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        const before = [...accessRows];
+        try {
+          return await task({
+            subscriptionNodeAccess: {
+              deleteMany: async () => {
+                accessRows = [];
+              }
             }
-          }
-        })
+          });
+        } catch (error) {
+          accessRows = before;
+          throw error;
+        }
+      }
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
@@ -6555,12 +6570,9 @@ async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
     publishNodeAccessUpdatedEvent: async () => undefined
   });
 
-  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: [] });
+  await assert.rejects(() => service.updateSubscriptionNodeAccess("sub_1", { nodeIds: [] }), /panel job write failed/);
 
-  assert.deepEqual(accessRows, [], "local node access must be cleared even when panel disable queueing fails");
-  assert.deepEqual(result.nodeIds, []);
-  assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /后台处理/);
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_old"], "local node access must roll back when queue write fails");
 }
 
 async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
@@ -6579,7 +6591,8 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
     security: "reality"
   };
   let accessRows = [{ id: "access_old", nodeId: "node_offline", node: oldNode }];
-  let disableQueueStarted = false;
+  let disableQueueQueued = false;
+  let activeLeaseRevokeStarted = false;
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -6612,11 +6625,17 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
-        disableQueueStarted = true;
-        return new Promise<number>(() => undefined);
+        throw new Error("node access removal should use transaction-scoped panel queueing");
+      },
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        disableQueueQueued = true;
+        return 1;
       },
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
-      revokeSubscriptionLeases: async () => 0
+      revokeSubscriptionLeases: async () => {
+        activeLeaseRevokeStarted = true;
+        return 0;
+      }
     },
     publishNodeAccessUpdatedEvent: async () => undefined
   });
@@ -6628,7 +6647,8 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
     })
   ]);
 
-  assert.equal(disableQueueStarted, false, "panel disable queueing must be deferred until after the local response");
+  assert.equal(disableQueueQueued, true, "panel disable jobs must be queued with the local access update");
+  assert.equal(activeLeaseRevokeStarted, false, "active lease revocation must be deferred until after the local response");
   assert.deepEqual(accessRows, [], "local node access must be cleared before stalled follow-up finishes");
   assert.deepEqual(result.nodeIds, []);
   assert.equal(result.panelSyncStatus, "pending");
@@ -6701,6 +6721,9 @@ async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
       },
       runtimeSessionService: {
         markPanelBindingsDisabledForSubscription: async () => {
+          throw new Error("node access removal should use transaction-scoped panel queueing");
+        },
+        queuePanelDisableJobsForSubscriptionTx: async () => {
           queuedDisableJobs += 1;
           return 1;
         },
@@ -6718,7 +6741,7 @@ async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
     ]);
 
     assert.deepEqual(accessRows, [], "local node access must be cleared without waiting for usage sync lock");
-    assert.equal(queuedDisableJobs, 0, "offline panel disable work must be deferred until after the local response");
+    assert.equal(queuedDisableJobs, 1, "offline panel disable jobs must be queued with the local response");
     assert.equal(result.panelSyncStatus, "pending");
     assert.deepEqual(result.nodeIds, []);
   } finally {
@@ -6816,6 +6839,9 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
       },
       runtimeSessionService: {
         markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+          throw new Error("node access removal should use transaction-scoped panel queueing");
+        },
+        queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
           disableFilter = filter;
           return 1;
         },
@@ -6837,7 +6863,7 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
     ]);
 
     assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
-    assert.equal(disableFilter, undefined, "offline panel disable work must be deferred until after the local response");
+    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs must be queued for only the removed node");
     assert.equal(syncCalls, 0, "removing one node must not run full panel sync");
     assert.deepEqual(result.nodeIds, ["node_keep"]);
     assert.equal(result.panelSyncStatus, "pending");
@@ -6921,8 +6947,11 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+        throw new Error("node access removal should use transaction-scoped panel queueing");
+      },
+      queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
         disableFilter = filter;
-        return new Promise<number>(() => undefined);
+        return 1;
       },
       queueLeaseRevocationJobsForSubscriptionTx: async () => {
         leaseJobQueued = true;
@@ -6946,8 +6975,8 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
   ]);
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
-  assert.equal(disableFilter, undefined, "revocation follow-up must not start before the local response is built");
-  assert.equal(leaseJobQueued, false, "lease revocation job queueing must be deferred after the local response");
+  assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "panel disable jobs must be queued for only the removed node");
+  assert.equal(leaseJobQueued, true, "lease revocation jobs must be queued with the local access update");
   assert.equal(activeLeaseRevokeStarted, false, "active lease revoke must be deferred after the local response");
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
@@ -6979,7 +7008,9 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
     { id: "access_offline", nodeId: "node_offline" },
     { id: "access_keep", nodeId: "node_keep" }
   ];
-  let followUpStartedInline = false;
+  let panelDisableQueuedInTransaction = false;
+  let leaseJobQueuedInTransaction = false;
+  let activeLeaseRevokeStarted = false;
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -7018,15 +7049,23 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
-        followUpStartedInline = true;
+        throw new Error("node access removal should use transaction-scoped panel queueing");
+      },
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        panelDisableQueuedInTransaction = true;
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        leaseJobQueuedInTransaction = true;
+      },
+      revokeSubscriptionLeases: async () => {
+        activeLeaseRevokeStarted = true;
         const deadline = Date.now() + 500;
         while (Date.now() < deadline) {
           // Simulate a bad follow-up implementation that blocks before yielding.
         }
-        return 1;
+        return 0;
       },
-      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
-      revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
         throw new Error("removal-only access update must not full-sync remote panels");
       }
@@ -7042,12 +7081,14 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
     })
   ]);
 
-  assert.equal(followUpStartedInline, false, "revocation follow-up must be deferred until after the response is built");
+  assert.equal(panelDisableQueuedInTransaction, true, "panel disable jobs must be queued with the local access update");
+  assert.equal(leaseJobQueuedInTransaction, true, "lease revocation jobs must be queued with the local access update");
+  assert.equal(activeLeaseRevokeStarted, false, "active lease revocation must be deferred until after the response is built");
   assert.ok(Date.now() - startedAt < 150, "local node access update must return before deferred follow-up work starts");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(followUpStartedInline, false, "revocation follow-up must leave a small response-flush window before starting");
-  await waitUntil(() => followUpStartedInline);
-  assert.equal(followUpStartedInline, true, "revocation follow-up should still run after the response-flush window");
+  assert.equal(activeLeaseRevokeStarted, false, "active lease revocation must leave a small response-flush window before starting");
+  await waitUntil(() => activeLeaseRevokeStarted);
+  assert.equal(activeLeaseRevokeStarted, true, "active lease revocation should still run after the response-flush window");
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
@@ -7122,6 +7163,7 @@ async function testRemoveStaleExistingNodeAccessDoesNotRejectInvalidRemainingSel
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
@@ -7203,6 +7245,7 @@ async function testRemoveNodeAccessIgnoresStaleAddedSelection() {
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
@@ -7337,11 +7380,61 @@ async function testRemoveSingleNodeAccessQueuesDisableJobOnlyForRemovedBindingWi
             deleteMany: async () => {
               accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
             }
+          },
+          panelClientBinding: {
+            findMany: async (payload: Record<string, any>) => {
+              bindingFindCalls.push(payload);
+              const requestedNodeIds = payload.where?.nodeId?.in as string[] | undefined;
+              const bindings = [
+                {
+                  id: "binding_offline",
+                  subscriptionId: "sub_1",
+                  userId: "user_1",
+                  teamId: null,
+                  nodeId: "node_offline",
+                  panelClientEmail: "offline@example.com",
+                  panelClientId: "client_offline",
+                  panelInboundId: 1,
+                  status: "active",
+                  node: {
+                    panelBaseUrl: "https://offline-panel.example.com",
+                    panelApiBasePath: "/panel",
+                    panelUsername: "admin",
+                    panelPassword: "secret"
+                  }
+                },
+                {
+                  id: "binding_keep",
+                  subscriptionId: "sub_1",
+                  userId: "user_1",
+                  teamId: null,
+                  nodeId: "node_keep",
+                  panelClientEmail: "keep@example.com",
+                  panelClientId: "client_keep",
+                  panelInboundId: 1,
+                  status: "active",
+                  node: {
+                    panelBaseUrl: "https://keep-panel.example.com",
+                    panelApiBasePath: "/panel",
+                    panelUsername: "admin",
+                    panelPassword: "secret"
+                  }
+                }
+              ];
+              return requestedNodeIds ? bindings.filter((binding) => requestedNodeIds.includes(binding.nodeId)) : bindings;
+            },
+            updateMany: async () => ({ count: 1 })
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelSyncUpserts.push(payload);
+            }
           }
         })
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: runtimeSession.markPanelBindingsDisabledForSubscription.bind(runtimeSession),
+      queuePanelDisableJobsForSubscriptionTx: runtimeSession.queuePanelDisableJobsForSubscriptionTx.bind(runtimeSession),
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
@@ -7427,6 +7520,7 @@ async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls() {
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
@@ -7518,6 +7612,7 @@ async function testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishThrowsSynch
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
@@ -7603,6 +7698,7 @@ async function testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalize
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 1,
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
       revokeSubscriptionLeases: async () => 0,
       syncSubscriptionPanelAccess: async () => {
@@ -7709,6 +7805,9 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
       },
       runtimeSessionService: {
         markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+          throw new Error("node access replacement should use transaction-scoped panel queueing");
+        },
+        queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
           disableFilter = filter;
           return 1;
         },
@@ -7734,7 +7833,7 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
     ]);
 
     assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
-    assert.equal(disableFilter, undefined, "offline panel disable work must be deferred until after the local response");
+    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs must be queued with the local response");
     assert.equal(queuedAccessSync, 0, "newly authorized nodes must defer panel access sync until after the local response");
     assert.equal(syncCalls, 0, "node access replacement must not use the usage-locking panel sync path");
     assert.deepEqual(result.nodeIds, ["node_new"]);
