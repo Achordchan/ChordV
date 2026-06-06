@@ -87,6 +87,7 @@ import {
   deleteAnnouncement,
   deleteNode,
   deleteTeamMember,
+  disconnectUser,
   fetchAdminAnnouncements,
   fetchAdminDashboard,
   fetchAdminLeaseRevocationJobs,
@@ -1796,6 +1797,26 @@ export function App() {
     );
   }
 
+  async function handleDisconnectUser(
+    userId: string,
+    displayName: string,
+    source: "personal" | "team-member" = "personal"
+  ) {
+    const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队成员。" : "";
+    const confirmed = window.confirm(
+      `确认断开 ${displayName} 的当前连接吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    await runAction(
+      () => disconnectUser(userId),
+      "账号当前连接已断开",
+      { treatHttp500AsUncertain: true }
+    );
+  }
+
   function openUserSubscriptions(user: AdminUserRecordDto) {
     setSubscriptionTab("personal");
     setSearch((current) => ({
@@ -2326,6 +2347,7 @@ export function App() {
                 onToggleTeamUserStatus={(userId, nextStatus, displayName) =>
                   void handleToggleUserStatus(userId, nextStatus, displayName, "team-member")
                 }
+                onDisconnectUser={(userId, displayName, source) => void handleDisconnectUser(userId, displayName, source)}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
               />
             ) : null}

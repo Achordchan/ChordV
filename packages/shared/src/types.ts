@@ -1005,6 +1005,18 @@ export interface KickTeamMemberResultDto {
   user: AdminUserRecordDto | null;
 }
 
+export interface DisconnectUserResultDto {
+  ok: boolean;
+  action: "disconnect_session";
+  disconnectedSessionCount: number;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message: string;
+  reasonCode: SessionReasonCode;
+  reasonMessage: string;
+  user: AdminUserRecordDto;
+}
+
 export interface ResetSubscriptionTrafficInputDto {
   userId?: string | null;
 }

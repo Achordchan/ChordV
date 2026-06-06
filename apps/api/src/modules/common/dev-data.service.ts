@@ -55,6 +55,7 @@ import type {
   CreateTeamMemberInputDto,
   CreateTeamSubscriptionInputDto,
   CreateUserInputDto,
+  DisconnectUserResultDto,
   GeneratedRuntimeConfigDto,
   ImportNodeInputDto,
   MarkClientAnnouncementsReadInputDto,
@@ -1224,6 +1225,10 @@ export class DevDataService implements OnModuleInit {
 
   async updateUser(userId: string, input: UpdateUserInputDto): Promise<AdminUserRecordDto> {
     return this.adminSubscriptionService.updateUser(userId, input);
+  }
+
+  async disconnectUser(userId: string): Promise<DisconnectUserResultDto> {
+    return this.adminSubscriptionService.disconnectUser(userId);
   }
 
   async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {

@@ -150,6 +150,7 @@ export function getLeaseFailureDetails(
         evictedReason: "concurrency_limit"
       };
     case "team_member_disconnected":
+    case "admin_user_disconnected":
       return {
         reasonCode: "admin_paused_connection",
         reasonMessage: "管理员已暂停当前连接",

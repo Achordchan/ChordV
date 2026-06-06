@@ -22,6 +22,7 @@ import type {
   CreateTeamMemberInputDto,
   CreateTeamSubscriptionInputDto,
   CreateUserInputDto,
+  DisconnectUserResultDto,
   KickTeamMemberInputDto,
   KickTeamMemberResultDto,
   ResetSubscriptionTrafficInputDto,
@@ -297,6 +298,38 @@ export class AdminSubscriptionService {
     }
 
     return this.withAdminUserRefreshBestEffort(userId, updatedUser, panelSync, "账号已更新。");
+  }
+
+  async disconnectUser(userId: string): Promise<DisconnectUserResultDto> {
+    const user = await this.ensureUserExists(userId);
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const subscriptionIds = await this.findCurrentSubscriptionIdsForUserTx(tx, userId);
+      let queuedCount = 0;
+      for (const subscriptionId of subscriptionIds) {
+        queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId });
+        queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "admin_user_disconnected", { userId });
+      }
+      return { queuedCount };
+    });
+    const panelSync = buildQueuedPanelSyncResult(saved.queuedCount, "user disconnect");
+    const refreshedUser = await this.withAdminUserRefreshBestEffort(
+      userId,
+      user,
+      panelSync,
+      "账号当前连接断开已进入后台处理。"
+    );
+
+    return {
+      ok: true,
+      action: "disconnect_session",
+      disconnectedSessionCount: 0,
+      panelSyncStatus: refreshedUser.panelSyncStatus,
+      panelSyncMessage: refreshedUser.panelSyncMessage,
+      message: refreshedUser.message ?? "账号当前连接断开已进入后台处理。",
+      reasonCode: "admin_paused_connection",
+      reasonMessage: "管理员已暂停当前连接，用户稍后可以重新连接。",
+      user: refreshedUser
+    };
   }
 
   async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {

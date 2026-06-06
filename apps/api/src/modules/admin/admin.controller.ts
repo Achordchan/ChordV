@@ -137,6 +137,11 @@ export class AdminController {
     return this.devDataService.updateUser(userId, body);
   }
 
+  @Post("users/:userId/disconnect")
+  disconnectUser(@Param("userId") userId: string) {
+    return this.devDataService.disconnectUser(userId);
+  }
+
   @Put("users/:userId/security")
   updateUserSecurity(@Param("userId") userId: string, @Body() body: UpdateUserSecurityDto) {
     return this.devDataService.updateUserSecurity(userId, body);

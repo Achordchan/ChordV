@@ -38,6 +38,7 @@ type UsersPageProps = {
   onDeleteTeamMember: (teamId: string, memberId: string) => void;
   onToggleUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
+  onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
 };
 
@@ -95,6 +96,14 @@ export function UsersPage(props: UsersPageProps) {
                         </ActionIcon>
                         <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
                           <IconListDetails size={16} />
+                        </ActionIcon>
+                        <ActionIcon
+                          variant="subtle"
+                          color="orange"
+                          onClick={() => props.onDisconnectUser(item.id, item.displayName, "personal")}
+                          title="账号级：断开当前连接"
+                        >
+                          <IconRefresh size={16} />
                         </ActionIcon>
                         <ActionIcon
                           variant="subtle"
@@ -308,6 +317,14 @@ export function UsersPage(props: UsersPageProps) {
                                       title={userRecord?.status === "active" ? "账号级：禁用账号" : "账号级：启用账号"}
                                     >
                                       {userRecord?.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
+                                    </ActionIcon>
+                                    <ActionIcon
+                                      variant="subtle"
+                                      color="orange"
+                                      onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
+                                      title="账号级：断开当前连接，不移出团队"
+                                    >
+                                      <IconRefresh size={16} />
                                     </ActionIcon>
                                     <ActionIcon
                                       variant="subtle"

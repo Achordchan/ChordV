@@ -8643,6 +8643,79 @@ async function testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails() {
   assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
+async function testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const panelCalls: Array<{ subscriptionId: string; filter?: { userId?: string } }> = [];
+  const leaseCalls: Array<{ subscriptionId: string; reason: string; filter?: { userId?: string } }> = [];
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: now,
+      maxConcurrentSessionsOverride: null
+    }),
+    findCurrentSubscriptionIdsForUserTx: async () => ["sub_personal", "sub_team"],
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 1,
+      activeSubscriptionCount: 1,
+      currentSubscription: null,
+      subscriptions: [],
+      teamMemberships: [],
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      lastSeenAt: now.toISOString()
+    }),
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async (
+        _writer: unknown,
+        subscriptionId: string,
+        filter?: { userId?: string }
+      ) => {
+        panelCalls.push({ subscriptionId, filter });
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async (
+        _writer: unknown,
+        subscriptionId: string,
+        reason: string,
+        filter?: { userId?: string }
+      ) => {
+        leaseCalls.push({ subscriptionId, reason, filter });
+        return 1;
+      }
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, unknown>) => Promise<unknown>) => task({})
+    }
+  });
+
+  const result = await service.disconnectUser("user_1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, "disconnect_session");
+  assert.equal(result.reasonCode, "admin_paused_connection");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.deepEqual(panelCalls, [
+    { subscriptionId: "sub_personal", filter: { userId: "user_1" } },
+    { subscriptionId: "sub_team", filter: { userId: "user_1" } }
+  ]);
+  assert.deepEqual(leaseCalls, [
+    { subscriptionId: "sub_personal", reason: "admin_user_disconnected", filter: { userId: "user_1" } },
+    { subscriptionId: "sub_team", reason: "admin_user_disconnected", filter: { userId: "user_1" } }
+  ]);
+}
+
 async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
   let leaseJobQueued = false;
   const service = createAdminSubscriptionService({
@@ -17766,6 +17839,7 @@ async function main() {
   await testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
+  await testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamWaitsForRequiredTeamSubscriptionLookup();
   await testConvertPersonalSubscriptionToTeamConvertsMembershipUniqueConflict();

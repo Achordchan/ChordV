@@ -1,4 +1,10 @@
-import type { AdminUserRecordDto, CreateUserInputDto, UpdateUserInputDto, UpdateUserSecurityInputDto } from "@chordv/shared";
+import type {
+  AdminUserRecordDto,
+  CreateUserInputDto,
+  DisconnectUserResultDto,
+  UpdateUserInputDto,
+  UpdateUserSecurityInputDto
+} from "@chordv/shared";
 import { request } from "./base";
 
 const PANEL_SYNC_ACTION_TIMEOUT_MS = 60 * 1000;
@@ -22,6 +28,13 @@ export function updateUser(userId: string, input: UpdateUserInputDto) {
   return request<AdminUserRecordDto>(`/admin/users/${userId}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+export function disconnectUser(userId: string) {
+  return request<DisconnectUserResultDto>(`/admin/users/${userId}/disconnect`, {
+    method: "POST",
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }
