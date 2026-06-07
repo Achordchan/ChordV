@@ -11,7 +11,10 @@ export type ReleaseEditorFormState = {
   status: AdminReleaseStatus;
   version: string;
   title: string;
+  artifactSource: "uploaded" | "external";
   downloadUrl: string;
+  fileName: string;
+  selectedFile: File | null;
   changelog: string;
 };
 
@@ -37,7 +40,10 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     status: "draft",
     version: "",
     title: "",
+    artifactSource: "external",
     downloadUrl: "",
+    fileName: "",
+    selectedFile: null,
     changelog: ""
   };
 }
@@ -48,7 +54,10 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     status: record.status,
     version: record.version,
     title: record.title,
+    artifactSource: record.artifacts.find((artifact) => artifact.isPrimary)?.source ?? "external",
     downloadUrl: record.artifacts.find((artifact) => artifact.isPrimary)?.originDownloadUrl ?? "",
+    fileName: record.artifacts.find((artifact) => artifact.isPrimary)?.fileName ?? "",
+    selectedFile: null,
     changelog: record.changelog.join("\n")
   };
 }

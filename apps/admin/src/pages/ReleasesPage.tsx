@@ -4,6 +4,7 @@ import { notifications } from "@mantine/notifications";
 import { IconPlus, IconRefresh } from "@tabler/icons-react";
 import type {
   AdminReleaseArtifactRecordDto,
+  AdminReleaseArtifactType,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
   CreateAdminReleaseInputDto
@@ -141,11 +142,7 @@ export function ReleasesPage() {
     try {
       setSaving("release-editor");
       const version = releaseForm.version.trim();
-      const validationMessage = validateReleaseEditorInput(
-        version,
-        releaseEditorId ? undefined : releaseForm.downloadUrl,
-        releaseForm.platform
-      );
+      const validationMessage = validateReleaseEditorInput(version, releaseEditorId ? undefined : releaseForm, releaseForm.platform);
       if (validationMessage) {
         notifications.show({
           color: "yellow",
@@ -162,25 +159,52 @@ export function ReleasesPage() {
         forceUpgrade: false,
         title: releaseForm.title.trim() || version,
         changelog: splitLines(releaseForm.changelog),
-        initialArtifact: releaseEditorId
-          ? undefined
-          : {
-              source: "external",
-              type: "external",
-              deliveryMode: "external_download",
-              downloadUrl: releaseForm.downloadUrl.trim(),
-              isPrimary: true
-            }
+        initialArtifact:
+          !releaseEditorId && releaseForm.artifactSource === "external"
+            ? {
+                source: "external",
+                type: "external",
+                deliveryMode: "external_download",
+                downloadUrl: releaseForm.downloadUrl.trim(),
+                isPrimary: true
+              }
+            : undefined
       };
 
       if (!releaseEditorId) {
-        const record = await createAdminRelease(payload);
+        let record = await createAdminRelease(payload);
+        if (releaseForm.artifactSource === "uploaded") {
+          if (!releaseForm.selectedFile) {
+            throw new Error("请先选择要上传的安装包文件");
+          }
+          try {
+            record = await uploadAdminReleaseArtifact(
+              record.id,
+              {
+                source: "uploaded",
+                type: defaultArtifactTypeForPlatform(releaseForm.platform),
+                fileName: releaseForm.fileName.trim() || releaseForm.selectedFile.name,
+                isPrimary: true
+              },
+              releaseForm.selectedFile
+            );
+          } catch (uploadError) {
+            setReleases((current) => upsertRelease(current, record));
+            closeReleaseEditor();
+            notifications.show({
+              color: "yellow",
+              title: "发布记录已创建，安装包上传失败",
+              message: `${readError(uploadError, "安装包上传失败")}。请在列表中继续新增安装包，或删除这条草稿。`
+            });
+            return;
+          }
+        }
         setReleases((current) => upsertRelease(current, record));
         closeReleaseEditor();
         notifications.show({
           color: "green",
           title: "发布中心",
-          message: "发布记录和外链安装包已创建"
+          message: releaseForm.artifactSource === "uploaded" ? "发布记录和上传安装包已创建" : "发布记录和外链安装包已创建"
         });
         return;
       }
@@ -280,6 +304,15 @@ export function ReleasesPage() {
     setArtifactForm(toArtifactEditorForm(artifact));
   }
 
+  function getEditingArtifact() {
+    if (!artifactEditor?.artifactId) {
+      return null;
+    }
+    return releases
+      .find((item) => item.id === artifactEditor.releaseId)
+      ?.artifacts.find((artifact) => artifact.id === artifactEditor.artifactId) ?? null;
+  }
+
   function closeArtifactEditor() {
     setArtifactEditor(null);
     setArtifactForm(emptyArtifactEditorForm());
@@ -289,7 +322,11 @@ export function ReleasesPage() {
     if (!artifactEditor) {
       return false;
     }
-    return artifactForm.source === "uploaded" && !artifactEditor.artifactId && !artifactForm.selectedFile;
+    if (artifactForm.source !== "uploaded" || artifactForm.selectedFile) {
+      return false;
+    }
+    const editingArtifact = getEditingArtifact();
+    return !editingArtifact || editingArtifact.source !== "uploaded";
   }
 
   function validateArtifactEditorInput() {
@@ -354,8 +391,17 @@ export function ReleasesPage() {
             ? await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId, externalPayload)
             : await createAdminReleaseArtifact(releaseId!, externalPayload);
         }
-        if (!record && !artifactForm.selectedFile && !artifactEditor.artifactId) {
-          throw new Error("请先选择要上传的安装包文件");
+        if (!record && artifactForm.source === "uploaded" && !artifactForm.selectedFile && artifactEditor.artifactId) {
+          const editingArtifact = getEditingArtifact();
+          if (editingArtifact?.source === "uploaded") {
+            closeArtifactEditor();
+            notifications.show({
+              color: "blue",
+              title: "发布中心",
+              message: "未选择新的安装包文件，原安装包保持不变。"
+            });
+            return;
+          }
         }
         if (!record && artifactForm.selectedFile) {
           const uploadPayload = {
@@ -591,20 +637,33 @@ function splitLines(value: string) {
     .filter(Boolean);
 }
 
-function validateReleaseEditorInput(version: string, downloadUrl?: string, platform?: AdminReleasePlatform) {
+function validateReleaseEditorInput(version: string, form?: ReleaseEditorFormState, platform?: AdminReleasePlatform) {
   if (!version) {
     return "请填写版本号，例如 1.1.6。";
   }
   if (!RELEASE_VERSION_PATTERN.test(version)) {
     return "版本号格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
   }
-  if (downloadUrl !== undefined && !downloadUrl.trim()) {
+  if (!form) {
+    return null;
+  }
+  if (form.artifactSource === "uploaded") {
+    if (!form.selectedFile) {
+      return "请先选择要上传的安装包文件。";
+    }
+    if (form.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
+      return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
+    }
+    return null;
+  }
+  const downloadUrl = form.downloadUrl.trim();
+  if (!downloadUrl) {
     return "请填写外链下载地址。";
   }
-  if (downloadUrl !== undefined && !/^https?:\/\//i.test(downloadUrl.trim())) {
+  if (!/^https?:\/\//i.test(downloadUrl)) {
     return "外链下载地址必须是完整的 http/https 地址。";
   }
-  if (downloadUrl !== undefined && (platform === "windows" || platform === "macos") && !/^https:\/\//i.test(downloadUrl.trim())) {
+  if ((platform === "windows" || platform === "macos") && !/^https:\/\//i.test(downloadUrl)) {
     return "桌面端安装包外链必须使用 HTTPS 地址。";
   }
   return null;
@@ -654,6 +713,15 @@ function formatUploadBytes(value: number) {
   return `${value} B`;
 }
 
-function defaultArtifactTypeForPlatform(_platform: AdminReleasePlatform): AdminReleaseArtifactRecordDto["type"] {
-  return "external";
+function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminReleaseArtifactType {
+  if (platform === "windows") {
+    return "zip";
+  }
+  if (platform === "android") {
+    return "apk";
+  }
+  if (platform === "ios") {
+    return "ipa";
+  }
+  return "dmg";
 }

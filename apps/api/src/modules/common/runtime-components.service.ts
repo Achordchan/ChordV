@@ -447,12 +447,9 @@ export class RuntimeComponentsService {
       architecture: input.architecture,
       components: rows.map((row) => {
         const originUrl = row.originUrl.trim();
-        const defaultMirrorPrefix = row.source === "uploaded" ? null : normalizeNullableText(row.defaultMirrorPrefix);
-        const allowClientMirror = row.source === "uploaded" ? false : row.allowClientMirror;
-        const candidates =
-          row.source === "uploaded"
-            ? [{ label: "origin" as const, url: originUrl }]
-            : buildRuntimeComponentCandidates(originUrl, defaultMirrorPrefix, input.clientMirrorPrefix, allowClientMirror);
+        const defaultMirrorPrefix = null;
+        const allowClientMirror = false;
+        const candidates = [{ label: "origin" as const, url: originUrl }];
 
         return {
           id: row.id,
@@ -839,65 +836,14 @@ export class RuntimeComponentsService {
   }
 }
 
-function buildRuntimeComponentCandidates(
-  originUrl: string,
-  defaultMirrorPrefix: string | null,
-  clientMirrorPrefix: string | null | undefined,
-  allowClientMirror: boolean
-) {
-  const candidates: ClientRuntimeComponentsPlanDto["components"][number]["candidates"] = [];
-  if (allowClientMirror && clientMirrorPrefix?.trim()) {
-    candidates.push({
-      label: "client_mirror" as const,
-      url: joinMirrorPrefix(clientMirrorPrefix, originUrl)
-    });
-  }
-  if (defaultMirrorPrefix?.trim()) {
-    candidates.push({
-      label: "default_mirror" as const,
-      url: joinMirrorPrefix(defaultMirrorPrefix, originUrl)
-    });
-  }
-  candidates.push({
-    label: "origin" as const,
-    url: originUrl
-  });
-  return candidates;
-}
-
-function joinMirrorPrefix(prefix: string, originUrl: string) {
-  const normalizedPrefix = prefix.trim();
-  if (!normalizedPrefix) {
-    return originUrl;
-  }
-  if (normalizedPrefix.includes("{url}")) {
-    return normalizedPrefix.replaceAll("{url}", originUrl);
-  }
-  if (normalizedPrefix.endsWith("/")) {
-    return `${normalizedPrefix}${originUrl}`;
-  }
-  return `${normalizedPrefix}/${originUrl}`;
-}
-
 function resolveRuntimeComponentUrl(
   component: {
     source?: "uploaded" | "github_remote" | "custom_remote";
     originUrl: string;
-    defaultMirrorPrefix: string | null;
-    allowClientMirror: boolean;
   },
-  clientMirrorPrefix: string | null | undefined
+  _clientMirrorPrefix: string | null | undefined
 ) {
-  if (component.source === "uploaded") {
-    return component.originUrl.trim();
-  }
-  const candidates = buildRuntimeComponentCandidates(
-    component.originUrl.trim(),
-    normalizeNullableText(component.defaultMirrorPrefix),
-    clientMirrorPrefix,
-    component.allowClientMirror
-  );
-  return candidates[0]?.url ?? component.originUrl.trim();
+  return component.originUrl.trim();
 }
 
 function toAdminRuntimeComponentRecord(row: {
@@ -926,8 +872,8 @@ function toAdminRuntimeComponentRecord(row: {
     kind: row.kind,
     source: row.source,
     originUrl: row.originUrl,
-    defaultMirrorPrefix: row.defaultMirrorPrefix,
-    allowClientMirror: row.source === "uploaded" ? false : row.allowClientMirror,
+    defaultMirrorPrefix: null,
+    allowClientMirror: false,
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes ? row.fileSizeBytes.toString() : null,
     fileHash: row.fileHash,

@@ -12203,6 +12203,51 @@ async function testRuntimePlanSkipsUploadedRowsWithStaleMetadata() {
   }
 }
 
+async function testRuntimePlanIgnoresHistoricalMirrorFields() {
+  const makeRemoteComponent = (id: string, kind: "xray" | "geoip" | "geosite") => ({
+    id,
+    platform: kind === "xray" ? "windows" : "macos",
+    architecture: kind === "xray" ? "x64" : "arm64",
+    kind,
+    source: "custom_remote",
+    originUrl: `https://origin.example.com/${kind}.dat`,
+    defaultMirrorPrefix: "https://ghfast.top/",
+    allowClientMirror: true,
+    fileName: `${kind}.dat`,
+    storedFilePath: null,
+    fileSizeBytes: 1024n,
+    fileHash: "b".repeat(64),
+    archiveEntryName: null,
+    expectedHash: "a".repeat(64)
+  });
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async (payload: { where: { kind?: string | { in: string[] } } }) => {
+          if (payload.where.kind === "xray") {
+            return [makeRemoteComponent("xray_1", "xray")];
+          }
+          return [makeRemoteComponent("geoip_1", "geoip"), makeRemoteComponent("geosite_1", "geosite")];
+        }
+      }
+    }
+  });
+
+  const plan = await service.getClientRuntimeComponentsPlan({
+    platform: "windows",
+    architecture: "x64",
+    clientMirrorPrefix: "https://client-mirror.example.com/"
+  });
+
+  assert.equal(plan.components.length, 3);
+  for (const component of plan.components) {
+    assert.equal(component.allowClientMirror, false, "client plan must not expose historical client mirror flags");
+    assert.equal(component.defaultMirrorPrefix, null, "client plan must not expose historical default mirror prefixes");
+    assert.equal(component.resolvedUrl, component.originUrl, "client plan must resolve runtime components to the origin URL");
+    assert.deepEqual(component.candidates, [{ label: "origin", url: component.originUrl }]);
+  }
+}
+
 async function testRuntimeComponentPatchCannotSwitchToUploadedSource() {
   const service = createRuntimeComponentsService({
     ensureRuntimeComponentExists: async () => ({
@@ -18039,6 +18084,7 @@ async function main() {
   await testRuntimePlanSkipsRemoteRowsMissingDownloadMetadata();
   await testRuntimePlanSkipsUploadedRowsMissingFiles();
   await testRuntimePlanSkipsUploadedRowsWithStaleMetadata();
+  await testRuntimePlanIgnoresHistoricalMirrorFields();
   await testRuntimeComponentPatchCannotSwitchToUploadedSource();
   await testRuntimeComponentPatchInvalidatesRemoteMetadata();
   await testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote();

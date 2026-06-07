@@ -1,4 +1,4 @@
-import { Button, Group, Modal, Select, Stack, TextInput, Textarea } from "@mantine/core";
+import { Alert, Button, FileInput, Group, Modal, SegmentedControl, Select, Stack, TextInput, Textarea } from "@mantine/core";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -22,7 +22,15 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           label="平台"
           data={releasePlatformOptions as unknown as { value: string; label: string }[]}
           value={props.form.platform}
-          onChange={(value) => value && props.onChange({ ...props.form, platform: value as ReleaseEditorFormState["platform"] })}
+          onChange={(value) =>
+            value &&
+            props.onChange({
+              ...props.form,
+              platform: value as ReleaseEditorFormState["platform"],
+              selectedFile: null,
+              fileName: ""
+            })
+          }
           disabled={props.editing}
         />
 
@@ -42,12 +50,53 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
         />
 
         {!props.editing ? (
-          <TextInput
-            label="外链下载地址"
-            placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
-            value={props.form.downloadUrl}
-            onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-          />
+          <>
+            <SegmentedControl
+              value={props.form.artifactSource}
+              onChange={(value) =>
+                props.onChange({
+                  ...props.form,
+                  artifactSource: value as ReleaseEditorFormState["artifactSource"]
+                })
+              }
+              data={[
+                { value: "external", label: "外链地址" },
+                { value: "uploaded", label: "上传文件" }
+              ]}
+            />
+
+            {props.form.artifactSource === "external" ? (
+              <TextInput
+                label="外链下载地址"
+                placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+                value={props.form.downloadUrl}
+                onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+              />
+            ) : (
+              <FileInput
+                label="安装包文件"
+                description="也保留本地上传路径；如果外链下载慢，可以上传到服务器。"
+                placeholder="选择安装包文件"
+                accept={acceptedArtifactExtensionForPlatform(props.form.platform)}
+                value={props.form.selectedFile}
+                onChange={(file) =>
+                  props.onChange({
+                    ...props.form,
+                    artifactSource: "uploaded",
+                    selectedFile: file,
+                    fileName: file?.name ?? props.form.fileName
+                  })
+                }
+                clearable
+              />
+            )}
+
+            <Alert color="blue" variant="light">
+              {props.form.artifactSource === "external"
+                ? "外链会直接下发给客户端，不经过本地服务器中转下载。"
+                : "上传文件会保存到本地服务器，发布记录仍可后续编辑、撤回或替换安装包。"}
+            </Alert>
+          </>
         ) : null}
 
         <Textarea
@@ -69,4 +118,17 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
       </Stack>
     </Modal>
   );
+}
+
+function acceptedArtifactExtensionForPlatform(platform: ReleaseEditorFormState["platform"]) {
+  if (platform === "windows") {
+    return ".zip";
+  }
+  if (platform === "android") {
+    return ".apk";
+  }
+  if (platform === "ios") {
+    return ".ipa";
+  }
+  return ".dmg";
 }

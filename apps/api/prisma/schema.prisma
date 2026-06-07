@@ -706,7 +706,7 @@ model ReleaseArtifact {
   deliveryMode  UpdateDeliveryMode @default(external_download)
   downloadUrl   String
   defaultMirrorPrefix String?
-  allowClientMirror Boolean        @default(true)
+  allowClientMirror Boolean        @default(false)
   fileName      String?
   storedFilePath String?
   fileSizeBytes BigInt?
@@ -728,7 +728,7 @@ model RuntimeComponent {
   source              RuntimeComponentSource      @default(github_remote)
   originUrl           String
   defaultMirrorPrefix String?
-  allowClientMirror   Boolean                     @default(true)
+  allowClientMirror   Boolean                     @default(false)
   fileName            String
   storedFilePath      String?
   fileSizeBytes       BigInt?
