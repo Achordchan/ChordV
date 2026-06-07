@@ -99,6 +99,7 @@ import type {
 } from "@chordv/shared";
 import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { AdminNodeService } from "./admin-node.service";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AdminSubscriptionService } from "./admin-subscription.service";
 import { AnnouncementPolicyService } from "./announcement-policy.service";
 import { AuthSessionService } from "./auth-session.service";
@@ -180,6 +181,7 @@ export class DevDataService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly clientEventsPublisher: ClientEventsPublisher,
     private readonly clientAccessService: ClientAccessService,
     private readonly clientTicketService: ClientTicketService,
@@ -271,6 +273,17 @@ export class DevDataService implements OnModuleInit {
       this.clientRuntimeEventsService.publishToUser(userId, event);
     } catch (error) {
       this.logger?.warn(`Local change saved, but user event publish failed for ${userId}: ${readPanelSyncErrorMessage(error)}`);
+    }
+  }
+
+  private publishAdminTicketEventBestEffort(ticketId: string, ticketStatus?: SupportTicketStatus) {
+    if (!this.adminRuntimeEventsService) {
+      return;
+    }
+    try {
+      this.adminRuntimeEventsService.publishTicketUpdated({ ticketId, ticketStatus });
+    } catch (error) {
+      this.logger?.warn(`Local ticket change saved, but admin ticket event publish failed: ${readPanelSyncErrorMessage(error)}`);
     }
   }
 
@@ -590,6 +603,7 @@ export class DevDataService implements OnModuleInit {
       ticketId,
       ticketStatus: "waiting_user"
     });
+    this.publishAdminTicketEventBestEffort(ticketId, "waiting_user");
 
     return this.getAdminSupportTicketDetailAfterReply(
       ticketId,
@@ -704,6 +718,7 @@ export class DevDataService implements OnModuleInit {
       ticketId,
       ticketStatus: "waiting_user"
     });
+    this.publishAdminTicketEventBestEffort(ticketId, "waiting_user");
 
     return this.getAdminSupportTicketDetailAfterReply(
       ticketId,
@@ -909,6 +924,7 @@ export class DevDataService implements OnModuleInit {
       ticketId,
       ticketStatus: "closed"
     });
+    this.publishAdminTicketEventBestEffort(ticketId, "closed");
     return this.getAdminSupportTicketDetailAfterReply(
       ticketId,
       () => this.buildAdminSupportTicketStatusFallback(current, now, "closed", closedAt),
@@ -943,6 +959,7 @@ export class DevDataService implements OnModuleInit {
       ticketId,
       ticketStatus: "open"
     });
+    this.publishAdminTicketEventBestEffort(ticketId, "open");
     return this.getAdminSupportTicketDetailAfterReply(
       ticketId,
       () => this.buildAdminSupportTicketStatusFallback(current, now, "open", null),

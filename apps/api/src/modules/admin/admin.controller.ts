@@ -10,6 +10,7 @@ import {
   Put,
   Query,
   Req,
+  Sse,
   UploadedFile,
   UseGuards,
   UseInterceptors
@@ -20,6 +21,8 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
+import { AdminRuntimeEventsService } from "../common/admin-runtime-events.service";
+import { AuthSessionService } from "../common/auth-session.service";
 import { DevDataService } from "../common/dev-data.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "../common/image-bed.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
@@ -84,7 +87,9 @@ export class AdminController {
   constructor(
     private readonly devDataService: DevDataService,
     private readonly runtimeComponentsService: RuntimeComponentsService,
-    private readonly imageBedService: ImageBedService
+    private readonly imageBedService: ImageBedService,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
+    private readonly authSessionService: AuthSessionService
   ) {}
 
   @Get("snapshot")
@@ -95,6 +100,19 @@ export class AdminController {
   @Get("dashboard")
   getDashboard() {
     return this.devDataService.getAdminDashboard();
+  }
+
+  @Sse("events/stream")
+  streamEvents(@Headers("authorization") authorization?: string, @Headers("last-event-id") lastEventId?: string) {
+    return this.adminRuntimeEventsService.stream({
+      lastEventId,
+      validate: async () => {
+        const user = await this.authSessionService.authenticateAccessToken(authorization);
+        if (user.role !== "admin") {
+          throw new Error("需要管理员权限");
+        }
+      }
+    });
   }
 
   @Get("image-bed/config")

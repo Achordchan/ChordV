@@ -1,5 +1,5 @@
 const RAW_API_BASE = import.meta.env.VITE_API_BASE_URL;
-const API_BASE =
+export const API_BASE =
   typeof RAW_API_BASE === "string" && RAW_API_BASE.trim().length > 0
     ? RAW_API_BASE.trim().replace(/\/+$/, "")
     : window.location.origin;

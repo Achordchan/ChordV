@@ -1,5 +1,6 @@
 import { AdminAuthGuard } from "./admin-auth.guard";
 import { AdminNodeService } from "./admin-node.service";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AdminSubscriptionService } from "./admin-subscription.service";
 import { AnnouncementPolicyService } from "./announcement-policy.service";
 import { AuthSessionService } from "./auth-session.service";
@@ -23,6 +24,7 @@ import { XuiModule } from "../xui/xui.module";
   imports: [XuiModule],
   providers: [
     DevDataService,
+    AdminRuntimeEventsService,
     AdminNodeService,
     AdminSubscriptionService,
     AnnouncementPolicyService,
@@ -42,6 +44,7 @@ import { XuiModule } from "../xui/xui.module";
   ],
   exports: [
     DevDataService,
+    AdminRuntimeEventsService,
     AdminNodeService,
     AdminSubscriptionService,
     AnnouncementPolicyService,

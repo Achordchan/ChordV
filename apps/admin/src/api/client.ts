@@ -26,7 +26,7 @@ import type {
   UpdateReleaseInputDto,
   UpdateRuntimeComponentInputDto
 } from "@chordv/shared";
-import { request } from "./base";
+import { API_BASE, getStoredAdminAccessToken, request } from "./base";
 
 const IMAGE_BED_ACTION_TIMEOUT_MS = 75 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
@@ -91,6 +91,12 @@ export type AdminSupportTicketDetailDto = SharedAdminSupportTicketDetailDto;
 export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
+export type AdminRuntimeEventDto = {
+  type: "keepalive" | "ticket_updated";
+  occurredAt: string;
+  ticketId?: string;
+  ticketStatus?: SupportTicketStatus;
+};
 
 export type CreateAdminReleaseInputDto = {
   platform: AdminReleasePlatform;
@@ -461,6 +467,118 @@ export async function fetchAdminSupportTickets() {
   return request<SharedAdminSupportTicketSummaryDto[]>("/admin/tickets", {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
   });
+}
+
+export function subscribeAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDto) => void) {
+  let stopped = false;
+  let reconnectTimer: ReturnType<typeof window.setTimeout> | null = null;
+  let controller: AbortController | null = null;
+  let lastEventId: string | null = null;
+
+  const scheduleReconnect = () => {
+    if (stopped || reconnectTimer) {
+      return;
+    }
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, 3000);
+  };
+
+  const connect = async () => {
+    if (stopped) {
+      return;
+    }
+    controller = new AbortController();
+    try {
+      const headers: Record<string, string> = {};
+      const token = getStoredAdminAccessToken();
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      if (lastEventId) {
+        headers["Last-Event-ID"] = lastEventId;
+      }
+
+      const response = await fetch(`${API_BASE}/api/admin/events/stream`, {
+        method: "GET",
+        credentials: "include",
+        headers,
+        signal: controller.signal
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`Admin event stream failed: HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!stopped) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseAdminEventStreamBuffer(buffer, (eventId, event) => {
+          if (eventId) {
+            lastEventId = eventId;
+          }
+          onEvent(event);
+        });
+        buffer = parsed.remaining;
+      }
+    } catch (error) {
+      if (!stopped) {
+        console.warn(error);
+      }
+    } finally {
+      controller = null;
+      scheduleReconnect();
+    }
+  };
+
+  void connect();
+
+  return () => {
+    stopped = true;
+    if (reconnectTimer) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    controller?.abort();
+    controller = null;
+  };
+}
+
+function parseAdminEventStreamBuffer(
+  input: string,
+  onEvent: (eventId: string | null, event: AdminRuntimeEventDto) => void
+) {
+  const normalized = input.replace(/\r\n/g, "\n");
+  const chunks = normalized.split("\n\n");
+  const remaining = chunks.pop() ?? "";
+  for (const chunk of chunks) {
+    let eventId: string | null = null;
+    const dataLines: string[] = [];
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("id:")) {
+        eventId = line.slice(3).trim();
+      }
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    const data = dataLines.join("\n").trim();
+    if (!data) {
+      continue;
+    }
+    try {
+      onEvent(eventId, JSON.parse(data) as AdminRuntimeEventDto);
+    } catch (error) {
+      console.warn(error);
+    }
+  }
+  return { remaining };
 }
 
 export async function fetchAdminSupportTicketDetail(ticketId: string) {

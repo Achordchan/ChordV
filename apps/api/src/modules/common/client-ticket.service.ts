@@ -7,6 +7,7 @@ import type {
   TeamMemberRole
 } from "@chordv/shared";
 import { AuthSessionService } from "./auth-session.service";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { PrismaService } from "./prisma.service";
@@ -41,6 +42,7 @@ export class ClientTicketService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly imageBedService: ImageBedService
   ) {}
@@ -565,6 +567,16 @@ export class ClientTicketService {
       this.clientRuntimeEventsService.publishToUser(userId, event);
     } catch (error) {
       this.logger.warn(`Local ticket change saved, but ticket event publish failed for ${userId}: ${readErrorMessage(error)}`);
+    }
+    if (event.ticketId && this.adminRuntimeEventsService) {
+      try {
+        this.adminRuntimeEventsService.publishTicketUpdated({
+          ticketId: event.ticketId,
+          ticketStatus: event.ticketStatus
+        });
+      } catch (error) {
+        this.logger.warn(`Local ticket change saved, but admin ticket event publish failed: ${readErrorMessage(error)}`);
+      }
     }
   }
 

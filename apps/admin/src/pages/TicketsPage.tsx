@@ -26,6 +26,7 @@ import {
   reopenAdminSupportTicket,
   replyAdminSupportTicket,
   replyAdminSupportTicketWithAttachment,
+  subscribeAdminRuntimeEvents,
   type AdminSupportTicketDetailDto,
   type AdminSupportTicketSummaryDto
 } from "../api/client";
@@ -109,6 +110,20 @@ export function TicketsPage() {
       window.removeEventListener("focus", refreshVisibleTickets);
       document.removeEventListener("visibilitychange", refreshVisibleTickets);
     };
+  }, []);
+
+  useEffect(() => {
+    return subscribeAdminRuntimeEvents((event) => {
+      if (event.type !== "ticket_updated" || document.visibilityState === "hidden") {
+        return;
+      }
+      void loadTickets({ silent: true }).then(() => {
+        const ticketId = selectedTicketIdRef.current;
+        if (ticketId && (!event.ticketId || event.ticketId === ticketId)) {
+          void loadTicketDetail(ticketId, { silent: true });
+        }
+      });
+    });
   }, []);
 
   useEffect(() => {

@@ -17333,6 +17333,7 @@ async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls
 
 async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
   let updatedStatus: string | null = null;
+  const adminEvents: Array<Record<string, unknown>> = [];
   const ticketRow = {
     id: "ticket_1",
     title: "Need help",
@@ -17366,6 +17367,11 @@ async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls
     clientRuntimeEventsService: {
       publishToUser: () => undefined
     },
+    adminRuntimeEventsService: {
+      publishTicketUpdated: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
     getAdminSupportTicketDetail: async () => new Promise(() => undefined)
   });
 
@@ -17377,6 +17383,7 @@ async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls
   ]);
 
   assert.equal(updatedStatus, "closed");
+  assert.deepEqual(adminEvents, [{ ticketId: "ticket_1", ticketStatus: "closed" }]);
   assert.equal(result.id, "ticket_1");
   assert.equal(result.status, "closed");
 }
@@ -17434,6 +17441,7 @@ async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStall
 
 async function testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
   let createdTicket: Record<string, any> | null = null;
+  const adminEvents: Array<Record<string, unknown>> = [];
   const service = createClientTicketService({
     logger: {
       warn: () => undefined
@@ -17456,6 +17464,11 @@ async function testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStal
     clientRuntimeEventsService: {
       publishToUser: () => undefined
     },
+    adminRuntimeEventsService: {
+      publishTicketUpdated: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
     getClientSupportTicketDetail: async () => new Promise(() => undefined)
   });
 
@@ -17467,6 +17480,7 @@ async function testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStal
   ]);
 
   assert.ok(createdTicket);
+  assert.deepEqual(adminEvents, [{ ticketId: createdTicket.id, ticketStatus: "waiting_admin" }]);
   assert.equal(result.title, "Need help");
   assert.equal(result.subscriptionId, "sub_1");
   assert.equal(result.messages[0]?.body, "body saved");
