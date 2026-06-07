@@ -754,6 +754,103 @@ async function testImageBedUploadRejectsSuccessFalsePayload() {
   }
 }
 
+async function testImageBedUploadSuccessParsesUrlAndCleansTempFile() {
+  let observedUrl = "";
+  let observedAuthorization = "";
+  const server = createServer((request, response) => {
+    observedUrl = request.url ?? "";
+    observedAuthorization = String(request.headers.authorization ?? "");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: true,
+        fileUrl: "/file/support-tickets/screenshot.png",
+        fullId: "support-tickets/screenshot.png"
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-upload-success-"));
+  const filePath = path.join(tempDir, "screenshot original.png");
+  await writeFile(filePath, Buffer.from("image"));
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token",
+              uploadFolder: "support-tickets",
+              uploadChannel: "ticket-channel",
+              channelName: "ticket-channel-name"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.uploadSupportTicketAttachment({
+      path: filePath,
+      originalname: "screen shot.png",
+      mimetype: "image/png",
+      size: 5
+    });
+    const requestUrl = new URL(observedUrl, `http://127.0.0.1:${address.port}`);
+
+    assert.equal(requestUrl.pathname, "/upload");
+    assert.equal(requestUrl.searchParams.get("returnFormat"), "full");
+    assert.equal(requestUrl.searchParams.get("uploadFolder"), "support-tickets");
+    assert.equal(requestUrl.searchParams.get("uploadChannel"), "ticket-channel");
+    assert.equal(requestUrl.searchParams.get("channelName"), "ticket-channel-name");
+    assert.equal(observedAuthorization, "Bearer test-token");
+    assert.equal(result.url, `http://127.0.0.1:${address.port}/file/support-tickets/screenshot.png`);
+    assert.equal(result.providerFileId, "support-tickets/screenshot.png");
+    assert.equal(result.fileName, "screen shot.png");
+    assert.equal(result.mimeType, "image/png");
+    assert.equal(result.fileSizeBytes, 5n);
+    assert.equal(existsSync(filePath), false, "successful image bed uploads must remove the temporary file");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function testImageBedUploadRejectsNonImageAndCleansTempFile() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-upload-invalid-"));
+  const filePath = path.join(tempDir, "note.txt");
+  await writeFile(filePath, "not image");
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => {
+            throw new Error("invalid attachment must be rejected before reading image bed config");
+          }
+        }
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        service.uploadSupportTicketAttachment({
+          path: filePath,
+          originalname: "note.txt",
+          mimetype: "text/plain",
+          size: 8
+        }),
+      /Only image attachments are supported/
+    );
+    assert.equal(existsSync(filePath), false, "rejected image bed uploads must remove the temporary file");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function testImageBedDeleteReturnsStructuredBusinessFailure() {
   const server = createServer((request, response) => {
     assert.equal(request.url, "/api/manage/delete/support-tickets/missing.png");
@@ -13023,6 +13120,196 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
   ]);
 }
 
+async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-switch-"));
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  const oldStoredFilePath = path.join("release_1", "artifact_1", "old-upload.zip");
+  const oldAbsolutePath = path.resolve(tempDir, oldStoredFilePath);
+  await mkdir(path.dirname(oldAbsolutePath), { recursive: true });
+  await writeFile(oldAbsolutePath, Buffer.from("old-upload"));
+  const currentArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_1",
+    source: "uploaded",
+    downloadUrl: "/api/downloads/releases/artifact_1",
+    storedFilePath: oldStoredFilePath,
+    allowClientMirror: false,
+    fileName: "old-upload.zip"
+  });
+  const release = makeReleaseCenterTestRelease({
+    artifacts: [currentArtifact]
+  });
+  const updates: Array<Record<string, any>> = [];
+  try {
+    const service = createReleaseCenterService({
+      prisma: {
+        releaseArtifact: {
+          findFirst: async () => currentArtifact
+        },
+        release: {
+          findUnique: async () => ({
+            ...release,
+            artifacts: [
+              makeReleaseCenterTestArtifact({
+                ...currentArtifact,
+                source: "external",
+                downloadUrl: "https://example.com/new.zip",
+                storedFilePath: null,
+                fileName: null,
+                fileSizeBytes: null,
+                fileHash: null
+              })
+            ]
+          })
+        },
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            releaseArtifact: {
+              updateMany: async () => ({ count: 1 }),
+              update: async (payload: Record<string, any>) => {
+                updates.push(payload);
+                return {
+                  ...currentArtifact,
+                  ...payload.data
+                };
+              }
+            }
+          })
+      }
+    });
+
+    const result = await service.updateReleaseArtifact("release_1", "artifact_1", {
+      source: "external",
+      type: "zip",
+      deliveryMode: "desktop_full_replace",
+      downloadUrl: "https://example.com/new.zip",
+      isPrimary: true
+    });
+
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].data.source, "external");
+    assert.equal(updates[0].data.storedFilePath, null);
+    assert.equal(updates[0].data.fileSizeBytes, null);
+    assert.equal(updates[0].data.fileHash, null);
+    assert.equal(existsSync(oldAbsolutePath), false, "switching uploaded artifacts to external must remove the old uploaded file");
+    assert.equal(result.id, "release_1");
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-replace-"));
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  const oldStoredFilePath = path.join("release_1", "artifact_1", "old-upload.zip");
+  const newStoredFilePath = path.join("release_1", "artifact_1", "new-upload.zip");
+  const oldAbsolutePath = path.resolve(tempDir, oldStoredFilePath);
+  const newAbsolutePath = path.resolve(tempDir, newStoredFilePath);
+  await mkdir(path.dirname(oldAbsolutePath), { recursive: true });
+  await writeFile(oldAbsolutePath, Buffer.from("old-upload"));
+  const currentArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_1",
+    source: "uploaded",
+    downloadUrl: "/api/downloads/releases/artifact_1",
+    storedFilePath: oldStoredFilePath,
+    allowClientMirror: false,
+    fileName: "old-upload.zip",
+    isPrimary: false
+  });
+  const release = makeReleaseCenterTestRelease({
+    artifacts: [currentArtifact]
+  });
+  let primaryCleared = false;
+  const updates: Array<Record<string, any>> = [];
+  try {
+    const service = createReleaseCenterService({
+      prepareUploadedReleaseArtifactFile: async () => ({
+        absolutePath: newAbsolutePath,
+        storedFilePath: newStoredFilePath,
+        fileName: "new-upload.zip",
+        fileSizeBytes: 10n,
+        fileHash: null,
+        downloadUrl: "/api/downloads/releases/artifact_1"
+      }),
+      prisma: {
+        releaseArtifact: {
+          findFirst: async () => currentArtifact
+        },
+        release: {
+          findUnique: async () => ({
+            ...release,
+            artifacts: [
+              makeReleaseCenterTestArtifact({
+                ...currentArtifact,
+                storedFilePath: newStoredFilePath,
+                fileName: "new-upload.zip",
+                fileSizeBytes: 10n,
+                fileHash: null,
+                isPrimary: true
+              })
+            ]
+          })
+        },
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            releaseArtifact: {
+              updateMany: async () => {
+                primaryCleared = true;
+                return { count: 1 };
+              },
+              update: async (payload: Record<string, any>) => {
+                updates.push(payload);
+                return {
+                  ...currentArtifact,
+                  ...payload.data
+                };
+              }
+            }
+          })
+      }
+    });
+
+    const result = await service.replaceReleaseArtifactUpload(
+      "release_1",
+      "artifact_1",
+      {
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        isPrimary: true
+      },
+      {
+        path: "new-upload.tmp",
+        originalname: "new-upload.zip",
+        size: 10
+      }
+    );
+
+    assert.equal(primaryCleared, true, "primary siblings must be cleared when the replacement is primary");
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].data.source, "uploaded");
+    assert.equal(updates[0].data.storedFilePath, newStoredFilePath);
+    assert.equal(updates[0].data.fileName, "new-upload.zip");
+    assert.equal(updates[0].data.fileSizeBytes, 10n);
+    assert.equal(updates[0].data.fileHash, null);
+    assert.equal(updates[0].data.isPrimary, true);
+    assert.equal(existsSync(oldAbsolutePath), false, "successful replacement must remove the previous uploaded file");
+    assert.equal(result.id, "release_1");
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
   const artifact = makeReleaseCenterTestArtifact({
     source: "uploaded",
@@ -18111,6 +18398,8 @@ async function main() {
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
+  await testUpdateUploadedReleaseArtifactToExternalDeletesOldFile();
+  await testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseAllowsAnySavedArtifact();
@@ -18135,6 +18424,8 @@ async function main() {
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
   await testImageBedUploadRejectsSuccessFalsePayload();
+  await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
+  await testImageBedUploadRejectsNonImageAndCleansTempFile();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
