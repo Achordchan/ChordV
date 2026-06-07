@@ -179,9 +179,14 @@ function NodeSyncQueueCell(props: {
   return (
     <Stack gap={2}>
       {panelTotal > 0 ? (
-        <Badge color="yellow" variant="light">
-          {buildBackgroundSyncLabel("面板同步", panelSummary)}
-        </Badge>
+        <>
+          <Badge color="yellow" variant="light">
+            {buildBackgroundSyncLabel("面板同步", panelSummary)}
+          </Badge>
+          <Text size="xs" c="dimmed" lineClamp={1}>
+            {panelSummary.actionLabel}
+          </Text>
+        </>
       ) : null}
       {leaseSummary.total > 0 ? (
         <Badge color="yellow" variant="light">
@@ -233,6 +238,7 @@ function summarizePanelSyncJobsForNode(jobs: AdminPanelSyncJobDto[], nodeId: str
     pending: related.filter((job) => job.status === "pending").length,
     running: related.filter((job) => job.status === "running").length,
     failed: related.filter((job) => job.status === "failed").length,
+    actionLabel: summarizePanelSyncActions(related),
     lastError: related.find((job) => job.lastError)?.lastError ?? null
   };
 }
@@ -257,6 +263,7 @@ function PanelSyncQueueDrawer(props: {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>状态</Table.Th>
+                <Table.Th>动作</Table.Th>
                 <Table.Th>节点</Table.Th>
                 <Table.Th>客户端</Table.Th>
                 <Table.Th>次数</Table.Th>
@@ -268,7 +275,7 @@ function PanelSyncQueueDrawer(props: {
             <Table.Tbody>
               {props.jobs.length === 0 ? (
                 <Table.Tr>
-                  <Table.Td colSpan={7}>
+                  <Table.Td colSpan={8}>
                     <Text c="dimmed">暂无面板客户端同步任务</Text>
                   </Table.Td>
                 </Table.Tr>
@@ -280,6 +287,11 @@ function PanelSyncQueueDrawer(props: {
                     <Table.Td>
                       <Badge color={panelSyncStatusColor(job.status)} variant="light">
                         {translatePanelSyncStatus(job.status)}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge color={panelSyncActionColor(job.action)} variant="light">
+                        {translatePanelSyncAction(job.action)}
                       </Badge>
                     </Table.Td>
                     <Table.Td>{job.nodeName}</Table.Td>
@@ -436,6 +448,11 @@ function buildBackgroundSyncLabel(
   return parts.length > 0 ? `${prefix}${parts.join(" / ")}` : `${prefix}待同步`;
 }
 
+function summarizePanelSyncActions(jobs: AdminPanelSyncJobDto[]) {
+  const labels = Array.from(new Set(jobs.map((job) => translatePanelSyncAction(job.action))));
+  return labels.length > 0 ? `动作：${labels.join(" / ")}` : "动作：待同步";
+}
+
 function leaseRevocationJobTargetLabel(job: AdminLeaseRevocationJobDto) {
   return job.nodeName ?? job.nodeId ?? job.subscriptionId ?? job.userId ?? "全局连接";
 }
@@ -445,6 +462,22 @@ function translatePanelSyncStatus(status: AdminPanelSyncJobDto["status"]) {
   if (status === "running") return "执行中";
   if (status === "failed") return "待重试";
   return "完成";
+}
+
+function translatePanelSyncAction(action: AdminPanelSyncJobDto["action"]) {
+  if (action === "ensure_client") return "新增/恢复客户端";
+  if (action === "disable_client") return "禁用客户端";
+  if (action === "delete_client") return "删除客户端";
+  if (action === "reset_client_traffic") return "重置流量";
+  return action;
+}
+
+function panelSyncActionColor(action: AdminPanelSyncJobDto["action"]) {
+  if (action === "ensure_client") return "blue";
+  if (action === "disable_client") return "orange";
+  if (action === "delete_client") return "red";
+  if (action === "reset_client_traffic") return "teal";
+  return "gray";
 }
 
 function panelSyncStatusColor(status: AdminPanelSyncJobDto["status"]) {
