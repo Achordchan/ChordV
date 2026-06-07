@@ -41,6 +41,7 @@ import type {
   UserSubscriptionSummaryDto
 } from "@chordv/shared";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
@@ -97,6 +98,7 @@ export class AdminSubscriptionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly authSessionService: AuthSessionService,
     private readonly runtimeSessionService: RuntimeSessionService
   ) {}
@@ -1841,6 +1843,10 @@ export class AdminSubscriptionService {
             occurredAt: new Date().toISOString(),
             subscriptionId: target.subscriptionId ?? null,
             subscriptionState: target.state ?? null,
+            state: target.state ?? null
+          });
+          this.adminRuntimeEventsService.publishSubscriptionUpdated({
+            subscriptionId: target.subscriptionId ?? null,
             state: target.state ?? null
           });
         } catch (error) {

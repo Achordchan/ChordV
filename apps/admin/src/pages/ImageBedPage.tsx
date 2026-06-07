@@ -77,7 +77,7 @@ export function ImageBedPage() {
       const result = await fetchAdminImageBedFiles({
         count: 50,
         search: search.trim() || undefined,
-        recursive: true
+        recursive: false
       });
       setFiles(result.files);
     } catch (reason) {

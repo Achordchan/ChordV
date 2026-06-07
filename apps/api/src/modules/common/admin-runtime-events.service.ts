@@ -6,7 +6,19 @@ import { Observable } from "rxjs";
 import { PrismaService } from "./prisma.service";
 
 type EventSink = (event: MessageEvent) => void;
-type AdminRuntimeEventDto = Pick<ClientRuntimeEventDto, "type" | "occurredAt" | "ticketId" | "ticketStatus">;
+type AdminRuntimeEventDto = Pick<
+  ClientRuntimeEventDto,
+  | "type"
+  | "occurredAt"
+  | "ticketId"
+  | "ticketStatus"
+  | "subscriptionId"
+  | "subscriptionState"
+  | "state"
+  | "platform"
+  | "channel"
+  | "latestVersion"
+>;
 type ClusterEnvelope = {
   originInstanceId: string;
   eventId: string;
@@ -104,6 +116,33 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
     });
   }
 
+  publishSubscriptionUpdated(input: {
+    subscriptionId?: string | null;
+    state?: AdminRuntimeEventDto["state"] | null;
+  }) {
+    this.publish({
+      type: "subscription_updated",
+      occurredAt: new Date().toISOString(),
+      subscriptionId: input.subscriptionId ?? null,
+      subscriptionState: input.state ?? null,
+      state: input.state ?? null
+    });
+  }
+
+  publishVersionUpdated(input: {
+    platform?: AdminRuntimeEventDto["platform"] | null;
+    channel?: AdminRuntimeEventDto["channel"] | null;
+    latestVersion?: string | null;
+  }) {
+    this.publish({
+      type: "version_updated",
+      occurredAt: new Date().toISOString(),
+      platform: input.platform ?? null,
+      channel: input.channel ?? null,
+      latestVersion: input.latestVersion ?? null
+    });
+  }
+
   private dispatch(event: AdminRuntimeEventDto, eventId: string) {
     const message = this.toReplayableMessageEvent(event, eventId);
     this.recordReplayEvent(message);
@@ -167,7 +206,9 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
     const occurredAt = new Date().toISOString();
     return [
       { type: "keepalive", occurredAt },
-      { type: "ticket_updated", occurredAt }
+      { type: "ticket_updated", occurredAt },
+      { type: "subscription_updated", occurredAt },
+      { type: "version_updated", occurredAt }
     ];
   }
 

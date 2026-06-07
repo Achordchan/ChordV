@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActionIcon,
   Alert,
@@ -112,6 +112,7 @@ import {
   retryAdminLeaseRevocationJobsForNode,
   retryAdminPanelSyncJob,
   retryAdminPanelSyncJobsForNode,
+  subscribeAdminRuntimeEvents,
   updateAnnouncement,
   updateNode,
   updatePlan,
@@ -298,6 +299,7 @@ export function App() {
     confirmPassword: ""
   });
   const [section, setSection] = useState<SectionKey>("overview");
+  const sectionRef = useRef<SectionKey>("overview");
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
@@ -427,10 +429,27 @@ export function App() {
   }, [authenticated, section, snapshot]);
 
   useEffect(() => {
+    sectionRef.current = section;
+  }, [section]);
+
+  useEffect(() => {
     if (snapshot) {
       setPolicyForm(toPolicyForm(snapshot.policy));
     }
   }, [snapshot]);
+
+  useEffect(() => {
+    if (!authenticated) {
+      return;
+    }
+    return subscribeAdminRuntimeEvents((event) => {
+      if (event.type === "keepalive" || document.visibilityState === "hidden") {
+        return;
+      }
+      void refreshDashboard();
+      void loadSectionData(sectionRef.current, { force: true, silent: true });
+    });
+  }, [authenticated]);
 
   useEffect(() => {
     const handleSessionExpired = () => {

@@ -16,6 +16,7 @@ import type {
   UploadReleaseArtifactInputDto
 } from "@chordv/shared";
 import { ClientEventsPublisher } from "./client-events.publisher";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { PrismaService } from "./prisma.service";
 import {
   assertReleaseArtifactTypeAllowed,
@@ -72,7 +73,8 @@ export class ReleaseCenterService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly clientEventsPublisher: ClientEventsPublisher
+    private readonly clientEventsPublisher: ClientEventsPublisher,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService
   ) {}
 
   async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
@@ -327,6 +329,17 @@ export class ReleaseCenterService {
         `Local release change saved, but version_updated publish failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
+    try {
+      this.adminRuntimeEventsService.publishVersionUpdated({
+        platform: platform ?? null,
+        channel,
+        latestVersion: latestVersion ?? null
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Local release change saved, but admin version_updated publish failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   async createReleaseArtifact(releaseId: string, input: CreateReleaseArtifactInputDto): Promise<AdminReleaseRecordDto> {

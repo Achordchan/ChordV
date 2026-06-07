@@ -145,8 +145,10 @@ async function requestOnce(path: string, init?: RequestOptions, useAuth = true, 
   const adminAccessToken = useAuth ? accessTokenOverride ?? getStoredAdminAccessToken() : "";
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
 
+  const method = init?.method ?? "GET";
+  const requestUrl = `${API_BASE}/api${path}`;
   try {
-    return await fetch(`${API_BASE}/api${path}`, {
+    return await fetch(requestUrl, {
       ...init,
       credentials: "include",
       signal: init?.signal ?? controller.signal,
@@ -156,12 +158,15 @@ async function requestOnce(path: string, init?: RequestOptions, useAuth = true, 
         ...(init?.headers ?? {})
       }
     });
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    throw new Error(`${method} /api${path} failed before HTTP response: ${message}`);
   } finally {
     window.clearTimeout(timer);
   }
 }
 
-async function refreshAdminAccessToken() {
+export async function refreshAdminAccessToken() {
   if (refreshPromise) {
     return refreshPromise;
   }

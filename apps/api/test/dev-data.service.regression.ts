@@ -3580,6 +3580,88 @@ async function testLeaseRevocationJobRetriesFailedRevocation() {
   assert.match(updates[0].data.lastError, /lease store unavailable/);
 }
 
+async function testLeaseRevocationBatchContinuesAfterStalledJob() {
+  const originalTimeout = process.env.CHORDV_LEASE_REVOCATION_JOB_TIMEOUT_MS;
+  const originalConcurrency = process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY;
+  process.env.CHORDV_LEASE_REVOCATION_JOB_TIMEOUT_MS = "10";
+  process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY = "2";
+  try {
+    const updates: Array<Record<string, any>> = [];
+    const revokedSubscriptions: string[] = [];
+    const jobs = [
+      {
+        id: "lease_job_stalled",
+        attempts: 0,
+        subscriptionId: "sub_stalled",
+        userId: "user_1",
+        nodeId: "node_1",
+        reason: "node_access_revoked",
+        status: "pending",
+        nextRunAt: new Date(Date.now() - 1000),
+        lockedAt: null,
+        createdAt: new Date(Date.now() - 2000)
+      },
+      {
+        id: "lease_job_online",
+        attempts: 0,
+        subscriptionId: "sub_online",
+        userId: "user_2",
+        nodeId: "node_2",
+        reason: "node_access_revoked",
+        status: "pending",
+        nextRunAt: new Date(Date.now() - 1000),
+        lockedAt: null,
+        createdAt: new Date(Date.now() - 1000)
+      }
+    ];
+    const service = createRuntimeSessionService({
+      logger: {
+        warn: () => undefined
+      },
+      revokeSubscriptionLeases: async (subscriptionId: string) => {
+        if (subscriptionId === "sub_stalled") {
+          return new Promise(() => undefined);
+        }
+        revokedSubscriptions.push(subscriptionId);
+      },
+      prisma: {
+        leaseRevocationJob: {
+          findMany: async () => jobs,
+          updateMany: async () => ({ count: 1 }),
+          update: async (payload: Record<string, any>) => {
+            updates.push(payload);
+          }
+        }
+      }
+    });
+
+    await Promise.race([
+      service.retryPendingLeaseRevocationJobs(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("lease revocation batch stalled behind one job")), 250);
+      })
+    ]);
+
+    assert.deepEqual(revokedSubscriptions, ["sub_online"]);
+    const statusById = new Map(updates.map((item) => [item.where.id, item.data.status]));
+    assert.equal(statusById.get("lease_job_online"), "completed");
+    assert.equal(statusById.get("lease_job_stalled"), "failed");
+    const stalledUpdate = updates.find((item) => item.where.id === "lease_job_stalled");
+    assert.match(stalledUpdate?.data.lastError ?? "", /timed out/);
+  } finally {
+    if (originalTimeout === undefined) {
+      delete process.env.CHORDV_LEASE_REVOCATION_JOB_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_LEASE_REVOCATION_JOB_TIMEOUT_MS = originalTimeout;
+    }
+    if (originalConcurrency === undefined) {
+      delete process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY;
+    } else {
+      process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY = originalConcurrency;
+    }
+  }
+}
+
 async function testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess() {
   let clearedIds: string[] = [];
   const service = createRuntimeSessionService({
@@ -18894,6 +18976,7 @@ async function main() {
   await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
+  await testLeaseRevocationBatchContinuesAfterStalledJob();
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();
   await testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline();
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();

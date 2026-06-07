@@ -94,6 +94,8 @@ const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_
 const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
 const PANEL_SYNC_MANUAL_RETRY_PAUSE_MS = 365 * 24 * 60 * 60 * 1000;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
+const DEFAULT_LEASE_REVOCATION_JOB_CONCURRENCY = 4;
+const DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS = 30_000;
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
 const LEASE_REVOCATION_RETRY_MAX_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_MAX_SECONDS ?? 900);
 const CONNECT_LOCK_KEY_1 = 420_702;
@@ -1594,33 +1596,43 @@ export class RuntimeSessionService {
       take: LEASE_REVOCATION_BATCH_SIZE
     });
 
-    for (const job of jobs) {
-      const locked = await this.prisma.leaseRevocationJob.updateMany({
-        where: {
-          id: job.id,
-          OR: [
-            {
-              status: { in: ["pending", "failed"] },
-              nextRunAt: { lte: now },
-              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
-            },
-            {
-              status: "running",
-              lockedAt: { lt: staleLockBefore }
-            }
-          ]
-        },
-        data: {
-          status: "running",
-          lockedAt: new Date()
+    let nextIndex = 0;
+    const workerCount = Math.min(jobs.length, readLeaseRevocationJobConcurrency());
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const job = jobs[nextIndex];
+        nextIndex += 1;
+        if (!job) {
+          return;
         }
-      });
-      if (locked.count === 0) {
-        continue;
-      }
+        const locked = await this.prisma.leaseRevocationJob.updateMany({
+          where: {
+            id: job.id,
+            OR: [
+              {
+                status: { in: ["pending", "failed"] },
+                nextRunAt: { lte: now },
+                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+              },
+              {
+                status: "running",
+                lockedAt: { lt: staleLockBefore }
+              }
+            ]
+          },
+          data: {
+            status: "running",
+            lockedAt: new Date()
+          }
+        });
+        if (locked.count === 0) {
+          continue;
+        }
 
-      await this.runLeaseRevocationJob(job);
-    }
+        await this.runLeaseRevocationJob(job);
+      }
+    });
+    await Promise.all(workers);
   }
 
   private async runLeaseRevocationJob(job: {
@@ -1633,14 +1645,20 @@ export class RuntimeSessionService {
   }) {
     try {
       if (job.subscriptionId) {
-        await this.revokeSubscriptionLeases(job.subscriptionId, job.reason, {
-          ...(job.userId ? { userId: job.userId } : {}),
-          ...(job.nodeId ? { nodeIds: [job.nodeId] } : {})
-        });
+        await this.runLeaseRevocationEffectWithBudget(
+          job,
+          this.revokeSubscriptionLeases(job.subscriptionId, job.reason, {
+            ...(job.userId ? { userId: job.userId } : {}),
+            ...(job.nodeId ? { nodeIds: [job.nodeId] } : {})
+          })
+        );
       } else if (job.userId) {
-        await this.revokeUserLeases(job.userId, job.reason, job.nodeId ? { nodeIds: [job.nodeId] } : undefined);
+        await this.runLeaseRevocationEffectWithBudget(
+          job,
+          this.revokeUserLeases(job.userId, job.reason, job.nodeId ? { nodeIds: [job.nodeId] } : undefined)
+        );
       } else if (job.nodeId) {
-        await this.revokeNodeLeases(job.nodeId, job.reason);
+        await this.runLeaseRevocationEffectWithBudget(job, this.revokeNodeLeases(job.nodeId, job.reason));
       } else {
         throw new Error("Lease revocation job is missing a target.");
       }
@@ -1672,6 +1690,48 @@ export class RuntimeSessionService {
         }
       });
       this.logger.warn(`Lease revocation job failed; retrying in ${retrySeconds}s: ${job.id}: ${message}`);
+    }
+  }
+
+  private async runLeaseRevocationEffectWithBudget(
+    job: { id: string; reason: string; subscriptionId: string | null; userId: string | null; nodeId: string | null },
+    task: Promise<unknown>
+  ) {
+    let settled = false;
+    const guardedTask = task.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void guardedTask.catch((error) => {
+      this.logger.warn(
+        `Delayed lease revocation effect failed after timeout or retry handoff (${job.id}/${job.reason}/${job.subscriptionId ?? "-"}/${job.userId ?? "-"}/${job.nodeId ?? "-"}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    });
+
+    const timeoutMs = readLeaseRevocationJobTimeoutMs();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          reject(new LeaseRevocationEffectTimeoutError(timeoutMs));
+        }
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([guardedTask, timeoutTask]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -2695,6 +2755,13 @@ class PanelSyncRemoteCallTimeoutError extends Error {
   }
 }
 
+class LeaseRevocationEffectTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`lease revocation effect timed out after ${timeoutMs}ms; retry will continue in background`);
+    this.name = "LeaseRevocationEffectTimeoutError";
+  }
+}
+
 function readPanelSyncJobTimeoutMs() {
   const parsed = Number(process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS;
@@ -2703,6 +2770,16 @@ function readPanelSyncJobTimeoutMs() {
 function readPanelSyncJobConcurrency() {
   const parsed = Number(process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY);
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : DEFAULT_PANEL_SYNC_JOB_CONCURRENCY;
+}
+
+function readLeaseRevocationJobTimeoutMs() {
+  const parsed = Number(process.env.CHORDV_LEASE_REVOCATION_JOB_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS;
+}
+
+function readLeaseRevocationJobConcurrency() {
+  const parsed = Number(process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : DEFAULT_LEASE_REVOCATION_JOB_CONCURRENCY;
 }
 
 function isPanelDisableJobClearableAfterNodeReenabled(

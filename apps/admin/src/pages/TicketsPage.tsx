@@ -79,6 +79,7 @@ export function TicketsPage() {
   const [replySaving, setReplySaving] = useState(false);
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
   const selectedTicketIdRef = useRef<string | null>(null);
+  const ticketListRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
 
   useEffect(() => {
@@ -161,12 +162,16 @@ export function TicketsPage() {
   }, [keyword, ownerFilter, statusFilter, tickets, userEmailFilter]);
 
   async function loadTickets(options?: { silent?: boolean }) {
+    const requestSeq = ++ticketListRequestSeqRef.current;
     try {
       if (!options?.silent) {
         setLoading(true);
         setError(null);
       }
       const records = await fetchAdminSupportTickets();
+      if (requestSeq !== ticketListRequestSeqRef.current) {
+        return;
+      }
       const sorted = [...records].sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
       setTickets(sorted);
       setSelectedTicketId((current) => {
@@ -176,11 +181,14 @@ export function TicketsPage() {
         return sorted[0]?.id ?? null;
       });
     } catch (reason) {
+      if (requestSeq !== ticketListRequestSeqRef.current) {
+        return;
+      }
       if (!options?.silent) {
         setError(readError(reason, "工单接口暂不可用，请先确认后端工单接口是否已合并。"));
       }
     } finally {
-      if (!options?.silent) {
+      if (requestSeq === ticketListRequestSeqRef.current && !options?.silent) {
         setLoading(false);
       }
     }

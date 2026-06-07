@@ -26,12 +26,13 @@ import type {
   UpdateReleaseInputDto,
   UpdateRuntimeComponentInputDto
 } from "@chordv/shared";
-import { API_BASE, getStoredAdminAccessToken, request } from "./base";
+import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
 
 const IMAGE_BED_ACTION_TIMEOUT_MS = 75 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
 const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
+const ADMIN_EVENT_STREAM_STALE_MS = 60 * 1000;
 
 export * from "./announcements";
 export * from "./auth";
@@ -92,10 +93,16 @@ export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInput
 export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 export type AdminRuntimeEventDto = {
-  type: "keepalive" | "ticket_updated";
+  type: "keepalive" | "ticket_updated" | "subscription_updated" | "version_updated";
   occurredAt: string;
-  ticketId?: string;
-  ticketStatus?: SupportTicketStatus;
+  ticketId?: string | null;
+  ticketStatus?: SupportTicketStatus | null;
+  subscriptionId?: string | null;
+  subscriptionState?: string | null;
+  state?: string | null;
+  platform?: AdminReleasePlatform | null;
+  channel?: "stable" | null;
+  latestVersion?: string | null;
 };
 
 export type CreateAdminReleaseInputDto = {
@@ -475,14 +482,14 @@ export function subscribeAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDt
   let controller: AbortController | null = null;
   let lastEventId: string | null = null;
 
-  const scheduleReconnect = () => {
+  const scheduleReconnect = (delayMs = 3000) => {
     if (stopped || reconnectTimer) {
       return;
     }
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
       void connect();
-    }, 3000);
+    }, delayMs);
   };
 
   const connect = async () => {
@@ -506,6 +513,17 @@ export function subscribeAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDt
         headers,
         signal: controller.signal
       });
+      if (response.status === 401 || response.status === 403) {
+        const refreshedAccessToken = await refreshAdminAccessToken();
+        if (refreshedAccessToken) {
+          scheduleReconnect(0);
+          return;
+        }
+        clearStoredAdminSession({ notify: true });
+        stopped = true;
+        return;
+      }
+
       if (!response.ok || !response.body) {
         throw new Error(`Admin event stream failed: HTTP ${response.status}`);
       }
@@ -513,19 +531,31 @@ export function subscribeAdminRuntimeEvents(onEvent: (event: AdminRuntimeEventDt
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      while (!stopped) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
+      let lastChunkAt = Date.now();
+      const watchdog = window.setInterval(() => {
+        if (Date.now() - lastChunkAt > ADMIN_EVENT_STREAM_STALE_MS) {
+          controller?.abort(new Error("Admin event stream heartbeat timed out"));
         }
-        buffer += decoder.decode(value, { stream: true });
-        const parsed = parseAdminEventStreamBuffer(buffer, (eventId, event) => {
-          if (eventId) {
-            lastEventId = eventId;
+      }, ADMIN_EVENT_STREAM_STALE_MS);
+      try {
+        while (!stopped) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
           }
-          onEvent(event);
-        });
-        buffer = parsed.remaining;
+          lastChunkAt = Date.now();
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseAdminEventStreamBuffer(buffer, (eventId, event) => {
+            if (eventId) {
+              lastEventId = eventId;
+            }
+            onEvent(event);
+          });
+          buffer = parsed.remaining;
+        }
+      } finally {
+        window.clearInterval(watchdog);
+        reader.releaseLock();
       }
     } catch (error) {
       if (!stopped) {
