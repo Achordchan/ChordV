@@ -661,6 +661,9 @@ export class DevDataService implements OnModuleInit {
           timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
         });
       } catch (error) {
+        if (error instanceof BadRequestException) {
+          throw error;
+        }
         attachmentUploadError = readPanelSyncErrorMessage(error);
         this.logger.warn(`Admin ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
       }
@@ -864,40 +867,24 @@ export class DevDataService implements OnModuleInit {
   }
 
   private buildAdminSupportTicketStatusFallback(
-    ticket: {
-      id: string;
-      title: string;
-      source: SupportTicketSource;
-      userId: string;
-      subscriptionId: string | null;
-      teamId: string | null;
-      createdAt: Date;
-      closedAt: Date | null;
-      user: { email: string; displayName: string };
-      team?: { name: string } | null;
-    },
+    ticket: Parameters<typeof toAdminSupportTicketDetail>[0],
     now: Date,
     status: SupportTicketStatus,
     closedAt: Date | null
   ): AdminSupportTicketDetailDto {
+    const detail = toAdminSupportTicketDetail({
+      ...ticket,
+      lastMessageAt: ticket.lastMessageAt ?? now,
+      closedAt: ticket.closedAt ?? null,
+      updatedAt: ticket.updatedAt ?? now,
+      messages: ticket.messages ?? []
+    });
     return {
-      id: ticket.id,
-      title: ticket.title,
+      ...detail,
       status,
-      source: ticket.source,
-      ownerType: ticket.teamId ? "team" : "personal",
-      userId: ticket.userId,
-      userEmail: ticket.user.email,
-      userDisplayName: ticket.user.displayName,
-      subscriptionId: ticket.subscriptionId,
-      teamId: ticket.teamId,
-      teamName: ticket.team?.name ?? null,
       lastMessageAt: now.toISOString(),
       closedAt: closedAt?.toISOString() ?? null,
-      createdAt: ticket.createdAt.toISOString(),
-      updatedAt: now.toISOString(),
-      lastMessagePreview: null,
-      messages: []
+      updatedAt: now.toISOString()
     };
   }
 
@@ -906,7 +893,14 @@ export class DevDataService implements OnModuleInit {
       where: { id: ticketId },
       include: {
         user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } }
+        team: { select: { id: true, name: true } },
+        messages: {
+          include: {
+            authorUser: { select: { id: true, email: true, displayName: true } },
+            attachments: { orderBy: { createdAt: "asc" } }
+          },
+          orderBy: { createdAt: "asc" }
+        }
       }
     });
     if (!current) {
@@ -942,7 +936,14 @@ export class DevDataService implements OnModuleInit {
       where: { id: ticketId },
       include: {
         user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } }
+        team: { select: { id: true, name: true } },
+        messages: {
+          include: {
+            authorUser: { select: { id: true, email: true, displayName: true } },
+            attachments: { orderBy: { createdAt: "asc" } }
+          },
+          orderBy: { createdAt: "asc" }
+        }
       }
     });
     if (!current) {
@@ -1355,6 +1356,9 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     input: UpdateSubscriptionNodeAccessInputDto
   ): Promise<SubscriptionNodeAccessDto> {
+    if (!input || !Array.isArray(input.nodeIds)) {
+      throw new BadRequestException("nodeIds must be an array.");
+    }
     // Admin authorization changes are DB-first and must not wait behind slow usage/panel sync work.
     const localSaveFallbackRef: { current?: SubscriptionNodeAccessDto } = {};
     try {
@@ -1491,7 +1495,8 @@ export class DevDataService implements OnModuleInit {
               id: createId("subscription_node"),
               subscriptionId,
               nodeId
-            }))
+            })),
+            skipDuplicates: true
           });
         }
       });
@@ -1549,7 +1554,8 @@ export class DevDataService implements OnModuleInit {
             id: createId("subscription_node"),
             subscriptionId,
             nodeId
-          }))
+          })),
+          skipDuplicates: true
         });
       });
       const fallbackNodes = uniqueNodeIds

@@ -24,7 +24,11 @@ type LoadFilesOptions = {
   silent?: boolean;
 };
 
-export function ImageBedPage() {
+type ImageBedPageProps = {
+  refreshSignal?: number;
+};
+
+export function ImageBedPage(props: ImageBedPageProps) {
   const [config, setConfig] = useState<AdminImageBedConfigDto | null>(null);
   const [form, setForm] = useState<ImageBedConfigForm>({
     baseUrl: "https://image.achord.cn",
@@ -43,15 +47,25 @@ export function ImageBedPage() {
   const [fileListError, setFileListError] = useState<string | null>(null);
   const [fileListErrorColor, setFileListErrorColor] = useState<"red" | "yellow">("red");
   const fileListRequestSeqRef = useRef(0);
+  const fileListLoadingSeqRef = useRef<number | null>(null);
 
   useEffect(() => {
     void loadConfig();
   }, []);
 
-  async function loadConfig() {
+  useEffect(() => {
+    if (!props.refreshSignal) {
+      return;
+    }
+    void loadConfig({ silent: true }).then(() => loadFiles());
+  }, [props.refreshSignal]);
+
+  async function loadConfig(options?: { silent?: boolean }) {
     try {
-      setLoadingConfig(true);
-      setError(null);
+      if (!options?.silent) {
+        setLoadingConfig(true);
+        setError(null);
+      }
       const nextConfig = await fetchAdminImageBedConfig();
       setConfig(nextConfig);
       setForm({
@@ -64,15 +78,20 @@ export function ImageBedPage() {
       setFiles([]);
       setFileListError(null);
     } catch (reason) {
-      setError(readError(reason, "图床配置加载失败"));
+      if (!options?.silent) {
+        setError(readError(reason, "图床配置加载失败"));
+      }
     } finally {
-      setLoadingConfig(false);
+      if (!options?.silent) {
+        setLoadingConfig(false);
+      }
     }
   }
 
   async function loadFiles(options: LoadFilesOptions = {}) {
     const requestSeq = ++fileListRequestSeqRef.current;
     try {
+      fileListLoadingSeqRef.current = requestSeq;
       setLoadingFiles(true);
       setFileListError(null);
       setFileListErrorColor("red");
@@ -101,7 +120,10 @@ export function ImageBedPage() {
         message: options.afterSuccessfulSave ? `${message}。配置保存请求已经成功返回，可稍后手动刷新列表。` : message
       });
     } finally {
-      setLoadingFiles(false);
+      if (fileListLoadingSeqRef.current === requestSeq) {
+        fileListLoadingSeqRef.current = null;
+        setLoadingFiles(false);
+      }
     }
   }
 
@@ -138,6 +160,9 @@ export function ImageBedPage() {
         title: "图床",
         message: uncertain ? `${message}。请求状态不确定，配置可能已保存，请刷新页面确认。` : message
       });
+      if (uncertain) {
+        void loadConfig({ silent: true }).then(() => loadFiles({ silent: true }));
+      }
     } finally {
       setSaving(false);
     }
@@ -172,6 +197,9 @@ export function ImageBedPage() {
         title: "图床",
         message: uncertain ? `${message}。请求状态不确定，Token 可能已清空，请刷新页面确认。` : message
       });
+      if (uncertain) {
+        void loadConfig({ silent: true }).then(() => loadFiles({ silent: true }));
+      }
     } finally {
       setSaving(false);
     }
@@ -187,6 +215,8 @@ export function ImageBedPage() {
       const deleted = new Set(result.deleted.length > 0 ? result.deleted : result.success ? [file.name] : []);
       if (deleted.size > 0) {
         fileListRequestSeqRef.current += 1;
+        fileListLoadingSeqRef.current = null;
+        setLoadingFiles(false);
         setFiles((current) => current.filter((item) => item.name !== file.name && !deleted.has(item.name)));
       }
       if (result.failed.length > 0) {
@@ -218,6 +248,9 @@ export function ImageBedPage() {
         title: "图床",
         message: uncertain ? `${message}。请求状态不确定，文件可能已删除，请刷新列表确认。` : message
       });
+      if (uncertain) {
+        void loadFiles({ silent: true });
+      }
     } finally {
       setDeletingPath(null);
     }

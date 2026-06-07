@@ -370,6 +370,9 @@ export class ClientTicketService {
           timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
         });
       } catch (error) {
+        if (error instanceof BadRequestException) {
+          throw error;
+        }
         attachmentUploadError = readErrorMessage(error);
         this.logger.warn(`Client ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
       }

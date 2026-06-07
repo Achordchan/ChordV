@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
+import { BadRequestException, ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
 import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
@@ -422,6 +422,7 @@ async function testUpdateNodeAccessDoesNotQueuePanelSyncInsideLocalTransaction()
     ]);
 
     assert.equal(createdRows.length, 1);
+    assert.equal(createdRows[0]?.skipDuplicates, true, "node access inserts must be idempotent for concurrent saves");
     assert.equal(transactionScopedEnsureCalled, false, "node access local transaction must only write subscriptionNodeAccess rows");
     assert.deepEqual(result.nodeIds, ["node_1"]);
     assert.equal(result.panelSyncStatus, "pending");
@@ -7263,6 +7264,16 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   assert.equal(panelSyncStarted, true, "deferred panel pre-sync should still start after the response");
+}
+
+async function testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest() {
+  const service = createDevDataService();
+
+  await assert.rejects(
+    () => service.updateSubscriptionNodeAccess("sub_1", {} as any),
+    (error) => error instanceof BadRequestException && /nodeIds must be an array/.test(error.message),
+    "invalid node access payloads must return a controlled 400 instead of leaking a TypeError as HTTP 500"
+  );
 }
 
 async function testUpdateNodeAccessKeepsLocalSaveWhenPublishFails() {
@@ -20058,6 +20069,7 @@ async function main() {
   await testRefreshNodeOfflinePanelKeepsLocalRuntime();
   await testRefreshNodeSlowPanelReturnsDegradedWithinBudget();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
+  await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();

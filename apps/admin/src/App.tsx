@@ -302,6 +302,8 @@ export function App() {
   const [section, setSection] = useState<SectionKey>("overview");
   const sectionRef = useRef<SectionKey>("overview");
   const [releaseRefreshSignal, setReleaseRefreshSignal] = useState(0);
+  const [ticketRefreshSignal, setTicketRefreshSignal] = useState(0);
+  const [imageBedRefreshSignal, setImageBedRefreshSignal] = useState(0);
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
@@ -359,6 +361,7 @@ export function App() {
   const panelSyncRetryBusyRef = useRef(false);
   const [leaseRevocationRetryBusyKey, setLeaseRevocationRetryBusyKey] = useState<string | null>(null);
   const leaseRevocationRetryBusyRef = useRef(false);
+  const dashboardRefreshSeqRef = useRef(0);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -379,6 +382,7 @@ export function App() {
   const [nodeAccessSelection, setNodeAccessSelection] = useState<string[]>([]);
   const [nodeAccessLoading, setNodeAccessLoading] = useState(false);
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
+  const nodeAccessRequestSeqRef = useRef(0);
   const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
   const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
   const [panelSyncQueueOpened, setPanelSyncQueueOpened] = useState(false);
@@ -766,9 +770,13 @@ export function App() {
   }
 
   async function refreshDashboard(options?: { silent?: boolean }) {
+    const requestSeq = ++dashboardRefreshSeqRef.current;
     try {
       setRefreshingDashboard(true);
       const dashboard = await fetchAdminDashboard();
+      if (requestSeq !== dashboardRefreshSeqRef.current) {
+        return;
+      }
       mergeSnapshot({ dashboard });
     } catch (reason) {
       if (options?.silent) {
@@ -776,7 +784,9 @@ export function App() {
       }
       throw reason;
     } finally {
-      setRefreshingDashboard(false);
+      if (requestSeq === dashboardRefreshSeqRef.current) {
+        setRefreshingDashboard(false);
+      }
     }
   }
 
@@ -882,6 +892,17 @@ export function App() {
           message: readError(reason, "节点列表刷新失败，请稍后手动刷新确认")
         });
       });
+  }
+
+  async function handleHeaderRefresh() {
+    await loadFullSnapshot();
+    if (sectionRef.current === "releases") {
+      setReleaseRefreshSignal((current) => current + 1);
+    } else if (sectionRef.current === "tickets") {
+      setTicketRefreshSignal((current) => current + 1);
+    } else if (sectionRef.current === "imageBed") {
+      setImageBedRefreshSignal((current) => current + 1);
+    }
   }
 
   async function handleRetryPanelSyncJob(jobId: string) {
@@ -1248,9 +1269,14 @@ export function App() {
   }
 
   async function openNodeAccessEditor(subscriptionId: string, ownerLabel: string) {
+    const requestSeq = nodeAccessRequestSeqRef.current + 1;
+    nodeAccessRequestSeqRef.current = requestSeq;
     try {
       setNodeAccessLoading(true);
       const result = await getSubscriptionNodeAccess(subscriptionId);
+      if (nodeAccessRequestSeqRef.current !== requestSeq) {
+        return;
+      }
       setNodeAccessSelection(result.nodeIds);
       setNodeAccessEditor({ subscriptionId, ownerLabel });
     } catch (reason) {
@@ -1264,11 +1290,14 @@ export function App() {
         message
       });
     } finally {
-      setNodeAccessLoading(false);
+      if (nodeAccessRequestSeqRef.current === requestSeq) {
+        setNodeAccessLoading(false);
+      }
     }
   }
 
   function closeNodeAccessEditor() {
+    nodeAccessRequestSeqRef.current += 1;
     setNodeAccessEditor(null);
     setNodeAccessSelection([]);
     setNodeAccessLoading(false);
@@ -1282,8 +1311,11 @@ export function App() {
 
     try {
       setNodeAccessSaving(true);
+      const nodeIds = Array.from(
+        new Set(nodeAccessSelection.map((nodeId) => nodeId.trim()).filter((nodeId) => nodeId.length > 0))
+      );
       const result = await updateSubscriptionNodeAccess(nodeAccessEditor.subscriptionId, {
-        nodeIds: nodeAccessSelection
+        nodeIds
       });
       const panelSyncPending = result.panelSyncStatus === "pending";
       notifications.show({
@@ -2429,7 +2461,7 @@ export function App() {
             </Group>
 
             <Group className="admin-header-actions">
-              <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadFullSnapshot()} loading={loading || sectionLoading || refreshingDashboard}>
+              <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void handleHeaderRefresh()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
               </Button>
               <Button variant="default" leftSection={<IconListDetails size={16} />} onClick={() => setPanelSyncQueueOpened(true)}>
@@ -2601,7 +2633,7 @@ export function App() {
               />
             ) : null}
 
-            {section === "tickets" ? <TicketsPage /> : null}
+            {section === "tickets" ? <TicketsPage refreshSignal={ticketRefreshSignal} /> : null}
 
             {section === "nodes" ? (
               <NodesPage
@@ -2655,7 +2687,7 @@ export function App() {
 
             {section === "runtimeComponents" ? <RuntimeComponentsPage /> : null}
 
-            {section === "imageBed" ? <ImageBedPage /> : null}
+            {section === "imageBed" ? <ImageBedPage refreshSignal={imageBedRefreshSignal} /> : null}
           </Stack>
         </AppShell.Main>
       </AppShell>

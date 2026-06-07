@@ -136,11 +136,14 @@ export function ReleasesPage(props: ReleasesPageProps) {
       }
       setReleases(data);
     } catch (reason) {
+      if (requestSeq !== releaseListRequestSeqRef.current || mutationSeqAtStart !== releaseMutationSeqRef.current) {
+        return;
+      }
       if (!silent) {
         setError(readError(reason, "发布中心接口暂不可用，请先确认后端发布中心接口是否已合并。"));
       }
     } finally {
-      if (!silent) {
+      if (!silent && requestSeq === releaseListRequestSeqRef.current) {
         setLoading(false);
       }
     }

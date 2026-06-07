@@ -62,7 +62,11 @@ const ownerTypeOptions = [
   { value: "team", label: "Team 订阅" }
 ] as const;
 
-export function TicketsPage() {
+type TicketsPageProps = {
+  refreshSignal?: number;
+};
+
+export function TicketsPage(props: TicketsPageProps) {
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const [ownerFilter, setOwnerFilter] = useState<TicketOwnerFilter>("all");
@@ -81,10 +85,23 @@ export function TicketsPage() {
   const selectedTicketIdRef = useRef<string | null>(null);
   const ticketListRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
+  const ticketListLoadingSeqRef = useRef<number | null>(null);
+  const ticketDetailLoadingSeqRef = useRef<number | null>(null);
 
   useEffect(() => {
     void loadTickets();
   }, []);
+
+  useEffect(() => {
+    if (!props.refreshSignal) {
+      return;
+    }
+    void loadTickets();
+    const ticketId = selectedTicketIdRef.current;
+    if (ticketId) {
+      void loadTicketDetail(ticketId);
+    }
+  }, [props.refreshSignal]);
 
   useEffect(() => {
     selectedTicketIdRef.current = selectedTicketId;
@@ -165,6 +182,7 @@ export function TicketsPage() {
     const requestSeq = ++ticketListRequestSeqRef.current;
     try {
       if (!options?.silent) {
+        ticketListLoadingSeqRef.current = requestSeq;
         setLoading(true);
         setError(null);
       }
@@ -188,7 +206,8 @@ export function TicketsPage() {
         setError(readError(reason, "工单接口暂不可用，请先确认后端工单接口是否已合并。"));
       }
     } finally {
-      if (!options?.silent) {
+      if (ticketListLoadingSeqRef.current === requestSeq) {
+        ticketListLoadingSeqRef.current = null;
         setLoading(false);
       }
     }
@@ -198,6 +217,7 @@ export function TicketsPage() {
     const requestSeq = ++detailRequestSeqRef.current;
     try {
       if (!options?.silent) {
+        ticketDetailLoadingSeqRef.current = requestSeq;
         setDetailLoading(true);
         setDetailError(null);
       }
@@ -217,7 +237,8 @@ export function TicketsPage() {
       setSelectedTicket(null);
       setDetailError(readError(reason, "加载工单详情失败"));
     } finally {
-      if (!options?.silent) {
+      if (ticketDetailLoadingSeqRef.current === requestSeq) {
+        ticketDetailLoadingSeqRef.current = null;
         setDetailLoading(false);
       }
     }
@@ -278,10 +299,13 @@ export function TicketsPage() {
         : await replyAdminSupportTicket(selectedTicket.id, { body });
       detailRequestSeqRef.current += 1;
       ticketListRequestSeqRef.current += 1;
-      setSelectedTicket(detail);
+      const stillSelected = selectedTicketIdRef.current === detail.id;
+      if (stillSelected) {
+        setSelectedTicket(detail);
+        setReplyDraft("");
+        setReplyAttachment(null);
+      }
       upsertTicketSummary(detail);
-      setReplyDraft("");
-      setReplyAttachment(null);
       if (detail.attachmentUploadStatus === "failed") {
         notifications.show({
           color: "yellow",
@@ -308,6 +332,10 @@ export function TicketsPage() {
             ? `${message} 附件上传失败，工单回复未保存，请稍后重试或先发送纯文字回复。`
             : message
       });
+      if (uncertain && selectedTicket) {
+        void loadTickets({ silent: true });
+        void loadTicketDetail(selectedTicket.id, { silent: true });
+      }
     } finally {
       setReplySaving(false);
     }
@@ -319,7 +347,7 @@ export function TicketsPage() {
       const detail = next === "close" ? await closeAdminSupportTicket(ticket.id) : await reopenAdminSupportTicket(ticket.id);
       detailRequestSeqRef.current += 1;
       ticketListRequestSeqRef.current += 1;
-      if (selectedTicketId === detail.id) {
+      if (selectedTicketIdRef.current === detail.id) {
         setSelectedTicket(detail);
       }
       upsertTicketSummary(detail);
@@ -336,6 +364,10 @@ export function TicketsPage() {
         title: uncertain ? "工单状态不确定" : "工单",
         message: uncertain ? `${message} 操作可能已完成，请刷新工单确认。` : message
       });
+      if (uncertain) {
+        void loadTickets({ silent: true });
+        void loadTicketDetail(ticket.id, { silent: true });
+      }
     } finally {
       setStatusChanging(null);
     }
