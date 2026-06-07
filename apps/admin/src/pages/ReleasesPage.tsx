@@ -194,17 +194,14 @@ export function ReleasesPage(props: ReleasesPageProps) {
         title: releaseForm.title.trim() || version,
         changelog: splitLines(releaseForm.changelog),
         initialArtifact:
-          !releaseEditorId && releaseForm.artifactSource === "external"
+          !releaseEditorId && releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim()
             ? buildExternalArtifactPayload(releaseForm.platform, releaseForm.downloadUrl, true)
             : undefined
       };
 
       if (!releaseEditorId) {
         let record = await createAdminRelease(payload);
-        if (releaseForm.artifactSource === "uploaded") {
-          if (!releaseForm.selectedFile) {
-            throw new Error("请先选择要上传的安装包文件");
-          }
+        if (releaseForm.artifactSource === "uploaded" && releaseForm.selectedFile) {
           try {
             record = await uploadAdminReleaseArtifact(
               record.id,
@@ -232,7 +229,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         notifications.show({
           color: "green",
           title: "发布中心",
-          message: releaseForm.artifactSource === "uploaded" ? "发布记录和上传安装包已创建" : "发布记录和外链安装包已创建"
+          message: releaseFormHasArtifact(releaseForm) ? "发布记录和安装包已创建" : "发布记录已创建，可继续添加外链或上传文件"
         });
         return;
       }
@@ -379,6 +376,10 @@ export function ReleasesPage(props: ReleasesPageProps) {
     }
     if (artifactForm.selectedFile && artifactForm.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
       return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
+    }
+    if (artifactForm.selectedFile) {
+      const fileMessage = validateReleaseArtifactFile(artifactEditor.platform, artifactForm.selectedFile);
+      if (fileMessage) return fileMessage;
     }
     if (artifactForm.source === "external" && !artifactForm.downloadUrl.trim()) {
       return "请填写外链下载地址。";
@@ -695,9 +696,9 @@ function validateReleaseEditorInput(version: string, form?: ReleaseEditorFormSta
     return null;
   }
   if (form.artifactSource === "uploaded") {
-    if (!form.selectedFile) {
-      return "请先选择要上传的安装包文件。";
-    }
+    if (!form.selectedFile) return null;
+    const fileMessage = validateReleaseArtifactFile(platform, form.selectedFile);
+    if (fileMessage) return fileMessage;
     if (form.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
       return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
     }
@@ -705,7 +706,7 @@ function validateReleaseEditorInput(version: string, form?: ReleaseEditorFormSta
   }
   const downloadUrl = form.downloadUrl.trim();
   if (!downloadUrl) {
-    return "请填写外链下载地址。";
+    return null;
   }
   if (!/^https?:\/\//i.test(downloadUrl)) {
     return "外链下载地址必须是完整的 http/https 地址。";
@@ -809,9 +810,6 @@ function inferUploadedArtifactType(
 ): AdminReleaseArtifactType {
   const normalized = fileName.trim().toLowerCase();
   if (platform === "windows") {
-    if (normalized.endsWith(".exe")) {
-      return "setup.exe";
-    }
     return "zip";
   }
   return fallbackType;
@@ -822,9 +820,6 @@ function inferExternalArtifactType(platform: AdminReleasePlatform, downloadUrl: 
   if (platform === "windows") {
     if (pathname.endsWith(".zip")) {
       return "zip";
-    }
-    if (pathname.endsWith(".exe")) {
-      return "setup.exe";
     }
     return "external";
   }
@@ -838,9 +833,6 @@ function inferExternalArtifactType(platform: AdminReleasePlatform, downloadUrl: 
 }
 
 function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
-  if (platform === "windows" && type === "setup.exe") {
-    return "desktop_installer_download" as const;
-  }
   if (platform === "windows" && type === "zip") {
     return "desktop_full_replace" as const;
   }
@@ -856,9 +848,6 @@ function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: A
 function deliveryModeForExternalArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
   if (platform === "windows" && type === "zip") {
     return "desktop_full_replace" as const;
-  }
-  if (platform === "windows" && type === "setup.exe") {
-    return "desktop_installer_download" as const;
   }
   if (platform === "macos" && type === "dmg") {
     return "desktop_installer_download" as const;
@@ -885,4 +874,15 @@ function inferUrlPathname(downloadUrl: string) {
   } catch {
     return downloadUrl.trim().toLowerCase();
   }
+}
+
+function releaseFormHasArtifact(form: ReleaseEditorFormState) {
+  return form.artifactSource === "uploaded" ? Boolean(form.selectedFile) : Boolean(form.downloadUrl.trim());
+}
+
+function validateReleaseArtifactFile(platform: AdminReleasePlatform | undefined, file: File) {
+  if (platform === "windows" && !file.name.trim().toLowerCase().endsWith(".zip")) {
+    return "Windows 静默全量更新只支持 ZIP 安装包，请上传 ChordV_x64-full.zip。";
+  }
+  return null;
 }

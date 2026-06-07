@@ -95,8 +95,8 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
 
             <Alert color="blue" variant="light">
               {props.form.artifactSource === "external"
-                ? "外链会直接下发给客户端，不经过本地服务器中转下载。"
-                : "上传文件会保存到本地服务器，发布记录仍可后续编辑、撤回或替换安装包。"}
+                ? "外链会直接下发给客户端，不经过本地服务器中转下载；也可以先留空创建草稿，稍后再补。"
+                : "上传文件会保存到本地服务器；也可以先不选文件创建草稿，稍后再上传。"}
             </Alert>
           </>
         ) : (
@@ -155,7 +155,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
 
 function acceptedArtifactExtensionForPlatform(platform: ReleaseEditorFormState["platform"]) {
   if (platform === "windows") {
-    return ".zip,.exe";
+    return ".zip";
   }
   if (platform === "android") {
     return ".apk";

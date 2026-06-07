@@ -100,7 +100,7 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): Artifac
 
 function acceptedArtifactExtensionForPlatform(platform: AdminReleasePlatform) {
   if (platform === "windows") {
-    return ".zip,.exe";
+    return ".zip";
   }
   if (platform === "android") {
     return ".apk";

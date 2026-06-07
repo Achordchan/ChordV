@@ -276,14 +276,11 @@ export function assertReleaseArtifactDeliveryAllowed(
     if (type === "zip" && deliveryMode === "desktop_full_replace") {
       return;
     }
-    if (type === "setup.exe" && deliveryMode === "desktop_installer_download") {
-      return;
-    }
     if (type === "external" && deliveryMode === "external_download") {
       return;
     }
     throw new BadRequestException(
-      "Windows release artifacts must use zip + desktop_full_replace, setup.exe + desktop_installer_download, or external + external_download."
+      "Windows release artifacts must use zip + desktop_full_replace or external + external_download."
     );
   }
 
@@ -331,7 +328,7 @@ export function assertReleaseArtifactTypeAllowed(platform: PlatformTarget, type:
     platform === "macos"
       ? ["dmg", "external"]
       : platform === "windows"
-        ? ["zip", "setup.exe", "external"]
+        ? ["zip", "external"]
         : platform === "android"
           ? ["apk", "external"]
           : ["ipa", "external"];

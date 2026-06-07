@@ -505,6 +505,10 @@ export class ReleaseCenterService {
     }
     const platform = release.platform as PlatformTarget;
     const uploadType = inferUploadedReleaseArtifactType(platform, input.fileName || file.originalname, input.type);
+    assertUploadedReleaseArtifactFileAllowed(platform, file.originalname);
+    if (input.fileName) {
+      assertUploadedReleaseArtifactFileAllowed(platform, input.fileName);
+    }
     assertReleaseArtifactTypeAllowed(platform, uploadType);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(
       platform,
@@ -571,6 +575,10 @@ export class ReleaseCenterService {
     this.assertReleaseArtifactsMutable(release);
     const platform = release.platform as PlatformTarget;
     const uploadType = inferUploadedReleaseArtifactType(platform, input.fileName || file.originalname, input.type);
+    assertUploadedReleaseArtifactFileAllowed(platform, file.originalname);
+    if (input.fileName) {
+      assertUploadedReleaseArtifactFileAllowed(platform, input.fileName);
+    }
     assertReleaseArtifactTypeAllowed(platform, uploadType);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(
       platform,
@@ -1150,9 +1158,6 @@ function inferUploadedReleaseArtifactType(
     return fallbackType;
   }
   const normalized = fileName?.trim().toLowerCase() ?? "";
-  if (normalized.endsWith(".exe")) {
-    return "setup.exe";
-  }
   if (normalized.endsWith(".zip")) {
     return "zip";
   }
@@ -1169,10 +1174,7 @@ function inferExternalReleaseArtifactType(
     if (pathname.endsWith(".zip")) {
       return "zip";
     }
-    if (pathname.endsWith(".exe")) {
-      return "setup.exe";
-    }
-    return fallbackType;
+    return "external";
   }
   if (platform === "macos") {
     return pathname.endsWith(".dmg") ? "dmg" : fallbackType;
@@ -1181,6 +1183,16 @@ function inferExternalReleaseArtifactType(
     return pathname.endsWith(".apk") ? "apk" : fallbackType;
   }
   return pathname.endsWith(".ipa") ? "ipa" : fallbackType;
+}
+
+function assertUploadedReleaseArtifactFileAllowed(platform: PlatformTarget, fileName: string | null | undefined) {
+  if (platform !== "windows") {
+    return;
+  }
+  const normalized = fileName?.trim().toLowerCase() ?? "";
+  if (!normalized.endsWith(".zip")) {
+    throw new BadRequestException("Windows silent full replacement updates only support ZIP artifacts.");
+  }
 }
 
 function inferUrlPathname(downloadUrl: string) {

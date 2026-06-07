@@ -1650,8 +1650,8 @@ function testUploadedReleaseArtifactDoesNotUseClientMirror() {
   assert.equal(resolved.allowClientMirror, false);
 }
 
-function testReleaseArtifactClientUsableAllowsMissingHashForInstallerDownloads() {
-  assert.doesNotThrow(
+function testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads() {
+  assert.throws(
     () =>
       assertReleaseArtifactClientUsable(
         {
@@ -1674,7 +1674,8 @@ function testReleaseArtifactClientUsableAllowsMissingHashForInstallerDownloads()
         },
         "windows"
       ),
-    "release publisher must not require SHA256 metadata for client-visible installer artifacts"
+    /zip|external|支持/i,
+    "Windows client-visible update artifacts must match the ZIP full-replacement updater"
   );
 }
 
@@ -13948,7 +13949,7 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
   assert.equal(result.id, "release_1");
 }
 
-async function testUpdateWindowsExternalReleaseInfersInstallerForExeUrl() {
+async function testUpdateWindowsExternalReleaseInfersExternalForExeUrl() {
   const artifact = makeReleaseCenterTestArtifact({
     id: "artifact_existing",
     source: "external",
@@ -13999,8 +14000,8 @@ async function testUpdateWindowsExternalReleaseInfersInstallerForExeUrl() {
 
   assert.equal(updates.length, 1);
   assert.equal(updates[0].data.downloadUrl, "https://example.com/ChordV-setup.exe");
-  assert.equal(updates[0].data.type, "setup_exe");
-  assert.equal(updates[0].data.deliveryMode, "desktop_installer_download");
+  assert.equal(updates[0].data.type, "external");
+  assert.equal(updates[0].data.deliveryMode, "external_download");
   assert.equal(result.id, "release_1");
 }
 
@@ -14134,43 +14135,32 @@ async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
   assert.equal(result.id, "release_1");
 }
 
-async function testWindowsExeUploadInfersInstallerArtifactType() {
+async function testWindowsExeUploadIsRejectedForFullReplacementUpdates() {
   const release = makeReleaseCenterTestRelease({
     version: "1.1.6"
   });
-  let createdData: Record<string, any> | null = null;
+  let preparedCalled = false;
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
-    prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "prepared-windows-setup.exe",
-      storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
-      fileName: "ChordV-setup.exe",
-      fileSizeBytes: 123n,
-      fileHash: null,
-      downloadUrl: "/api/downloads/releases/artifact_created"
-    }),
+    prepareUploadedReleaseArtifactFile: async () => {
+      preparedCalled = true;
+      return {
+        absolutePath: "prepared-windows-setup.exe",
+        storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
+        fileName: "ChordV-setup.exe",
+        fileSizeBytes: 123n,
+        fileHash: null,
+        downloadUrl: "/api/downloads/releases/artifact_created"
+      };
+    },
     prisma: {
       $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
         task({
           releaseArtifact: {
             updateMany: async () => ({ count: 0 }),
-            create: async (payload: Record<string, any>) => {
-              createdData = payload.data;
-              return makeReleaseCenterTestArtifact({
-                id: payload.data.id,
-                releaseId: payload.data.releaseId,
-                source: payload.data.source,
-                type: payload.data.type,
-                deliveryMode: payload.data.deliveryMode,
-                downloadUrl: payload.data.downloadUrl,
-                fileName: payload.data.fileName,
-                storedFilePath: payload.data.storedFilePath,
-                fileSizeBytes: payload.data.fileSizeBytes,
-                fileHash: payload.data.fileHash,
-                isPrimary: payload.data.isPrimary,
-                isFullPackage: payload.data.isFullPackage
-              });
+            create: async () => {
+              throw new Error("Windows .exe upload should be rejected before writing an artifact");
             }
           }
         }),
@@ -14183,21 +14173,24 @@ async function testWindowsExeUploadInfersInstallerArtifactType() {
     }
   });
 
-  await service.uploadReleaseArtifact(
-    "release_1",
-    {
-      type: "zip",
-      deliveryMode: "desktop_full_replace"
-    },
-    {
-      path: "windows-setup-upload.tmp",
-      originalname: "ChordV-setup.exe",
-      size: 123
-    }
+  await assert.rejects(
+    () =>
+      service.uploadReleaseArtifact(
+        "release_1",
+        {
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          fileName: "ChordV_1.1.6_x64-full.zip"
+        },
+        {
+          path: "windows-setup-upload.tmp",
+          originalname: "ChordV-setup.exe",
+          size: 123
+        }
+      ),
+    /ZIP/i
   );
-
-  assert.equal(createdData?.type, "setup_exe");
-  assert.equal(createdData?.deliveryMode, "desktop_installer_download");
+  assert.equal(preparedCalled, false);
 }
 
 async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
@@ -14588,9 +14581,9 @@ async function testPublishWindowsReleaseAllowsAnySavedArtifact() {
   await service["assertReleasePublishable"]("release_1");
 }
 
-async function testUploadWindowsReleaseInfersInstallerFromExeFileName() {
+async function testUploadWindowsReleaseRejectsExeFileName() {
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
-  let createdData: Record<string, any> | null = null;
+  let preparedCalled = false;
   const service = createReleaseCenterService({
     prisma: {
       release: {
@@ -14603,57 +14596,47 @@ async function testUploadWindowsReleaseInfersInstallerFromExeFileName() {
         task({
           releaseArtifact: {
             updateMany: async () => ({ count: 0 }),
-            create: async (payload: Record<string, any>) => {
-              createdData = payload.data;
-              return makeReleaseCenterTestArtifact({
-                id: payload.data.id,
-                releaseId: payload.data.releaseId,
-                source: payload.data.source,
-                type: payload.data.type,
-                deliveryMode: payload.data.deliveryMode,
-                downloadUrl: payload.data.downloadUrl,
-                fileName: payload.data.fileName,
-                storedFilePath: payload.data.storedFilePath,
-                fileSizeBytes: payload.data.fileSizeBytes,
-                fileHash: payload.data.fileHash,
-                isPrimary: payload.data.isPrimary,
-                isFullPackage: payload.data.isFullPackage
-              });
+            create: async () => {
+              throw new Error("Windows .exe upload should be rejected before writing an artifact");
             }
           }
         })
     },
     assertReleaseArtifactsMutable: () => undefined,
-    prepareUploadedReleaseArtifactFile: async () => ({
-      absolutePath: "prepared-windows-setup.exe",
-      storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
-      fileName: "ChordV-setup.exe",
-      fileSizeBytes: 123n,
-      fileHash: null,
-      downloadUrl: "/api/downloads/releases/artifact_created"
-    }),
+    prepareUploadedReleaseArtifactFile: async () => {
+      preparedCalled = true;
+      return {
+        absolutePath: "prepared-windows-setup.exe",
+        storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
+        fileName: "ChordV-setup.exe",
+        fileSizeBytes: 123n,
+        fileHash: null,
+        downloadUrl: "/api/downloads/releases/artifact_created"
+      };
+    },
     cleanupFailedReleaseArtifactUpload: async (absolutePath: string | null, label: string) => {
       cleanupCalls.push({ absolutePath, label });
     }
   });
 
-  const result = await service.uploadReleaseArtifact(
-    "release_1",
-    {
-      type: "zip",
-      deliveryMode: "desktop_full_replace"
-    },
-    {
-      path: "windows-setup-upload.tmp",
-      originalname: "ChordV-setup.exe",
-      size: 123
-    }
+  await assert.rejects(
+    () =>
+      service.uploadReleaseArtifact(
+        "release_1",
+        {
+          type: "zip",
+          deliveryMode: "desktop_full_replace"
+        },
+        {
+          path: "windows-setup-upload.tmp",
+          originalname: "ChordV-setup.exe",
+          size: 123
+        }
+      ),
+    /ZIP/i
   );
 
-  assert.equal(result.id, "release_1");
-  assert.equal(createdData?.fileName, "ChordV-setup.exe");
-  assert.equal(createdData?.type, "setup_exe");
-  assert.equal(createdData?.deliveryMode, "desktop_installer_download");
+  assert.equal(preparedCalled, false);
   assert.deepEqual(cleanupCalls, []);
 }
 
@@ -19539,7 +19522,7 @@ async function main() {
   await testRuntimeEventStreamPreservesOrderWithAsyncValidation();
   testReleaseArtifactPathTraversalIsRejected();
   testUploadedReleaseArtifactDoesNotUseClientMirror();
-  testReleaseArtifactClientUsableAllowsMissingHashForInstallerDownloads();
+  testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
   await testExternalReleaseDownloadRejectsStalledBody();
@@ -19729,10 +19712,10 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
-  await testUpdateWindowsExternalReleaseInfersInstallerForExeUrl();
+  await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
-  await testWindowsExeUploadInfersInstallerArtifactType();
+  await testWindowsExeUploadIsRejectedForFullReplacementUpdates();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testUpdateUploadedReleaseArtifactToExternalDeletesOldFile();
@@ -19740,7 +19723,7 @@ async function main() {
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseAllowsAnySavedArtifact();
-  await testUploadWindowsReleaseInfersInstallerFromExeFileName();
+  await testUploadWindowsReleaseRejectsExeFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
