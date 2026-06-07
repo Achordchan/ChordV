@@ -58,7 +58,7 @@ function showReleaseRequestFailure(reason: unknown, fallback: string) {
   notifications.show({
     color: uncertain ? "yellow" : "red",
     title: uncertain ? "发布中心请求状态不确定" : "发布中心",
-    message: uncertain ? `${message} 请求可能已被后台保存，请刷新发布列表确认最新状态。` : message
+    message: uncertain ? `${message} 请求可能已被后台保存，正在刷新发布列表确认最新状态。` : message
   });
   return { message, uncertain };
 }
@@ -217,7 +217,10 @@ export function ReleasesPage() {
         message: "发布记录已更新"
       });
     } catch (reason) {
-      showReleaseRequestFailure(reason, "保存发布记录失败");
+      const result = showReleaseRequestFailure(reason, "保存发布记录失败");
+      if (result.uncertain) {
+        void loadReleases();
+      }
     } finally {
       setSaving(null);
     }
@@ -259,7 +262,10 @@ export function ReleasesPage() {
         message: nextStatus === "published" ? "版本已发布" : "已撤回到草稿"
       });
     } catch (reason) {
-      showReleaseRequestFailure(reason, "更新发布状态失败");
+      const result = showReleaseRequestFailure(reason, "更新发布状态失败");
+      if (result.uncertain) {
+        void loadReleases();
+      }
     } finally {
       setSaving(null);
     }
@@ -281,7 +287,10 @@ export function ReleasesPage() {
         message: "发布记录已删除"
       });
     } catch (reason) {
-      showReleaseRequestFailure(reason, "删除发布记录失败");
+      const result = showReleaseRequestFailure(reason, "删除发布记录失败");
+      if (result.uncertain) {
+        void loadReleases();
+      }
     } finally {
       setSaving(null);
     }
@@ -428,7 +437,10 @@ export function ReleasesPage() {
         message: artifactEditor.artifactId ? "安装包已更新" : "安装包已新增"
       });
     } catch (reason) {
-      showReleaseRequestFailure(reason, "保存安装包失败");
+      const result = showReleaseRequestFailure(reason, "保存安装包失败");
+      if (result.uncertain) {
+        void loadReleases();
+      }
     } finally {
       setSaving(null);
     }
@@ -446,7 +458,10 @@ export function ReleasesPage() {
         message: "安装包已删除"
       });
     } catch (reason) {
-      showReleaseRequestFailure(reason, "删除安装包失败");
+      const result = showReleaseRequestFailure(reason, "删除安装包失败");
+      if (result.uncertain) {
+        void loadReleases();
+      }
     } finally {
       setSaving(null);
     }

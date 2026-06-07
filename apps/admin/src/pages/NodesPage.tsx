@@ -423,14 +423,14 @@ function leaseRevocationJobTargetLabel(job: AdminLeaseRevocationJobDto) {
 function translatePanelSyncStatus(status: AdminPanelSyncJobDto["status"]) {
   if (status === "pending") return "等待";
   if (status === "running") return "执行中";
-  if (status === "failed") return "失败";
+  if (status === "failed") return "待重试";
   return "完成";
 }
 
 function panelSyncStatusColor(status: AdminPanelSyncJobDto["status"]) {
   if (status === "pending") return "yellow";
   if (status === "running") return "blue";
-  if (status === "failed") return "red";
+  if (status === "failed") return "yellow";
   if (status === "completed") return "green";
   return "gray";
 }

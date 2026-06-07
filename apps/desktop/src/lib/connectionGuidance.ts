@@ -11,6 +11,7 @@ export type GuidanceTone = "danger" | "warning" | "info";
 export type ConnectionGuidanceCode =
   | "admin_paused"
   | "node_access_revoked"
+  | "node_provisioning_pending"
   | "node_unavailable"
   | "subscription_expired"
   | "subscription_exhausted"
@@ -42,6 +43,9 @@ export type ConnectionGuidance = {
 };
 
 export function readError(message: string) {
+  if (message.includes("Panel client is queued but not confirmed yet")) {
+    return "节点开通同步中，面板暂时不可用或尚未确认客户端，请稍后重试。";
+  }
   try {
     const parsed = JSON.parse(message) as { message?: string[] | string };
     if (Array.isArray(parsed.message)) {
@@ -265,6 +269,17 @@ export function deriveGuidanceFromConnectFailure(
       message: "当前节点未开通，请切换其他可用节点后重新连接。",
       actionLabel: "切换节点后重连",
       recommendedNodeId: fallbackNodeId
+    };
+  }
+  if (message.includes("节点开通同步中")) {
+    return {
+      code: "node_provisioning_pending",
+      tone: "warning",
+      title: "节点开通同步中",
+      message: "本地授权已保存，远端面板客户端还在同步或面板暂时不可用，请稍后重试。",
+      actionLabel: "稍后重试",
+      recommendedNodeId: fallbackNodeId,
+      errorCode: "node_provisioning_pending"
     };
   }
   if (platformTarget === "android" && looksLikeGenericConnectFailure(message)) {
