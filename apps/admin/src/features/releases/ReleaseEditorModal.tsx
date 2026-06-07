@@ -122,7 +122,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
 
 function acceptedArtifactExtensionForPlatform(platform: ReleaseEditorFormState["platform"]) {
   if (platform === "windows") {
-    return ".zip";
+    return ".zip,.exe";
   }
   if (platform === "android") {
     return ".apk";

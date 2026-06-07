@@ -7,7 +7,8 @@ import type {
   AdminReleaseArtifactType,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
-  CreateAdminReleaseInputDto
+  CreateAdminReleaseInputDto,
+  UploadAdminReleaseArtifactInputDto
 } from "../api/client";
 import {
   createAdminRelease,
@@ -180,12 +181,7 @@ export function ReleasesPage() {
           try {
             record = await uploadAdminReleaseArtifact(
               record.id,
-              {
-                source: "uploaded",
-                type: defaultArtifactTypeForPlatform(releaseForm.platform),
-                fileName: releaseForm.fileName.trim() || releaseForm.selectedFile.name,
-                isPrimary: true
-              },
+              buildUploadedArtifactPayload(releaseForm.platform, releaseForm.selectedFile, releaseForm.fileName, true),
               releaseForm.selectedFile
             );
           } catch (uploadError) {
@@ -404,12 +400,13 @@ export function ReleasesPage() {
           }
         }
         if (!record && artifactForm.selectedFile) {
-          const uploadPayload = {
-            source: "uploaded" as const,
-            type: artifactForm.type,
-            fileName: artifactForm.fileName.trim() || artifactForm.selectedFile.name,
-            isPrimary: artifactForm.isPrimary
-          };
+          const uploadPayload = buildUploadedArtifactPayload(
+            artifactEditor.platform,
+            artifactForm.selectedFile,
+            artifactForm.fileName,
+            artifactForm.isPrimary,
+            artifactForm.type
+          );
           record = artifactEditor.artifactId
             ? await replaceAdminReleaseArtifactUpload(releaseId!, artifactEditor.artifactId, uploadPayload, artifactForm.selectedFile)
             : await uploadAdminReleaseArtifact(releaseId!, uploadPayload, artifactForm.selectedFile);
@@ -724,4 +721,52 @@ function defaultArtifactTypeForPlatform(platform: AdminReleasePlatform): AdminRe
     return "ipa";
   }
   return "dmg";
+}
+
+function buildUploadedArtifactPayload(
+  platform: AdminReleasePlatform,
+  file: File,
+  fileName: string,
+  isPrimary: boolean,
+  fallbackType: AdminReleaseArtifactType = defaultArtifactTypeForPlatform(platform)
+): UploadAdminReleaseArtifactInputDto {
+  const type = inferUploadedArtifactType(platform, file.name, fallbackType);
+  return {
+    source: "uploaded",
+    type,
+    deliveryMode: deliveryModeForUploadedArtifact(platform, type),
+    fileName: fileName.trim() || file.name,
+    isPrimary
+  };
+}
+
+function inferUploadedArtifactType(
+  platform: AdminReleasePlatform,
+  fileName: string,
+  fallbackType: AdminReleaseArtifactType
+): AdminReleaseArtifactType {
+  const normalized = fileName.trim().toLowerCase();
+  if (platform === "windows") {
+    if (normalized.endsWith(".exe")) {
+      return "setup.exe";
+    }
+    return "zip";
+  }
+  return fallbackType;
+}
+
+function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
+  if (platform === "windows" && type === "setup.exe") {
+    return "desktop_installer_download" as const;
+  }
+  if (platform === "windows" && type === "zip") {
+    return "desktop_full_replace" as const;
+  }
+  if (platform === "android") {
+    return "apk_download" as const;
+  }
+  if (platform === "ios") {
+    return "external_download" as const;
+  }
+  return "desktop_installer_download" as const;
 }
