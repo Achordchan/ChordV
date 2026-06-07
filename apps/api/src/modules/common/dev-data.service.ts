@@ -1213,33 +1213,46 @@ export class DevDataService implements OnModuleInit {
     }
 
     const nextPassword = input.newPassword?.trim();
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.user.update({
-        where: { id: admin.id },
-        data: {
-          email: nextEmail,
-          ...(nextPassword ? { passwordHash: await bcrypt.hash(nextPassword, 10) } : {}),
-          authVersion: { increment: 1 },
-          lastSeenAt: new Date()
-        }
-      });
-      await tx.refreshToken.updateMany({
-        where: {
-          userId: admin.id,
-          revokedAt: null
-        },
-        data: {
-          revokedAt: new Date()
-        }
-      });
-      return row;
-    });
+    const updated = await this.updateCurrentAdminSecurityWithUniqueEmailGuard(async () =>
+      this.prisma.$transaction(async (tx) => {
+        const row = await tx.user.update({
+          where: { id: admin.id },
+          data: {
+            email: nextEmail,
+            ...(nextPassword ? { passwordHash: await bcrypt.hash(nextPassword, 10) } : {}),
+            authVersion: { increment: 1 },
+            lastSeenAt: new Date()
+          }
+        });
+        await tx.refreshToken.updateMany({
+          where: {
+            userId: admin.id,
+            revokedAt: null
+          },
+          data: {
+            revokedAt: new Date()
+          }
+        });
+        return row;
+      })
+    );
 
     return this.authSessionService.issueSession(updated.id);
   }
 
   async createUser(input: CreateUserInputDto): Promise<AdminUserRecordDto> {
     return this.adminSubscriptionService.createUser(input);
+  }
+
+  private async updateCurrentAdminSecurityWithUniqueEmailGuard<T>(task: () => Promise<T>): Promise<T> {
+    try {
+      return await task();
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("该账号已被占用");
+      }
+      throw error;
+    }
   }
 
   async updateUser(userId: string, input: UpdateUserInputDto): Promise<AdminUserRecordDto> {
@@ -1368,6 +1381,14 @@ export class DevDataService implements OnModuleInit {
     } catch (error) {
       const localSaveFallback = localSaveFallbackRef.current;
       if (!localSaveFallback) {
+        const controlledError = toNodeAccessLocalSaveHttpError(error);
+        if (controlledError) {
+          throw controlledError;
+        }
+        this.logger?.error(
+          `Node access local save failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`,
+          error instanceof Error ? error.stack : undefined
+        );
         throw error;
       }
       const errorMessage = readPanelSyncErrorMessage(error);
@@ -2130,6 +2151,28 @@ function shouldAutoBootstrapDevData() {
 
 function readPanelSyncErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : "3x-ui 客户端预同步失败";
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function isPrismaForeignKeyConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2003";
+}
+
+function isPrismaRecordNotFoundError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2025";
+}
+
+function toNodeAccessLocalSaveHttpError(error: unknown) {
+  if (isPrismaUniqueConstraintError(error)) {
+    return new ConflictException("节点授权已被其他操作修改，请刷新后重试。");
+  }
+  if (isPrismaForeignKeyConstraintError(error) || isPrismaRecordNotFoundError(error)) {
+    return new BadRequestException("节点授权数据已变化，请刷新订阅和节点列表后重试。");
+  }
+  return null;
 }
 
 function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {

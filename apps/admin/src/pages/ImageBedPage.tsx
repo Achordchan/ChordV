@@ -48,6 +48,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const [fileListErrorColor, setFileListErrorColor] = useState<"red" | "yellow">("red");
   const fileListRequestSeqRef = useRef(0);
   const fileListLoadingSeqRef = useRef<number | null>(null);
+  const formDirtyRef = useRef(false);
 
   useEffect(() => {
     void loadConfig();
@@ -60,6 +61,11 @@ export function ImageBedPage(props: ImageBedPageProps) {
     void loadConfig({ silent: true }).then(() => loadFiles());
   }, [props.refreshSignal]);
 
+  function updateForm(patch: Partial<ImageBedConfigForm>) {
+    formDirtyRef.current = true;
+    setForm((current) => ({ ...current, ...patch }));
+  }
+
   async function loadConfig(options?: { silent?: boolean }) {
     try {
       if (!options?.silent) {
@@ -67,16 +73,29 @@ export function ImageBedPage(props: ImageBedPageProps) {
         setError(null);
       }
       const nextConfig = await fetchAdminImageBedConfig();
+      const preserveForm = Boolean(options?.silent && (formDirtyRef.current || saving));
+      const endpointChanged =
+        !config ||
+        config.baseUrl !== nextConfig.baseUrl ||
+        config.hasToken !== nextConfig.hasToken ||
+        config.uploadFolder !== nextConfig.uploadFolder ||
+        config.uploadChannel !== nextConfig.uploadChannel ||
+        config.channelName !== nextConfig.channelName;
       setConfig(nextConfig);
-      setForm({
-        baseUrl: nextConfig.baseUrl,
-        apiToken: "",
-        uploadFolder: nextConfig.uploadFolder ?? "",
-        uploadChannel: nextConfig.uploadChannel ?? "",
-        channelName: nextConfig.channelName ?? ""
-      });
-      setFiles([]);
-      setFileListError(null);
+      if (!preserveForm) {
+        formDirtyRef.current = false;
+        setForm({
+          baseUrl: nextConfig.baseUrl,
+          apiToken: "",
+          uploadFolder: nextConfig.uploadFolder ?? "",
+          uploadChannel: nextConfig.uploadChannel ?? "",
+          channelName: nextConfig.channelName ?? ""
+        });
+      }
+      if (!preserveForm && endpointChanged) {
+        setFiles([]);
+        setFileListError(null);
+      }
     } catch (reason) {
       if (!options?.silent) {
         setError(readError(reason, "图床配置加载失败"));
@@ -138,7 +157,14 @@ export function ImageBedPage(props: ImageBedPageProps) {
         channelName: form.channelName.trim() || null
       });
       setConfig(nextConfig);
-      setForm((current) => ({ ...current, apiToken: "" }));
+      formDirtyRef.current = false;
+      setForm({
+        baseUrl: nextConfig.baseUrl,
+        apiToken: "",
+        uploadFolder: nextConfig.uploadFolder ?? "",
+        uploadChannel: nextConfig.uploadChannel ?? "",
+        channelName: nextConfig.channelName ?? ""
+      });
       setFileListError(null);
       setFileListErrorColor("red");
       notifications.show({
@@ -176,7 +202,14 @@ export function ImageBedPage(props: ImageBedPageProps) {
       setSaving(true);
       const nextConfig = await updateAdminImageBedConfig({ apiToken: null });
       setConfig(nextConfig);
-      setForm((current) => ({ ...current, apiToken: "" }));
+      formDirtyRef.current = false;
+      setForm({
+        baseUrl: nextConfig.baseUrl,
+        apiToken: "",
+        uploadFolder: nextConfig.uploadFolder ?? "",
+        uploadChannel: nextConfig.uploadChannel ?? "",
+        channelName: nextConfig.channelName ?? ""
+      });
       if (!nextConfig.hasToken) {
         setFiles([]);
         setFileListError(null);
@@ -290,32 +323,32 @@ export function ImageBedPage(props: ImageBedPageProps) {
             <TextInput
               label="图床地址"
               value={form.baseUrl}
-              onChange={(event) => setForm((current) => ({ ...current, baseUrl: event.currentTarget.value }))}
+              onChange={(event) => updateForm({ baseUrl: event.currentTarget.value })}
               placeholder="https://image.achord.cn"
             />
             <PasswordInput
               label="API Token"
               value={form.apiToken}
-              onChange={(event) => setForm((current) => ({ ...current, apiToken: event.currentTarget.value }))}
+              onChange={(event) => updateForm({ apiToken: event.currentTarget.value })}
               placeholder={config?.hasToken ? "留空则不修改现有 Token" : "请输入图床 API Token"}
             />
             <Group grow>
               <TextInput
                 label="上传目录"
                 value={form.uploadFolder}
-                onChange={(event) => setForm((current) => ({ ...current, uploadFolder: event.currentTarget.value }))}
+                onChange={(event) => updateForm({ uploadFolder: event.currentTarget.value })}
                 placeholder="support-tickets"
               />
               <TextInput
                 label="上传渠道"
                 value={form.uploadChannel}
-                onChange={(event) => setForm((current) => ({ ...current, uploadChannel: event.currentTarget.value }))}
+                onChange={(event) => updateForm({ uploadChannel: event.currentTarget.value })}
                 placeholder="留空使用图床默认渠道"
               />
               <TextInput
                 label="渠道名称"
                 value={form.channelName}
-                onChange={(event) => setForm((current) => ({ ...current, channelName: event.currentTarget.value }))}
+                onChange={(event) => updateForm({ channelName: event.currentTarget.value })}
                 placeholder="留空使用图床默认渠道名"
               />
             </Group>

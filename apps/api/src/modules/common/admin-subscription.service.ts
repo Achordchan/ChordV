@@ -239,18 +239,26 @@ export class AdminSubscriptionService {
     }
 
     const passwordHash = await bcrypt.hash(input.password, 10);
-    const row = await this.prisma.user.create({
-      data: {
-        id: createId("user"),
-        email,
-        displayName: input.displayName.trim(),
-        role: input.role,
-        status: "active",
-        maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null,
-        passwordHash,
-        lastSeenAt: new Date()
+    let row: Awaited<ReturnType<PrismaService["user"]["create"]>>;
+    try {
+      row = await this.prisma.user.create({
+        data: {
+          id: createId("user"),
+          email,
+          displayName: input.displayName.trim(),
+          role: input.role,
+          status: "active",
+          maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null,
+          passwordHash,
+          lastSeenAt: new Date()
+        }
+      });
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("邮箱已存在");
       }
-    });
+      throw error;
+    }
 
     return toAdminUserRecord(row, {
       accountType: "personal",
@@ -1281,14 +1289,22 @@ export class AdminSubscriptionService {
     }
     await this.assertUserCanJoinTeam(input.userId);
 
-    const member = await this.prisma.teamMember.create({
-      data: {
-        id: createId("member"),
-        teamId,
-        userId: input.userId,
-        role: input.role ?? "member"
+    let member: Awaited<ReturnType<PrismaService["teamMember"]["create"]>>;
+    try {
+      member = await this.prisma.teamMember.create({
+        data: {
+          id: createId("member"),
+          teamId,
+          userId: input.userId,
+          role: input.role ?? "member"
+        }
+      });
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("The account already belongs to another team.");
       }
-    });
+      throw error;
+    }
 
     await this.closePersonalSupportTicketsForUserBestEffort(
       input.userId,

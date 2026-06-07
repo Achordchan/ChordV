@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { BadRequestException, ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
+import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
 import { LEASE_GRACE_SECONDS } from "../src/modules/common/runtime-session.utils";
@@ -7297,6 +7298,32 @@ async function testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest() {
     () => service.updateSubscriptionNodeAccess("sub_1", {} as any),
     (error) => error instanceof BadRequestException && /nodeIds must be an array/.test(error.message),
     "invalid node access payloads must return a controlled 400 instead of leaking a TypeError as HTTP 500"
+  );
+}
+
+async function testUpdateNodeAccessMapsLocalSaveConstraintErrors() {
+  const service = createDevDataService({
+    logger: {
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async () => {
+          throw { code: "P2003" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] }),
+    (error) => error instanceof BadRequestException && /节点授权数据已变化/.test(error.message),
+    "local node access constraint errors must return a controlled 400 instead of HTTP 500"
   );
 }
 
@@ -15759,6 +15786,51 @@ async function testCreateTeamMemberRejectsOwnerRole() {
   );
 }
 
+async function testCreateTeamMemberRejectsUniqueConflictAsConflict() {
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({ id: "team_1" }),
+    assertUserCanJoinTeam: async () => undefined,
+    prisma: {
+      teamMember: {
+        create: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.createTeamMember("team_1", { userId: "user_1", role: "member" }),
+    (error) => error instanceof ConflictException && /belongs to another team/i.test(error.message),
+    "team member unique conflicts must return a controlled conflict instead of HTTP 500"
+  );
+}
+
+async function testCreateUserRejectsUniqueEmailConflictAsConflict() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findUnique: async () => null,
+        create: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createUser({
+        email: "user@example.com",
+        password: "password123",
+        displayName: "User",
+        role: "user"
+      }),
+    (error) => error instanceof ConflictException && /邮箱|exist/i.test(error.message),
+    "user email unique conflicts must return a controlled conflict instead of HTTP 500"
+  );
+}
+
 async function testUpdatePlanRejectsScopeChangeWhenUsed() {
   const service = createAdminSubscriptionService({
     ensurePlanExists: async () => ({
@@ -15888,6 +15960,58 @@ function testUpdateCurrentAdminSecurityDtoRequiresEmail() {
 
   assert.ok(invalid.some((error) => error.property === "email"), "admin security email must reject non-email values");
   assert.equal(valid.length, 0, "admin security email must accept valid email addresses");
+}
+
+async function testUpdateCurrentAdminSecurityRejectsUniqueEmailConflictAsConflict() {
+  const passwordHash = await bcrypt.hash("current-password", 10);
+  const service = createDevDataService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({
+        id: "admin_1",
+        role: "admin"
+      }),
+      issueSession: async () => {
+        throw new Error("session should not be issued after an email unique conflict");
+      }
+    },
+    prisma: {
+      user: {
+        findUnique: async (payload: Record<string, any>) => {
+          if (payload.where.id === "admin_1") {
+            return {
+              id: "admin_1",
+              email: "admin@example.com",
+              role: "admin",
+              status: "active",
+              passwordHash
+            };
+          }
+          return null;
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          user: {
+            update: async () => {
+              throw { code: "P2002" };
+            }
+          },
+          refreshToken: {
+            updateMany: async () => ({ count: 0 })
+          }
+        })
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateCurrentAdminSecurity("Bearer admin-token", {
+        currentPassword: "current-password",
+        email: "taken@example.com"
+      }),
+    (error) => error instanceof ConflictException && /占用|conflict|exists/i.test(error.message),
+    "admin email unique conflicts must return a controlled conflict instead of HTTP 500"
+  );
 }
 
 function testNodePanelBaseUrlAllowsBlankAsEmpty() {
@@ -20288,6 +20412,7 @@ async function main() {
   await testRefreshNodeSlowPanelReturnsDegradedWithinBudget();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
+  await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
@@ -20412,12 +20537,15 @@ async function main() {
   await testCurrentSubscriptionPrefersEffectiveSubscription();
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
   await testCreateTeamMemberRejectsOwnerRole();
+  await testCreateTeamMemberRejectsUniqueConflictAsConflict();
+  await testCreateUserRejectsUniqueEmailConflictAsConflict();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   await testCreatePlanRejectsBlankTrimmedName();
   await testUpdatePlanRejectsBlankTrimmedName();
   testAdminPatchDtosRejectNullForNonNullableFields();
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
   testUpdateCurrentAdminSecurityDtoRequiresEmail();
+  await testUpdateCurrentAdminSecurityRejectsUniqueEmailConflictAsConflict();
   testNodePanelBaseUrlAllowsBlankAsEmpty();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();

@@ -89,6 +89,7 @@ export function TicketsPage(props: TicketsPageProps) {
   const ticketDetailLoadingSeqRef = useRef<number | null>(null);
   const replySavingRef = useRef(false);
   const statusChangingRef = useRef<string | null>(null);
+  const replyAttachmentResetRef = useRef<() => void>(null);
 
   useEffect(() => {
     void loadTickets();
@@ -152,10 +153,12 @@ export function TicketsPage(props: TicketsPageProps) {
       setDetailError(null);
       setReplyDraft("");
       setReplyAttachment(null);
+      replyAttachmentResetRef.current?.();
       return;
     }
     setReplyDraft("");
     setReplyAttachment(null);
+    replyAttachmentResetRef.current?.();
     void loadTicketDetail(selectedTicketId);
   }, [selectedTicketId]);
 
@@ -257,6 +260,7 @@ export function TicketsPage(props: TicketsPageProps) {
   function handleReplyAttachmentChange(file: File | null) {
     if (!file) {
       setReplyAttachment(null);
+      replyAttachmentResetRef.current?.();
       return;
     }
     if (!file.type.startsWith("image/")) {
@@ -266,6 +270,7 @@ export function TicketsPage(props: TicketsPageProps) {
         message: "工单附件只支持图片文件。"
       });
       setReplyAttachment(null);
+      replyAttachmentResetRef.current?.();
       return;
     }
     if (file.size > ADMIN_TICKET_ATTACHMENT_MAX_BYTES) {
@@ -310,6 +315,7 @@ export function TicketsPage(props: TicketsPageProps) {
         setSelectedTicket(detail);
         setReplyDraft("");
         setReplyAttachment(null);
+        replyAttachmentResetRef.current?.();
       }
       upsertTicketSummary(detail);
       if (detail.attachmentUploadStatus === "failed") {
@@ -667,12 +673,19 @@ export function TicketsPage(props: TicketsPageProps) {
                                 variant="light"
                                 rightSection={<IconX size={14} />}
                                 className="admin-ticket-attachment-pill"
-                                onClick={() => setReplyAttachment(null)}
+                                onClick={() => {
+                                  setReplyAttachment(null);
+                                  replyAttachmentResetRef.current?.();
+                                }}
                               >
                                 {replyAttachment.name}
                               </Button>
                             ) : null}
-                            <FileButton onChange={handleReplyAttachmentChange} accept="image/png,image/jpeg,image/webp,image/gif">
+                            <FileButton
+                              resetRef={replyAttachmentResetRef}
+                              onChange={handleReplyAttachmentChange}
+                              accept="image/png,image/jpeg,image/webp,image/gif"
+                            >
                               {(fileButtonProps) => (
                                 <Button
                                   {...fileButtonProps}
