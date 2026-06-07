@@ -414,9 +414,15 @@ export class ReleaseCenterService {
     if (input.type !== undefined) {
       assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
     }
+    const platform = release.platform as PlatformTarget;
     const nextSource = input.source ?? current.source;
-    const nextType = input.type ?? fromPrismaReleaseArtifactType(current.type);
+    const currentType = fromPrismaReleaseArtifactType(current.type);
     const nextDownloadUrl = input.downloadUrl ?? current.downloadUrl;
+    const inferredExternalType =
+      nextSource === "external" && input.downloadUrl !== undefined && input.type === undefined
+        ? inferExternalReleaseArtifactType(platform, nextDownloadUrl, currentType)
+        : undefined;
+    const nextType = input.type ?? inferredExternalType ?? currentType;
     if (input.source === "uploaded" && current.source !== "uploaded") {
       throw new BadRequestException("Use the upload endpoint to switch to an uploaded artifact.");
     }
@@ -433,9 +439,9 @@ export class ReleaseCenterService {
       assertDesktopReleaseArtifactUsesHttps(release.platform as PlatformTarget, nextDownloadUrl);
     }
     const nextDeliveryMode = resolveReleaseArtifactDeliveryMode(
-      release.platform as PlatformTarget,
+      platform,
       nextType,
-      input.deliveryMode ?? (input.type !== undefined ? undefined : (current.deliveryMode as UpdateDeliveryMode))
+      input.deliveryMode ?? (input.type !== undefined || inferredExternalType !== undefined ? undefined : (current.deliveryMode as UpdateDeliveryMode))
     );
     const metadataIdentityChanged =
       input.source !== undefined ||
@@ -456,8 +462,10 @@ export class ReleaseCenterService {
         where: { id: artifactId },
         data: {
           ...(input.source !== undefined ? { source: input.source } : {}),
-          ...(input.type !== undefined ? { type: toPrismaReleaseArtifactType(input.type) } : {}),
-          ...(input.deliveryMode !== undefined || input.type !== undefined ? { deliveryMode: nextDeliveryMode } : {}),
+          ...(input.type !== undefined || inferredExternalType !== undefined ? { type: toPrismaReleaseArtifactType(nextType) } : {}),
+          ...(input.deliveryMode !== undefined || input.type !== undefined || inferredExternalType !== undefined
+            ? { deliveryMode: nextDeliveryMode }
+            : {}),
           ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
           ...(nextSource === "external" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
           ...(nextSource !== "external" ? { defaultMirrorPrefix: null } : {}),
@@ -1136,6 +1144,38 @@ function inferUploadedReleaseArtifactType(
     return "zip";
   }
   return fallbackType;
+}
+
+function inferExternalReleaseArtifactType(
+  platform: PlatformTarget,
+  downloadUrl: string,
+  fallbackType: ReleaseArtifactType
+): ReleaseArtifactType {
+  const pathname = inferUrlPathname(downloadUrl);
+  if (platform === "windows") {
+    if (pathname.endsWith(".zip")) {
+      return "zip";
+    }
+    if (pathname.endsWith(".exe")) {
+      return "setup.exe";
+    }
+    return fallbackType;
+  }
+  if (platform === "macos") {
+    return pathname.endsWith(".dmg") ? "dmg" : fallbackType;
+  }
+  if (platform === "android") {
+    return pathname.endsWith(".apk") ? "apk" : fallbackType;
+  }
+  return pathname.endsWith(".ipa") ? "ipa" : fallbackType;
+}
+
+function inferUrlPathname(downloadUrl: string) {
+  try {
+    return new URL(downloadUrl.trim()).pathname.toLowerCase();
+  } catch {
+    return downloadUrl.trim().toLowerCase();
+  }
 }
 
 function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: string) {

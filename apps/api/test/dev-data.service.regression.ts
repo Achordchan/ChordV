@@ -13867,7 +13867,7 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
   assert.equal(result.id, "release_1");
 }
 
-async function testUpdateWindowsExternalReleaseKeepsSaveForNonZipUrl() {
+async function testUpdateWindowsExternalReleaseInfersInstallerForExeUrl() {
   const artifact = makeReleaseCenterTestArtifact({
     id: "artifact_existing",
     source: "external",
@@ -13918,6 +13918,64 @@ async function testUpdateWindowsExternalReleaseKeepsSaveForNonZipUrl() {
 
   assert.equal(updates.length, 1);
   assert.equal(updates[0].data.downloadUrl, "https://example.com/ChordV-setup.exe");
+  assert.equal(updates[0].data.type, "setup_exe");
+  assert.equal(updates[0].data.deliveryMode, "desktop_installer_download");
+  assert.equal(result.id, "release_1");
+}
+
+async function testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl() {
+  const artifact = makeReleaseCenterTestArtifact({
+    id: "artifact_existing",
+    source: "external",
+    type: "external",
+    deliveryMode: "external_download",
+    fileName: null,
+    downloadUrl: "https://example.com/chordv/windows/latest"
+  });
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => artifact,
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...artifact,
+            ...payload.data
+          };
+        }
+      },
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            platform: "windows",
+            artifacts: [artifact]
+          })
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...artifact,
+                ...payload.data
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await service.updateReleaseArtifact("release_1", "artifact_existing", {
+    downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip"
+  });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
+  assert.equal(updates[0].data.type, "zip");
+  assert.equal(updates[0].data.deliveryMode, "desktop_full_replace");
   assert.equal(result.id, "release_1");
 }
 
@@ -19579,7 +19637,8 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
-  await testUpdateWindowsExternalReleaseKeepsSaveForNonZipUrl();
+  await testUpdateWindowsExternalReleaseInfersInstallerForExeUrl();
+  await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
   await testWindowsExeUploadInfersInstallerArtifactType();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
