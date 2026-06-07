@@ -80,7 +80,9 @@ export function ReleasesPage(props: ReleasesPageProps) {
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
   const releaseListRequestSeqRef = useRef(0);
+  const releaseListLoadingSeqRef = useRef<number | null>(null);
   const releaseMutationSeqRef = useRef(0);
+  const savingRef = useRef<string | null>(null);
 
   useEffect(() => {
     void loadReleases();
@@ -127,6 +129,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     const mutationSeqAtStart = releaseMutationSeqRef.current;
     try {
       if (!silent) {
+        releaseListLoadingSeqRef.current = requestSeq;
         setLoading(true);
         setError(null);
       }
@@ -143,10 +146,28 @@ export function ReleasesPage(props: ReleasesPageProps) {
         setError(readError(reason, "发布中心接口暂不可用，请先确认后端发布中心接口是否已合并。"));
       }
     } finally {
-      if (!silent && requestSeq === releaseListRequestSeqRef.current) {
+      if (!silent && releaseListLoadingSeqRef.current === requestSeq) {
+        releaseListLoadingSeqRef.current = null;
         setLoading(false);
       }
     }
+  }
+
+  function beginSaving(actionKey: string) {
+    if (savingRef.current) {
+      return false;
+    }
+    savingRef.current = actionKey;
+    setSaving(actionKey);
+    return true;
+  }
+
+  function endSaving(actionKey: string) {
+    if (savingRef.current !== actionKey) {
+      return;
+    }
+    savingRef.current = null;
+    setSaving(null);
   }
 
   function openCreateRelease() {
@@ -188,8 +209,11 @@ export function ReleasesPage(props: ReleasesPageProps) {
   }
 
   async function saveRelease() {
+    const actionKey = "release-editor";
+    if (!beginSaving(actionKey)) {
+      return;
+    }
     try {
-      setSaving("release-editor");
       const version = releaseForm.version.trim();
       const validationMessage = validateReleaseEditorInput(version, releaseEditorId ? undefined : releaseForm, releaseForm.platform);
       if (validationMessage) {
@@ -267,7 +291,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         void loadReleases();
       }
     } finally {
-      setSaving(null);
+      endSaving(actionKey);
     }
   }
 
@@ -297,8 +321,11 @@ export function ReleasesPage(props: ReleasesPageProps) {
   }
 
   async function updateReleaseStatus(record: AdminReleaseRecordDto, nextStatus: "draft" | "published") {
+    const actionKey = `release-status:${record.id}`;
+    if (!beginSaving(actionKey)) {
+      return;
+    }
     try {
-      setSaving(`release-status:${record.id}`);
       releaseMutationSeqRef.current += 1;
       const nextRecord = nextStatus === "published" ? await publishAdminRelease(record.id) : await unpublishAdminRelease(record.id);
       setReleases((current) => upsertRelease(current, nextRecord));
@@ -313,18 +340,24 @@ export function ReleasesPage(props: ReleasesPageProps) {
         void loadReleases();
       }
     } finally {
-      setSaving(null);
+      endSaving(actionKey);
     }
   }
 
   async function deleteRelease(record: AdminReleaseRecordDto) {
+    const actionKey = `release-delete:${record.id}`;
+    if (savingRef.current) {
+      return;
+    }
     const confirmed = window.confirm(`确认删除 ${record.version} 这条发布记录吗？已上传的安装包也会一起删除。`);
     if (!confirmed) {
       return;
     }
 
+    if (!beginSaving(actionKey)) {
+      return;
+    }
     try {
-      setSaving(`release-delete:${record.id}`);
       releaseMutationSeqRef.current += 1;
       await deleteAdminRelease(record.id);
       setReleases((current) => current.filter((item) => item.id !== record.id));
@@ -339,7 +372,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         void loadReleases();
       }
     } finally {
-      setSaving(null);
+      endSaving(actionKey);
     }
   }
 
@@ -418,6 +451,10 @@ export function ReleasesPage(props: ReleasesPageProps) {
   async function saveArtifact() {
     if (!artifactEditor) return;
 
+    const actionKey = `artifact:${artifactEditor.releaseId ?? "new"}`;
+    if (!beginSaving(actionKey)) {
+      return;
+    }
     try {
       let releaseId = artifactEditor.releaseId;
       const validationMessage = validateArtifactEditorInput();
@@ -430,7 +467,6 @@ export function ReleasesPage(props: ReleasesPageProps) {
         return;
       }
 
-      setSaving(`artifact:${artifactEditor.releaseId ?? "new"}`);
       releaseMutationSeqRef.current += 1;
       let record: AdminReleaseRecordDto | null = null;
 
@@ -491,14 +527,20 @@ export function ReleasesPage(props: ReleasesPageProps) {
         void loadReleases();
       }
     } finally {
-      setSaving(null);
+      endSaving(actionKey);
     }
   }
 
   async function removeArtifact(releaseId: string, artifactId: string) {
+    const actionKey = `artifact:${releaseId}`;
+    if (savingRef.current) {
+      return;
+    }
     if (!window.confirm("确定删除这个安装包吗？")) return;
+    if (!beginSaving(actionKey)) {
+      return;
+    }
     try {
-      setSaving(`artifact:${releaseId}`);
       releaseMutationSeqRef.current += 1;
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
       setReleases((current) => upsertRelease(current, record));
@@ -513,7 +555,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         void loadReleases();
       }
     } finally {
-      setSaving(null);
+      endSaving(actionKey);
     }
   }
 

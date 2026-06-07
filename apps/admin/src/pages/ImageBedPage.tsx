@@ -49,6 +49,8 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const fileListRequestSeqRef = useRef(0);
   const fileListLoadingSeqRef = useRef<number | null>(null);
   const formDirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  const deletingPathRef = useRef<string | null>(null);
 
   useEffect(() => {
     void loadConfig();
@@ -66,14 +68,15 @@ export function ImageBedPage(props: ImageBedPageProps) {
     setForm((current) => ({ ...current, ...patch }));
   }
 
-  async function loadConfig(options?: { silent?: boolean }) {
+  async function loadConfig(options?: { silent?: boolean; preserveForm?: boolean }) {
     try {
       if (!options?.silent) {
         setLoadingConfig(true);
         setError(null);
       }
       const nextConfig = await fetchAdminImageBedConfig();
-      const preserveForm = Boolean(options?.silent && (formDirtyRef.current || saving));
+      const preserveForm =
+        options?.preserveForm ?? Boolean(options?.silent && (formDirtyRef.current || savingRef.current || saving));
       const endpointChanged =
         !config ||
         config.baseUrl !== nextConfig.baseUrl ||
@@ -147,6 +150,10 @@ export function ImageBedPage(props: ImageBedPageProps) {
   }
 
   async function handleSave() {
+    if (savingRef.current) {
+      return;
+    }
+    savingRef.current = true;
     try {
       setSaving(true);
       const nextConfig = await updateAdminImageBedConfig({
@@ -187,17 +194,22 @@ export function ImageBedPage(props: ImageBedPageProps) {
         message: uncertain ? `${message}。请求状态不确定，配置可能已保存，请刷新页面确认。` : message
       });
       if (uncertain) {
-        void loadConfig({ silent: true }).then(() => loadFiles({ silent: true }));
+        void loadConfig({ silent: true, preserveForm: false }).then(() => loadFiles({ silent: true }));
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
 
   async function handleClearToken() {
+    if (savingRef.current) {
+      return;
+    }
     if (!window.confirm("确定清空图床 API Token？清空后工单附件上传会不可用。")) {
       return;
     }
+    savingRef.current = true;
     try {
       setSaving(true);
       const nextConfig = await updateAdminImageBedConfig({ apiToken: null });
@@ -231,17 +243,22 @@ export function ImageBedPage(props: ImageBedPageProps) {
         message: uncertain ? `${message}。请求状态不确定，Token 可能已清空，请刷新页面确认。` : message
       });
       if (uncertain) {
-        void loadConfig({ silent: true }).then(() => loadFiles({ silent: true }));
+        void loadConfig({ silent: true, preserveForm: false }).then(() => loadFiles({ silent: true }));
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
 
   async function handleDelete(file: AdminImageBedFileDto) {
+    if (deletingPathRef.current) {
+      return;
+    }
     if (!window.confirm(`确定删除图床文件 ${file.name}？此操作不会自动删除工单消息记录。`)) {
       return;
     }
+    deletingPathRef.current = file.name;
     try {
       setDeletingPath(file.name);
       const result = await deleteAdminImageBedFile(file.name);
@@ -285,7 +302,10 @@ export function ImageBedPage(props: ImageBedPageProps) {
         void loadFiles({ silent: true });
       }
     } finally {
-      setDeletingPath(null);
+      if (deletingPathRef.current === file.name) {
+        deletingPathRef.current = null;
+        setDeletingPath(null);
+      }
     }
   }
 

@@ -17,6 +17,7 @@ import {
   hasUnreadTicketMessages,
   readSupportTicketAuthorDisplayName,
   summarizeSupportTicketMessage,
+  toSupportTicketAttachmentDto,
   toClientSupportTicketDetail,
   toClientSupportTicketSummary
 } from "./ticket.utils";
@@ -256,11 +257,26 @@ export class ClientTicketService {
         id: true,
         title: true,
         status: true,
+        source: true,
         subscriptionId: true,
         teamId: true,
+        lastMessageAt: true,
         closedAt: true,
         createdAt: true,
-        team: { select: { name: true } }
+        updatedAt: true,
+        team: { select: { name: true } },
+        messages: {
+          include: {
+            authorUser: { select: { displayName: true } },
+            attachments: { orderBy: { createdAt: "asc" } }
+          },
+          orderBy: { createdAt: "asc" }
+        },
+        readStates: {
+          where: { userId: user.id },
+          select: { lastReadAt: true, lastReadMessageAt: true },
+          take: 1
+        }
       }
     });
     if (!current) {
@@ -348,11 +364,26 @@ export class ClientTicketService {
         id: true,
         title: true,
         status: true,
+        source: true,
         subscriptionId: true,
         teamId: true,
+        lastMessageAt: true,
         closedAt: true,
         createdAt: true,
-        team: { select: { name: true } }
+        updatedAt: true,
+        team: { select: { name: true } },
+        messages: {
+          include: {
+            authorUser: { select: { displayName: true } },
+            attachments: { orderBy: { createdAt: "asc" } }
+          },
+          orderBy: { createdAt: "asc" }
+        },
+        readStates: {
+          where: { userId: user.id },
+          select: { lastReadAt: true, lastReadMessageAt: true },
+          take: 1
+        }
       }
     });
     if (!current) {
@@ -527,8 +558,28 @@ export class ClientTicketService {
       teamId: string | null;
       teamName?: string | null;
       team?: { name: string } | null;
+      source?: "desktop" | "admin";
+      lastMessageAt?: Date;
       closedAt: Date | null;
       createdAt: Date;
+      updatedAt?: Date;
+      readStates?: Array<{ lastReadAt: Date | null; lastReadMessageAt: Date | null }>;
+      messages?: Array<{
+        id: string;
+        ticketId: string;
+        authorRole: ClientSupportTicketDetailDto["messages"][number]["authorRole"];
+        body: string;
+        createdAt: Date;
+        attachments?: Array<{
+          id: string;
+          url: string;
+          fileName: string;
+          mimeType: string;
+          fileSizeBytes: bigint | number | null;
+          createdAt: Date;
+        }>;
+        authorUser?: { displayName: string } | null;
+      }>;
     },
     now: Date,
     message: {
@@ -554,6 +605,18 @@ export class ClientTicketService {
       unreadCount: 0,
       lastReadAt: now.toISOString(),
       messages: [
+        ...(ticket.messages ?? []).map((existingMessage) => ({
+          id: existingMessage.id,
+          ticketId: existingMessage.ticketId,
+          authorRole: existingMessage.authorRole,
+          authorDisplayName: readSupportTicketAuthorDisplayName(
+            existingMessage.authorRole,
+            existingMessage.authorUser?.displayName ?? null
+          ),
+          body: existingMessage.body,
+          attachments: (existingMessage.attachments ?? []).map(toSupportTicketAttachmentDto),
+          createdAt: existingMessage.createdAt.toISOString()
+        })),
         {
           id: message.messageId,
           ticketId: ticket.id,

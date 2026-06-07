@@ -1347,6 +1347,22 @@ export function App() {
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      if (uncertain) {
+        void refreshCurrentDataAfterAction().catch((refreshReason) => {
+          notifications.show({
+            color: "yellow",
+            title: "节点授权状态不确定",
+            message: readError(refreshReason, "节点授权状态刷新失败")
+          });
+        });
+        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
+          notifications.show({
+            color: "yellow",
+            title: "同步队列刷新失败",
+            message: readError(refreshReason, "同步队列刷新失败")
+          });
+        });
+      }
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "节点授权状态不确定" : "操作失败",

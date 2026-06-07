@@ -19840,11 +19840,26 @@ async function testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStall
     id: "ticket_1",
     title: "Need help",
     status: "waiting_user",
+    source: "desktop",
     subscriptionId: "sub_1",
     teamId: null,
+    lastMessageAt: new Date("2026-01-01T00:01:00.000Z"),
     closedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
-    team: null
+    updatedAt: new Date("2026-01-01T00:01:00.000Z"),
+    team: null,
+    readStates: [{ lastReadAt: new Date("2026-01-01T00:01:00.000Z"), lastReadMessageAt: new Date("2026-01-01T00:01:00.000Z") }],
+    messages: [
+      {
+        id: "ticket_msg_existing",
+        ticketId: "ticket_1",
+        authorRole: "admin",
+        body: "existing admin reply",
+        createdAt: new Date("2026-01-01T00:01:00.000Z"),
+        authorUser: { displayName: "Support" },
+        attachments: []
+      }
+    ]
   };
   const service = createClientTicketService({
     logger: {
@@ -19910,7 +19925,9 @@ async function testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStall
 
   assert.deepEqual(writes.sort(), ["message", "read_state", "ticket"]);
   assert.equal(result.id, "ticket_1");
-  assert.equal(result.messages[0]?.body, "reply saved");
+  assert.equal(result.messages[0]?.body, "existing admin reply");
+  assert.equal(result.messages[0]?.authorDisplayName, "Support");
+  assert.equal(result.messages[1]?.body, "reply saved");
 }
 
 async function testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls() {
@@ -19925,11 +19942,35 @@ async function testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRe
     id: "ticket_1",
     title: "Need attachment",
     status: "waiting_user",
+    source: "desktop",
     subscriptionId: "sub_1",
     teamId: null,
+    lastMessageAt: new Date("2026-01-01T00:01:00.000Z"),
     closedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
-    team: null
+    updatedAt: new Date("2026-01-01T00:01:00.000Z"),
+    team: null,
+    readStates: [{ lastReadAt: new Date("2026-01-01T00:01:00.000Z"), lastReadMessageAt: new Date("2026-01-01T00:01:00.000Z") }],
+    messages: [
+      {
+        id: "ticket_msg_existing",
+        ticketId: "ticket_1",
+        authorRole: "admin",
+        body: "existing attachment discussion",
+        createdAt: new Date("2026-01-01T00:01:00.000Z"),
+        authorUser: { displayName: "Support" },
+        attachments: [
+          {
+            id: "att_existing",
+            url: "https://image.achord.cn/file/support-tickets/existing.png",
+            fileName: "existing.png",
+            mimeType: "image/png",
+            fileSizeBytes: BigInt(99),
+            createdAt: new Date("2026-01-01T00:01:01.000Z")
+          }
+        ]
+      }
+    ]
   };
   const service = createClientTicketService({
     logger: {
@@ -19986,9 +20027,11 @@ async function testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRe
   ]);
 
   assert.equal(result.id, "ticket_1");
-  assert.equal(result.messages[0]?.body, `Uploaded attachment: ${uploadedFile.fileName}`);
-  assert.equal(result.messages[0]?.attachments[0]?.url, uploadedFile.url);
-  assert.equal(result.messages[0]?.attachments[0]?.fileSizeBytes, uploadedFile.fileSizeBytes.toString());
+  assert.equal(result.messages[0]?.body, "existing attachment discussion");
+  assert.equal(result.messages[0]?.attachments[0]?.url, "https://image.achord.cn/file/support-tickets/existing.png");
+  assert.equal(result.messages[1]?.body, `Uploaded attachment: ${uploadedFile.fileName}`);
+  assert.equal(result.messages[1]?.attachments[0]?.url, uploadedFile.url);
+  assert.equal(result.messages[1]?.attachments[0]?.fileSizeBytes, uploadedFile.fileSizeBytes.toString());
 }
 
 async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
