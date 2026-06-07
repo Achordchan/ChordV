@@ -1648,13 +1648,18 @@ export class DevDataService implements OnModuleInit {
 
   private async trySyncSubscriptionPanelAccess(subscriptionId: string) {
     try {
-      const queuePanelAccessSync =
-        typeof (this.runtimeSessionService as { queueSubscriptionPanelAccessSync?: unknown }).queueSubscriptionPanelAccessSync ===
-        "function"
-          ? (this.runtimeSessionService as { queueSubscriptionPanelAccessSync: (subscriptionId: string) => Promise<number> })
-              .queueSubscriptionPanelAccessSync.bind(this.runtimeSessionService)
-          : this.runtimeSessionService.syncSubscriptionPanelAccess.bind(this.runtimeSessionService);
-      const syncResult = await this.withNodeAccessPanelSyncBudget(subscriptionId, queuePanelAccessSync(subscriptionId));
+      const queuePanelAccessSync = (this.runtimeSessionService as { queueSubscriptionPanelAccessSync?: unknown })
+        .queueSubscriptionPanelAccessSync;
+      if (typeof queuePanelAccessSync !== "function") {
+        return {
+          ok: false as const,
+          errorMessage: "runtime session service does not support queued panel access synchronization"
+        };
+      }
+      const syncResult = await this.withNodeAccessPanelSyncBudget(
+        subscriptionId,
+        (queuePanelAccessSync as (subscriptionId: string) => Promise<number>).call(this.runtimeSessionService, subscriptionId)
+      );
       if (!syncResult.ok) {
         return syncResult;
       }

@@ -7074,9 +7074,12 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
     },
     runtimeSessionService: {
       queueSubscriptionPanelAccessSyncTx: async () => 1,
-      syncSubscriptionPanelAccess: async () => {
+      queueSubscriptionPanelAccessSync: async () => {
         panelSyncStarted = true;
         throw new Error("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("node panel access sync must use queueSubscriptionPanelAccessSync");
       }
     },
     publishNodeAccessUpdatedEvent: async () => {
