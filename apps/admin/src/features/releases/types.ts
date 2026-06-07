@@ -62,9 +62,12 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
   };
 }
 
-export function emptyArtifactEditorForm(type: AdminReleaseArtifactType = "dmg"): ArtifactEditorFormState {
+export function emptyArtifactEditorForm(
+  type: AdminReleaseArtifactType = "dmg",
+  source: ArtifactEditorFormState["source"] = "external"
+): ArtifactEditorFormState {
   return {
-    source: "external",
+    source,
     type,
     downloadUrl: "",
     fileName: "",

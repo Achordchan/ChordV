@@ -13,6 +13,7 @@ import {
 } from "@mantine/core";
 import { IconCheck, IconCopy, IconEdit, IconExternalLink, IconPlus, IconTrash } from "@tabler/icons-react";
 import type { AdminReleaseArtifactRecordDto, AdminReleasePlatform, AdminReleaseRecordDto } from "../../api/client";
+import type { ArtifactEditorFormState } from "./types";
 import { formatDateTime } from "../../utils/admin-format";
 import { StatusBadge } from "../shared/StatusBadge";
 
@@ -20,7 +21,7 @@ type ReleaseRecordCardProps = {
   record: AdminReleaseRecordDto;
   busyAction: "status" | "delete" | "artifact" | null;
   onEditRelease: (record: AdminReleaseRecordDto) => void;
-  onCreateArtifact: (releaseId: string, platform: AdminReleasePlatform) => void;
+  onCreateArtifact: (releaseId: string, platform: AdminReleasePlatform, source?: ArtifactEditorFormState["source"]) => void;
   onPublish: (record: AdminReleaseRecordDto) => void;
   onWithdraw: (record: AdminReleaseRecordDto) => void;
   onDeleteRelease: (record: AdminReleaseRecordDto) => void;
@@ -77,11 +78,21 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               size="xs"
               variant="default"
               leftSection={<IconPlus size={14} />}
-              onClick={() => props.onCreateArtifact(record.id, record.platform)}
+              onClick={() => props.onCreateArtifact(record.id, record.platform, "external")}
               disabled={artifactEditingDisabled}
-              title={artifactEditingDisabled ? "请先撤回发布，再新增或上传安装包" : undefined}
+              title={artifactEditingDisabled ? "请先撤回发布，再添加外链" : undefined}
             >
-              新增/上传安装包
+              添加外链
+            </Button>
+            <Button
+              size="xs"
+              variant="light"
+              leftSection={<IconPlus size={14} />}
+              onClick={() => props.onCreateArtifact(record.id, record.platform, "uploaded")}
+              disabled={artifactEditingDisabled}
+              title={artifactEditingDisabled ? "请先撤回发布，再上传文件" : undefined}
+            >
+              上传文件
             </Button>
             {isArchived ? (
               <Button size="xs" variant="default" disabled>

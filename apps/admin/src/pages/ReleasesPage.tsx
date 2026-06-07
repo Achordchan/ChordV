@@ -287,11 +287,15 @@ export function ReleasesPage() {
     }
   }
 
-  function openCreateArtifact(releaseId: string, releasePlatform?: AdminReleasePlatform) {
+  function openCreateArtifact(
+    releaseId: string,
+    releasePlatform?: AdminReleasePlatform,
+    source: ArtifactEditorFormState["source"] = "external"
+  ) {
     const release = releases.find((item) => item.id === releaseId);
     const platform = releasePlatform ?? release?.platform ?? "macos";
     setArtifactEditor({ releaseId, artifactId: null, platform });
-    setArtifactForm(emptyArtifactEditorForm(defaultArtifactTypeForPlatform(platform)));
+    setArtifactForm(emptyArtifactEditorForm(defaultArtifactTypeForPlatform(platform), source));
   }
 
   function openEditArtifact(releaseId: string, artifact: AdminReleaseArtifactRecordDto) {
