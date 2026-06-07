@@ -2885,7 +2885,7 @@ function buildPanelSyncResult(panelSync: PanelSyncBestEffortResult) {
   }
   return {
     panelSyncStatus: "pending" as const,
-    panelSyncMessage: `3x-ui 面板同步失败，将在后续连接或手动操作时重试：${panelSync.errorMessage}`
+    panelSyncMessage: `本地操作已保存，3x-ui 面板同步已进入后台队列：${panelSync.errorMessage}`
   };
 }
 

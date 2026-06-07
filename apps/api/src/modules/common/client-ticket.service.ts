@@ -34,6 +34,7 @@ type ClientSubscriptionAccess = {
 };
 
 const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
+const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 12_000);
 
 @Injectable()
 export class ClientTicketService {
@@ -365,13 +366,12 @@ export class ClientTicketService {
     let attachmentUploadError: string | null = null;
     if (file) {
       try {
-        uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
+        uploaded = await this.imageBedService.uploadSupportTicketAttachment(file, {
+          timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
+        });
       } catch (error) {
         attachmentUploadError = readErrorMessage(error);
         this.logger.warn(`Client ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
-        if (!body) {
-          throw error;
-        }
       }
     }
     const now = new Date();
@@ -713,9 +713,14 @@ function readErrorMessage(error: unknown) {
 }
 
 function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
-  const baseBody = body || attachmentFallbackBody;
+  const baseBody = body || attachmentFallbackBody || "Attachment upload failed";
   if (!attachmentUploadError) {
     return baseBody;
   }
   return `${baseBody}\n\nAttachment upload failed; text reply was saved first: ${attachmentUploadError}`;
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(Number(parsed)) : fallback;
 }

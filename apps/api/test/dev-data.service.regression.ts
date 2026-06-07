@@ -841,6 +841,54 @@ async function testImageBedUploadRejectsSuccessFalsePayload() {
   }
 }
 
+async function testImageBedUploadUsesCallerTimeout() {
+  const server = createServer(() => {
+    // Intentionally never respond; ticket replies pass a short upload budget.
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-upload-timeout-"));
+  const filePath = path.join(tempDir, "timeout.png");
+  await writeFile(filePath, "image");
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      () =>
+        service.uploadSupportTicketAttachment(
+          {
+            path: filePath,
+            originalname: "timeout.png",
+            mimetype: "image/png",
+            size: 5
+          },
+          { timeoutMs: 25 }
+        ),
+      /timed out after 25ms/
+    );
+    assert.equal(Date.now() - startedAt < 1000, true, "image bed upload must respect the caller timeout");
+    assert.equal(existsSync(filePath), false, "timed-out image bed uploads must remove the temporary file");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedUploadSuccessParsesUrlAndCleansTempFile() {
   let observedUrl = "";
   let observedAuthorization = "";
@@ -6138,9 +6186,9 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
 
   assert.deepEqual(probed, ["node_bad", "node_good"], "bulk probe must continue after one node fails");
   assert.deepEqual(result.map((item) => item.id), ["node_bad", "node_good"]);
-  assert.equal(result[0]?.probeStatus, "offline");
+  assert.equal(result[0]?.probeStatus, "unknown");
   assert.equal(result[0]?.panelStatus, "degraded");
-  assert.match(result[0]?.probeError ?? "", /panel unavailable/);
+  assert.match(result[0]?.panelError ?? "", /panel unavailable/);
   assert.equal(result[1]?.probeStatus, "healthy");
 }
 
@@ -6223,9 +6271,9 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeStalls() {
 
     assert.deepEqual(probed, ["node_stalled", "node_good"], "bulk probe must continue after one node stalls");
     assert.deepEqual(result.map((item) => item.id), ["node_stalled", "node_good"]);
-    assert.equal(result[0]?.probeStatus, "offline");
+    assert.equal(result[0]?.probeStatus, "unknown");
     assert.equal(result[0]?.panelStatus, "degraded");
-    assert.match(result[0]?.probeError ?? "", /bulk node probe exceeded/);
+    assert.match(result[0]?.panelError ?? "", /bulk node probe exceeded/);
     assert.equal(result[1]?.probeStatus, "healthy");
   } finally {
     if (previousProbeBudget === undefined) {
@@ -6312,7 +6360,7 @@ async function testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially() {
     assert.ok(Date.now() - startedAt < 180, "bulk probe must run stalled nodes concurrently instead of serially");
     assert.equal(probed.length, nodes.length);
     assert.deepEqual(result.map((item) => item.id), nodes.map((node) => node.id));
-    assert.equal(result.every((item) => item.probeStatus === "offline"), true);
+    assert.equal(result.every((item) => item.probeStatus === "unknown"), true);
     assert.equal(result.every((item) => item.panelStatus === "degraded"), true);
   } finally {
     if (previousProbeBudget === undefined) {
@@ -6411,10 +6459,13 @@ async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
     assert.ok(Date.now() - startedAt < 250, "bulk probe must return before the admin request timeout guard");
     assert.deepEqual(probed, ["node_stalled_1", "node_stalled_2"]);
     assert.deepEqual(result.map((item) => item.id), nodes.map((node) => node.id));
-    assert.match(result[2]?.probeError ?? "", /request budget 80ms exhausted/);
+    assert.equal(result[2]?.probeStatus, "unknown");
+    assert.equal(result[2]?.probeError, null);
     assert.equal(result[2]?.panelStatus, "degraded");
+    assert.match(result[2]?.panelError ?? "", /request budget 80ms exhausted/);
     assert.equal(updateManyCalls.length, 1, "unstarted nodes should be marked with one bulk update");
     assert.deepEqual(updateManyCalls[0].where.id.in, ["node_skipped"]);
+    assert.equal("probeStatus" in updateManyCalls[0].data, false, "skipped nodes must not be marked offline");
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
@@ -6473,9 +6524,9 @@ async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
     ]);
 
     assert.equal(updates.length, 1);
-    assert.equal(result.probeStatus, "offline");
+    assert.equal(result.probeStatus, "unknown");
     assert.equal(result.panelStatus, "degraded");
-    assert.match(result.probeError ?? "", /node probe exceeded/);
+    assert.equal(result.probeError, null);
     assert.match(result.panelError ?? "", /node probe exceeded/);
   } finally {
     if (previousProbeBudget === undefined) {
@@ -18614,8 +18665,9 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
-async function testAdminReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply() {
-  let transactionCalls = 0;
+async function testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply() {
+  const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
+  let publishCalls = 0;
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -18624,35 +18676,62 @@ async function testAdminReplySupportTicketAttachmentOnlyUploadFailureDoesNotWrit
       supportTicket: {
         findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
       },
-      $transaction: async () => {
-        transactionCalls += 1;
-        throw new Error("transaction must not run after upload failure");
-      }
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "message", data });
+              return { id: data.id };
+            }
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "attachment", data });
+              return data;
+            }
+          },
+          supportTicket: {
+            update: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "ticket", data });
+              return data;
+            }
+          }
+        })
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
         throw new Error("image bed upload failed");
       }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        publishCalls += 1;
+      }
+    },
+    getAdminSupportTicketDetail: async () => {
+      return { id: "ticket_1" };
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.replyAdminSupportTicketWithAttachment(
-        "ticket_1",
-        { body: "" },
-        {
-          path: path.join(tmpdir(), "upload-failure.png"),
-          originalname: "upload-failure.png",
-          mimetype: "image/png",
-          size: 1234
-        },
-        "admin_1"
-      ),
-    /image bed upload failed/
+  const result = await service.replyAdminSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "" },
+    {
+      path: path.join(tmpdir(), "upload-failure.png"),
+      originalname: "upload-failure.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "admin_1"
   );
 
-  assert.equal(transactionCalls, 0, "attachment-only admin reply must not write an empty DB message when upload fails");
+  assert.equal((result as { id: string }).id, "ticket_1");
+  assert.equal(result.attachmentUploadStatus, "failed");
+  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
+  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/);
+  assert.equal(writes.some((item) => item.kind === "attachment"), false);
+  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_user");
+  assert.equal(publishCalls, 1, "attachment-only upload failure should still save and publish the ticket reply");
 }
 
 async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
@@ -19479,8 +19558,9 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
-async function testClientReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply() {
-  let transactionCalls = 0;
+async function testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply() {
+  const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
+  let publishCalls = 0;
   const service = createClientTicketService({
     logger: {
       warn: () => undefined
@@ -19501,35 +19581,69 @@ async function testClientReplySupportTicketAttachmentOnlyUploadFailureDoesNotWri
           team: null
         })
       },
-      $transaction: async () => {
-        transactionCalls += 1;
-        throw new Error("transaction must not run after upload failure");
-      }
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          supportTicketMessage: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "message", data });
+              return { id: data.id };
+            }
+          },
+          supportTicketAttachment: {
+            create: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "attachment", data });
+              return data;
+            }
+          },
+          supportTicket: {
+            update: async ({ data }: { data: Record<string, unknown> }) => {
+              writes.push({ kind: "ticket", data });
+              return data;
+            }
+          },
+          supportTicketReadState: {
+            upsert: async ({ update }: { update: Record<string, unknown> }) => {
+              writes.push({ kind: "read", data: update });
+              return update;
+            }
+          }
+        })
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
         throw new Error("image bed upload failed");
       }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        publishCalls += 1;
+      }
+    },
+    getClientSupportTicketDetail: async () => {
+      return { id: "ticket_1" };
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.replyClientSupportTicketWithAttachment(
-        "ticket_1",
-        { body: "" },
-        {
-          path: path.join(tmpdir(), "client-upload-failure.png"),
-          originalname: "client-upload-failure.png",
-          mimetype: "image/png",
-          size: 1234
-        },
-        "token"
-      ),
-    /image bed upload failed/
+  const result = await service.replyClientSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "" },
+    {
+      path: path.join(tmpdir(), "client-upload-failure.png"),
+      originalname: "client-upload-failure.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "token"
   );
 
-  assert.equal(transactionCalls, 0, "attachment-only client reply must not write an empty DB message when upload fails");
+  assert.equal((result as { id: string }).id, "ticket_1");
+  assert.equal(result.attachmentUploadStatus, "failed");
+  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
+  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/);
+  assert.equal(writes.some((item) => item.kind === "attachment"), false);
+  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_admin");
+  assert.equal(writes.some((item) => item.kind === "read"), true);
+  assert.equal(publishCalls, 1, "attachment-only upload failure should still save and publish the ticket reply");
 }
 
 async function main() {
@@ -19784,6 +19898,7 @@ async function main() {
   await testImageBedListDefaultsToUploadFolder();
   await testImageBedListUsesProviderFileIdForNestedFiles();
   await testImageBedUploadRejectsSuccessFalsePayload();
+  await testImageBedUploadUsesCallerTimeout();
   await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
   await testImageBedUploadRejectsNonImageAndCleansTempFile();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
@@ -19844,7 +19959,7 @@ async function main() {
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
-  await testAdminReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply();
+  await testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
@@ -19856,7 +19971,7 @@ async function main() {
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply();
-  await testClientReplySupportTicketAttachmentOnlyUploadFailureDoesNotWriteReply();
+  await testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");

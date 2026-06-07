@@ -974,10 +974,6 @@ export class AdminNodeService {
       const row = await this.prisma.node.update({
         where: { id: current.id },
         data: {
-          probeStatus: "offline",
-          probeLatencyMs: null,
-          probeCheckedAt: checkedAt,
-          probeError: message,
           panelStatus: fallbackStatus,
           panelError: fallbackStatus === "degraded" ? message : null
         }
@@ -987,10 +983,6 @@ export class AdminNodeService {
       this.logger.warn(`Node ${current.id} probe timeout fallback update failed: ${readAdminNodeErrorMessage(error)}`);
       return toAdminNodeRecord({
         ...current,
-        probeStatus: "offline",
-        probeLatencyMs: null,
-        probeCheckedAt: checkedAt,
-        probeError: message,
         panelStatus: fallbackStatus,
         panelError: fallbackStatus === "degraded" ? message : null,
         updatedAt: checkedAt
@@ -1044,10 +1036,6 @@ export class AdminNodeService {
         const row = await this.prisma.node.update({
           where: { id: node.id },
           data: {
-            probeStatus: "offline",
-            probeLatencyMs: null,
-            probeCheckedAt: checkedAt,
-            probeError: message,
             panelStatus: fallbackStatus,
             panelError: fallbackStatus === "degraded" ? message : null
           }
@@ -1057,10 +1045,6 @@ export class AdminNodeService {
         this.logger.warn(`Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`);
         return toAdminNodeRecord({
           ...node,
-          probeStatus: "offline",
-          probeLatencyMs: null,
-          probeCheckedAt: checkedAt,
-          probeError: message,
           panelStatus: fallbackStatus,
           panelError: fallbackStatus === "degraded" ? message : null,
           updatedAt: checkedAt
@@ -1127,10 +1111,6 @@ export class AdminNodeService {
             .updateMany({
               where: { id: { in: group.ids } },
               data: {
-                probeStatus: "offline",
-                probeLatencyMs: null,
-                probeCheckedAt: checkedAt,
-                probeError: `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`,
                 panelStatus: group.panelStatus,
                 panelError:
                   group.panelStatus === "degraded"
@@ -1154,10 +1134,6 @@ export class AdminNodeService {
     const panelStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
     return toAdminNodeRecord({
       ...node,
-      probeStatus: "offline",
-      probeLatencyMs: null,
-      probeCheckedAt: checkedAt,
-      probeError: message,
       panelStatus,
       panelError: panelStatus === "degraded" ? message : null,
       updatedAt: checkedAt

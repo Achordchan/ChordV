@@ -28,7 +28,8 @@ import type {
 } from "@chordv/shared";
 import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
 
-const IMAGE_BED_ACTION_TIMEOUT_MS = 75 * 1000;
+const IMAGE_BED_MANAGE_TIMEOUT_MS = 8 * 1000;
+const TICKET_ATTACHMENT_TIMEOUT_MS = 20 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
 const LONG_ADMIN_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
@@ -457,7 +458,7 @@ export async function fetchAdminImageBedFiles(input?: FetchAdminImageBedFilesInp
   if (input?.recursive !== undefined) params.set("recursive", String(input.recursive));
   const query = params.toString();
   return request<AdminImageBedFileListDto>(`/admin/image-bed/files${query ? `?${query}` : ""}`, {
-    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+    timeoutMs: IMAGE_BED_MANAGE_TIMEOUT_MS
   });
 }
 
@@ -466,7 +467,7 @@ export async function deleteAdminImageBedFile(path: string, folder?: boolean) {
   if (folder) params.set("folder", "true");
   return request<DeleteAdminImageBedFileResultDto>(`/admin/image-bed/files?${params.toString()}`, {
     method: "DELETE",
-    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+    timeoutMs: IMAGE_BED_MANAGE_TIMEOUT_MS
   });
 }
 
@@ -638,7 +639,7 @@ export async function replyAdminSupportTicketWithAttachment(
   return request<SharedAdminSupportTicketDetailDto>(`/admin/tickets/${ticketId}/attachments`, {
     method: "POST",
     body,
-    timeoutMs: IMAGE_BED_ACTION_TIMEOUT_MS
+    timeoutMs: TICKET_ATTACHMENT_TIMEOUT_MS
   });
 }
 

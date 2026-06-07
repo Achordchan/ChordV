@@ -19,7 +19,7 @@ const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = readPositiveIntegerEnv(
   DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
 );
 const DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS = 60_000;
-const DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS = 15_000;
+const DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS = 5_000;
 const IMAGE_BED_CLEANUP_BUDGET_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_CLEANUP_BUDGET_MS", 500);
 
 type StoredImageBedConfig = {
@@ -164,7 +164,10 @@ export class ImageBedService {
     };
   }
 
-  async uploadSupportTicketAttachment(file: UploadedTicketAttachmentFile): Promise<UploadedImageBedFile> {
+  async uploadSupportTicketAttachment(
+    file: UploadedTicketAttachmentFile,
+    options: { timeoutMs?: number | null } = {}
+  ): Promise<UploadedImageBedFile> {
     try {
       this.assertSupportTicketAttachment(file);
       const config = await this.loadEffectiveConfig(true);
@@ -193,7 +196,7 @@ export class ImageBedService {
           },
           body
         },
-        readImageBedUploadTimeoutMs()
+        readUploadTimeoutMs(options.timeoutMs)
       );
       const rawBody = await response.text();
       if (!response.ok) {
@@ -556,6 +559,10 @@ function readImageBedUploadTimeoutMs() {
     "CHORDV_IMAGE_BED_UPLOAD_TIMEOUT_MS",
     readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS)
   );
+}
+
+function readUploadTimeoutMs(value: number | null | undefined) {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.trunc(Number(value)) : readImageBedUploadTimeoutMs();
 }
 
 function readImageBedManageTimeoutMs() {

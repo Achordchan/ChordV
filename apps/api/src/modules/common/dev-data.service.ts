@@ -160,6 +160,7 @@ const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS = 50;
 const EVENT_PUBLISH_BUDGET_MS = 300;
 const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
+const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 12_000);
 
 type NodeAccessRevocationEffects = {
   revokedSessionCount: number;
@@ -656,13 +657,12 @@ export class DevDataService implements OnModuleInit {
     let attachmentUploadError: string | null = null;
     if (file) {
       try {
-        uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
+        uploaded = await this.imageBedService.uploadSupportTicketAttachment(file, {
+          timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
+        });
       } catch (error) {
         attachmentUploadError = readPanelSyncErrorMessage(error);
         this.logger.warn(`Admin ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
-        if (!body) {
-          throw error;
-        }
       }
     }
     const now = new Date();
@@ -2155,11 +2155,16 @@ function readPanelSyncErrorMessage(error: unknown) {
 }
 
 function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
-  const baseBody = body || attachmentFallbackBody;
+  const baseBody = body || attachmentFallbackBody || "附件上传失败";
   if (!attachmentUploadError) {
     return baseBody;
   }
   return `${baseBody}\n\n附件上传失败，已先保存文字回复：${attachmentUploadError}`;
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
 function isClientVisibleAdminAnnouncement(item: AdminAnnouncementRecordDto) {

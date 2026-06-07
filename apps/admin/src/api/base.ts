@@ -246,10 +246,6 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
   }
 
   const text = await response.text();
-  const panelSyncPendingPayload = parsePanelSyncPendingPayload(text);
-  if (panelSyncPendingPayload) {
-    return panelSyncPendingPayload as T;
-  }
   if (text.trim().length === 0) {
     return undefined as T;
   }
