@@ -476,8 +476,14 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
     typeof overrides.runtimeSessionService === "object" && overrides.runtimeSessionService !== null
       ? (overrides.runtimeSessionService as Record<string, unknown>)
       : {};
+  const prismaOverride =
+    typeof overrides.prisma === "object" && overrides.prisma !== null ? (overrides.prisma as Record<string, unknown>) : {};
   return createInstance<AdminSubscriptionService>(AdminSubscriptionService.prototype, {
     ...overrides,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, unknown>) => unknown) => task(prismaOverride),
+      ...prismaOverride
+    },
     runtimeSessionService: {
       queueActiveLeaseSyncForSubscription: async () => 0,
       queueSubscriptionPanelAccessSync: async () => 0,
@@ -9757,7 +9763,7 @@ async function testConvertPersonalSubscriptionToTeamConvertsMembershipUniqueConf
 
   await assert.rejects(
     () => service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
-    /灞炰簬/
+    /already belongs to another team/
   );
 }
 
@@ -9825,7 +9831,8 @@ async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRe
   assert.equal(archivedSubscriptions[0].data.state, "expired");
   assert.equal(archivedSubscriptions[0].data.remainingTrafficGb, 0);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /old lease revoke job failed/);
+  assert.match(result.panelSyncMessage ?? "", /personal lease revocation after team conversion/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails() {
@@ -10210,6 +10217,7 @@ async function testListAdminTeamsDoesNotLoadTrafficLedgerUsage() {
 }
 
 async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails() {
+  const createdMemberships: string[] = [];
   const deletedMemberships: string[] = [];
   const service = createAdminSubscriptionService({
     logger: {
@@ -10246,16 +10254,31 @@ async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbac
       assertPanelBindingMutation: () => undefined
     },
     prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        const before = [...createdMemberships];
+        try {
+          return await task({
+            teamMember: {
+              create: async (payload: Record<string, any>) => {
+                createdMemberships.push(payload.data.id);
+                return {};
+              }
+            },
+            subscription: {
+              update: async () => {
+                throw new Error("local archive failed");
+              }
+            }
+          });
+        } catch (error) {
+          createdMemberships.splice(0, createdMemberships.length, ...before);
+          throw error;
+        }
+      },
       teamMember: {
-        create: async () => ({}),
         deleteMany: async (payload: Record<string, any>) => {
           deletedMemberships.push(payload.where.id);
           return { count: 1 };
-        }
-      },
-      subscription: {
-        update: async () => {
-          throw new Error("local archive failed");
         }
       }
     }
@@ -10265,7 +10288,8 @@ async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbac
     () => service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
     /local archive failed/
   );
-  assert.equal(deletedMemberships.length, 1, "created team membership must be rolled back after local conversion failure");
+  assert.equal(createdMemberships.length, 0, "failed local transaction must not leave created team membership");
+  assert.equal(deletedMemberships.length, 0, "local transaction failures must not use old manual rollback");
 }
 
 async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {

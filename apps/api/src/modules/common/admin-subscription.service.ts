@@ -858,12 +858,11 @@ export class AdminSubscriptionService {
     }
 
     const membershipId = createId("member");
-    let membershipCreated = false;
     let teamPanelSync: PanelSyncBestEffortResult = { ok: true };
 
     try {
-      try {
-        await this.prisma.teamMember.create({
+      await this.prisma.$transaction(async (tx) => {
+        await tx.teamMember.create({
           data: {
             id: membershipId,
             teamId: targetTeam.id,
@@ -871,94 +870,52 @@ export class AdminSubscriptionService {
             role: "member"
           }
         });
-      } catch (error) {
-        if (isPrismaUniqueConstraintError(error)) {
-          throw new ConflictException("璇ヨ处鍙峰凡灞炰簬鍏朵粬鍥㈤槦");
-        }
-        throw error;
-      }
-      membershipCreated = true;
-
-      const personalLeaseSync = await this.revokeSubscriptionLeasesBestEffort(subscriptionId, "team_member_removed", {
-        userId: user.id
-      });
-      teamPanelSync = mergePanelSyncResults(
-        await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id),
-        personalLeaseSync
-      );
-      try {
-        const removeResult = await this.withSubscriptionFollowUpBudget(
-          `personal panel cleanup for ${subscriptionId}`,
-          {
-            requested: -1,
-            updated: 0,
-            failed: []
-          },
-          () =>
-            this.runtimeSessionService.removePanelBindingsForSubscription(subscriptionId, {
-              userId: user.id
-            })
-        );
-        if (removeResult.requested < 0) {
-          teamPanelSync = mergePanelSyncResults(teamPanelSync, {
-            ok: false,
-            errorMessage: "personal panel cleanup is still running in background"
-          });
-        }
-        this.runtimeSessionService.assertPanelBindingMutation("删除个人订阅的 3x-ui 客户端失败", removeResult);
-        if (removeResult.updated > 0) {
-          teamPanelSync = mergePanelSyncResults(teamPanelSync, {
-            ok: false,
-            errorMessage: "3x-ui client delete queued for background retry"
-          });
-        }
-      } catch (error) {
-        const errorMessage = readErrorMessage(error, "unknown error");
-        this.logger?.warn(`Personal subscription converted to Team, but personal panel cleanup queueing failed for ${subscriptionId}: ${errorMessage}`);
-        teamPanelSync = mergePanelSyncResults(teamPanelSync, {
-          ok: false,
-          errorMessage: `personal panel cleanup queueing failed: ${errorMessage}`
+        await tx.subscription.update({
+          where: { id: subscriptionId },
+          data: {
+            state: "expired",
+            expireAt: new Date(),
+            remainingTrafficGb: 0,
+            sourceAction: "adjusted",
+            lastSyncedAt: new Date()
+          }
         });
-      }
-
-      await this.closePersonalSupportTicketsForUserBestEffort(
-        user.id,
-        "当前账号已切换为 Team 归属，原个人订阅工单已失效。如需继续咨询，请在当前 Team 归属下重新创建工单。"
-      );
-
-      await this.prisma.subscription.update({
-        where: { id: subscriptionId },
-        data: {
-          state: "expired",
-          expireAt: new Date(),
-          remainingTrafficGb: 0,
-          sourceAction: "adjusted",
-          lastSyncedAt: new Date()
-        }
       });
     } catch (error) {
-      if (membershipCreated) {
-        await this.prisma.teamMember.deleteMany({
-          where: { id: membershipId }
-        });
-        const rollbackErrors: string[] = [];
-        const teamRollback = await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
-        if (!teamRollback.ok) {
-          rollbackErrors.push(teamRollback.errorMessage);
-        }
-        const personalRollback = await this.syncSubscriptionPanelAccessBestEffort(subscriptionId);
-        if (!personalRollback.ok) {
-          rollbackErrors.push(personalRollback.errorMessage);
-        }
-        if (rollbackErrors.length > 0) {
-          this.logger?.warn(
-            `Personal subscription Team conversion rollback queued panel sync issues for ${subscriptionId}: ${rollbackErrors.join("; ")}`
-          );
-        }
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("The account already belongs to another team.");
       }
       throw error;
     }
-
+    teamPanelSync = mergePanelSyncResults(
+      teamPanelSync,
+      this.startSubscriptionFollowUpInBackground(`team panel sync after personal conversion for ${teamSubscription.id}`, async () => {
+        const result = await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id);
+        if (!result.ok) {
+          throw new Error(result.errorMessage);
+        }
+      }),
+      this.startSubscriptionFollowUpInBackground(`personal lease revocation after team conversion for ${subscriptionId}`, async () => {
+        const result = await this.revokeSubscriptionLeasesBestEffort(subscriptionId, "team_member_removed", {
+          userId: user.id
+        });
+        if (!result.ok) {
+          throw new Error(result.errorMessage);
+        }
+      }),
+      this.startSubscriptionFollowUpInBackground(`personal panel cleanup for ${subscriptionId}`, async () => {
+        const removeResult = await this.runtimeSessionService.removePanelBindingsForSubscription(subscriptionId, {
+          userId: user.id
+        });
+        this.runtimeSessionService.assertPanelBindingMutation("Delete personal subscription 3x-ui client failed", removeResult);
+      }),
+      this.startSubscriptionFollowUpInBackground(`personal ticket cleanup after team conversion for ${user.id}`, () =>
+        this.closePersonalSupportTicketsForUser(
+          user.id,
+          "Current account has switched to Team ownership. Previous personal subscription tickets are closed. Please create a new ticket under the current Team if needed."
+        )
+      )
+    );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId,
       userId: user.id,
