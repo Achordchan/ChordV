@@ -87,6 +87,8 @@ export function TicketsPage(props: TicketsPageProps) {
   const detailRequestSeqRef = useRef(0);
   const ticketListLoadingSeqRef = useRef<number | null>(null);
   const ticketDetailLoadingSeqRef = useRef<number | null>(null);
+  const replySavingRef = useRef(false);
+  const statusChangingRef = useRef<string | null>(null);
 
   useEffect(() => {
     void loadTickets();
@@ -279,6 +281,9 @@ export function TicketsPage(props: TicketsPageProps) {
   }
 
   async function handleReply() {
+    if (replySavingRef.current) {
+      return;
+    }
     const body = replyDraft.trim();
     if (!selectedTicket || (!body && !replyAttachment)) {
       return;
@@ -293,6 +298,7 @@ export function TicketsPage(props: TicketsPageProps) {
     }
 
     try {
+      replySavingRef.current = true;
       setReplySaving(true);
       const detail = replyAttachment
         ? await replyAdminSupportTicketWithAttachment(selectedTicket.id, { body: body || null }, replyAttachment)
@@ -337,12 +343,17 @@ export function TicketsPage(props: TicketsPageProps) {
         void loadTicketDetail(selectedTicket.id, { silent: true });
       }
     } finally {
+      replySavingRef.current = false;
       setReplySaving(false);
     }
   }
 
   async function handleStatusAction(ticket: AdminSupportTicketSummaryDto | AdminSupportTicketDetailDto, next: "close" | "reopen") {
+    if (statusChangingRef.current) {
+      return;
+    }
     try {
+      statusChangingRef.current = ticket.id;
       setStatusChanging(ticket.id);
       const detail = next === "close" ? await closeAdminSupportTicket(ticket.id) : await reopenAdminSupportTicket(ticket.id);
       detailRequestSeqRef.current += 1;
@@ -369,6 +380,7 @@ export function TicketsPage(props: TicketsPageProps) {
         void loadTicketDetail(ticket.id, { silent: true });
       }
     } finally {
+      statusChangingRef.current = null;
       setStatusChanging(null);
     }
   }

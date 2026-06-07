@@ -2207,7 +2207,7 @@ export class RuntimeSessionService {
       return { ...binding, cachedRemoteClient: existing.status !== "deleted" };
     }
 
-    const binding = await this.createPanelClientBindingOrRecover(writer, {
+    const recovered = await this.createPanelClientBindingOrRecover(writer, {
       id: createId("panel_client"),
       subscriptionId: input.subscriptionId,
       userId: input.userId,
@@ -2221,6 +2221,7 @@ export class RuntimeSessionService {
       lastSyncedAt: baseline.sampledAt,
       status: "active"
     });
+    const binding = recovered.binding;
     await this.ensureTrafficSnapshotBaseline(writer, {
       nodeId: binding.nodeId,
       subscriptionId: binding.subscriptionId,
@@ -2231,7 +2232,7 @@ export class RuntimeSessionService {
       sampledAt: baseline.sampledAt
     });
     await this.queuePanelEnsureJobForBinding(writer, binding, input);
-    return { ...binding, cachedRemoteClient: false };
+    return { ...binding, cachedRemoteClient: recovered.cachedRemoteClient };
   }
 
   private async queuePanelEnsureJobForBinding(
@@ -2314,7 +2315,10 @@ export class RuntimeSessionService {
     status: string;
   }) {
     try {
-      return await writer.panelClientBinding.create({ data });
+      return {
+        binding: await writer.panelClientBinding.create({ data }),
+        cachedRemoteClient: false
+      };
     } catch (error) {
       if (!isPrismaUniqueConstraintError(error)) {
         throw error;
@@ -2332,19 +2336,17 @@ export class RuntimeSessionService {
     if (!existing) {
       throw new BadGatewayException("Panel client binding was created concurrently but could not be reloaded.");
     }
-    return writer.panelClientBinding.update({
+    const binding = await writer.panelClientBinding.update({
       where: { id: existing.id },
       data: {
         teamId: data.teamId,
-        panelClientEmail: data.panelClientEmail,
-        panelClientId: data.panelClientId,
-        panelInboundId: data.panelInboundId,
-        lastUplinkBytes: data.lastUplinkBytes,
-        lastDownlinkBytes: data.lastDownlinkBytes,
-        lastSyncedAt: data.lastSyncedAt,
         status: "active"
       }
     });
+    return {
+      binding,
+      cachedRemoteClient: existing.status !== "deleted"
+    };
   }
 
   private async ensureTrafficSnapshotBaseline(writer: any, input: {

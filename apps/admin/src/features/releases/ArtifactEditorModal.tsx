@@ -18,8 +18,22 @@ type ArtifactEditorModalProps = {
 };
 
 export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
+  const close = () => {
+    if (!props.saving) {
+      props.onClose();
+    }
+  };
+
   return (
-    <Modal opened={props.opened} onClose={props.onClose} title={props.title} centered size="lg">
+    <Modal
+      opened={props.opened}
+      onClose={close}
+      title={props.title}
+      centered
+      size="lg"
+      closeOnClickOutside={!props.saving}
+      closeOnEscape={!props.saving}
+    >
       <Stack gap="md">
         <SegmentedControl
           value={props.form.source}
@@ -73,7 +87,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         </Alert>
 
         <Group justify="flex-end">
-          <Button variant="default" onClick={props.onClose}>
+          <Button variant="default" onClick={close} disabled={props.saving}>
             取消
           </Button>
           <Button onClick={props.onSubmit} loading={props.saving}>

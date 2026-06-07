@@ -2263,6 +2263,30 @@ async function testCreateReleaseWithInitialArtifactUsesSingleTransaction() {
   assert.equal(result.artifacts[0]?.fileHash, null);
 }
 
+async function testCreateReleaseRejectsDuplicateVersionAsConflict() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        create: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createRelease({
+        platform: "windows",
+        channel: "stable",
+        version: "1.1.6",
+        minimumVersion: "1.1.0"
+      }),
+    (error) => error instanceof ConflictException && /already exists/i.test(error.message),
+    "duplicate release versions must return a controlled conflict instead of HTTP 500"
+  );
+}
+
 async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
@@ -10906,6 +10930,90 @@ async function testDeletedPanelBindingDoesNotReuseOldInboundId() {
   assert.equal(panelSyncUpserts[0].create.panelInboundId, 0);
 }
 
+async function testConcurrentPanelBindingRecoveryKeepsExistingCredentials() {
+  const updates: Array<Record<string, any>> = [];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
+  const existing = {
+    id: "binding_existing",
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: "node_1",
+    panelClientEmail: "user@example.com",
+    panelClientId: "existing-panel-client",
+    panelInboundId: 7,
+    status: "active",
+    lastUplinkBytes: 123n,
+    lastDownlinkBytes: 456n,
+    lastSyncedAt: new Date("2026-01-01T00:00:00.000Z")
+  };
+  let bindingFindCalls = 0;
+  const service = createRuntimeSessionService({
+    prisma: {
+      panelClientBinding: {
+        findFirst: async () => null,
+        create: async () => {
+          throw { code: "P2002" };
+        },
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...existing,
+            teamId: payload.data.teamId,
+            status: payload.data.status
+          };
+        }
+      },
+      trafficSnapshot: {
+        findUnique: async () => ({
+          snapshotKey: "node_1:sub_1:user_1"
+        })
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelSyncUpserts.push(payload);
+          return {};
+        }
+      }
+    }
+  });
+  service["prisma"].panelClientBinding.findFirst = async (payload: Record<string, any>) => {
+    bindingFindCalls += 1;
+    if (bindingFindCalls > 1 && payload.orderBy) {
+      return existing;
+    }
+    return null;
+  };
+
+  const binding = await service["ensurePanelClientBinding"](service["prisma"], {
+    node: {
+      id: "node_1",
+      name: "Node 1",
+      flow: "xtls-rprx-vision",
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 9,
+      panelEnabled: true
+    },
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    userEmail: "user@example.com",
+    userDisplayName: "User",
+    expireAt: new Date("2026-02-01T00:00:00.000Z")
+  });
+
+  assert.equal(updates[0].data.panelClientId, undefined, "concurrent recovery must not rotate the existing panel client id");
+  assert.equal(updates[0].data.panelInboundId, undefined, "concurrent recovery must not overwrite the confirmed inbound id");
+  assert.equal(binding.panelClientId, "existing-panel-client");
+  assert.equal(binding.panelInboundId, 7);
+  assert.equal(binding.cachedRemoteClient, true);
+  assert.equal(panelSyncUpserts[0].create.panelClientId, "existing-panel-client");
+  assert.equal(panelSyncUpserts[0].create.panelInboundId, 7);
+}
+
 async function testDisablePanelBindingUsesStoredInboundId() {
   const upserts: Array<Record<string, any>> = [];
   let xuiCalled = false;
@@ -14228,6 +14336,61 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   assert.equal(result.artifacts[0]?.id, createdData?.id);
 }
 
+async function testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls() {
+  const release = makeReleaseCenterTestRelease();
+  const createdArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_created",
+    isPrimary: true
+  });
+  let releaseFindCalls = 0;
+  let createdArtifactId: string | null = null;
+  const service = createReleaseCenterService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      release: {
+        findUnique: async () => {
+          releaseFindCalls += 1;
+          if (releaseFindCalls > 1) {
+            return new Promise(() => undefined);
+          }
+          return release;
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async (payload: Record<string, any>) => {
+              createdArtifactId = payload.data.id;
+              return {
+                ...createdArtifact,
+                ...payload.data
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await Promise.race([
+    service.createReleaseArtifact("release_1", {
+      type: "zip",
+      deliveryMode: "desktop_full_replace",
+      downloadUrl: createdArtifact.downloadUrl,
+      fileName: createdArtifact.fileName,
+      isPrimary: true
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("release artifact save waited for stalled response refresh")), 750);
+    })
+  ]);
+
+  assert.equal(result.id, "release_1");
+  assert.equal(result.artifacts[0]?.id, createdArtifactId);
+}
+
 async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave() {
   const release = makeReleaseCenterTestRelease();
   const currentArtifact = makeReleaseCenterTestArtifact({
@@ -15094,6 +15257,60 @@ async function testUpdateCheckSkipsUploadedArtifactMissingStoredFile() {
   assert.equal(result.hasUpdate, false, "client update check must not announce an update whose uploaded file is missing");
   assert.equal(result.recommendedArtifact, null);
   assert.equal(result.downloadUrl, null);
+}
+
+async function testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMissing() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const newerRelease = makeReleaseCenterTestRelease({
+    id: "release_newer",
+    version: "1.1.7",
+    displayTitle: "ChordV 1.1.7",
+    status: "published",
+    publishedAt: now,
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        id: "artifact_missing",
+        releaseId: "release_newer",
+        source: "uploaded",
+        downloadUrl: "/api/downloads/releases/artifact_missing",
+        storedFilePath: `missing-${Date.now()}/ChordV_1.1.7_x64-full.zip`,
+        fileName: "ChordV_1.1.7_x64-full.zip",
+        isPrimary: true
+      })
+    ]
+  });
+  const olderRelease = makeReleaseCenterTestRelease({
+    id: "release_older",
+    version: "1.1.6",
+    displayTitle: "ChordV 1.1.6",
+    status: "published",
+    publishedAt: new Date("2025-12-31T00:00:00.000Z"),
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        id: "artifact_older",
+        releaseId: "release_older",
+        source: "external",
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        isPrimary: true
+      })
+    ]
+  });
+  const service = createReleaseCenterService({
+    findPublishedReleaseCandidates: async () => [newerRelease, olderRelease]
+  });
+
+  const result = await service.checkClientUpdate({
+    currentVersion: "1.1.5",
+    platform: "windows",
+    channel: "stable",
+    artifactType: "zip"
+  });
+
+  assert.equal(result.hasUpdate, true);
+  assert.equal(result.latestVersion, "1.1.6");
+  assert.equal(result.recommendedArtifact?.id, "artifact_older");
+  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
 }
 
 async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
@@ -19986,6 +20203,7 @@ async function main() {
   await testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow();
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
+  await testCreateReleaseRejectsDuplicateVersionAsConflict();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
@@ -20115,6 +20333,7 @@ async function main() {
   await testPanelDisableJobStoresAndUsesPanelSnapshot();
   await testPanelDisableJobCompletionDoesNotResolveUsageIncident();
   await testDeletedPanelBindingDoesNotReuseOldInboundId();
+  await testConcurrentPanelBindingRecoveryKeepsExistingCredentials();
   await testDisablePanelBindingUsesStoredInboundId();
   await testUsageSyncUsesStoredInboundIdGroups();
   await testUsageSyncKeepsNodeDegradedWhenAnyInboundFails();
@@ -20166,6 +20385,7 @@ async function main() {
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
+  await testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
   await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
@@ -20182,6 +20402,7 @@ async function main() {
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
+  await testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMissing();
   await testUpdateCheckAllowsUploadedArtifactWithStaleMetadata();
   await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();

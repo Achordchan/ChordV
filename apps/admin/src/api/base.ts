@@ -35,17 +35,29 @@ function isPanelSyncPendingPayload(value: unknown): value is Record<string, unkn
   return record.panelSyncStatus === "pending";
 }
 
-function findPanelSyncPendingPayload(value: unknown): unknown | null {
+function findPanelSyncPendingPayload(value: unknown, depth = 0): unknown | null {
   if (!value || typeof value !== "object") {
     return null;
   }
   if (isPanelSyncPendingPayload(value)) {
     return value;
   }
+  if (depth >= 4) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = findPanelSyncPendingPayload(item, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
   const record = value as Record<string, unknown>;
   for (const key of ["data", "result", "payload", "error", "response"]) {
-    const nested = record[key];
-    if (isPanelSyncPendingPayload(nested)) {
+    const nested = findPanelSyncPendingPayload(record[key], depth + 1);
+    if (nested) {
       return nested;
     }
   }

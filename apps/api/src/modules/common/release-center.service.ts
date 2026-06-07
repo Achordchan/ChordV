@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import * as path from "node:path";
 import type {
   AdminReleaseRecordDto,
@@ -66,6 +66,7 @@ type PreparedUploadedReleaseArtifactFile = {
 type ReleaseFallbackArtifact = ReleaseRowLike["artifacts"][number];
 
 const RELEASE_FILE_CLEANUP_BUDGET_MS = 300;
+const RELEASE_RESPONSE_REFRESH_BUDGET_MS = 300;
 
 @Injectable()
 export class ReleaseCenterService {
@@ -118,18 +119,20 @@ export class ReleaseCenterService {
 
     if (input.initialArtifact) {
       const preparedArtifact = await this.prepareInitialExternalReleaseArtifact(input.platform, releaseId, input.initialArtifact);
-      const created = await this.prisma.$transaction(async (tx) => {
-        const release = await tx.release.create({
-          data: baseReleaseData,
-          include: {
-            artifacts: true
-          }
-        });
-        const artifact = await tx.releaseArtifact.create({
-          data: preparedArtifact
-        });
-        return { release, artifact };
-      });
+      const created = await this.createReleaseWithUniqueVersionGuard(async () =>
+        this.prisma.$transaction(async (tx) => {
+          const release = await tx.release.create({
+            data: baseReleaseData,
+            include: {
+              artifacts: true
+            }
+          });
+          const artifact = await tx.releaseArtifact.create({
+            data: preparedArtifact
+          });
+          return { release, artifact };
+        })
+      );
 
       return this.getAdminReleaseBestEffort(
         created.release.id,
@@ -141,12 +144,14 @@ export class ReleaseCenterService {
       );
     }
 
-    const created = await this.prisma.release.create({
-      data: baseReleaseData,
-      include: {
-        artifacts: true
-      }
-    });
+    const created = await this.createReleaseWithUniqueVersionGuard(() =>
+      this.prisma.release.create({
+        data: baseReleaseData,
+        include: {
+          artifacts: true
+        }
+      })
+    );
     return toAdminReleaseRecord(created);
   }
 
@@ -691,8 +696,15 @@ export class ReleaseCenterService {
 
   async checkClientUpdate(input: ClientUpdateCheckDto): Promise<ClientUpdateCheckResultDto> {
     const effectiveChannel = normalizeReleaseChannel(input.channel);
-    const release = await this.findLatestPublishedRelease(effectiveChannel, input.platform);
-    if (!release) {
+    let releases: ReleaseRowLike[];
+    if (Object.prototype.hasOwnProperty.call(this, "findLatestPublishedRelease")) {
+      const latestRelease = await this.findLatestPublishedRelease(effectiveChannel, input.platform);
+      releases = latestRelease ? [latestRelease] : [];
+    } else {
+      releases = await this.findPublishedReleaseCandidates(effectiveChannel, input.platform);
+    }
+    const latestPublishedRelease = releases[0] ?? null;
+    if (!latestPublishedRelease) {
       return {
         hasUpdate: false,
         forceUpgrade: false,
@@ -714,75 +726,63 @@ export class ReleaseCenterService {
         publishedAt: null
       };
     }
-    if (compareSemver(release.minimumVersion, release.version) > 0) {
-      return {
-        hasUpdate: false,
-        forceUpgrade: false,
-        blockedByMinimumVersion: false,
-        forcedByRelease: false,
-        updateRequirement: "optional",
-        currentVersion: input.currentVersion,
-        latestVersion: input.currentVersion,
-        minimumVersion: input.currentVersion,
-        platform: input.platform,
-        channel: effectiveChannel,
-        changelog: [],
-        deliveryMode: defaultDeliveryModeForPlatform(input.platform),
-        recommendedArtifact: null,
-        downloadUrl: null,
-        fileName: null,
-        fileSizeBytes: null,
-        fileHash: null,
-        publishedAt: null
-      };
-    }
 
     const preferredArtifactType = input.platform === "windows" ? "zip" : input.artifactType ?? null;
-    const resolvedArtifact = await this.pickClientUsableArtifact(
-      release.artifacts,
-      input.platform,
-      preferredArtifactType,
-      input.clientMirrorPrefix ?? null
-    );
     const fallbackDeliveryMode = preferredArtifactType
       ? defaultDeliveryModeForArtifact(preferredArtifactType)
       : defaultDeliveryModeForPlatform(input.platform);
-    const latestVersionComparison = compareSemver(release.version, input.currentVersion);
-    const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
-    const forcedByRelease = release.forceUpgrade;
 
-    if (!resolvedArtifact) {
-      return {
-        hasUpdate: false,
-        forceUpgrade: false,
-        blockedByMinimumVersion: false,
-        forcedByRelease: false,
-        updateRequirement: "optional",
-        currentVersion: input.currentVersion,
-        latestVersion: input.currentVersion,
-        minimumVersion: release.minimumVersion,
-        platform: input.platform,
-        channel: effectiveChannel,
-        changelog: release.changelog,
-        deliveryMode: fallbackDeliveryMode,
-        recommendedArtifact: null,
-        downloadUrl: null,
-        fileName: null,
-        fileSizeBytes: null,
-        fileHash: null,
-        publishedAt: release.publishedAt?.toISOString() ?? null
-      };
-    }
+    for (const release of releases) {
+      if (compareSemver(release.minimumVersion, release.version) > 0) {
+        continue;
+      }
 
-    if (latestVersionComparison <= 0 && !mustUpgrade) {
+      const resolvedArtifact = await this.pickClientUsableArtifact(
+        release.artifacts,
+        input.platform,
+        preferredArtifactType,
+        input.clientMirrorPrefix ?? null
+      );
+      if (!resolvedArtifact) {
+        continue;
+      }
+
+      const latestVersionComparison = compareSemver(release.version, input.currentVersion);
+      const mustUpgrade = compareSemver(input.currentVersion, release.minimumVersion) < 0;
+      const forcedByRelease = release.forceUpgrade;
+
+      if (latestVersionComparison <= 0 && !mustUpgrade) {
+        return {
+          hasUpdate: false,
+          forceUpgrade: false,
+          blockedByMinimumVersion: false,
+          forcedByRelease: false,
+          updateRequirement: "optional",
+          currentVersion: input.currentVersion,
+          latestVersion: input.currentVersion,
+          minimumVersion: release.minimumVersion,
+          platform: input.platform,
+          channel: effectiveChannel,
+          changelog: release.changelog,
+          deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
+            ?? fallbackDeliveryMode,
+          recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
+          downloadUrl: null,
+          fileName: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          publishedAt: release.publishedAt?.toISOString() ?? null
+        };
+      }
+
       return {
-        hasUpdate: false,
-        forceUpgrade: false,
-        blockedByMinimumVersion: false,
-        forcedByRelease: false,
-        updateRequirement: "optional",
+        hasUpdate: latestVersionComparison > 0,
+        forceUpgrade: mustUpgrade || forcedByRelease,
+        blockedByMinimumVersion: mustUpgrade,
+        forcedByRelease,
+        updateRequirement: mustUpgrade ? "required_minimum" : forcedByRelease ? "required_release" : "optional",
         currentVersion: input.currentVersion,
-        latestVersion: input.currentVersion,
+        latestVersion: release.version,
         minimumVersion: release.minimumVersion,
         platform: input.platform,
         channel: effectiveChannel,
@@ -790,38 +790,41 @@ export class ReleaseCenterService {
         deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
           ?? fallbackDeliveryMode,
         recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
-        downloadUrl: null,
-        fileName: null,
-        fileSizeBytes: null,
-        fileHash: null,
+        downloadUrl: resolvedArtifact?.downloadUrl ?? null,
+        fileName: resolvedArtifact?.fileName ?? null,
+        fileSizeBytes: resolvedArtifact?.fileSizeBytes?.toString() ?? null,
+        fileHash: resolvedArtifact?.fileHash ?? null,
         publishedAt: release.publishedAt?.toISOString() ?? null
       };
     }
 
     return {
-      hasUpdate: latestVersionComparison > 0,
-      forceUpgrade: mustUpgrade || forcedByRelease,
-      blockedByMinimumVersion: mustUpgrade,
-      forcedByRelease,
-      updateRequirement: mustUpgrade ? "required_minimum" : forcedByRelease ? "required_release" : "optional",
+      hasUpdate: false,
+      forceUpgrade: false,
+      blockedByMinimumVersion: false,
+      forcedByRelease: false,
+      updateRequirement: "optional",
       currentVersion: input.currentVersion,
-      latestVersion: release.version,
-      minimumVersion: release.minimumVersion,
+      latestVersion: input.currentVersion,
+      minimumVersion: latestPublishedRelease.minimumVersion,
       platform: input.platform,
       channel: effectiveChannel,
-      changelog: release.changelog,
-      deliveryMode: (resolvedArtifact?.deliveryMode as ClientUpdateCheckResultDto["deliveryMode"] | undefined)
-        ?? fallbackDeliveryMode,
-      recommendedArtifact: resolvedArtifact ? toAdminReleaseArtifactRecord(resolvedArtifact) : null,
-      downloadUrl: resolvedArtifact?.downloadUrl ?? null,
-      fileName: resolvedArtifact?.fileName ?? null,
-      fileSizeBytes: resolvedArtifact?.fileSizeBytes?.toString() ?? null,
-      fileHash: resolvedArtifact?.fileHash ?? null,
-      publishedAt: release.publishedAt?.toISOString() ?? null
+      changelog: latestPublishedRelease.changelog,
+      deliveryMode: fallbackDeliveryMode,
+      recommendedArtifact: null,
+      downloadUrl: null,
+      fileName: null,
+      fileSizeBytes: null,
+      fileHash: null,
+      publishedAt: latestPublishedRelease.publishedAt?.toISOString() ?? null
     };
   }
 
   async findLatestPublishedRelease(channel: ReleaseChannel, platform?: ClientUpdateCheckDto["platform"]) {
+    return (await this.findPublishedReleaseCandidates(channel, platform))[0] ?? null;
+  }
+
+  private async findPublishedReleaseCandidates(channel: ReleaseChannel, platform?: ClientUpdateCheckDto["platform"]) {
     const rows = await this.prisma.release.findMany({
       where: {
         channel,
@@ -836,7 +839,7 @@ export class ReleaseCenterService {
     });
 
     if (rows.length === 0) {
-      return null;
+      return [];
     }
 
     return rows.sort((left, right) => {
@@ -845,7 +848,7 @@ export class ReleaseCenterService {
         return versionDiff;
       }
       return (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0);
-    })[0];
+    });
   }
 
   private async assertReleasePublishable(releaseId: string) {
@@ -997,13 +1000,56 @@ export class ReleaseCenterService {
   }
 
   private async getAdminReleaseBestEffort(releaseId: string, fallback: AdminReleaseRecordDto, label: string) {
+    let settled = false;
+    const refreshTask = this.getAdminRelease(releaseId).then(
+      (release) => {
+        settled = true;
+        return release;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    void refreshTask.catch((error) => {
+      this.logger.warn(
+        `Local release change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<AdminReleaseRecordDto>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          this.logger.warn(`Local release change saved, but ${label} exceeded ${RELEASE_RESPONSE_REFRESH_BUDGET_MS}ms.`);
+        }
+        resolve(fallback);
+      }, RELEASE_RESPONSE_REFRESH_BUDGET_MS);
+      timeoutHandle.unref?.();
+    });
+
     try {
-      return await this.getAdminRelease(releaseId);
+      return await Promise.race([refreshTask, timeoutTask]);
     } catch (error) {
       this.logger.warn(
         `Local release change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
       return fallback;
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private async createReleaseWithUniqueVersionGuard<T>(task: () => Promise<T>): Promise<T> {
+    try {
+      return await task();
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("Release version already exists for this platform and channel.");
+      }
+      throw error;
     }
   }
 
@@ -1207,6 +1253,10 @@ function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: st
   if (compareSemver(minimumVersion, version) > 0) {
     throw new BadRequestException("minimumVersion must not be greater than release version.");
   }
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }
 
 function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {
