@@ -34,8 +34,8 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
               ...value,
               source: next === "uploaded" ? "uploaded" : "custom_remote",
               originUrl: next === "uploaded" ? value.originUrl : value.originUrl,
-              defaultMirrorPrefix: next === "uploaded" ? "" : value.defaultMirrorPrefix,
-              allowClientMirror: next === "uploaded" ? false : value.allowClientMirror,
+              defaultMirrorPrefix: "",
+              allowClientMirror: false,
               archiveEntryName: next === "uploaded" ? "" : value.archiveEntryName
             })
           }
@@ -135,22 +135,10 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
               onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
             />
             <TextInput
-              label="默认加速前缀"
-              description="可选。直接填写加速域名前缀即可，比如 https://ghfast.top/ 。留空时就直接使用原始下载地址。"
-              placeholder="例如 https://ghfast.top/"
-              value={value.defaultMirrorPrefix}
-              onChange={(event) => onChange({ ...value, defaultMirrorPrefix: event.currentTarget.value })}
-            />
-            <TextInput
               label="压缩包内文件名"
               description="只有下载地址是 zip 压缩包时才需要填写。普通文件直链留空即可。"
               value={value.archiveEntryName}
               onChange={(event) => onChange({ ...value, archiveEntryName: event.currentTarget.value })}
-            />
-            <Switch
-              label="允许客户端自定义加速前缀"
-              checked={value.allowClientMirror}
-              onChange={(event) => onChange({ ...value, allowClientMirror: event.currentTarget.checked })}
             />
           </>
         )}

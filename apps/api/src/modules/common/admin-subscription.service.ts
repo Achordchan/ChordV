@@ -441,10 +441,11 @@ export class AdminSubscriptionService {
   }
 
   async createPlan(input: CreatePlanInputDto): Promise<AdminPlanRecordDto> {
+    const name = normalizePlanName(input.name);
     const row = await this.prisma.plan.create({
       data: {
         id: createId("plan"),
-        name: input.name.trim(),
+        name,
         scope: input.scope,
         totalTrafficGb: input.totalTrafficGb,
         renewable: input.renewable,
@@ -473,10 +474,11 @@ export class AdminSubscriptionService {
     if (input.scope !== undefined && input.scope !== current.scope && subscriptionCount > 0) {
       throw new BadRequestException("Plan scope cannot be changed while subscriptions are using this plan.");
     }
+    const name = input.name !== undefined ? normalizePlanName(input.name) : undefined;
     const row = await this.prisma.plan.update({
       where: { id: planId },
       data: {
-        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+        ...(name !== undefined ? { name } : {}),
         ...(input.scope !== undefined ? { scope: input.scope } : {}),
         ...(input.totalTrafficGb !== undefined ? { totalTrafficGb: input.totalTrafficGb } : {}),
         ...(input.renewable !== undefined ? { renewable: input.renewable } : {}),
@@ -2834,6 +2836,14 @@ export class AdminSubscriptionService {
 
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function normalizePlanName(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new BadRequestException("Plan name must not be empty.");
+  }
+  return trimmed;
 }
 
 function readErrorMessage(error: unknown, fallback: string) {

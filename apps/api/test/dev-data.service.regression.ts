@@ -609,6 +609,25 @@ async function testPublicRemoteUrlDnsLookupRespectsTimeout() {
   );
 }
 
+async function testPublicRemoteUrlRejectsPrivateAddressOnConnectLookup() {
+  let lookupCalls = 0;
+  await assert.rejects(
+    () =>
+      fetchPublicHttpUrl("https://download.example.com/runtime.zip", {}, {
+        errorPrefix: "Runtime component",
+        dnsLookup: async () => {
+          lookupCalls += 1;
+          if (lookupCalls === 1) {
+            return [{ address: "93.184.216.34", family: 4 }];
+          }
+          return [{ address: "127.0.0.1", family: 4 }];
+        }
+      }),
+    /Runtime component resolves to a private or reserved address/
+  );
+  assert.ok(lookupCalls >= 2, "public remote URL protection must validate the actual connection lookup");
+}
+
 async function testImageBedListRejectsSuccessFalsePayload() {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -11078,6 +11097,65 @@ async function testRuntimeComponentCreateRequiresHttpUrl() {
   );
 }
 
+async function testRuntimeComponentCreateRejectsBlankFileName() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw new Error("create should not be called");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.createAdminRuntimeComponent({
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "custom_remote",
+      originUrl: "https://example.com/xray.zip",
+      fileName: "   "
+    }),
+    /fileName must not be empty/,
+    "remote runtime component create must reject blank output file names"
+  );
+}
+
+async function testRuntimeComponentCreateIgnoresRemoteMirrorFields() {
+  let createdData: Record<string, unknown> | null = null;
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        create: async (payload: { data: Record<string, unknown> }) => {
+          createdData = payload.data;
+          return {
+            ...payload.data,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.createAdminRuntimeComponent({
+    platform: "windows",
+    architecture: "x64",
+    kind: "xray",
+    source: "custom_remote",
+    originUrl: "https://example.com/xray.zip",
+    defaultMirrorPrefix: "https://ghfast.top/",
+    allowClientMirror: true,
+    fileName: "xray.exe"
+  });
+
+  assert.equal(createdData?.defaultMirrorPrefix, null, "remote runtime components must keep the origin URL without default mirrors");
+  assert.equal(createdData?.allowClientMirror, false, "remote runtime components must not enable client mirror rewriting");
+  assert.equal(result.defaultMirrorPrefix, null);
+  assert.equal(result.allowClientMirror, false);
+}
+
 async function testRuntimeFailureReportLimitRejectsInvalidValues() {
   const service = createRuntimeComponentsService({
     prisma: {
@@ -13648,6 +13726,62 @@ async function testUpdatePlanRejectsScopeChangeWhenUsed() {
     () => service.updatePlan("plan_1", { scope: "team" }),
     /scope cannot be changed/,
     "plan scope changes must be blocked when existing subscriptions use the plan"
+  );
+}
+
+async function testCreatePlanRejectsBlankTrimmedName() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      plan: {
+        create: async () => {
+          throw new Error("plan create should not be called");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createPlan({
+        name: "   ",
+        scope: "personal",
+        totalTrafficGb: 100,
+        renewable: true
+      }),
+    /Plan name must not be empty/,
+    "plan creation must reject names that are blank after trimming"
+  );
+}
+
+async function testUpdatePlanRejectsBlankTrimmedName() {
+  const service = createAdminSubscriptionService({
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      name: "Personal",
+      scope: "personal",
+      totalTrafficGb: 100,
+      renewable: true,
+      maxConcurrentSessions: 3,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    }),
+    prisma: {
+      subscription: {
+        count: async () => 0
+      },
+      plan: {
+        update: async () => {
+          throw new Error("plan update should not be called");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updatePlan("plan_1", { name: "   " }),
+    /Plan name must not be empty/,
+    "plan updates must reject names that are blank after trimming"
   );
 }
 
@@ -17720,6 +17854,7 @@ async function main() {
   await testClientAuthGuardAllowsUserTokens();
   testCorsAllowsProductionAndConfiguredOrigins();
   await testPublicRemoteUrlDnsLookupRespectsTimeout();
+  await testPublicRemoteUrlRejectsPrivateAddressOnConnectLookup();
   await testUpdateUserPasswordRevokesExistingSessions();
   await testUpdateUserRoleRevokesExistingSessions();
   await testUpdateUserKeepsLocalSaveWhenSessionRevocationFails();
@@ -17882,6 +18017,8 @@ async function main() {
   await testRuntimePlanRequiresCompleteComponentSet();
   await testRuntimeComponentCreateRejectsUploadedSource();
   await testRuntimeComponentCreateRequiresHttpUrl();
+  await testRuntimeComponentCreateRejectsBlankFileName();
+  await testRuntimeComponentCreateIgnoresRemoteMirrorFields();
   await testRuntimeFailureReportLimitRejectsInvalidValues();
   await testRuntimeComponentFailureRejectsUnknownComponentId();
   await testRemoteRuntimeValidationRejectsPrivateNetworkUrl();
@@ -17931,6 +18068,8 @@ async function main() {
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
   await testCreateTeamMemberRejectsOwnerRole();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
+  await testCreatePlanRejectsBlankTrimmedName();
+  await testUpdatePlanRejectsBlankTrimmedName();
   testAdminPatchDtosRejectNullForNonNullableFields();
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
   await testImageBedListRejectsSuccessFalsePayload();

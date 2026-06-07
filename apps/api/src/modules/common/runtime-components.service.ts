@@ -76,6 +76,7 @@ export class RuntimeComponentsService {
     const source = input.source ?? "github_remote";
     const expectedHash = normalizeExpectedHash(input.expectedHash);
     const normalizedInput = normalizeRuntimeComponentIdentity(input.platform, input.architecture, input.kind);
+    const fileName = normalizeRequiredText(input.fileName, "fileName");
     if (isSharedRuleset(input.kind)) {
       const existing = await this.findSharedRulesetRecord(input.kind);
       if (existing) {
@@ -87,9 +88,9 @@ export class RuntimeComponentsService {
             kind: input.kind,
             source,
             originUrl,
-            defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix),
-            allowClientMirror: input.allowClientMirror ?? true,
-            fileName: input.fileName.trim(),
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName,
             storedFilePath: null,
             fileSizeBytes: null,
             fileHash: null,
@@ -111,9 +112,9 @@ export class RuntimeComponentsService {
         kind: input.kind,
         source,
         originUrl,
-        defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix),
-        allowClientMirror: input.allowClientMirror ?? true,
-        fileName: input.fileName.trim(),
+        defaultMirrorPrefix: null,
+        allowClientMirror: false,
+        fileName,
         storedFilePath: null,
         fileSizeBytes: null,
         fileHash: null,
@@ -219,10 +220,7 @@ export class RuntimeComponentsService {
       data: {
         ...(input.source !== undefined ? { source: input.source } : {}),
         ...(input.originUrl !== undefined ? { originUrl: nextOriginUrl } : {}),
-        ...(input.defaultMirrorPrefix !== undefined
-          ? { defaultMirrorPrefix: normalizeNullableText(input.defaultMirrorPrefix) }
-          : {}),
-        ...(input.allowClientMirror !== undefined ? { allowClientMirror: input.allowClientMirror } : {}),
+        ...(nextSource !== "uploaded" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
         ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
         ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
         ...(input.expectedHash !== undefined ? { expectedHash: normalizedExpectedHash } : {}),

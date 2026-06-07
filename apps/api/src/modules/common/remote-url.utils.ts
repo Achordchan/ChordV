@@ -1,19 +1,44 @@
 import { BadRequestException } from "@nestjs/common";
 import { lookup } from "node:dns/promises";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { isIP } from "node:net";
-import { fetch as undiciFetch } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 
 const DEFAULT_MAX_REDIRECTS = 5;
 const DEFAULT_DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
 type FetchOptions = NonNullable<Parameters<typeof undiciFetch>[1]>;
 type DnsLookup = typeof lookup;
+type UndiciLookupOptions = LookupOptions;
+type UndiciLookupCallback = (
+  error: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number
+) => void;
 type FetchPublicHttpUrlSettings = {
   maxRedirects?: number;
   errorPrefix?: string;
   dnsLookupTimeoutMs?: number;
   dnsLookup?: DnsLookup;
 };
+
+const publicHttpDispatcher = new Agent({
+  connect: {
+    lookup(hostname: string, options: UndiciLookupOptions, callback: UndiciLookupCallback) {
+      void lookupPublicHostname(hostname, "Remote URL", {}, options).then(
+        (addresses) => {
+          if (options.all) {
+            callback(null, addresses);
+            return;
+          }
+          const first = addresses[0];
+          callback(null, first.address, first.family);
+        },
+        (error) => callback(error as NodeJS.ErrnoException, "", 0)
+      );
+    }
+  }
+});
 
 export async function fetchPublicHttpUrl(
   rawUrl: string,
@@ -25,10 +50,7 @@ export async function fetchPublicHttpUrl(
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     await assertPublicHttpUrl(currentUrl, settings.errorPrefix, settings);
-    const response = await undiciFetch(currentUrl, {
-      ...options,
-      redirect: "manual"
-    });
+    const response = await fetchWithPublicDispatcher(currentUrl, options, settings);
 
     if (!isRedirectStatus(response.status)) {
       return {
@@ -46,6 +68,49 @@ export async function fetchPublicHttpUrl(
   }
 
   throw new BadRequestException(`${settings.errorPrefix ?? "Remote URL"} redirected too many times.`);
+}
+
+async function fetchWithPublicDispatcher(
+  url: string | URL,
+  options: FetchOptions,
+  settings: FetchPublicHttpUrlSettings
+) {
+  try {
+    return await undiciFetch(url, {
+      ...options,
+      dispatcher: options.dispatcher ?? createPublicHttpDispatcher(settings),
+      redirect: "manual"
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : null;
+    if (cause instanceof BadRequestException) {
+      throw cause;
+    }
+    throw error;
+  }
+}
+
+function createPublicHttpDispatcher(settings: FetchPublicHttpUrlSettings) {
+  if (!settings.dnsLookup && !settings.dnsLookupTimeoutMs) {
+    return publicHttpDispatcher;
+  }
+  return new Agent({
+    connect: {
+      lookup(hostname: string, options: UndiciLookupOptions, callback: UndiciLookupCallback) {
+        void lookupPublicHostname(hostname, settings.errorPrefix ?? "Remote URL", settings, options).then(
+          (addresses) => {
+            if (options.all) {
+              callback(null, addresses);
+              return;
+            }
+            const first = addresses[0];
+            callback(null, first.address, first.family);
+          },
+          (error) => callback(error as NodeJS.ErrnoException, "", 0)
+        );
+      }
+    }
+  });
 }
 
 export async function assertPublicHttpUrl(
@@ -85,6 +150,18 @@ async function assertPublicHostname(
     return;
   }
 
+  const addresses = await lookupPublicHostname(hostname, errorPrefix, settings);
+  if (addresses.length === 0) {
+    throw new BadRequestException(`${errorPrefix} host did not resolve.`);
+  }
+}
+
+async function lookupPublicHostname(
+  hostname: string,
+  errorPrefix: string,
+  settings: Pick<FetchPublicHttpUrlSettings, "dnsLookupTimeoutMs" | "dnsLookup"> = {},
+  options: UndiciLookupOptions = {}
+) {
   const addresses = await lookupHostnameWithTimeout(
     hostname,
     errorPrefix,
@@ -94,9 +171,28 @@ async function assertPublicHostname(
   if (addresses.length === 0) {
     throw new BadRequestException(`${errorPrefix} host did not resolve.`);
   }
-  for (const address of addresses) {
+  const family = normalizeLookupFamily(options.family);
+  const matchingAddresses = family > 0 ? addresses.filter((address) => address.family === family) : addresses;
+  if (matchingAddresses.length === 0) {
+    throw new BadRequestException(`${errorPrefix} host did not resolve to a supported address family.`);
+  }
+  for (const address of matchingAddresses) {
     assertPublicIp(address.address, errorPrefix);
   }
+  return matchingAddresses;
+}
+
+function normalizeLookupFamily(family: LookupOptions["family"]) {
+  if (family === 4 || family === 6) {
+    return family;
+  }
+  if (family === "IPv4") {
+    return 4;
+  }
+  if (family === "IPv6") {
+    return 6;
+  }
+  return 0;
 }
 
 async function lookupHostnameWithTimeout(hostname: string, errorPrefix: string, dnsLookup: DnsLookup, timeoutMs: number) {

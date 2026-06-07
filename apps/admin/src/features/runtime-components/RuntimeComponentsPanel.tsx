@@ -166,8 +166,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           kind: form.kind,
           source: form.source,
           originUrl: form.originUrl.trim(),
-          defaultMirrorPrefix: form.defaultMirrorPrefix.trim() || null,
-          allowClientMirror: form.allowClientMirror,
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
           fileName: form.fileName.trim(),
           archiveEntryName: form.archiveEntryName.trim() || null,
           expectedHash: form.expectedHash.trim() || null,
@@ -447,9 +447,6 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                       <Badge color={record.source === "uploaded" ? "teal" : "blue"} variant="light">
                         {record.source === "uploaded" ? "已上传到服务器" : record.source === "github_remote" ? "远程直链（旧）" : "远程直链"}
                       </Badge>
-                      <Text size="xs" c="dimmed">
-                        {record.allowClientMirror ? "允许客户端自定义加速" : "不允许客户端自定义加速"}
-                      </Text>
                     </Stack>
                   </Table.Td>
                   <Table.Td>
@@ -470,11 +467,6 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                       <Text size="sm" lineClamp={1}>
                         {record.finalUrlPreview}
                       </Text>
-                      {record.source !== "uploaded" ? (
-                        <Text size="xs" c="dimmed" lineClamp={1}>
-                          默认加速：{record.defaultMirrorPrefix || "未设置"}
-                        </Text>
-                      ) : null}
                     </Stack>
                   </Table.Td>
                   <Table.Td>
