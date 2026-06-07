@@ -27,17 +27,25 @@ type AuthSessionResponse = {
 let refreshPromise: Promise<string | null> | null = null;
 let adminAccessToken: string | null = null;
 
+function isPanelSyncPendingPayload(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return record.panelSyncStatus === "pending";
+}
+
 function findPanelSyncPendingPayload(value: unknown): unknown | null {
   if (!value || typeof value !== "object") {
     return null;
   }
-  const record = value as Record<string, unknown>;
-  if (record.panelSyncStatus === "pending") {
+  if (isPanelSyncPendingPayload(value)) {
     return value;
   }
+  const record = value as Record<string, unknown>;
   for (const key of ["data", "result", "payload", "error", "response"]) {
-    const nested = findPanelSyncPendingPayload(record[key]);
-    if (nested) {
+    const nested = record[key];
+    if (isPanelSyncPendingPayload(nested)) {
       return nested;
     }
   }

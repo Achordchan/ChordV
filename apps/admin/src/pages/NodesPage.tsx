@@ -156,8 +156,16 @@ function NodeSyncQueueCell(props: {
   onRetryNodePanelSyncJobs: (nodeId: string) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
-  const panelSummary = summarizePanelSyncJobsForNode(props.panelSyncJobs, props.node.id);
-  const panelTotal = panelSummary.total;
+  const queuedPanelSummary = summarizePanelSyncJobsForNode(props.panelSyncJobs, props.node.id);
+  const panelTotal = props.node.panelSyncTotalCount ?? queuedPanelSummary.total;
+  const panelSummary = {
+    total: panelTotal,
+    pending: props.node.panelSyncPendingCount ?? queuedPanelSummary.pending,
+    running: props.node.panelSyncRunningCount ?? queuedPanelSummary.running,
+    failed: props.node.panelSyncFailedCount ?? queuedPanelSummary.failed,
+    actionLabel: queuedPanelSummary.actionLabel,
+    lastError: props.node.panelSyncLastError ?? queuedPanelSummary.lastError
+  };
   const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
   const panelRetryable = hasRetryableBackgroundSync(panelSummary);
   const leaseRetryable = hasRetryableBackgroundSync(leaseSummary);

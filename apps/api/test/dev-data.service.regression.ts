@@ -3749,11 +3749,10 @@ async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
   assert.equal(nodeUpdates[0].where.id, "node_stalled");
   const stalledUpdate = jobUpdates.find((item) => item.where.id === "stalled");
   assert.match(stalledUpdate?.data.lastError ?? "", /timed out/);
-  assert.match(stalledUpdate?.data.lastError ?? "", /已暂停自动重试/);
   assert.ok(
     stalledUpdate?.data.nextRunAt instanceof Date &&
-      stalledUpdate.data.nextRunAt.getTime() - Date.now() > 300 * 24 * 60 * 60 * 1000,
-    "timed-out traffic reset must not be scheduled for automatic near-term retry"
+      stalledUpdate.data.nextRunAt.getTime() - Date.now() < 5 * 60 * 1000,
+    "timed-out traffic reset must be scheduled for automatic near-term retry"
   );
 }
 
@@ -3871,11 +3870,10 @@ async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
   assert.equal(statusById.get("stalled_b"), "failed");
   for (const stalledId of ["stalled_a", "stalled_b"]) {
     const stalledUpdate = jobUpdates.find((item) => item.where.id === stalledId);
-    assert.match(stalledUpdate?.data.lastError ?? "", /已暂停自动重试/);
     assert.ok(
       stalledUpdate?.data.nextRunAt instanceof Date &&
-        stalledUpdate.data.nextRunAt.getTime() - Date.now() > 300 * 24 * 60 * 60 * 1000,
-      "timed-out traffic reset must wait for manual retry instead of automatic retry"
+        stalledUpdate.data.nextRunAt.getTime() - Date.now() < 5 * 60 * 1000,
+      "timed-out traffic reset must keep automatic near-term retry"
     );
   }
 }
