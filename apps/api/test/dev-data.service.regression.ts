@@ -11117,6 +11117,133 @@ async function testConnectRejectsPanelDisabledNode() {
   );
 }
 
+async function testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls() {
+  const leaseCreates: Array<Record<string, any>> = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
+  const panelSyncJobs: Array<Record<string, any>> = [];
+  const resolvedIncidents: Array<Record<string, string>> = [];
+  let panelReadStarted = false;
+  let bindingClientId = "";
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const node = {
+    id: "node_1",
+    name: "Node",
+    region: "US",
+    provider: "xui",
+    tags: [],
+    recommended: true,
+    latencyMs: 20,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "cached.example.com",
+    serverPort: 443,
+    serverName: "cached.example.com",
+    uuid: "template_uuid",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "cached_public_key",
+    shortId: "cached_sid",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: "cached_verify",
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 7,
+    panelEnabled: true
+  };
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      getInboundRuntime: async () => {
+        panelReadStarted = true;
+        return new Promise<any>(() => undefined);
+      }
+    },
+    meteringIncidentService: {
+      resolve: async (subscriptionId: string, nodeId: string, reason: string) => {
+        resolvedIncidents.push({ subscriptionId, nodeId, reason });
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findFirst: async () => null,
+        create: async ({ data }: { data: Record<string, any> }) => {
+          bindingClientId = data.panelClientId;
+          return data;
+        }
+      },
+      trafficSnapshot: {
+        findUnique: async () => null,
+        upsert: async () => ({})
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelSyncJobs.push(payload);
+          return {};
+        }
+      },
+      nodeSessionLease: {
+        create: async (payload: Record<string, any>) => {
+          leaseCreates.push(payload);
+          return payload.data;
+        }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return { ...node, ...payload.data, updatedAt: now };
+        }
+      }
+    }
+  });
+
+  const runtime = await Promise.race([
+    service["connectWithXui"](
+      node,
+      {
+        id: "user_1",
+        email: "user@example.com",
+        displayName: "User",
+        role: "user",
+        status: "active",
+        lastSeenAt: now.toISOString()
+      },
+      {
+        subscription: {
+          id: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          state: "active",
+          remainingTrafficGb: 10,
+          expireAt: new Date(Date.now() + 86_400_000)
+        },
+        team: null,
+        memberRole: null,
+        memberUsedTrafficGb: null
+      },
+      { nodeId: "node_1", mode: "rule" },
+      { blockAds: true, chinaDirect: true, aiServicesProxy: true }
+    ),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("connect waited for stalled panel runtime read")), 2_500);
+    })
+  ]);
+
+  assert.equal(panelReadStarted, true);
+  assert.equal(runtime.outbound.server, "cached.example.com");
+  assert.equal(runtime.outbound.uuid, bindingClientId);
+  assert.equal(runtime.outbound.realityPublicKey, "cached_public_key");
+  assert.equal(runtime.outbound.shortId, "cached_sid");
+  assert.equal(leaseCreates.length, 1, "connect must still create a local runtime lease when panel runtime read stalls");
+  assert.equal(panelSyncJobs.length, 1, "connect must queue panel ensure job instead of waiting for 3x-ui");
+  assert.equal(nodeUpdates[0]?.data?.panelStatus, "degraded");
+  assert.match(nodeUpdates[0]?.data?.panelError, /timed out/);
+  assert.deepEqual(resolvedIncidents, [], "stalled panel reads must not be marked fully resolved");
+}
+
 async function testRemovePanelBindingQueuesDeleteWithoutRemoteCall() {
   const upserts: Array<Record<string, any>> = [];
   const bindingUpdates: Array<Record<string, any>> = [];
@@ -18638,6 +18765,7 @@ async function main() {
   await testUpdateNodeDisablingPanelForcesOfflineStatus();
   await testClientNodesRequirePanelEnabled();
   await testConnectRejectsPanelDisabledNode();
+  await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
   await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
   await testRuntimePlanRequiresCompleteComponentSet();

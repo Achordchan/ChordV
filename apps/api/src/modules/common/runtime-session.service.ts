@@ -77,6 +77,7 @@ type ActiveRuntimeUsageContext = {
 };
 
 const NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS = 300;
+const CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS = Number(process.env.CHORDV_CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS ?? 1500);
 
 type PanelBindingFilter = {
   userId?: string;
@@ -1828,14 +1829,7 @@ export class RuntimeSessionService {
       userDisplayName: user.displayName,
       expireAt: subscription.expireAt
     });
-    const inboundRuntime = await this.xuiService.getInboundRuntime({
-      id: node.id,
-      panelBaseUrl: node.panelBaseUrl,
-      panelApiBasePath: node.panelApiBasePath,
-      panelUsername: node.panelUsername,
-      panelPassword: node.panelPassword,
-      panelInboundId: binding.panelInboundId
-    });
+    const inboundRuntime = await this.readConnectInboundRuntimeBestEffort(node, binding.panelInboundId);
     const effectiveNode = {
       ...node,
       serverHost: inboundRuntime.serverHost,
@@ -1917,13 +1911,80 @@ export class RuntimeSessionService {
         serverName: effectiveNode.serverName,
         fingerprint: effectiveNode.fingerprint,
         spiderX: effectiveNode.spiderX,
-        mldsa65Verify: effectiveNode.mldsa65Verify,
-        panelStatus: "online",
-        panelError: null
+        mldsa65Verify: effectiveNode.mldsa65Verify ?? "",
+        panelStatus: inboundRuntime.ok ? "online" : "degraded",
+        panelError: inboundRuntime.ok ? null : inboundRuntime.errorMessage
       }
     });
-    await this.meteringIncidentService.resolve(subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
+    if (inboundRuntime.ok) {
+      await this.meteringIncidentService.resolve(subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
+    }
     return runtime;
+  }
+
+  private async readConnectInboundRuntimeBestEffort(
+    node: {
+      id: string;
+      serverHost: string;
+      serverPort: number;
+      uuid: string;
+      flow: string;
+      realityPublicKey: string;
+      shortId: string;
+      serverName: string;
+      fingerprint: string;
+      spiderX: string;
+      mldsa65Verify?: string | null;
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+    },
+    panelInboundId: number
+  ) {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const readTask = this.xuiService.getInboundRuntime({
+      id: node.id,
+      panelBaseUrl: node.panelBaseUrl,
+      panelApiBasePath: node.panelApiBasePath,
+      panelUsername: node.panelUsername,
+      panelPassword: node.panelPassword,
+      panelInboundId
+    });
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`panel runtime read timed out after ${CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS}ms`));
+      }, CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS);
+      timeoutHandle.unref?.();
+    });
+
+    try {
+      return {
+        ok: true as const,
+        ...(await Promise.race([readTask, timeoutTask]))
+      };
+    } catch (error) {
+      const errorMessage = readRuntimeErrorMessage(error) || "panel runtime read failed";
+      this.logger.warn(`Using cached node runtime for ${node.id} because panel runtime read failed: ${errorMessage}`);
+      return {
+        ok: false as const,
+        errorMessage,
+        serverHost: node.serverHost,
+        serverPort: node.serverPort,
+        uuid: node.uuid,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX,
+        mldsa65Verify: node.mldsa65Verify ?? null
+      };
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private async ensurePanelClientBinding(writer: any, input: {
