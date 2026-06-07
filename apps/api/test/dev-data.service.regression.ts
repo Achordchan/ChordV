@@ -6773,6 +6773,42 @@ function testAdminNodePanelApiPathAcceptsFullUrl() {
   assert.equal(normalizePanelApiBasePath("https://panel.example.com/secret/"), "/secret");
 }
 
+async function testXuiPanelRequestUsesCallerAbortBudget() {
+  const service = new XuiService();
+  const server = createServer((_request, _response) => {
+    // Intentionally keep the socket open so only the caller budget can finish the request.
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("test server did not expose a TCP address");
+  }
+
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      () =>
+        service.listInbounds({
+          id: "node_slow_panel",
+          panelBaseUrl: `http://127.0.0.1:${address.port}`,
+          panelApiBasePath: "/",
+          panelUsername: "admin",
+          panelPassword: "password",
+          panelInboundId: null,
+          panelRequestTimeoutMs: 5_000,
+          panelAbortSignal: AbortSignal.timeout(25)
+        }),
+      /abort|timeout|timed out|This operation was aborted/i
+    );
+    assert.ok(Date.now() - startedAt < 1_000, "caller abort budget must stop the 3x-ui request before the default panel timeout");
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testXuiBusinessNotFoundFallsBackToInboundDelete() {
   const service = new XuiService();
   const calls: string[] = [];
@@ -19605,6 +19641,7 @@ async function main() {
   await testXuiPanelLocationStripsApiPathSuffix();
   await testXuiPanelLocationAcceptsFullUrlAsApiBasePath();
   testAdminNodePanelApiPathAcceptsFullUrl();
+  await testXuiPanelRequestUsesCallerAbortBudget();
   await testXuiBusinessNotFoundFallsBackToInboundDelete();
   testXuiSettingsClientStatsTakePrecedenceOverZeroClientFallback();
   await testXuiInboundRuntimeReadsMldsa65Verify();

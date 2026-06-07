@@ -402,6 +402,7 @@ export class AdminNodeService {
     panelUsername: string;
     panelPassword: string;
   }): Promise<AdminNodePanelInboundDto[]> {
+    const budgetMs = readListNodePanelInboundsBudgetMs();
     const inbounds = await this.readNodePanelInboundsWithBudget(
       this.xuiService.listInbounds({
         id: createId("panel"),
@@ -409,7 +410,9 @@ export class AdminNodeService {
         panelApiBasePath: input.panelApiBasePath ?? "/",
         panelUsername: input.panelUsername,
         panelPassword: input.panelPassword,
-        panelInboundId: null
+        panelInboundId: null,
+        panelRequestTimeoutMs: budgetMs,
+        panelAbortSignal: AbortSignal.timeout(budgetMs)
       }, {
         forceRelogin: true,
         strictCredentialCheck: true
@@ -821,8 +824,13 @@ export class AdminNodeService {
     derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
     errorMessage: string | null;
   }> {
+    const budgetMs = NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS;
     let settled = false;
-    const runtimeTask = this.xuiService.getInboundRuntime(input).then(
+    const runtimeTask = this.xuiService.getInboundRuntime({
+      ...input,
+      panelRequestTimeoutMs: budgetMs,
+      panelAbortSignal: AbortSignal.timeout(budgetMs)
+    }).then(
       (derived) => {
         settled = true;
         return { derived, errorMessage: null };
@@ -921,13 +929,16 @@ export class AdminNodeService {
       panelError = null;
     } else if (current.panelEnabled) {
       try {
+        const panelProbeBudgetMs = readNodeProbeBudgetMs();
         await this.xuiService.checkNodeHealth({
           id: current.id,
           panelBaseUrl: current.panelBaseUrl,
           panelApiBasePath: current.panelApiBasePath,
           panelUsername: current.panelUsername,
           panelPassword: current.panelPassword,
-          panelInboundId: current.panelInboundId
+          panelInboundId: current.panelInboundId,
+          panelRequestTimeoutMs: panelProbeBudgetMs,
+          panelAbortSignal: AbortSignal.timeout(panelProbeBudgetMs)
         });
         panelStatus = "online";
         panelError = null;
@@ -1286,6 +1297,7 @@ export class AdminNodeService {
     }
 
     if (panelEnabled && input.panelBaseUrl && input.panelUsername && input.panelPassword) {
+      const budgetMs = readImportNodeRuntimeBudgetMs();
       return this.readImportRuntimeWithBudget(
         this.xuiService.getInboundRuntime({
           id: createId("panel_runtime"),
@@ -1293,7 +1305,9 @@ export class AdminNodeService {
           panelApiBasePath: input.panelApiBasePath ?? "/",
           panelUsername: input.panelUsername,
           panelPassword: input.panelPassword,
-          panelInboundId: input.panelInboundId ?? null
+          panelInboundId: input.panelInboundId ?? null,
+          panelRequestTimeoutMs: budgetMs,
+          panelAbortSignal: AbortSignal.timeout(budgetMs)
         }),
         "3x-ui panel runtime read"
       );

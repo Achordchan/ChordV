@@ -348,6 +348,7 @@ export function App() {
   const [probingAll, setProbingAll] = useState(false);
   const probingBusyRef = useRef(false);
   const [panelSyncRetryBusyKey, setPanelSyncRetryBusyKey] = useState<string | null>(null);
+  const panelSyncRetryBusyRef = useRef(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -863,10 +864,11 @@ export function App() {
 
   async function handleRetryPanelSyncJob(jobId: string) {
     const busyKey = `job:${jobId}`;
-    if (panelSyncRetryBusyKey === busyKey) {
+    if (panelSyncRetryBusyRef.current) {
       return;
     }
     try {
+      panelSyncRetryBusyRef.current = true;
       setPanelSyncRetryBusyKey(busyKey);
       const panelSyncJobs = await retryAdminPanelSyncJob(jobId);
       mergeSnapshot({ panelSyncJobs });
@@ -886,15 +888,17 @@ export function App() {
       });
     } finally {
       setPanelSyncRetryBusyKey(null);
+      panelSyncRetryBusyRef.current = false;
     }
   }
 
   async function handleRetryNodePanelSyncJobs(nodeId: string) {
     const busyKey = `node:${nodeId}`;
-    if (panelSyncRetryBusyKey === busyKey) {
+    if (panelSyncRetryBusyRef.current) {
       return;
     }
     try {
+      panelSyncRetryBusyRef.current = true;
       setPanelSyncRetryBusyKey(busyKey);
       const panelSyncJobs = await retryAdminPanelSyncJobsForNode(nodeId);
       mergeSnapshot({ panelSyncJobs });
@@ -914,15 +918,17 @@ export function App() {
       });
     } finally {
       setPanelSyncRetryBusyKey(null);
+      panelSyncRetryBusyRef.current = false;
     }
   }
 
   async function handleRetryLeaseRevocationJob(jobId: string) {
     const busyKey = `lease-job:${jobId}`;
-    if (panelSyncRetryBusyKey === busyKey) {
+    if (panelSyncRetryBusyRef.current) {
       return;
     }
     try {
+      panelSyncRetryBusyRef.current = true;
       setPanelSyncRetryBusyKey(busyKey);
       const leaseRevocationJobs = await retryAdminLeaseRevocationJob(jobId);
       mergeSnapshot({ leaseRevocationJobs });
@@ -941,15 +947,17 @@ export function App() {
       });
     } finally {
       setPanelSyncRetryBusyKey(null);
+      panelSyncRetryBusyRef.current = false;
     }
   }
 
   async function handleRetryNodeLeaseRevocationJobs(nodeId: string) {
     const busyKey = `lease-node:${nodeId}`;
-    if (panelSyncRetryBusyKey === busyKey) {
+    if (panelSyncRetryBusyRef.current) {
       return;
     }
     try {
+      panelSyncRetryBusyRef.current = true;
       setPanelSyncRetryBusyKey(busyKey);
       const leaseRevocationJobs = await retryAdminLeaseRevocationJobsForNode(nodeId);
       mergeSnapshot({ leaseRevocationJobs });
@@ -968,6 +976,7 @@ export function App() {
       });
     } finally {
       setPanelSyncRetryBusyKey(null);
+      panelSyncRetryBusyRef.current = false;
     }
   }
 
@@ -1839,7 +1848,7 @@ export function App() {
   }
 
   async function handleDeleteTeamMember(teamId: string, memberId: string) {
-    const confirmed = window.confirm("Remove this team member? Their team subscription access will be revoked immediately.");
+    const confirmed = window.confirm("确认移出这个团队成员吗？他的 Team 订阅访问会进入后台撤销任务。");
     if (!confirmed) {
       return;
     }

@@ -265,7 +265,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       return;
     }
 
-    if (!window.confirm(`Publish ${record.version}? This immediately changes the client update channel.`)) {
+    if (!window.confirm(`确认发布 ${record.version} 吗？客户端会开始收到这个版本更新。`)) {
       return;
     }
 
@@ -273,7 +273,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   }
 
   async function withdrawRelease(record: AdminReleaseRecordDto) {
-    if (!window.confirm(`Withdraw ${record.version} to draft? Clients will stop receiving this release.`)) {
+    if (!window.confirm(`确认将 ${record.version} 撤回为草稿吗？客户端将不再收到这个版本。`)) {
       return;
     }
 

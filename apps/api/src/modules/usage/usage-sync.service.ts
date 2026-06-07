@@ -182,7 +182,9 @@ export class UsageSyncService {
               panelApiBasePath: nodeBindings[0].node.panelApiBasePath,
               panelUsername: nodeBindings[0].node.panelUsername,
               panelPassword: nodeBindings[0].node.panelPassword,
-              panelInboundId
+              panelInboundId,
+              panelRequestTimeoutMs: USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS,
+              panelAbortSignal: AbortSignal.timeout(USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS)
             }),
             USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS,
             `3x-ui node ${nodeId} inbound ${panelInboundId} usage request`

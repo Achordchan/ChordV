@@ -222,8 +222,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
   async function removeComponent(record: AdminRuntimeComponentRecordDto) {
     const confirmMessage = record.enabled
-      ? `Delete enabled runtime component ${record.platform}/${record.kind}/${record.architecture}/${record.fileName}? Disable it first unless this is an emergency.`
-      : `Delete runtime component ${record.platform}/${record.kind}/${record.architecture}/${record.fileName}?`;
+      ? `确认删除已启用的内核组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？除非紧急处理，建议先停用再删除。`
+      : `确认删除内核组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？`;
     if (!window.confirm(confirmMessage)) {
       return;
     }

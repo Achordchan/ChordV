@@ -15,6 +15,8 @@ type XuiNodeConfig = {
   panelUsername: string | null;
   panelPassword: string | null;
   panelInboundId: number | null;
+  panelRequestTimeoutMs?: number | null;
+  panelAbortSignal?: AbortSignal | null;
 };
 
 type XuiClientPayload = {
@@ -674,7 +676,7 @@ export class XuiService {
       body,
       headers,
       dispatcher: this.dispatcher,
-      signal: AbortSignal.timeout(PANEL_TIMEOUT_MS)
+      signal: createPanelRequestSignal(node)
     });
   }
 
@@ -706,7 +708,7 @@ export class XuiService {
       body: form.toString(),
       headers,
       dispatcher: this.dispatcher,
-      signal: AbortSignal.timeout(PANEL_TIMEOUT_MS)
+      signal: createPanelRequestSignal(node)
     });
 
     const responseText = await response.text().catch(() => "");
@@ -776,7 +778,7 @@ export class XuiService {
         method: "GET",
         headers,
         dispatcher: this.dispatcher,
-        signal: AbortSignal.timeout(PANEL_TIMEOUT_MS)
+        signal: createPanelRequestSignal(node)
       });
       const responseText = await response.text().catch(() => "");
       const payload = parseJsonRecord(responseText);
@@ -1111,6 +1113,19 @@ function joinPanelPath(basePath: string, path: string) {
 
 function normalizeBaseUrl(value: string) {
   return value.replace(/\/$/, "");
+}
+
+function resolvePanelRequestTimeoutMs(node: XuiNodeConfig) {
+  const timeoutMs = Number(node.panelRequestTimeoutMs);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.floor(timeoutMs) : PANEL_TIMEOUT_MS;
+}
+
+function createPanelRequestSignal(node: XuiNodeConfig) {
+  const timeoutSignal = AbortSignal.timeout(resolvePanelRequestTimeoutMs(node));
+  if (!node.panelAbortSignal) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([node.panelAbortSignal, timeoutSignal]);
 }
 
 function readCookieHeader(headers: Headers) {

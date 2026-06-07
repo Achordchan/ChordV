@@ -1323,13 +1323,15 @@ export class RuntimeSessionService {
         return;
       }
 
+      const panelSyncTimeoutMs = readPanelSyncJobTimeoutMs();
       const panelNodeConfig = {
         id: job.node.id,
         panelBaseUrl: job.panelBaseUrl ?? job.node.panelBaseUrl,
         panelApiBasePath: job.panelApiBasePath ?? job.node.panelApiBasePath,
         panelUsername: job.panelUsername ?? job.node.panelUsername,
         panelPassword: job.panelPassword ?? job.node.panelPassword,
-        panelInboundId: job.panelInboundId ?? job.node.panelInboundId
+        panelInboundId: job.panelInboundId ?? job.node.panelInboundId,
+        panelRequestTimeoutMs: panelSyncTimeoutMs
       };
 
       if (job.action === "disable_client" && !(await this.shouldRunPanelDisableJob(job))) {
@@ -1343,7 +1345,7 @@ export class RuntimeSessionService {
         await this.runPanelSyncRemoteCallWithBudget(
           job,
           this.xuiService.setClientEnabled(
-            panelNodeConfig,
+            withPanelAbortBudget(panelNodeConfig, panelSyncTimeoutMs),
             job.panelClientId,
             job.panelClientEmail,
             false
@@ -1359,7 +1361,7 @@ export class RuntimeSessionService {
         }
         const ensured = await this.runPanelSyncRemoteCallWithBudget(
           job,
-          this.xuiService.ensureClient(panelNodeConfig, {
+          this.xuiService.ensureClient(withPanelAbortBudget(panelNodeConfig, panelSyncTimeoutMs), {
             id: job.panelClientId,
             email: job.panelClientEmail,
             enable: true,
@@ -1378,7 +1380,7 @@ export class RuntimeSessionService {
       } else if (job.action === "reset_client_traffic") {
         const resetSubmitted = await this.runPanelSyncRemoteCallWithBudget(
           job,
-          this.xuiService.resetClientTraffic(panelNodeConfig, job.panelClientEmail)
+          this.xuiService.resetClientTraffic(withPanelAbortBudget(panelNodeConfig, panelSyncTimeoutMs), job.panelClientEmail)
         );
         if (resetSubmitted) {
           await this.confirmPanelTrafficReset(job, panelNodeConfig);
@@ -1387,7 +1389,7 @@ export class RuntimeSessionService {
         const removalStatus = await this.runPanelSyncRemoteCallWithBudget(
           job,
           this.xuiService.removeClient(
-            panelNodeConfig,
+            withPanelAbortBudget(panelNodeConfig, panelSyncTimeoutMs),
             job.panelClientId,
             job.panelClientEmail
           )
@@ -1530,11 +1532,13 @@ export class RuntimeSessionService {
       panelUsername: string | null;
       panelPassword: string | null;
       panelInboundId: number | null;
+      panelRequestTimeoutMs?: number | null;
     }
   ) {
+    const timeoutMs = readPanelSyncJobTimeoutMs();
     const sample = await this.runPanelSyncRemoteCallWithBudget(
       job,
-      this.xuiService.getClientUsage(panelNodeConfig, job.panelClientEmail)
+      this.xuiService.getClientUsage(withPanelAbortBudget(panelNodeConfig, timeoutMs), job.panelClientEmail)
     );
     if (!sample) {
       return;
@@ -2045,7 +2049,9 @@ export class RuntimeSessionService {
       panelApiBasePath: node.panelApiBasePath,
       panelUsername: node.panelUsername,
       panelPassword: node.panelPassword,
-      panelInboundId
+      panelInboundId,
+      panelRequestTimeoutMs: CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS,
+      panelAbortSignal: AbortSignal.timeout(CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS)
     });
     const timeoutTask = new Promise<never>((_resolve, reject) => {
       timeoutHandle = setTimeout(() => {
@@ -2777,6 +2783,19 @@ function isPrismaUniqueConstraintError(error: unknown) {
 
 function isPanelSyncAction(action: string): action is PanelSyncAction {
   return ["ensure_client", "disable_client", "delete_client", "reset_client_traffic"].includes(action);
+}
+
+function withPanelAbortBudget<
+  T extends {
+    panelRequestTimeoutMs?: number | null;
+    panelAbortSignal?: AbortSignal | null;
+  }
+>(config: T, timeoutMs: number) {
+  return {
+    ...config,
+    panelRequestTimeoutMs: timeoutMs,
+    panelAbortSignal: AbortSignal.timeout(timeoutMs)
+  };
 }
 
 class PanelSyncRemoteCallTimeoutError extends Error {
