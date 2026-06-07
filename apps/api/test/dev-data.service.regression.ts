@@ -11169,14 +11169,37 @@ async function testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls() {
     },
     prisma: {
       panelClientBinding: {
-        findFirst: async () => null,
-        create: async ({ data }: { data: Record<string, any> }) => {
+        findFirst: async () => ({
+          id: "binding_1",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_1",
+          panelClientEmail: "user@example.com",
+          panelClientId: "cached_panel_uuid",
+          panelInboundId: 7,
+          lastUplinkBytes: 0n,
+          lastDownlinkBytes: 0n,
+          lastSyncedAt: now,
+          status: "active"
+        }),
+        update: async ({ data }: { data: Record<string, any> }) => {
           bindingClientId = data.panelClientId;
-          return data;
+          return {
+            id: "binding_1",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: data.panelClientEmail,
+            panelClientId: data.panelClientId,
+            panelInboundId: 7,
+            status: "active"
+          };
         }
       },
       trafficSnapshot: {
-        findUnique: async () => null,
+        findUnique: async () => ({ snapshotKey: "snapshot" }),
         upsert: async () => ({})
       },
       panelSyncJob: {
@@ -11242,6 +11265,215 @@ async function testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls() {
   assert.equal(nodeUpdates[0]?.data?.panelStatus, "degraded");
   assert.match(nodeUpdates[0]?.data?.panelError, /timed out/);
   assert.deepEqual(resolvedIncidents, [], "stalled panel reads must not be marked fully resolved");
+}
+
+async function testConnectWithXuiRejectsNewBindingWhenPanelReadFails() {
+  const leaseCreates: Array<Record<string, any>> = [];
+  const panelSyncJobs: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const node = {
+    id: "node_1",
+    name: "Node",
+    region: "US",
+    provider: "xui",
+    tags: [],
+    recommended: true,
+    latencyMs: 20,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "cached.example.com",
+    serverPort: 443,
+    serverName: "cached.example.com",
+    uuid: "template_uuid",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "cached_public_key",
+    shortId: "cached_sid",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: "cached_verify",
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 7,
+    panelEnabled: true
+  };
+  const service = createRuntimeSessionService({
+    xuiService: {
+      getInboundRuntime: async () => {
+        throw new Error("panel offline");
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findFirst: async () => null,
+        create: async ({ data }: { data: Record<string, any> }) => data
+      },
+      trafficSnapshot: {
+        findUnique: async () => null,
+        upsert: async () => ({})
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelSyncJobs.push(payload);
+          return {};
+        }
+      },
+      nodeSessionLease: {
+        create: async (payload: Record<string, any>) => {
+          leaseCreates.push(payload);
+          return payload.data;
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service["connectWithXui"](
+        node,
+        {
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User",
+          role: "user",
+          status: "active",
+          lastSeenAt: now.toISOString()
+        },
+        {
+          subscription: {
+            id: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            state: "active",
+            remainingTrafficGb: 10,
+            expireAt: new Date(Date.now() + 86_400_000)
+          },
+          team: null,
+          memberRole: null,
+          memberUsedTrafficGb: null
+        },
+        { nodeId: "node_1", mode: "rule" },
+        null
+      ),
+    /queued but not confirmed|panel offline/,
+    "new bindings must not return a runtime config before the remote 3x-ui client is confirmed"
+  );
+  assert.equal(panelSyncJobs.length, 1, "new binding should still queue remote ensure for retry");
+  assert.equal(leaseCreates.length, 0, "new binding failure must not create a local lease with an unprovisioned remote client");
+}
+
+async function testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails() {
+  const leaseCreates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const node = {
+    id: "node_1",
+    name: "Node",
+    region: "US",
+    provider: "xui",
+    tags: [],
+    recommended: true,
+    latencyMs: 20,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "",
+    serverPort: 0,
+    serverName: "",
+    uuid: "template_uuid",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "",
+    shortId: "cached_sid",
+    fingerprint: "",
+    spiderX: "",
+    mldsa65Verify: "",
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 7,
+    panelEnabled: true
+  };
+  const service = createRuntimeSessionService({
+    xuiService: {
+      getInboundRuntime: async () => {
+        throw new Error("panel offline");
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findFirst: async () => ({
+          id: "binding_1",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_1",
+          panelClientEmail: "user@example.com",
+          panelClientId: "cached_panel_uuid",
+          panelInboundId: 7,
+          lastUplinkBytes: 0n,
+          lastDownlinkBytes: 0n,
+          lastSyncedAt: now,
+          status: "active"
+        }),
+        update: async ({ data }: { data: Record<string, any> }) => ({
+          id: "binding_1",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_1",
+          panelClientEmail: data.panelClientEmail,
+          panelClientId: data.panelClientId,
+          panelInboundId: 7,
+          status: "active"
+        })
+      },
+      trafficSnapshot: {
+        findUnique: async () => ({ snapshotKey: "snapshot" })
+      },
+      panelSyncJob: {
+        upsert: async () => ({})
+      },
+      nodeSessionLease: {
+        create: async (payload: Record<string, any>) => {
+          leaseCreates.push(payload);
+          return payload.data;
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service["connectWithXui"](
+        node,
+        {
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User",
+          role: "user",
+          status: "active",
+          lastSeenAt: now.toISOString()
+        },
+        {
+          subscription: {
+            id: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            state: "active",
+            remainingTrafficGb: 10,
+            expireAt: new Date(Date.now() + 86_400_000)
+          },
+          team: null,
+          memberRole: null,
+          memberUsedTrafficGb: null
+        },
+        { nodeId: "node_1", mode: "rule" },
+        null
+      ),
+    /Cached node runtime is incomplete/,
+    "cached fallback must not return an unusable runtime config"
+  );
+  assert.equal(leaseCreates.length, 0, "incomplete cached runtime must not create a lease");
 }
 
 async function testRemovePanelBindingQueuesDeleteWithoutRemoteCall() {
@@ -18766,6 +18998,8 @@ async function main() {
   await testClientNodesRequirePanelEnabled();
   await testConnectRejectsPanelDisabledNode();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
+  await testConnectWithXuiRejectsNewBindingWhenPanelReadFails();
+  await testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails();
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
   await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
   await testRuntimePlanRequiresCompleteComponentSet();

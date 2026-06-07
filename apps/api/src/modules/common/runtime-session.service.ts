@@ -1829,7 +1829,11 @@ export class RuntimeSessionService {
       userDisplayName: user.displayName,
       expireAt: subscription.expireAt
     });
-    const inboundRuntime = await this.readConnectInboundRuntimeBestEffort(node, binding.panelInboundId);
+    const inboundRuntime = await this.readConnectInboundRuntimeBestEffort(
+      node,
+      binding.panelInboundId,
+      binding.cachedRemoteClient === true
+    );
     const effectiveNode = {
       ...node,
       serverHost: inboundRuntime.serverHost,
@@ -1940,7 +1944,8 @@ export class RuntimeSessionService {
       panelUsername: string | null;
       panelPassword: string | null;
     },
-    panelInboundId: number
+    panelInboundId: number,
+    allowCachedFallback: boolean
   ) {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const readTask = this.xuiService.getInboundRuntime({
@@ -1965,6 +1970,10 @@ export class RuntimeSessionService {
       };
     } catch (error) {
       const errorMessage = readRuntimeErrorMessage(error) || "panel runtime read failed";
+      if (!allowCachedFallback) {
+        throw new BadGatewayException(`Panel client is queued but not confirmed yet: ${errorMessage}`);
+      }
+      this.assertCachedNodeRuntimeUsable(node);
       this.logger.warn(`Using cached node runtime for ${node.id} because panel runtime read failed: ${errorMessage}`);
       return {
         ok: false as const,
@@ -1984,6 +1993,22 @@ export class RuntimeSessionService {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+    }
+  }
+
+  private assertCachedNodeRuntimeUsable(node: {
+    serverHost: string;
+    serverPort: number;
+    realityPublicKey: string;
+    serverName: string;
+    fingerprint: string;
+    spiderX: string;
+  }) {
+    if (!node.serverHost.trim() || !Number.isFinite(node.serverPort) || node.serverPort <= 0) {
+      throw new BadGatewayException("Cached node runtime is incomplete: server address is missing.");
+    }
+    if (!node.realityPublicKey.trim() || !node.serverName.trim() || !node.fingerprint.trim() || !node.spiderX.trim()) {
+      throw new BadGatewayException("Cached node runtime is incomplete: reality settings are missing.");
     }
   }
 
@@ -2090,7 +2115,7 @@ export class RuntimeSessionService {
         });
       }
       await this.queuePanelEnsureJobForBinding(writer, binding, input);
-      return binding;
+      return { ...binding, cachedRemoteClient: existing.status !== "deleted" };
     }
 
     const binding = await this.createPanelClientBindingOrRecover(writer, {
@@ -2117,7 +2142,7 @@ export class RuntimeSessionService {
       sampledAt: baseline.sampledAt
     });
     await this.queuePanelEnsureJobForBinding(writer, binding, input);
-    return binding;
+    return { ...binding, cachedRemoteClient: false };
   }
 
   private async queuePanelEnsureJobForBinding(
