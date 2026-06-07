@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { BadRequestException, ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
@@ -48,7 +48,7 @@ import {
   UpdateUserDto
 } from "../src/modules/admin/admin.dto";
 import { isAllowedCorsOrigin } from "../src/cors";
-import { normalizePanelApiBasePath } from "../src/modules/common/node-import.utils";
+import { fetchSubscriptionNode, normalizePanelApiBasePath, parseVlessLink } from "../src/modules/common/node-import.utils";
 import { moveUploadedFile } from "../src/modules/common/upload-file.utils";
 import { AnnouncementPolicyService } from "../src/modules/common/announcement-policy.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "../src/modules/common/usage-lock.utils";
@@ -6926,6 +6926,38 @@ function testAdminNodePanelApiPathAcceptsFullUrl() {
   assert.equal(normalizePanelApiBasePath("https://panel.example.com/secret/"), "/secret");
 }
 
+function testParseVlessLinkRejectsMissingPort() {
+  assert.throws(
+    () => parseVlessLink("vless://uuid@example.com?security=reality#missing-port"),
+    BadRequestException,
+    "vless links without a valid port must return a controlled 400 instead of HTTP 500"
+  );
+}
+
+function testParseVlessLinkRejectsMalformedUrl() {
+  assert.throws(
+    () => parseVlessLink("not-a-vless-url"),
+    BadRequestException,
+    "malformed vless links must return a controlled 400 instead of HTTP 500"
+  );
+}
+
+async function testFetchSubscriptionNodeMapsInvalidUrlToBadRequest() {
+  await assert.rejects(
+    () => fetchSubscriptionNode("not a url"),
+    BadRequestException,
+    "invalid subscription URLs must return a controlled 400 instead of HTTP 500"
+  );
+}
+
+async function testFetchSubscriptionNodeMapsNetworkFailureToBadGateway() {
+  await assert.rejects(
+    () => fetchSubscriptionNode("http://127.0.0.1:9/sub"),
+    BadGatewayException,
+    "subscription network failures must return a controlled 502 instead of HTTP 500"
+  );
+}
+
 async function testXuiPanelRequestUsesCallerAbortBudget() {
   const service = new XuiService();
   const server = createServer((_request, _response) => {
@@ -12793,6 +12825,68 @@ async function testRuntimeComponentCreateIgnoresRemoteMirrorFields() {
   assert.equal(result.allowClientMirror, false);
 }
 
+async function testRuntimeComponentCreateMapsUniqueIdentityConflict() {
+  const service = createRuntimeComponentsService({
+    findSharedRulesetRecord: async () => null,
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createAdminRuntimeComponent({
+        platform: "windows",
+        architecture: "x64",
+        kind: "xray",
+        source: "custom_remote",
+        originUrl: "https://example.com/xray.exe",
+        fileName: "xray.exe"
+      }),
+    ConflictException,
+    "runtime component duplicate identity must return a controlled 409 instead of HTTP 500"
+  );
+}
+
+async function testRuntimeComponentUpdateMapsUniqueIdentityConflict() {
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "custom_remote",
+      originUrl: "https://example.com/xray.exe",
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
+      fileName: "xray.exe",
+      storedFilePath: null,
+      fileSizeBytes: null,
+      fileHash: null,
+      archiveEntryName: null,
+      expectedHash: null,
+      enabled: true
+    }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAdminRuntimeComponent("component_1", { fileName: "xray-new.exe" }),
+    ConflictException,
+    "runtime component update duplicate identity must return a controlled 409 instead of HTTP 500"
+  );
+}
+
 async function testRuntimeFailureReportLimitRejectsInvalidValues() {
   const service = createRuntimeComponentsService({
     prisma: {
@@ -12949,6 +13043,81 @@ async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
   assert.deepEqual(cleanupCalls, [{ absolutePath: "missing-prepared-runtime.bin", label: "failed runtime component upload" }]);
 }
 
+async function testRuntimeComponentUploadMapsUniqueIdentityConflict() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    findSharedRulesetRecord: async () => null,
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "prepared-runtime.bin",
+      storedFilePath: "component/prepared-runtime.bin",
+      fileName: "xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadAdminRuntimeComponent(
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray"
+        },
+        {
+          path: "upload-runtime.tmp",
+          originalname: "xray.exe",
+          size: 1
+        }
+      ),
+    ConflictException,
+    "runtime component upload duplicate identity must return a controlled 409 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [{ absolutePath: "prepared-runtime.bin", label: "failed runtime component upload" }]);
+}
+
+async function testRuntimeComponentPrepareMissingTempFileReturnsBadRequest() {
+  const previousStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "runtime-upload-missing-"));
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = storageRoot;
+  const service = createRuntimeComponentsService();
+
+  try {
+    await assert.rejects(
+      () =>
+        service["prepareUploadedRuntimeComponentFile"](
+          "component_1",
+          {
+            path: path.join(storageRoot, "missing-upload.tmp"),
+            originalname: "xray.exe",
+            size: 1
+          },
+          "xray.exe"
+        ),
+      BadRequestException,
+      "missing runtime component temporary upload must return a controlled 400 instead of HTTP 500"
+    );
+  } finally {
+    if (previousStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousStorageRoot;
+    }
+    await rm(storageRoot, { recursive: true, force: true });
+  }
+}
+
 async function testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup() {
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   const service = createRuntimeComponentsService({
@@ -13010,6 +13179,69 @@ async function testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithB
   );
   assert.deepEqual(cleanupCalls, [
     { absolutePath: "missing-replacement-runtime.bin", label: "failed runtime component replacement upload" }
+  ]);
+}
+
+async function testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "uploaded",
+      originUrl: "/api/downloads/runtime-components/component_1",
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
+      fileName: "xray.exe",
+      storedFilePath: "component_1/xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      archiveEntryName: null,
+      expectedHash: "a".repeat(64),
+      enabled: true
+    }),
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "replacement-runtime.bin",
+      storedFilePath: "component_1/replacement-runtime.bin",
+      fileName: "xray-new.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw { code: "P2002" };
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceAdminRuntimeComponentUpload(
+        "component_1",
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray"
+        },
+        {
+          path: "replacement-upload-runtime.tmp",
+          originalname: "xray-new.exe",
+          size: 1
+        }
+      ),
+    ConflictException,
+    "runtime component replacement duplicate identity must return a controlled 409 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "replacement-runtime.bin", label: "failed runtime component replacement upload" }
   ]);
 }
 
@@ -14669,6 +14901,38 @@ async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
   assert.equal(createdData?.fileSizeBytes, 17n);
   assert.equal(createdData?.deliveryMode, "desktop_full_replace");
   assert.equal(result.id, "release_1");
+}
+
+async function testReleaseArtifactPrepareMissingTempFileReturnsBadRequest() {
+  const previousStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "release-upload-missing-"));
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = storageRoot;
+  const service = createReleaseCenterService();
+
+  try {
+    await assert.rejects(
+      () =>
+        service["prepareUploadedReleaseArtifactFile"](
+          "release_1",
+          "artifact_1",
+          {
+            path: path.join(storageRoot, "missing-release-upload.tmp"),
+            originalname: "ChordV_1.1.6_x64-full.zip",
+            size: 1
+          },
+          "ChordV_1.1.6_x64-full.zip"
+        ),
+      BadRequestException,
+      "missing release artifact temporary upload must return a controlled 400 instead of HTTP 500"
+    );
+  } finally {
+    if (previousStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousStorageRoot;
+    }
+    await rm(storageRoot, { recursive: true, force: true });
+  }
 }
 
 async function testWindowsExeUploadIsRejectedForFullReplacementUpdates() {
@@ -20440,6 +20704,10 @@ async function main() {
   await testXuiPanelLocationStripsApiPathSuffix();
   await testXuiPanelLocationAcceptsFullUrlAsApiBasePath();
   testAdminNodePanelApiPathAcceptsFullUrl();
+  testParseVlessLinkRejectsMissingPort();
+  testParseVlessLinkRejectsMalformedUrl();
+  await testFetchSubscriptionNodeMapsInvalidUrlToBadRequest();
+  await testFetchSubscriptionNodeMapsNetworkFailureToBadGateway();
   await testXuiPanelRequestUsesCallerAbortBudget();
   await testXuiBusinessNotFoundFallsBackToInboundDelete();
   testXuiSettingsClientStatsTakePrecedenceOverZeroClientFallback();
@@ -20525,12 +20793,17 @@ async function main() {
   await testRuntimeComponentCreateRequiresHttpUrl();
   await testRuntimeComponentCreateRejectsBlankFileName();
   await testRuntimeComponentCreateIgnoresRemoteMirrorFields();
+  await testRuntimeComponentCreateMapsUniqueIdentityConflict();
+  await testRuntimeComponentUpdateMapsUniqueIdentityConflict();
   await testRuntimeFailureReportLimitRejectsInvalidValues();
   await testRuntimeComponentFailureRejectsUnknownComponentId();
   await testRemoteRuntimeValidationRejectsPrivateNetworkUrl();
   await testRemoteRuntimeValidationRejectsMissingExpectedHash();
   await testRuntimeComponentUploadRejectsExpectedHashMismatch();
+  await testRuntimeComponentUploadMapsUniqueIdentityConflict();
+  await testRuntimeComponentPrepareMissingTempFileReturnsBadRequest();
   await testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup();
+  await testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict();
   await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
@@ -20558,6 +20831,7 @@ async function main() {
   await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
+  await testReleaseArtifactPrepareMissingTempFileReturnsBadRequest();
   await testWindowsExeUploadIsRejectedForFullReplacementUpdates();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();

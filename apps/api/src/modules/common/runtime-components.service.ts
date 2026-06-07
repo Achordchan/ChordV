@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
   AdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto,
@@ -80,49 +80,53 @@ export class RuntimeComponentsService {
     if (isSharedRuleset(input.kind)) {
       const existing = await this.findSharedRulesetRecord(input.kind);
       if (existing) {
-        const updated = await this.prisma.runtimeComponent.update({
-          where: { id: existing.id },
-          data: {
-            platform: normalizedInput.platform,
-            architecture: normalizedInput.architecture,
-            kind: input.kind,
-            source,
-            originUrl,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            archiveEntryName: normalizeNullableText(input.archiveEntryName),
-            expectedHash,
-            enabled: input.enabled ?? true
-          }
-        });
+        const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
+          this.prisma.runtimeComponent.update({
+            where: { id: existing.id },
+            data: {
+              platform: normalizedInput.platform,
+              architecture: normalizedInput.architecture,
+              kind: input.kind,
+              source,
+              originUrl,
+              defaultMirrorPrefix: null,
+              allowClientMirror: false,
+              fileName,
+              storedFilePath: null,
+              fileSizeBytes: null,
+              fileHash: null,
+              archiveEntryName: normalizeNullableText(input.archiveEntryName),
+              expectedHash,
+              enabled: input.enabled ?? true
+            }
+          })
+        );
         await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, updated.id);
         return toAdminRuntimeComponentRecord(updated);
       }
     }
 
-    const created = await this.prisma.runtimeComponent.create({
-      data: {
-        id: createId("rtcomp"),
-        platform: normalizedInput.platform,
-        architecture: normalizedInput.architecture,
-        kind: input.kind,
-        source,
-        originUrl,
-        defaultMirrorPrefix: null,
-        allowClientMirror: false,
-        fileName,
-        storedFilePath: null,
-        fileSizeBytes: null,
-        fileHash: null,
-        archiveEntryName: normalizeNullableText(input.archiveEntryName),
-        expectedHash,
-        enabled: input.enabled ?? true
-      }
-    });
+    const created = await this.withRuntimeComponentIdentityConflictGuard(() =>
+      this.prisma.runtimeComponent.create({
+        data: {
+          id: createId("rtcomp"),
+          platform: normalizedInput.platform,
+          architecture: normalizedInput.architecture,
+          kind: input.kind,
+          source,
+          originUrl,
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          archiveEntryName: normalizeNullableText(input.archiveEntryName),
+          expectedHash,
+          enabled: input.enabled ?? true
+        }
+      })
+    );
     return toAdminRuntimeComponentRecord(created);
   }
 
@@ -148,28 +152,31 @@ export class RuntimeComponentsService {
     const componentId = createId("rtcomp");
     let prepared: PreparedUploadedRuntimeComponentFile | null = null;
     try {
-      prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
+      const preparedFile = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
+      prepared = preparedFile;
       const expectedHash = normalizeExpectedHash(input.expectedHash);
-      assertExpectedHashMatchesFile(expectedHash, prepared.fileHash);
-      const created = await this.prisma.runtimeComponent.create({
-        data: {
-          id: componentId,
-          platform: normalizedInput.platform,
-          architecture: normalizedInput.architecture,
-          kind: input.kind,
-          source: "uploaded",
-          originUrl: prepared.downloadUrl,
-          defaultMirrorPrefix: null,
-          allowClientMirror: false,
-          fileName: prepared.fileName,
-          storedFilePath: prepared.storedFilePath,
-          fileSizeBytes: prepared.fileSizeBytes,
-          fileHash: prepared.fileHash,
-          archiveEntryName: null,
-          expectedHash: expectedHash ?? prepared.fileHash,
-          enabled: input.enabled ?? true
-        }
-      });
+      assertExpectedHashMatchesFile(expectedHash, preparedFile.fileHash);
+      const created = await this.withRuntimeComponentIdentityConflictGuard(() =>
+        this.prisma.runtimeComponent.create({
+          data: {
+            id: componentId,
+            platform: normalizedInput.platform,
+            architecture: normalizedInput.architecture,
+            kind: input.kind,
+            source: "uploaded",
+            originUrl: preparedFile.downloadUrl,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: preparedFile.fileName,
+            storedFilePath: preparedFile.storedFilePath,
+            fileSizeBytes: preparedFile.fileSizeBytes,
+            fileHash: preparedFile.fileHash,
+            archiveEntryName: null,
+            expectedHash: expectedHash ?? preparedFile.fileHash,
+            enabled: input.enabled ?? true
+          }
+        })
+      );
       await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, created.id);
       return toAdminRuntimeComponentRecord(created);
     } catch (error) {
@@ -215,38 +222,40 @@ export class RuntimeComponentsService {
     const staleUploadedFilePath =
       remoteValidationInvalidated && current.storedFilePath ? current.storedFilePath : null;
 
-    const updated = await this.prisma.runtimeComponent.update({
-      where: { id: componentId },
-      data: {
-        ...(input.source !== undefined ? { source: input.source } : {}),
-        ...(input.originUrl !== undefined ? { originUrl: nextOriginUrl } : {}),
-        ...(nextSource !== "uploaded" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
-        ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
-        ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
-        ...(input.expectedHash !== undefined ? { expectedHash: normalizedExpectedHash } : {}),
-        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-        ...(remoteValidationInvalidated
-          ? {
-              storedFilePath: null,
-              fileSizeBytes: null,
-              fileHash: null
-            }
-          : {}),
-        ...(isSharedRuleset(current.kind as RuntimeComponentKind)
-          ? {
-              platform: normalizedIdentity.platform,
-              architecture: normalizedIdentity.architecture
-            }
-          : {}),
-        ...(nextSource === "uploaded"
-          ? {
-              defaultMirrorPrefix: null,
-              allowClientMirror: false,
-              archiveEntryName: null
-            }
-          : {})
-      }
-    });
+    const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
+      this.prisma.runtimeComponent.update({
+        where: { id: componentId },
+        data: {
+          ...(input.source !== undefined ? { source: input.source } : {}),
+          ...(input.originUrl !== undefined ? { originUrl: nextOriginUrl } : {}),
+          ...(nextSource !== "uploaded" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
+          ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
+          ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
+          ...(input.expectedHash !== undefined ? { expectedHash: normalizedExpectedHash } : {}),
+          ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(remoteValidationInvalidated
+            ? {
+                storedFilePath: null,
+                fileSizeBytes: null,
+                fileHash: null
+              }
+            : {}),
+          ...(isSharedRuleset(current.kind as RuntimeComponentKind)
+            ? {
+                platform: normalizedIdentity.platform,
+                architecture: normalizedIdentity.architecture
+              }
+            : {}),
+          ...(nextSource === "uploaded"
+            ? {
+                defaultMirrorPrefix: null,
+                allowClientMirror: false,
+                archiveEntryName: null
+              }
+            : {})
+        }
+      })
+    );
     await this.cleanupSharedRulesetDuplicatesBestEffort(updated.kind as RuntimeComponentKind, updated.id);
     await this.removeRuntimeComponentFileBestEffort(
       staleUploadedFilePath ? resolveRuntimeComponentAbsolutePath(staleUploadedFilePath) : null,
@@ -269,30 +278,33 @@ export class RuntimeComponentsService {
     const previousStoredFilePath = current.storedFilePath;
     let prepared: PreparedUploadedRuntimeComponentFile | null = null;
     try {
-      prepared = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
+      const preparedFile = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
+      prepared = preparedFile;
       const expectedHash = normalizeExpectedHash(input.expectedHash);
-      assertExpectedHashMatchesFile(expectedHash, prepared.fileHash);
-      const updated = await this.prisma.runtimeComponent.update({
-        where: { id: componentId },
-        data: {
-          platform: normalizedInput.platform,
-          architecture: normalizedInput.architecture,
-          kind: input.kind,
-          source: "uploaded",
-          originUrl: prepared.downloadUrl,
-          defaultMirrorPrefix: null,
-          allowClientMirror: false,
-          fileName: prepared.fileName,
-          storedFilePath: prepared.storedFilePath,
-          fileSizeBytes: prepared.fileSizeBytes,
-          fileHash: prepared.fileHash,
-          archiveEntryName: null,
-          expectedHash: expectedHash ?? prepared.fileHash,
-          enabled: input.enabled ?? current.enabled
-        }
-      });
+      assertExpectedHashMatchesFile(expectedHash, preparedFile.fileHash);
+      const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
+        this.prisma.runtimeComponent.update({
+          where: { id: componentId },
+          data: {
+            platform: normalizedInput.platform,
+            architecture: normalizedInput.architecture,
+            kind: input.kind,
+            source: "uploaded",
+            originUrl: preparedFile.downloadUrl,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: preparedFile.fileName,
+            storedFilePath: preparedFile.storedFilePath,
+            fileSizeBytes: preparedFile.fileSizeBytes,
+            fileHash: preparedFile.fileHash,
+            archiveEntryName: null,
+            expectedHash: expectedHash ?? preparedFile.fileHash,
+            enabled: input.enabled ?? current.enabled
+          }
+        })
+      );
       await this.removeRuntimeComponentFileBestEffort(
-        previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath
+        previousStoredFilePath && previousStoredFilePath !== preparedFile.storedFilePath
           ? resolveRuntimeComponentAbsolutePath(previousStoredFilePath)
           : null,
         "old runtime component upload"
@@ -822,17 +834,32 @@ export class RuntimeComponentsService {
     const storedFilePath = path.join(componentId, `${createId("file")}_${finalFileName}`);
     const absolutePath = resolveRuntimeComponentAbsolutePath(storedFilePath);
 
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await moveUploadedFile(file.path, absolutePath);
+    try {
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await moveUploadedFile(file.path, absolutePath);
 
-    return {
-      absolutePath,
-      storedFilePath,
-      fileName: finalFileName,
-      fileSizeBytes: BigInt(file.size),
-      fileHash: await calculateFileSha256(absolutePath),
-      downloadUrl: buildRuntimeComponentDownloadUrl(componentId)
-    };
+      return {
+        absolutePath,
+        storedFilePath,
+        fileName: finalFileName,
+        fileSizeBytes: BigInt(file.size),
+        fileHash: await calculateFileSha256(absolutePath),
+        downloadUrl: buildRuntimeComponentDownloadUrl(componentId)
+      };
+    } catch (error) {
+      throw mapUploadedFilePreparationError(error, "runtime component upload");
+    }
+  }
+
+  private async withRuntimeComponentIdentityConflictGuard<T>(task: () => Promise<T>): Promise<T> {
+    try {
+      return await task();
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("A runtime component already exists for this platform, architecture, and kind.");
+      }
+      throw error;
+    }
   }
 }
 
@@ -1228,6 +1255,29 @@ async function calculateFileSha256(filePath: string) {
 
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function mapUploadedFilePreparationError(error: unknown, label: string) {
+  if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ConflictException) {
+    return error;
+  }
+  const code = readErrorCode(error);
+  const message = error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+  if (code === "ENOSPC" || code === "EACCES" || code === "EPERM") {
+    return new ServiceUnavailableException(`${label} storage is currently unavailable: ${code ?? message}`);
+  }
+  if (code === "ENOENT") {
+    return new BadRequestException(`${label} temporary file is missing; please select the file again and retry.`);
+  }
+  return new ServiceUnavailableException(`${label} file preparation failed: ${message}`);
+}
+
+function readErrorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
 function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {

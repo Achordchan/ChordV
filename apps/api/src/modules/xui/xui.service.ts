@@ -671,11 +671,10 @@ export class XuiService {
       headers.set("Content-Type", contentType);
     }
 
-    return undiciFetch(`${normalizeBaseUrl(node.panelBaseUrl)}${joinPanelPath(node.panelApiBasePath, path)}`, {
+    return this.fetchPanel(node, path, {
       method,
       body,
       headers,
-      dispatcher: this.dispatcher,
       signal: createPanelRequestSignal(node)
     });
   }
@@ -703,11 +702,10 @@ export class XuiService {
       headers.set("X-CSRF-Token", csrfState.csrfToken);
     }
 
-    const response = await undiciFetch(`${normalizeBaseUrl(node.panelBaseUrl)}${joinPanelPath(node.panelApiBasePath, "/login")}`, {
+    const response = await this.fetchPanel(node, "/login", {
       method: "POST",
       body: form.toString(),
       headers,
-      dispatcher: this.dispatcher,
       signal: createPanelRequestSignal(node)
     });
 
@@ -774,10 +772,9 @@ export class XuiService {
       if (cookieHeader) {
         headers.set("Cookie", cookieHeader);
       }
-      const response = await undiciFetch(`${normalizeBaseUrl(node.panelBaseUrl)}${joinPanelPath(node.panelApiBasePath, "/csrf-token")}`, {
+      const response = await this.fetchPanel(node, "/csrf-token", {
         method: "GET",
         headers,
-        dispatcher: this.dispatcher,
         signal: createPanelRequestSignal(node)
       });
       const responseText = await response.text().catch(() => "");
@@ -792,6 +789,26 @@ export class XuiService {
         csrfToken: null,
         cookieHeader: cookieHeader ?? null
       };
+    }
+  }
+
+  private async fetchPanel(
+    node: NormalizedXuiNodeConfig,
+    path: string,
+    init: {
+      method: "GET" | "POST";
+      body?: BodyInitLike | URLSearchParams | null;
+      headers: Headers;
+      signal: AbortSignal;
+    }
+  ) {
+    try {
+      return await undiciFetch(`${normalizeBaseUrl(node.panelBaseUrl)}${joinPanelPath(node.panelApiBasePath, path)}`, {
+        ...init,
+        dispatcher: this.dispatcher
+      });
+    } catch (error) {
+      throw new BadGatewayException(`3x-ui panel request failed: ${readPanelFetchErrorMessage(error)}`);
     }
   }
 
@@ -1199,6 +1216,10 @@ function readPanelClientPayloadObject(value: unknown): Record<string, unknown> |
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readPanelFetchErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }
 
 function resolveInboundServerHost(listen: string | null, panelHost: string) {

@@ -69,7 +69,15 @@ type AdminDrawerFormProps = {
 
 export function AdminDrawerForm(props: AdminDrawerFormProps) {
   return (
-    <Drawer opened={props.opened} onClose={props.onClose} title={props.title} position="right" size="lg">
+    <Drawer
+      opened={props.opened}
+      onClose={props.drawerBusy ? () => undefined : props.onClose}
+      title={props.title}
+      position="right"
+      size="lg"
+      closeOnClickOutside={!props.drawerBusy}
+      closeOnEscape={!props.drawerBusy}
+    >
       <Stack>
         {props.drawerType === "user" ? (
           <UserEditorSection drawerRecordId={props.drawerRecordId} userForm={props.userForm} setUserForm={props.setUserForm} />
@@ -143,10 +151,10 @@ export function AdminDrawerForm(props: AdminDrawerFormProps) {
           />
         ) : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={props.onClose}>
+          <Button variant="default" onClick={props.onClose} disabled={props.drawerBusy}>
             取消
           </Button>
-          <Button onClick={props.onSubmit} loading={props.drawerBusy}>
+          <Button onClick={props.onSubmit} loading={props.drawerBusy} disabled={props.drawerBusy}>
             保存
           </Button>
         </Group>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ActionIcon,
   Alert,
@@ -56,6 +56,14 @@ function showRuntimeComponentFailure(reason: unknown, fallback: string, options?
   return { message, uncertain };
 }
 
+function showRuntimeComponentValidation(message: string) {
+  notifications.show({
+    color: "yellow",
+    title: "内核组件",
+    message
+  });
+}
+
 type RuntimeComponentsPanelProps = {
   components: AdminRuntimeComponentRecordDto[];
   failures: AdminRuntimeComponentFailureReportDto[];
@@ -89,6 +97,9 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [form, setForm] = useState<RuntimeComponentEditorFormState>(emptyRuntimeComponentEditorForm());
+  const savingRef = useRef(false);
+  const verifyingRef = useRef<string | null>(null);
+  const deletingRef = useRef<Set<string>>(new Set());
 
   const groupedSummary = useMemo(() => {
     const runtimeCore = components.filter((item) => item.kind === "xray");
@@ -121,9 +132,30 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }
 
   async function saveComponent() {
+    if (saving || savingRef.current) {
+      return;
+    }
+
+    const currentRecord = editingId ? components.find((item) => item.id === editingId) ?? null : null;
+    const selectedFile = form.selectedFile;
+    if (form.source === "uploaded") {
+      if (!editingId && !selectedFile) {
+        showRuntimeComponentValidation("请先选择要上传的组件文件");
+        return;
+      }
+      if (selectedFile && selectedFile.size > ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES) {
+        showRuntimeComponentValidation(`内核组件文件不能超过 ${formatBytes(String(ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES))}。`);
+        return;
+      }
+      if (editingId && !selectedFile && (!currentRecord || currentRecord.source !== "uploaded")) {
+        showRuntimeComponentValidation("切换为“上传到服务器”时，请先选择要上传的组件文件");
+        return;
+      }
+    }
+
+    savingRef.current = true;
     try {
       onSavingChange(true);
-      const currentRecord = editingId ? components.find((item) => item.id === editingId) ?? null : null;
       let record: AdminRuntimeComponentRecordDto;
       if (form.source === "uploaded") {
         const uploadPayload: UploadAdminRuntimeComponentInputDto = {
@@ -136,22 +168,10 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         };
 
         if (!editingId) {
-          if (!form.selectedFile) {
-            throw new Error("请先选择要上传的组件文件");
-          }
-          if (form.selectedFile.size > ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES) {
-            throw new Error(`内核组件文件不能超过 ${formatBytes(String(ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES))}。`);
-          }
-          record = await uploadAdminRuntimeComponent(uploadPayload, form.selectedFile);
-        } else if (form.selectedFile) {
-          if (form.selectedFile.size > ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES) {
-            throw new Error(`内核组件文件不能超过 ${formatBytes(String(ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES))}。`);
-          }
-          record = await replaceAdminRuntimeComponentUpload(editingId, uploadPayload, form.selectedFile);
+          record = await uploadAdminRuntimeComponent(uploadPayload, selectedFile!);
+        } else if (selectedFile) {
+          record = await replaceAdminRuntimeComponentUpload(editingId, uploadPayload, selectedFile);
         } else {
-          if (!currentRecord || currentRecord.source !== "uploaded") {
-            throw new Error("切换为“上传到服务器”时，请先选择要上传的组件文件");
-          }
           const updatePayload: UpdateAdminRuntimeComponentInputDto = {
             source: "uploaded" as AdminRuntimeComponentSource,
             fileName: form.fileName.trim(),
@@ -193,14 +213,16 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         void onRefresh();
       }
     } finally {
+      savingRef.current = false;
       onSavingChange(false);
     }
   }
 
   async function verifyComponent(record: AdminRuntimeComponentRecordDto) {
-    if (verifyingId) {
+    if (verifyingRef.current) {
       return;
     }
+    verifyingRef.current = record.id;
     try {
       setVerifyingId(record.id);
       const result = await verifyAdminRuntimeComponent(record.id);
@@ -216,11 +238,18 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
       });
     } finally {
-      setVerifyingId(null);
+      if (verifyingRef.current === record.id) {
+        verifyingRef.current = null;
+        setVerifyingId(null);
+      }
     }
   }
 
   async function removeComponent(record: AdminRuntimeComponentRecordDto) {
+    if (saving || savingRef.current || deletingRef.current.has(record.id)) {
+      return;
+    }
+
     const confirmMessage = record.enabled
       ? `确认删除已启用的内核组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？除非紧急处理，建议先停用再删除。`
       : `确认删除内核组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？`;
@@ -228,6 +257,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       return;
     }
 
+    deletingRef.current.add(record.id);
+    savingRef.current = true;
     try {
       onSavingChange(true);
       await deleteAdminRuntimeComponent(record.id);
@@ -244,6 +275,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         void onRefresh();
       }
     } finally {
+      deletingRef.current.delete(record.id);
+      savingRef.current = false;
       onSavingChange(false);
     }
   }

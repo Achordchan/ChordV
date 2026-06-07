@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import * as path from "node:path";
 import type {
   AdminReleaseRecordDto,
@@ -985,18 +985,22 @@ export class ReleaseCenterService {
     const storedFilePath = path.join(releaseId, artifactId, `${createId("file")}_${finalFileName}`);
     const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
 
-    const fs = await import("node:fs/promises");
-    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await moveUploadedFile(file.path, absolutePath);
+    try {
+      const fs = await import("node:fs/promises");
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await moveUploadedFile(file.path, absolutePath);
 
-    return {
-      absolutePath,
-      storedFilePath,
-      fileName: finalFileName,
-      fileSizeBytes: BigInt(file.size),
-      fileHash: null,
-      downloadUrl: buildReleaseArtifactDownloadUrl(artifactId)
-    };
+      return {
+        absolutePath,
+        storedFilePath,
+        fileName: finalFileName,
+        fileSizeBytes: BigInt(file.size),
+        fileHash: null,
+        downloadUrl: buildReleaseArtifactDownloadUrl(artifactId)
+      };
+    } catch (error) {
+      throw mapUploadedFilePreparationError(error, "release artifact upload");
+    }
   }
 
   private async getAdminReleaseBestEffort(releaseId: string, fallback: AdminReleaseRecordDto, label: string) {
@@ -1257,6 +1261,25 @@ function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: st
 
 function isPrismaUniqueConstraintError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function mapUploadedFilePreparationError(error: unknown, label: string) {
+  if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof ConflictException) {
+    return error;
+  }
+  const code = readErrorCode(error);
+  const message = error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+  if (code === "ENOSPC" || code === "EACCES" || code === "EPERM") {
+    return new ServiceUnavailableException(`${label} storage is currently unavailable: ${code ?? message}`);
+  }
+  if (code === "ENOENT") {
+    return new BadRequestException(`${label} temporary file is missing; please select the file again and retry.`);
+  }
+  return new ServiceUnavailableException(`${label} file preparation failed: ${message}`);
+}
+
+function readErrorCode(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
 function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {

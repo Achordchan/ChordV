@@ -1,4 +1,4 @@
-import { BadRequestException } from "@nestjs/common";
+import { BadGatewayException, BadRequestException } from "@nestjs/common";
 import * as net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import type { AdminNodeRecordDto, NodeProbeStatus, NodeSummaryDto } from "@chordv/shared";
@@ -105,13 +105,22 @@ export function decodeSubscriptionText(raw: string) {
 }
 
 export function parseVlessLink(link: string): ParsedVlessLink {
-  const parsed = new URL(link);
+  let parsed: URL;
+  try {
+    parsed = new URL(link);
+  } catch {
+    throw new BadRequestException("Invalid vless node URL in subscription content.");
+  }
   const name = decodeURIComponent(parsed.hash.replace(/^#/, "")) || `${parsed.hostname}:${parsed.port}`;
+  const serverPort = Number(parsed.port);
+  if (!Number.isInteger(serverPort) || serverPort < 1 || serverPort > 65535) {
+    throw new BadRequestException("Invalid vless node port in subscription content.");
+  }
 
   return {
     name,
     serverHost: parsed.hostname,
-    serverPort: Number(parsed.port),
+    serverPort,
     uuid: decodeURIComponent(parsed.username),
     flow: parsed.searchParams.get("flow") || "xtls-rprx-vision",
     realityPublicKey: parsed.searchParams.get("pbk") || "",
@@ -141,16 +150,26 @@ export function toNodeId(host: string, port: number) {
 export async function fetchSubscriptionNode(subscriptionUrl: string) {
   const timeoutMs = Number(process.env.CHORDV_SUBSCRIPTION_TIMEOUT_MS ?? 15000);
   const allowInsecureTls = (process.env.CHORDV_SUBSCRIPTION_ALLOW_INSECURE_TLS ?? "true").toLowerCase() === "true";
-  const response = await undiciFetch(subscriptionUrl, {
-    signal: AbortSignal.timeout(timeoutMs),
-    dispatcher: createDispatcher(timeoutMs, allowInsecureTls)
-  });
+  let response: Awaited<ReturnType<typeof undiciFetch>>;
+  try {
+    response = await undiciFetch(subscriptionUrl, {
+      signal: AbortSignal.timeout(timeoutMs),
+      dispatcher: createDispatcher(timeoutMs, allowInsecureTls)
+    });
+  } catch (error) {
+    throw mapSubscriptionFetchError(error);
+  }
 
   if (!response.ok) {
     throw new BadRequestException(`订阅地址请求失败：HTTP ${response.status}`);
   }
 
-  const raw = (await response.text()).trim();
+  let raw: string;
+  try {
+    raw = (await response.text()).trim();
+  } catch (error) {
+    throw new BadGatewayException(`Subscription response could not be read: ${readErrorMessage(error)}`);
+  }
   const decoded = decodeSubscriptionText(raw);
   const first = decoded
     .split(/\r?\n/)
@@ -162,6 +181,18 @@ export async function fetchSubscriptionNode(subscriptionUrl: string) {
   }
 
   return parseVlessLink(first);
+}
+
+function mapSubscriptionFetchError(error: unknown) {
+  const message = readErrorMessage(error);
+  if (/Failed to parse URL|Invalid URL/i.test(message)) {
+    return new BadRequestException("Subscription URL must be a complete http/https URL.");
+  }
+  return new BadGatewayException(`Subscription URL request failed: ${message}`);
+}
+
+function readErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }
 
 export function toNodeSummary(row: {

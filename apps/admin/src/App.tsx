@@ -307,6 +307,7 @@ export function App() {
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
+  const drawerBusyRef = useRef(false);
   const [teamInlineEditorId, setTeamInlineEditorId] = useState<string | null>(null);
   const [teamMemberInlineEditor, setTeamMemberInlineEditor] = useState<{ teamId: string; memberId: string | null } | null>(null);
   const [teamSubscriptionInlineEditorId, setTeamSubscriptionInlineEditorId] = useState<string | null>(null);
@@ -382,6 +383,7 @@ export function App() {
   const [nodeAccessSelection, setNodeAccessSelection] = useState<string[]>([]);
   const [nodeAccessLoading, setNodeAccessLoading] = useState(false);
   const [nodeAccessSaving, setNodeAccessSaving] = useState(false);
+  const nodeAccessSavingRef = useRef(false);
   const nodeAccessRequestSeqRef = useRef(0);
   const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
   const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
@@ -1257,6 +1259,22 @@ export function App() {
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const http500Uncertain = Boolean(options.treatHttp500AsUncertain && /http\s*500/i.test(message));
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || http500Uncertain);
+      if (uncertain && (options.refreshAfter ?? true)) {
+        void refreshCurrentDataAfterAction().catch((refreshReason) => {
+          notifications.show({
+            color: "yellow",
+            title: "请求状态不确定",
+            message: readError(refreshReason, "状态刷新失败")
+          });
+        });
+        void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
+          notifications.show({
+            color: "yellow",
+            title: "同步队列刷新失败",
+            message: readError(refreshReason, "同步队列刷新失败")
+          });
+        });
+      }
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
@@ -1301,14 +1319,16 @@ export function App() {
     setNodeAccessEditor(null);
     setNodeAccessSelection([]);
     setNodeAccessLoading(false);
+    nodeAccessSavingRef.current = false;
     setNodeAccessSaving(false);
   }
 
   async function saveNodeAccessEditor() {
-    if (!nodeAccessEditor || nodeAccessLoading || nodeAccessSaving) {
+    if (!nodeAccessEditor || nodeAccessLoading || nodeAccessSaving || nodeAccessSavingRef.current) {
       return;
     }
 
+    nodeAccessSavingRef.current = true;
     try {
       setNodeAccessSaving(true);
       const nodeIds = Array.from(
@@ -1369,6 +1389,7 @@ export function App() {
         message: uncertain ? `${message} 节点授权可能已保存，请刷新订阅列表和同步队列确认。` : message
       });
     } finally {
+      nodeAccessSavingRef.current = false;
       setNodeAccessSaving(false);
     }
   }
@@ -1556,12 +1577,19 @@ export function App() {
   }
 
   function closeDrawer() {
+    if (drawerBusyRef.current) {
+      return;
+    }
     setDrawer({ type: null, recordId: null, parentId: null });
   }
 
   async function submitDrawer() {
     if (!drawer.type || !snapshot) return;
+    if (drawerBusyRef.current) {
+      return;
+    }
 
+    drawerBusyRef.current = true;
     try {
       setDrawerBusy(true);
 
@@ -1808,6 +1836,7 @@ export function App() {
         if (success) closeDrawer();
       }
     } finally {
+      drawerBusyRef.current = false;
       setDrawerBusy(false);
     }
   }
