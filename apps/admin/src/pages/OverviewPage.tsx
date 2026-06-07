@@ -124,7 +124,7 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
                 </Group>
                 <Text size="xs" c="dimmed" lineClamp={1}>
                   3x-ui：{translatePanelStatus(item.panelStatus, item.panelEnabled)} · 探测：{translateProbeStatus(item.probeStatus)}
-                  {item.panelSyncPendingCount ? ` · 待同步 ${item.panelSyncPendingCount}` : ""}
+                  {buildNodePanelSyncText(item)}
                 </Text>
               </div>
               <StatusBadge color={status.color} label={status.label} />
@@ -141,7 +141,11 @@ function compactNodeStatus(item: AdminNodeRecordDto) {
     return { color: "gray", label: "已禁用" };
   }
 
-  if (item.panelSyncPendingCount) {
+  if (
+    (item.panelSyncPendingCount ?? 0) > 0 ||
+    (item.panelSyncRunningCount ?? 0) > 0 ||
+    (item.panelSyncFailedCount ?? 0) > 0
+  ) {
     return { color: "yellow", label: "待同步" };
   }
 
@@ -154,4 +158,13 @@ function compactNodeStatus(item: AdminNodeRecordDto) {
   }
 
   return { color: nodeProbeColor(item.probeStatus), label: translateProbeStatus(item.probeStatus) };
+}
+
+function buildNodePanelSyncText(item: AdminNodeRecordDto) {
+  const parts = [
+    (item.panelSyncPendingCount ?? 0) > 0 ? `待同步 ${item.panelSyncPendingCount}` : null,
+    (item.panelSyncRunningCount ?? 0) > 0 ? `执行中 ${item.panelSyncRunningCount}` : null,
+    (item.panelSyncFailedCount ?? 0) > 0 ? `待重试 ${item.panelSyncFailedCount}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? ` · 面板同步${parts.join(" / ")}` : "";
 }

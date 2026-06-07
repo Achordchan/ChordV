@@ -304,6 +304,15 @@ export function UsersPage(props: UsersPageProps) {
                                     >
                                       <IconPencil size={16} />
                                     </ActionIcon>
+                                    {userRecord ? (
+                                      <ActionIcon
+                                        variant="subtle"
+                                        onClick={() => props.onOpenUserSubscriptions(userRecord)}
+                                        title="账号级：打开订阅管理"
+                                      >
+                                        <IconListDetails size={16} />
+                                      </ActionIcon>
+                                    ) : null}
                                     <ActionIcon
                                       variant="subtle"
                                       color={userRecord?.status === "active" ? "red" : "green"}
@@ -373,18 +382,11 @@ function PanelSyncInlineStatus(props: {
     return null;
   }
   const summary = props.item.panelSyncSummary;
-  const color = summary?.failed ? "red" : summary?.running ? "blue" : "yellow";
-  const label = summary
-    ? summary.failed > 0
-      ? `面板同步失败 ${summary.failed}`
-      : summary.running > 0
-        ? `面板同步执行中 ${summary.running}`
-        : `面板待同步 ${summary.pending}`
-    : "面板待同步";
-  const detail = summary?.lastError ?? props.item.panelSyncMessage;
+  const label = summary ? buildPanelSyncPendingLabel(summary) : "面板同步待重试";
+  const detail = [summary?.lastError, props.item.panelSyncMessage].filter(Boolean).join(" · ");
   return (
     <Stack gap={2}>
-      <Badge color={color} variant="light">
+      <Badge color="yellow" variant="light">
         {label}
       </Badge>
       {detail ? (
@@ -408,21 +410,25 @@ function LeaseRevocationInlineStatus(props: {
   const failed = activeJobs.filter((job) => job.status === "failed");
   const running = activeJobs.filter((job) => job.status === "running");
   const retryable = failed[0] ?? activeJobs.find((job) => job.status === "pending") ?? null;
-  const color = failed.length > 0 ? "red" : running.length > 0 ? "blue" : "yellow";
-  const label = failed.length > 0 ? `连接撤销失败 ${failed.length}` : running.length > 0 ? "连接撤销执行中" : `连接撤销待同步 ${activeJobs.length}`;
+  const label =
+    failed.length > 0
+      ? `连接撤销待重试 ${failed.length}`
+      : running.length > 0
+        ? "连接撤销执行中"
+        : `连接撤销待同步 ${activeJobs.length}`;
   const lastError = failed.find((job) => job.lastError)?.lastError ?? activeJobs.find((job) => job.lastError)?.lastError ?? null;
 
   return (
     <Stack gap={2}>
       <Group gap={4} wrap="nowrap">
-        <Badge color={color} variant="light">
+        <Badge color="yellow" variant="light">
           {label}
         </Badge>
         {retryable ? (
           <ActionIcon
             size="xs"
             variant="subtle"
-            color={color}
+            color="yellow"
             loading={props.retryBusyKey === `lease-job:${retryable.id}`}
             disabled={props.retryBusyKey !== null && props.retryBusyKey !== `lease-job:${retryable.id}`}
             onClick={(event) => {
@@ -442,4 +448,13 @@ function LeaseRevocationInlineStatus(props: {
       ) : null}
     </Stack>
   );
+}
+
+function buildPanelSyncPendingLabel(summary: { pending: number; running: number; failed: number; total: number }) {
+  const parts = [
+    summary.pending > 0 ? `待同步 ${summary.pending}` : null,
+    summary.running > 0 ? `执行中 ${summary.running}` : null,
+    summary.failed > 0 ? `待重试 ${summary.failed}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? `面板同步${parts.join(" / ")}` : "面板同步待重试";
 }

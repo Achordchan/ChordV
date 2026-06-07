@@ -163,9 +163,6 @@ function NodeSyncQueueCell(props: {
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
   const panelSummary = summarizePanelSyncJobsForNode(props.panelSyncJobs, props.node.id);
-  const panelPending = panelSummary.pending;
-  const panelRunning = panelSummary.running;
-  const panelFailed = panelSummary.failed;
   const panelTotal = panelSummary.total;
   const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
 
@@ -179,34 +176,14 @@ function NodeSyncQueueCell(props: {
 
   return (
     <Stack gap={2}>
-      {panelPending > 0 ? (
+      {panelTotal > 0 ? (
         <Badge color="yellow" variant="light">
-          面板待同步 {panelPending}
+          {buildBackgroundSyncLabel("面板同步", panelSummary)}
         </Badge>
       ) : null}
-      {panelRunning > 0 ? (
-        <Badge color="blue" variant="light">
-          面板执行中 {panelRunning}
-        </Badge>
-      ) : null}
-      {panelFailed > 0 ? (
-        <Badge color="red" variant="light">
-          面板失败 {panelFailed}
-        </Badge>
-      ) : null}
-      {leaseSummary.pending > 0 ? (
+      {leaseSummary.total > 0 ? (
         <Badge color="yellow" variant="light">
-          连接撤销待同步 {leaseSummary.pending}
-        </Badge>
-      ) : null}
-      {leaseSummary.running > 0 ? (
-        <Badge color="blue" variant="light">
-          连接撤销执行中 {leaseSummary.running}
-        </Badge>
-      ) : null}
-      {leaseSummary.failed > 0 ? (
-        <Badge color="red" variant="light">
-          连接撤销失败 {leaseSummary.failed}
+          {buildBackgroundSyncLabel("连接撤销", leaseSummary)}
         </Badge>
       ) : null}
       {panelSummary.lastError ? (
@@ -425,6 +402,18 @@ function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[],
     failed: related.filter((job) => job.status === "failed").length,
     lastError: related.find((job) => job.lastError)?.lastError ?? null
   };
+}
+
+function buildBackgroundSyncLabel(
+  prefix: string,
+  summary: { pending: number; running: number; failed: number; total: number }
+) {
+  const parts = [
+    summary.pending > 0 ? `待同步 ${summary.pending}` : null,
+    summary.running > 0 ? `执行中 ${summary.running}` : null,
+    summary.failed > 0 ? `待重试 ${summary.failed}` : null
+  ].filter(Boolean);
+  return parts.length > 0 ? `${prefix}${parts.join(" / ")}` : `${prefix}待同步`;
 }
 
 function leaseRevocationJobTargetLabel(job: AdminLeaseRevocationJobDto) {
