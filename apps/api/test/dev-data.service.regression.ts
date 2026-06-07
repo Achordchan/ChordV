@@ -8832,6 +8832,43 @@ async function testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs() {
   ]);
 }
 
+async function testDisconnectUserReturnsPendingWhenUserRefreshFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: now,
+      maxConcurrentSessionsOverride: null
+    }),
+    findCurrentSubscriptionIdsForUserTx: async () => ["sub_1"],
+    requireAdminUserRecord: async () => {
+      throw new Error("user refresh failed after disconnect");
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 1
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, unknown>) => Promise<unknown>) => task({})
+    }
+  });
+
+  const result = await service.disconnectUser("user_1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /user refresh failed after disconnect/);
+  assert.equal(result.user.id, "user_1");
+  assert.equal(result.user.panelSyncStatus, "pending");
+}
+
 async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
   let leaseJobQueued = false;
   const service = createAdminSubscriptionService({
@@ -9236,6 +9273,122 @@ async function testAdminListsSurfacePersistentPanelSyncPendingState() {
   assert.equal(teams[0].panelSyncStatus, "pending");
   assert.equal(teams[0].panelSyncSummary?.failed, 1);
   assert.match(teams[0].panelSyncMessage ?? "", /失败 1/);
+}
+
+async function testAdminListsAggregatePanelSyncPendingRunningAndFailedState() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const panelSyncJobs = [
+    {
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: "team_1",
+      status: "pending",
+      lastError: null,
+      updatedAt: new Date("2026-01-01T00:03:00.000Z")
+    },
+    {
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: "team_1",
+      status: "running",
+      lastError: null,
+      updatedAt: new Date("2026-01-01T00:02:00.000Z")
+    },
+    {
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: "team_1",
+      status: "failed",
+      lastError: "panel offline",
+      updatedAt: new Date("2026-01-01T00:01:00.000Z")
+    }
+  ];
+  const subscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 1,
+    remainingTrafficGb: 99,
+    expireAt: new Date(Date.now() + 60_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Personal" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findMany: async () => [
+          {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: "active",
+            lastSeenAt: now,
+            maxConcurrentSessionsOverride: null,
+            subscriptions: [subscription],
+            teamMemberships: []
+          }
+        ]
+      },
+      subscription: {
+        findMany: async () => [subscription]
+      },
+      team: {
+        findMany: async () => [
+          {
+            id: "team_1",
+            name: "Team",
+            ownerUserId: "user_1",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+            owner: { displayName: "User", email: "user@example.com" },
+            members: [],
+            subscriptions: [],
+            trafficLedgerEntries: []
+          }
+        ]
+      },
+      trafficLedger: {
+        groupBy: async () => []
+      },
+      node: {
+        findMany: async () => []
+      },
+      panelSyncJob: {
+        findMany: async () => panelSyncJobs
+      }
+    }
+  });
+
+  const [users, subscriptions, teams] = await Promise.all([
+    service.listAdminUsers(),
+    service.listAdminSubscriptions(),
+    service.listAdminTeams()
+  ]);
+
+  for (const record of [users[0], subscriptions[0], teams[0]]) {
+    assert.equal(record.panelSyncStatus, "pending");
+    assert.deepEqual(record.panelSyncSummary, {
+      pending: 1,
+      running: 1,
+      failed: 1,
+      total: 3,
+      lastError: "panel offline"
+    });
+    assert.match(record.panelSyncMessage ?? "", /待同步 1/);
+    assert.match(record.panelSyncMessage ?? "", /执行中 1/);
+    assert.match(record.panelSyncMessage ?? "", /失败 1/);
+    assert.match(record.panelSyncMessage ?? "", /panel offline/);
+  }
 }
 
 async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails() {
@@ -16237,6 +16390,131 @@ async function testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails() {
   assert.match(result.panelSyncMessage ?? "", /team list refresh failed/);
 }
 
+async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
+  const memberUpdates: Array<Record<string, any>> = [];
+  const memberDemotions: Array<Record<string, any>> = [];
+  const teamUpdates: Array<Record<string, any>> = [];
+  const queuedSubscriptions: string[] = [];
+  const publishedSubscriptions: Array<Record<string, unknown>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const teamSubscription = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 1,
+    remainingTrafficGb: 99,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Team Plan", maxConcurrentSessions: 3 },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_new_owner",
+      teamId: "team_1",
+      userId: "user_new_owner",
+      role: "member"
+    }),
+    ensureUserExists: async () => ({
+      id: "user_new_owner",
+      email: "new-owner@example.com",
+      displayName: "New Owner",
+      role: "user",
+      status: "active",
+      lastSeenAt: now,
+      maxConcurrentSessionsOverride: null
+    }),
+    findCurrentTeamSubscription: async () => teamSubscription,
+    publishSubscriptionUpdatedEvent: async (target: Record<string, unknown>) => {
+      publishedSubscriptions.push(target);
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async (subscriptionId: string) => {
+        queuedSubscriptions.push(subscriptionId);
+        return 1;
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("owner transfer must use queued panel access sync");
+      }
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "user_new_owner",
+      ownerDisplayName: "New Owner",
+      ownerEmail: "new-owner@example.com",
+      status: "active",
+      memberCount: 2,
+      currentSubscription: null,
+      members: [],
+      usage: [],
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    }),
+    prisma: {
+      $transaction: async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+      teamMember: {
+        update: async (payload: Record<string, any>) => {
+          memberUpdates.push(payload);
+          return {};
+        },
+        updateMany: async (payload: Record<string, any>) => {
+          memberDemotions.push(payload);
+          return {};
+        }
+      },
+      team: {
+        update: async (payload: Record<string, any>) => {
+          teamUpdates.push(payload);
+          return {};
+        }
+      }
+    }
+  });
+
+  const result = await service.updateTeamMember("team_1", "member_new_owner", { role: "owner" });
+
+  assert.deepEqual(memberUpdates, [
+    {
+      where: { id: "member_new_owner" },
+      data: { role: "owner" }
+    }
+  ]);
+  assert.deepEqual(memberDemotions, [
+    {
+      where: {
+        teamId: "team_1",
+        NOT: { id: "member_new_owner" }
+      },
+      data: { role: "member" }
+    }
+  ]);
+  assert.deepEqual(teamUpdates, [
+    {
+      where: { id: "team_1" },
+      data: { ownerUserId: "user_new_owner" }
+    }
+  ]);
+  assert.deepEqual(queuedSubscriptions, ["sub_team"]);
+  assert.deepEqual(publishedSubscriptions, [
+    {
+      subscriptionId: "sub_team",
+      teamId: "team_1",
+      state: "active"
+    }
+  ]);
+  assert.equal(result.ownerUserId, "user_new_owner");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /queued for background retry/);
+}
+
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
   const service = createAdminSubscriptionService({
     requireTeamMember: async () => ({
@@ -18330,12 +18608,14 @@ async function main() {
   await testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs();
+  await testDisconnectUserReturnsPendingWhenUserRefreshFails();
   await testKickTeamMemberReturnsRevokedCountAndDisableAccountPending();
   await testConvertPersonalSubscriptionToTeamWaitsForRequiredTeamSubscriptionLookup();
   await testConvertPersonalSubscriptionToTeamConvertsMembershipUniqueConflict();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
   await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();
+  await testAdminListsAggregatePanelSyncPendingRunningAndFailedState();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testImportNodeReturnsWhenInitialProbeStalls();
@@ -18464,6 +18744,7 @@ async function main() {
   await testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails();
   await testCreateTeamMemberReturnsPendingWhenSubscriptionLookupStalls();
   await testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails();
+  await testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();

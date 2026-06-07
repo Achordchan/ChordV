@@ -1316,6 +1316,7 @@ export class AdminSubscriptionService {
       throw new BadRequestException("Use the team owner transfer flow before changing the current owner role.");
     }
 
+    let panelSync: PanelSyncBestEffortResult = { ok: true };
     if (nextRole === "owner") {
       const ownerUser = await this.ensureUserExists(member.userId);
       if (ownerUser.status !== "active") {
@@ -1338,6 +1339,19 @@ export class AdminSubscriptionService {
           data: { ownerUserId: member.userId }
         })
       ]);
+      const lookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+        member.teamId,
+        "team subscription lookup after owner transfer"
+      );
+      panelSync = mergePanelSyncResults(panelSync, lookup.panelSync);
+      if (lookup.subscription) {
+        panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(lookup.subscription.id));
+        await this.publishSubscriptionUpdatedEvent({
+          subscriptionId: lookup.subscription.id,
+          teamId: lookup.subscription.teamId,
+          state: lookup.subscription.state
+        });
+      }
     } else {
       await this.prisma.teamMember.update({
         where: { id: memberId },
@@ -1345,7 +1359,7 @@ export class AdminSubscriptionService {
       });
     }
 
-    return this.withTeamRecordRefreshBestEffort(member.teamId, { ok: true }, "Team 成员已更新。");
+    return this.withTeamRecordRefreshBestEffort(member.teamId, panelSync, "Team 成员已更新。");
   }
 
   async deleteTeamMember(teamId: string, memberId: string) {
