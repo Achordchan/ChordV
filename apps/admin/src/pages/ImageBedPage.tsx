@@ -109,6 +109,8 @@ export function ImageBedPage() {
       });
       setConfig(nextConfig);
       setForm((current) => ({ ...current, apiToken: "" }));
+      setFileListError(null);
+      setFileListErrorColor("red");
       notifications.show({
         color: "green",
         title: "图床",

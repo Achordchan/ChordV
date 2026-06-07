@@ -178,9 +178,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           : await createAdminRuntimeComponent(payload);
       }
 
-      if (editingId) {
-        onValidationChange(editingId, null);
-      }
+      onValidationChange(record.id, null);
       onComponentsChange(upsertRuntimeComponent(components, record));
       closeEditor();
       notifications.show({
@@ -586,6 +584,7 @@ function displayRuntimeComponentArchitecture(record: AdminRuntimeComponentRecord
 }
 
 function validationColor(status?: AdminRuntimeComponentValidationDto["status"]) {
+  if (status === undefined) return "gray";
   if (status === "ready") return "green";
   if (status === "disabled") return "yellow";
   if (status === "invalid_url") return "orange";
