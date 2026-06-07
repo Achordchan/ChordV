@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Anchor, Badge, Button, Card, Group, Loader, PasswordInput, Stack, Table, Text, TextInput, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { AdminImageBedConfigDto, AdminImageBedFileDto } from "@chordv/shared";
@@ -42,6 +42,7 @@ export function ImageBedPage() {
   const [error, setError] = useState<string | null>(null);
   const [fileListError, setFileListError] = useState<string | null>(null);
   const [fileListErrorColor, setFileListErrorColor] = useState<"red" | "yellow">("red");
+  const fileListRequestSeqRef = useRef(0);
 
   useEffect(() => {
     void loadConfig();
@@ -70,6 +71,7 @@ export function ImageBedPage() {
   }
 
   async function loadFiles(options: LoadFilesOptions = {}) {
+    const requestSeq = ++fileListRequestSeqRef.current;
     try {
       setLoadingFiles(true);
       setFileListError(null);
@@ -79,8 +81,14 @@ export function ImageBedPage() {
         search: search.trim() || undefined,
         recursive: false
       });
+      if (requestSeq !== fileListRequestSeqRef.current) {
+        return;
+      }
       setFiles(result.files);
     } catch (reason) {
+      if (requestSeq !== fileListRequestSeqRef.current) {
+        return;
+      }
       const message = readError(reason, "图床文件列表加载失败");
       setFileListErrorColor(options.afterSuccessfulSave ? "yellow" : "red");
       setFileListError(message);
@@ -93,7 +101,9 @@ export function ImageBedPage() {
         message: options.afterSuccessfulSave ? `${message}。配置保存请求已经成功返回，可稍后手动刷新列表。` : message
       });
     } finally {
-      setLoadingFiles(false);
+      if (requestSeq === fileListRequestSeqRef.current) {
+        setLoadingFiles(false);
+      }
     }
   }
 
@@ -119,6 +129,8 @@ export function ImageBedPage() {
       if (!nextConfig.hasToken) {
         setFiles([]);
         setFileListError(null);
+      } else {
+        void loadFiles({ afterSuccessfulSave: true });
       }
     } catch (reason) {
       const message = readError(reason, "图床配置保存失败");

@@ -1190,9 +1190,7 @@ export function App() {
         return false;
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain =
-        !definiteLocalSaveFailure &&
-        (isUncertainRequestFailure(message) || (options.treatHttp500AsUncertain === true && /http 500/i.test(message)));
+      const uncertain = !definiteLocalSaveFailure && isUncertainRequestFailure(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
@@ -1270,7 +1268,7 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
-      const uncertain = isUncertainRequestFailure(message) || /http 500/i.test(message);
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "节点授权状态不确定" : "操作失败",

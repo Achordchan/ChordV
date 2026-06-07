@@ -857,8 +857,18 @@ export class ReleaseCenterService {
     if (!primaryArtifact) {
       throw new BadRequestException("Add at least one installer artifact before publishing.");
     }
+    let lastArtifactError: unknown = null;
     for (const artifact of release.artifacts) {
-      await this.assertStoredReleaseArtifactReadable(artifact);
+      try {
+        await this.assertStoredReleaseArtifactReadable(artifact);
+        lastArtifactError = null;
+        break;
+      } catch (error) {
+        lastArtifactError = error;
+      }
+    }
+    if (lastArtifactError) {
+      throw lastArtifactError;
     }
     assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
   }

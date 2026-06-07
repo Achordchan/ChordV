@@ -211,6 +211,9 @@ export function TicketsPage() {
       if (requestSeq !== detailRequestSeqRef.current || selectedTicketIdRef.current !== ticketId) {
         return;
       }
+      if (options?.silent) {
+        return;
+      }
       setSelectedTicket(null);
       setDetailError(readError(reason, "加载工单详情失败"));
     } finally {

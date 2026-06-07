@@ -2288,6 +2288,49 @@ async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
   );
 }
 
+async function testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissing() {
+  const release = makeReleaseCenterTestRelease({
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        id: "artifact_external",
+        source: "external",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
+        storedFilePath: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        allowClientMirror: false,
+        isPrimary: true
+      }),
+      makeReleaseCenterTestArtifact({
+        id: "artifact_missing_upload",
+        source: "uploaded",
+        type: "setup.exe",
+        deliveryMode: "desktop_installer_download",
+        fileName: "ChordV_1.1.6_setup.exe",
+        downloadUrl: "/api/downloads/releases/artifact_missing_upload",
+        storedFilePath: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        allowClientMirror: false,
+        isPrimary: false
+      })
+    ]
+  });
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => release
+      }
+    },
+    assertReleaseRecordMutable: () => undefined
+  });
+
+  await service["assertReleasePublishable"]("release_1");
+}
+
 async function testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata() {
   const release = makeReleaseCenterTestRelease({
     artifacts: [
@@ -19511,6 +19554,7 @@ async function main() {
   await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
   await testPublishReleaseRejectsMissingUploadedArtifactFile();
+  await testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissing();
   await testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
