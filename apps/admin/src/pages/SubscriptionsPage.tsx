@@ -303,7 +303,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             ) : null}
                             {teamSubscriptionRecord?.panelSyncStatus === "pending" ? (
                               <Alert color="yellow" variant="light" mt="md">
-                                {teamSubscriptionRecord.panelSyncMessage ?? "面板同步待重试"}
+                                {buildPanelSyncInlineMessage(teamSubscriptionRecord)}
                               </Alert>
                             ) : null}
                           </>
@@ -577,4 +577,14 @@ function buildPanelSyncPendingLabel(summary: { pending: number; running: number;
     summary.failed > 0 ? `待重试 ${summary.failed}` : null
   ].filter(Boolean);
   return parts.length > 0 ? `面板同步${parts.join(" / ")}` : "面板同步待重试";
+}
+
+function buildPanelSyncInlineMessage(item: {
+  panelSyncMessage?: string | null;
+  panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
+}) {
+  const summary = item.panelSyncSummary;
+  const label = summary ? buildPanelSyncPendingLabel(summary) : "面板同步待处理";
+  const detail = [summary?.lastError, item.panelSyncMessage].filter(Boolean).join(" · ");
+  return detail ? `${label}：${detail}` : label;
 }

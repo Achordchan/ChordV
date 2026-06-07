@@ -212,13 +212,18 @@ export function ReleasesPage(props: ReleasesPageProps) {
               releaseForm.selectedFile
             );
           } catch (uploadError) {
-            setReleases((current) => upsertRelease(current, record));
+            const result = showReleaseRequestFailure(uploadError, "安装包上传失败");
+            if (result.uncertain) {
+              void loadReleases();
+            } else {
+              setReleases((current) => upsertRelease(current, record));
+              notifications.show({
+                color: "yellow",
+                title: "发布记录已创建，安装包上传失败",
+                message: `${result.message}。请在列表中继续新增安装包，或删除这条草稿。`
+              });
+            }
             closeReleaseEditor();
-            notifications.show({
-              color: "yellow",
-              title: "发布记录已创建，安装包上传失败",
-              message: `${readError(uploadError, "安装包上传失败")}。请在列表中继续新增安装包，或删除这条草稿。`
-            });
             return;
           }
         }

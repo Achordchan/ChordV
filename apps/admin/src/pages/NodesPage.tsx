@@ -165,6 +165,8 @@ function NodeSyncQueueCell(props: {
   const panelSummary = summarizePanelSyncJobsForNode(props.panelSyncJobs, props.node.id);
   const panelTotal = panelSummary.total;
   const leaseSummary = summarizeLeaseRevocationJobsForNode(props.leaseRevocationJobs, props.node.id);
+  const panelRetryable = hasRetryableBackgroundSync(panelSummary);
+  const leaseRetryable = hasRetryableBackgroundSync(leaseSummary);
 
   if (panelTotal <= 0 && leaseSummary.total <= 0) {
     return (
@@ -197,7 +199,7 @@ function NodeSyncQueueCell(props: {
         </Text>
       ) : null}
       <Group gap={4}>
-        {panelTotal > 0 ? (
+        {panelRetryable ? (
           <Button
             size="xs"
             variant="light"
@@ -208,7 +210,7 @@ function NodeSyncQueueCell(props: {
             重试面板
           </Button>
         ) : null}
-        {leaseSummary.total > 0 ? (
+        {leaseRetryable ? (
           <Button
             size="xs"
             variant="light"
@@ -271,7 +273,9 @@ function PanelSyncQueueDrawer(props: {
                   </Table.Td>
                 </Table.Tr>
               ) : (
-                props.jobs.map((job) => (
+                props.jobs.map((job) => {
+                  const retryable = isRetryableBackgroundSyncStatus(job.status);
+                  return (
                   <Table.Tr key={job.id}>
                     <Table.Td>
                       <Badge color={panelSyncStatusColor(job.status)} variant="light">
@@ -297,8 +301,9 @@ function PanelSyncQueueDrawer(props: {
                           size="xs"
                           variant="light"
                           loading={props.retryBusyKey === `job:${job.id}`}
-                          disabled={props.retryBusyKey !== null && props.retryBusyKey !== `job:${job.id}`}
+                          disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `job:${job.id}`)}
                           onClick={() => props.onRetryJob(job.id)}
+                          title={retryable ? "重试这个同步任务" : "执行中的任务不可重试"}
                         >
                           重试
                         </Button>
@@ -306,15 +311,17 @@ function PanelSyncQueueDrawer(props: {
                           size="xs"
                           variant="subtle"
                           loading={props.retryBusyKey === `node:${job.nodeId}`}
-                          disabled={props.retryBusyKey !== null && props.retryBusyKey !== `node:${job.nodeId}`}
+                          disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `node:${job.nodeId}`)}
                           onClick={() => props.onRetryNode(job.nodeId)}
+                          title={retryable ? "重试这个节点的待同步任务" : "执行中的任务不可重试"}
                         >
                           重试节点
                         </Button>
                       </Group>
                     </Table.Td>
                   </Table.Tr>
-                ))
+                  );
+                })
               )}
             </Table.Tbody>
           </DataTable>
@@ -342,7 +349,9 @@ function PanelSyncQueueDrawer(props: {
                   </Table.Td>
                 </Table.Tr>
               ) : (
-                props.leaseRevocationJobs.map((job) => (
+                props.leaseRevocationJobs.map((job) => {
+                  const retryable = isRetryableBackgroundSyncStatus(job.status);
+                  return (
                   <Table.Tr key={job.id}>
                     <Table.Td>
                       <Badge color={panelSyncStatusColor(job.status)} variant="light">
@@ -364,8 +373,9 @@ function PanelSyncQueueDrawer(props: {
                           size="xs"
                           variant="light"
                           loading={props.retryBusyKey === `lease-job:${job.id}`}
-                          disabled={props.retryBusyKey !== null && props.retryBusyKey !== `lease-job:${job.id}`}
+                          disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `lease-job:${job.id}`)}
                           onClick={() => props.onRetryLeaseJob(job.id)}
+                          title={retryable ? "重试这个连接撤销任务" : "执行中的任务不可重试"}
                         >
                           重试
                         </Button>
@@ -374,8 +384,9 @@ function PanelSyncQueueDrawer(props: {
                             size="xs"
                             variant="subtle"
                             loading={props.retryBusyKey === `lease-node:${job.nodeId}`}
-                            disabled={props.retryBusyKey !== null && props.retryBusyKey !== `lease-node:${job.nodeId}`}
+                            disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `lease-node:${job.nodeId}`)}
                             onClick={() => props.onRetryLeaseNode(job.nodeId!)}
+                            title={retryable ? "重试这个节点的连接撤销任务" : "执行中的任务不可重试"}
                           >
                             重试节点
                           </Button>
@@ -383,7 +394,8 @@ function PanelSyncQueueDrawer(props: {
                       </Group>
                     </Table.Td>
                   </Table.Tr>
-                ))
+                  );
+                })
               )}
             </Table.Tbody>
           </DataTable>
@@ -402,6 +414,14 @@ function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[],
     failed: related.filter((job) => job.status === "failed").length,
     lastError: related.find((job) => job.lastError)?.lastError ?? null
   };
+}
+
+function isRetryableBackgroundSyncStatus(status: AdminPanelSyncJobDto["status"] | AdminLeaseRevocationJobDto["status"]) {
+  return status === "pending" || status === "failed";
+}
+
+function hasRetryableBackgroundSync(summary: { pending: number; failed: number }) {
+  return summary.pending + summary.failed > 0;
 }
 
 function buildBackgroundSyncLabel(

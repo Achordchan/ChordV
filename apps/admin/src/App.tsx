@@ -451,7 +451,7 @@ export function App() {
         setReleaseRefreshSignal((current) => current + 1);
       }
       void refreshDashboard();
-      void loadSectionData(sectionRef.current, { force: true, silent: true });
+      void refreshCurrentSectionSilently();
     };
     window.addEventListener("focus", refreshVisibleAdminData);
     document.addEventListener("visibilitychange", refreshVisibleAdminData);
@@ -473,7 +473,7 @@ export function App() {
         setReleaseRefreshSignal((current) => current + 1);
       }
       void refreshDashboard();
-      void loadSectionData(sectionRef.current, { force: true, silent: true });
+      void refreshCurrentSectionSilently();
     });
   }, [authenticated]);
 
@@ -750,6 +750,12 @@ export function App() {
     } finally {
       setRefreshingDashboard(false);
     }
+  }
+
+  function refreshCurrentSectionSilently() {
+    void loadSectionData(sectionRef.current, { force: true, silent: true }).catch(() => {
+      // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
+    });
   }
 
   function applyListPatch<K extends SnapshotListKey>(key: K, value: AdminSnapshotDto[K]) {

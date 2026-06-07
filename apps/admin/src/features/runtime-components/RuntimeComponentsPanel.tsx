@@ -53,6 +53,7 @@ function showRuntimeComponentFailure(reason: unknown, fallback: string, options?
       ? options?.uncertainMessage?.(message) ?? `${message} 请求可能已被后台保存，请刷新组件列表确认最新状态。`
       : message
   });
+  return { message, uncertain };
 }
 
 type RuntimeComponentsPanelProps = {
@@ -187,7 +188,10 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         message: editingId ? "内核组件已更新" : "内核组件已创建"
       });
     } catch (reason) {
-      showRuntimeComponentFailure(reason, "保存内核组件失败");
+      const result = showRuntimeComponentFailure(reason, "保存内核组件失败");
+      if (result.uncertain) {
+        void onRefresh();
+      }
     } finally {
       onSavingChange(false);
     }
@@ -206,6 +210,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         title: "内核组件",
         message: result.message
       });
+      void onRefresh();
     } catch (reason) {
       showRuntimeComponentFailure(reason, "校验下载链接失败", {
         uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
@@ -234,7 +239,10 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         message: "内核组件已删除"
       });
     } catch (reason) {
-      showRuntimeComponentFailure(reason, "删除内核组件失败");
+      const result = showRuntimeComponentFailure(reason, "删除内核组件失败");
+      if (result.uncertain) {
+        void onRefresh();
+      }
     } finally {
       onSavingChange(false);
     }
