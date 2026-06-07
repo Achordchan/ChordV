@@ -14791,7 +14791,7 @@ async function testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails() {
   assert.deepEqual(calls, ["copy:upload.tmp:stored.bin", "unlink", "rm:stored.bin:true"]);
 }
 
-async function testWindowsUpdateCheckAllowsPrimaryExternalArtifact() {
+async function testWindowsUpdateCheckPrefersZipOverGenericExternalArtifact() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createReleaseCenterService({
     findLatestPublishedRelease: async () => ({
@@ -14852,14 +14852,14 @@ async function testWindowsUpdateCheckAllowsPrimaryExternalArtifact() {
     currentVersion: "1.1.2",
     platform: "windows",
     channel: "stable",
-    artifactType: "setup.exe"
+    artifactType: "zip"
   });
 
   assert.equal(result.hasUpdate, true);
-  assert.equal(result.deliveryMode, "external_download");
-  assert.equal(result.recommendedArtifact?.type, "external");
-  assert.equal(result.downloadUrl, "https://example.com/chordv/windows/latest");
-  assert.equal(result.fileName, null);
+  assert.equal(result.deliveryMode, "desktop_full_replace");
+  assert.equal(result.recommendedArtifact?.type, "zip");
+  assert.equal(result.downloadUrl, "https://example.com/ChordV_1.1.3_x64-full.zip");
+  assert.equal(result.fileName, "ChordV_1.1.3_x64-full.zip");
 }
 
 async function testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata() {
@@ -19596,7 +19596,7 @@ async function main() {
   await testUpdateCheckAllowsUploadedArtifactWithStaleMetadata();
   await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();
-  await testWindowsUpdateCheckAllowsPrimaryExternalArtifact();
+  await testWindowsUpdateCheckPrefersZipOverGenericExternalArtifact();
   await testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata();
   await testWindowsUpdateCheckSkipsInstallerOnlyRelease();
   await testCurrentSubscriptionPrefersEffectiveSubscription();

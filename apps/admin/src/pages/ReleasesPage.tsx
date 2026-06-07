@@ -162,13 +162,7 @@ export function ReleasesPage() {
         changelog: splitLines(releaseForm.changelog),
         initialArtifact:
           !releaseEditorId && releaseForm.artifactSource === "external"
-            ? {
-                source: "external",
-                type: "external",
-                deliveryMode: "external_download",
-                downloadUrl: releaseForm.downloadUrl.trim(),
-                isPrimary: true
-              }
+            ? buildExternalArtifactPayload(releaseForm.platform, releaseForm.downloadUrl, true)
             : undefined
       };
 
@@ -388,14 +382,11 @@ export function ReleasesPage() {
 
       if (!record) {
         if (artifactForm.source === "external") {
-          const externalPayload = {
-            source: "external" as const,
-            type: "external" as const,
-            deliveryMode: "external_download" as const,
-            downloadUrl: artifactForm.downloadUrl.trim(),
-            fileName: null,
-            isPrimary: artifactForm.isPrimary
-          };
+          const externalPayload = buildExternalArtifactPayload(
+            artifactEditor.platform,
+            artifactForm.downloadUrl,
+            artifactForm.isPrimary
+          );
           record = artifactEditor.artifactId
             ? await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId, externalPayload)
             : await createAdminReleaseArtifact(releaseId!, externalPayload);
@@ -759,6 +750,18 @@ function buildUploadedArtifactPayload(
   };
 }
 
+function buildExternalArtifactPayload(platform: AdminReleasePlatform, downloadUrl: string, isPrimary: boolean) {
+  const type = inferExternalArtifactType(platform, downloadUrl);
+  return {
+    source: "external" as const,
+    type,
+    deliveryMode: deliveryModeForExternalArtifact(platform, type),
+    downloadUrl: downloadUrl.trim(),
+    fileName: inferFileNameFromUrl(downloadUrl),
+    isPrimary
+  };
+}
+
 function inferUploadedArtifactType(
   platform: AdminReleasePlatform,
   fileName: string,
@@ -772,6 +775,26 @@ function inferUploadedArtifactType(
     return "zip";
   }
   return fallbackType;
+}
+
+function inferExternalArtifactType(platform: AdminReleasePlatform, downloadUrl: string): AdminReleaseArtifactType {
+  const pathname = inferUrlPathname(downloadUrl);
+  if (platform === "windows") {
+    if (pathname.endsWith(".zip")) {
+      return "zip";
+    }
+    if (pathname.endsWith(".exe")) {
+      return "setup.exe";
+    }
+    return "external";
+  }
+  if (platform === "macos") {
+    return pathname.endsWith(".dmg") ? "dmg" : "external";
+  }
+  if (platform === "android") {
+    return pathname.endsWith(".apk") ? "apk" : "external";
+  }
+  return pathname.endsWith(".ipa") ? "ipa" : "external";
 }
 
 function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
@@ -788,4 +811,38 @@ function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: A
     return "external_download" as const;
   }
   return "desktop_installer_download" as const;
+}
+
+function deliveryModeForExternalArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
+  if (platform === "windows" && type === "zip") {
+    return "desktop_full_replace" as const;
+  }
+  if (platform === "windows" && type === "setup.exe") {
+    return "desktop_installer_download" as const;
+  }
+  if (platform === "macos" && type === "dmg") {
+    return "desktop_installer_download" as const;
+  }
+  if (platform === "android" && type === "apk") {
+    return "apk_download" as const;
+  }
+  return "external_download" as const;
+}
+
+function inferFileNameFromUrl(downloadUrl: string) {
+  try {
+    const pathname = new URL(downloadUrl.trim()).pathname;
+    const fileName = pathname.split("/").filter(Boolean).pop();
+    return fileName ? decodeURIComponent(fileName) : null;
+  } catch {
+    return null;
+  }
+}
+
+function inferUrlPathname(downloadUrl: string) {
+  try {
+    return new URL(downloadUrl.trim()).pathname.toLowerCase();
+  } catch {
+    return downloadUrl.trim().toLowerCase();
+  }
 }
