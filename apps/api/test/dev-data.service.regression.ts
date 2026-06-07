@@ -470,6 +470,7 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
     ...overrides,
     runtimeSessionService: {
       queueActiveLeaseSyncForSubscription: async () => 0,
+      queueSubscriptionPanelAccessSync: async () => 0,
       queueLeaseRevocationJobsForSubscription: async () => 0,
       queueLeaseRevocationJobsForSubscriptionTx: async () => 0,
       ...runtimeSessionOverride
@@ -15882,7 +15883,6 @@ async function testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfter
     "queue_active_lease_sync",
     "queue_panel_disabled",
     "queue_lease_revocation",
-    "sync_panel",
     "publish_subscription"
   ]);
   assert.equal(result.state, "paused");
@@ -16136,7 +16136,7 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
     }),
     closeTeamSupportTicketsForUserBestEffort: async () => undefined,
     runtimeSessionService: {
-      syncSubscriptionPanelAccess: async () => {
+      queueSubscriptionPanelAccessSync: async () => {
         throw new Error("panel add failed");
       }
     },
@@ -16305,7 +16305,7 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
       throw new Error("ticket cleanup failed");
     },
     runtimeSessionService: {
-      syncSubscriptionPanelAccess: async () => {
+      queueSubscriptionPanelAccessSync: async () => {
         syncCalled = true;
         return 0;
       }
@@ -16345,7 +16345,7 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
   });
 
   assert.equal(createdSubscription, true);
-  assert.equal(syncCalled, true, "panel sync should still run after best-effort ticket cleanup fails");
+  assert.equal(syncCalled, true, "panel sync should still be queued after best-effort ticket cleanup fails");
   assert.equal(result.id, "sub_1");
 }
 
@@ -16375,7 +16375,7 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
     }),
     closeSupportTicketsForUser: async () => new Promise<number>(() => undefined),
     runtimeSessionService: {
-      syncSubscriptionPanelAccess: async () => {
+      queueSubscriptionPanelAccessSync: async () => {
         syncCalled = true;
         return 0;
       }
@@ -16420,7 +16420,7 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
   ]);
 
   assert.equal(createdSubscription, true);
-  assert.equal(syncCalled, true, "panel sync should still run after stalled best-effort ticket cleanup");
+  assert.equal(syncCalled, true, "panel sync should still be queued after stalled best-effort ticket cleanup");
   assert.equal(result.id, "sub_1");
 }
 
@@ -16442,7 +16442,7 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
       isActive: true
     }),
     runtimeSessionService: {
-      syncSubscriptionPanelAccess: async () => {
+      queueSubscriptionPanelAccessSync: async () => {
         throw new Error("panel sync failed");
       }
     },
@@ -17274,7 +17274,7 @@ async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
       state: "active"
     }),
     runtimeSessionService: {
-      syncSubscriptionPanelAccess: async () => {
+      queueSubscriptionPanelAccessSync: async () => {
         throw new Error("panel sync failed");
       }
     },

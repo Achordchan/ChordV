@@ -2361,13 +2361,7 @@ export class AdminSubscriptionService {
       },
       async () => {
     try {
-      const queuePanelAccessSync =
-        typeof (this.runtimeSessionService as { queueSubscriptionPanelAccessSync?: unknown }).queueSubscriptionPanelAccessSync ===
-        "function"
-          ? (this.runtimeSessionService as { queueSubscriptionPanelAccessSync: (subscriptionId: string) => Promise<number> })
-              .queueSubscriptionPanelAccessSync.bind(this.runtimeSessionService)
-          : this.runtimeSessionService.syncSubscriptionPanelAccess.bind(this.runtimeSessionService);
-      const queuedCount = await queuePanelAccessSync(subscriptionId);
+      const queuedCount = await this.runtimeSessionService.queueSubscriptionPanelAccessSync(subscriptionId);
       return queuedCount > 0
         ? {
             ok: false as const,
