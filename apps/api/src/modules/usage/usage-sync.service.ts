@@ -7,7 +7,8 @@ import {
   METERING_REASON_COUNTER_ROLLBACK,
   METERING_REASON_MAPPING_MISSING,
   METERING_REASON_NODE_UNAVAILABLE,
-  METERING_REASON_SAMPLE_MISSING
+  METERING_REASON_SAMPLE_MISSING,
+  METERING_REASON_RESET_UNCONFIRMED
 } from "../common/metering.constants";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
@@ -23,6 +24,7 @@ const USAGE_SYNC_LOCK_KEY_1 = 420_701;
 const USAGE_SYNC_LOCK_KEY_2 = 917_503;
 const USAGE_SYNC_NODE_CONCURRENCY = readPositiveIntegerEnv("CHORDV_USAGE_SYNC_NODE_CONCURRENCY", 4);
 const USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS = readPositiveIntegerEnv("CHORDV_USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS", 10_000);
+const USAGE_RESET_CONFIRM_MAX_BYTES = readPositiveBigIntEnv("CHORDV_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES", 16n * 1024n * 1024n);
 
 @Injectable()
 export class UsageSyncService {
@@ -327,6 +329,32 @@ export class UsageSyncService {
         return;
       }
 
+      if (this.isResetBaselineAwaitingConfirmation(mapping, snapshot, sampledAt)) {
+        if (totalBytes > USAGE_RESET_CONFIRM_MAX_BYTES) {
+          await this.meteringIncidentService.open(
+            mapping.subscriptionId,
+            nodeId,
+            METERING_REASON_RESET_UNCONFIRMED,
+            `用户 ${normalizedEmail} 的 3x-ui 流量重置尚未确认，远端计数仍为 ${totalBytes.toString()} bytes，已暂缓入账`
+          );
+          return;
+        }
+
+        await this.prisma.trafficSnapshot.update({
+          where: { snapshotKey },
+          data: {
+            uplinkBytes: sample.uplinkBytes,
+            downlinkBytes: sample.downlinkBytes,
+            totalBytes,
+            sampledAt
+          }
+        });
+        await this.touchBindingSyncState(mapping.bindingId, sample.uplinkBytes, sample.downlinkBytes, sampledAt);
+        await this.touchSubscriptionSyncState(mapping.subscriptionId, sampledAt);
+        await this.meteringIncidentService.resolve(mapping.subscriptionId, nodeId, METERING_REASON_RESET_UNCONFIRMED);
+        return;
+      }
+
       const deltaBytes = totalBytes - snapshot.totalBytes;
       if (deltaBytes <= 0n) {
         await this.prisma.trafficSnapshot.update({
@@ -564,6 +592,19 @@ export class UsageSyncService {
     });
   }
 
+  private isResetBaselineAwaitingConfirmation(
+    mapping: UsageMapping,
+    snapshot: { totalBytes: bigint; sampledAt: Date },
+    sampledAt: Date
+  ) {
+    const resetCompletedAt = mapping.lastCompletedTrafficResetAt;
+    if (!resetCompletedAt || sampledAt.getTime() < resetCompletedAt.getTime()) {
+      return false;
+    }
+    const bindingTotalBytes = (mapping.bindingLastUplinkBytes ?? 0n) + (mapping.bindingLastDownlinkBytes ?? 0n);
+    return snapshot.totalBytes === 0n && bindingTotalBytes === 0n;
+  }
+
   private async createTrafficSnapshot(input: {
     snapshotKey: string;
     nodeId: string;
@@ -644,7 +685,19 @@ export class UsageSyncService {
         teamId: true,
         lastSyncedAt: true,
         lastUplinkBytes: true,
-        lastDownlinkBytes: true
+        lastDownlinkBytes: true,
+        panelSyncJobs: {
+          where: {
+            action: "reset_client_traffic",
+            status: "completed",
+            completedAt: { not: null }
+          },
+          orderBy: { completedAt: "desc" },
+          take: 1,
+          select: {
+            completedAt: true
+          }
+        }
       }
     });
     for (const binding of bindings) {
@@ -656,7 +709,8 @@ export class UsageSyncService {
         userId: binding.userId,
         bindingLastUplinkBytes: binding.lastUplinkBytes,
         bindingLastDownlinkBytes: binding.lastDownlinkBytes,
-        bindingLastSyncedAt: binding.lastSyncedAt
+        bindingLastSyncedAt: binding.lastSyncedAt,
+        lastCompletedTrafficResetAt: binding.panelSyncJobs?.[0]?.completedAt ?? null
       });
       leaseMappingsByUuid.set(binding.panelClientId, {
         bindingId: binding.id,
@@ -665,7 +719,8 @@ export class UsageSyncService {
         userId: binding.userId,
         bindingLastUplinkBytes: binding.lastUplinkBytes,
         bindingLastDownlinkBytes: binding.lastDownlinkBytes,
-        bindingLastSyncedAt: binding.lastSyncedAt
+        bindingLastSyncedAt: binding.lastSyncedAt,
+        lastCompletedTrafficResetAt: binding.panelSyncJobs?.[0]?.completedAt ?? null
       });
     }
 
@@ -752,6 +807,15 @@ function readPositiveIntegerEnv(key: string, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
+function readPositiveBigIntEnv(key: string, fallback: bigint) {
+  const rawValue = process.env[key];
+  if (!rawValue) {
+    return fallback;
+  }
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) && parsed > 0 ? BigInt(Math.trunc(parsed)) : fallback;
+}
+
 async function runWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -803,6 +867,7 @@ type UsageMapping = {
   bindingLastUplinkBytes?: bigint | null;
   bindingLastDownlinkBytes?: bigint | null;
   bindingLastSyncedAt?: Date | null;
+  lastCompletedTrafficResetAt?: Date | null;
 };
 
 type UsageDeltaInput = {

@@ -3251,7 +3251,13 @@ async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
         if (email === "offline@example.com") {
           throw new Error("panel offline");
         }
-      }
+      },
+      getClientUsage: async (_node: unknown, email: string) => ({
+        xrayUserEmail: email,
+        uplinkBytes: 0n,
+        downlinkBytes: 0n,
+        sampledAt: new Date().toISOString()
+      })
     },
     prisma: {
       panelClientBinding: {
@@ -3295,6 +3301,88 @@ async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
   );
   assert.equal(nodeUpdates.length, 1, "offline panel failure should degrade only its node");
   assert.equal(nodeUpdates[0].where.id, "node_offline");
+}
+
+async function testPanelTrafficResetRequiresRemoteCounterConfirmation() {
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      resetClientTraffic: async () => true,
+      getClientUsage: async () => ({
+        xrayUserEmail: "user@example.com",
+        uplinkBytes: 0n,
+        downlinkBytes: BigInt(8 * GB_IN_BYTES),
+        sampledAt: new Date().toISOString()
+      })
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+          return {};
+        }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return {};
+        }
+      },
+      panelSyncJob: {
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  await service["runPanelSyncJob"]({
+    id: "job_reset_confirm",
+    action: "reset_client_traffic",
+    attempts: 0,
+    bindingId: "binding_1",
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: "node_1",
+    panelClientEmail: "user@example.com",
+    panelClientId: "panel_client_1",
+    panelInboundId: 7,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    node: {
+      id: "node_1",
+      name: "node 1",
+      flow: "",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    },
+    binding: {
+      status: "active"
+    }
+  });
+
+  assert.equal(bindingUpdates.length, 0, "unconfirmed remote reset must not complete the binding update");
+  assert.equal(nodeUpdates.length, 1, "unconfirmed reset should mark the node degraded");
+  assert.equal(jobUpdates.length, 1);
+  assert.equal(jobUpdates[0].data.status, "failed");
+  assert.match(jobUpdates[0].data.lastError, /traffic reset is not confirmed/);
 }
 
 async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
@@ -3346,7 +3434,13 @@ async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
         if (email === "stalled@example.com") {
           return new Promise<void>(() => undefined);
         }
-      }
+      },
+      getClientUsage: async (_node: unknown, email: string) => ({
+        xrayUserEmail: email,
+        uplinkBytes: 0n,
+        downlinkBytes: 0n,
+        sampledAt: new Date().toISOString()
+      })
     },
     prisma: {
       panelClientBinding: {
@@ -3457,7 +3551,13 @@ async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
         if (email.startsWith("stalled")) {
           return new Promise<void>(() => undefined);
         }
-      }
+      },
+      getClientUsage: async (_node: unknown, email: string) => ({
+        xrayUserEmail: email,
+        uplinkBytes: 0n,
+        downlinkBytes: 0n,
+        sampledAt: new Date().toISOString()
+      })
     },
     prisma: {
       panelClientBinding: {
@@ -5343,7 +5443,8 @@ async function testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic() {
             teamId: null,
             lastSyncedAt: resetBaselineAt,
             lastUplinkBytes: 0n,
-            lastDownlinkBytes: 0n
+            lastDownlinkBytes: 0n,
+            panelSyncJobs: []
           }
         ]
       },
@@ -5429,6 +5530,203 @@ async function testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic() {
 
   assert.equal(subscriptionUpdates.length, 0, "stale pre-reset samples must not add traffic after reset baseline");
   assert.equal(snapshotUpdates.length, 0, "stale pre-reset samples must not move the reset baseline");
+}
+
+async function testCompletedResetHighUsageSampleDoesNotReapplyOldTraffic() {
+  const subscriptionUpdates: Array<Record<string, unknown>> = [];
+  const snapshotUpdates: Array<Record<string, unknown>> = [];
+  const bindingUpdates: Array<Record<string, unknown>> = [];
+  const openedIncidents: Array<Record<string, unknown>> = [];
+  let billed = false;
+  const resetCompletedAt = new Date("2026-01-01T00:00:10.000Z");
+  const sampleAfterReset = new Date("2026-01-01T00:00:20.000Z");
+
+  const service = createUsageSyncService({
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "panel_uuid",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            lastSyncedAt: resetCompletedAt,
+            lastUplinkBytes: 0n,
+            lastDownlinkBytes: 0n,
+            panelSyncJobs: [{ completedAt: resetCompletedAt }]
+          }
+        ],
+        update: async (payload: Record<string, unknown>) => {
+          bindingUpdates.push(payload);
+        }
+      },
+      trafficSnapshot: {
+        findUnique: async () => ({
+          snapshotKey: "node_1:sub_1:user_1",
+          totalBytes: 0n,
+          sampledAt: resetCompletedAt
+        }),
+        findMany: async () => [],
+        update: async (payload: Record<string, unknown>) => {
+          snapshotUpdates.push(payload);
+        }
+      },
+      subscription: {
+        update: async (payload: Record<string, unknown>) => {
+          subscriptionUpdates.push(payload);
+        }
+      },
+      $transaction: async () => {
+        billed = true;
+        throw new Error("old high counter after reset must not be billed");
+      }
+    },
+    meteringIncidentService: {
+      open: async (
+        subscriptionId: string,
+        nodeId: string,
+        reason: string,
+        message: string
+      ) => {
+        openedIncidents.push({ subscriptionId, nodeId, reason, message });
+      },
+      resolve: async () => undefined
+    },
+    clientEventsPublisher: {
+      publishSubscriptionUpdated: async () => undefined
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 0,
+      revokeSubscriptionLeases: async () => 0
+    }
+  });
+
+  const context = await service["loadNodeSyncContext"]("node_1");
+  await service["applyNodeSamples"](
+    "node_1",
+    [
+      {
+        xrayUserEmail: "user@example.com",
+        xrayUserUuid: "panel_uuid",
+        uplinkBytes: 0n,
+        downlinkBytes: BigInt(8 * GB_IN_BYTES),
+        sampledAt: sampleAfterReset.toISOString()
+      }
+    ],
+    context
+  );
+
+  assert.equal(billed, false, "old high counter after reset must not enter billing transaction");
+  assert.equal(subscriptionUpdates.length, 0, "old high counter after reset must not touch subscription usage");
+  assert.equal(snapshotUpdates.length, 0, "old high counter after reset must not move the reset baseline");
+  assert.equal(bindingUpdates.length, 0, "old high counter after reset must not move binding baseline");
+  assert.equal(openedIncidents.length, 1);
+  assert.equal(openedIncidents[0].reason, "NODE_TRAFFIC_RESET_UNCONFIRMED");
+}
+
+async function testCompletedResetSmallUsageSampleBecomesBaselineWithoutBilling() {
+  const subscriptionUpdates: Array<Record<string, any>> = [];
+  const snapshotUpdates: Array<Record<string, any>> = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const resolvedIncidents: Array<Record<string, unknown>> = [];
+  let billed = false;
+  const resetCompletedAt = new Date("2026-01-01T00:00:10.000Z");
+  const sampleAfterReset = new Date("2026-01-01T00:00:20.000Z");
+
+  const service = createUsageSyncService({
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          {
+            id: "binding_1",
+            panelClientEmail: "user@example.com",
+            panelClientId: "panel_uuid",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            lastSyncedAt: resetCompletedAt,
+            lastUplinkBytes: 0n,
+            lastDownlinkBytes: 0n,
+            panelSyncJobs: [{ completedAt: resetCompletedAt }]
+          }
+        ],
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+        }
+      },
+      trafficSnapshot: {
+        findUnique: async () => ({
+          snapshotKey: "node_1:sub_1:user_1",
+          totalBytes: 0n,
+          sampledAt: resetCompletedAt
+        }),
+        findMany: async () => [],
+        update: async (payload: Record<string, any>) => {
+          snapshotUpdates.push(payload);
+        }
+      },
+      subscription: {
+        update: async (payload: Record<string, any>) => {
+          subscriptionUpdates.push(payload);
+        }
+      },
+      $transaction: async () => {
+        billed = true;
+        throw new Error("small post-reset baseline sample must not be billed");
+      }
+    },
+    meteringIncidentService: {
+      open: async () => undefined,
+      resolve: async (subscriptionId: string, nodeId: string, reason: string) => {
+        resolvedIncidents.push({ subscriptionId, nodeId, reason });
+      }
+    },
+    clientEventsPublisher: {
+      publishSubscriptionUpdated: async () => undefined
+    },
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => 0,
+      revokeSubscriptionLeases: async () => 0
+    }
+  });
+
+  const context = await service["loadNodeSyncContext"]("node_1");
+  await service["applyNodeSamples"](
+    "node_1",
+    [
+      {
+        xrayUserEmail: "user@example.com",
+        xrayUserUuid: "panel_uuid",
+        uplinkBytes: 512n,
+        downlinkBytes: 512n,
+        sampledAt: sampleAfterReset.toISOString()
+      }
+    ],
+    context
+  );
+
+  assert.equal(billed, false, "small post-reset sample must become baseline without billing");
+  assert.equal(snapshotUpdates.length, 1);
+  assert.equal(snapshotUpdates[0].data.totalBytes, 1024n);
+  assert.equal(bindingUpdates.length, 1);
+  assert.equal(bindingUpdates[0].data.lastUplinkBytes, 512n);
+  assert.equal(bindingUpdates[0].data.lastDownlinkBytes, 512n);
+  assert.equal(
+    subscriptionUpdates.some((payload) => Boolean(payload.data?.usedTrafficGb)),
+    false,
+    "baseline touch must not update usedTrafficGb"
+  );
+  assert.ok(
+    resolvedIncidents.some(
+      (item) =>
+        item.subscriptionId === "sub_1" &&
+        item.nodeId === "node_1" &&
+        item.reason === "NODE_TRAFFIC_RESET_UNCONFIRMED"
+    ),
+    "small post-reset baseline must resolve reset-unconfirmed incident"
+  );
 }
 
 async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
@@ -18972,6 +19270,7 @@ async function main() {
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
+  await testPanelTrafficResetRequiresRemoteCounterConfirmation();
   await testPanelSyncBatchContinuesAfterStalledRemoteJob();
   await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
@@ -18996,6 +19295,8 @@ async function main() {
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
   await testStaleUsageSampleAfterResetDoesNotReapplyOldTraffic();
+  await testCompletedResetHighUsageSampleDoesNotReapplyOldTraffic();
+  await testCompletedResetSmallUsageSampleBecomesBaselineWithoutBilling();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();

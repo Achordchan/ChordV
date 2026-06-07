@@ -93,6 +93,7 @@ const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
 const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
 const PANEL_SYNC_MANUAL_RETRY_PAUSE_MS = 365 * 24 * 60 * 60 * 1000;
+const DEFAULT_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES = 16n * 1024n * 1024n;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
 const DEFAULT_LEASE_REVOCATION_JOB_CONCURRENCY = 4;
 const DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS = 30_000;
@@ -1375,10 +1376,13 @@ export class RuntimeSessionService {
         ensuredPanelClientId = ensured.uuid || job.panelClientId;
         ensuredPanelInboundId = ensured.inboundId ?? panelNodeConfig.panelInboundId ?? job.panelInboundId ?? null;
       } else if (job.action === "reset_client_traffic") {
-        await this.runPanelSyncRemoteCallWithBudget(
+        const resetSubmitted = await this.runPanelSyncRemoteCallWithBudget(
           job,
           this.xuiService.resetClientTraffic(panelNodeConfig, job.panelClientEmail)
         );
+        if (resetSubmitted) {
+          await this.confirmPanelTrafficReset(job, panelNodeConfig);
+        }
       } else if (job.action === "delete_client") {
         const removalStatus = await this.runPanelSyncRemoteCallWithBudget(
           job,
@@ -1514,6 +1518,33 @@ export class RuntimeSessionService {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+    }
+  }
+
+  private async confirmPanelTrafficReset(
+    job: { id: string; action: string; nodeId: string; panelClientEmail: string },
+    panelNodeConfig: {
+      id: string;
+      panelBaseUrl: string | null;
+      panelApiBasePath: string | null;
+      panelUsername: string | null;
+      panelPassword: string | null;
+      panelInboundId: number | null;
+    }
+  ) {
+    const sample = await this.runPanelSyncRemoteCallWithBudget(
+      job,
+      this.xuiService.getClientUsage(panelNodeConfig, job.panelClientEmail)
+    );
+    if (!sample) {
+      return;
+    }
+    const totalBytes = sample.uplinkBytes + sample.downlinkBytes;
+    const maxConfirmedBytes = readPanelTrafficResetConfirmMaxBytes();
+    if (totalBytes > maxConfirmedBytes) {
+      throw new Error(
+        `3x-ui traffic reset is not confirmed for ${job.panelClientEmail}: remote counter is still ${totalBytes.toString()} bytes`
+      );
     }
   }
 
@@ -2770,6 +2801,13 @@ function readPanelSyncJobTimeoutMs() {
 function readPanelSyncJobConcurrency() {
   const parsed = Number(process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY);
   return Number.isFinite(parsed) && parsed > 0 ? Math.max(1, Math.floor(parsed)) : DEFAULT_PANEL_SYNC_JOB_CONCURRENCY;
+}
+
+function readPanelTrafficResetConfirmMaxBytes() {
+  const parsed = Number(process.env.CHORDV_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES);
+  return Number.isFinite(parsed) && parsed > 0
+    ? BigInt(Math.floor(parsed))
+    : DEFAULT_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES;
 }
 
 function readLeaseRevocationJobTimeoutMs() {
