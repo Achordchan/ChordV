@@ -1522,12 +1522,8 @@ export class AdminSubscriptionService {
 
   async getTeamUsage(teamId: string): Promise<AdminTeamUsageRecordDto[]> {
     await this.requireTeam(teamId);
-    const rows = await this.prisma.trafficLedger.findMany({
-      where: { teamId },
-      include: { user: true, node: true },
-      orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
-    });
-    return summarizeTeamUsageRecords(rows);
+    const usageByTeamId = await this.loadTeamUsageSummaries([teamId]);
+    return summarizeTeamUsageRecords(usageByTeamId.get(teamId) ?? []);
   }
 
   private async resetSubscriptionTrafficCounters(

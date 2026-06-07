@@ -10025,6 +10025,61 @@ async function testAdminListsAggregatePanelSyncPendingRunningAndFailedState() {
   }
 }
 
+async function testGetTeamUsageUsesAggregatedLedgerRows() {
+  const groupByCalls: Array<Record<string, unknown>> = [];
+  const service = createAdminSubscriptionService({
+    prisma: {
+      team: {
+        findUnique: async () => ({ id: "team_1", name: "Team" })
+      },
+      trafficLedger: {
+        findMany: async () => {
+          throw new Error("team usage detail must not load raw traffic ledger rows");
+        },
+        groupBy: async (payload: Record<string, unknown>) => {
+          groupByCalls.push(payload);
+          return [
+            {
+              teamId: "team_1",
+              userId: "user_1",
+              subscriptionId: "sub_1",
+              nodeId: "node_1",
+              _sum: { usedTrafficGb: 12.3456 },
+              _count: { _all: 3 },
+              _max: { recordedAt: new Date("2026-01-02T00:00:00.000Z") }
+            },
+            {
+              teamId: "team_1",
+              userId: "user_1",
+              subscriptionId: "sub_1",
+              nodeId: null,
+              _sum: { usedTrafficGb: 1 },
+              _count: { _all: 1 },
+              _max: { recordedAt: new Date("2026-01-01T00:00:00.000Z") }
+            }
+          ];
+        }
+      },
+      user: {
+        findMany: async () => [{ id: "user_1", displayName: "User", email: "user@example.com" }]
+      },
+      node: {
+        findMany: async () => [{ id: "node_1", name: "Node", region: "US" }]
+      }
+    }
+  });
+
+  const result = await service.getTeamUsage("team_1");
+
+  assert.equal(groupByCalls.length, 1);
+  assert.deepEqual((groupByCalls[0].where as Record<string, unknown>).teamId, { in: ["team_1"] });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].userId, "user_1");
+  assert.equal(result[0].usedTrafficGb, 13.346);
+  assert.equal(result[0].recordCount, 2, "aggregated rows should be summarized without loading raw ledger entries");
+  assert.equal(result[0].nodeBreakdown.length, 2);
+}
+
 async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails() {
   const deletedMemberships: string[] = [];
   const service = createAdminSubscriptionService({
@@ -19802,6 +19857,7 @@ async function main() {
   await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testAdminListsAggregatePanelSyncPendingRunningAndFailedState();
+  await testGetTeamUsageUsesAggregatedLedgerRows();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testImportNodeReturnsWhenInitialProbeStalls();

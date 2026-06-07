@@ -136,7 +136,7 @@ import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawer
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
-import { NodesPage } from "./pages/NodesPage";
+import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
@@ -307,7 +307,9 @@ export function App() {
   const [teamInlineEditorId, setTeamInlineEditorId] = useState<string | null>(null);
   const [teamMemberInlineEditor, setTeamMemberInlineEditor] = useState<{ teamId: string; memberId: string | null } | null>(null);
   const [teamSubscriptionInlineEditorId, setTeamSubscriptionInlineEditorId] = useState<string | null>(null);
-  const [teamInlineBusy, setTeamInlineBusy] = useState(false);
+  const [teamProfileBusyKey, setTeamProfileBusyKey] = useState<string | null>(null);
+  const [teamMemberBusyKey, setTeamMemberBusyKey] = useState<string | null>(null);
+  const [teamSubscriptionBusyKey, setTeamSubscriptionBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
@@ -347,6 +349,8 @@ export function App() {
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
   const probingBusyRef = useRef(false);
+  const [refreshingNodeId, setRefreshingNodeId] = useState<string | null>(null);
+  const refreshingNodeRef = useRef<string | null>(null);
   const [panelSyncRetryBusyKey, setPanelSyncRetryBusyKey] = useState<string | null>(null);
   const panelSyncRetryBusyRef = useRef(false);
 
@@ -654,10 +658,14 @@ export function App() {
     setNodePanelInboundsLoading(false);
     setPanelSyncQueueOpened(false);
     setDrawerBusy(false);
-    setTeamInlineBusy(false);
+    setTeamProfileBusyKey(null);
+    setTeamMemberBusyKey(null);
+    setTeamSubscriptionBusyKey(null);
     setPolicySaving(false);
     setProbingNodeId(null);
     setProbingAll(false);
+    setRefreshingNodeId(null);
+    refreshingNodeRef.current = null;
   }
 
   function ensureAuthenticated(message: string) {
@@ -1184,7 +1192,7 @@ export function App() {
       const successOverride = options.resolveSuccess?.(result) ?? null;
       notifications.show({
         color: panelSyncPending ? "yellow" : successOverride?.color ?? "green",
-        title: panelSyncPending ? "已保存，面板同步待重试" : successOverride?.title ?? options.successTitle ?? "操作成功",
+        title: panelSyncPending ? "已保存，后台同步待处理" : successOverride?.title ?? options.successTitle ?? "操作成功",
         message: successOverride?.message ?? resolvedMessage
       });
       if (options.refreshAfter ?? true) void refreshCurrentDataAfterAction().catch((refreshReason) => {
@@ -1263,7 +1271,7 @@ export function App() {
       const panelSyncPending = result.panelSyncStatus === "pending";
       notifications.show({
         color: panelSyncPending ? "yellow" : "green",
-        title: panelSyncPending ? "已保存，面板同步待重试" : "操作成功",
+        title: panelSyncPending ? "已保存，后台同步待处理" : "操作成功",
         message: result.message ?? result.panelSyncMessage ?? "节点授权已保存"
       });
       closeNodeAccessEditor();
@@ -1805,6 +1813,12 @@ export function App() {
   }
 
   async function handleRefreshNode(nodeId: string) {
+    if (refreshingNodeRef.current) {
+      return;
+    }
+    refreshingNodeRef.current = nodeId;
+    setRefreshingNodeId(nodeId);
+    try {
     await runAction(() => refreshNode(nodeId), "节点已从 3x-ui 面板刷新", {
       successTitle: "读取面板成功",
       failureTitle: "读取面板失败",
@@ -1822,6 +1836,10 @@ export function App() {
         return null;
       }
     });
+    } finally {
+      refreshingNodeRef.current = null;
+      setRefreshingNodeId(null);
+    }
   }
 
   async function handleDeleteAnnouncement(announcementId: string) {
@@ -1905,6 +1923,21 @@ export function App() {
       ...current,
       subscriptions: user.email || user.displayName || user.id
     }));
+    selectSection("subscriptions");
+  }
+
+  function openCreateSubscriptionForUser(user: AdminUserRecordDto) {
+    if (!snapshot) return;
+    setSubscriptionTab("personal");
+    setSearch((current) => ({
+      ...current,
+      subscriptions: user.email || user.displayName || user.id
+    }));
+    setSubscriptionCreateForm({
+      ...emptySubscriptionCreateForm(snapshot),
+      userId: user.id
+    });
+    setDrawer({ type: "subscription-create", recordId: null, parentId: null });
     selectSection("subscriptions");
   }
 
@@ -2089,7 +2122,7 @@ export function App() {
 
   async function saveTeamInlineEditor(teamId: string) {
     try {
-      setTeamInlineBusy(true);
+      setTeamProfileBusyKey(teamId);
       const success = await runAction(
         () =>
           updateTeam(teamId, {
@@ -2104,7 +2137,7 @@ export function App() {
         closeTeamInlineEditor();
       }
     } finally {
-      setTeamInlineBusy(false);
+      setTeamProfileBusyKey(null);
     }
   }
 
@@ -2152,7 +2185,7 @@ export function App() {
 
   async function saveTeamSubscriptionInlineEditor(teamId: string) {
     try {
-      setTeamInlineBusy(true);
+      setTeamSubscriptionBusyKey(teamId);
       const success = await runAction(
         () =>
           createTeamSubscription(teamId, {
@@ -2167,15 +2200,16 @@ export function App() {
         closeTeamSubscriptionInlineEditor();
       }
     } finally {
-      setTeamInlineBusy(false);
+      setTeamSubscriptionBusyKey(null);
     }
   }
 
   async function saveTeamMemberInlineEditor() {
     if (!teamMemberInlineEditor) return;
+    const busyKey = `${teamMemberInlineEditor.teamId}:${teamMemberInlineEditor.memberId ?? "new"}`;
 
     try {
-      setTeamInlineBusy(true);
+      setTeamMemberBusyKey(busyKey);
       const payload = {
         userId: teamMemberForm.userId,
         role: teamMemberForm.role
@@ -2199,7 +2233,7 @@ export function App() {
         closeTeamMemberInlineEditor();
       }
     } finally {
-      setTeamInlineBusy(false);
+      setTeamMemberBusyKey(null);
     }
   }
 
@@ -2278,6 +2312,8 @@ export function App() {
     );
   }
 
+  const backgroundSyncQueueCount = snapshot.panelSyncJobs.length + snapshot.leaseRevocationJobs.length;
+
   return (
     <>
       <AppShell
@@ -2345,6 +2381,9 @@ export function App() {
             <Group className="admin-header-actions">
               <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void loadFullSnapshot()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
+              </Button>
+              <Button variant="default" leftSection={<IconListDetails size={16} />} onClick={() => setPanelSyncQueueOpened(true)}>
+                同步队列{backgroundSyncQueueCount > 0 ? ` · ${backgroundSyncQueueCount}` : ""}
               </Button>
               <Button variant="default" onClick={openAdminSecurityModal}>
                 账号安全
@@ -2430,7 +2469,8 @@ export function App() {
                 leaseRevocationRetryBusyKey={panelSyncRetryBusyKey}
                 teamInlineEditorId={teamInlineEditorId}
                 teamMemberInlineEditor={teamMemberInlineEditor}
-                teamInlineBusy={teamInlineBusy}
+                teamProfileBusyKey={teamProfileBusyKey}
+                teamMemberBusyKey={teamMemberBusyKey}
                 teamForm={teamForm}
                 setTeamForm={setTeamForm}
                 teamMemberForm={teamMemberForm}
@@ -2438,6 +2478,7 @@ export function App() {
                 buildTeamMemberOptions={buildTeamMemberOptions}
                 onOpenUserDrawer={(userId) => openDrawer("user", userId)}
                 onOpenUserSubscriptions={openUserSubscriptions}
+                onCreateSubscriptionForUser={openCreateSubscriptionForUser}
                 onOpenTeamSubscriptions={openTeamSubscriptions}
                 onOpenTeamInlineEditor={openTeamInlineEditor}
                 onCloseTeamInlineEditor={closeTeamInlineEditor}
@@ -2454,6 +2495,7 @@ export function App() {
                 }
                 onDisconnectUser={(userId, displayName, source) => void handleDisconnectUser(userId, displayName, source)}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
+                onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
               />
             ) : null}
 
@@ -2481,7 +2523,7 @@ export function App() {
                 teamSubscriptionInlineEditorId={teamSubscriptionInlineEditorId}
                 teamSubscriptionForm={teamSubscriptionForm}
                 setTeamSubscriptionForm={setTeamSubscriptionForm}
-                teamInlineBusy={teamInlineBusy}
+                teamSubscriptionBusyKey={teamSubscriptionBusyKey}
                 onOpenRenewDrawer={(subscriptionId) => openDrawer("subscription-renew", subscriptionId)}
                 onOpenChangePlanDrawer={(subscriptionId) => openDrawer("subscription-change-plan", subscriptionId)}
                 onOpenAdjustDrawer={(subscriptionId) => openDrawer("subscription-adjust", subscriptionId)}
@@ -2501,6 +2543,7 @@ export function App() {
                 onOpenKickMemberModal={openKickMemberModal}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onOpenTeamUsageDetail={setTeamUsageDetailTarget}
+                onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
               />
             ) : null}
 
@@ -2517,6 +2560,7 @@ export function App() {
                 panelSyncRetryBusyKey={panelSyncRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
+                refreshingNodeId={refreshingNodeId}
                 onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
                 onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
                 onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
@@ -2685,6 +2729,18 @@ export function App() {
         opened={teamUsageDetailTarget !== null}
         target={teamUsageDetailTarget}
         onClose={() => setTeamUsageDetailTarget(null)}
+      />
+
+      <PanelSyncQueueDrawer
+        opened={panelSyncQueueOpened}
+        jobs={snapshot.panelSyncJobs}
+        leaseRevocationJobs={snapshot.leaseRevocationJobs}
+        retryBusyKey={panelSyncRetryBusyKey}
+        onClose={() => setPanelSyncQueueOpened(false)}
+        onRetryJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
+        onRetryNode={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
+        onRetryLeaseJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
+        onRetryLeaseNode={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
       />
 
       <NodeAccessEditorModal

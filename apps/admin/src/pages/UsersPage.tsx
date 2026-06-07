@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
 import type { AdminLeaseRevocationJobDto, AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
-import { IconListDetails, IconLock, IconLockOpen2, IconPencil, IconRefresh, IconTrash, IconUsers } from "@tabler/icons-react";
+import { IconListDetails, IconLock, IconLockOpen2, IconPencil, IconPlus, IconRefresh, IconTrash, IconUsers } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -21,7 +21,8 @@ type UsersPageProps = {
   leaseRevocationRetryBusyKey: string | null;
   teamInlineEditorId: string | null;
   teamMemberInlineEditor: { teamId: string; memberId: string | null } | null;
-  teamInlineBusy: boolean;
+  teamProfileBusyKey: string | null;
+  teamMemberBusyKey: string | null;
   teamForm: TeamFormState;
   setTeamForm: Dispatch<SetStateAction<TeamFormState>>;
   teamMemberForm: TeamMemberFormState;
@@ -29,6 +30,7 @@ type UsersPageProps = {
   buildTeamMemberOptions: (currentUserId?: string) => Array<{ value: string; label: string }>;
   onOpenUserDrawer: (userId: string) => void;
   onOpenUserSubscriptions: (user: AdminUserRecordDto) => void;
+  onCreateSubscriptionForUser: (user: AdminUserRecordDto) => void;
   onOpenTeamSubscriptions: (team: AdminTeamRecordDto) => void;
   onOpenTeamInlineEditor: (teamId: string) => void;
   onCloseTeamInlineEditor: () => void;
@@ -41,6 +43,7 @@ type UsersPageProps = {
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
+  onOpenPanelSyncQueue: () => void;
 };
 
 export function UsersPage(props: UsersPageProps) {
@@ -82,7 +85,7 @@ export function UsersPage(props: UsersPageProps) {
                     <Table.Td>
                       <Stack gap={4}>
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
-                        <PanelSyncInlineStatus item={item} />
+                        <PanelSyncInlineStatus item={item} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) => job.userId === item.id)}
                           retryBusyKey={props.leaseRevocationRetryBusyKey}
@@ -95,9 +98,15 @@ export function UsersPage(props: UsersPageProps) {
                         <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号">
                           <IconPencil size={16} />
                         </ActionIcon>
-                        <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
-                          <IconListDetails size={16} />
-                        </ActionIcon>
+                        {item.currentSubscription ? (
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
+                            <IconListDetails size={16} />
+                          </ActionIcon>
+                        ) : (
+                          <ActionIcon variant="subtle" color="blue" onClick={() => props.onCreateSubscriptionForUser(item)} title="为此用户创建订阅">
+                            <IconPlus size={16} />
+                          </ActionIcon>
+                        )}
                         <ActionIcon
                           variant="subtle"
                           color="orange"
@@ -149,7 +158,7 @@ export function UsersPage(props: UsersPageProps) {
                       </Group>
                       <Stack gap={4} align="flex-end">
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
-                        <PanelSyncInlineStatus item={item} />
+                        <PanelSyncInlineStatus item={item} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) =>
                             item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id && job.userId === null : false
@@ -212,7 +221,7 @@ export function UsersPage(props: UsersPageProps) {
                               <Button variant="default" onClick={props.onCloseTeamInlineEditor}>
                                 取消
                               </Button>
-                              <Button onClick={() => props.onSaveTeamInlineEditor(item.id)} loading={props.teamInlineBusy}>
+                              <Button onClick={() => props.onSaveTeamInlineEditor(item.id)} loading={props.teamProfileBusyKey === item.id}>
                                 保存
                               </Button>
                             </Group>
@@ -245,7 +254,13 @@ export function UsersPage(props: UsersPageProps) {
                               <Button variant="default" onClick={props.onCloseTeamMemberInlineEditor}>
                                 取消
                               </Button>
-                              <Button onClick={props.onSaveTeamMemberInlineEditor} loading={props.teamInlineBusy}>
+                              <Button
+                                onClick={props.onSaveTeamMemberInlineEditor}
+                                loading={
+                                  props.teamMemberBusyKey ===
+                                  `${props.teamMemberInlineEditor.teamId}:${props.teamMemberInlineEditor.memberId ?? "new"}`
+                                }
+                              >
                                 保存
                               </Button>
                             </Group>
@@ -284,7 +299,7 @@ export function UsersPage(props: UsersPageProps) {
                                       color={userRecord?.status === "active" ? "green" : "gray"}
                                       label={translateUserStatus(userRecord?.status ?? "disabled")}
                                     />
-                                    <PanelSyncInlineStatus item={userRecord} />
+                                    <PanelSyncInlineStatus item={userRecord} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
                                     <LeaseRevocationInlineStatus
                                       jobs={props.leaseRevocationJobs.filter(
                                         (job) =>
@@ -376,18 +391,33 @@ function PanelSyncInlineStatus(props: {
     panelSyncMessage?: string | null;
     panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
   } | null;
+  onOpenPanelSyncQueue: () => void;
 }) {
   if (props.item?.panelSyncStatus !== "pending") {
     return null;
   }
   const summary = props.item.panelSyncSummary;
-  const label = summary ? buildPanelSyncPendingLabel(summary) : "面板同步待重试";
+  const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
   const detail = [summary?.lastError, props.item.panelSyncMessage].filter(Boolean).join(" · ");
   return (
     <Stack gap={2}>
-      <Badge color="yellow" variant="light">
-        {label}
-      </Badge>
+      <Group gap={4} wrap="nowrap">
+        <Badge color="yellow" variant="light">
+          {label}
+        </Badge>
+        <ActionIcon
+          size="xs"
+          variant="subtle"
+          color="yellow"
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onOpenPanelSyncQueue();
+          }}
+          title="查看后台同步队列"
+        >
+          <IconListDetails size={12} />
+        </ActionIcon>
+      </Group>
       {detail ? (
         <Text size="xs" c="dimmed" lineClamp={2}>
           {detail}
@@ -455,5 +485,5 @@ function buildPanelSyncPendingLabel(summary: { pending: number; running: number;
     summary.running > 0 ? `执行中 ${summary.running}` : null,
     summary.failed > 0 ? `待重试 ${summary.failed}` : null
   ].filter(Boolean);
-  return parts.length > 0 ? `面板同步${parts.join(" / ")}` : "面板同步待重试";
+  return parts.length > 0 ? `面板同步${parts.join(" / ")}` : "后台同步待处理";
 }

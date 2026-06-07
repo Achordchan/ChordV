@@ -19,6 +19,7 @@ type NodesPageProps = {
   panelSyncRetryBusyKey: string | null;
   probingNodeId: string | null;
   probingAll: boolean;
+  refreshingNodeId: string | null;
   onOpenPanelSyncQueue: () => void;
   onClosePanelSyncQueue: () => void;
   onRetryPanelSyncJob: (jobId: string) => void;
@@ -124,6 +125,8 @@ export function NodesPage(props: NodesPageProps) {
                         variant="subtle"
                         title="从 3x-ui/订阅源重新读取运行参数；面板离线会失败，但不影响本地配置"
                         onClick={() => props.onRefreshNode(item.id)}
+                        loading={props.refreshingNodeId === item.id}
+                        disabled={props.refreshingNodeId !== null && props.refreshingNodeId !== item.id}
                       >
                         <IconRefresh size={16} />
                       </ActionIcon>
@@ -141,17 +144,6 @@ export function NodesPage(props: NodesPageProps) {
           </DataTable>
         </Stack>
       </SectionCard>
-      <PanelSyncQueueDrawer
-        opened={props.panelSyncQueueOpened}
-        jobs={props.panelSyncJobs}
-        leaseRevocationJobs={props.leaseRevocationJobs}
-        retryBusyKey={props.panelSyncRetryBusyKey}
-        onClose={props.onClosePanelSyncQueue}
-        onRetryJob={props.onRetryPanelSyncJob}
-        onRetryNode={props.onRetryNodePanelSyncJobs}
-        onRetryLeaseJob={props.onRetryLeaseRevocationJob}
-        onRetryLeaseNode={props.onRetryNodeLeaseRevocationJobs}
-      />
     </>
   );
 }
@@ -245,7 +237,7 @@ function summarizePanelSyncJobsForNode(jobs: AdminPanelSyncJobDto[], nodeId: str
   };
 }
 
-function PanelSyncQueueDrawer(props: {
+export function PanelSyncQueueDrawer(props: {
   opened: boolean;
   jobs: AdminPanelSyncJobDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
