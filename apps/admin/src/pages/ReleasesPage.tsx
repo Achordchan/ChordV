@@ -120,17 +120,22 @@ export function ReleasesPage(props: ReleasesPageProps) {
   );
 
   async function loadReleases(options?: { silent?: boolean }) {
+    const silent = Boolean(options?.silent);
     try {
-      if (!options?.silent) {
+      if (!silent) {
         setLoading(true);
+        setError(null);
       }
-      setError(null);
       const data = await fetchAdminReleases();
       setReleases(data);
     } catch (reason) {
-      setError(readError(reason, "发布中心接口暂不可用，请先确认后端发布中心接口是否已合并。"));
+      if (!silent) {
+        setError(readError(reason, "发布中心接口暂不可用，请先确认后端发布中心接口是否已合并。"));
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }
 
@@ -590,6 +595,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
                           <ReleaseRecordCard
                             record={latest}
                             busyAction={getReleaseBusyAction(latest.id)}
+                            globalBusy={saving !== null}
                             onEditRelease={openEditRelease}
                             onCreateArtifact={openCreateArtifact}
                             onPublish={(record) => void publishRelease(record)}
@@ -616,6 +622,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
                                         key={record.id}
                                         record={record}
                                         busyAction={getReleaseBusyAction(record.id)}
+                                        globalBusy={saving !== null}
                                         onEditRelease={openEditRelease}
                                         onCreateArtifact={openCreateArtifact}
                                         onPublish={(item) => void publishRelease(item)}

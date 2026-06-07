@@ -36,6 +36,7 @@ import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/upload
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import {
   ImportNodeDto,
+  UpdateCurrentAdminSecurityDto,
   UpdateAnnouncementDto,
   UpdateNodeDto,
   UpdatePolicyDto,
@@ -1069,6 +1070,23 @@ async function testImageBedDeleteReturnsStructuredBusinessFailure() {
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+async function testImageBedDeleteRejectsMalformedPercentPath() {
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    prisma: {
+      systemSetting: {
+        findUnique: async () => {
+          throw new Error("malformed file path must be rejected before loading image bed config");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteAdminFile({ path: "support-tickets/100% legit.png" }),
+    /Invalid image bed file path/
+  );
 }
 
 async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
@@ -15576,6 +15594,24 @@ function testUpdateReleaseDtoAllowsBlankDisplayTitle() {
   assert.equal(errors.length, 0, "blank displayTitle should be accepted and normalized to the version by the release service");
 }
 
+function testUpdateCurrentAdminSecurityDtoRequiresEmail() {
+  const invalid = validateSync(
+    plainToInstance(UpdateCurrentAdminSecurityDto, {
+      currentPassword: "password123",
+      email: "not-an-email"
+    })
+  );
+  const valid = validateSync(
+    plainToInstance(UpdateCurrentAdminSecurityDto, {
+      currentPassword: "password123",
+      email: "admin@example.com"
+    })
+  );
+
+  assert.ok(invalid.some((error) => error.property === "email"), "admin security email must reject non-email values");
+  assert.equal(valid.length, 0, "admin security email must accept valid email addresses");
+}
+
 function testNodePanelBaseUrlAllowsBlankAsEmpty() {
   const imported = plainToInstance(ImportNodeDto, { panelBaseUrl: "   " });
   const updated = plainToInstance(UpdateNodeDto, { panelBaseUrl: "" });
@@ -18090,6 +18126,7 @@ async function testAdminSnapshotCountsOnlyClientVisibleAnnouncements() {
 
 async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
   const announcementCountPayloads: Array<Record<string, any>> = [];
+  const subscriptionCountPayloads: Array<Record<string, any>> = [];
   const service = createDevDataService({
     getSupportTicketDashboardCounts: async () => ({
       openTickets: 0,
@@ -18100,7 +18137,12 @@ async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
       user: { count: async () => 0 },
       team: { count: async () => 0 },
       plan: { count: async () => 0 },
-      subscription: { count: async () => 0 },
+      subscription: {
+        count: async (payload: Record<string, any>) => {
+          subscriptionCountPayloads.push(payload);
+          return 2;
+        }
+      },
       node: { count: async () => 0 },
       announcement: {
         count: async (payload: Record<string, any>) => {
@@ -18114,6 +18156,11 @@ async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
   const dashboard = await service.getAdminDashboard();
 
   assert.equal(dashboard.announcements, 1);
+  assert.equal(dashboard.activeSubscriptions, 2);
+  assert.equal(subscriptionCountPayloads.length, 1);
+  assert.equal(subscriptionCountPayloads[0].where.state, "active");
+  assert.ok(subscriptionCountPayloads[0].where.expireAt?.gt instanceof Date);
+  assert.deepEqual(subscriptionCountPayloads[0].where.remainingTrafficGb, { gt: 0 });
   assert.equal(announcementCountPayloads.length, 1);
   assert.equal(announcementCountPayloads[0].where.isActive, true);
   assert.ok(announcementCountPayloads[0].where.publishedAt?.lte instanceof Date);
@@ -20075,6 +20122,7 @@ async function main() {
   await testUpdatePlanRejectsBlankTrimmedName();
   testAdminPatchDtosRejectNullForNonNullableFields();
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
+  testUpdateCurrentAdminSecurityDtoRequiresEmail();
   testNodePanelBaseUrlAllowsBlankAsEmpty();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
@@ -20085,6 +20133,7 @@ async function main() {
   await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
   await testImageBedUploadRejectsNonImageAndCleansTempFile();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
+  await testImageBedDeleteRejectsMalformedPercentPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
   await testImageBedAttachmentCleanupLogsDeleteFailure();

@@ -153,19 +153,31 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         onClick={() => props.onOpenRenewDrawer(item.id)}
                         disabled={!item.renewable}
                         title={getRenewActionText(item.renewable)}
+                        aria-label={getRenewActionText(item.renewable)}
                       >
                         <IconRefresh size={16} />
                       </ActionIcon>
-                      <ActionIcon variant="subtle" onClick={() => props.onOpenChangePlanDrawer(item.id)}>
+                      <ActionIcon
+                        variant="subtle"
+                        onClick={() => props.onOpenChangePlanDrawer(item.id)}
+                        title="变更套餐"
+                        aria-label="变更套餐"
+                      >
                         <IconListDetails size={16} />
                       </ActionIcon>
-                      <ActionIcon variant="subtle" onClick={() => props.onOpenAdjustDrawer(item.id)}>
+                      <ActionIcon
+                        variant="subtle"
+                        onClick={() => props.onOpenAdjustDrawer(item.id)}
+                        title="调整订阅"
+                        aria-label="调整订阅"
+                      >
                         <IconPencil size={16} />
                       </ActionIcon>
                       <ActionIcon
                         variant="subtle"
                         color="blue"
                         title={convertDisabledReason}
+                        aria-label="转为团队订阅"
                         onClick={() => canConvertToTeam && props.onOpenConvertToTeamModal(item)}
                         disabled={!canConvertToTeam}
                       >

@@ -17,6 +17,7 @@ type NodesPageProps = {
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   panelSyncQueueOpened: boolean;
   panelSyncRetryBusyKey: string | null;
+  leaseRevocationRetryBusyKey: string | null;
   probingNodeId: string | null;
   probingAll: boolean;
   refreshingNodeId: string | null;
@@ -95,7 +96,8 @@ export function NodesPage(props: NodesPageProps) {
                       node={item}
                       panelSyncJobs={props.panelSyncJobs}
                       leaseRevocationJobs={props.leaseRevocationJobs}
-                      retryBusyKey={props.panelSyncRetryBusyKey}
+                      panelRetryBusyKey={props.panelSyncRetryBusyKey}
+                      leaseRetryBusyKey={props.leaseRevocationRetryBusyKey}
                       onRetryNodePanelSyncJobs={props.onRetryNodePanelSyncJobs}
                       onRetryNodeLeaseRevocationJobs={props.onRetryNodeLeaseRevocationJobs}
                     />
@@ -152,7 +154,8 @@ function NodeSyncQueueCell(props: {
   node: AdminNodeRecordDto;
   panelSyncJobs: AdminPanelSyncJobDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  retryBusyKey: string | null;
+  panelRetryBusyKey: string | null;
+  leaseRetryBusyKey: string | null;
   onRetryNodePanelSyncJobs: (nodeId: string) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
@@ -210,8 +213,8 @@ function NodeSyncQueueCell(props: {
           <Button
             size="xs"
             variant="light"
-            loading={props.retryBusyKey === `node:${props.node.id}`}
-            disabled={props.retryBusyKey !== null && props.retryBusyKey !== `node:${props.node.id}`}
+            loading={props.panelRetryBusyKey === `node:${props.node.id}`}
+            disabled={props.panelRetryBusyKey !== null && props.panelRetryBusyKey !== `node:${props.node.id}`}
             onClick={() => props.onRetryNodePanelSyncJobs(props.node.id)}
           >
             重试面板
@@ -221,8 +224,8 @@ function NodeSyncQueueCell(props: {
           <Button
             size="xs"
             variant="light"
-            loading={props.retryBusyKey === `lease-node:${props.node.id}`}
-            disabled={props.retryBusyKey !== null && props.retryBusyKey !== `lease-node:${props.node.id}`}
+            loading={props.leaseRetryBusyKey === `lease-node:${props.node.id}`}
+            disabled={props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-node:${props.node.id}`}
             onClick={() => props.onRetryNodeLeaseRevocationJobs(props.node.id)}
           >
             重试连接撤销
@@ -249,7 +252,8 @@ export function PanelSyncQueueDrawer(props: {
   opened: boolean;
   jobs: AdminPanelSyncJobDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
-  retryBusyKey: string | null;
+  panelRetryBusyKey: string | null;
+  leaseRetryBusyKey: string | null;
   onClose: () => void;
   onRetryJob: (jobId: string) => void;
   onRetryNode: (nodeId: string) => void;
@@ -317,8 +321,8 @@ export function PanelSyncQueueDrawer(props: {
                         <Button
                           size="xs"
                           variant="light"
-                          loading={props.retryBusyKey === `job:${job.id}`}
-                          disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `job:${job.id}`)}
+                          loading={props.panelRetryBusyKey === `job:${job.id}`}
+                          disabled={!retryable || (props.panelRetryBusyKey !== null && props.panelRetryBusyKey !== `job:${job.id}`)}
                           onClick={() => props.onRetryJob(job.id)}
                           title={retryable ? "重试这个同步任务" : "执行中的任务不可重试"}
                         >
@@ -327,8 +331,8 @@ export function PanelSyncQueueDrawer(props: {
                         <Button
                           size="xs"
                           variant="subtle"
-                          loading={props.retryBusyKey === `node:${job.nodeId}`}
-                          disabled={!nodeRetryable || (props.retryBusyKey !== null && props.retryBusyKey !== `node:${job.nodeId}`)}
+                          loading={props.panelRetryBusyKey === `node:${job.nodeId}`}
+                          disabled={!nodeRetryable || (props.panelRetryBusyKey !== null && props.panelRetryBusyKey !== `node:${job.nodeId}`)}
                           onClick={() => props.onRetryNode(job.nodeId)}
                           title={nodeRetryable ? "重试这个节点的待同步任务" : "这个节点暂无可重试任务"}
                         >
@@ -394,8 +398,8 @@ export function PanelSyncQueueDrawer(props: {
                         <Button
                           size="xs"
                           variant="light"
-                          loading={props.retryBusyKey === `lease-job:${job.id}`}
-                          disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `lease-job:${job.id}`)}
+                          loading={props.leaseRetryBusyKey === `lease-job:${job.id}`}
+                          disabled={!retryable || (props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-job:${job.id}`)}
                           onClick={() => props.onRetryLeaseJob(job.id)}
                           title={retryable ? "重试这个连接撤销任务" : "执行中的任务不可重试"}
                         >
@@ -405,8 +409,8 @@ export function PanelSyncQueueDrawer(props: {
                           <Button
                             size="xs"
                             variant="subtle"
-                            loading={props.retryBusyKey === `lease-node:${job.nodeId}`}
-                            disabled={!nodeRetryable || (props.retryBusyKey !== null && props.retryBusyKey !== `lease-node:${job.nodeId}`)}
+                            loading={props.leaseRetryBusyKey === `lease-node:${job.nodeId}`}
+                            disabled={!nodeRetryable || (props.leaseRetryBusyKey !== null && props.leaseRetryBusyKey !== `lease-node:${job.nodeId}`)}
                             onClick={() => props.onRetryLeaseNode(job.nodeId!)}
                             title={nodeRetryable ? "重试这个节点的连接撤销任务" : "这个节点暂无可重试任务"}
                           >

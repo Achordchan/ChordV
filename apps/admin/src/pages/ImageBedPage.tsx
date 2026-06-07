@@ -188,6 +188,7 @@ export function ImageBedPage() {
       const result = await deleteAdminImageBedFile(file.name);
       const deleted = new Set(result.deleted.length > 0 ? result.deleted : result.success ? [file.name] : []);
       if (deleted.size > 0) {
+        fileListRequestSeqRef.current += 1;
         setFiles((current) => current.filter((item) => item.name !== file.name && !deleted.has(item.name)));
       }
       if (result.failed.length > 0) {

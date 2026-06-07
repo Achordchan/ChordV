@@ -20,6 +20,7 @@ import { StatusBadge } from "../shared/StatusBadge";
 type ReleaseRecordCardProps = {
   record: AdminReleaseRecordDto;
   busyAction: "status" | "delete" | "artifact" | null;
+  globalBusy: boolean;
   onEditRelease: (record: AdminReleaseRecordDto) => void;
   onCreateArtifact: (releaseId: string, platform: AdminReleasePlatform, source?: ArtifactEditorFormState["source"]) => void;
   onPublish: (record: AdminReleaseRecordDto) => void;
@@ -34,10 +35,11 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
   const { record } = props;
   const isArchived = record.status === "archived";
   const recordBusy = props.busyAction !== null;
+  const blockedByOtherMutation = props.globalBusy && !recordBusy;
   const statusBusy = props.busyAction === "status";
   const deleteBusy = props.busyAction === "delete";
   const publishDisabled = record.artifacts.length === 0 || isArchived;
-  const artifactEditingDisabled = record.status !== "draft" || recordBusy;
+  const artifactEditingDisabled = record.status !== "draft" || recordBusy || blockedByOtherMutation;
   const tone =
     record.status === "published"
       ? { color: "green", bg: "rgba(46, 160, 67, 0.05)" }
@@ -69,7 +71,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               variant="default"
               leftSection={<IconEdit size={14} />}
               onClick={() => props.onEditRelease(record)}
-              disabled={isArchived || recordBusy}
+              disabled={isArchived || recordBusy || blockedByOtherMutation}
               title={isArchived ? "Archived releases are read-only." : undefined}
             >
               编辑
@@ -104,13 +106,18 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                 color="orange"
                 variant="light"
                 loading={statusBusy}
-                disabled={recordBusy && !statusBusy}
+                disabled={blockedByOtherMutation || (recordBusy && !statusBusy)}
                 onClick={() => props.onWithdraw(record)}
               >
                 撤回发布
               </Button>
             ) : (
-              <Button size="xs" loading={statusBusy} disabled={publishDisabled || (recordBusy && !statusBusy)} onClick={() => props.onPublish(record)}>
+              <Button
+                size="xs"
+                loading={statusBusy}
+                disabled={publishDisabled || blockedByOtherMutation || (recordBusy && !statusBusy)}
+                onClick={() => props.onPublish(record)}
+              >
                 发布版本
               </Button>
             )}
@@ -120,7 +127,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               variant="subtle"
               loading={deleteBusy}
               onClick={() => props.onDeleteRelease(record)}
-              disabled={isArchived || (recordBusy && !deleteBusy)}
+              disabled={isArchived || blockedByOtherMutation || (recordBusy && !deleteBusy)}
             >
               删除记录
             </Button>

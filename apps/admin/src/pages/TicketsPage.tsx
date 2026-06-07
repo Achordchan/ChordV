@@ -18,7 +18,7 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { SupportTicketStatus } from "@chordv/shared";
-import { IconPaperclip, IconSend, IconX } from "@tabler/icons-react";
+import { IconPaperclip, IconRefresh, IconSend, IconX } from "@tabler/icons-react";
 import {
   closeAdminSupportTicket,
   fetchAdminSupportTicketDetail,
@@ -276,6 +276,8 @@ export function TicketsPage() {
       const detail = replyAttachment
         ? await replyAdminSupportTicketWithAttachment(selectedTicket.id, { body: body || null }, replyAttachment)
         : await replyAdminSupportTicket(selectedTicket.id, { body });
+      detailRequestSeqRef.current += 1;
+      ticketListRequestSeqRef.current += 1;
       setSelectedTicket(detail);
       upsertTicketSummary(detail);
       setReplyDraft("");
@@ -315,6 +317,8 @@ export function TicketsPage() {
     try {
       setStatusChanging(ticket.id);
       const detail = next === "close" ? await closeAdminSupportTicket(ticket.id) : await reopenAdminSupportTicket(ticket.id);
+      detailRequestSeqRef.current += 1;
+      ticketListRequestSeqRef.current += 1;
       if (selectedTicketId === detail.id) {
         setSelectedTicket(detail);
       }
@@ -373,6 +377,20 @@ export function TicketsPage() {
               onChange={(value) => setOwnerFilter((value as TicketOwnerFilter) || "all")}
               w={180}
             />
+            <Button
+              variant="light"
+              leftSection={<IconRefresh size={16} />}
+              onClick={() => {
+                void loadTickets();
+                const ticketId = selectedTicketIdRef.current;
+                if (ticketId) {
+                  void loadTicketDetail(ticketId);
+                }
+              }}
+              loading={loading || detailLoading}
+            >
+              刷新
+            </Button>
           </Group>
 
           {error ? (

@@ -497,7 +497,7 @@ export class DevDataService implements OnModuleInit {
       this.prisma.user.count(),
       this.prisma.team.count(),
       this.prisma.plan.count({ where: { isActive: true } }),
-      this.prisma.subscription.count({ where: { state: "active" } }),
+      this.prisma.subscription.count({ where: { state: "active", expireAt: { gt: now }, remainingTrafficGb: { gt: 0 } } }),
       this.prisma.node.count({ where: { isActive: true } }),
       this.prisma.announcement.count({ where: { isActive: true, publishedAt: { lte: now } } }),
       this.getSupportTicketDashboardCounts()

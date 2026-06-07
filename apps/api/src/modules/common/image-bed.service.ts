@@ -146,8 +146,8 @@ export class ImageBedService {
   }
 
   async deleteAdminFile(input: { path: string; folder?: boolean }): Promise<DeleteAdminImageBedFileResultDto> {
-    const config = await this.loadEffectiveConfig(true);
     const normalizedPath = normalizeImageBedFilePath(input.path);
+    const config = await this.loadEffectiveConfig(true);
     const query = input.folder ? "?folder=true" : "";
     const payload = await this.requestImageBedJson<Record<string, unknown>>(
       config,
@@ -467,7 +467,12 @@ function normalizeImageBedFilePath(value: string) {
   } catch {
     // Plain file IDs from the list API are expected.
   }
-  pathValue = decodeURIComponent(pathValue).replace(/^\/+/, "").replace(/^file\/+/, "");
+  try {
+    pathValue = decodeURIComponent(pathValue);
+  } catch {
+    throw new BadRequestException("Invalid image bed file path.");
+  }
+  pathValue = pathValue.replace(/^\/+/, "").replace(/^file\/+/, "");
   if (!pathValue || pathValue.includes("..")) {
     throw new BadRequestException("Invalid image bed file path.");
   }

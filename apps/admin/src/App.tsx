@@ -357,6 +357,8 @@ export function App() {
   const refreshingNodeRef = useRef<string | null>(null);
   const [panelSyncRetryBusyKey, setPanelSyncRetryBusyKey] = useState<string | null>(null);
   const panelSyncRetryBusyRef = useRef(false);
+  const [leaseRevocationRetryBusyKey, setLeaseRevocationRetryBusyKey] = useState<string | null>(null);
+  const leaseRevocationRetryBusyRef = useRef(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -371,6 +373,7 @@ export function App() {
   const [nodeForm, setNodeForm] = useState<NodeFormState>(emptyNodeForm());
   const [announcementForm, setAnnouncementForm] = useState<AnnouncementFormState>(emptyAnnouncementForm());
   const [policyForm, setPolicyForm] = useState<PolicyFormState | null>(null);
+  const [policyDirty, setPolicyDirty] = useState(false);
   const [policySaving, setPolicySaving] = useState(false);
   const [nodeAccessEditor, setNodeAccessEditor] = useState<NodeAccessEditorState | null>(null);
   const [nodeAccessSelection, setNodeAccessSelection] = useState<string[]>([]);
@@ -448,10 +451,11 @@ export function App() {
   }, [section]);
 
   useEffect(() => {
-    if (snapshot) {
-      setPolicyForm(toPolicyForm(snapshot.policy));
+    if (!snapshot) {
+      return;
     }
-  }, [snapshot]);
+    setPolicyForm((current) => (policyDirty && current ? current : toPolicyForm(snapshot.policy)));
+  }, [policyDirty, snapshot?.policy]);
 
   useEffect(() => {
     if (!authenticated) {
@@ -939,12 +943,12 @@ export function App() {
 
   async function handleRetryLeaseRevocationJob(jobId: string) {
     const busyKey = `lease-job:${jobId}`;
-    if (panelSyncRetryBusyRef.current) {
+    if (leaseRevocationRetryBusyRef.current) {
       return;
     }
     try {
-      panelSyncRetryBusyRef.current = true;
-      setPanelSyncRetryBusyKey(busyKey);
+      leaseRevocationRetryBusyRef.current = true;
+      setLeaseRevocationRetryBusyKey(busyKey);
       const leaseRevocationJobs = await retryAdminLeaseRevocationJob(jobId);
       mergeSnapshot({ leaseRevocationJobs });
       notifications.show({
@@ -961,19 +965,19 @@ export function App() {
         message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
       });
     } finally {
-      setPanelSyncRetryBusyKey(null);
-      panelSyncRetryBusyRef.current = false;
+      setLeaseRevocationRetryBusyKey(null);
+      leaseRevocationRetryBusyRef.current = false;
     }
   }
 
   async function handleRetryNodeLeaseRevocationJobs(nodeId: string) {
     const busyKey = `lease-node:${nodeId}`;
-    if (panelSyncRetryBusyRef.current) {
+    if (leaseRevocationRetryBusyRef.current) {
       return;
     }
     try {
-      panelSyncRetryBusyRef.current = true;
-      setPanelSyncRetryBusyKey(busyKey);
+      leaseRevocationRetryBusyRef.current = true;
+      setLeaseRevocationRetryBusyKey(busyKey);
       const leaseRevocationJobs = await retryAdminLeaseRevocationJobsForNode(nodeId);
       mergeSnapshot({ leaseRevocationJobs });
       notifications.show({
@@ -990,8 +994,8 @@ export function App() {
         message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
       });
     } finally {
-      setPanelSyncRetryBusyKey(null);
-      panelSyncRetryBusyRef.current = false;
+      setLeaseRevocationRetryBusyKey(null);
+      leaseRevocationRetryBusyRef.current = false;
     }
   }
 
@@ -1225,7 +1229,8 @@ export function App() {
         return false;
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain = !definiteLocalSaveFailure && isUncertainRequestFailure(message);
+      const http500Uncertain = Boolean(options.treatHttp500AsUncertain && /http\s*500/i.test(message));
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || http500Uncertain);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
@@ -2287,6 +2292,8 @@ export function App() {
         chinaDirect: policyForm.chinaDirect,
         aiServicesProxy: policyForm.aiServicesProxy
       } satisfies UpdatePolicyInputDto);
+      setPolicyDirty(false);
+      setPolicyForm(toPolicyForm(policy));
       mergeSnapshot({ policy });
       notifications.show({
         color: "green",
@@ -2496,7 +2503,7 @@ export function App() {
                 filteredTeams={filteredTeams}
                 allUsers={snapshot.users}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
-                leaseRevocationRetryBusyKey={panelSyncRetryBusyKey}
+                leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 teamInlineEditorId={teamInlineEditorId}
                 teamMemberInlineEditor={teamMemberInlineEditor}
                 teamProfileBusyKey={teamProfileBusyKey}
@@ -2569,7 +2576,7 @@ export function App() {
                 resetTrafficBusyKey={resetTrafficBusyKey}
                 allUsers={snapshot.users}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
-                leaseRevocationRetryBusyKey={panelSyncRetryBusyKey}
+                leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 onOpenKickMemberModal={openKickMemberModal}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onOpenTeamUsageDetail={setTeamUsageDetailTarget}
@@ -2592,6 +2599,7 @@ export function App() {
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
                 panelSyncQueueOpened={panelSyncQueueOpened}
                 panelSyncRetryBusyKey={panelSyncRetryBusyKey}
+                leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
                 refreshingNodeId={refreshingNodeId}
@@ -2621,7 +2629,10 @@ export function App() {
             {section === "policies" && policyForm ? (
               <PoliciesPage
                 policyForm={policyForm}
-                setPolicyForm={setPolicyForm}
+                setPolicyForm={(updater) => {
+                  setPolicyDirty(true);
+                  setPolicyForm(updater);
+                }}
                 policySaving={policySaving}
                 onSave={() => void handleSavePolicy()}
               />
@@ -2769,7 +2780,8 @@ export function App() {
         opened={panelSyncQueueOpened}
         jobs={snapshot.panelSyncJobs}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
-        retryBusyKey={panelSyncRetryBusyKey}
+        panelRetryBusyKey={panelSyncRetryBusyKey}
+        leaseRetryBusyKey={leaseRevocationRetryBusyKey}
         onClose={() => setPanelSyncQueueOpened(false)}
         onRetryJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
         onRetryNode={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
