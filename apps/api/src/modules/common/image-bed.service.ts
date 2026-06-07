@@ -119,8 +119,9 @@ export class ImageBedService {
     if (input?.search?.trim()) {
       params.set("search", input.search.trim());
     }
-    if (input?.dir?.trim()) {
-      params.set("dir", input.dir.trim());
+    const dir = normalizeOptionalPath(input?.dir) ?? config.uploadFolder;
+    if (dir) {
+      params.set("dir", dir);
     }
     if (input?.recursive) {
       params.set("recursive", "true");
@@ -293,7 +294,13 @@ export class ImageBedService {
     }
     const record = input as Record<string, unknown>;
     const name = readString(record.name);
-    if (!name) {
+    const fileId =
+      readString(record.fullId) ??
+      readString(record.fileId) ??
+      readString(record.path) ??
+      readString(record.key) ??
+      name;
+    if (!fileId) {
       return null;
     }
     const metadata = readRecord(record.metadata);
@@ -301,8 +308,8 @@ export class ImageBedService {
     const fileSizeBytes = readString(metadata?.["File-Size"]) ?? readString(metadata?.fileSize) ?? null;
     const timestamp = readString(metadata?.TimeStamp) ?? readString(metadata?.timestamp);
     return {
-      name,
-      url: new URL(`/file/${encodePathSegments(name)}`, baseUrl).toString(),
+      name: fileId,
+      url: new URL(`/file/${encodePathSegments(fileId)}`, baseUrl).toString(),
       mimeType,
       fileSizeBytes,
       uploadedAt: normalizeTimestamp(timestamp),

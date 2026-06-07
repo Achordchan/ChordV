@@ -704,6 +704,91 @@ async function testImageBedListUsesShortManageTimeout() {
   }
 }
 
+async function testImageBedListDefaultsToUploadFolder() {
+  let requestPath = "";
+  const server = createServer((request, response) => {
+    requestPath = request.url ?? "";
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ success: true, files: [] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token",
+              uploadFolder: "support-tickets"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    await service.listAdminFiles();
+
+    const url = new URL(requestPath, `http://127.0.0.1:${address.port}`);
+    assert.equal(url.pathname, "/api/manage/list");
+    assert.equal(url.searchParams.get("dir"), "support-tickets");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function testImageBedListUsesProviderFileIdForNestedFiles() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: true,
+        files: [
+          {
+            name: "screenshot.png",
+            fullId: "support-tickets/screenshot.png",
+            metadata: {
+              "File-Mime": "image/png",
+              "File-Size": "1234"
+            }
+          }
+        ]
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token",
+              uploadFolder: "support-tickets"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.listAdminFiles();
+
+    assert.equal(result.files[0]?.name, "support-tickets/screenshot.png");
+    assert.equal(result.files[0]?.url, `http://127.0.0.1:${address.port}/file/support-tickets/screenshot.png`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedUploadRejectsSuccessFalsePayload() {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -13910,6 +13995,72 @@ async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
   assert.equal(result.id, "release_1");
 }
 
+async function testWindowsExeUploadInfersInstallerArtifactType() {
+  const release = makeReleaseCenterTestRelease({
+    version: "1.1.6"
+  });
+  let createdData: Record<string, any> | null = null;
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => release,
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => ({
+      absolutePath: "prepared-windows-setup.exe",
+      storedFilePath: "release_1/artifact_created/ChordV-setup.exe",
+      fileName: "ChordV-setup.exe",
+      fileSizeBytes: 123n,
+      fileHash: null,
+      downloadUrl: "/api/downloads/releases/artifact_created"
+    }),
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async (payload: Record<string, any>) => {
+              createdData = payload.data;
+              return makeReleaseCenterTestArtifact({
+                id: payload.data.id,
+                releaseId: payload.data.releaseId,
+                source: payload.data.source,
+                type: payload.data.type,
+                deliveryMode: payload.data.deliveryMode,
+                downloadUrl: payload.data.downloadUrl,
+                fileName: payload.data.fileName,
+                storedFilePath: payload.data.storedFilePath,
+                fileSizeBytes: payload.data.fileSizeBytes,
+                fileHash: payload.data.fileHash,
+                isPrimary: payload.data.isPrimary,
+                isFullPackage: payload.data.isFullPackage
+              });
+            }
+          }
+        }),
+      release: {
+        findUnique: async () => ({
+          ...release,
+          artifacts: []
+        })
+      }
+    }
+  });
+
+  await service.uploadReleaseArtifact(
+    "release_1",
+    {
+      type: "zip",
+      deliveryMode: "desktop_full_replace"
+    },
+    {
+      path: "windows-setup-upload.tmp",
+      originalname: "ChordV-setup.exe",
+      size: 123
+    }
+  );
+
+  assert.equal(createdData?.type, "setup_exe");
+  assert.equal(createdData?.deliveryMode, "desktop_installer_download");
+}
+
 async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
   const release = makeReleaseCenterTestRelease();
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
@@ -14298,7 +14449,7 @@ async function testPublishWindowsReleaseAllowsAnySavedArtifact() {
   await service["assertReleasePublishable"]("release_1");
 }
 
-async function testUploadWindowsReleaseSavesNonZipFileName() {
+async function testUploadWindowsReleaseInfersInstallerFromExeFileName() {
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
   let createdData: Record<string, any> | null = null;
   const service = createReleaseCenterService({
@@ -14362,6 +14513,8 @@ async function testUploadWindowsReleaseSavesNonZipFileName() {
 
   assert.equal(result.id, "release_1");
   assert.equal(createdData?.fileName, "ChordV-setup.exe");
+  assert.equal(createdData?.type, "setup_exe");
+  assert.equal(createdData?.deliveryMode, "desktop_installer_download");
   assert.deepEqual(cleanupCalls, []);
 }
 
@@ -18147,6 +18300,8 @@ async function testAdminReplySupportTicketWithAttachmentCreatesAttachment() {
   );
 
   assert.equal((result as { id: string }).id, "ticket_1");
+  assert.equal(result.attachmentUploadStatus, "uploaded");
+  assert.equal(result.attachmentUploadError, null);
   const message = writes.find((item) => item.kind === "message")?.data;
   const attachment = writes.find((item) => item.kind === "attachment")?.data;
   const ticketUpdate = writes.find((item) => item.kind === "ticket")?.data;
@@ -18281,6 +18436,8 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
   );
 
   assert.equal((result as { id: string }).id, "ticket_1");
+  assert.equal(result.attachmentUploadStatus, "failed");
+  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
   const message = writes.find((item) => item.kind === "message")?.data;
   assert.match(String(message?.body), /please see attachment/);
   assert.match(String(message?.body), /附件上传失败/);
@@ -19143,6 +19300,8 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
   );
 
   assert.equal((result as { id: string }).id, "ticket_1");
+  assert.equal(result.attachmentUploadStatus, "failed");
+  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
   const message = writes.find((item) => item.kind === "message")?.data;
   assert.match(String(message?.body), /please see attachment/);
   assert.match(String(message?.body), /Attachment upload failed/);
@@ -19422,6 +19581,7 @@ async function main() {
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
   await testUpdateWindowsExternalReleaseKeepsSaveForNonZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
+  await testWindowsExeUploadInfersInstallerArtifactType();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testUpdateUploadedReleaseArtifactToExternalDeletesOldFile();
@@ -19429,7 +19589,7 @@ async function main() {
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseAllowsAnySavedArtifact();
-  await testUploadWindowsReleaseSavesNonZipFileName();
+  await testUploadWindowsReleaseInfersInstallerFromExeFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
@@ -19449,6 +19609,8 @@ async function main() {
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
+  await testImageBedListDefaultsToUploadFolder();
+  await testImageBedListUsesProviderFileIdForNestedFiles();
   await testImageBedUploadRejectsSuccessFalsePayload();
   await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
   await testImageBedUploadRejectsNonImageAndCleansTempFile();

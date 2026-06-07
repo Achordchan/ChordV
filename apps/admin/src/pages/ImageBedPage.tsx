@@ -114,9 +114,7 @@ export function ImageBedPage() {
         title: "图床",
         message: "图床配置已保存"
       });
-      if (nextConfig.hasToken) {
-        void loadFiles({ afterSuccessfulSave: true });
-      } else {
+      if (!nextConfig.hasToken) {
         setFiles([]);
         setFileListError(null);
       }
@@ -142,9 +140,7 @@ export function ImageBedPage() {
       const nextConfig = await updateAdminImageBedConfig({ apiToken: null });
       setConfig(nextConfig);
       setForm((current) => ({ ...current, apiToken: "" }));
-      if (nextConfig.hasToken) {
-        void loadFiles({ afterSuccessfulSave: true });
-      } else {
+      if (!nextConfig.hasToken) {
         setFiles([]);
         setFileListError(null);
       }

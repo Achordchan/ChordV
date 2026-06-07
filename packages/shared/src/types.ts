@@ -709,6 +709,8 @@ export interface SupportTicketAttachmentDto {
   createdAt: string;
 }
 
+export type SupportTicketAttachmentUploadStatus = "none" | "uploaded" | "failed";
+
 export interface ClientSupportTicketMessageDto {
   id: string;
   ticketId: string;
@@ -739,6 +741,8 @@ export interface ClientSupportTicketSummaryDto {
 
 export interface ClientSupportTicketDetailDto extends ClientSupportTicketSummaryDto {
   messages: ClientSupportTicketMessageDto[];
+  attachmentUploadStatus?: SupportTicketAttachmentUploadStatus;
+  attachmentUploadError?: string | null;
 }
 
 export interface AdminSupportTicketMessageDto {
@@ -774,6 +778,8 @@ export interface AdminSupportTicketSummaryDto {
 
 export interface AdminSupportTicketDetailDto extends AdminSupportTicketSummaryDto {
   messages: AdminSupportTicketMessageDto[];
+  attachmentUploadStatus?: SupportTicketAttachmentUploadStatus;
+  attachmentUploadError?: string | null;
 }
 
 export interface AuthSessionDto {

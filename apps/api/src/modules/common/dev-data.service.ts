@@ -720,7 +720,7 @@ export class DevDataService implements OnModuleInit {
     });
     this.publishAdminTicketEventBestEffort(ticketId, "waiting_user");
 
-    return this.getAdminSupportTicketDetailAfterReply(
+    const detail = await this.getAdminSupportTicketDetailAfterReply(
       ticketId,
       () => this.buildAdminSupportTicketReplyFallback(current, now, {
         messageId,
@@ -741,6 +741,11 @@ export class DevDataService implements OnModuleInit {
             : []
       })
     );
+    return {
+      ...detail,
+      attachmentUploadStatus: file ? (uploaded ? "uploaded" : "failed") : "none",
+      attachmentUploadError
+    };
   }
 
   private async getAdminSupportTicketDetailAfterReply(

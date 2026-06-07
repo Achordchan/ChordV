@@ -7,7 +7,7 @@ export function readError(reason: unknown, fallback: string) {
   if (reason.name === "AbortError" || reason.message === "signal is aborted without reason") {
     return "请求超时，后台未在限定时间内返回。当前操作状态可能不确定，请刷新列表或同步队列确认最新状态。";
   }
-  if (reason.message === "Failed to fetch" || reason.message.includes("NetworkError")) {
+  if (reason.message.includes("Failed to fetch") || reason.message.includes("NetworkError")) {
     return "网络请求失败，请检查后台服务、网络连接或跨域配置后重试。";
   }
   if (reason.message === "请求超时") {

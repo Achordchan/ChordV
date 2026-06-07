@@ -447,7 +447,7 @@ export class ClientTicketService {
       ticketStatus: "waiting_admin"
     });
 
-    return this.getClientSupportTicketDetailAfterWrite(ticketId, token, () =>
+    const detail = await this.getClientSupportTicketDetailAfterWrite(ticketId, token, () =>
       this.buildClientSupportTicketWriteFallback(current, now, {
         messageId,
         body: safeMessageBody,
@@ -466,6 +466,11 @@ export class ClientTicketService {
             : []
       })
     );
+    return {
+      ...detail,
+      attachmentUploadStatus: file ? (uploaded ? "uploaded" : "failed") : "none",
+      attachmentUploadError
+    };
   }
 
   private async getClientSupportTicketDetailAfterWrite(

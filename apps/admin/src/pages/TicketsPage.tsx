@@ -277,11 +277,19 @@ export function TicketsPage() {
       upsertTicketSummary(detail);
       setReplyDraft("");
       setReplyAttachment(null);
-      notifications.show({
-        color: "green",
-        title: "工单",
-        message: "回复已发送"
-      });
+      if (detail.attachmentUploadStatus === "failed") {
+        notifications.show({
+          color: "yellow",
+          title: "附件上传失败",
+          message: `文字回复已保存，附件上传失败：${detail.attachmentUploadError ?? "请稍后重试"}`
+        });
+      } else {
+        notifications.show({
+          color: "green",
+          title: "工单",
+          message: "回复已发送"
+        });
+      }
     } catch (reason) {
       const message = readError(reason, "发送回复失败");
       const attachmentUploadFailed = Boolean(replyAttachment) && isSupportTicketAttachmentUploadFailure(message);

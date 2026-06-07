@@ -492,15 +492,17 @@ export class ReleaseCenterService {
   ): Promise<AdminReleaseRecordDto> {
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
-    assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
-    const deliveryMode = resolveReleaseArtifactDeliveryMode(
-      release.platform as PlatformTarget,
-      input.type,
-      input.deliveryMode
-    );
     if (!file) {
       throw new BadRequestException("Select an installer package file first.");
     }
+    const platform = release.platform as PlatformTarget;
+    const uploadType = inferUploadedReleaseArtifactType(platform, input.fileName || file.originalname, input.type);
+    assertReleaseArtifactTypeAllowed(platform, uploadType);
+    const deliveryMode = resolveReleaseArtifactDeliveryMode(
+      platform,
+      uploadType,
+      uploadType === input.type ? input.deliveryMode : null
+    );
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
 
     const artifactId = createId("artifact");
@@ -520,7 +522,7 @@ export class ReleaseCenterService {
             id: artifactId,
             releaseId,
             source: "uploaded",
-            type: toPrismaReleaseArtifactType(input.type),
+            type: toPrismaReleaseArtifactType(uploadType),
             deliveryMode,
             downloadUrl: preparedFile.downloadUrl,
             defaultMirrorPrefix: null,
@@ -559,11 +561,13 @@ export class ReleaseCenterService {
     }
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
-    assertReleaseArtifactTypeAllowed(release.platform as PlatformTarget, input.type);
+    const platform = release.platform as PlatformTarget;
+    const uploadType = inferUploadedReleaseArtifactType(platform, input.fileName || file.originalname, input.type);
+    assertReleaseArtifactTypeAllowed(platform, uploadType);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(
-      release.platform as PlatformTarget,
-      input.type,
-      input.deliveryMode
+      platform,
+      uploadType,
+      uploadType === input.type ? input.deliveryMode : null
     );
 
     const previousStoredFilePath = current.storedFilePath;
@@ -583,7 +587,7 @@ export class ReleaseCenterService {
           where: { id: artifactId },
           data: {
             source: "uploaded",
-            type: toPrismaReleaseArtifactType(input.type),
+            type: toPrismaReleaseArtifactType(uploadType),
             deliveryMode,
             downloadUrl: preparedFile.downloadUrl,
             defaultMirrorPrefix: null,
@@ -1117,6 +1121,24 @@ export class ReleaseCenterService {
     }
     return row;
   }
+}
+
+function inferUploadedReleaseArtifactType(
+  platform: PlatformTarget,
+  fileName: string | null | undefined,
+  fallbackType: ReleaseArtifactType
+): ReleaseArtifactType {
+  if (platform !== "windows") {
+    return fallbackType;
+  }
+  const normalized = fileName?.trim().toLowerCase() ?? "";
+  if (normalized.endsWith(".exe")) {
+    return "setup.exe";
+  }
+  if (normalized.endsWith(".zip")) {
+    return "zip";
+  }
+  return fallbackType;
 }
 
 function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: string) {

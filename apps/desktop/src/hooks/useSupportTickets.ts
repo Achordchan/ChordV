@@ -251,11 +251,21 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
       setTicketReplyDraft("");
       setTicketReplyAttachment(null);
       await loadTicketList(detail.id);
-      options.notify?.({
-        color: "green",
-        title: "回复已发送",
-        message: "客服看到后会继续在这条工单里回复你。"
-      });
+      if (detail.attachmentUploadStatus === "failed") {
+        const message = `文字回复已保存，附件上传失败：${detail.attachmentUploadError ?? "请稍后重试"}`;
+        setTicketCenterError(message);
+        options.notify?.({
+          color: "yellow",
+          title: "附件上传失败",
+          message
+        });
+      } else {
+        options.notify?.({
+          color: "green",
+          title: "回复已发送",
+          message: "客服看到后会继续在这条工单里回复你。"
+        });
+      }
       return detail;
     } catch (reason) {
       if (isUnauthorizedApiError(reason)) {

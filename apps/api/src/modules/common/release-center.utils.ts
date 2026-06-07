@@ -1160,7 +1160,7 @@ export function toAdminReleaseRecord(row: ReleaseRowLike): AdminReleaseRecordDto
     platform: row.platform as AdminReleaseRecordDto["platform"],
     channel: normalizeReleaseChannel(row.channel),
     version: row.version,
-    displayTitle: row.displayTitle,
+    displayTitle: row.displayTitle?.trim() || row.version,
     changelog: row.changelog,
     minimumVersion: row.minimumVersion,
     forceUpgrade: row.forceUpgrade,
