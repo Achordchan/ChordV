@@ -46,7 +46,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         ) : (
           <FileInput
             description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传需要等待，请不要重复点击。`}
-            label="安装包文件"
+            label="上传安装包文件"
             placeholder="选择安装包文件"
             accept={acceptedArtifactExtensionForPlatform(props.platform)}
             value={props.form.selectedFile}
@@ -69,7 +69,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             ? "外链会直接下发给客户端，不经过本地服务器中转下载。"
             : props.creatingRelease
               ? "保存后会创建发布记录，并上传这个安装包。"
-              : "选择新文件后保存即可替换安装包。"}
+              : "选择“上传文件”并选择新文件后保存，即可替换安装包；选择“外链地址”则直接保存外链。"}
         </Alert>
 
         <Group justify="flex-end">

@@ -74,7 +74,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
               />
             ) : (
               <FileInput
-                label="安装包文件"
+                label="上传安装包文件"
                 description="也保留本地上传路径；如果外链下载慢，可以上传到服务器。"
                 placeholder="选择安装包文件"
                 accept={acceptedArtifactExtensionForPlatform(props.form.platform)}

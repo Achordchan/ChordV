@@ -79,9 +79,9 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               leftSection={<IconPlus size={14} />}
               onClick={() => props.onCreateArtifact(record.id, record.platform)}
               disabled={artifactEditingDisabled}
-              title={artifactEditingDisabled ? "请先撤回发布，再调整安装包" : undefined}
+              title={artifactEditingDisabled ? "请先撤回发布，再新增或上传安装包" : undefined}
             >
-              新增安装包
+              新增/上传安装包
             </Button>
             {isArchived ? (
               <Button size="xs" variant="default" disabled>
@@ -118,7 +118,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
 
         {record.status === "draft" ? (
           <Alert color="blue" variant="light">
-            当前还是草稿。补完至少一个安装包后，再点击“发布版本”。
+            当前还是草稿。点击“新增/上传安装包”后，可以选择外链地址，也可以上传文件。
           </Alert>
         ) : (
           <Alert color="teal" variant="light">
@@ -150,13 +150,13 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
 
         <Stack gap="sm">
           <Group justify="space-between" wrap="wrap">
-            <Text fw={600}>安装包</Text>
+            <Text fw={600}>安装包（外链/上传）</Text>
             <Badge variant="light">{record.artifacts.length} 个</Badge>
           </Group>
 
           {record.artifacts.length === 0 ? (
             <Alert color="yellow" variant="light">
-              当前版本还没有安装包，客户端不能直接拿它做更新入口。
+              当前版本还没有安装包。请点击“新增/上传安装包”，选择外链地址或上传文件后再发布。
             </Alert>
           ) : (
             <Stack gap="sm">
