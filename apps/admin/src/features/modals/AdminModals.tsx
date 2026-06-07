@@ -6,20 +6,27 @@ import { formatDateTime, formatTrafficGb } from "../../utils/admin-format";
 
 export function DeleteNodeModal(props: {
   target: AdminNodeRecordDto | null;
+  submitting: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const close = () => {
+    if (!props.submitting) {
+      props.onClose();
+    }
+  };
+
   return (
-    <Modal opened={props.target !== null} onClose={props.onClose} title="删除节点" centered>
+    <Modal opened={props.target !== null} onClose={close} title="停用节点" centered>
       <Stack>
-        <Text>删除后不可恢复。</Text>
+        <Text>该操作会先停用节点并隐藏入口，面板客户端清理会进入后台同步队列。</Text>
         <Text fw={600}>{props.target?.name}</Text>
         <Group justify="flex-end">
-          <Button variant="default" onClick={props.onClose}>
+          <Button variant="default" onClick={close} disabled={props.submitting}>
             取消
           </Button>
-          <Button color="red" onClick={props.onConfirm}>
-            删除
+          <Button color="red" onClick={props.onConfirm} loading={props.submitting}>
+            停用并清理
           </Button>
         </Group>
       </Stack>
@@ -37,9 +44,9 @@ export function KickMemberModal(props: {
   onConfirm: () => void;
 }) {
   return (
-    <Modal opened={props.opened} onClose={props.onClose} title="立即断网" centered>
+    <Modal opened={props.opened} onClose={props.onClose} title="提交断网任务" centered>
       <Stack>
-        <Text>该操作会立即关闭这个成员当前会话，让他立刻断网，但不会把他移出团队。</Text>
+        <Text>该操作会保存本地状态，并把当前连接撤销加入后台任务；不会把成员移出团队。</Text>
         <Text fw={600}>{props.memberName}</Text>
         <Checkbox checked={props.disableAccount} onChange={(event) => props.onDisableAccountChange(event.currentTarget.checked)} label="同时禁用这个账号" />
         <Group justify="flex-end">
@@ -146,8 +153,15 @@ export function NodeAccessEditorModal(props: {
   onClose: () => void;
   onSave: () => void;
 }) {
+  const busy = props.loading || props.saving;
+  const close = () => {
+    if (!busy) {
+      props.onClose();
+    }
+  };
+
   return (
-    <Modal opened={props.opened} onClose={props.onClose} title="节点授权" centered size="lg">
+    <Modal opened={props.opened} onClose={close} title="节点授权" centered size="lg">
       <Stack>
         <Text size="sm" c="dimmed">
           {props.ownerLabel ?? "当前订阅"}
@@ -160,26 +174,26 @@ export function NodeAccessEditorModal(props: {
           data={props.nodeOptions}
           value={props.selection}
           onChange={props.onSelectionChange}
-          disabled={props.loading || props.saving}
+          disabled={busy}
         />
         <Group justify="space-between">
           <Text size="sm" c={props.selection.length > 0 ? "dimmed" : "orange.7"}>
             {props.selection.length > 0 ? `已分配 ${props.selection.length} 个节点` : "当前订阅未分配节点"}
           </Text>
           <Group gap="xs">
-            <Button variant="default" size="xs" onClick={props.onSelectAll}>
+            <Button variant="default" size="xs" onClick={props.onSelectAll} disabled={busy}>
               全选
             </Button>
-            <Button variant="default" size="xs" onClick={props.onClear}>
+            <Button variant="default" size="xs" onClick={props.onClear} disabled={busy}>
               清空
             </Button>
           </Group>
         </Group>
         <Group justify="flex-end">
-          <Button variant="default" onClick={props.onClose}>
+          <Button variant="default" onClick={close} disabled={busy}>
             取消
           </Button>
-          <Button onClick={props.onSave} loading={props.saving || props.loading}>
+          <Button onClick={props.onSave} loading={busy}>
             保存
           </Button>
         </Group>

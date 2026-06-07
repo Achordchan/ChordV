@@ -322,10 +322,14 @@ export function App() {
     imageBed: ""
   });
   const [deleteNodeTarget, setDeleteNodeTarget] = useState<AdminNodeRecordDto | null>(null);
+  const [deleteNodeSubmitting, setDeleteNodeSubmitting] = useState(false);
+  const deleteNodeSubmittingRef = useRef(false);
   const [kickMemberTarget, setKickMemberTarget] = useState<{ teamId: string; memberId: string; memberName: string } | null>(null);
   const [kickDisableAccount, setKickDisableAccount] = useState(false);
   const [kickSubmitting, setKickSubmitting] = useState(false);
+  const kickSubmittingRef = useRef(false);
   const [resetTrafficBusyKey, setResetTrafficBusyKey] = useState<string | null>(null);
+  const resetTrafficBusyRef = useRef(false);
   const [convertSubscriptionTarget, setConvertSubscriptionTarget] = useState<{
     subscriptionId: string;
     ownerLabel: string;
@@ -342,6 +346,7 @@ export function App() {
   } | null>(null);
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
+  const probingBusyRef = useRef(false);
   const [panelSyncRetryBusyKey, setPanelSyncRetryBusyKey] = useState<string | null>(null);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
@@ -1237,7 +1242,7 @@ export function App() {
   }
 
   async function saveNodeAccessEditor() {
-    if (!nodeAccessEditor) {
+    if (!nodeAccessEditor || nodeAccessLoading || nodeAccessSaving) {
       return;
     }
 
@@ -1722,6 +1727,10 @@ export function App() {
   }
 
   async function handleProbeNode(nodeId: string) {
+    if (probingBusyRef.current) {
+      return;
+    }
+    probingBusyRef.current = true;
     try {
       setProbingNodeId(nodeId);
       await runAction(() => probeNode(nodeId), "节点探测已完成", {
@@ -1750,10 +1759,15 @@ export function App() {
       });
     } finally {
       setProbingNodeId(null);
+      probingBusyRef.current = false;
     }
   }
 
   async function handleProbeAllNodes() {
+    if (probingBusyRef.current) {
+      return;
+    }
+    probingBusyRef.current = true;
     try {
       setProbingAll(true);
       await runAction(() => probeAllNodes(), "全部节点探测已完成", {
@@ -1777,6 +1791,7 @@ export function App() {
       });
     } finally {
       setProbingAll(false);
+      probingBusyRef.current = false;
     }
   }
 
@@ -1809,9 +1824,18 @@ export function App() {
   }
 
   async function handleDeleteNode() {
-    if (!deleteNodeTarget) return;
-    const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已删除", { treatHttp500AsUncertain: true });
-    if (success) setDeleteNodeTarget(null);
+    if (!deleteNodeTarget || deleteNodeSubmittingRef.current) return;
+    try {
+      deleteNodeSubmittingRef.current = true;
+      setDeleteNodeSubmitting(true);
+      const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已停用，面板清理任务已排队", {
+        treatHttp500AsUncertain: true
+      });
+      if (success) setDeleteNodeTarget(null);
+    } finally {
+      setDeleteNodeSubmitting(false);
+      deleteNodeSubmittingRef.current = false;
+    }
   }
 
   async function handleDeleteTeamMember(teamId: string, memberId: string) {
@@ -1853,7 +1877,7 @@ export function App() {
   ) {
     const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队成员。" : "";
     const confirmed = window.confirm(
-      `确认断开 ${displayName} 的当前连接吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
+      `确认提交 ${displayName} 的连接撤销任务吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
     );
     if (!confirmed) {
       return;
@@ -1861,7 +1885,7 @@ export function App() {
 
     await runAction(
       () => disconnectUser(userId),
-      "账号当前连接已断开",
+      "账号连接撤销任务已提交",
       { treatHttp500AsUncertain: true }
     );
   }
@@ -1890,22 +1914,23 @@ export function App() {
   }
 
   function closeKickMemberModal() {
-    if (kickSubmitting) return;
+    if (kickSubmittingRef.current) return;
     setKickMemberTarget(null);
     setKickDisableAccount(false);
   }
 
   async function handleKickMember() {
-    if (!kickMemberTarget) return;
+    if (!kickMemberTarget || kickSubmittingRef.current) return;
 
     try {
+      kickSubmittingRef.current = true;
       setKickSubmitting(true);
       const success = await runAction(
         () =>
           kickTeamMember(kickMemberTarget.teamId, kickMemberTarget.memberId, {
             disableAccount: kickDisableAccount
           }),
-        kickDisableAccount ? "成员已立即断网并禁用账号" : "成员已立即断网",
+        kickDisableAccount ? "成员断网任务已提交，账号已禁用" : "成员断网任务已提交",
         { treatHttp500AsUncertain: true }
       );
       if (success) {
@@ -1913,10 +1938,14 @@ export function App() {
       }
     } finally {
       setKickSubmitting(false);
+      kickSubmittingRef.current = false;
     }
   }
 
   async function handleResetSubscriptionTraffic(subscriptionId: string, ownerLabel: string, userId?: string) {
+    if (resetTrafficBusyRef.current) {
+      return;
+    }
     const targetKey = `${subscriptionId}:${userId ?? "all"}`;
     const confirmed = window.confirm(
       `确认重置 ${ownerLabel} 的流量吗？这会同步清空 3x-ui 面板计量，并重置后台本地基线。`
@@ -1926,10 +1955,12 @@ export function App() {
     }
 
     try {
+      resetTrafficBusyRef.current = true;
       setResetTrafficBusyKey(targetKey);
       await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", { treatHttp500AsUncertain: true });
     } finally {
       setResetTrafficBusyKey(null);
+      resetTrafficBusyRef.current = false;
     }
   }
 
@@ -2338,7 +2369,13 @@ export function App() {
               ) : null}
               {section === "nodes" ? (
                 <Group gap="xs">
-                  <Button variant="default" leftSection={<IconBolt size={16} />} onClick={() => void handleProbeAllNodes()} loading={probingAll}>
+                  <Button
+                    variant="default"
+                    leftSection={<IconBolt size={16} />}
+                    onClick={() => void handleProbeAllNodes()}
+                    loading={probingAll}
+                    disabled={probingNodeId !== null}
+                  >
                     全部探测
                   </Button>
                   <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("node")}>
@@ -2470,6 +2507,7 @@ export function App() {
                 panelSyncQueueOpened={panelSyncQueueOpened}
                 panelSyncRetryBusyKey={panelSyncRetryBusyKey}
                 probingNodeId={probingNodeId}
+                probingAll={probingAll}
                 onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
                 onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
                 onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
@@ -2617,7 +2655,12 @@ export function App() {
         </Stack>
       </Modal>
 
-      <DeleteNodeModal target={deleteNodeTarget} onClose={() => setDeleteNodeTarget(null)} onConfirm={() => void handleDeleteNode()} />
+      <DeleteNodeModal
+        target={deleteNodeTarget}
+        submitting={deleteNodeSubmitting}
+        onClose={() => setDeleteNodeTarget(null)}
+        onConfirm={() => void handleDeleteNode()}
+      />
 
       <KickMemberModal
         opened={kickMemberTarget !== null}
@@ -2642,9 +2685,21 @@ export function App() {
         selection={nodeAccessSelection}
         loading={nodeAccessLoading}
         saving={nodeAccessSaving}
-        onSelectionChange={setNodeAccessSelection}
-        onSelectAll={() => setNodeAccessSelection(nodeOptions.map((item) => item.value))}
-        onClear={() => setNodeAccessSelection([])}
+        onSelectionChange={(value) => {
+          if (!nodeAccessLoading && !nodeAccessSaving) {
+            setNodeAccessSelection(value);
+          }
+        }}
+        onSelectAll={() => {
+          if (!nodeAccessLoading && !nodeAccessSaving) {
+            setNodeAccessSelection(nodeOptions.map((item) => item.value));
+          }
+        }}
+        onClear={() => {
+          if (!nodeAccessLoading && !nodeAccessSaving) {
+            setNodeAccessSelection([]);
+          }
+        }}
         onClose={closeNodeAccessEditor}
         onSave={() => void saveNodeAccessEditor()}
       />

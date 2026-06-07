@@ -18,6 +18,7 @@ type NodesPageProps = {
   panelSyncQueueOpened: boolean;
   panelSyncRetryBusyKey: string | null;
   probingNodeId: string | null;
+  probingAll: boolean;
   onOpenPanelSyncQueue: () => void;
   onClosePanelSyncQueue: () => void;
   onRetryPanelSyncJob: (jobId: string) => void;
@@ -115,6 +116,7 @@ export function NodesPage(props: NodesPageProps) {
                         title="探测节点连通性"
                         onClick={() => props.onProbeNode(item.id)}
                         loading={props.probingNodeId === item.id}
+                        disabled={props.probingAll || (props.probingNodeId !== null && props.probingNodeId !== item.id)}
                       >
                         <IconBolt size={16} />
                       </ActionIcon>
@@ -128,7 +130,7 @@ export function NodesPage(props: NodesPageProps) {
                       <ActionIcon variant="subtle" title="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
                         <IconPencil size={16} />
                       </ActionIcon>
-                      <ActionIcon color="red" variant="subtle" title="删除节点" onClick={() => props.onDeleteNode(item)}>
+                      <ActionIcon color="red" variant="subtle" title="停用节点并清理" onClick={() => props.onDeleteNode(item)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </RowActions>
@@ -282,6 +284,9 @@ function PanelSyncQueueDrawer(props: {
               ) : (
                 props.jobs.map((job) => {
                   const retryable = isRetryableBackgroundSyncStatus(job.status);
+                  const nodeRetryable = props.jobs.some(
+                    (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
+                  );
                   return (
                   <Table.Tr key={job.id}>
                     <Table.Td>
@@ -323,9 +328,9 @@ function PanelSyncQueueDrawer(props: {
                           size="xs"
                           variant="subtle"
                           loading={props.retryBusyKey === `node:${job.nodeId}`}
-                          disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `node:${job.nodeId}`)}
+                          disabled={!nodeRetryable || (props.retryBusyKey !== null && props.retryBusyKey !== `node:${job.nodeId}`)}
                           onClick={() => props.onRetryNode(job.nodeId)}
-                          title={retryable ? "重试这个节点的待同步任务" : "执行中的任务不可重试"}
+                          title={nodeRetryable ? "重试这个节点的待同步任务" : "这个节点暂无可重试任务"}
                         >
                           重试节点
                         </Button>
@@ -363,6 +368,11 @@ function PanelSyncQueueDrawer(props: {
               ) : (
                 props.leaseRevocationJobs.map((job) => {
                   const retryable = isRetryableBackgroundSyncStatus(job.status);
+                  const nodeRetryable = job.nodeId
+                    ? props.leaseRevocationJobs.some(
+                        (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
+                      )
+                    : false;
                   return (
                   <Table.Tr key={job.id}>
                     <Table.Td>
@@ -396,9 +406,9 @@ function PanelSyncQueueDrawer(props: {
                             size="xs"
                             variant="subtle"
                             loading={props.retryBusyKey === `lease-node:${job.nodeId}`}
-                            disabled={!retryable || (props.retryBusyKey !== null && props.retryBusyKey !== `lease-node:${job.nodeId}`)}
+                            disabled={!nodeRetryable || (props.retryBusyKey !== null && props.retryBusyKey !== `lease-node:${job.nodeId}`)}
                             onClick={() => props.onRetryLeaseNode(job.nodeId!)}
-                            title={retryable ? "重试这个节点的连接撤销任务" : "执行中的任务不可重试"}
+                            title={nodeRetryable ? "重试这个节点的连接撤销任务" : "这个节点暂无可重试任务"}
                           >
                             重试节点
                           </Button>

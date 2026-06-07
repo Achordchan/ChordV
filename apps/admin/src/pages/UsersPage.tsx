@@ -102,7 +102,7 @@ export function UsersPage(props: UsersPageProps) {
                           variant="subtle"
                           color="orange"
                           onClick={() => props.onDisconnectUser(item.id, item.displayName, "personal")}
-                          title="账号级：断开当前连接"
+                          title="账号级：提交连接撤销任务"
                         >
                           <IconRefresh size={16} />
                         </ActionIcon>
@@ -330,7 +330,7 @@ export function UsersPage(props: UsersPageProps) {
                                       variant="subtle"
                                       color="orange"
                                       onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
-                                      title="账号级：断开当前连接，不移出团队"
+                                      title="账号级：提交连接撤销任务，不移出团队"
                                     >
                                       <IconRefresh size={16} />
                                     </ActionIcon>

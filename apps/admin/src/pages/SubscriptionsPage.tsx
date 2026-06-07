@@ -178,6 +178,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         title="重置流量"
                         onClick={() => props.onResetSubscriptionTraffic(item.id, item.userDisplayName ?? item.userEmail ?? "当前个人订阅")}
                         loading={props.resetTrafficBusyKey === `${item.id}:all`}
+                        disabled={props.resetTrafficBusyKey !== null}
                       >
                         <IconBolt size={16} />
                       </ActionIcon>
@@ -397,6 +398,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 leftSection={<IconRefresh size={14} />}
                                                 onClick={() => props.onResetSubscriptionTraffic(currentSubscription.id, `${member.displayName} · ${team.name}`, member.userId)}
                                                 loading={props.resetTrafficBusyKey === `${currentSubscription.id}:${member.userId}`}
+                                                disabled={props.resetTrafficBusyKey !== null}
                                               >
                                                 重置流量
                                               </Button>
@@ -408,7 +410,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                               leftSection={<IconBolt size={14} />}
                                               onClick={() => props.onOpenKickMemberModal(team.id, member.id, member.displayName)}
                                             >
-                                              立即断网
+                                              提交断网任务
                                             </Button>
                                           </Group>
                                         </Group>
