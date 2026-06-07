@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Accordion, Alert, Badge, Button, Card, Group, SegmentedControl, Stack, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { IconPlus, IconRefresh } from "@tabler/icons-react";
@@ -79,6 +79,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
+  const releaseListRequestSeqRef = useRef(0);
+  const releaseMutationSeqRef = useRef(0);
 
   useEffect(() => {
     void loadReleases();
@@ -121,12 +123,17 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
   async function loadReleases(options?: { silent?: boolean }) {
     const silent = Boolean(options?.silent);
+    const requestSeq = ++releaseListRequestSeqRef.current;
+    const mutationSeqAtStart = releaseMutationSeqRef.current;
     try {
       if (!silent) {
         setLoading(true);
         setError(null);
       }
       const data = await fetchAdminReleases();
+      if (requestSeq !== releaseListRequestSeqRef.current || mutationSeqAtStart !== releaseMutationSeqRef.current) {
+        return;
+      }
       setReleases(data);
     } catch (reason) {
       if (!silent) {
@@ -190,6 +197,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         });
         return;
       }
+      releaseMutationSeqRef.current += 1;
       const payload: CreateAdminReleaseInputDto = {
         platform: releaseForm.platform,
         status: "draft",
@@ -288,6 +296,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   async function updateReleaseStatus(record: AdminReleaseRecordDto, nextStatus: "draft" | "published") {
     try {
       setSaving(`release-status:${record.id}`);
+      releaseMutationSeqRef.current += 1;
       const nextRecord = nextStatus === "published" ? await publishAdminRelease(record.id) : await unpublishAdminRelease(record.id);
       setReleases((current) => upsertRelease(current, nextRecord));
       notifications.show({
@@ -313,6 +322,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
     try {
       setSaving(`release-delete:${record.id}`);
+      releaseMutationSeqRef.current += 1;
       await deleteAdminRelease(record.id);
       setReleases((current) => current.filter((item) => item.id !== record.id));
       notifications.show({
@@ -418,6 +428,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       }
 
       setSaving(`artifact:${artifactEditor.releaseId ?? "new"}`);
+      releaseMutationSeqRef.current += 1;
       let record: AdminReleaseRecordDto | null = null;
 
       if (!releaseId) {
@@ -485,6 +496,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (!window.confirm("确定删除这个安装包吗？")) return;
     try {
       setSaving(`artifact:${releaseId}`);
+      releaseMutationSeqRef.current += 1;
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
       setReleases((current) => upsertRelease(current, record));
       notifications.show({

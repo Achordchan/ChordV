@@ -468,7 +468,7 @@ export function App() {
       if (sectionRef.current === "releases") {
         setReleaseRefreshSignal((current) => current + 1);
       }
-      void refreshDashboard();
+      void refreshDashboard({ silent: true });
       void refreshCurrentSectionSilently();
     };
     window.addEventListener("focus", refreshVisibleAdminData);
@@ -490,7 +490,7 @@ export function App() {
       if (event.type === "version_updated") {
         setReleaseRefreshSignal((current) => current + 1);
       }
-      void refreshDashboard();
+      void refreshDashboard({ silent: true });
       void refreshCurrentSectionSilently();
     });
   }, [authenticated]);
@@ -765,13 +765,16 @@ export function App() {
     }
   }
 
-  async function refreshDashboard() {
+  async function refreshDashboard(options?: { silent?: boolean }) {
     try {
       setRefreshingDashboard(true);
       const dashboard = await fetchAdminDashboard();
       mergeSnapshot({ dashboard });
-    } catch {
-      // ignore
+    } catch (reason) {
+      if (options?.silent) {
+        return;
+      }
+      throw reason;
     } finally {
       setRefreshingDashboard(false);
     }
@@ -1748,9 +1751,12 @@ export function App() {
         const success = drawer.recordId
           ? await runAction(
               () => updateAnnouncement(drawer.recordId!, payload satisfies UpdateAnnouncementInputDto),
-              "公告已更新"
+              "公告已更新",
+              { treatHttp500AsUncertain: true }
             )
-          : await runAction(() => createAnnouncement(payload satisfies CreateAnnouncementInputDto), "公告已创建");
+          : await runAction(() => createAnnouncement(payload satisfies CreateAnnouncementInputDto), "公告已创建", {
+              treatHttp500AsUncertain: true
+            });
         if (success) closeDrawer();
       }
     } finally {
@@ -1862,7 +1868,7 @@ export function App() {
     if (!confirmed) {
       return;
     }
-    await runAction(() => deleteAnnouncement(announcementId), "公告已删除");
+    await runAction(() => deleteAnnouncement(announcementId), "公告已删除", { treatHttp500AsUncertain: true });
   }
 
   async function handleDeleteNode() {
@@ -2305,7 +2311,11 @@ export function App() {
       });
     } catch (reason) {
       const message = readError(reason, "策略更新失败");
-      const uncertain = isUncertainRequestFailure(message);
+      if (ensureAuthenticated(message)) {
+        return;
+      }
+      const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : "操作失败",

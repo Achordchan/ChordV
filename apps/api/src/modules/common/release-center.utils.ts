@@ -976,6 +976,10 @@ async function requestExternalReleaseArtifactMetadata(
     if (method === "HEAD") {
       return null;
     }
+    if (timeout.signal.aborted) {
+      const reason = timeout.signal.reason;
+      throw new BadRequestException(reason instanceof Error ? reason.message : `${method} request timed out.`);
+    }
     throw new BadRequestException(error instanceof Error ? error.message : "外部下载地址校验失败");
   } finally {
     timeout.clear();

@@ -1157,11 +1157,7 @@ export class DevDataService implements OnModuleInit {
   private async getSupportTicketDashboardCounts() {
     const [openTickets, waitingAdminTickets, closedTickets] = await Promise.all([
       this.prisma.supportTicket.count({
-        where: {
-          status: {
-            in: ["open", "waiting_admin", "waiting_user"]
-          }
-        }
+        where: { status: "open" }
       }),
       this.prisma.supportTicket.count({
         where: { status: "waiting_admin" }

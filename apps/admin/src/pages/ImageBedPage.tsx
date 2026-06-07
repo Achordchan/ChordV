@@ -101,9 +101,7 @@ export function ImageBedPage() {
         message: options.afterSuccessfulSave ? `${message}。配置保存请求已经成功返回，可稍后手动刷新列表。` : message
       });
     } finally {
-      if (requestSeq === fileListRequestSeqRef.current) {
-        setLoadingFiles(false);
-      }
+      setLoadingFiles(false);
     }
   }
 

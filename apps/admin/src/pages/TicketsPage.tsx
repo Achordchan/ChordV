@@ -188,7 +188,7 @@ export function TicketsPage() {
         setError(readError(reason, "工单接口暂不可用，请先确认后端工单接口是否已合并。"));
       }
     } finally {
-      if (requestSeq === ticketListRequestSeqRef.current && !options?.silent) {
+      if (!options?.silent) {
         setLoading(false);
       }
     }
@@ -217,7 +217,7 @@ export function TicketsPage() {
       setSelectedTicket(null);
       setDetailError(readError(reason, "加载工单详情失败"));
     } finally {
-      if (requestSeq === detailRequestSeqRef.current && !options?.silent) {
+      if (!options?.silent) {
         setDetailLoading(false);
       }
     }

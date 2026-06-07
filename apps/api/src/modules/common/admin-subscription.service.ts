@@ -171,6 +171,18 @@ export class AdminSubscriptionService {
     };
   }
 
+  private startPanelSyncResultFollowUpInBackground(
+    label: string,
+    task: () => Promise<PanelSyncBestEffortResult>
+  ): PanelSyncBestEffortResult {
+    return this.startSubscriptionFollowUpInBackground(label, async () => {
+      const result = await task();
+      if (!result.ok) {
+        throw new Error(result.errorMessage);
+      }
+    });
+  }
+
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
     const [rows, panelSyncJobs] = await Promise.all([
       this.prisma.user.findMany({
@@ -608,12 +620,17 @@ export class AdminSubscriptionService {
       }
     });
 
-    await this.closeTeamSupportTicketsForUserBestEffort(
-      input.userId,
-      "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
+    const panelSync = mergePanelSyncResults(
+      this.startSubscriptionFollowUpInBackground(`team ticket cleanup after personal subscription create for ${input.userId}`, () =>
+        this.closeTeamSupportTicketsForUser(
+          input.userId,
+          "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
+        )
+      ),
+      this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after create for ${row.id}`, () =>
+        this.syncSubscriptionPanelAccessBestEffort(row.id)
+      )
     );
-
-    const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -676,9 +693,17 @@ export class AdminSubscriptionService {
 
     const panelSync = mergePanelSyncResults(
       resetPanelSync,
-      disconnectReason ? await this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason) : { ok: true },
-      await this.syncActiveLeasesForSubscriptionBestEffort(row),
-      await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+      disconnectReason
+        ? this.startPanelSyncResultFollowUpInBackground(`subscription disconnect after renew for ${subscriptionId}`, () =>
+            this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason as string)
+          )
+        : { ok: true },
+      this.startPanelSyncResultFollowUpInBackground(`active lease sync after renew for ${subscriptionId}`, () =>
+        this.syncActiveLeasesForSubscriptionBestEffort(row)
+      ),
+      this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after renew for ${subscriptionId}`, () =>
+        this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+      )
     );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
@@ -742,10 +767,18 @@ export class AdminSubscriptionService {
     });
 
     const panelSync = mergePanelSyncResults(
-      disconnectReason ? await this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason) : { ok: true },
+      disconnectReason
+        ? this.startPanelSyncResultFollowUpInBackground(`subscription disconnect after plan change for ${subscriptionId}`, () =>
+            this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason as string)
+          )
+        : { ok: true },
       await this.enforceSubscriptionConcurrentLeaseLimits(row),
-      await this.syncActiveLeasesForSubscriptionBestEffort(row),
-      await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+      this.startPanelSyncResultFollowUpInBackground(`active lease sync after plan change for ${subscriptionId}`, () =>
+        this.syncActiveLeasesForSubscriptionBestEffort(row)
+      ),
+      this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after plan change for ${subscriptionId}`, () =>
+        this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+      )
     );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
@@ -799,11 +832,18 @@ export class AdminSubscriptionService {
       });
     });
 
-    const leaseSync = await this.syncActiveLeasesForSubscriptionBestEffort(row);
     const panelSync = mergePanelSyncResults(
-      disconnectReason ? await this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason) : { ok: true },
-      leaseSync,
-      await this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+      disconnectReason
+        ? this.startPanelSyncResultFollowUpInBackground(`subscription disconnect after update for ${subscriptionId}`, () =>
+            this.queueSubscriptionDisconnectBestEffort(subscriptionId, disconnectReason as string)
+          )
+        : { ok: true },
+      this.startPanelSyncResultFollowUpInBackground(`active lease sync after update for ${subscriptionId}`, () =>
+        this.syncActiveLeasesForSubscriptionBestEffort(row)
+      ),
+      this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after update for ${subscriptionId}`, () =>
+        this.syncSubscriptionPanelAccessBestEffort(subscriptionId)
+      )
     );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,

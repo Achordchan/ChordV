@@ -4969,8 +4969,9 @@ async function testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail() {
   assert.equal(record.totalTrafficGb, 20);
   assert.equal(record.remainingTrafficGb, 16);
   assert.equal(record.panelSyncStatus, "pending");
-  assert.match(record.panelSyncMessage ?? "", /lease sync failed/);
-  assert.match(record.panelSyncMessage ?? "", /panel sync failed/);
+  assert.match(record.panelSyncMessage ?? "", /active lease sync after renew/);
+  assert.match(record.panelSyncMessage ?? "", /subscription panel access sync after renew/);
+  assert.match(record.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testRenewSubscriptionReturnsPendingWhenPanelSyncStalls() {
@@ -5036,7 +5037,8 @@ async function testRenewSubscriptionReturnsPendingWhenPanelSyncStalls() {
   assert.equal(record.totalTrafficGb, 20);
   assert.equal(record.remainingTrafficGb, 16);
   assert.equal(record.panelSyncStatus, "pending");
-  assert.match(record.panelSyncMessage ?? "", /still running in background/);
+  assert.match(record.panelSyncMessage ?? "", /subscription panel access sync after renew/);
+  assert.match(record.panelSyncMessage ?? "", /queued for background processing/);
 }
 
 async function testRenewSubscriptionReturnsWhenSubscriptionPublishStalls() {
@@ -16130,6 +16132,9 @@ async function testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails() 
   assert.equal(updates[0].data.state, "paused");
   assert.equal(result.state, "paused");
   assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /subscription disconnect after update/);
+  assert.deepEqual(disableQueueCalls, [], "panel disable queueing must be deferred until after the local response");
+  await waitUntil(() => disableQueueCalls.length > 0);
   assert.deepEqual(disableQueueCalls, [{ subscriptionId: "subscription_1", filter: undefined }]);
 }
 
@@ -16215,16 +16220,15 @@ async function testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfter
 
   const result = await service.updateSubscription("subscription_1", { state: "paused" });
 
-  assert.deepEqual(calls, [
-    "update_subscription",
-    "queue_active_lease_sync",
-    "queue_panel_disabled",
-    "queue_lease_revocation",
-    "publish_subscription"
-  ]);
+  assert.deepEqual(calls, ["update_subscription", "publish_subscription"]);
   assert.equal(result.state, "paused");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /active lease queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /active lease sync after update/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  await waitUntil(() => calls.includes("queue_active_lease_sync") && calls.includes("queue_panel_disabled"));
+  assert.ok(calls.includes("queue_active_lease_sync"));
+  assert.ok(calls.includes("queue_panel_disabled"));
+  assert.ok(calls.includes("queue_lease_revocation"));
 }
 
 async function testChangeSubscriptionPlanReconcilesNewConcurrencyLimit() {
@@ -16445,11 +16449,14 @@ async function testChangeSubscriptionPlanReturnsPendingWhenPanelSyncStalls() {
     })
   ]);
 
-  assert.equal(panelSyncStarted, true);
+  assert.equal(panelSyncStarted, false, "plan change response must not wait for stalled panel sync to start");
   assert.equal(updates.length, 1, "local plan change must save before panel sync follow-up finishes");
   assert.equal(result.planId, "plan_new");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /3x-ui panel sync is still running/);
+  assert.match(result.panelSyncMessage ?? "", /subscription panel access sync after plan change/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  await waitUntil(() => panelSyncStarted);
+  assert.equal(panelSyncStarted, true);
 }
 
 async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
@@ -16471,7 +16478,7 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
       renewable: true,
       isActive: true
     }),
-    closeTeamSupportTicketsForUserBestEffort: async () => undefined,
+    closeTeamSupportTicketsForUser: async () => undefined,
     runtimeSessionService: {
       queueSubscriptionPanelAccessSync: async () => {
         throw new Error("panel add failed");
@@ -16509,7 +16516,8 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   });
 
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel add failed/);
+  assert.match(result.panelSyncMessage ?? "", /subscription panel access sync after create/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
   assert.match(result.message ?? "", /订阅已创建/);
 }
 
@@ -16551,7 +16559,7 @@ async function testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock() {
         renewable: true,
         isActive: true
       }),
-      closeTeamSupportTicketsForUserBestEffort: async () => undefined,
+      closeTeamSupportTicketsForUser: async () => undefined,
       runtimeSessionService: {
         queueSubscriptionPanelAccessSync: async () => {
           queuedPanelSync += 1;
@@ -16598,9 +16606,11 @@ async function testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock() {
       })
     ]);
 
-    assert.equal(queuedPanelSync, 1);
+    assert.equal(queuedPanelSync, 0, "createSubscription must return before queued panel sync starts");
     assert.equal(usageLockingSyncCalls, 0, "createSubscription must not use usage-locking panel sync after local save");
     assert.equal(result.panelSyncStatus, "pending");
+    await waitUntil(() => queuedPanelSync === 1);
+    assert.equal(queuedPanelSync, 1);
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -16682,8 +16692,10 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
   });
 
   assert.equal(createdSubscription, true);
-  assert.equal(syncCalled, true, "panel sync should still be queued after best-effort ticket cleanup fails");
+  assert.equal(syncCalled, false, "panel sync should be deferred until after the local response");
   assert.equal(result.id, "sub_1");
+  await waitUntil(() => syncCalled);
+  assert.equal(syncCalled, true, "panel sync should still be queued after best-effort ticket cleanup fails");
 }
 
 async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
@@ -16757,8 +16769,10 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
   ]);
 
   assert.equal(createdSubscription, true);
-  assert.equal(syncCalled, true, "panel sync should still be queued after stalled best-effort ticket cleanup");
+  assert.equal(syncCalled, false, "panel sync should be deferred until after the local response");
   assert.equal(result.id, "sub_1");
+  await waitUntil(() => syncCalled);
+  assert.equal(syncCalled, true, "panel sync should still be queued after stalled best-effort ticket cleanup");
 }
 
 async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
