@@ -443,6 +443,28 @@ export function App() {
     if (!authenticated) {
       return;
     }
+    const refreshVisibleAdminData = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      if (sectionRef.current === "releases") {
+        setReleaseRefreshSignal((current) => current + 1);
+      }
+      void refreshDashboard();
+      void loadSectionData(sectionRef.current, { force: true, silent: true });
+    };
+    window.addEventListener("focus", refreshVisibleAdminData);
+    document.addEventListener("visibilitychange", refreshVisibleAdminData);
+    return () => {
+      window.removeEventListener("focus", refreshVisibleAdminData);
+      document.removeEventListener("visibilitychange", refreshVisibleAdminData);
+    };
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) {
+      return;
+    }
     return subscribeAdminRuntimeEvents((event) => {
       if (event.type === "keepalive" || document.visibilityState === "hidden") {
         return;

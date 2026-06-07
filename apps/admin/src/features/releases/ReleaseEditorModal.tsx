@@ -1,4 +1,4 @@
-import { Alert, Button, FileInput, Group, Modal, SegmentedControl, Select, Stack, TextInput, Textarea } from "@mantine/core";
+import { Alert, Button, FileInput, Group, Modal, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -9,8 +9,10 @@ type ReleaseEditorModalProps = {
   title: string;
   submitLabel: string;
   form: ReleaseEditorFormState;
+  artifactEditingDisabled?: boolean;
   onClose: () => void;
   onChange: (value: ReleaseEditorFormState) => void;
+  onManageArtifact?: (source: ReleaseEditorFormState["artifactSource"]) => void;
   onSubmit: () => void;
 };
 
@@ -97,7 +99,38 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 : "上传文件会保存到本地服务器，发布记录仍可后续编辑、撤回或替换安装包。"}
             </Alert>
           </>
-        ) : null}
+        ) : (
+          <Alert color={props.artifactEditingDisabled ? "yellow" : "blue"} variant="light">
+            <Stack gap="xs">
+              <Text size="sm">
+                已有发布记录的安装包入口仍然保留：可以继续添加外链，也可以上传文件。
+              </Text>
+              <Group gap="xs">
+                <Button
+                  size="xs"
+                  variant="default"
+                  disabled={props.artifactEditingDisabled || !props.onManageArtifact}
+                  onClick={() => props.onManageArtifact?.("external")}
+                >
+                  添加外链
+                </Button>
+                <Button
+                  size="xs"
+                  variant="light"
+                  disabled={props.artifactEditingDisabled || !props.onManageArtifact}
+                  onClick={() => props.onManageArtifact?.("uploaded")}
+                >
+                  上传文件
+                </Button>
+              </Group>
+              {props.artifactEditingDisabled ? (
+                <Text size="xs" c="dimmed">
+                  已发布版本需要先撤回到草稿，才能新增、替换或删除安装包。
+                </Text>
+              ) : null}
+            </Stack>
+          </Alert>
+        )}
 
         <Textarea
           label="更新日志"

@@ -152,6 +152,26 @@ export function ReleasesPage(props: ReleasesPageProps) {
     setReleaseForm(emptyReleaseEditorForm());
   }
 
+  function openArtifactFromReleaseEditor(source: ReleaseEditorFormState["artifactSource"]) {
+    if (!releaseEditorId) {
+      return;
+    }
+    const record = releases.find((item) => item.id === releaseEditorId);
+    if (!record) {
+      return;
+    }
+    closeReleaseEditor();
+    openCreateArtifact(record.id, record.platform, source);
+  }
+
+  function isReleaseEditorArtifactEditingDisabled() {
+    if (!releaseEditorId) {
+      return false;
+    }
+    const record = releases.find((item) => item.id === releaseEditorId);
+    return !record || record.status !== "draft" || getReleaseBusyAction(record.id) !== null;
+  }
+
   async function saveRelease() {
     try {
       setSaving("release-editor");
@@ -621,8 +641,10 @@ export function ReleasesPage(props: ReleasesPageProps) {
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
         submitLabel={releaseEditorId ? "保存发布记录" : "创建发布"}
         form={releaseForm}
+        artifactEditingDisabled={isReleaseEditorArtifactEditingDisabled()}
         onClose={closeReleaseEditor}
         onChange={setReleaseForm}
+        onManageArtifact={openArtifactFromReleaseEditor}
         onSubmit={() => void saveRelease()}
       />
 
