@@ -4,14 +4,11 @@ export function readError(reason: unknown, fallback: string) {
   if (!(reason instanceof Error)) {
     return fallback;
   }
-  if (reason.name === "AbortError" || reason.message === "signal is aborted without reason") {
+  if (reason.name === "AbortError" || reason.message === "signal is aborted without reason" || /请求超时/i.test(reason.message)) {
     return "请求超时，后台未在限定时间内返回。当前操作状态可能不确定，请刷新列表或同步队列确认最新状态。";
   }
-  if (reason.message.includes("Failed to fetch") || reason.message.includes("NetworkError")) {
+  if (/Failed to fetch|NetworkError/i.test(reason.message)) {
     return "网络请求失败，请检查后台服务、网络连接或跨域配置后重试。";
-  }
-  if (reason.message === "请求超时") {
-    return "请求超时，后台未在限定时间内返回。当前操作状态可能不确定，请刷新列表或同步队列确认最新状态。";
   }
   try {
     const parsed = JSON.parse(reason.message) as { message?: string[] | string; statusCode?: number; status?: number };
@@ -41,7 +38,7 @@ export function isDefiniteLocalSaveFailure(message: string) {
 }
 
 export function isPotentiallyCompletedMutationFailure(message: string) {
-  return isUncertainRequestFailure(message) || /http 500/i.test(message);
+  return isUncertainRequestFailure(message);
 }
 
 export function isSupportTicketAttachmentUploadFailure(message: string) {

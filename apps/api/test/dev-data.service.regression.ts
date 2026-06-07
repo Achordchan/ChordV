@@ -35,6 +35,7 @@ import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import {
+  ImportNodeDto,
   UpdateAnnouncementDto,
   UpdateNodeDto,
   UpdatePolicyDto,
@@ -2248,10 +2249,43 @@ async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
         findUnique: async () => release
       }
     },
+    assertStoredReleaseArtifactReadable: async () => undefined,
     assertReleaseRecordMutable: () => undefined
   });
 
   await service["assertReleasePublishable"]("release_1");
+}
+
+async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
+  const release = makeReleaseCenterTestRelease({
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        source: "uploaded",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        downloadUrl: "/api/downloads/releases/artifact_1",
+        storedFilePath: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        allowClientMirror: false
+      })
+    ]
+  });
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => release
+      }
+    },
+    assertReleaseRecordMutable: () => undefined
+  });
+
+  await assert.rejects(
+    () => service["assertReleasePublishable"]("release_1"),
+    /stored file|missing/i,
+    "published uploaded artifacts must still point to a readable local file"
+  );
 }
 
 async function testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata() {
@@ -15245,6 +15279,16 @@ function testUpdateReleaseDtoAllowsBlankDisplayTitle() {
   assert.equal(errors.length, 0, "blank displayTitle should be accepted and normalized to the version by the release service");
 }
 
+function testNodePanelBaseUrlAllowsBlankAsEmpty() {
+  const imported = plainToInstance(ImportNodeDto, { panelBaseUrl: "   " });
+  const updated = plainToInstance(UpdateNodeDto, { panelBaseUrl: "" });
+
+  assert.equal(validateSync(imported).length, 0, "blank import panelBaseUrl should be accepted as an empty panel config");
+  assert.equal(validateSync(updated).length, 0, "blank update panelBaseUrl should be accepted as an empty panel config");
+  assert.equal(imported.panelBaseUrl, null);
+  assert.equal(updated.panelBaseUrl, null);
+}
+
 async function testUpdateUserSecurityReconcilesActiveLeases() {
   const enforced: Array<{ userId: string; limit: number }> = [];
   const service = createAdminSubscriptionService({
@@ -19466,6 +19510,7 @@ async function main() {
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
+  await testPublishReleaseRejectsMissingUploadedArtifactFile();
   await testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
@@ -19666,6 +19711,7 @@ async function main() {
   await testUpdatePlanRejectsBlankTrimmedName();
   testAdminPatchDtosRejectNullForNonNullableFields();
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
+  testNodePanelBaseUrlAllowsBlankAsEmpty();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
   await testImageBedListDefaultsToUploadFolder();

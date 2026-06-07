@@ -45,6 +45,14 @@ function transformTrimmedString(value: unknown) {
   return typeof value === "string" ? value.trim() : value;
 }
 
+function transformBlankStringToNull(value: unknown) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export class CreateUserDto {
   @IsEmail()
   email!: string;
@@ -482,6 +490,7 @@ export class ImportNodeDto {
   recommended?: boolean;
 
   @IsOptional()
+  @Transform(({ value }) => transformBlankStringToNull(value))
   @IsUrl({
     require_tld: false
   })
@@ -554,6 +563,7 @@ export class UpdateNodeDto {
   subscriptionUrl?: string;
 
   @IsOptional()
+  @Transform(({ value }) => transformBlankStringToNull(value))
   @IsUrl({
     require_tld: false
   })
