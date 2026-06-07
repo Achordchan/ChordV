@@ -29,9 +29,11 @@ const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
 const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
 const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
-const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 55_000;
+const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
+const MAX_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
 const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 const BULK_NODE_PROBE_START_GUARD_MS = 5;
+const NODE_PANEL_SYNC_RECENT_ERROR_LIMIT = 500;
 const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
 
 @Injectable()
@@ -49,30 +51,45 @@ export class AdminNodeService {
     const rows = await this.prisma.node.findMany({
       orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
     });
-    const jobs = await this.prisma.panelSyncJob.findMany({
+    const jobCounts = await this.prisma.panelSyncJob.groupBy({
+      by: ["nodeId", "status"],
       where: {
         status: { in: ["pending", "running", "failed"] }
       },
+      _count: { _all: true }
+    });
+    const recentFailedJobs = await this.prisma.panelSyncJob.findMany({
+      where: {
+        status: "failed",
+        lastError: { not: null }
+      },
       select: {
         nodeId: true,
-        status: true,
         lastError: true,
         updatedAt: true
       },
-      orderBy: [{ updatedAt: "desc" }]
+      orderBy: [{ updatedAt: "desc" }],
+      take: NODE_PANEL_SYNC_RECENT_ERROR_LIMIT
     });
     const summaryByNode = new Map<
       string,
       { pending: number; running: number; failed: number; lastError: string | null }
     >();
-    for (const job of jobs) {
+    for (const job of jobCounts) {
       const summary = summaryByNode.get(job.nodeId) ?? { pending: 0, running: 0, failed: 0, lastError: null };
       if (job.status === "failed") {
-        summary.failed += 1;
+        summary.failed += job._count._all;
       } else if (job.status === "running") {
-        summary.running += 1;
+        summary.running += job._count._all;
       } else {
-        summary.pending += 1;
+        summary.pending += job._count._all;
+      }
+      summaryByNode.set(job.nodeId, summary);
+    }
+    for (const job of recentFailedJobs) {
+      const summary = summaryByNode.get(job.nodeId);
+      if (!summary || summary.lastError) {
+        continue;
       }
       summary.lastError = job.lastError ?? summary.lastError;
       summaryByNode.set(job.nodeId, summary);
@@ -1380,7 +1397,10 @@ function readBulkNodeProbeBudgetMs() {
 }
 
 function readBulkNodeProbeRequestBudgetMs() {
-  return readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS);
+  return Math.min(
+    readPositiveIntegerEnv("CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS", DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS),
+    MAX_BULK_NODE_PROBE_REQUEST_BUDGET_MS
+  );
 }
 
 function readImportNodeRuntimeBudgetMs() {

@@ -100,6 +100,7 @@ import {
   fetchAdminUsers,
   fetchNodePanelInbounds,
   getAdminProfile,
+  getTeamUsage,
   getSubscriptionNodeAccess,
   importNode,
   kickTeamMember,
@@ -346,6 +347,9 @@ export function App() {
     userEmail: string;
     entry: AdminTeamUsageRecordDto;
   } | null>(null);
+  const [teamUsageByTeamId, setTeamUsageByTeamId] = useState<Record<string, AdminTeamUsageRecordDto[]>>({});
+  const [teamUsageLoadingByTeamId, setTeamUsageLoadingByTeamId] = useState<Record<string, boolean>>({});
+  const [teamUsageErrorByTeamId, setTeamUsageErrorByTeamId] = useState<Record<string, string | null>>({});
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
   const probingBusyRef = useRef(false);
@@ -650,6 +654,9 @@ export function App() {
     setConvertTargetTeamId(null);
     setConvertSubmitting(false);
     setTeamUsageDetailTarget(null);
+    setTeamUsageByTeamId({});
+    setTeamUsageLoadingByTeamId({});
+    setTeamUsageErrorByTeamId({});
     setNodeAccessEditor(null);
     setNodeAccessSelection([]);
     setNodeAccessLoading(false);
@@ -1950,6 +1957,28 @@ export function App() {
     selectSection("subscriptions");
   }
 
+  async function loadTeamUsage(teamId: string, options: { force?: boolean } = {}) {
+    if (!options.force && (teamUsageByTeamId[teamId] || teamUsageLoadingByTeamId[teamId])) {
+      return;
+    }
+    setTeamUsageLoadingByTeamId((current) => ({ ...current, [teamId]: true }));
+    setTeamUsageErrorByTeamId((current) => ({ ...current, [teamId]: null }));
+    try {
+      const usage = await getTeamUsage(teamId);
+      setTeamUsageByTeamId((current) => ({ ...current, [teamId]: usage }));
+    } catch (reason) {
+      const message = readError(reason, "Team 用量加载失败");
+      setTeamUsageErrorByTeamId((current) => ({ ...current, [teamId]: message }));
+      notifications.show({
+        color: "yellow",
+        title: "Team 用量加载失败",
+        message
+      });
+    } finally {
+      setTeamUsageLoadingByTeamId((current) => ({ ...current, [teamId]: false }));
+    }
+  }
+
   function openKickMemberModal(teamId: string, memberId: string, memberName: string) {
     setKickMemberTarget({ teamId, memberId, memberName });
     setKickDisableAccount(false);
@@ -1999,6 +2028,7 @@ export function App() {
     try {
       resetTrafficBusyRef.current = true;
       setResetTrafficBusyKey(targetKey);
+      setTeamUsageByTeamId({});
       await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", { treatHttp500AsUncertain: true });
     } finally {
       setResetTrafficBusyKey(null);
@@ -2543,6 +2573,10 @@ export function App() {
                 onOpenKickMemberModal={openKickMemberModal}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
                 onOpenTeamUsageDetail={setTeamUsageDetailTarget}
+                teamUsageByTeamId={teamUsageByTeamId}
+                teamUsageLoadingByTeamId={teamUsageLoadingByTeamId}
+                teamUsageErrorByTeamId={teamUsageErrorByTeamId}
+                onLoadTeamUsage={(teamId, options) => void loadTeamUsage(teamId, options)}
                 onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
               />
             ) : null}

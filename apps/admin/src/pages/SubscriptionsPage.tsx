@@ -63,6 +63,10 @@ type SubscriptionsPageProps = {
     userEmail: string;
     entry: AdminTeamUsageRecordDto;
   }) => void;
+  teamUsageByTeamId: Record<string, AdminTeamUsageRecordDto[]>;
+  teamUsageLoadingByTeamId: Record<string, boolean>;
+  teamUsageErrorByTeamId: Record<string, string | null>;
+  onLoadTeamUsage: (teamId: string, options?: { force?: boolean }) => void;
   onOpenPanelSyncQueue: () => void;
 };
 
@@ -199,11 +203,15 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                 ? props.allSubscriptions.find((item) => item.id === team.currentSubscription?.id)
                 : null;
               const renewable = teamSubscriptionRecord?.renewable ?? false;
-              const usageSummary = summarizeTeamUsage(team.usage);
+              const usageLoaded = Object.prototype.hasOwnProperty.call(props.teamUsageByTeamId, team.id);
+              const usageLoading = Boolean(props.teamUsageLoadingByTeamId[team.id]);
+              const usageError = props.teamUsageErrorByTeamId[team.id] ?? null;
+              const usageSummary = summarizeTeamUsage(props.teamUsageByTeamId[team.id] ?? []);
+              const usageByUserId = new Map(usageSummary.map((entry) => [entry.userId, entry]));
 
               return (
                 <Accordion.Item key={team.id} value={team.id}>
-                  <Accordion.Control>
+                  <Accordion.Control onClick={() => props.onLoadTeamUsage(team.id)}>
                     <Group justify="space-between" wrap="nowrap">
                       <Stack gap={2} miw={280}>
                         <Text fw={600}>{team.name}</Text>
@@ -388,7 +396,16 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                           <Text size="sm" c="dimmed">{member.email}</Text>
                                         </Stack>
                                           <SimpleGrid cols={{ base: 1, sm: 1 }} spacing="xs" style={{ flex: 1, minWidth: 180 }}>
-                                            <MiniMetric label="成员用量" value={`${formatTrafficGb(member.usedTrafficGb)} GB`} />
+                                            <MiniMetric
+                                              label="成员用量"
+                                              value={
+                                                usageLoaded
+                                                  ? `${formatTrafficGb(usageByUserId.get(member.userId)?.usedTrafficGb ?? 0)} GB`
+                                                  : usageLoading
+                                                    ? "加载中"
+                                                    : "未加载"
+                                              }
+                                            />
                                           </SimpleGrid>
                                           <Group gap="xs" wrap="wrap" justify="flex-end">
                                             {currentSubscription ? (
@@ -435,6 +452,24 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               </div>
                               <Badge variant="light">{usageSummary.length} 人</Badge>
                             </Group>
+                            {usageError ? (
+                              <Alert color="yellow" variant="light">
+                                <Group justify="space-between" gap="sm">
+                                  <Text size="sm">{usageError}</Text>
+                                  <Button size="xs" variant="default" onClick={() => props.onLoadTeamUsage(team.id, { force: true })}>
+                                    重试
+                                  </Button>
+                                </Group>
+                              </Alert>
+                            ) : null}
+                            {!usageLoaded && !usageLoading && !usageError ? (
+                              <Alert color="blue" variant="light">
+                                展开 Team 后会按需加载成员流量，避免后台列表被历史账单拖慢。
+                              </Alert>
+                            ) : null}
+                            {usageLoading ? (
+                              <Text size="sm" c="dimmed">正在加载成员流量...</Text>
+                            ) : null}
                             {usageSummary.length > 0 ? (
                               <Stack gap="sm">
                                 {usageSummary.map((entry) => (

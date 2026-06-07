@@ -64,6 +64,7 @@ import {
 
 const SUBSCRIPTION_FOLLOW_UP_BUDGET_MS = 300;
 const SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS = 50;
+const PANEL_SYNC_RECENT_ERROR_LIMIT = 1_000;
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
@@ -74,6 +75,7 @@ type PanelSyncSummaryJob = {
   status: string;
   lastError: string | null;
   updatedAt: Date;
+  count?: number;
 };
 type PanelSyncSummary = {
   pending: number;
@@ -1003,11 +1005,10 @@ export class AdminSubscriptionService {
       this.listActivePanelSyncJobs()
     ]);
     const panelSyncByTeamId = buildPanelSyncSummaryMap(panelSyncJobs, "teamId");
-    const usageByTeamId = await this.loadTeamUsageSummaries(teams.map((team) => team.id));
     return teams.map((team) =>
       withPanelSyncSummary(toAdminTeamRecord({
         ...team,
-        trafficLedgerEntries: usageByTeamId.get(team.id) ?? []
+        trafficLedgerEntries: []
       }), panelSyncByTeamId.get(team.id))
     );
   }
@@ -1078,20 +1079,51 @@ export class AdminSubscriptionService {
   }
 
   private async listActivePanelSyncJobs(): Promise<PanelSyncSummaryJob[]> {
-    return this.prisma.panelSyncJob.findMany({
-      where: {
-        status: { in: ["pending", "running", "failed"] }
-      },
-      select: {
-        subscriptionId: true,
-        userId: true,
-        teamId: true,
-        status: true,
-        lastError: true,
-        updatedAt: true
-      },
-      orderBy: [{ updatedAt: "desc" }]
-    });
+    const [counts, recentFailedJobs] = await Promise.all([
+      this.prisma.panelSyncJob.groupBy({
+        by: ["subscriptionId", "userId", "teamId", "status"],
+        where: {
+          status: { in: ["pending", "running", "failed"] }
+        },
+        _count: { _all: true }
+      }),
+      this.prisma.panelSyncJob.findMany({
+        where: {
+          status: "failed",
+          lastError: { not: null }
+        },
+        select: {
+          subscriptionId: true,
+          userId: true,
+          teamId: true,
+          status: true,
+          lastError: true,
+          updatedAt: true
+        },
+        orderBy: [{ updatedAt: "desc" }],
+        take: PANEL_SYNC_RECENT_ERROR_LIMIT
+      })
+    ]);
+    return [
+      ...counts.map((row) => ({
+        subscriptionId: row.subscriptionId,
+        userId: row.userId,
+        teamId: row.teamId,
+        status: row.status,
+        lastError: null,
+        updatedAt: new Date(0),
+        count: row._count._all
+      })),
+      ...recentFailedJobs.map((row) => ({
+        subscriptionId: row.subscriptionId,
+        userId: row.userId,
+        teamId: row.teamId,
+        status: row.status,
+        lastError: row.lastError,
+        updatedAt: row.updatedAt,
+        count: 0
+      }))
+    ];
   }
 
   async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {
@@ -2572,7 +2604,7 @@ export class AdminSubscriptionService {
   }
 
   private async requireTeamRecord(teamId: string) {
-    const row = (await this.listAdminTeams()).find((item) => item.id === teamId);
+    const row = await this.loadBasicTeamRecord(teamId);
     if (!row) {
       throw new NotFoundException("团队不存在");
     }
@@ -2672,24 +2704,16 @@ export class AdminSubscriptionService {
         subscriptions: {
           include: { plan: true },
           orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-        },
-        trafficLedgerEntries: {
-          include: {
-            user: {
-              select: { displayName: true, email: true }
-            },
-            node: {
-              select: { id: true, name: true, region: true }
-            }
-          },
-          orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }]
         }
       }
     });
     if (!row) {
       throw new NotFoundException("Team not found");
     }
-    return toAdminTeamRecord(row);
+    return toAdminTeamRecord({
+      ...row,
+      trafficLedgerEntries: []
+    });
   }
 
   private async requireTeamMember(memberId: string) {
@@ -2923,12 +2947,13 @@ function buildPanelSyncSummaryMap(
       continue;
     }
     const summary = result.get(id) ?? { pending: 0, running: 0, failed: 0, lastError: null };
+    const count = job.count ?? 1;
     if (job.status === "failed") {
-      summary.failed += 1;
+      summary.failed += count;
     } else if (job.status === "running") {
-      summary.running += 1;
+      summary.running += count;
     } else {
-      summary.pending += 1;
+      summary.pending += count;
     }
     summary.lastError = summary.lastError ?? job.lastError;
     result.set(id, summary);

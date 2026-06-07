@@ -478,6 +478,49 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
   });
 }
 
+function createPanelSyncJobSummaryMock(
+  jobs: Array<{
+    subscriptionId: string;
+    userId: string | null;
+    teamId: string | null;
+    status: string;
+    lastError: string | null;
+    updatedAt: Date;
+  }>
+) {
+  return {
+    groupBy: async () => {
+      const grouped = new Map<
+        string,
+        {
+          subscriptionId: string;
+          userId: string | null;
+          teamId: string | null;
+          status: string;
+          _count: { _all: number };
+        }
+      >();
+      for (const job of jobs) {
+        const key = `${job.subscriptionId}:${job.userId ?? ""}:${job.teamId ?? ""}:${job.status}`;
+        const current = grouped.get(key) ?? {
+          subscriptionId: job.subscriptionId,
+          userId: job.userId,
+          teamId: job.teamId,
+          status: job.status,
+          _count: { _all: 0 }
+        };
+        current._count._all += 1;
+        grouped.set(key, current);
+      }
+      return Array.from(grouped.values());
+    },
+    findMany: async () =>
+      jobs
+        .filter((job) => job.status === "failed" && job.lastError)
+        .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime())
+  };
+}
+
 function createBasicTeamRow(overrides: Record<string, unknown> = {}) {
   const now = new Date("2026-01-01T00:00:00.000Z");
   return {
@@ -9879,9 +9922,7 @@ async function testAdminListsSurfacePersistentPanelSyncPendingState() {
       node: {
         findMany: async () => []
       },
-      panelSyncJob: {
-        findMany: async () => panelSyncJobs
-      }
+      panelSyncJob: createPanelSyncJobSummaryMock(panelSyncJobs)
     }
   });
 
@@ -9997,9 +10038,7 @@ async function testAdminListsAggregatePanelSyncPendingRunningAndFailedState() {
       node: {
         findMany: async () => []
       },
-      panelSyncJob: {
-        findMany: async () => panelSyncJobs
-      }
+      panelSyncJob: createPanelSyncJobSummaryMock(panelSyncJobs)
     }
   });
 
@@ -10078,6 +10117,56 @@ async function testGetTeamUsageUsesAggregatedLedgerRows() {
   assert.equal(result[0].usedTrafficGb, 13.346);
   assert.equal(result[0].recordCount, 2, "aggregated rows should be summarized without loading raw ledger entries");
   assert.equal(result[0].nodeBreakdown.length, 2);
+}
+
+async function testListAdminTeamsDoesNotLoadTrafficLedgerUsage() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    prisma: {
+      team: {
+        findMany: async () => [
+          {
+            id: "team_1",
+            name: "Team",
+            ownerUserId: "owner_1",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+            owner: { displayName: "Owner", email: "owner@example.com" },
+            members: [
+              {
+                id: "member_1",
+                teamId: "team_1",
+                userId: "user_1",
+                role: "member",
+                createdAt: now,
+                user: { displayName: "User", email: "user@example.com" }
+              }
+            ],
+            subscriptions: []
+          }
+        ]
+      },
+      trafficLedger: {
+        groupBy: async () => {
+          throw new Error("team list must not aggregate traffic ledger usage");
+        },
+        findMany: async () => {
+          throw new Error("team list must not load raw traffic ledger usage");
+        }
+      },
+      panelSyncJob: {
+        groupBy: async () => [],
+        findMany: async () => []
+      }
+    }
+  });
+
+  const result = await service.listAdminTeams();
+
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0].usage, []);
+  assert.equal(result[0].members[0]?.usedTrafficGb, 0);
 }
 
 async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails() {
@@ -11210,6 +11299,44 @@ function makeAdminNodeRow(overrides: Record<string, any> = {}) {
     updatedAt: now,
     ...overrides
   };
+}
+
+async function testListAdminNodesUsesAggregatedPanelSyncCounts() {
+  const node = makeAdminNodeRow({ id: "node_1" });
+  const service = createAdminNodeService({
+    prisma: {
+      node: {
+        findMany: async () => [node]
+      },
+      panelSyncJob: {
+        groupBy: async () => [
+          { nodeId: "node_1", status: "pending", _count: { _all: 2 } },
+          { nodeId: "node_1", status: "running", _count: { _all: 1 } },
+          { nodeId: "node_1", status: "failed", _count: { _all: 50_000 } }
+        ],
+        findMany: async (payload: Record<string, any>) => {
+          assert.equal(payload.where.status, "failed");
+          assert.deepEqual(payload.where.lastError, { not: null });
+          assert.ok(payload.take <= 500, "node list must cap recent failed job error lookup");
+          return [
+            {
+              nodeId: "node_1",
+              lastError: "panel offline",
+              updatedAt: new Date("2026-01-01T00:00:00.000Z")
+            }
+          ];
+        }
+      }
+    }
+  });
+
+  const result = await service.listAdminNodes();
+
+  assert.equal(result[0].panelSyncPendingCount, 2);
+  assert.equal(result[0].panelSyncRunningCount, 1);
+  assert.equal(result[0].panelSyncFailedCount, 50_000);
+  assert.equal(result[0].panelSyncTotalCount, 50_003);
+  assert.equal(result[0].panelSyncLastError, "panel offline");
 }
 
 async function testListNodePanelInboundsPropagatesOfflinePanelError() {
@@ -19816,6 +19943,7 @@ async function main() {
   await testXuiInboundRuntimeReadsMldsa65Verify();
   await testXuiInboundRuntimeReadsPqvAlias();
   await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
+  await testListAdminNodesUsesAggregatedPanelSyncCounts();
   await testListNodePanelInboundsPropagatesOfflinePanelError();
   await testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout();
   await testImportNodeFromOfflinePanelFailsBeforeLocalSave();
@@ -19858,6 +19986,7 @@ async function main() {
   await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testAdminListsAggregatePanelSyncPendingRunningAndFailedState();
   await testGetTeamUsageUsesAggregatedLedgerRows();
+  await testListAdminTeamsDoesNotLoadTrafficLedgerUsage();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testImportNodeReturnsWhenInitialProbeStalls();
