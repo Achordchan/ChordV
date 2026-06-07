@@ -46,6 +46,10 @@ type ArtifactEditorState = {
   platform: AdminReleasePlatform;
 };
 
+type ReleasesPageProps = {
+  refreshSignal?: number;
+};
+
 const platformFilterOptions = [{ value: "all", label: "全部平台" }, ...releasePlatformOptions];
 
 const RELEASE_VERSION_PATTERN =
@@ -63,7 +67,7 @@ function showReleaseRequestFailure(reason: unknown, fallback: string) {
   return { message, uncertain };
 }
 
-export function ReleasesPage() {
+export function ReleasesPage(props: ReleasesPageProps) {
   const [searchValue, setSearchValue] = useState("");
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   const [releases, setReleases] = useState<AdminReleaseRecordDto[]>([]);
@@ -79,6 +83,13 @@ export function ReleasesPage() {
   useEffect(() => {
     void loadReleases();
   }, []);
+
+  useEffect(() => {
+    if (!props.refreshSignal) {
+      return;
+    }
+    void loadReleases({ silent: true });
+  }, [props.refreshSignal]);
 
   const visibleReleases = useMemo(
     () =>
@@ -108,9 +119,11 @@ export function ReleasesPage() {
     [visibleReleases]
   );
 
-  async function loadReleases() {
+  async function loadReleases(options?: { silent?: boolean }) {
     try {
-      setLoading(true);
+      if (!options?.silent) {
+        setLoading(true);
+      }
       setError(null);
       const data = await fetchAdminReleases();
       setReleases(data);

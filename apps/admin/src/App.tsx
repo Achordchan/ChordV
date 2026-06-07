@@ -300,6 +300,7 @@ export function App() {
   });
   const [section, setSection] = useState<SectionKey>("overview");
   const sectionRef = useRef<SectionKey>("overview");
+  const [releaseRefreshSignal, setReleaseRefreshSignal] = useState(0);
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
   const [drawerBusy, setDrawerBusy] = useState(false);
@@ -445,6 +446,9 @@ export function App() {
     return subscribeAdminRuntimeEvents((event) => {
       if (event.type === "keepalive" || document.visibilityState === "hidden") {
         return;
+      }
+      if (event.type === "version_updated") {
+        setReleaseRefreshSignal((current) => current + 1);
       }
       void refreshDashboard();
       void loadSectionData(sectionRef.current, { force: true, silent: true });
@@ -1845,6 +1849,15 @@ export function App() {
     selectSection("subscriptions");
   }
 
+  function openTeamSubscriptions(team: AdminTeamRecordDto) {
+    setSubscriptionTab("team");
+    setSearch((current) => ({
+      ...current,
+      subscriptions: team.name || team.ownerEmail || team.id
+    }));
+    selectSection("subscriptions");
+  }
+
   function openKickMemberModal(teamId: string, memberId: string, memberName: string) {
     setKickMemberTarget({ teamId, memberId, memberName });
     setKickDisableAccount(false);
@@ -2353,6 +2366,7 @@ export function App() {
                 buildTeamMemberOptions={buildTeamMemberOptions}
                 onOpenUserDrawer={(userId) => openDrawer("user", userId)}
                 onOpenUserSubscriptions={openUserSubscriptions}
+                onOpenTeamSubscriptions={openTeamSubscriptions}
                 onOpenTeamInlineEditor={openTeamInlineEditor}
                 onCloseTeamInlineEditor={closeTeamInlineEditor}
                 onSaveTeamInlineEditor={(teamId) => void saveTeamInlineEditor(teamId)}
@@ -2462,7 +2476,7 @@ export function App() {
               />
             ) : null}
 
-            {section === "releases" ? <ReleasesPage /> : null}
+            {section === "releases" ? <ReleasesPage refreshSignal={releaseRefreshSignal} /> : null}
 
             {section === "runtimeComponents" ? <RuntimeComponentsPage /> : null}
 

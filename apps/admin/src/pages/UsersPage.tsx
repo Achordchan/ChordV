@@ -29,6 +29,7 @@ type UsersPageProps = {
   buildTeamMemberOptions: (currentUserId?: string) => Array<{ value: string; label: string }>;
   onOpenUserDrawer: (userId: string) => void;
   onOpenUserSubscriptions: (user: AdminUserRecordDto) => void;
+  onOpenTeamSubscriptions: (team: AdminTeamRecordDto) => void;
   onOpenTeamInlineEditor: (teamId: string) => void;
   onCloseTeamInlineEditor: () => void;
   onSaveTeamInlineEditor: (teamId: string) => void;
@@ -304,15 +305,13 @@ export function UsersPage(props: UsersPageProps) {
                                     >
                                       <IconPencil size={16} />
                                     </ActionIcon>
-                                    {userRecord ? (
-                                      <ActionIcon
-                                        variant="subtle"
-                                        onClick={() => props.onOpenUserSubscriptions(userRecord)}
-                                        title="账号级：打开订阅管理"
-                                      >
-                                        <IconListDetails size={16} />
-                                      </ActionIcon>
-                                    ) : null}
+                                    <ActionIcon
+                                      variant="subtle"
+                                      onClick={() => props.onOpenTeamSubscriptions(item)}
+                                      title="Team 订阅：打开共享订阅管理"
+                                    >
+                                      <IconListDetails size={16} />
+                                    </ActionIcon>
                                     <ActionIcon
                                       variant="subtle"
                                       color={userRecord?.status === "active" ? "red" : "green"}
