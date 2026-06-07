@@ -1407,12 +1407,10 @@ export class DevDataService implements OnModuleInit {
 
     if (requestedNodeIds.length === 0) {
       if (existingRows.length > 0) {
-        let queuedPanelSyncMessage: string | null = null;
         await this.prisma.$transaction(async (tx) => {
           await tx.subscriptionNodeAccess.deleteMany({
             where: { subscriptionId }
           });
-          queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(tx, subscriptionId, undefined);
         });
         markLocalSave?.({
           subscriptionId,
@@ -1427,8 +1425,7 @@ export class DevDataService implements OnModuleInit {
         });
         panelSyncStatus = "pending";
         panelSyncMessage = [
-          queuedPanelSyncMessage,
-          this.startActiveNodeAccessRevocationEffects(
+          this.startNodeAccessRevocationEffects(
             subscriptionId,
             undefined,
             "node_access_revoked"
@@ -1485,7 +1482,6 @@ export class DevDataService implements OnModuleInit {
     const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
 
     if (removedNodeIds.length > 0) {
-      let queuedPanelSyncMessage: string | null = null;
       await this.prisma.$transaction(async (tx) => {
         await tx.subscriptionNodeAccess.deleteMany({
           where: {
@@ -1501,17 +1497,6 @@ export class DevDataService implements OnModuleInit {
               nodeId
             }))
           });
-        }
-        queuedPanelSyncMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTx(tx, subscriptionId, {
-          nodeIds: removedNodeIds
-        });
-        if (addedNodeIds.length > 0) {
-          const pendingEnsureCount = await this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId);
-          if (pendingEnsureCount > 0) {
-            queuedPanelSyncMessage = [queuedPanelSyncMessage, "3x-ui ensure job queued for newly authorized nodes."]
-              .filter(Boolean)
-              .join(" ");
-          }
         }
       });
       const fallbackNodes = uniqueNodeIds
@@ -1531,8 +1516,7 @@ export class DevDataService implements OnModuleInit {
       panelSyncStatus = "pending";
       panelSyncMessage = [
         panelSyncMessage,
-        queuedPanelSyncMessage,
-        this.startActiveNodeAccessRevocationEffects(subscriptionId, { nodeIds: removedNodeIds }, "node_access_revoked")
+        this.startNodeAccessRevocationEffects(subscriptionId, { nodeIds: removedNodeIds }, "node_access_revoked")
       ]
         .filter(Boolean)
         .join(" ");
@@ -1563,7 +1547,6 @@ export class DevDataService implements OnModuleInit {
     }
 
     if (removedNodeIds.length === 0 && addedNodeIds.length > 0) {
-      let queuedPanelSyncMessage: string | null = null;
       await this.prisma.$transaction(async (tx) => {
         await tx.subscriptionNodeAccess.createMany({
           data: addedNodeIds.map((nodeId) => ({
@@ -1572,10 +1555,6 @@ export class DevDataService implements OnModuleInit {
             nodeId
           }))
         });
-        const pendingEnsureCount = await this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId);
-        if (pendingEnsureCount > 0) {
-          queuedPanelSyncMessage = "3x-ui ensure job queued for newly authorized nodes.";
-        }
       });
       const fallbackNodes = uniqueNodeIds
         .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
@@ -1591,9 +1570,6 @@ export class DevDataService implements OnModuleInit {
         panelSyncMessage: "local node access saved; panel ensure synchronization is pending background processing.",
         message: "Node access saved locally; panel synchronization is pending background retry."
       });
-      panelSyncMessage = [panelSyncMessage, queuedPanelSyncMessage]
-        .filter(Boolean)
-        .join(" ");
     }
 
     if (addedNodeIds.length > 0) {

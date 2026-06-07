@@ -1036,7 +1036,8 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
-      const uncertain = isUncertainRequestFailure(message);
+      const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
       notifications.show({
         title: options.automatic || uncertain ? "面板入站暂不可用" : "读取失败",
         message:
@@ -1171,7 +1172,8 @@ export function App() {
       });
     } catch (reason) {
       const message = readError(reason, "更新管理员账号失败");
-      const uncertain = isUncertainRequestFailure(message);
+      const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "账号安全状态不确定" : "账号安全",
@@ -1308,7 +1310,8 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
-      const uncertain = isUncertainRequestFailure(message);
+      const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "节点授权状态不确定" : "操作失败",
