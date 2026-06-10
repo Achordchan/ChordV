@@ -116,12 +116,18 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }, [components, failures.length]);
 
   function openCreate() {
+    if (saving) {
+      return;
+    }
     setEditingId(null);
     setForm(emptyRuntimeComponentEditorForm());
     setEditorOpened(true);
   }
 
   function openEdit(record: AdminRuntimeComponentRecordDto) {
+    if (saving) {
+      return;
+    }
     setEditingId(record.id);
     setForm(toRuntimeComponentEditorForm(record));
     setEditorOpened(true);
@@ -325,7 +331,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
             <Button variant="light" leftSection={<IconRefresh size={16} />} onClick={() => void onRefresh()} loading={loading}>
               刷新
             </Button>
-            <Button leftSection={<IconPlus size={16} />} onClick={openCreate}>
+            <Button leftSection={<IconPlus size={16} />} onClick={openCreate} disabled={saving}>
               新增组件
             </Button>
           </Group>
@@ -530,7 +536,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                   </Table.Td>
                   <Table.Td>
                     <Group gap={6} wrap="nowrap">
-                      <ActionIcon variant="light" color="blue" onClick={() => onEdit(record)} aria-label="编辑">
+                      <ActionIcon variant="light" color="blue" onClick={() => onEdit(record)} aria-label="编辑" disabled={saving}>
                         <IconEdit size={16} />
                       </ActionIcon>
                       <ActionIcon

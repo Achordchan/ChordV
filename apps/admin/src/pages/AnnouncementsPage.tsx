@@ -11,6 +11,7 @@ type AnnouncementsPageProps = {
   searchValue: string;
   onSearchChange: (value: string) => void;
   announcements: AdminAnnouncementRecordDto[];
+  actionBusyKey: string | null;
   onOpenAnnouncementDrawer: (announcementId: string) => void;
   onDeleteAnnouncement: (announcementId: string) => void;
 };
@@ -52,10 +53,16 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
               </Table.Td>
               <Table.Td>
                 <Stack gap={6}>
-                  <ActionIcon variant="subtle" onClick={() => props.onOpenAnnouncementDrawer(item.id)}>
+                  <ActionIcon variant="subtle" onClick={() => props.onOpenAnnouncementDrawer(item.id)} disabled={props.actionBusyKey !== null}>
                     <IconPencil size={16} />
                   </ActionIcon>
-                  <ActionIcon variant="subtle" color="red" onClick={() => props.onDeleteAnnouncement(item.id)}>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    onClick={() => props.onDeleteAnnouncement(item.id)}
+                    loading={props.actionBusyKey === `announcement-delete:${item.id}`}
+                    disabled={props.actionBusyKey !== null && props.actionBusyKey !== `announcement-delete:${item.id}`}
+                  >
                     <IconTrash size={16} />
                   </ActionIcon>
                 </Stack>

@@ -19168,6 +19168,54 @@ async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
   assert.equal(result.id, "announcement_1");
 }
 
+async function testMarkAnnouncementReadKeepsLocalSaveWhenPublishFails() {
+  const upserts: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        throw new Error("announcement read SSE unavailable");
+      }
+    },
+    prisma: {
+      announcement: {
+        findMany: async () => [
+          {
+            id: "announcement_1",
+            displayMode: "passive"
+          }
+        ]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          announcementReadState: {
+            upsert: async (payload: Record<string, any>) => {
+              upserts.push(payload);
+            }
+          }
+        })
+    }
+  });
+
+  const result = await service.markClientAnnouncementsRead(
+    {
+      announcementIds: ["announcement_1"],
+      action: "seen"
+    },
+    "token"
+  );
+
+  assert.deepEqual(result.updatedIds, ["announcement_1"]);
+  assert.equal(upserts.length, 1, "announcement read state must be saved before SSE publish");
+  assert.match(warnings[0] ?? "", /announcement_read_state_updated publish failed/);
+}
+
 async function testUpdatePolicyRejectsDuplicateModes() {
   const service = createAnnouncementPolicyService({
     prisma: {
@@ -21168,6 +21216,7 @@ async function main() {
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
+  await testMarkAnnouncementReadKeepsLocalSaveWhenPublishFails();
   await testUpdatePolicyRejectsDuplicateModes();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
   await testUpdatePolicyKeepsLocalSaveWhenPublishFails();

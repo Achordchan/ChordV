@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { notifications } from "@mantine/notifications";
 import type {
   AdminRuntimeComponentFailureReportDto,
@@ -24,6 +24,7 @@ export function RuntimeComponentsPage() {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [uploadMaxBytes, setUploadMaxBytes] = useState(DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES);
+  const runtimeRequestSeqRef = useRef(0);
 
   useEffect(() => {
     void loadRuntimeComponents();
@@ -40,13 +41,21 @@ export function RuntimeComponentsPage() {
   }
 
   async function loadRuntimeComponents() {
+    const requestSeq = runtimeRequestSeqRef.current + 1;
+    runtimeRequestSeqRef.current = requestSeq;
     try {
       setRuntimeLoading(true);
       setRuntimeError(null);
       const [components, failures] = await Promise.all([fetchAdminRuntimeComponents(), fetchAdminRuntimeComponentFailures()]);
+      if (runtimeRequestSeqRef.current !== requestSeq) {
+        return;
+      }
       setRuntimeComponents(components);
       setRuntimeFailures(failures);
     } catch (reason) {
+      if (runtimeRequestSeqRef.current !== requestSeq) {
+        return;
+      }
       const message = readError(reason, "加载内核组件失败");
       setRuntimeError(message);
       notifications.show({
@@ -55,7 +64,9 @@ export function RuntimeComponentsPage() {
         message
       });
     } finally {
-      setRuntimeLoading(false);
+      if (runtimeRequestSeqRef.current === requestSeq) {
+        setRuntimeLoading(false);
+      }
     }
   }
 

@@ -19,6 +19,7 @@ type UsersPageProps = {
   allUsers: AdminUserRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   leaseRevocationRetryBusyKey: string | null;
+  actionBusyKey: string | null;
   teamInlineEditorId: string | null;
   teamMemberInlineEditor: { teamId: string; memberId: string | null } | null;
   teamProfileBusyKey: string | null;
@@ -112,6 +113,8 @@ export function UsersPage(props: UsersPageProps) {
                           color="orange"
                           onClick={() => props.onDisconnectUser(item.id, item.displayName, "personal")}
                           title="账号级：提交连接撤销任务"
+                          loading={props.actionBusyKey === `user-disconnect:${item.id}`}
+                          disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${item.id}`}
                         >
                           <IconRefresh size={16} />
                         </ActionIcon>
@@ -126,6 +129,8 @@ export function UsersPage(props: UsersPageProps) {
                             )
                           }
                           title={item.status === "active" ? "禁用账号" : "启用账号"}
+                          loading={props.actionBusyKey === `user-status:${item.id}`}
+                          disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${item.id}`}
                         >
                           {item.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
                         </ActionIcon>
@@ -330,6 +335,8 @@ export function UsersPage(props: UsersPageProps) {
                                     <ActionIcon
                                       variant="subtle"
                                       color={userRecord?.status === "active" ? "red" : "green"}
+                                      loading={props.actionBusyKey === `user-status:${member.userId}`}
+                                      disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${member.userId}`}
                                       onClick={() =>
                                         props.onToggleTeamUserStatus(
                                           member.userId,
@@ -344,6 +351,8 @@ export function UsersPage(props: UsersPageProps) {
                                     <ActionIcon
                                       variant="subtle"
                                       color="orange"
+                                      loading={props.actionBusyKey === `user-disconnect:${member.userId}`}
+                                      disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${member.userId}`}
                                       onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
                                       title="账号级：提交连接撤销任务，不移出团队"
                                     >
@@ -360,6 +369,8 @@ export function UsersPage(props: UsersPageProps) {
                                       <ActionIcon
                                         color="red"
                                         variant="subtle"
+                                        loading={props.actionBusyKey === `team-member-delete:${member.id}`}
+                                        disabled={props.actionBusyKey !== null && props.actionBusyKey !== `team-member-delete:${member.id}`}
                                         onClick={() => props.onDeleteTeamMember(item.id, member.id)}
                                         title="团队关系：移出团队"
                                       >

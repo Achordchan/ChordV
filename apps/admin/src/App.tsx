@@ -175,7 +175,13 @@ import {
   type TeamSubscriptionFormState,
   type UserFormState
 } from "./utils/admin-forms";
-import { filterByKeyword, isDefiniteLocalSaveFailure, isUncertainRequestFailure, readError } from "./utils/admin-filters";
+import {
+  filterByKeyword,
+  isDefiniteLocalSaveFailure,
+  isPotentiallyCompletedMutationFailure,
+  isUncertainRequestFailure,
+  readError
+} from "./utils/admin-filters";
 import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
 import {
   getRenewActionDescription,
@@ -293,6 +299,7 @@ export function App() {
   });
   const [adminSecurityOpened, setAdminSecurityOpened] = useState(false);
   const [adminSecuritySaving, setAdminSecuritySaving] = useState(false);
+  const adminSecuritySavingRef = useRef(false);
   const [adminSecurityForm, setAdminSecurityForm] = useState<AdminSecurityFormState>({
     email: "",
     currentPassword: "",
@@ -348,6 +355,8 @@ export function App() {
   const [convertTargetTeamId, setConvertTargetTeamId] = useState<string | null>(null);
   const [convertSubmitting, setConvertSubmitting] = useState(false);
   const convertSubmittingRef = useRef(false);
+  const [entityActionBusyKey, setEntityActionBusyKey] = useState<string | null>(null);
+  const entityActionBusyRef = useRef<string | null>(null);
   const [teamUsageDetailTarget, setTeamUsageDetailTarget] = useState<{
     teamName: string;
     userDisplayName: string;
@@ -383,6 +392,7 @@ export function App() {
   const [policyForm, setPolicyForm] = useState<PolicyFormState | null>(null);
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policySaving, setPolicySaving] = useState(false);
+  const policySavingRef = useRef(false);
   const [nodeAccessEditor, setNodeAccessEditor] = useState<NodeAccessEditorState | null>(null);
   const [nodeAccessSelection, setNodeAccessSelection] = useState<string[]>([]);
   const [nodeAccessLoading, setNodeAccessLoading] = useState(false);
@@ -933,7 +943,10 @@ export function App() {
       });
     } catch (reason) {
       const retryMessage = readError(reason, "同步任务重新排队失败");
-      const retryUncertain = isUncertainRequestFailure(retryMessage);
+      const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
+      if (retryUncertain) {
+        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+      }
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
@@ -963,7 +976,10 @@ export function App() {
       });
     } catch (reason) {
       const retryMessage = readError(reason, "节点同步任务重新排队失败");
-      const retryUncertain = isUncertainRequestFailure(retryMessage);
+      const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
+      if (retryUncertain) {
+        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+      }
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
@@ -992,7 +1008,10 @@ export function App() {
       });
     } catch (reason) {
       const retryMessage = readError(reason, "连接撤销任务重新排队失败");
-      const retryUncertain = isUncertainRequestFailure(retryMessage);
+      const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
+      if (retryUncertain) {
+        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+      }
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
@@ -1021,7 +1040,10 @@ export function App() {
       });
     } catch (reason) {
       const retryMessage = readError(reason, "节点连接撤销任务重新排队失败");
-      const retryUncertain = isUncertainRequestFailure(retryMessage);
+      const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
+      if (retryUncertain) {
+        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+      }
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
@@ -1147,6 +1169,9 @@ export function App() {
   }
 
   async function saveAdminSecurity() {
+    if (adminSecuritySavingRef.current) {
+      return;
+    }
     const email = adminSecurityForm.email.trim();
     const newPassword = adminSecurityForm.newPassword.trim();
     if (!email || !adminSecurityForm.currentPassword.trim()) {
@@ -1175,6 +1200,7 @@ export function App() {
     }
 
     try {
+      adminSecuritySavingRef.current = true;
       setAdminSecuritySaving(true);
       const session = await updateCurrentAdminSecurity({
         email,
@@ -1208,12 +1234,16 @@ export function App() {
       const message = readError(reason, "更新管理员账号失败");
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      if (uncertain) {
+        void loadFullSnapshot().catch(() => undefined);
+      }
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "账号安全状态不确定" : "账号安全",
         message: uncertain ? `${message} 管理员账号安全信息可能已保存，请刷新后台确认。` : message
       });
     } finally {
+      adminSecuritySavingRef.current = false;
       setAdminSecuritySaving(false);
     }
   }
@@ -1860,6 +1890,7 @@ export function App() {
         successTitle: "探测完成",
         failureTitle: "探测失败",
         failureFallback: "节点网络探测失败",
+        treatHttp500AsUncertain: true,
         uncertainMessage: (message) => `${message} 节点探测状态不确定，请刷新节点列表确认最新探测结果。`,
         resolveSuccess: (result) => {
           const node = result as AdminNodeRecordDto;
@@ -1897,6 +1928,7 @@ export function App() {
         successTitle: "探测完成",
         failureTitle: "探测失败",
         failureFallback: "批量节点网络探测失败",
+        treatHttp500AsUncertain: true,
         uncertainMessage: (message) => `${message} 批量探测状态不确定，请刷新节点列表确认最新探测结果。`,
         resolveSuccess: (result) => {
           const nodes = Array.isArray(result) ? (result as AdminNodeRecordDto[]) : [];
@@ -1929,6 +1961,7 @@ export function App() {
       successTitle: "读取面板成功",
       failureTitle: "读取面板失败",
       failureFallback: "读取 3x-ui 面板并刷新节点失败",
+      treatHttp500AsUncertain: true,
       uncertainMessage: (message) => `${message} 面板读取状态不确定，请刷新节点列表确认节点运行时是否已更新。`,
       resolveSuccess: (result) => {
         const node = result as AdminNodeRecordDto;
@@ -1949,11 +1982,24 @@ export function App() {
   }
 
   async function handleDeleteAnnouncement(announcementId: string) {
-    const confirmed = window.confirm("确认删除这条公告吗？删除后软件端会立即同步移除。");
-    if (!confirmed) {
+    const actionKey = `announcement-delete:${announcementId}`;
+    if (entityActionBusyRef.current) {
       return;
     }
-    await runAction(() => deleteAnnouncement(announcementId), "公告已删除", { treatHttp500AsUncertain: true });
+    entityActionBusyRef.current = actionKey;
+    setEntityActionBusyKey(actionKey);
+    const confirmed = window.confirm("确认删除这条公告吗？删除后软件端会立即同步移除。");
+    if (!confirmed) {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
+      return;
+    }
+    try {
+      await runAction(() => deleteAnnouncement(announcementId), "公告已删除", { treatHttp500AsUncertain: true });
+    } finally {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
+    }
   }
 
   async function handleDeleteNode() {
@@ -1972,12 +2018,25 @@ export function App() {
   }
 
   async function handleDeleteTeamMember(teamId: string, memberId: string) {
+    const actionKey = `team-member-delete:${memberId}`;
+    if (entityActionBusyRef.current) {
+      return;
+    }
+    entityActionBusyRef.current = actionKey;
+    setEntityActionBusyKey(actionKey);
     const confirmed = window.confirm("确认移出这个团队成员吗？他的 Team 订阅访问会进入后台撤销任务。");
     if (!confirmed) {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
       return;
     }
 
-    await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除", { treatHttp500AsUncertain: true });
+    try {
+      await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除", { treatHttp500AsUncertain: true });
+    } finally {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
+    }
   }
 
   async function handleToggleUserStatus(
@@ -1986,6 +2045,12 @@ export function App() {
     displayName: string,
     source: "personal" | "team-member" = "personal"
   ) {
+    const actionKey = `user-status:${userId}`;
+    if (entityActionBusyRef.current) {
+      return;
+    }
+    entityActionBusyRef.current = actionKey;
+    setEntityActionBusyKey(actionKey);
     const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队关系。" : "";
     const confirmed = window.confirm(
       nextStatus === "disabled"
@@ -1993,14 +2058,21 @@ export function App() {
         : `确认启用 ${displayName} 的账号吗？启用后该账号可以重新登录和连接。${teamScopeHint}`
     );
     if (!confirmed) {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
       return;
     }
 
-    await runAction(
-      () => updateUser(userId, { status: nextStatus }),
-      nextStatus === "disabled" ? "账号已禁用" : "账号已启用",
-      { treatHttp500AsUncertain: true }
-    );
+    try {
+      await runAction(
+        () => updateUser(userId, { status: nextStatus }),
+        nextStatus === "disabled" ? "账号已禁用" : "账号已启用",
+        { treatHttp500AsUncertain: true }
+      );
+    } finally {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
+    }
   }
 
   async function handleDisconnectUser(
@@ -2008,19 +2080,32 @@ export function App() {
     displayName: string,
     source: "personal" | "team-member" = "personal"
   ) {
+    const actionKey = `user-disconnect:${userId}`;
+    if (entityActionBusyRef.current) {
+      return;
+    }
+    entityActionBusyRef.current = actionKey;
+    setEntityActionBusyKey(actionKey);
     const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队成员。" : "";
     const confirmed = window.confirm(
       `确认提交 ${displayName} 的连接撤销任务吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
     );
     if (!confirmed) {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
       return;
     }
 
-    await runAction(
-      () => disconnectUser(userId),
-      "账号连接撤销任务已提交",
-      { treatHttp500AsUncertain: true }
-    );
+    try {
+      await runAction(
+        () => disconnectUser(userId),
+        "账号连接撤销任务已提交",
+        { treatHttp500AsUncertain: true }
+      );
+    } finally {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
+    }
   }
 
   function openUserSubscriptions(user: AdminUserRecordDto) {
@@ -2396,8 +2481,10 @@ export function App() {
 
   async function handleSavePolicy() {
     if (!policyForm) return;
+    if (policySavingRef.current) return;
 
     try {
+      policySavingRef.current = true;
       setPolicySaving(true);
       if (!policyForm.modes.includes(policyForm.defaultMode)) {
         notifications.show({
@@ -2429,12 +2516,22 @@ export function App() {
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      if (uncertain) {
+        void fetchAdminPolicy()
+          .then((policy) => {
+            setPolicyDirty(false);
+            setPolicyForm(toPolicyForm(policy));
+            mergeSnapshot({ policy });
+          })
+          .catch(() => undefined);
+      }
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : "操作失败",
         message: uncertain ? `${message} 策略可能已保存，请刷新页面确认。` : message
       });
     } finally {
+      policySavingRef.current = false;
       setPolicySaving(false);
     }
   }
@@ -2630,6 +2727,7 @@ export function App() {
                 allUsers={snapshot.users}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
+                actionBusyKey={entityActionBusyKey}
                 teamInlineEditorId={teamInlineEditorId}
                 teamMemberInlineEditor={teamMemberInlineEditor}
                 teamProfileBusyKey={teamProfileBusyKey}
@@ -2747,6 +2845,7 @@ export function App() {
                 searchValue={search.announcements}
                 onSearchChange={(value) => setSearch((current) => ({ ...current, announcements: value }))}
                 announcements={announcements}
+                actionBusyKey={entityActionBusyKey}
                 onOpenAnnouncementDrawer={(announcementId) => openDrawer("announcement", announcementId)}
                 onDeleteAnnouncement={(announcementId) => void handleDeleteAnnouncement(announcementId)}
               />

@@ -164,11 +164,7 @@ export class AnnouncementPolicyService {
     });
 
     for (const item of targetRows) {
-      this.clientRuntimeEventsService.publishToUser(user.id, {
-        type: "announcement_read_state_updated",
-        occurredAt: now.toISOString(),
-        announcementId: item.id
-      });
+      this.publishAnnouncementReadStateUpdatedBestEffort(user.id, item.id, now);
     }
 
     return {
@@ -324,6 +320,20 @@ export class AnnouncementPolicyService {
         announcementId
       });
     });
+  }
+
+  private publishAnnouncementReadStateUpdatedBestEffort(userId: string, announcementId: string, occurredAt: Date) {
+    try {
+      this.clientRuntimeEventsService.publishToUser(userId, {
+        type: "announcement_read_state_updated",
+        occurredAt: occurredAt.toISOString(),
+        announcementId
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Local announcement read state saved, but announcement_read_state_updated publish failed for ${userId}: ${readErrorMessage(error)}`
+      );
+    }
   }
 
   private async runPublishEventBestEffort(eventType: string, task: () => Promise<unknown>) {
