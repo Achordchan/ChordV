@@ -346,7 +346,7 @@ async function testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscript
   );
 }
 
-async function testUpdateNodeAccessDoesNotQueuePanelSyncInsideLocalTransaction() {
+async function testUpdateNodeAccessQueuesPanelSyncInsideLocalTransaction() {
   const originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
   const createdRows: Array<Record<string, any>> = [];
@@ -404,11 +404,11 @@ async function testUpdateNodeAccessDoesNotQueuePanelSyncInsideLocalTransaction()
       runtimeSessionService: {
         queueSubscriptionPanelAccessSyncTx: async () => {
           transactionScopedEnsureCalled = true;
-          throw new Error("transaction-scoped panel sync queue must not run inside node access local save");
+          return 1;
         },
         queueSubscriptionPanelAccessSync: async () => {
           deferredEnsureStarted = true;
-          return 1;
+          throw new Error("node access local save must not use deferred panel sync for required jobs");
         },
         syncSubscriptionPanelAccess: async (subscriptionId: string) =>
           runWithSubscriptionUsageLock(subscriptionId, async () => 0)
@@ -425,12 +425,11 @@ async function testUpdateNodeAccessDoesNotQueuePanelSyncInsideLocalTransaction()
 
     assert.equal(createdRows.length, 1);
     assert.equal(createdRows[0]?.skipDuplicates, true, "node access inserts must be idempotent for concurrent saves");
-    assert.equal(transactionScopedEnsureCalled, false, "node access local transaction must only write subscriptionNodeAccess rows");
+    assert.equal(transactionScopedEnsureCalled, true, "node access local transaction must also create required panel sync jobs");
     assert.deepEqual(result.nodeIds, ["node_1"]);
     assert.equal(result.panelSyncStatus, "pending");
     assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
-    await waitUntil(() => deferredEnsureStarted);
-    assert.equal(deferredEnsureStarted, true, "panel ensure jobs should start after the local response");
+    assert.equal(deferredEnsureStarted, false, "required panel sync jobs must not depend on a deferred timer");
   } finally {
     if (originalDatabaseUrl === undefined) {
       delete process.env.DATABASE_URL;
@@ -7443,15 +7442,12 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
   const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] });
 
   assert.equal(createdRows.length, 1, "local node authorization must be saved before panel pre-sync");
-  assert.equal(panelSyncStarted, false, "panel pre-sync must be deferred until after the local response");
+  assert.equal(panelSyncStarted, false, "required panel sync jobs must be queued locally without deferred remote sync");
   assert.equal(published, true, "clients must still be notified after local authorization changes");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
   assert.match(result.message ?? "", /节点授权已保存/);
-  for (let attempt = 0; !panelSyncStarted && attempt < 10; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  assert.equal(panelSyncStarted, true, "deferred panel pre-sync should still start after the response");
+  assert.equal(panelSyncStarted, false, "required panel sync jobs must not depend on a deferred timer");
 }
 
 async function testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest() {
@@ -7722,7 +7718,7 @@ async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.deepEqual(accessRows.map((row) => row.nodeId), [], "local node access must stay cleared when panel queue fails");
   assert.deepEqual(result.nodeIds, []);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /background processing|后台处理/);
+  assert.match(result.panelSyncMessage ?? "", /background processing|后台处理|queueing failed/);
 }
 
 async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
@@ -7772,24 +7768,24 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
             }
           }
         })
-    },
-    runtimeSessionService: {
-      markPanelBindingsDisabledForSubscription: async () => {
-        disableQueueStarted = true;
-        return 1;
       },
-      queuePanelDisableJobsForSubscriptionTx: async () => {
-        throw new Error("node access removal must not queue panel jobs inside the local transaction");
+      runtimeSessionService: {
+        markPanelBindingsDisabledForSubscription: async () => {
+          throw new Error("node access removal must not use deferred panel disable for required jobs");
+        },
+        queuePanelDisableJobsForSubscriptionTx: async () => {
+          disableQueueStarted = true;
+          return 1;
+        },
+        queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+        queueLeaseRevocationJobsForSubscription: async () => {
+          leaseJobQueueFollowUpStarted = true;
+          return new Promise<number>(() => undefined);
+        },
+        revokeSubscriptionLeases: async () => {
+          throw new Error("node access revocation should queue lease jobs instead of direct active revoke");
+        }
       },
-      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
-      queueLeaseRevocationJobsForSubscription: async () => {
-        leaseJobQueueFollowUpStarted = true;
-        return new Promise<number>(() => undefined);
-      },
-      revokeSubscriptionLeases: async () => {
-        throw new Error("node access revocation should queue lease jobs instead of direct active revoke");
-      }
-    },
     publishNodeAccessUpdatedEvent: async () => undefined
   });
 
@@ -7800,13 +7796,12 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
     })
   ]);
 
-  assert.equal(disableQueueStarted, false, "panel disable jobs must not run before the local response");
+  assert.equal(disableQueueStarted, true, "panel disable jobs must be queued inside the local transaction");
   assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must be deferred until after the local response");
   assert.deepEqual(accessRows, [], "local node access must be cleared before stalled follow-up finishes");
   assert.deepEqual(result.nodeIds, []);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /后台处理/);
-  await waitUntil(() => disableQueueStarted && leaseJobQueueFollowUpStarted);
+  assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
 }
 
 async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
@@ -7875,11 +7870,11 @@ async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
       },
       runtimeSessionService: {
         markPanelBindingsDisabledForSubscription: async () => {
-          panelDisableStarted = true;
-          return 1;
+          throw new Error("node access removal must not use deferred panel disable for required jobs");
         },
         queuePanelDisableJobsForSubscriptionTx: async () => {
-          throw new Error("node access removal must not queue panel jobs inside the local transaction");
+          panelDisableStarted = true;
+          return 1;
         },
         queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
         revokeSubscriptionLeases: async () => 0
@@ -7895,10 +7890,9 @@ async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
     ]);
 
     assert.deepEqual(accessRows, [], "local node access must be cleared without waiting for usage sync lock");
-    assert.equal(panelDisableStarted, false, "offline panel disable jobs must not run before the local response");
+    assert.equal(panelDisableStarted, true, "offline panel disable jobs must be queued inside the local transaction");
     assert.equal(result.panelSyncStatus, "pending");
     assert.deepEqual(result.nodeIds, []);
-    await waitUntil(() => panelDisableStarted);
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -7994,11 +7988,11 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
       },
       runtimeSessionService: {
         markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
-          disableFilter = filter;
-          return 1;
+          throw new Error("node access removal must not use deferred panel disable for required jobs");
         },
         queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
-          throw new Error("node access removal must not queue panel jobs inside the local transaction");
+          disableFilter = filter;
+          return 1;
         },
         queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
         revokeSubscriptionLeases: async () => 0,
@@ -8018,13 +8012,11 @@ async function testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock() {
     ]);
 
     assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
-    assert.deepEqual(disableFilter, undefined, "offline panel disable jobs must not run before the local response");
+    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs must be queued inside the local transaction");
     assert.equal(syncCalls, 0, "removing one node must not run full panel sync");
     assert.deepEqual(result.nodeIds, ["node_keep"]);
     assert.equal(result.panelSyncStatus, "pending");
-    assert.match(result.panelSyncMessage ?? "", /后台处理/);
-    await waitUntil(() => Boolean(disableFilter));
-    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs should run after the local response");
+    assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -8104,19 +8096,19 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
+        throw new Error("node access removal must not use deferred panel disable for required jobs");
+      },
+      queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
         disableFilter = filter;
         return 1;
       },
-      queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
-        throw new Error("node access removal must not queue panel jobs inside the local transaction");
-      },
       queueLeaseRevocationJobsForSubscriptionTx: async () => {
         leaseJobQueuedInTransaction = true;
-        throw new Error("node access removal must not queue lease revocation jobs inside the local transaction");
+        return 1;
       },
       queueLeaseRevocationJobsForSubscription: async () => {
         leaseJobQueueFollowUpStarted = true;
-        return 0;
+        throw new Error("node access removal must not use deferred lease revocation for required jobs");
       },
       revokeSubscriptionLeases: async () => {
         throw new Error("node access removal should queue lease jobs instead of direct active revoke");
@@ -8136,14 +8128,12 @@ async function testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpSta
   ]);
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
-  assert.deepEqual(disableFilter, undefined, "panel disable jobs must not run before the local response");
-  assert.equal(leaseJobQueuedInTransaction, false, "lease revocation jobs must not be queued inside the local transaction");
+  assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "panel disable jobs must be queued inside the local transaction");
+  assert.equal(leaseJobQueuedInTransaction, true, "lease revocation jobs must be queued inside the local transaction");
   assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must be deferred after the local response");
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /后台处理/);
-  await waitUntil(() => Boolean(disableFilter) && leaseJobQueueFollowUpStarted);
-  assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "panel disable jobs should run after the local response");
+  assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
 }
 
 async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() {
@@ -8212,15 +8202,15 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("node access removal must not use deferred panel disable for required jobs");
+      },
+      queuePanelDisableJobsForSubscriptionTx: async () => {
         panelDisableStarted = true;
         return 1;
       },
-      queuePanelDisableJobsForSubscriptionTx: async () => {
-        throw new Error("node access removal must not queue panel jobs inside the local transaction");
-      },
       queueLeaseRevocationJobsForSubscriptionTx: async () => {
         leaseJobQueuedInTransaction = true;
-        throw new Error("node access removal must not queue lease revocation jobs inside the local transaction");
+        return 1;
       },
       queueLeaseRevocationJobsForSubscription: async () => {
         leaseJobQueueFollowUpStarted = true;
@@ -8245,16 +8235,13 @@ async function testRemoveSingleNodeAccessDoesNotStartRevocationFollowUpInline() 
     })
   ]);
 
-  assert.equal(panelDisableStarted, false, "panel disable jobs must not run before the local response");
-  assert.equal(leaseJobQueuedInTransaction, false, "lease revocation jobs must not be queued inside the local transaction");
+  assert.equal(panelDisableStarted, true, "panel disable jobs must be queued inside the local transaction");
+  assert.equal(leaseJobQueuedInTransaction, true, "lease revocation jobs must be queued inside the local transaction");
   assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must be deferred until after the response is built");
-  assert.ok(Date.now() - startedAt < 150, "local node access update must return before deferred follow-up work starts");
+  assert.ok(Date.now() - startedAt < 150, "local node access update must return after local queueing without deferred blocking");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(panelDisableStarted, false, "panel disable jobs must leave a small response-flush window before starting");
-  assert.equal(leaseJobQueueFollowUpStarted, false, "lease revocation queue follow-up must leave a small response-flush window before starting");
-  await waitUntil(() => panelDisableStarted && leaseJobQueueFollowUpStarted);
-  assert.equal(panelDisableStarted, true, "panel disable jobs should still run after the response-flush window");
-  assert.equal(leaseJobQueueFollowUpStarted, true, "lease revocation queue follow-up should still run after the response-flush window");
+  assert.equal(panelDisableStarted, true, "panel disable jobs must already be queued");
+  assert.equal(leaseJobQueueFollowUpStarted, false, "required lease revocation jobs must not depend on deferred follow-up");
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"]);
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
@@ -8971,21 +8958,21 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
       },
       runtimeSessionService: {
         markPanelBindingsDisabledForSubscription: async (_subscriptionId: string, filter?: { nodeIds?: string[] }) => {
-          disableFilter = filter;
-          return 1;
+          throw new Error("node access replacement must not use deferred panel disable for required jobs");
         },
         queuePanelDisableJobsForSubscriptionTx: async (_writer: unknown, _subscriptionId: string, filter?: { nodeIds?: string[] }) => {
-          throw new Error("node access replacement must not queue panel disable jobs inside the local transaction");
+          disableFilter = filter;
+          return 1;
         },
         queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
         revokeSubscriptionLeases: async () => 0,
         queueSubscriptionPanelAccessSyncTx: async () => {
           transactionScopedEnsureCalled = true;
-          throw new Error("node access replacement must not queue panel ensure jobs inside the local transaction");
+          return 1;
         },
         queueSubscriptionPanelAccessSync: async () => {
           syncCalls += 1;
-          return 1;
+          throw new Error("required panel ensure jobs must not depend on deferred remote sync");
         },
         syncSubscriptionPanelAccess: async () => {
           syncCalls += 1;
@@ -9003,15 +8990,13 @@ async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
     ]);
 
     assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
-    assert.deepEqual(disableFilter, undefined, "offline panel disable jobs must not run before the local response");
-    assert.equal(transactionScopedEnsureCalled, false, "newly authorized nodes must not queue panel ensure jobs inside the local transaction");
+    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs must be queued inside the local transaction");
+    assert.equal(transactionScopedEnsureCalled, true, "newly authorized nodes must queue panel ensure jobs inside the local transaction");
     assert.equal(syncCalls, 0, "node access replacement must not use the usage-locking panel sync path");
     assert.deepEqual(result.nodeIds, ["node_new"]);
     assert.equal(result.panelSyncStatus, "pending");
-    assert.match(result.panelSyncMessage ?? "", /后台处理/);
+    assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
     assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
-    await waitUntil(() => syncCalls > 0 && Boolean(disableFilter));
-    assert.deepEqual(disableFilter, { nodeIds: ["node_offline"] }, "offline panel disable jobs should run after the local response");
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -9103,7 +9088,7 @@ async function testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes() {
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
   assert.deepEqual(result.nodeIds, ["node_new"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /后台处理/);
+  assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
 }
 
 async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue() {
@@ -9184,7 +9169,7 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access replacement can commit after disable jobs are durable");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /后台处理/);
+  assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
 }
 
 async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
@@ -9260,7 +9245,7 @@ async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
       queueSubscriptionPanelAccessSyncTx: async () => 1,
       queueSubscriptionPanelAccessSync: async () => {
         panelAccessSyncStarted = true;
-        return new Promise<number>(() => undefined);
+        throw new Error("required panel access sync must not depend on deferred work");
       }
     },
     publishNodeAccessUpdatedEvent: async () => undefined
@@ -9273,13 +9258,12 @@ async function testReplaceNodeAccessReturnsPendingWhenPanelAccessSyncStalls() {
     })
   ]);
 
-  assert.equal(panelAccessSyncStarted, false, "panel access sync must be deferred until after the local response");
+  assert.equal(panelAccessSyncStarted, false, "required panel access sync must be queued locally without deferred work");
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access replacement must stay saved");
   assert.deepEqual(result.nodeIds, ["node_new"]);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
-  await waitUntil(() => panelAccessSyncStarted);
-  assert.equal(panelAccessSyncStarted, true, "deferred panel access sync should still start after the response");
+  assert.equal(panelAccessSyncStarted, false, "required panel access sync must not depend on a deferred timer");
 }
 
 async function testUpdateNodeAccessKeepsLocalSaveWhenResponseRefreshFails() {
@@ -20888,7 +20872,7 @@ async function main() {
   await testSubscriptionOwnerLockTimesOutAsRetryableConflict();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
   await testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscriptionStalls();
-  await testUpdateNodeAccessDoesNotQueuePanelSyncInsideLocalTransaction();
+  await testUpdateNodeAccessQueuesPanelSyncInsideLocalTransaction();
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();
   testCorsAllowsProductionAndConfiguredOrigins();

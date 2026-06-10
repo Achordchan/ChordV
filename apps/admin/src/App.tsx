@@ -1618,6 +1618,10 @@ export function App() {
     if (drawerBusyRef.current) {
       return;
     }
+    forceCloseDrawer();
+  }
+
+  function forceCloseDrawer() {
     setDrawer({ type: null, recordId: null, parentId: null });
   }
 
@@ -1657,7 +1661,7 @@ export function App() {
               { treatHttp500AsUncertain: true }
             );
 
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "plan") {
@@ -1672,7 +1676,7 @@ export function App() {
         const success = drawer.recordId
           ? await runAction(() => updatePlan(drawer.recordId!, payload satisfies UpdatePlanInputDto), "套餐已更新", { treatHttp500AsUncertain: true })
           : await runAction(() => createPlan(payload satisfies CreatePlanInputDto), "套餐已创建", { treatHttp500AsUncertain: true });
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "subscription-create") {
@@ -1689,7 +1693,7 @@ export function App() {
           "订阅已创建",
           { treatHttp500AsUncertain: true }
         );
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "subscription-adjust" && drawer.recordId) {
@@ -1704,7 +1708,7 @@ export function App() {
           "订阅已校正",
           { treatHttp500AsUncertain: true }
         );
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "subscription-renew" && drawer.recordId) {
@@ -1719,7 +1723,7 @@ export function App() {
           "订阅已续期",
           { treatHttp500AsUncertain: true }
         );
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "subscription-change-plan" && drawer.recordId) {
@@ -1733,7 +1737,7 @@ export function App() {
           "套餐已变更",
           { treatHttp500AsUncertain: true }
         );
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "team") {
@@ -1745,7 +1749,7 @@ export function App() {
         const success = drawer.recordId
           ? await runAction(() => updateTeam(drawer.recordId!, payload satisfies UpdateTeamInputDto), "团队已更新", { treatHttp500AsUncertain: true })
           : await runAction(() => createTeam(payload satisfies CreateTeamInputDto), "团队已创建", { treatHttp500AsUncertain: true });
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "team-member" && drawer.parentId) {
@@ -1764,7 +1768,7 @@ export function App() {
               "成员已加入",
               { treatHttp500AsUncertain: true }
             );
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "team-subscription" && drawer.parentId) {
@@ -1778,7 +1782,7 @@ export function App() {
           "团队套餐已分配",
           { treatHttp500AsUncertain: true }
         );
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "node") {
@@ -1849,7 +1853,7 @@ export function App() {
               failureFallback: "导入失败，未保存。请检查订阅地址或 3x-ui 面板连接后重试。",
               treatHttp500AsUncertain: true
             });
-        if (success) closeDrawer();
+        if (success) forceCloseDrawer();
       }
 
       if (drawer.type === "announcement") {
@@ -2271,6 +2275,10 @@ export function App() {
 
   function closeConvertToTeamModal() {
     if (convertSubmitting || convertSubmittingRef.current) return;
+    forceCloseConvertToTeamModal();
+  }
+
+  function forceCloseConvertToTeamModal() {
     setConvertSubscriptionTarget(null);
     setConvertTargetTeamId(null);
   }
@@ -2309,7 +2317,7 @@ export function App() {
         { treatHttp500AsUncertain: true }
       );
       if (success) {
-        closeConvertToTeamModal();
+        forceCloseConvertToTeamModal();
       }
     } finally {
       convertSubmittingRef.current = false;
@@ -2410,6 +2418,10 @@ export function App() {
     if (teamSubscriptionBusyRef.current) {
       return;
     }
+    forceCloseTeamSubscriptionInlineEditor();
+  }
+
+  function forceCloseTeamSubscriptionInlineEditor() {
     setTeamSubscriptionInlineEditorId(null);
     setTeamSubscriptionForm(emptyTeamSubscriptionForm());
   }
@@ -2433,7 +2445,7 @@ export function App() {
         { treatHttp500AsUncertain: true }
       );
       if (success) {
-        closeTeamSubscriptionInlineEditor();
+        forceCloseTeamSubscriptionInlineEditor();
       }
     } finally {
       teamSubscriptionBusyRef.current = null;

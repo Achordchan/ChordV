@@ -1385,7 +1385,7 @@ export class DevDataService implements OnModuleInit {
         if (controlledError) {
           throw controlledError;
         }
-        this.logger?.error(
+        this.logger?.error?.(
           `Node access local save failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`,
           error instanceof Error ? error.stack : undefined
         );
@@ -1428,10 +1428,12 @@ export class DevDataService implements OnModuleInit {
 
     if (requestedNodeIds.length === 0) {
       if (existingRows.length > 0) {
+        let queuedRevocationMessage: string | null = null;
         await this.prisma.$transaction(async (tx) => {
           await tx.subscriptionNodeAccess.deleteMany({
             where: { subscriptionId }
           });
+          queuedRevocationMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTxBestEffort(tx, subscriptionId, undefined);
         });
         markLocalSave?.({
           subscriptionId,
@@ -1445,15 +1447,7 @@ export class DevDataService implements OnModuleInit {
           message: "Node access cleared locally; panel synchronization is pending background retry."
         });
         panelSyncStatus = "pending";
-        panelSyncMessage = [
-          this.startNodeAccessRevocationEffects(
-            subscriptionId,
-            undefined,
-            "node_access_revoked"
-          )
-        ]
-          .filter(Boolean)
-          .join(" ");
+        panelSyncMessage = queuedRevocationMessage ?? "3x-ui client disable and lease revocation jobs queued; local node access is already invalid.";
         reasonCode = "node_access_revoked";
         reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
         message =
@@ -1501,8 +1495,10 @@ export class DevDataService implements OnModuleInit {
       .filter((item) => !uniqueNodeIds.includes(item.nodeId))
       .map((item) => item.nodeId);
     const addedNodeIds = uniqueNodeIds.filter((nodeId) => !existingNodeIds.has(nodeId));
+    let queuedEnsureMessage: string | null = null;
 
     if (removedNodeIds.length > 0) {
+      let queuedRevocationMessage: string | null = null;
       await this.prisma.$transaction(async (tx) => {
         await tx.subscriptionNodeAccess.deleteMany({
           where: {
@@ -1519,6 +1515,10 @@ export class DevDataService implements OnModuleInit {
             })),
             skipDuplicates: true
           });
+        }
+        queuedRevocationMessage = await this.queuePanelDisableJobsForNodeAccessRevocationTxBestEffort(tx, subscriptionId, { nodeIds: removedNodeIds });
+        if (addedNodeIds.length > 0) {
+          queuedEnsureMessage = await this.queueSubscriptionPanelAccessSyncTxBestEffort(tx, subscriptionId);
         }
       });
       const fallbackNodes = uniqueNodeIds
@@ -1538,7 +1538,8 @@ export class DevDataService implements OnModuleInit {
       panelSyncStatus = "pending";
       panelSyncMessage = [
         panelSyncMessage,
-        this.startNodeAccessRevocationEffects(subscriptionId, { nodeIds: removedNodeIds }, "node_access_revoked")
+        queuedRevocationMessage ?? "3x-ui client disable and lease revocation jobs queued; local node access is already invalid.",
+        queuedEnsureMessage
       ]
         .filter(Boolean)
         .join(" ");
@@ -1578,6 +1579,7 @@ export class DevDataService implements OnModuleInit {
           })),
           skipDuplicates: true
         });
+        queuedEnsureMessage = await this.queueSubscriptionPanelAccessSyncTxBestEffort(tx, subscriptionId);
       });
       const fallbackNodes = uniqueNodeIds
         .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
@@ -1597,7 +1599,7 @@ export class DevDataService implements OnModuleInit {
 
     if (addedNodeIds.length > 0) {
       panelSyncStatus = "pending";
-      panelSyncMessage = [panelSyncMessage, this.startSubscriptionPanelAccessSync(subscriptionId)]
+      panelSyncMessage = [panelSyncMessage, queuedEnsureMessage ?? "panel access synchronization queued; local node access is already saved."]
         .filter(Boolean)
         .join(" ");
     }
@@ -1682,6 +1684,22 @@ export class DevDataService implements OnModuleInit {
       throw new Error("runtime session service does not support transaction-scoped panel access queueing");
     }
     return queuePanelAccessSyncTx.call(this.runtimeSessionService, writer, subscriptionId);
+  }
+
+  private async queueSubscriptionPanelAccessSyncTxBestEffort(writer: any, subscriptionId: string) {
+    try {
+      await this.queueSubscriptionPanelAccessSyncTx(writer, subscriptionId);
+      return "panel access synchronization queued; local node access is already saved.";
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but transaction panel access sync queueing failed for ${subscriptionId}: ${errorMessage}`);
+      return [
+        `panel access sync queueing failed: ${errorMessage}`,
+        this.startSubscriptionPanelAccessSync(subscriptionId)
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
   }
 
   private startSubscriptionPanelAccessSync(subscriptionId: string) {
@@ -1830,6 +1848,28 @@ export class DevDataService implements OnModuleInit {
       return "3x-ui disable job queued; local node access and active sessions are invalidated.";
     }
     return null;
+  }
+
+  private async queuePanelDisableJobsForNodeAccessRevocationTxBestEffort(
+    writer: any,
+    subscriptionId: string,
+    filter: { nodeIds?: string[] } | undefined
+  ) {
+    try {
+      return (
+        (await this.queuePanelDisableJobsForNodeAccessRevocationTx(writer, subscriptionId, filter)) ??
+        "3x-ui client disable and lease revocation jobs queued; local node access is already invalid."
+      );
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but transaction revocation queueing failed for ${subscriptionId}: ${errorMessage}`);
+      return [
+        `node access revocation queueing failed: ${errorMessage}`,
+        this.startNodeAccessRevocationEffects(subscriptionId, filter, "node_access_revoked")
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
   }
 
   private async queueLeaseRevocationJobsForNodeAccessRevocation(
