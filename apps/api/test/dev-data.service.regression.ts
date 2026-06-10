@@ -1848,6 +1848,29 @@ async function testExternalReleaseMetadataRejectsStalledResponse() {
   }
 }
 
+async function testExternalReleaseMetadataMapsHttp500ToBadRequest() {
+  const server = createServer((_request, response) => {
+    response.writeHead(500, { "content-type": "text/plain" });
+    response.end("upstream failed");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const port = address && typeof address === "object" ? address.port : 0;
+
+  try {
+    await withPrivateRemoteUrlsAllowed(() =>
+      assert.rejects(
+        () => fetchExternalReleaseArtifactMetadata(`http://127.0.0.1:${port}/ChordV-full.zip`),
+        (error: unknown) => error instanceof BadRequestException && /HTTP 500/.test(error.message),
+        "external release metadata HTTP 500 must return a controlled BadRequestException"
+      )
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testExternalReleaseDownloadRejectsStalledBody() {
   const previousAllowPrivate = process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS;
   const previousTotalTimeout = process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS;
@@ -1890,6 +1913,29 @@ async function testExternalReleaseDownloadRejectsStalledBody() {
     } else {
       process.env.CHORDV_RELEASE_EXTERNAL_DOWNLOAD_IDLE_TIMEOUT_MS = previousIdleTimeout;
     }
+  }
+}
+
+async function testExternalReleaseDownloadMapsHttp500ToBadRequest() {
+  const server = createServer((_request, response) => {
+    response.writeHead(500, { "content-type": "text/plain" });
+    response.end("upstream failed");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const port = address && typeof address === "object" ? address.port : 0;
+
+  try {
+    await withPrivateRemoteUrlsAllowed(() =>
+      assert.rejects(
+        () => downloadExternalReleaseArtifactFileStrict(`http://127.0.0.1:${port}/ChordV-full.zip`),
+        (error: unknown) => error instanceof BadRequestException && /HTTP 500/.test(error.message),
+        "external release ZIP download HTTP 500 must return a controlled BadRequestException"
+      )
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
@@ -1961,6 +2007,53 @@ async function testReleaseDownloadAllowsUploadedArtifactWithStaleMetadata() {
   }
 }
 
+async function testReleaseDownloadMissingUploadedFileReturnsNotFound() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-missing-download-"));
+  const storedFilePath = path.join("release_1", "artifact_1", "missing.zip");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  try {
+    const service = createReleaseCenterService({
+      prisma: {
+        releaseArtifact: {
+          findUnique: async () => ({
+            id: "artifact_1",
+            releaseId: "release_1",
+            source: "uploaded",
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            downloadUrl: "/api/downloads/releases/artifact_1",
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "ChordV.zip",
+            storedFilePath,
+            fileSizeBytes: 1n,
+            fileHash: "a".repeat(64),
+            isPrimary: true,
+            isFullPackage: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            release: { status: "published" }
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.getReleaseArtifactDownloadDescriptor("artifact_1"),
+      NotFoundException,
+      "missing uploaded release artifacts must return a controlled 404 instead of leaking filesystem errors"
+    );
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function testRuntimeDownloadRejectsDisabledComponents() {
   const service = createRuntimeComponentsService({
     prisma: {
@@ -2010,6 +2103,43 @@ async function testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata() {
       () => service.getRuntimeComponentDownloadDescriptor("component_1"),
       /metadata/,
       "runtime download descriptor must not serve tampered uploaded components"
+    );
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testRuntimeDownloadMissingUploadedFileReturnsNotFound() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-runtime-missing-download-"));
+  const storedFilePath = path.join("component_1", "missing-xray.exe");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  try {
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            source: "uploaded",
+            storedFilePath,
+            enabled: true,
+            fileName: "xray.exe",
+            fileSizeBytes: 1n,
+            fileHash: "a".repeat(64),
+            expectedHash: "a".repeat(64)
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.getRuntimeComponentDownloadDescriptor("component_1"),
+      NotFoundException,
+      "missing uploaded runtime components must return a controlled 404 instead of leaking filesystem errors"
     );
   } finally {
     if (previousReleaseStorageRoot === undefined) {
@@ -13487,6 +13617,49 @@ async function testRemoteRuntimeValidationChecksExpectedHashWithGet() {
   }
 }
 
+async function testRemoteRuntimeValidationReturnsUnreachableForHttp500() {
+  const server = createServer((_request, response) => {
+    response.writeHead(500, { "content-type": "text/plain" });
+    response.end("upstream failed");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            id: "component_1",
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            source: "custom_remote",
+            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "xray.exe",
+            archiveEntryName: null,
+            storedFilePath: null,
+            fileSizeBytes: null,
+            fileHash: null,
+            expectedHash: "a".repeat(64),
+            enabled: true
+          })
+        }
+      }
+    });
+
+    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
+
+    assert.equal(result.status, "unreachable");
+    assert.equal(result.httpStatus, 500);
+    assert.match(result.message, /HTTP 500/);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
 async function testRemoteRuntimeValidationPersistsDownloadMetadata() {
   const body = Buffer.from("runtime-binary");
   const expectedHash = createHash("sha256").update(body).digest("hex");
@@ -20636,11 +20809,15 @@ async function main() {
   testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
+  await testExternalReleaseMetadataMapsHttp500ToBadRequest();
   await testExternalReleaseDownloadRejectsStalledBody();
+  await testExternalReleaseDownloadMapsHttp500ToBadRequest();
   await testReleaseDownloadRejectsDraftArtifacts();
   await testReleaseDownloadAllowsUploadedArtifactWithStaleMetadata();
+  await testReleaseDownloadMissingUploadedFileReturnsNotFound();
   await testRuntimeDownloadRejectsDisabledComponents();
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
+  await testRuntimeDownloadMissingUploadedFileReturnsNotFound();
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
@@ -20821,6 +20998,7 @@ async function main() {
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
+  await testRemoteRuntimeValidationReturnsUnreachableForHttp500();
   await testRemoteRuntimeValidationPersistsDownloadMetadata();
   await testRemoteRuntimeValidationReportsMetadataPersistFailure();
   await testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash();
