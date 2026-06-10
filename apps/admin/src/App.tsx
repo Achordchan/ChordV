@@ -312,8 +312,11 @@ export function App() {
   const [teamMemberInlineEditor, setTeamMemberInlineEditor] = useState<{ teamId: string; memberId: string | null } | null>(null);
   const [teamSubscriptionInlineEditorId, setTeamSubscriptionInlineEditorId] = useState<string | null>(null);
   const [teamProfileBusyKey, setTeamProfileBusyKey] = useState<string | null>(null);
+  const teamProfileBusyRef = useRef<string | null>(null);
   const [teamMemberBusyKey, setTeamMemberBusyKey] = useState<string | null>(null);
+  const teamMemberBusyRef = useRef<string | null>(null);
   const [teamSubscriptionBusyKey, setTeamSubscriptionBusyKey] = useState<string | null>(null);
+  const teamSubscriptionBusyRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
@@ -344,6 +347,7 @@ export function App() {
   } | null>(null);
   const [convertTargetTeamId, setConvertTargetTeamId] = useState<string | null>(null);
   const [convertSubmitting, setConvertSubmitting] = useState(false);
+  const convertSubmittingRef = useRef(false);
   const [teamUsageDetailTarget, setTeamUsageDetailTarget] = useState<{
     teamName: string;
     userDisplayName: string;
@@ -662,6 +666,7 @@ export function App() {
     setResetTrafficBusyKey(null);
     setConvertSubscriptionTarget(null);
     setConvertTargetTeamId(null);
+    convertSubmittingRef.current = false;
     setConvertSubmitting(false);
     setTeamUsageDetailTarget(null);
     setTeamUsageByTeamId({});
@@ -676,8 +681,11 @@ export function App() {
     setPanelSyncQueueOpened(false);
     setDrawerBusy(false);
     setTeamProfileBusyKey(null);
+    teamProfileBusyRef.current = null;
     setTeamMemberBusyKey(null);
+    teamMemberBusyRef.current = null;
     setTeamSubscriptionBusyKey(null);
+    teamSubscriptionBusyRef.current = null;
     setPolicySaving(false);
     setProbingNodeId(null);
     setProbingAll(false);
@@ -2177,13 +2185,13 @@ export function App() {
   }
 
   function closeConvertToTeamModal() {
-    if (convertSubmitting) return;
+    if (convertSubmitting || convertSubmittingRef.current) return;
     setConvertSubscriptionTarget(null);
     setConvertTargetTeamId(null);
   }
 
   async function handleConvertToTeam() {
-    if (!convertSubscriptionTarget || !convertTargetTeamId) {
+    if (!convertSubscriptionTarget || !convertTargetTeamId || convertSubmittingRef.current) {
       return;
     }
 
@@ -2205,6 +2213,7 @@ export function App() {
     }
 
     try {
+      convertSubmittingRef.current = true;
       setConvertSubmitting(true);
       const success = await runAction(
         () =>
@@ -2218,6 +2227,7 @@ export function App() {
         closeConvertToTeamModal();
       }
     } finally {
+      convertSubmittingRef.current = false;
       setConvertSubmitting(false);
     }
   }
@@ -2237,12 +2247,20 @@ export function App() {
   }
 
   function closeTeamInlineEditor() {
+    if (teamProfileBusyRef.current) {
+      return;
+    }
     setTeamInlineEditorId(null);
     setTeamForm(emptyTeamForm(snapshot));
   }
 
   async function saveTeamInlineEditor(teamId: string) {
+    if (teamProfileBusyRef.current) {
+      return;
+    }
+
     try {
+      teamProfileBusyRef.current = teamId;
       setTeamProfileBusyKey(teamId);
       const success = await runAction(
         () =>
@@ -2258,6 +2276,7 @@ export function App() {
         closeTeamInlineEditor();
       }
     } finally {
+      teamProfileBusyRef.current = null;
       setTeamProfileBusyKey(null);
     }
   }
@@ -2281,6 +2300,9 @@ export function App() {
   }
 
   function closeTeamMemberInlineEditor() {
+    if (teamMemberBusyRef.current) {
+      return;
+    }
     setTeamMemberInlineEditor(null);
     setTeamMemberForm(emptyTeamMemberForm());
   }
@@ -2300,12 +2322,20 @@ export function App() {
   }
 
   function closeTeamSubscriptionInlineEditor() {
+    if (teamSubscriptionBusyRef.current) {
+      return;
+    }
     setTeamSubscriptionInlineEditorId(null);
     setTeamSubscriptionForm(emptyTeamSubscriptionForm());
   }
 
   async function saveTeamSubscriptionInlineEditor(teamId: string) {
+    if (teamSubscriptionBusyRef.current) {
+      return;
+    }
+
     try {
+      teamSubscriptionBusyRef.current = teamId;
       setTeamSubscriptionBusyKey(teamId);
       const success = await runAction(
         () =>
@@ -2321,6 +2351,7 @@ export function App() {
         closeTeamSubscriptionInlineEditor();
       }
     } finally {
+      teamSubscriptionBusyRef.current = null;
       setTeamSubscriptionBusyKey(null);
     }
   }
@@ -2328,8 +2359,12 @@ export function App() {
   async function saveTeamMemberInlineEditor() {
     if (!teamMemberInlineEditor) return;
     const busyKey = `${teamMemberInlineEditor.teamId}:${teamMemberInlineEditor.memberId ?? "new"}`;
+    if (teamMemberBusyRef.current) {
+      return;
+    }
 
     try {
+      teamMemberBusyRef.current = busyKey;
       setTeamMemberBusyKey(busyKey);
       const payload = {
         userId: teamMemberForm.userId,
@@ -2354,6 +2389,7 @@ export function App() {
         closeTeamMemberInlineEditor();
       }
     } finally {
+      teamMemberBusyRef.current = null;
       setTeamMemberBusyKey(null);
     }
   }

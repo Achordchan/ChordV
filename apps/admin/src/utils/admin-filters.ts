@@ -38,7 +38,7 @@ export function isDefiniteLocalSaveFailure(message: string) {
 }
 
 export function isPotentiallyCompletedMutationFailure(message: string) {
-  return isUncertainRequestFailure(message);
+  return isUncertainRequestFailure(message) || /http 500|internal server error/i.test(message);
 }
 
 export function isSupportTicketAttachmentUploadFailure(message: string) {

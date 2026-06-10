@@ -31,7 +31,7 @@ import {
   updateAdminRuntimeComponent,
   verifyAdminRuntimeComponent
 } from "../../api/client";
-import { isUncertainRequestFailure, readError } from "../../utils/admin-filters";
+import { isPotentiallyCompletedMutationFailure, readError } from "../../utils/admin-filters";
 import { formatDateTime } from "../../utils/admin-format";
 import { RuntimeComponentEditorModal } from "./RuntimeComponentEditorModal";
 import {
@@ -45,7 +45,7 @@ const ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 function showRuntimeComponentFailure(reason: unknown, fallback: string, options?: { uncertainMessage?: (message: string) => string }) {
   const message = readError(reason, fallback);
-  const uncertain = isUncertainRequestFailure(message);
+  const uncertain = isPotentiallyCompletedMutationFailure(message);
   notifications.show({
     color: uncertain ? "yellow" : "red",
     title: uncertain ? "内核组件请求状态不确定" : "内核组件",
