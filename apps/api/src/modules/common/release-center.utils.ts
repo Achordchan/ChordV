@@ -16,6 +16,7 @@ import type {
   UpdateDeliveryMode
 } from "@chordv/shared";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
+import { RELEASE_ARTIFACT_MAX_UPLOAD_BYTES } from "./upload-limits";
 
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const STRICT_SEMVER_PATTERN =
@@ -29,19 +30,12 @@ const WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES = new Set([
 const WINDOWS_FULL_UPDATE_ROOT_EXES = new Set(["chordv.exe", "chordv-desktop.exe"]);
 const MIN_WINDOWS_FULL_UPDATE_PE_BYTES = 1024 * 1024;
 const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
-const DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_VALIDATION_ENTRIES = 10_000;
 const DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_IDLE_TIMEOUT_MS = 15_000;
-const configuredMaxExternalReleaseArtifactBytes = Number(
-  process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES
-);
-const MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES =
-  Number.isFinite(configuredMaxExternalReleaseArtifactBytes) && configuredMaxExternalReleaseArtifactBytes > 0
-    ? Math.trunc(configuredMaxExternalReleaseArtifactBytes)
-    : DEFAULT_MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES;
+const MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES = RELEASE_ARTIFACT_MAX_UPLOAD_BYTES;
 const configuredMaxWindowsFullUpdateZipEntryBytes = Number(
   process.env.CHORDV_RELEASE_MAX_ZIP_ENTRY_BYTES ?? DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES
 );

@@ -8,16 +8,11 @@ import type {
   UpdateAdminImageBedConfigInputDto
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
+import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "./upload-limits";
 
 const IMAGE_BED_SETTING_KEY = "image-bed";
 const DEFAULT_IMAGE_BED_BASE_URL = "https://image.achord.cn";
 const DEFAULT_IMAGE_BED_UPLOAD_FOLDER = "support-tickets";
-const DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-
-const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = readPositiveIntegerEnv(
-  "CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES",
-  DEFAULT_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
-);
 const DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS = 5_000;
 const IMAGE_BED_CLEANUP_BUDGET_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_CLEANUP_BUDGET_MS", 500);

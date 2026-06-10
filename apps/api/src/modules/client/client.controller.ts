@@ -17,6 +17,7 @@ import type {
 import { ClientAuthGuard } from "../common/client-auth.guard";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
+import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "../common/upload-limits";
 import { ClientService } from "./client.service";
 
 type UploadedTicketAttachmentFile = {
@@ -27,7 +28,6 @@ type UploadedTicketAttachmentFile = {
 };
 
 type MulterCallback = (error: Error | null, filename: string) => void;
-const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = Number(process.env.CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024);
 
 class ConnectDto {
   @IsString()

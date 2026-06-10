@@ -28,6 +28,11 @@ import { ImageBedService, type UploadedTicketAttachmentFile } from "../common/im
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
 import {
+  getAdminUploadLimits,
+  RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
+  SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
+} from "../common/upload-limits";
+import {
   ChangeSubscriptionPlanDto,
   ConvertSubscriptionToTeamDto,
   CreateAnnouncementDto,
@@ -78,8 +83,6 @@ type UploadedReleaseFile = {
 };
 
 type MulterCallback = (error: Error | null, filename: string) => void;
-const RELEASE_ARTIFACT_MAX_UPLOAD_BYTES = Number(process.env.CHORDV_RELEASE_MAX_UPLOAD_BYTES ?? 1024 * 1024 * 1024);
-const SUPPORT_TICKET_ATTACHMENT_MAX_BYTES = Number(process.env.CHORDV_SUPPORT_TICKET_ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024);
 
 @Controller("admin")
 @UseGuards(AdminAuthGuard)
@@ -104,11 +107,7 @@ export class AdminController {
 
   @Get("upload-limits")
   getUploadLimits() {
-    return {
-      releaseArtifactMaxBytes: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
-      runtimeComponentMaxBytes: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
-      supportTicketAttachmentMaxBytes: SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
-    };
+    return getAdminUploadLimits();
   }
 
   @Sse("events/stream")
