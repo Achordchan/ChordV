@@ -102,6 +102,15 @@ export class AdminController {
     return this.devDataService.getAdminDashboard();
   }
 
+  @Get("upload-limits")
+  getUploadLimits() {
+    return {
+      releaseArtifactMaxBytes: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
+      runtimeComponentMaxBytes: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
+      supportTicketAttachmentMaxBytes: SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
+    };
+  }
+
   @Sse("events/stream")
   streamEvents(@Headers("authorization") authorization?: string, @Headers("last-event-id") lastEventId?: string) {
     return this.adminRuntimeEventsService.stream({

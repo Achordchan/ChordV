@@ -41,7 +41,7 @@ import {
   type RuntimeComponentEditorFormState
 } from "./types";
 
-const ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+export const DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 function showRuntimeComponentFailure(reason: unknown, fallback: string, options?: { uncertainMessage?: (message: string) => string }) {
   const message = readError(reason, fallback);
@@ -76,6 +76,7 @@ type RuntimeComponentsPanelProps = {
   onFailuresChange: (next: AdminRuntimeComponentFailureReportDto[]) => void;
   onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto | null) => void;
   onSavingChange: (next: boolean) => void;
+  uploadMaxBytes?: number;
 };
 
 export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
@@ -90,7 +91,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     onComponentsChange,
     onFailuresChange,
     onValidationChange,
-    onSavingChange
+    onSavingChange,
+    uploadMaxBytes = DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES
   } = props;
 
   const [editorOpened, setEditorOpened] = useState(false);
@@ -143,8 +145,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         showRuntimeComponentValidation("请先选择要上传的组件文件");
         return;
       }
-      if (selectedFile && selectedFile.size > ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES) {
-        showRuntimeComponentValidation(`内核组件文件不能超过 ${formatBytes(String(ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES))}。`);
+      if (selectedFile && selectedFile.size > uploadMaxBytes) {
+        showRuntimeComponentValidation(`内核组件文件不能超过 ${formatBytes(String(uploadMaxBytes))}。`);
         return;
       }
       if (editingId && !selectedFile && (!currentRecord || currentRecord.source !== "uploaded")) {
@@ -301,7 +303,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         editing={Boolean(editingId)}
         saving={saving}
         value={form}
-        uploadMaxBytes={ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES}
+        uploadMaxBytes={uploadMaxBytes}
         onChange={setForm}
         onClose={closeEditor}
         onSubmit={() => void saveComponent()}

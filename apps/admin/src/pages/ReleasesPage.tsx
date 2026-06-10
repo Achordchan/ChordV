@@ -15,6 +15,7 @@ import {
   createAdminReleaseArtifact,
   deleteAdminRelease,
   deleteAdminReleaseArtifact,
+  fetchAdminUploadLimits,
   fetchAdminReleases,
   publishAdminRelease,
   replaceAdminReleaseArtifactUpload,
@@ -54,7 +55,7 @@ const platformFilterOptions = [{ value: "all", label: "全部平台" }, ...relea
 
 const RELEASE_VERSION_PATTERN =
   /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const ADMIN_RELEASE_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+const DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 
 function showReleaseRequestFailure(reason: unknown, fallback: string) {
   const message = readError(reason, fallback);
@@ -79,6 +80,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
   const [artifactEditor, setArtifactEditor] = useState<ArtifactEditorState | null>(null);
   const [artifactForm, setArtifactForm] = useState<ArtifactEditorFormState>(emptyArtifactEditorForm());
+  const [uploadMaxBytes, setUploadMaxBytes] = useState(DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES);
   const releaseListRequestSeqRef = useRef(0);
   const releaseListLoadingSeqRef = useRef<number | null>(null);
   const releaseMutationSeqRef = useRef(0);
@@ -86,6 +88,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
   useEffect(() => {
     void loadReleases();
+    void loadUploadLimits();
   }, []);
 
   useEffect(() => {
@@ -122,6 +125,15 @@ export function ReleasesPage(props: ReleasesPageProps) {
         .filter((group) => group.records.length > 0),
     [visibleReleases]
   );
+
+  async function loadUploadLimits() {
+    try {
+      const limits = await fetchAdminUploadLimits();
+      setUploadMaxBytes(limits.releaseArtifactMaxBytes || DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES);
+    } catch {
+      setUploadMaxBytes(DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES);
+    }
+  }
 
   async function loadReleases(options?: { silent?: boolean }) {
     const silent = Boolean(options?.silent);
@@ -215,7 +227,12 @@ export function ReleasesPage(props: ReleasesPageProps) {
     }
     try {
       const version = releaseForm.version.trim();
-      const validationMessage = validateReleaseEditorInput(version, releaseEditorId ? undefined : releaseForm, releaseForm.platform);
+      const validationMessage = validateReleaseEditorInput(
+        version,
+        releaseEditorId ? undefined : releaseForm,
+        releaseForm.platform,
+        uploadMaxBytes
+      );
       if (validationMessage) {
         notifications.show({
           color: "yellow",
@@ -425,8 +442,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (isUploadFileRequired()) {
       return "请先选择要上传的安装包文件。";
     }
-    if (artifactForm.selectedFile && artifactForm.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
-      return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
+    if (artifactForm.selectedFile && artifactForm.selectedFile.size > uploadMaxBytes) {
+      return `安装包不能超过 ${formatUploadBytes(uploadMaxBytes)}。`;
     }
     if (artifactForm.selectedFile) {
       const fileMessage = validateReleaseArtifactFile(artifactEditor.platform, artifactForm.selectedFile);
@@ -726,7 +743,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         title={artifactEditor?.artifactId ? "编辑安装包" : "新增安装包"}
         submitLabel={artifactEditor?.artifactId ? "保存安装包" : "保存安装包"}
         form={artifactForm}
-        uploadMaxBytes={ADMIN_RELEASE_MAX_UPLOAD_BYTES}
+        uploadMaxBytes={uploadMaxBytes}
         uploadFileRequired={isUploadFileRequired()}
         onClose={closeArtifactEditor}
         onChange={setArtifactForm}
@@ -749,7 +766,12 @@ function splitLines(value: string) {
     .filter(Boolean);
 }
 
-function validateReleaseEditorInput(version: string, form?: ReleaseEditorFormState, platform?: AdminReleasePlatform) {
+function validateReleaseEditorInput(
+  version: string,
+  form?: ReleaseEditorFormState,
+  platform?: AdminReleasePlatform,
+  uploadMaxBytes = DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES
+) {
   if (!version) {
     return "请填写版本号，例如 1.1.6。";
   }
@@ -763,8 +785,8 @@ function validateReleaseEditorInput(version: string, form?: ReleaseEditorFormSta
     if (!form.selectedFile) return null;
     const fileMessage = validateReleaseArtifactFile(platform, form.selectedFile);
     if (fileMessage) return fileMessage;
-    if (form.selectedFile.size > ADMIN_RELEASE_MAX_UPLOAD_BYTES) {
-      return `安装包不能超过 ${formatUploadBytes(ADMIN_RELEASE_MAX_UPLOAD_BYTES)}。`;
+    if (form.selectedFile.size > uploadMaxBytes) {
+      return `安装包不能超过 ${formatUploadBytes(uploadMaxBytes)}。`;
     }
     return null;
   }

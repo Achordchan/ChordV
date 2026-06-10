@@ -3,6 +3,7 @@ import type {
   AdminSupportTicketSummaryDto as SharedAdminSupportTicketSummaryDto,
   AdminImageBedConfigDto,
   AdminImageBedFileListDto,
+  AdminUploadLimitsDto,
   AdminReleaseArtifactDto as SharedAdminReleaseArtifactDto,
   AdminRuntimeComponentFailureReportDto as SharedAdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto as SharedAdminRuntimeComponentRecordDto,
@@ -90,6 +91,7 @@ export type AdminRuntimeComponentValidationDto = SharedAdminRuntimeComponentVali
 export type AdminRuntimeComponentFailureReportDto = SharedAdminRuntimeComponentFailureReportDto;
 export type AdminSupportTicketSummaryDto = SharedAdminSupportTicketSummaryDto;
 export type AdminSupportTicketDetailDto = SharedAdminSupportTicketDetailDto;
+export type { AdminUploadLimitsDto };
 export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
@@ -148,6 +150,12 @@ export type FetchAdminReleasesFilters = {
   platform?: AdminReleasePlatform;
   status?: AdminReleaseStatus;
 };
+
+export async function fetchAdminUploadLimits() {
+  return request<AdminUploadLimitsDto>("/admin/upload-limits", {
+    timeoutMs: ADMIN_READ_TIMEOUT_MS
+  });
+}
 
 function buildReleaseQuery(filters?: FetchAdminReleasesFilters) {
   if (!filters) return "";

@@ -6,10 +6,14 @@ import type {
   AdminRuntimeComponentValidationDto
 } from "../api/client";
 import {
+  fetchAdminUploadLimits,
   fetchAdminRuntimeComponentFailures,
   fetchAdminRuntimeComponents
 } from "../api/client";
-import { RuntimeComponentsPanel } from "../features/runtime-components/RuntimeComponentsPanel";
+import {
+  DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES,
+  RuntimeComponentsPanel
+} from "../features/runtime-components/RuntimeComponentsPanel";
 import { readError } from "../utils/admin-filters";
 
 export function RuntimeComponentsPage() {
@@ -19,10 +23,21 @@ export function RuntimeComponentsPage() {
   const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [uploadMaxBytes, setUploadMaxBytes] = useState(DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES);
 
   useEffect(() => {
     void loadRuntimeComponents();
+    void loadUploadLimits();
   }, []);
+
+  async function loadUploadLimits() {
+    try {
+      const limits = await fetchAdminUploadLimits();
+      setUploadMaxBytes(limits.runtimeComponentMaxBytes || DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES);
+    } catch {
+      setUploadMaxBytes(DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES);
+    }
+  }
 
   async function loadRuntimeComponents() {
     try {
@@ -52,6 +67,7 @@ export function RuntimeComponentsPage() {
       loading={runtimeLoading}
       error={runtimeError}
       saving={saving}
+      uploadMaxBytes={uploadMaxBytes}
       onRefresh={loadRuntimeComponents}
       onComponentsChange={setRuntimeComponents}
       onFailuresChange={setRuntimeFailures}

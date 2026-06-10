@@ -21,6 +21,7 @@ import type { SupportTicketStatus } from "@chordv/shared";
 import { IconPaperclip, IconRefresh, IconSend, IconX } from "@tabler/icons-react";
 import {
   closeAdminSupportTicket,
+  fetchAdminUploadLimits,
   fetchAdminSupportTicketDetail,
   fetchAdminSupportTickets,
   reopenAdminSupportTicket,
@@ -46,7 +47,7 @@ type TicketStatusFilter = "all" | SupportTicketStatus;
 
 const TICKET_AUTO_REFRESH_INTERVAL_MS = 20_000;
 const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
-const ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
 const ticketStatusOptions = [
   { value: "all", label: "全部状态" },
@@ -80,6 +81,7 @@ export function TicketsPage(props: TicketsPageProps) {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState("");
   const [replyAttachment, setReplyAttachment] = useState<File | null>(null);
+  const [attachmentMaxBytes, setAttachmentMaxBytes] = useState(DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
   const [replySaving, setReplySaving] = useState(false);
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
   const selectedTicketIdRef = useRef<string | null>(null);
@@ -93,7 +95,17 @@ export function TicketsPage(props: TicketsPageProps) {
 
   useEffect(() => {
     void loadTickets();
+    void loadUploadLimits();
   }, []);
+
+  async function loadUploadLimits() {
+    try {
+      const limits = await fetchAdminUploadLimits();
+      setAttachmentMaxBytes(limits.supportTicketAttachmentMaxBytes || DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
+    } catch {
+      setAttachmentMaxBytes(DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
+    }
+  }
 
   useEffect(() => {
     if (!props.refreshSignal) {
@@ -273,11 +285,11 @@ export function TicketsPage(props: TicketsPageProps) {
       replyAttachmentResetRef.current?.();
       return;
     }
-    if (file.size > ADMIN_TICKET_ATTACHMENT_MAX_BYTES) {
+    if (file.size > attachmentMaxBytes) {
       notifications.show({
         color: "yellow",
         title: "附件过大",
-        message: "工单附件不能超过 10MB。"
+        message: `工单附件不能超过 ${formatUploadBytes(attachmentMaxBytes)}。`
       });
       setReplyAttachment(null);
       return;
@@ -753,4 +765,14 @@ function readMessageAuthorLabel(
     return authorDisplayName;
   }
   return translateMessageRole(role);
+}
+
+function formatUploadBytes(value: number) {
+  if (value >= 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "")}GB`;
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")}MB`;
+  }
+  return `${value}B`;
 }

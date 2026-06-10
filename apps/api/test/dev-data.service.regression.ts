@@ -35,6 +35,7 @@ import { ClientRuntimeEventsService } from "../src/modules/common/client-runtime
 import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
+import { AdminController } from "../src/modules/admin/admin.controller";
 import {
   ImportNodeDto,
   UpdateCurrentAdminSecurityDto,
@@ -18802,6 +18803,18 @@ async function testAdminSnapshotCountsOnlyClientVisibleAnnouncements() {
   assert.equal(snapshot.dashboard.announcements, 1);
 }
 
+function testAdminUploadLimitsExposePositiveControllerLimits() {
+  const controller = createInstance<AdminController>(AdminController.prototype);
+  const limits = controller.getUploadLimits();
+
+  assert.equal(Number.isInteger(limits.releaseArtifactMaxBytes), true);
+  assert.equal(Number.isInteger(limits.runtimeComponentMaxBytes), true);
+  assert.equal(Number.isInteger(limits.supportTicketAttachmentMaxBytes), true);
+  assert.equal(limits.releaseArtifactMaxBytes > 0, true);
+  assert.equal(limits.runtimeComponentMaxBytes, limits.releaseArtifactMaxBytes);
+  assert.equal(limits.supportTicketAttachmentMaxBytes > 0, true);
+}
+
 async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
   const announcementCountPayloads: Array<Record<string, any>> = [];
   const subscriptionCountPayloads: Array<Record<string, any>> = [];
@@ -20918,6 +20931,7 @@ async function main() {
   await testCreateAnnouncementRejectsFractionalCountdown();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
   await testAdminSnapshotCountsOnlyClientVisibleAnnouncements();
+  testAdminUploadLimitsExposePositiveControllerLimits();
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();

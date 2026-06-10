@@ -659,6 +659,12 @@ export interface AdminImageBedConfigDto {
   updatedAt: string | null;
 }
 
+export interface AdminUploadLimitsDto {
+  releaseArtifactMaxBytes: number;
+  runtimeComponentMaxBytes: number;
+  supportTicketAttachmentMaxBytes: number;
+}
+
 export interface UpdateAdminImageBedConfigInputDto {
   baseUrl?: string;
   apiToken?: string | null;
