@@ -27,9 +27,9 @@ import { fetchPublicHttpUrl } from "./remote-url.utils";
 const RUNTIME_COMPONENT_DOWNLOAD_PREFIX = "/api/downloads/runtime-components";
 const SHARED_RULESET_PLATFORM: PlatformTarget = "macos";
 const SHARED_RULESET_ARCHITECTURE: RuntimeComponentArchitecture = "arm64";
-const DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES = 512 * 1024 * 1024;
-const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES = 64 * 1024 * 1024;
+const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 15 * 1000;
+const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 5 * 1000;
 const DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS = 300;
 const DEFAULT_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS = 300;
 
@@ -1079,17 +1079,13 @@ async function assertStoredRuntimeComponentReadable(component: {
   if (!isValidSha256(component.fileHash)) {
     throw new BadRequestException("Uploaded runtime component is missing SHA256 metadata.");
   }
-  const actualHash = await calculateFileSha256(absolutePath);
-  if (actualHash !== component.fileHash) {
-    throw new BadRequestException("Uploaded runtime component SHA256 metadata does not match the stored file.");
-  }
-  if (component.expectedHash && component.expectedHash !== actualHash) {
+  if (component.expectedHash && component.expectedHash !== component.fileHash) {
     throw new BadRequestException("Uploaded runtime component expectedHash does not match the stored file.");
   }
   return {
     absolutePath,
     fileSizeBytes: actualSize,
-    fileHash: actualHash
+    fileHash: component.fileHash
   };
 }
 

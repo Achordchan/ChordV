@@ -13750,6 +13750,51 @@ async function testRemoteRuntimeValidationPersistsDownloadMetadata() {
   }
 }
 
+async function testRemoteRuntimeValidationRejectsLargeDefaultContentLength() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, {
+      "content-type": "application/octet-stream",
+      "content-length": String(65 * 1024 * 1024)
+    });
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            id: "component_1",
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            source: "custom_remote",
+            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "xray.exe",
+            archiveEntryName: null,
+            storedFilePath: null,
+            fileSizeBytes: null,
+            fileHash: null,
+            expectedHash: "a".repeat(64),
+            enabled: true
+          })
+        }
+      }
+    });
+
+    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
+
+    assert.equal(result.status, "metadata_mismatch");
+    assert.match(result.message, /too large/i);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
 async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
   const body = Buffer.from("runtime-binary");
   const expectedHash = createHash("sha256").update(body).digest("hex");
@@ -21087,6 +21132,7 @@ async function main() {
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
   await testRemoteRuntimeValidationReturnsUnreachableForHttp500();
   await testRemoteRuntimeValidationPersistsDownloadMetadata();
+  await testRemoteRuntimeValidationRejectsLargeDefaultContentLength();
   await testRemoteRuntimeValidationReportsMetadataPersistFailure();
   await testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash();
   await testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup();
