@@ -236,9 +236,12 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       });
       void onRefresh();
     } catch (reason) {
-      showRuntimeComponentFailure(reason, "校验下载链接失败", {
+      const result = showRuntimeComponentFailure(reason, "校验下载链接失败", {
         uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
       });
+      if (result.uncertain) {
+        void onRefresh();
+      }
     } finally {
       if (verifyingRef.current === record.id) {
         verifyingRef.current = null;

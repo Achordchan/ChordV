@@ -725,55 +725,66 @@ export class RuntimeSessionService {
       return 0;
     }
     const now = new Date();
+    let queuedCount = 0;
 
     for (const binding of bindings) {
       const snapshot = binding.node ?? {};
       const dedupeKey = `disable:${binding.id}`;
-      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
-        create: {
-          id: randomUUID(),
-          dedupeKey,
-          action: "disable_client",
-          bindingId: binding.id,
-          subscriptionId: binding.subscriptionId,
-          userId: binding.userId,
-          teamId: binding.teamId,
-          nodeId: binding.nodeId,
-          panelClientEmail: binding.panelClientEmail,
-          panelClientId: binding.panelClientId,
-          panelInboundId: binding.panelInboundId,
-          panelBaseUrl: snapshot.panelBaseUrl ?? null,
-          panelApiBasePath: snapshot.panelApiBasePath ?? null,
-          panelUsername: snapshot.panelUsername ?? null,
-          panelPassword: snapshot.panelPassword ?? null,
-          status: "pending",
-          nextRunAt: now
-        },
-        update: {
-          status: "pending",
-          nextRunAt: now,
-          lockedAt: null,
-          completedAt: null,
-          attempts: 0,
-          lastError: null,
-          subscriptionId: binding.subscriptionId,
-          userId: binding.userId,
-          teamId: binding.teamId,
-          nodeId: binding.nodeId,
-          panelClientEmail: binding.panelClientEmail,
-          panelClientId: binding.panelClientId,
-          panelInboundId: binding.panelInboundId,
-          panelBaseUrl: snapshot.panelBaseUrl ?? null,
-          panelApiBasePath: snapshot.panelApiBasePath ?? null,
-          panelUsername: snapshot.panelUsername ?? null,
-          panelPassword: snapshot.panelPassword ?? null
+      try {
+        await createOrRefreshPanelSyncJob(writer, dedupeKey, {
+          create: {
+            id: randomUUID(),
+            dedupeKey,
+            action: "disable_client",
+            bindingId: binding.id,
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            nodeId: binding.nodeId,
+            panelClientEmail: binding.panelClientEmail,
+            panelClientId: binding.panelClientId,
+            panelInboundId: binding.panelInboundId,
+            panelBaseUrl: snapshot.panelBaseUrl ?? null,
+            panelApiBasePath: snapshot.panelApiBasePath ?? null,
+            panelUsername: snapshot.panelUsername ?? null,
+            panelPassword: snapshot.panelPassword ?? null,
+            status: "pending",
+            nextRunAt: now
+          },
+          update: {
+            status: "pending",
+            nextRunAt: now,
+            lockedAt: null,
+            completedAt: null,
+            attempts: 0,
+            lastError: null,
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            nodeId: binding.nodeId,
+            panelClientEmail: binding.panelClientEmail,
+            panelClientId: binding.panelClientId,
+            panelInboundId: binding.panelInboundId,
+            panelBaseUrl: snapshot.panelBaseUrl ?? null,
+            panelApiBasePath: snapshot.panelApiBasePath ?? null,
+            panelUsername: snapshot.panelUsername ?? null,
+            panelPassword: snapshot.panelPassword ?? null
+          }
+        });
+        queuedCount += 1;
+      } catch (error) {
+        if (!isPrismaReferentialIntegrityError(error)) {
+          throw error;
         }
-      });
+        this.logger?.warn(
+          `Skipping stale panel disable job for binding ${binding.id}: ${readRuntimeErrorMessage(error)}`
+        );
+      }
     }
 
     await markPanelBindingsDisabledLocally(writer, bindings.map((binding: { id: string }) => binding.id));
 
-    return bindings.length;
+    return queuedCount;
   }
 
   async queuePanelDeleteJobsForSubscriptionTx(
@@ -2773,6 +2784,15 @@ function buildNodeLeaseRevocationJobKey(nodeId: string, reason: string) {
 
 function isPrismaUniqueConstraintError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function isPrismaReferentialIntegrityError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "P2003" || error.code === "P2025")
+  );
 }
 
 function isPanelSyncAction(action: string): action is PanelSyncAction {

@@ -10862,6 +10862,60 @@ async function testPanelDisableJobUpsertResetsStaleFailureState() {
   assert.equal(upserts[0].update.panelInboundId, 7, "re-queued disable jobs must refresh binding inbound id");
 }
 
+async function testPanelDisableJobSkipsStaleBindingConstraintFailure() {
+  const warnings: string[] = [];
+  const disabledIds: string[][] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_stale",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "panel_client_1",
+                panelInboundId: 7,
+                status: "active",
+                node: {
+                  panelBaseUrl: "https://offline-panel.example.com",
+                  panelApiBasePath: "/panel",
+                  panelUsername: "admin",
+                  panelPassword: "secret"
+                }
+              }
+            ],
+            updateMany: async (payload: Record<string, any>) => {
+              disabledIds.push(payload.where.id.in);
+              return { count: 0 };
+            }
+          },
+          panelSyncJob: {
+            create: async () => {
+              const error = new Error("Foreign key constraint failed on the field: bindingId") as Error & { code: string };
+              error.code = "P2003";
+              throw error;
+            },
+            updateMany: async () => ({ count: 0 })
+          }
+        })
+    }
+  });
+
+  const queuedCount = await service.markPanelBindingsDisabledForSubscription("sub_1");
+
+  assert.equal(queuedCount, 0, "stale binding job failures must not be counted as queued panel sync jobs");
+  assert.deepEqual(disabledIds, [["binding_stale"]], "local binding disable should still be attempted after stale job skip");
+  assert.match(warnings[0] ?? "", /Skipping stale panel disable job/);
+}
+
 async function testPanelDisableJobStoresAndUsesPanelSnapshot() {
   const upserts: Array<Record<string, any>> = [];
   const disabledConfigs: Array<Record<string, any>> = [];
@@ -20956,6 +21010,7 @@ async function main() {
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testDisableNodeReturnsWhenAfterSaveFollowUpStalls();
   await testPanelDisableJobUpsertResetsStaleFailureState();
+  await testPanelDisableJobSkipsStaleBindingConstraintFailure();
   await testPanelDisableJobStoresAndUsesPanelSnapshot();
   await testPanelDisableJobCompletionDoesNotResolveUsageIncident();
   await testDeletedPanelBindingDoesNotReuseOldInboundId();

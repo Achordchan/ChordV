@@ -23,9 +23,24 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
   const usesUploadedSource = value.source === "uploaded";
   const supportsLegacyRemote = value.source === "github_remote";
   const isRuleset = value.kind === "geoip" || value.kind === "geosite";
+  const handleClose = () => {
+    if (saving) {
+      return;
+    }
+    onClose();
+  };
 
   return (
-    <Modal opened={opened} onClose={onClose} title={editing ? "编辑内核组件" : "新增内核组件"} centered size="lg">
+    <Modal
+      opened={opened}
+      onClose={handleClose}
+      title={editing ? "编辑内核组件" : "新增内核组件"}
+      centered
+      size="lg"
+      closeOnClickOutside={!saving}
+      closeOnEscape={!saving}
+      closeButtonProps={{ disabled: saving }}
+    >
       <Stack gap="md">
         <SegmentedControl
           value={usesUploadedSource ? "uploaded" : "remote"}
@@ -164,7 +179,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
         />
 
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>
+          <Button variant="default" onClick={handleClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={onSubmit} loading={saving}>
