@@ -184,8 +184,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         showRuntimeComponentValidation("远程直链下载地址必须是完整的 http/https 地址");
         return;
       }
-      if (!/^[a-f0-9]{64}$/i.test(expectedHash)) {
-        showRuntimeComponentValidation("远程直链必须填写 64 位 SHA-256 Hash，校验通过后才会下发给客户端");
+      if (expectedHash && !/^[a-f0-9]{64}$/i.test(expectedHash)) {
+        showRuntimeComponentValidation("预期 Hash 必须是 64 位 SHA-256；不填写也可以先保存，但不会下发给客户端");
         return;
       }
     }
@@ -587,7 +587,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         {validation ? translateValidationStatus(validation.status) : "未校验"}
                       </Badge>
                       <Text size="xs" c="dimmed" lineClamp={2}>
-                        {validation?.message ?? "点击校验后会检查最终下载地址是否可用"}
+                        {summarizeAdminDiagnosticMessage(validation?.message, "内核组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "点击校验后会检查最终下载地址是否可用"}
                       </Text>
                     </Stack>
                   </Table.Td>

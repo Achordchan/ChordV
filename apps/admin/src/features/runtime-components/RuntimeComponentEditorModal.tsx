@@ -139,7 +139,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
         ) : (
           <>
             <Alert color="yellow" variant="light">
-              远程直链只建议在特殊情况下使用。远程组件必须填写 SHA-256 并完成校验，系统拿到文件大小后才会下发给客户端；否则只会保存记录，不会进入客户端下载计划。
+              远程直链只建议在特殊情况下使用。可以先保存记录；只有填写 SHA-256 并完成校验后，系统才会把该组件下发给客户端。
             </Alert>
             <Textarea
               label="组件下载地址"
@@ -167,7 +167,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
 
         <TextInput
           label="预期 Hash"
-          description={usesUploadedSource ? "可选。上传模式留空时会自动使用真实文件的 SHA-256。" : "远程直链必填 SHA-256；保存后请点击校验，校验通过才会下发给客户端。"}
+          description={usesUploadedSource ? "可选。上传模式留空时会自动使用真实文件的 SHA-256。" : "可选。远程直链不填也能保存，但校验通过前不会下发给客户端。"}
           value={value.expectedHash}
           onChange={(event) => onChange({ ...value, expectedHash: event.currentTarget.value })}
         />

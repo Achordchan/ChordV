@@ -2299,6 +2299,18 @@ async function testAdminControllerForwardsPreviouslyUncoveredManagementRoutes() 
         calls.push("lease:list");
         return [{ id: "lease_job_1" }];
       },
+      listAdminPanelSyncJobs: async () => {
+        calls.push("panel:list");
+        return [{ id: "panel_job_1" }];
+      },
+      retryAdminPanelSyncJob: async (jobId: string) => {
+        calls.push(`panel:retry:${jobId}`);
+        return [{ id: jobId, status: "pending" }];
+      },
+      retryAdminPanelSyncJobsForNode: async (nodeId: string) => {
+        calls.push(`panel:retry-node:${nodeId}`);
+        return [{ nodeId, status: "pending" }];
+      },
       retryAdminLeaseRevocationJob: async (jobId: string) => {
         calls.push(`lease:retry:${jobId}`);
         return [{ id: jobId, status: "pending" }];
@@ -2336,6 +2348,9 @@ async function testAdminControllerForwardsPreviouslyUncoveredManagementRoutes() 
     {} as any
   );
 
+  assert.deepEqual(await controller.getPanelSyncJobs(), [{ id: "panel_job_1" }]);
+  assert.deepEqual(await controller.retryPanelSyncJob("panel_job_1"), [{ id: "panel_job_1", status: "pending" }]);
+  assert.deepEqual(await controller.retryPanelSyncJobsForNode("node_1"), [{ nodeId: "node_1", status: "pending" }]);
   assert.deepEqual(await controller.getLeaseRevocationJobs(), [{ id: "lease_job_1" }]);
   assert.deepEqual(await controller.retryLeaseRevocationJob("lease_job_1"), [{ id: "lease_job_1", status: "pending" }]);
   assert.deepEqual(await controller.retryLeaseRevocationJobsForNode("node_1"), [{ nodeId: "node_1", status: "pending" }]);
@@ -2345,6 +2360,9 @@ async function testAdminControllerForwardsPreviouslyUncoveredManagementRoutes() 
   assert.deepEqual(await controller.getRuntimeComponents(), [{ id: "component_1" }]);
   assert.deepEqual(await controller.unpublishRelease("release_1"), { id: "release_1", status: "draft" });
   assert.deepEqual(calls, [
+    "panel:list",
+    "panel:retry:panel_job_1",
+    "panel:retry-node:node_1",
     "lease:list",
     "lease:retry:lease_job_1",
     "lease:retry-node:node_1",
@@ -7465,6 +7483,88 @@ async function testRetryPanelSyncJobDoesNotUnlockRunningJob() {
   assert.equal(updates[0]?.data.lockedAt, null, "retry payload may clear locks only for non-running jobs matched by status");
 }
 
+async function testRetryPanelSyncJobsForNodeOnlyRequeuesRetryableJobsOnThatNode() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    prisma: {
+      panelSyncJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 2 };
+        },
+        findMany: async () => [
+          {
+            id: "job_pending",
+            action: "ensure_client",
+            status: "pending",
+            nodeId: "node_1",
+            node: { name: "Node 1" },
+            panelClientEmail: "pending@example.com",
+            attempts: 1,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: "old error",
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          },
+          {
+            id: "job_failed",
+            action: "disable_client",
+            status: "failed",
+            nodeId: "node_1",
+            node: { name: "Node 1" },
+            panelClientEmail: "failed@example.com",
+            attempts: 2,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: "panel offline",
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      }
+    }
+  });
+
+  const result = await service.retryPanelSyncJobsForNode("node_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.nodeId, "node_1");
+  assert.deepEqual(updates[0]?.where.status, { in: ["pending", "failed"] });
+  assert.equal(updates[0]?.data.status, "pending");
+  assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(updates[0]?.data.completedAt, null);
+  assert.equal(updates[0]?.data.lastError, null);
+  assert.deepEqual(result.map((job) => job.id), ["job_pending", "job_failed"]);
+}
+
+async function testRetryPanelSyncJobsForNodeRejectsWhenNoRetryableJobsExist() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminNodeService({
+    prisma: {
+      panelSyncJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 0 };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.retryPanelSyncJobsForNode("node_running"),
+    (error) => error instanceof NotFoundException,
+    "node-level panel sync retry must not unlock running or completed jobs"
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.nodeId, "node_running");
+  assert.deepEqual(updates[0]?.where.status, { in: ["pending", "failed"] });
+}
+
 async function testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob() {
   const updates: Array<Record<string, any>> = [];
   await createOrRefreshPanelSyncJob(
@@ -7607,6 +7707,92 @@ async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
   assert.equal(updates[0]?.where.dedupeKey, "lease:subscription_running");
   assert.deepEqual(updates[0]?.where.status, { not: "running" });
   assert.equal(updates[0]?.data.lockedAt, null);
+}
+
+async function testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    prisma: {
+      leaseRevocationJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 2 };
+        },
+        findMany: async () => [
+          {
+            id: "lease_pending",
+            reason: "admin_user_disconnected",
+            status: "pending",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            nodeId: "node_1",
+            attempts: 1,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: "old error",
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          },
+          {
+            id: "lease_failed",
+            reason: "admin_user_disabled",
+            status: "failed",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            nodeId: "node_1",
+            attempts: 2,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: "lease revoke failed",
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      },
+      node: {
+        findMany: async () => [{ id: "node_1", name: "Node 1" }]
+      }
+    }
+  });
+
+  const result = await service.retryLeaseRevocationJobsForNode("node_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.nodeId, "node_1");
+  assert.deepEqual(updates[0]?.where.status, { in: ["pending", "failed"] });
+  assert.equal(updates[0]?.data.status, "pending");
+  assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(updates[0]?.data.completedAt, null);
+  assert.equal(updates[0]?.data.lastError, null);
+  assert.deepEqual(result.map((job) => job.id), ["lease_pending", "lease_failed"]);
+  assert.deepEqual(result.map((job) => job.nodeName), ["Node 1", "Node 1"]);
+}
+
+async function testRetryLeaseRevocationJobsForNodeRejectsWhenNoRetryableJobsExist() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminNodeService({
+    prisma: {
+      leaseRevocationJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 0 };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.retryLeaseRevocationJobsForNode("node_running"),
+    (error) => error instanceof NotFoundException,
+    "node-level lease revocation retry must not unlock running or completed jobs"
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.nodeId, "node_running");
+  assert.deepEqual(updates[0]?.where.status, { in: ["pending", "failed"] });
 }
 
 async function testXuiPanelLocationDoesNotDuplicateBasePath() {
@@ -22719,9 +22905,13 @@ async function main() {
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testListPanelSyncJobsHandlesMissingNode();
   await testRetryPanelSyncJobDoesNotUnlockRunningJob();
+  await testRetryPanelSyncJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
+  await testRetryPanelSyncJobsForNodeRejectsWhenNoRetryableJobsExist();
   await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
+  await testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
+  await testRetryLeaseRevocationJobsForNodeRejectsWhenNoRetryableJobsExist();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
   await testXuiPanelLocationAcceptsFullUrlAsApiBasePath();
