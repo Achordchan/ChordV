@@ -13,6 +13,7 @@ import { RuntimeComponentsService } from "../src/modules/common/runtime-componen
 type RouteCall = {
   route: string;
   value: string;
+  body?: unknown;
 };
 
 const calls: RouteCall[] = [];
@@ -40,6 +41,30 @@ const devDataServiceStub = {
   retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => {
     calls.push({ route: "lease-node", value: nodeId });
     return [{ nodeId, scope: "node" }];
+  },
+  updateSubscriptionNodeAccess: async (subscriptionId: string, body: unknown) => {
+    calls.push({ route: "subscription-nodes", value: subscriptionId, body });
+    return { subscriptionId, body, panelSyncStatus: "pending" };
+  },
+  resetSubscriptionTraffic: async (subscriptionId: string, body: unknown) => {
+    calls.push({ route: "subscription-reset-traffic", value: subscriptionId, body });
+    return { subscriptionId, body, panelSyncStatus: "pending" };
+  },
+  disconnectUser: async (userId: string) => {
+    calls.push({ route: "user-disconnect", value: userId });
+    return { userId, panelSyncStatus: "pending" };
+  },
+  updateNode: async (nodeId: string, body: unknown) => {
+    calls.push({ route: "node-update", value: nodeId, body });
+    return { id: nodeId, body, panelSyncStatus: "pending" };
+  },
+  deleteNode: async (nodeId: string) => {
+    calls.push({ route: "node-delete", value: nodeId });
+    return { ok: true, nodeId, panelSyncStatus: "pending" };
+  },
+  probeAllNodes: async () => {
+    calls.push({ route: "node-probe-all", value: "all" });
+    return [{ id: "node_1", panelStatus: "degraded" }];
   }
 };
 
@@ -61,12 +86,14 @@ const devDataServiceStub = {
 })
 class TestAdminRoutesModule {}
 
-async function requestJson(baseUrl: string, path: string) {
+async function requestJson(baseUrl: string, path: string, init?: { method?: string; body?: unknown }) {
   const response = await fetch(`${baseUrl}${path}`, {
-    method: "POST",
+    method: init?.method ?? "POST",
     headers: {
-      authorization: "Bearer admin-test-token"
-    }
+      authorization: "Bearer admin-test-token",
+      ...(init?.body === undefined ? {} : { "content-type": "application/json" })
+    },
+    body: init?.body === undefined ? undefined : JSON.stringify(init.body)
   });
   const body = await response.json();
   return { status: response.status, body };
@@ -95,12 +122,64 @@ async function main() {
       status: 201,
       body: [{ nodeId: "node_1", scope: "node" }]
     });
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/subscriptions/subscription_1/nodes", {
+        method: "PUT",
+        body: { nodeIds: ["node_1"] }
+      }),
+      {
+        status: 200,
+        body: { subscriptionId: "subscription_1", body: { nodeIds: ["node_1"] }, panelSyncStatus: "pending" }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/subscriptions/subscription_1/reset-traffic", {
+        body: { userId: "user_1" }
+      }),
+      {
+        status: 201,
+        body: { subscriptionId: "subscription_1", body: { userId: "user_1" }, panelSyncStatus: "pending" }
+      }
+    );
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/users/user_1/disconnect"), {
+      status: 201,
+      body: { userId: "user_1", panelSyncStatus: "pending" }
+    });
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/nodes/node_1", {
+        method: "PATCH",
+        body: { isActive: false }
+      }),
+      {
+        status: 200,
+        body: { id: "node_1", body: { isActive: false }, panelSyncStatus: "pending" }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/nodes/node_1", {
+        method: "DELETE"
+      }),
+      {
+        status: 200,
+        body: { ok: true, nodeId: "node_1", panelSyncStatus: "pending" }
+      }
+    );
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/probe-all"), {
+      status: 201,
+      body: [{ id: "node_1", panelStatus: "degraded" }]
+    });
 
     assert.deepEqual(calls, [
       { route: "panel-job", value: "job_1" },
       { route: "panel-node", value: "node_1" },
       { route: "lease-job", value: "lease_job_1" },
-      { route: "lease-node", value: "node_1" }
+      { route: "lease-node", value: "node_1" },
+      { route: "subscription-nodes", value: "subscription_1", body: { nodeIds: ["node_1"] } },
+      { route: "subscription-reset-traffic", value: "subscription_1", body: { userId: "user_1" } },
+      { route: "user-disconnect", value: "user_1" },
+      { route: "node-update", value: "node_1", body: { isActive: false } },
+      { route: "node-delete", value: "node_1" },
+      { route: "node-probe-all", value: "all" }
     ]);
   } finally {
     await app.close();

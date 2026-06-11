@@ -571,6 +571,16 @@ export function TicketsPage(props: TicketsPageProps) {
                     <Text c="dimmed">请选择左侧工单查看详情。</Text>
                   ) : (
                     <>
+                      {selectedTicket.attachmentUploadStatus === "failed" ? (
+                        <Alert color="yellow" variant="light">
+                          文字回复已保存，附件上传失败：
+                          {summarizeAdminDiagnosticMessage(
+                            selectedTicket.attachmentUploadError,
+                            "请检查图床配置或稍后重试。"
+                          )}
+                        </Alert>
+                      ) : null}
+
                       <div className="admin-ticket-summary">
                         <Paper withBorder radius="lg" p="md">
                           <Text size="xs" c="dimmed">标题</Text>

@@ -11,6 +11,7 @@
     "build": "turbo build",
     "check": "turbo check",
     "lint": "turbo lint",
+    "test:api": "pnpm --filter @chordv/api test:regression",
     "prepare:1panel-bundle": "node ./scripts/prepare-1panel-chordv-bundle.mjs",
     "release:desktop": "bash scripts/release-desktop.sh",
     "setup:mac": "docker compose up -d postgres && pnpm install && pnpm --filter @chordv/api db:generate && pnpm --filter @chordv/api db:push && NODE_ENV=development CHORDV_DEV_SEED_CONFIRM=true pnpm --filter @chordv/api db:seed",

@@ -405,14 +405,14 @@ function PanelSyncInlineStatus(props: {
   } | null;
   onOpenPanelSyncQueue: () => void;
 }) {
-  if (props.item?.panelSyncStatus !== "pending") {
+  const summary = props.item?.panelSyncSummary;
+  if (props.item?.panelSyncStatus !== "pending" && (summary?.total ?? 0) === 0) {
     return null;
   }
-  const summary = props.item.panelSyncSummary;
   const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
   const detail = [
     summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
-    summarizeAdminDiagnosticMessage(props.item.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
+    summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
   ]
     .filter(Boolean)
     .join(" · ");
