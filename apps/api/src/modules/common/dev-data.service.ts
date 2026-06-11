@@ -1519,6 +1519,17 @@ export class DevDataService implements OnModuleInit {
       const fallbackNodes = uniqueNodeIds
         .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
         .filter((node): node is (typeof availableNodes)[number] => Boolean(node));
+      markLocalSave?.({
+        subscriptionId,
+        nodeIds: uniqueNodeIds,
+        nodes: [],
+        revokedSessionCount,
+        reasonCode: "node_access_revoked",
+        reasonMessage: "Node access was updated locally; revoked nodes are invalid locally immediately.",
+        panelSyncStatus: "pending",
+        panelSyncMessage: "local node access saved; panel disable and lease revocation are pending background processing.",
+        message: "Node access saved locally; panel synchronization is pending background retry."
+      });
       const fallback: SubscriptionNodeAccessDto = {
         subscriptionId,
         nodeIds: fallbackNodes.map((node) => node.id),
@@ -1582,6 +1593,17 @@ export class DevDataService implements OnModuleInit {
       const fallbackNodes = uniqueNodeIds
         .map((nodeId) => availableNodes.find((node) => node.id === nodeId))
         .filter((node): node is (typeof availableNodes)[number] => Boolean(node));
+      markLocalSave?.({
+        subscriptionId,
+        nodeIds: uniqueNodeIds,
+        nodes: [],
+        revokedSessionCount,
+        reasonCode,
+        reasonMessage,
+        panelSyncStatus: "pending",
+        panelSyncMessage: "local node access saved; panel ensure synchronization is pending background processing.",
+        message: "Node access saved locally; panel synchronization is pending background retry."
+      });
       const fallback: SubscriptionNodeAccessDto = {
         subscriptionId,
         nodeIds: fallbackNodes.map((node) => node.id),
@@ -1677,21 +1699,32 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async queueSubscriptionPanelAccessSyncAfterLocalSave(subscriptionId: string) {
-    const result = await this.withNodeAccessPanelSyncBudget(
-      subscriptionId,
-      this.prisma.$transaction((tx) => this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId))
-    );
-    if (result.ok) {
-      return result.queuedCount > 0
-        ? "panel access synchronization queued; local node access is already saved."
-        : "panel access synchronization checked; no panel changes were required.";
+    try {
+      const result = await this.withNodeAccessPanelSyncBudget(
+        subscriptionId,
+        this.prisma.$transaction((tx) => this.queueSubscriptionPanelAccessSyncTx(tx, subscriptionId))
+      );
+      if (result.ok) {
+        return result.queuedCount > 0
+          ? "panel access synchronization queued; local node access is already saved."
+          : "panel access synchronization checked; no panel changes were required.";
+      }
+      return [
+        `panel access synchronization queued for background retry: ${result.errorMessage}`,
+        this.startSubscriptionPanelAccessSync(subscriptionId)
+      ]
+        .filter(Boolean)
+        .join(" ");
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but panel access sync queueing failed for ${subscriptionId}: ${errorMessage}`);
+      return [
+        `panel access synchronization queued for background retry: ${errorMessage}`,
+        this.startSubscriptionPanelAccessSync(subscriptionId)
+      ]
+        .filter(Boolean)
+        .join(" ");
     }
-    return [
-      `panel access synchronization queued for background retry: ${result.errorMessage}`,
-      this.startSubscriptionPanelAccessSync(subscriptionId)
-    ]
-      .filter(Boolean)
-      .join(" ");
   }
 
   private async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
@@ -1856,14 +1889,25 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined
   ) {
-    const result = await this.withNodeAccessFollowUpBudget(
-      subscriptionId,
-      this.queueNodeAccessRevocationJobsPostCommitTx(subscriptionId, filter).then((panelSyncMessage) => ({
-        revokedSessionCount: 0,
-        panelSyncMessage
-      }))
-    );
-    return result.panelSyncMessage;
+    try {
+      const result = await this.withNodeAccessFollowUpBudget(
+        subscriptionId,
+        this.queueNodeAccessRevocationJobsPostCommitTx(subscriptionId, filter).then((panelSyncMessage) => ({
+          revokedSessionCount: 0,
+          panelSyncMessage
+        }))
+      );
+      return result.panelSyncMessage;
+    } catch (error) {
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but revocation queueing failed for ${subscriptionId}: ${errorMessage}`);
+      return [
+        `node access revocation queueing failed: ${errorMessage}`,
+        this.startNodeAccessRevocationEffects(subscriptionId, filter, "node_access_revoked")
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
   }
 
   private async queueNodeAccessRevocationJobsPostCommitTx(

@@ -7929,6 +7929,224 @@ async function testUpdateNodeAccessMapsTransactionCommitFailure() {
   );
 }
 
+async function testUpdateNodeAccessKeepsLocalSaveWhenFallbackNodeSummaryThrows() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...oldNode,
+    id: "node_new",
+    name: "new",
+    get tags() {
+      throw new Error("node summary failed");
+    }
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old" }];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({
+            ...row,
+            node: row.nodeId === "node_new" ? newNode : oldNode
+          }));
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+        },
+        createMany: async () => {
+          accessRows.push({ id: "access_new", nodeId: "node_new" });
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+            },
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new" });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      queueSubscriptionPanelAccessSyncTx: async () => 1
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local replacement must stay saved");
+  assert.deepEqual(result.nodeIds, ["node_new"]);
+  assert.deepEqual(result.nodes, []);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /node summary failed/);
+}
+
+async function testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionThrowsSynchronously() {
+  const node = {
+    id: "node_new",
+    name: "new",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let transactionCalls = 0;
+  let accessRows: Array<{ id: string; nodeId: string }> = [];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({ ...row, node }));
+        },
+        createMany: async () => {
+          accessRows.push({ id: "access_new", nodeId: "node_new" });
+        }
+      },
+      node: {
+        findMany: async () => [node]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        transactionCalls += 1;
+        if (transactionCalls > 1) {
+          throw new Error("panel ensure transaction failed");
+        }
+        return task({
+          subscriptionNodeAccess: {
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new" });
+            }
+          }
+        });
+      }
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSyncTx: async () => 1
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local authorization must stay saved");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel ensure transaction failed/);
+}
+
+async function testClearNodeAccessReturnsPendingWhenRevocationQueueTransactionThrowsSynchronously() {
+  const oldNode = {
+    id: "node_old",
+    name: "old",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let transactionCalls = 0;
+  let accessRows = [{ id: "access_old", nodeId: "node_old", node: oldNode }];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        },
+        deleteMany: async () => {
+          accessRows = [];
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        transactionCalls += 1;
+        if (transactionCalls > 1) {
+          throw new Error("revocation queue transaction failed");
+        }
+        return task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = [];
+            }
+          }
+        });
+      }
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: [] });
+
+  assert.deepEqual(accessRows, [], "local node access must stay cleared");
+  assert.deepEqual(result.nodeIds, []);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /revocation queue transaction failed/);
+}
+
 async function testUpdateNodeAccessKeepsLocalSaveWhenPublishFails() {
   const createdRows: Array<Record<string, any>> = [];
   const node = {
@@ -22096,6 +22314,9 @@ async function main() {
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
   await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
   await testUpdateNodeAccessMapsTransactionCommitFailure();
+  await testUpdateNodeAccessKeepsLocalSaveWhenFallbackNodeSummaryThrows();
+  await testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionThrowsSynchronously();
+  await testClearNodeAccessReturnsPendingWhenRevocationQueueTransactionThrowsSynchronously();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();

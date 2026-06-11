@@ -1450,7 +1450,7 @@ export function App() {
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "节点授权状态不确定" : "操作失败",
-        message: uncertain ? `${message} 节点授权可能已保存，请刷新订阅列表和同步队列确认。` : message
+        message: uncertain ? "节点授权请求状态不确定，请刷新订阅列表和同步队列确认；不要重复提交同一操作。" : message
       });
     } finally {
       nodeAccessSavingRef.current = false;
