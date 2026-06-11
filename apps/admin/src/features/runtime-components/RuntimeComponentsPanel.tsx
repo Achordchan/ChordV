@@ -31,7 +31,12 @@ import {
   updateAdminRuntimeComponent,
   verifyAdminRuntimeComponent
 } from "../../api/client";
-import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../../utils/admin-filters";
+import {
+  buildUncertainMutationMessage,
+  isPotentiallyCompletedMutationFailure,
+  readError,
+  summarizeAdminDiagnosticMessage
+} from "../../utils/admin-filters";
 import { formatDateTime } from "../../utils/admin-format";
 import { RuntimeComponentEditorModal } from "./RuntimeComponentEditorModal";
 import {
@@ -273,7 +278,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       notifications.show({
         color: result.status === "ready" ? "green" : result.status === "disabled" ? "yellow" : "red",
         title: "内核组件",
-        message: result.message
+        message: summarizeAdminDiagnosticMessage(result.message, "内核组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "内核组件校验完成"
       });
       void onRefresh();
     } catch (reason) {

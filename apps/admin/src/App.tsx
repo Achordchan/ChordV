@@ -1418,7 +1418,10 @@ export function App() {
       notifications.show({
         color: panelSyncPending ? "yellow" : "green",
         title: panelSyncPending ? "已保存，后台同步待处理" : "操作成功",
-        message: result.message ?? result.panelSyncMessage ?? "节点授权已保存"
+        message:
+          summarizeAdminDiagnosticMessage(result.message, "节点授权已保存，后台同步待处理。") ??
+          summarizeAdminDiagnosticMessage(result.panelSyncMessage, "节点授权已保存，后台同步待处理。") ??
+          "节点授权已保存"
       });
       closeNodeAccessEditor();
       void refreshCurrentDataAfterAction().catch((refreshReason) => {

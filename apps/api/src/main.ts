@@ -14,6 +14,7 @@ async function bootstrap() {
     }
   });
 
+  app.enableShutdownHooks();
   app.setGlobalPrefix("api");
   const forceHttps = (process.env.CHORDV_API_FORCE_HTTPS ?? "true").toLowerCase() === "true";
   if (process.env.NODE_ENV === "production" && forceHttps) {
