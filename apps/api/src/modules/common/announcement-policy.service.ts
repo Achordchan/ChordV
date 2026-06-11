@@ -197,7 +197,7 @@ export class AnnouncementPolicyService {
         countdownSeconds
       }
     });
-    await this.publishAnnouncementUpdatedEvent(row.id);
+    this.publishAnnouncementUpdatedEventInBackground(row.id);
     return toAdminAnnouncementRecord(row);
   }
 
@@ -232,7 +232,7 @@ export class AnnouncementPolicyService {
         ...(input.displayMode !== undefined || input.countdownSeconds !== undefined ? { countdownSeconds } : {})
       }
     });
-    await this.publishAnnouncementUpdatedEvent(row.id);
+    this.publishAnnouncementUpdatedEventInBackground(row.id);
     return toAdminAnnouncementRecord(row);
   }
 
@@ -248,7 +248,7 @@ export class AnnouncementPolicyService {
     await this.prisma.announcement.delete({
       where: { id: announcementId }
     });
-    await this.publishAnnouncementUpdatedEvent(announcementId);
+    this.publishAnnouncementUpdatedEventInBackground(announcementId);
 
     return {
       ok: true,
@@ -290,8 +290,25 @@ export class AnnouncementPolicyService {
       where: { id: "default" },
       data
     });
-    await this.publishPolicyUpdatedEvent();
+    this.publishPolicyUpdatedEventInBackground();
     return toAdminPolicyRecord(updated ?? { ...current, ...data });
+  }
+
+  private publishPolicyUpdatedEventInBackground() {
+    this.startPublishEventInBackground("policy_updated", () => this.publishPolicyUpdatedEvent());
+  }
+
+  private publishAnnouncementUpdatedEventInBackground(announcementId: string) {
+    this.startPublishEventInBackground("announcement_updated", () => this.publishAnnouncementUpdatedEvent(announcementId));
+  }
+
+  private startPublishEventInBackground(eventType: string, task: () => Promise<unknown>) {
+    const timer = setTimeout(() => {
+      void task().catch((error) => {
+        this.logger.warn(`Local change saved, but background ${eventType} publish failed: ${readErrorMessage(error)}`);
+      });
+    }, 0);
+    timer.unref?.();
   }
 
   private async publishPolicyUpdatedEvent() {

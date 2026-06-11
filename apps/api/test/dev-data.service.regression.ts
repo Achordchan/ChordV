@@ -19622,6 +19622,7 @@ async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {
 async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   let created = false;
+  let publishLookupStarted = false;
   const service = createAnnouncementPolicyService({
     logger: {
       warn: () => undefined
@@ -19645,7 +19646,10 @@ async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
         }
       },
       user: {
-        findMany: async () => new Promise<never>(() => undefined)
+        findMany: async () => {
+          publishLookupStarted = true;
+          return new Promise<never>(() => undefined);
+        }
       }
     }
   });
@@ -19663,6 +19667,9 @@ async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
 
   assert.equal(created, true);
   assert.equal(result.id, "announcement_1");
+  assert.equal(publishLookupStarted, false, "announcement publish must not start before local create returns");
+  await waitUntil(() => publishLookupStarted);
+  assert.equal(publishLookupStarted, true, "announcement publish should still start in background");
 }
 
 async function testMarkAnnouncementReadKeepsLocalSaveWhenPublishFails() {
@@ -19855,6 +19862,7 @@ async function testUpdatePolicyDoesNotRefreshAfterLocalSave() {
 
 async function testUpdatePolicyReturnsWhenPublishUserLookupStalls() {
   const updates: Array<Record<string, any>> = [];
+  let publishLookupStarted = false;
   const service = createAnnouncementPolicyService({
     logger: {
       warn: () => undefined
@@ -19874,7 +19882,10 @@ async function testUpdatePolicyReturnsWhenPublishUserLookupStalls() {
         }
       },
       user: {
-        findMany: async () => new Promise<never>(() => undefined)
+        findMany: async () => {
+          publishLookupStarted = true;
+          return new Promise<never>(() => undefined);
+        }
       }
     }
   });
@@ -19888,6 +19899,9 @@ async function testUpdatePolicyReturnsWhenPublishUserLookupStalls() {
 
   assert.equal(updates.length, 1);
   assert.equal(result.features.blockAds, false);
+  assert.equal(publishLookupStarted, false, "policy publish must not start before local update returns");
+  await waitUntil(() => publishLookupStarted);
+  assert.equal(publishLookupStarted, true, "policy publish should still start in background");
 }
 
 async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
