@@ -16,7 +16,11 @@ import {
 } from "../features/runtime-components/RuntimeComponentsPanel";
 import { readError } from "../utils/admin-filters";
 
-export function RuntimeComponentsPage() {
+type RuntimeComponentsPageProps = {
+  refreshSignal?: number;
+};
+
+export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
   const [runtimeComponents, setRuntimeComponents] = useState<AdminRuntimeComponentRecordDto[]>([]);
   const [runtimeFailures, setRuntimeFailures] = useState<AdminRuntimeComponentFailureReportDto[]>([]);
   const [runtimeValidation, setRuntimeValidation] = useState<Record<string, AdminRuntimeComponentValidationDto>>({});
@@ -30,6 +34,13 @@ export function RuntimeComponentsPage() {
     void loadRuntimeComponents();
     void loadUploadLimits();
   }, []);
+
+  useEffect(() => {
+    if (!props.refreshSignal) {
+      return;
+    }
+    void loadRuntimeComponents();
+  }, [props.refreshSignal]);
 
   async function loadUploadLimits() {
     try {

@@ -451,6 +451,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
                           variant="subtle"
                           color="red"
                           loading={deletingPath === file.name}
+                          disabled={Boolean(deletingPath) && deletingPath !== file.name}
                           onClick={() => void handleDelete(file)}
                         >
                           删除

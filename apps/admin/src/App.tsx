@@ -310,6 +310,7 @@ export function App() {
   const sectionRef = useRef<SectionKey>("overview");
   const [releaseRefreshSignal, setReleaseRefreshSignal] = useState(0);
   const [ticketRefreshSignal, setTicketRefreshSignal] = useState(0);
+  const [runtimeComponentRefreshSignal, setRuntimeComponentRefreshSignal] = useState(0);
   const [imageBedRefreshSignal, setImageBedRefreshSignal] = useState(0);
   const [mobileNavOpened, setMobileNavOpened] = useState(false);
   const [drawer, setDrawer] = useState<EditorState>({ type: null, recordId: null, parentId: null });
@@ -920,6 +921,8 @@ export function App() {
       setReleaseRefreshSignal((current) => current + 1);
     } else if (sectionRef.current === "tickets") {
       setTicketRefreshSignal((current) => current + 1);
+    } else if (sectionRef.current === "runtimeComponents") {
+      setRuntimeComponentRefreshSignal((current) => current + 1);
     } else if (sectionRef.current === "imageBed") {
       setImageBedRefreshSignal((current) => current + 1);
     }
@@ -1258,6 +1261,7 @@ export function App() {
       uncertainMessage?: (message: string) => string;
       refreshAfter?: boolean;
       treatHttp500AsUncertain?: boolean;
+      treatUncertainAsCompleted?: boolean;
       resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
     } = {}
   ) {
@@ -1320,9 +1324,11 @@ export function App() {
           ? options.uncertainMessage?.(message) ?? `${message} 操作可能已保存，请刷新页面或列表确认。`
           : message
       });
-      return false;
+      return Boolean(uncertain && options.treatUncertainAsCompleted);
     }
   }
+
+  const dbFirstMutationOptions = { treatHttp500AsUncertain: true, treatUncertainAsCompleted: true } as const;
 
   async function openNodeAccessEditor(subscriptionId: string, ownerLabel: string) {
     const requestSeq = nodeAccessRequestSeqRef.current + 1;
@@ -1647,7 +1653,7 @@ export function App() {
         } satisfies UpdateUserInputDto;
 
         const success = drawer.recordId
-          ? await runAction(() => updateUser(drawer.recordId!, payload), "用户已更新", { treatHttp500AsUncertain: true })
+          ? await runAction(() => updateUser(drawer.recordId!, payload), "用户已更新", dbFirstMutationOptions)
           : await runAction(
               () =>
                 createUser({
@@ -1659,7 +1665,7 @@ export function App() {
                     userForm.maxConcurrentSessionsOverride === "" ? null : Number(userForm.maxConcurrentSessionsOverride)
                 } satisfies CreateUserInputDto),
               "用户已创建",
-              { treatHttp500AsUncertain: true }
+              dbFirstMutationOptions
             );
 
         if (success) forceCloseDrawer();
@@ -1675,8 +1681,8 @@ export function App() {
           isActive: planForm.isActive
         };
         const success = drawer.recordId
-          ? await runAction(() => updatePlan(drawer.recordId!, payload satisfies UpdatePlanInputDto), "套餐已更新", { treatHttp500AsUncertain: true })
-          : await runAction(() => createPlan(payload satisfies CreatePlanInputDto), "套餐已创建", { treatHttp500AsUncertain: true });
+          ? await runAction(() => updatePlan(drawer.recordId!, payload satisfies UpdatePlanInputDto), "套餐已更新", dbFirstMutationOptions)
+          : await runAction(() => createPlan(payload satisfies CreatePlanInputDto), "套餐已创建", dbFirstMutationOptions);
         if (success) forceCloseDrawer();
       }
 
@@ -1692,7 +1698,7 @@ export function App() {
               state: subscriptionCreateForm.state
             } satisfies CreateSubscriptionInputDto),
           "订阅已创建",
-          { treatHttp500AsUncertain: true }
+          dbFirstMutationOptions
         );
         if (success) forceCloseDrawer();
       }
@@ -1707,7 +1713,7 @@ export function App() {
               state: subscriptionAdjustForm.state
             } satisfies UpdateSubscriptionInputDto),
           "订阅已校正",
-          { treatHttp500AsUncertain: true }
+          dbFirstMutationOptions
         );
         if (success) forceCloseDrawer();
       }
@@ -1722,7 +1728,7 @@ export function App() {
                 subscriptionRenewForm.totalTrafficGb === "" ? undefined : Number(subscriptionRenewForm.totalTrafficGb)
             } satisfies RenewSubscriptionInputDto),
           "订阅已续期",
-          { treatHttp500AsUncertain: true }
+          dbFirstMutationOptions
         );
         if (success) forceCloseDrawer();
       }
@@ -1736,7 +1742,7 @@ export function App() {
               expireAt: fromDateTimeLocal(subscriptionChangePlanForm.expireAt)
             } satisfies ChangeSubscriptionPlanInputDto),
           "套餐已变更",
-          { treatHttp500AsUncertain: true }
+          dbFirstMutationOptions
         );
         if (success) forceCloseDrawer();
       }
@@ -1748,8 +1754,8 @@ export function App() {
           status: teamForm.status
         };
         const success = drawer.recordId
-          ? await runAction(() => updateTeam(drawer.recordId!, payload satisfies UpdateTeamInputDto), "团队已更新", { treatHttp500AsUncertain: true })
-          : await runAction(() => createTeam(payload satisfies CreateTeamInputDto), "团队已创建", { treatHttp500AsUncertain: true });
+          ? await runAction(() => updateTeam(drawer.recordId!, payload satisfies UpdateTeamInputDto), "团队已更新", dbFirstMutationOptions)
+          : await runAction(() => createTeam(payload satisfies CreateTeamInputDto), "团队已创建", dbFirstMutationOptions);
         if (success) forceCloseDrawer();
       }
 
@@ -1762,12 +1768,12 @@ export function App() {
           ? await runAction(
               () => updateTeamMember(drawer.parentId!, drawer.recordId!, { role: teamMemberForm.role } satisfies UpdateTeamMemberInputDto),
               "成员已更新",
-              { treatHttp500AsUncertain: true }
+              dbFirstMutationOptions
             )
           : await runAction(
               () => createTeamMember(drawer.parentId!, payload satisfies CreateTeamMemberInputDto),
               "成员已加入",
-              { treatHttp500AsUncertain: true }
+              dbFirstMutationOptions
             );
         if (success) forceCloseDrawer();
       }
@@ -1781,7 +1787,7 @@ export function App() {
               expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
             } satisfies CreateTeamSubscriptionInputDto),
           "团队套餐已分配",
-          { treatHttp500AsUncertain: true }
+          dbFirstMutationOptions
         );
         if (success) forceCloseDrawer();
       }
@@ -1847,7 +1853,7 @@ export function App() {
                   panelEnabled: updatePayload.panelEnabled
                 } satisfies UpdateNodeInputDto),
               "节点已更新",
-              { treatHttp500AsUncertain: true }
+              dbFirstMutationOptions
             )
           : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", {
               failureTitle: "节点导入失败，未保存",
@@ -1871,11 +1877,9 @@ export function App() {
           ? await runAction(
               () => updateAnnouncement(drawer.recordId!, payload satisfies UpdateAnnouncementInputDto),
               "公告已更新",
-              { treatHttp500AsUncertain: true }
+              dbFirstMutationOptions
             )
-          : await runAction(() => createAnnouncement(payload satisfies CreateAnnouncementInputDto), "公告已创建", {
-              treatHttp500AsUncertain: true
-            });
+          : await runAction(() => createAnnouncement(payload satisfies CreateAnnouncementInputDto), "公告已创建", dbFirstMutationOptions);
         if (success) closeDrawer();
       }
     } finally {
@@ -2072,7 +2076,7 @@ export function App() {
       await runAction(
         () => updateUser(userId, { status: nextStatus }),
         nextStatus === "disabled" ? "账号已禁用" : "账号已启用",
-        { treatHttp500AsUncertain: true }
+        dbFirstMutationOptions
       );
     } finally {
       entityActionBusyRef.current = null;
@@ -2105,7 +2109,7 @@ export function App() {
       await runAction(
         () => disconnectUser(userId),
         "账号连接撤销任务已提交",
-        { treatHttp500AsUncertain: true }
+        dbFirstMutationOptions
       );
     } finally {
       entityActionBusyRef.current = null;
@@ -2191,7 +2195,7 @@ export function App() {
             disableAccount: kickDisableAccount
           }),
         kickDisableAccount ? "成员断网任务已提交，账号已禁用" : "成员断网任务已提交",
-        { treatHttp500AsUncertain: true }
+        dbFirstMutationOptions
       );
       if (success) {
         closeKickMemberModal();
@@ -2218,7 +2222,7 @@ export function App() {
       resetTrafficBusyRef.current = true;
       setResetTrafficBusyKey(targetKey);
       setTeamUsageByTeamId({});
-      await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", { treatHttp500AsUncertain: true });
+      await runAction(() => resetSubscriptionTraffic(subscriptionId, userId), "订阅流量已重置", dbFirstMutationOptions);
     } finally {
       setResetTrafficBusyKey(null);
       resetTrafficBusyRef.current = false;
@@ -2315,7 +2319,7 @@ export function App() {
             targetTeamId: convertTargetTeamId
           }),
         "订阅已转入 Team",
-        { treatHttp500AsUncertain: true }
+        dbFirstMutationOptions
       );
       if (success) {
         forceCloseConvertToTeamModal();
@@ -2344,6 +2348,10 @@ export function App() {
     if (teamProfileBusyRef.current) {
       return;
     }
+    forceCloseTeamInlineEditor();
+  }
+
+  function forceCloseTeamInlineEditor() {
     setTeamInlineEditorId(null);
     setTeamForm(emptyTeamForm(snapshot));
   }
@@ -2364,10 +2372,10 @@ export function App() {
             status: teamForm.status
           } satisfies UpdateTeamInputDto),
         "团队已更新",
-        { treatHttp500AsUncertain: true }
+        dbFirstMutationOptions
       );
       if (success) {
-        closeTeamInlineEditor();
+        forceCloseTeamInlineEditor();
       }
     } finally {
       teamProfileBusyRef.current = null;
@@ -2397,6 +2405,10 @@ export function App() {
     if (teamMemberBusyRef.current) {
       return;
     }
+    forceCloseTeamMemberInlineEditor();
+  }
+
+  function forceCloseTeamMemberInlineEditor() {
     setTeamMemberInlineEditor(null);
     setTeamMemberForm(emptyTeamMemberForm());
   }
@@ -2443,7 +2455,7 @@ export function App() {
             expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
           } satisfies CreateTeamSubscriptionInputDto),
         "团队套餐已分配",
-        { treatHttp500AsUncertain: true }
+        dbFirstMutationOptions
       );
       if (success) {
         forceCloseTeamSubscriptionInlineEditor();
@@ -2475,16 +2487,16 @@ export function App() {
                 role: teamMemberForm.role
               } satisfies UpdateTeamMemberInputDto),
             "成员已更新",
-            { treatHttp500AsUncertain: true }
+            dbFirstMutationOptions
           )
         : await runAction(
             () =>
               createTeamMember(teamMemberInlineEditor.teamId, payload satisfies CreateTeamMemberInputDto),
             "成员已加入",
-            { treatHttp500AsUncertain: true }
-          );
+            dbFirstMutationOptions
+      );
       if (success) {
-        closeTeamMemberInlineEditor();
+        forceCloseTeamMemberInlineEditor();
       }
     } finally {
       teamMemberBusyRef.current = null;
@@ -2878,7 +2890,7 @@ export function App() {
 
             {section === "releases" ? <ReleasesPage refreshSignal={releaseRefreshSignal} /> : null}
 
-            {section === "runtimeComponents" ? <RuntimeComponentsPage /> : null}
+            {section === "runtimeComponents" ? <RuntimeComponentsPage refreshSignal={runtimeComponentRefreshSignal} /> : null}
 
             {section === "imageBed" ? <ImageBedPage refreshSignal={imageBedRefreshSignal} /> : null}
           </Stack>

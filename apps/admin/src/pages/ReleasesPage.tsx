@@ -305,6 +305,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     } catch (reason) {
       const result = showReleaseRequestFailure(reason, "保存发布记录失败");
       if (result.uncertain) {
+        closeReleaseEditor();
         void loadReleases();
       }
     } finally {
@@ -541,6 +542,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     } catch (reason) {
       const result = showReleaseRequestFailure(reason, "保存安装包失败");
       if (result.uncertain) {
+        closeArtifactEditor();
         void loadReleases();
       }
     } finally {
