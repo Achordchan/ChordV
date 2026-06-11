@@ -303,7 +303,7 @@ export class ReleaseCenterService {
       where: { id: releaseId }
     });
 
-    await this.runReleaseCleanupBestEffort("release artifact files after release delete", async () => {
+    this.startReleaseCleanupBestEffort("release artifact files after release delete", async () => {
       await Promise.all(
         storedFilePaths.map((storedFilePath) =>
           removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
@@ -490,7 +490,7 @@ export class ReleaseCenterService {
       });
     });
     if (current.storedFilePath && input.source === "external") {
-      await this.removeReleaseArtifactFileBestEffort(current.storedFilePath, "old uploaded release artifact after switching to external");
+      this.startRemoveReleaseArtifactFileBestEffort(current.storedFilePath, "old uploaded release artifact after switching to external");
     }
     return this.getAdminReleaseBestEffort(
       releaseId,
@@ -625,7 +625,7 @@ export class ReleaseCenterService {
       });
       const fallback = this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]);
       if (prepared && previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
-        await this.removeReleaseArtifactFileBestEffort(previousStoredFilePath, "old uploaded release artifact after replacement");
+        this.startRemoveReleaseArtifactFileBestEffort(previousStoredFilePath, "old uploaded release artifact after replacement");
       }
       return this.getAdminReleaseBestEffort(releaseId, fallback, "replace release artifact response refresh");
     } catch (error) {
@@ -663,7 +663,7 @@ export class ReleaseCenterService {
       }
     });
     if (artifact.storedFilePath) {
-      await this.removeReleaseArtifactFileBestEffort(artifact.storedFilePath, "deleted release artifact file");
+      this.startRemoveReleaseArtifactFileBestEffort(artifact.storedFilePath, "deleted release artifact file");
     }
     const fallbackArtifacts = siblings
       .filter((item) => item.id !== artifactId)
@@ -1123,6 +1123,12 @@ export class ReleaseCenterService {
     );
   }
 
+  private startRemoveReleaseArtifactFileBestEffort(storedFilePath: string, label: string) {
+    this.startReleaseCleanupBestEffort(label, () =>
+      removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
+    );
+  }
+
   private async cleanupFailedReleaseArtifactUpload(absolutePath: string | null, label: string) {
     await this.runReleaseCleanupBestEffort(label, () =>
       absolutePath ? removeReleaseArtifactFile(absolutePath) : Promise.resolve()
@@ -1170,6 +1176,17 @@ export class ReleaseCenterService {
         clearTimeout(timeoutHandle);
       }
     }
+  }
+
+  private startReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
+    const timer = setTimeout(() => {
+      void this.runReleaseCleanupBestEffort(label, task).catch((error) => {
+        this.logger.warn(
+          `Local release change saved, but background ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+    }, 0);
+    timer.unref?.();
   }
 
   private async ensureReleaseExists(releaseId: string) {

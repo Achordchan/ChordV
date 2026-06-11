@@ -102,7 +102,7 @@ export class RuntimeComponentsService {
             }
           })
         );
-        await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, updated.id);
+        this.startSharedRulesetDuplicatesCleanup(input.kind, updated.id);
         return toAdminRuntimeComponentRecord(updated);
       }
     }
@@ -178,7 +178,7 @@ export class RuntimeComponentsService {
           }
         })
       );
-      await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, created.id);
+      this.startSharedRulesetDuplicatesCleanup(input.kind, created.id);
       return toAdminRuntimeComponentRecord(created);
     } catch (error) {
       await this.removeRuntimeComponentFileBestEffort(
@@ -257,8 +257,8 @@ export class RuntimeComponentsService {
         }
       })
     );
-    await this.cleanupSharedRulesetDuplicatesBestEffort(updated.kind as RuntimeComponentKind, updated.id);
-    await this.removeRuntimeComponentFileBestEffort(
+    this.startSharedRulesetDuplicatesCleanup(updated.kind as RuntimeComponentKind, updated.id);
+    this.startRuntimeComponentFileCleanupBestEffort(
       staleUploadedFilePath ? resolveRuntimeComponentAbsolutePath(staleUploadedFilePath) : null,
       "stale runtime component upload"
     );
@@ -304,13 +304,13 @@ export class RuntimeComponentsService {
           }
         })
       );
-      await this.removeRuntimeComponentFileBestEffort(
+      this.startRuntimeComponentFileCleanupBestEffort(
         previousStoredFilePath && previousStoredFilePath !== preparedFile.storedFilePath
           ? resolveRuntimeComponentAbsolutePath(previousStoredFilePath)
           : null,
         "old runtime component upload"
       );
-      await this.cleanupSharedRulesetDuplicatesBestEffort(input.kind, updated.id);
+      this.startSharedRulesetDuplicatesCleanup(input.kind, updated.id);
       return toAdminRuntimeComponentRecord(updated);
     } catch (error) {
       await this.removeRuntimeComponentFileBestEffort(
@@ -326,7 +326,7 @@ export class RuntimeComponentsService {
     await this.prisma.runtimeComponent.delete({
       where: { id: componentId }
     });
-    await this.removeRuntimeComponentFileBestEffort(
+    this.startRuntimeComponentFileCleanupBestEffort(
       existing.storedFilePath ? resolveRuntimeComponentAbsolutePath(existing.storedFilePath) : null,
       "deleted runtime component upload"
     );
@@ -745,6 +745,15 @@ export class RuntimeComponentsService {
     }
   }
 
+  private startSharedRulesetDuplicatesCleanup(kind: RuntimeComponentKind, keepId: string) {
+    const timer = setTimeout(() => {
+      void this.cleanupSharedRulesetDuplicatesBestEffort(kind, keepId).catch((error) => {
+        this.logger.warn(`Runtime component ${keepId} saved, but background shared ruleset cleanup failed: ${readErrorMessage(error)}`);
+      });
+    }, 0);
+    timer.unref?.();
+  }
+
   private async removeRuntimeComponentFileBestEffort(absolutePath: string | null, label: string) {
     if (!absolutePath) {
       return;
@@ -785,6 +794,18 @@ export class RuntimeComponentsService {
         clearTimeout(timeoutHandle);
       }
     }
+  }
+
+  private startRuntimeComponentFileCleanupBestEffort(absolutePath: string | null, label: string) {
+    if (!absolutePath) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
+        this.logger.warn(`Runtime component saved, but background ${label} cleanup failed: ${readErrorMessage(error)}`);
+      });
+    }, 0);
+    timer.unref?.();
   }
 
   private async validateUploadedRuntimeComponent(

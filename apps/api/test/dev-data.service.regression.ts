@@ -13880,7 +13880,9 @@ async function testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails() {
   assert.equal(result.id, "component_existing");
   assert.equal(result.kind, "geosite");
   assert.equal(result.expectedHash, expectedHash);
-  assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted");
+  assert.equal(cleanupCalls, 0, "shared ruleset cleanup must not block the local save response");
+  await waitUntil(() => cleanupCalls > 0);
+  assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted in background");
 }
 
 async function testRemoteSharedRulesetCreateReturnsWhenCleanupStalls() {
@@ -13942,7 +13944,9 @@ async function testRemoteSharedRulesetCreateReturnsWhenCleanupStalls() {
 
     assert.equal(result.id, "component_existing");
     assert.equal(result.kind, "geosite");
-    assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted");
+    assert.equal(cleanupCalls, 0, "stalled shared ruleset cleanup must not start before local save returns");
+    await waitUntil(() => cleanupCalls > 0);
+    assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted in background");
   } finally {
     if (previousCleanupBudget === undefined) {
       delete process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS;
@@ -14839,7 +14843,9 @@ async function testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote() 
       expectedHash: "b".repeat(64)
     });
 
-    assert.equal(existsSync(absolutePath), false, "old uploaded runtime file must be removed after switching to remote");
+    assert.equal(existsSync(absolutePath), true, "switching runtime component to remote must not wait for old file cleanup");
+    await waitUntil(() => !existsSync(absolutePath));
+    assert.equal(existsSync(absolutePath), false, "old uploaded runtime file should still be removed in background");
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -14908,8 +14914,10 @@ async function testRuntimeComponentDeleteReturnsWhenFileCleanupStalls() {
     ]);
 
     assert.equal(deleteCalled, true);
-    assert.equal(cleanupStarted, true);
+    assert.equal(cleanupStarted, false, "runtime component delete must not wait for file cleanup to start");
     assert.deepEqual(result, { id: "component_1", deleted: true });
+    await waitUntil(() => cleanupStarted);
+    assert.equal(cleanupStarted, true, "runtime component file cleanup should still start in background");
   } finally {
     fsForPatch.rm = originalRm;
     if (previousReleaseStorageRoot === undefined) {
@@ -15870,8 +15878,10 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
     assert.equal(updates[0].data.storedFilePath, null);
     assert.equal(updates[0].data.fileSizeBytes, null);
     assert.equal(updates[0].data.fileHash, null);
-    assert.equal(existsSync(oldAbsolutePath), false, "switching uploaded artifacts to external must remove the old uploaded file");
     assert.equal(result.id, "release_1");
+    assert.equal(existsSync(oldAbsolutePath), true, "switching uploaded artifacts to external must not wait for old file cleanup");
+    await waitUntil(() => !existsSync(oldAbsolutePath));
+    assert.equal(existsSync(oldAbsolutePath), false, "old uploaded file should still be removed in background");
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -15977,8 +15987,10 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
     assert.equal(updates[0].data.fileSizeBytes, 10n);
     assert.equal(updates[0].data.fileHash, null);
     assert.equal(updates[0].data.isPrimary, true);
-    assert.equal(existsSync(oldAbsolutePath), false, "successful replacement must remove the previous uploaded file");
     assert.equal(result.id, "release_1");
+    assert.equal(existsSync(oldAbsolutePath), true, "successful replacement must not wait for old file cleanup");
+    await waitUntil(() => !existsSync(oldAbsolutePath));
+    assert.equal(existsSync(oldAbsolutePath), false, "previous uploaded file should still be removed in background");
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -16157,6 +16169,46 @@ async function testReleaseCleanupBestEffortReturnsWhenCleanupStalls() {
       setTimeout(() => reject(new Error("release cleanup waited for stalled cleanup task")), 750);
     })
   ]);
+}
+
+async function testDeleteReleaseStartsCleanupAfterLocalReturn() {
+  let deleted = false;
+  let returned = false;
+  let cleanupStarted = false;
+  const service = createReleaseCenterService({
+    logger: {
+      warn: () => undefined
+    },
+    runReleaseCleanupBestEffort: async () => {
+      assert.equal(returned, true, "release cleanup must start after deleteRelease returns");
+      cleanupStarted = true;
+    },
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            artifacts: [
+              makeReleaseCenterTestArtifact({
+                id: "artifact_1",
+                storedFilePath: "release_1/artifact_1/file.zip"
+              })
+            ]
+          }),
+        delete: async () => {
+          deleted = true;
+        }
+      }
+    }
+  });
+
+  const result = await service.deleteRelease("release_1");
+  returned = true;
+
+  assert.equal(result.ok, true);
+  assert.equal(deleted, true, "local release delete must finish before cleanup");
+  assert.equal(cleanupStarted, false, "cleanup must not run before local delete response returns");
+  await waitUntil(() => cleanupStarted);
+  assert.equal(cleanupStarted, true, "cleanup should still run in background");
 }
 
 async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
@@ -21795,6 +21847,7 @@ async function main() {
   await testPublishWindowsReleaseAllowsAnySavedArtifact();
   await testUploadWindowsReleaseRejectsExeFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
+  await testDeleteReleaseStartsCleanupAfterLocalReturn();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
   await testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMissing();
