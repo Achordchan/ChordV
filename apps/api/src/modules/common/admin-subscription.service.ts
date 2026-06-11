@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   Logger,
-  NotFoundException
+  NotFoundException,
+  ServiceUnavailableException
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
@@ -49,6 +51,7 @@ import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import { createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
+import { isPrismaCodedError, toPrismaTransientHttpError } from "./prisma-error.utils";
 import {
   isEffectiveSubscription,
   normalizeOptionalString,
@@ -259,7 +262,7 @@ export class AdminSubscriptionService {
       if (isPrismaUniqueConstraintError(error)) {
         throw new ConflictException("邮箱已存在");
       }
-      throw error;
+      throw toAdminLocalSaveHttpError(error, "账号保存失败，请刷新用户列表后重试。");
     }
 
     return toAdminUserRecord(row, {
@@ -963,7 +966,7 @@ export class AdminSubscriptionService {
       if (isPrismaUniqueConstraintError(error)) {
         throw new ConflictException("The account already belongs to another team.");
       }
-      throw error;
+      throw toAdminLocalSaveHttpError(error, "订阅转入 Team 保存失败，请刷新订阅和团队列表后重试。");
     }
     teamPanelSync = mergePanelSyncResults(
       teamPanelSync,
@@ -1341,7 +1344,7 @@ export class AdminSubscriptionService {
       if (isPrismaUniqueConstraintError(error)) {
         throw new ConflictException("The account already belongs to another team.");
       }
-      throw error;
+      throw toAdminLocalSaveHttpError(error, "Team 成员保存失败，请刷新团队和用户列表后重试。");
     }
 
     await this.closePersonalSupportTicketsForUserBestEffort(
@@ -3174,4 +3177,14 @@ function assertPlanScopeMatchesSubscription(
 
 function isPrismaUniqueConstraintError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
+}
+
+function toAdminLocalSaveHttpError(error: unknown, message: string) {
+  if (error instanceof HttpException) {
+    return error;
+  }
+  if (isPrismaCodedError(error)) {
+    return toPrismaTransientHttpError(error, message) ?? new ServiceUnavailableException(message);
+  }
+  return error;
 }

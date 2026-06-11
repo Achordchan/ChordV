@@ -14588,6 +14588,38 @@ function testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable() {
   assert.equal(responseBody.message, "服务暂时繁忙，请稍后重试。");
 }
 
+function testLoggingFilterMapsPrismaCodedErrorsToServiceUnavailable() {
+  const filter = new LoggingExceptionFilter();
+  let statusCode: number | null = null;
+  let responseBody: any = null;
+  const host = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        method: "POST",
+        originalUrl: "/api/admin/users",
+        ip: "127.0.0.1",
+        headers: {}
+      }),
+      getResponse: () => ({
+        status: (code: number) => {
+          statusCode = code;
+          return {
+            json: (body: unknown) => {
+              responseBody = body;
+            }
+          };
+        }
+      })
+    })
+  } as any;
+
+  filter.catch({ code: "P2010", message: "Raw query failed" }, host);
+
+  assert.equal(statusCode, 503);
+  assert.equal(responseBody.statusCode, 503);
+  assert.notEqual(responseBody.message, "Internal server error");
+}
+
 async function testConnectRejectsPanelDisabledNode() {
   const service = createRuntimeSessionService({
     prisma: {
@@ -19010,6 +19042,29 @@ async function testCreateTeamMemberRejectsUniqueConflictAsConflict() {
   );
 }
 
+async function testCreateTeamMemberMapsUnknownLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({ id: "team_1" }),
+    assertUserCanJoinTeam: async () => undefined,
+    prisma: {
+      teamMember: {
+        create: async () => {
+          throw { code: "P2010", message: "team member local save failed" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.createTeamMember("team_1", { userId: "user_1", role: "member" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /Team 成员保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team member local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testCreateUserRejectsUniqueEmailConflictAsConflict() {
   const service = createAdminSubscriptionService({
     prisma: {
@@ -19032,6 +19087,79 @@ async function testCreateUserRejectsUniqueEmailConflictAsConflict() {
       }),
     (error) => error instanceof ConflictException && /邮箱|exist/i.test(error.message),
     "user email unique conflicts must return a controlled conflict instead of HTTP 500"
+  );
+}
+
+async function testCreateUserMapsUnknownLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findUnique: async () => null,
+        create: async () => {
+          throw { code: "P2010", message: "user local save failed" };
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createUser({
+        email: "user@example.com",
+        password: "password123",
+        displayName: "User",
+        role: "user"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /账号保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "user local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testConvertSubscriptionToTeamMapsUnknownLocalSaveFailure() {
+  const personalSubscription = {
+    id: "subscription_1",
+    userId: "user_1",
+    teamId: null,
+    state: "active",
+    remainingTrafficGb: 10,
+    expireAt: new Date(Date.now() + 60_000)
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => personalSubscription,
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentTeamSubscription: async () => ({
+      id: "team_subscription_1",
+      userId: null,
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 60_000)
+    }),
+    prisma: {
+      $transaction: async () => {
+        throw { code: "P2010", message: "convert subscription local save failed" };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.convertPersonalSubscriptionToTeam("subscription_1", { targetTeamId: "team_1" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /订阅转入 Team 保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "subscription-to-team local save failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -24889,6 +25017,7 @@ async function main() {
   await testClientNodesRequirePanelEnabled();
   await testClientBootstrapDegradesOptionalSectionsOnPrismaPoolTimeout();
   testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable();
+  testLoggingFilterMapsPrismaCodedErrorsToServiceUnavailable();
   await testConnectRejectsPanelDisabledNode();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails();
@@ -24972,7 +25101,10 @@ async function main() {
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
   await testCreateTeamMemberRejectsOwnerRole();
   await testCreateTeamMemberRejectsUniqueConflictAsConflict();
+  await testCreateTeamMemberMapsUnknownLocalSaveFailure();
   await testCreateUserRejectsUniqueEmailConflictAsConflict();
+  await testCreateUserMapsUnknownLocalSaveFailure();
+  await testConvertSubscriptionToTeamMapsUnknownLocalSaveFailure();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   await testCreatePlanRejectsBlankTrimmedName();
   await testUpdatePlanRejectsBlankTrimmedName();
