@@ -134,7 +134,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                       <StatusBadge color={subscriptionStateColor(item.state)} label={translateSubscriptionState(item.state)} />
                       {item.stateReasonMessage ? (
                         <Text size="xs" c="dimmed">
-                          {item.stateReasonMessage}
+                          {formatSubscriptionStateReason(item.stateReasonMessage)}
                         </Text>
                       ) : null}
                       <PanelSyncInlineStatus item={item} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
@@ -239,7 +239,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         </Text>
                         {currentSubscription?.stateReasonMessage ? (
                           <Text size="sm" c="orange.7">
-                            {currentSubscription.stateReasonMessage}
+                            {formatSubscriptionStateReason(currentSubscription.stateReasonMessage)}
                           </Text>
                         ) : null}
                         <PanelSyncInlineStatus item={team} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
@@ -322,7 +322,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             </SimpleGrid>
                             {currentSubscription.stateReasonMessage ? (
                               <Alert color={subscriptionStateColor(currentSubscription.state)} variant="light" mt="md">
-                                {currentSubscription.stateReasonMessage}
+                                {formatSubscriptionStateReason(currentSubscription.stateReasonMessage)}
                               </Alert>
                             ) : null}
                             {teamSubscriptionRecord?.panelSyncStatus === "pending" ? (
@@ -667,4 +667,8 @@ function buildPanelSyncInlineMessage(item: {
     .filter(Boolean)
     .join(" · ");
   return detail ? `${label}：${detail}` : label;
+}
+
+function formatSubscriptionStateReason(message: string) {
+  return summarizeAdminDiagnosticMessage(message, "订阅状态已变更，请查看订阅详情。") ?? "订阅状态已变更，请查看订阅详情。";
 }

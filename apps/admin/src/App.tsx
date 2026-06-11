@@ -1379,10 +1379,11 @@ export function App() {
       if (ensureAuthenticated(message)) {
         return;
       }
+      const uncertain = isUncertainRequestFailure(message);
       notifications.show({
-        color: "red",
-        title: "节点授权加载失败",
-        message: `${message} 未修改节点授权，请稍后重试。`
+        color: uncertain ? "yellow" : "red",
+        title: uncertain ? "节点授权加载状态不确定" : "节点授权加载失败",
+        message: uncertain ? `${message} 未进入编辑状态，请刷新后重试。` : `${message} 未修改节点授权，请稍后重试。`
       });
     } finally {
       if (nodeAccessRequestSeqRef.current === requestSeq) {

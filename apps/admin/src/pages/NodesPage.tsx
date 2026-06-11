@@ -389,7 +389,7 @@ export function PanelSyncQueueDrawer(props: {
                       </Badge>
                     </Table.Td>
                     <Table.Td>{leaseRevocationJobTargetLabel(job)}</Table.Td>
-                    <Table.Td>{job.reason}</Table.Td>
+                    <Table.Td>{translateLeaseRevocationReason(job.reason)}</Table.Td>
                     <Table.Td>{job.attempts}</Table.Td>
                     <Table.Td>{formatDateTime(job.nextRunAt)}</Table.Td>
                     <Table.Td>
@@ -473,6 +473,27 @@ function summarizePanelSyncActions(jobs: AdminPanelSyncJobDto[]) {
 
 function leaseRevocationJobTargetLabel(job: AdminLeaseRevocationJobDto) {
   return job.nodeName ?? job.nodeId ?? job.subscriptionId ?? job.userId ?? "全局连接";
+}
+
+function translateLeaseRevocationReason(reason: string) {
+  const labels: Record<string, string> = {
+    admin_user_disconnected: "管理员断开连接",
+    connection_taken_over: "连接被接管",
+    lease_expired: "连接租约过期",
+    node_access_revoked: "节点授权取消",
+    node_deleted: "节点删除",
+    node_panel_config_changed: "节点面板配置变更",
+    subscription_expired: "订阅到期",
+    subscription_exhausted: "流量耗尽",
+    subscription_inactive: "订阅不可用",
+    subscription_paused: "订阅暂停",
+    subscription_user_disabled: "账号禁用",
+    team_disabled: "团队停用",
+    team_member_removed: "团队成员移除",
+    team_membership_missing: "团队成员关系失效",
+    user_disabled: "账号禁用"
+  };
+  return labels[reason] ?? reason.replace(/_/g, " ");
 }
 
 function translatePanelSyncStatus(status: AdminPanelSyncJobDto["status"]) {
