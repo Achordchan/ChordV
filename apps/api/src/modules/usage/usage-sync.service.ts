@@ -474,6 +474,7 @@ export class UsageSyncService {
     const apply = async () => {
       const deltaGb = Number(input.deltaBytes) / GB_IN_BYTES;
       let nextState: "active" | "expired" | "exhausted" | "paused" | null = null;
+      let previousState: "active" | "expired" | "exhausted" | "paused" | null = null;
 
       await this.prisma.$transaction(async (tx) => {
         const current = await tx.subscription.findUnique({
@@ -483,6 +484,7 @@ export class UsageSyncService {
         if (!current) {
           return;
         }
+        previousState = current.state;
 
         const nextUsedTrafficGb = roundTrafficGb(current.usedTrafficGb + deltaGb);
         const nextRemainingTrafficGb = roundTrafficGb(Math.max(0, current.totalTrafficGb - nextUsedTrafficGb));
@@ -562,7 +564,9 @@ export class UsageSyncService {
         return;
       }
 
-      if (nextState !== "active") {
+      const stateChanged = previousState !== null && nextState !== previousState;
+
+      if (stateChanged && nextState !== "active") {
         await this.markPanelBindingsDisabledBestEffort(input.subscriptionId);
         await this.queueLeaseRevocationBestEffort(
           input.subscriptionId,
@@ -572,6 +576,10 @@ export class UsageSyncService {
               ? "subscription_exhausted"
               : "subscription_paused"
         );
+      }
+
+      if (!stateChanged) {
+        return;
       }
 
       await this.publishSubscriptionUpdatedBestEffort({

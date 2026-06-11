@@ -4979,9 +4979,9 @@ async function testUsageDeltaKeepsLocalUsageWhenPublishFails() {
               id: "sub_1",
               state: "active",
               expireAt: new Date(Date.now() + 60_000),
-              usedTrafficGb: 1,
+              usedTrafficGb: 9,
               totalTrafficGb: 10,
-              remainingTrafficGb: 9
+              remainingTrafficGb: 1
             }),
             update: async (payload: Record<string, unknown>) => {
               subscriptionUpdates.push(payload);
@@ -5025,9 +5025,95 @@ async function testUsageDeltaKeepsLocalUsageWhenPublishFails() {
   assert.equal(subscriptionUpdates.length, 1);
   assert.equal(snapshotUpdates.length, 1);
   assert.equal(bindingUpdates.length, 1);
-  assert.equal((subscriptionUpdates[0].data as { state: string }).state, "active");
+  assert.equal((subscriptionUpdates[0].data as { state: string }).state, "exhausted");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /sse publish failed/);
+}
+
+async function testUsageDeltaDoesNotPublishWhenSubscriptionStaysActive() {
+  const publishedStates: string[] = [];
+  const panelQueueCalls: string[] = [];
+  const leaseJobCalls: string[] = [];
+  const subscriptionUpdates: Array<Record<string, unknown>> = [];
+  const service = createUsageSyncService({
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async (subscriptionId: string) => {
+        panelQueueCalls.push(subscriptionId);
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscription: async (subscriptionId: string, reason: string) => {
+        leaseJobCalls.push(`${subscriptionId}:${reason}`);
+        return 1;
+      }
+    },
+    clientEventsPublisher: {
+      publishSubscriptionUpdated: async ({ state }: { state: string }) => {
+        publishedStates.push(state);
+      }
+    },
+    prisma: {
+      $transaction: async (
+        callback: (tx: {
+          subscription: {
+            findUnique: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+            update: (payload: Record<string, unknown>) => Promise<void>;
+          };
+          trafficSnapshot: {
+            update: (payload: Record<string, unknown>) => Promise<void>;
+            upsert: (payload: Record<string, unknown>) => Promise<void>;
+          };
+          panelClientBinding: { updateMany: (payload: Record<string, unknown>) => Promise<void> };
+          trafficLedger: { create: (payload: Record<string, unknown>) => Promise<void> };
+        }) => Promise<void>
+      ) =>
+        callback({
+          subscription: {
+            findUnique: async () => ({
+              id: "sub_1",
+              state: "active",
+              expireAt: new Date(Date.now() + 60_000),
+              usedTrafficGb: 1,
+              totalTrafficGb: 10,
+              remainingTrafficGb: 9
+            }),
+            update: async (payload: Record<string, unknown>) => {
+              subscriptionUpdates.push(payload);
+            }
+          },
+          trafficSnapshot: {
+            update: async () => undefined,
+            upsert: async () => undefined
+          },
+          panelClientBinding: {
+            updateMany: async () => undefined
+          },
+          trafficLedger: {
+            create: async () => undefined
+          }
+        })
+    }
+  });
+
+  await service["applyUsageDelta"]({
+    nodeId: "node_1",
+    snapshotKey: "node_1:sub_1:user_1",
+    snapshotMode: "update",
+    subscriptionId: "sub_1",
+    teamId: null,
+    userId: "user_1",
+    bindingId: "binding_1",
+    uplinkBytes: 0n,
+    downlinkBytes: BigInt(GB_IN_BYTES),
+    totalBytes: BigInt(GB_IN_BYTES),
+    deltaBytes: BigInt(GB_IN_BYTES),
+    sampledAt: new Date()
+  });
+
+  assert.equal(subscriptionUpdates.length, 1);
+  assert.equal((subscriptionUpdates[0].data as { state: string }).state, "active");
+  assert.deepEqual(publishedStates, []);
+  assert.deepEqual(panelQueueCalls, []);
+  assert.deepEqual(leaseJobCalls, []);
 }
 
 async function testInitialUsageDeltaUsesBindingCountersForUuidMapping() {
@@ -5137,7 +5223,7 @@ async function testInitialUsageDeltaUsesBindingCountersForUuidMapping() {
   assert.equal(subscriptionUpdates.length, 1, "first UUID-mapped positive delta should update subscription usage");
   assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 5, "delta should be 1GB from binding counters, not 6GB from zero");
   assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 5);
-  assert.deepEqual(publishedStates, ["active"]);
+  assert.deepEqual(publishedStates, []);
   assert.equal(bindingUpdates.length, 1);
 }
 
@@ -22604,6 +22690,7 @@ async function main() {
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();
   await testUsageTriggeredInvalidationPublishesWhenPanelAndLeaseEffectsFail();
   await testUsageDeltaKeepsLocalUsageWhenPublishFails();
+  await testUsageDeltaDoesNotPublishWhenSubscriptionStaysActive();
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
   await testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFails();
