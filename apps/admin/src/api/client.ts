@@ -96,10 +96,18 @@ export type CreateAdminReleaseArtifactInputDto = Omit<CreateReleaseArtifactInput
 export type UpdateAdminReleaseArtifactInputDto = Omit<UpdateReleaseArtifactInputDto, "defaultMirrorPrefix" | "allowClientMirror">;
 export type ReplyAdminSupportTicketInputDto = ReplyClientSupportTicketInputDto;
 export type AdminRuntimeEventDto = {
-  type: "keepalive" | "ticket_updated" | "subscription_updated" | "version_updated";
+  type:
+    | "keepalive"
+    | "ticket_updated"
+    | "subscription_updated"
+    | "version_updated"
+    | "announcement_updated"
+    | "announcement_read_state_updated"
+    | "policy_updated";
   occurredAt: string;
   ticketId?: string | null;
   ticketStatus?: SupportTicketStatus | null;
+  announcementId?: string | null;
   subscriptionId?: string | null;
   subscriptionState?: string | null;
   state?: string | null;

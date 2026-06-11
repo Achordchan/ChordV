@@ -18,6 +18,7 @@ type AdminRuntimeEventDto = Pick<
   | "platform"
   | "channel"
   | "latestVersion"
+  | "announcementId"
 >;
 type ClusterEnvelope = {
   originInstanceId: string;
@@ -58,9 +59,13 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
   stream(options?: { validate?: () => Promise<void> | void; lastEventId?: string | null }): Observable<MessageEvent> {
     return new Observable<MessageEvent>((subscriber) => {
       let deliveryQueue = Promise.resolve();
-      const sink: EventSink = (event) => {
+      const deliver = (event: MessageEvent) => {
+        if (!options?.validate) {
+          subscriber.next(event);
+          return;
+        }
         deliveryQueue = deliveryQueue
-          .then(() => options?.validate?.())
+          .then(() => options.validate?.())
           .then(() => {
             subscriber.next(event);
           })
@@ -68,29 +73,24 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
             subscriber.error(error);
           });
       };
+      const sink: EventSink = (event) => deliver(event);
       this.subscribers.add(sink);
 
       for (const event of this.getReplayEvents(options?.lastEventId)) {
-        subscriber.next(event);
+        deliver(event);
       }
 
       for (const event of this.createStreamOpenedEvents()) {
-        subscriber.next(this.toMessageEvent(event));
+        deliver(this.toMessageEvent(event));
       }
 
       const timer = setInterval(() => {
-        Promise.resolve(options?.validate?.())
-          .then(() => {
-            subscriber.next(
-              this.toMessageEvent({
-                type: "keepalive",
-                occurredAt: new Date().toISOString()
-              })
-            );
+        deliver(
+          this.toMessageEvent({
+            type: "keepalive",
+            occurredAt: new Date().toISOString()
           })
-          .catch((error) => {
-            subscriber.error(error);
-          });
+        );
       }, 15000);
 
       return () => {
@@ -208,7 +208,9 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
       { type: "keepalive", occurredAt },
       { type: "ticket_updated", occurredAt },
       { type: "subscription_updated", occurredAt },
-      { type: "version_updated", occurredAt }
+      { type: "version_updated", occurredAt },
+      { type: "announcement_updated", occurredAt },
+      { type: "policy_updated", occurredAt }
     ];
   }
 

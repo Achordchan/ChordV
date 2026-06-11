@@ -49,9 +49,13 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
   ): Observable<MessageEvent> {
     return new Observable<MessageEvent>((subscriber) => {
       let deliveryQueue = Promise.resolve();
-      const sink: EventSink = (event) => {
+      const deliver = (event: MessageEvent) => {
+        if (!options?.validate) {
+          subscriber.next(event);
+          return;
+        }
         deliveryQueue = deliveryQueue
-          .then(() => options?.validate?.())
+          .then(() => options.validate?.())
           .then(() => {
             subscriber.next(event);
           })
@@ -59,31 +63,26 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
             subscriber.error(error);
           });
       };
+      const sink: EventSink = (event) => deliver(event);
       const current = this.subscribers.get(userId) ?? new Set<EventSink>();
       current.add(sink);
       this.subscribers.set(userId, current);
 
       for (const event of this.getReplayEvents(userId, options?.lastEventId)) {
-        subscriber.next(event);
+        deliver(event);
       }
 
       for (const event of this.createStreamOpenedEvents()) {
-        subscriber.next(this.toMessageEvent(event));
+        deliver(this.toMessageEvent(event));
       }
 
       const timer = setInterval(() => {
-        Promise.resolve(options?.validate?.())
-          .then(() => {
-            subscriber.next(
-              this.toMessageEvent({
-                type: "keepalive",
-                occurredAt: new Date().toISOString()
-              })
-            );
+        deliver(
+          this.toMessageEvent({
+            type: "keepalive",
+            occurredAt: new Date().toISOString()
           })
-          .catch((error) => {
-            subscriber.error(error);
-          });
+        );
       }, 15000);
 
       return () => {

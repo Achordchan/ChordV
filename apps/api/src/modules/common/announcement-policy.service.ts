@@ -12,6 +12,7 @@ import type {
   UpdatePolicyInputDto
 } from "@chordv/shared";
 import { AuthSessionService } from "./auth-session.service";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { PrismaService } from "./prisma.service";
 
@@ -55,7 +56,8 @@ export class AnnouncementPolicyService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
-    private readonly clientRuntimeEventsService: ClientRuntimeEventsService
+    private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService
   ) {}
 
   async getPolicies(): Promise<PolicyBundleDto> {
@@ -313,6 +315,11 @@ export class AnnouncementPolicyService {
 
   private async publishPolicyUpdatedEvent() {
     await this.runPublishEventBestEffort("policy_updated", async () => {
+      const occurredAt = new Date().toISOString();
+      this.adminRuntimeEventsService.publish({
+        type: "policy_updated",
+        occurredAt
+      });
       const rows = await this.prisma.user.findMany({
         where: { status: "active" },
         select: { id: true }
@@ -320,13 +327,19 @@ export class AnnouncementPolicyService {
       const userIds = Array.from(new Set(rows.map((row) => row.id)));
       this.clientRuntimeEventsService.publishToUsers(userIds, {
         type: "policy_updated",
-        occurredAt: new Date().toISOString()
+        occurredAt
       });
     });
   }
 
   private async publishAnnouncementUpdatedEvent(announcementId: string) {
     await this.runPublishEventBestEffort("announcement_updated", async () => {
+      const occurredAt = new Date().toISOString();
+      this.adminRuntimeEventsService.publish({
+        type: "announcement_updated",
+        occurredAt,
+        announcementId
+      });
       const rows = await this.prisma.user.findMany({
         where: { status: "active" },
         select: { id: true }
@@ -334,7 +347,7 @@ export class AnnouncementPolicyService {
       const userIds = Array.from(new Set(rows.map((row) => row.id)));
       this.clientRuntimeEventsService.publishToUsers(userIds, {
         type: "announcement_updated",
-        occurredAt: new Date().toISOString(),
+        occurredAt,
         announcementId
       });
     });

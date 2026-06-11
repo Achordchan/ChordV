@@ -632,6 +632,10 @@ function createClientRuntimeEventsService(overrides: Record<string, unknown> = {
   return createInstance<ClientRuntimeEventsService>(ClientRuntimeEventsService.prototype, overrides);
 }
 
+function createAdminRuntimeEventsService(overrides: Record<string, unknown> = {}) {
+  return createInstance<AdminRuntimeEventsService>(AdminRuntimeEventsService.prototype, overrides);
+}
+
 function createAdminNodeService(overrides: Record<string, unknown> = {}) {
   const runtimeSessionOverride =
     typeof overrides.runtimeSessionService === "object" && overrides.runtimeSessionService !== null
@@ -647,7 +651,12 @@ function createAdminNodeService(overrides: Record<string, unknown> = {}) {
 }
 
 function createAnnouncementPolicyService(overrides: Record<string, unknown> = {}) {
-  return createInstance<AnnouncementPolicyService>(AnnouncementPolicyService.prototype, overrides);
+  return createInstance<AnnouncementPolicyService>(AnnouncementPolicyService.prototype, {
+    adminRuntimeEventsService: {
+      publish: () => undefined
+    },
+    ...overrides
+  });
 }
 
 function createClientAccessService(overrides: Record<string, unknown> = {}) {
@@ -1801,6 +1810,7 @@ async function testRuntimeEventStreamValidatesBeforeDispatch() {
       errors.push(error);
     }
   });
+  await waitUntil(() => received.length >= 7);
   received.length = 0;
   valid = false;
 
@@ -1813,6 +1823,46 @@ async function testRuntimeEventStreamValidatesBeforeDispatch() {
   subscription.unsubscribe();
 
   assert.equal(received.length, 0, "revoked SSE sessions must not receive business events before the keepalive tick");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /session revoked/);
+}
+
+async function testRuntimeEventReplayValidatesBeforeDispatch() {
+  const service = createClientRuntimeEventsService({
+    instanceId: "instance_1",
+    subscribers: new Map(),
+    replayEventsByUser: new Map(),
+    eventSequence: 0,
+    prisma: {
+      $executeRaw: async () => undefined
+    }
+  });
+  service.publishToUser("user_1", {
+    type: "subscription_updated",
+    occurredAt: new Date().toISOString(),
+    subscriptionId: "sub_1",
+    state: "active"
+  });
+
+  const received: Array<{ id?: string; data: string }> = [];
+  const errors: Error[] = [];
+  const subscription = service.streamForUser("user_1", {
+    lastEventId: "missing",
+    validate: () => {
+      throw new Error("session revoked");
+    }
+  }).subscribe({
+    next: (event) => {
+      received.push(event as { id?: string; data: string });
+    },
+    error: (error) => {
+      errors.push(error);
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  subscription.unsubscribe();
+
+  assert.equal(received.length, 0, "revoked SSE sessions must not receive replay events");
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /session revoked/);
 }
@@ -1839,6 +1889,7 @@ async function testRuntimeEventStreamPreservesOrderWithAsyncValidation() {
   }).subscribe((event) => {
     receivedTypes.push(JSON.parse((event as { data: string }).data).type);
   });
+  await waitUntil(() => receivedTypes.length >= 7);
   receivedTypes.length = 0;
 
   service.publishToUser("user_1", {
@@ -1856,6 +1907,136 @@ async function testRuntimeEventStreamPreservesOrderWithAsyncValidation() {
   subscription.unsubscribe();
 
   assert.deepEqual(receivedTypes, ["version_updated", "subscription_updated"], "async SSE validation must not reorder business events");
+}
+
+function testAdminRuntimeEventStreamOpensWithAnnouncementAndPolicyRefreshEvents() {
+  const service = createAdminRuntimeEventsService({
+    subscribers: new Set(),
+    replayEvents: [],
+    eventSequence: 0,
+    prisma: {
+      $executeRaw: async () => undefined
+    }
+  });
+  const receivedTypes: string[] = [];
+  const subscription = service.stream().subscribe((event) => {
+    receivedTypes.push(JSON.parse((event as { data: string }).data).type);
+  });
+  subscription.unsubscribe();
+
+  assert.ok(receivedTypes.includes("announcement_updated"), "admin SSE open must trigger announcement refresh");
+  assert.ok(receivedTypes.includes("policy_updated"), "admin SSE open must trigger policy refresh");
+}
+
+function testAdminRuntimeEventStreamReplaysAfterLastEventId() {
+  const service = createAdminRuntimeEventsService({
+    subscribers: new Set(),
+    replayEvents: [],
+    eventSequence: 0,
+    prisma: {
+      $executeRaw: async () => undefined
+    }
+  });
+  service.publish({
+    type: "version_updated",
+    occurredAt: new Date().toISOString(),
+    latestVersion: "1.1.3"
+  });
+  service.publish({
+    type: "subscription_updated",
+    occurredAt: new Date().toISOString(),
+    subscriptionId: "sub_1",
+    state: "active"
+  });
+
+  const replayStore = (service as any).replayEvents as Array<{ id: string; data: string }>;
+  const received: Array<{ id?: string; data: string }> = [];
+  const subscription = service.stream({ lastEventId: replayStore[0].id }).subscribe((event) => {
+    received.push(event as { id?: string; data: string });
+  });
+  subscription.unsubscribe();
+
+  assert.equal(received[0].id, replayStore[1].id, "admin stream reconnect must replay events after Last-Event-ID");
+  assert.equal(JSON.parse(received[0].data).type, "subscription_updated");
+}
+
+async function testAdminRuntimeEventReplayValidatesBeforeDispatch() {
+  const service = createAdminRuntimeEventsService({
+    subscribers: new Set(),
+    replayEvents: [],
+    eventSequence: 0,
+    prisma: {
+      $executeRaw: async () => undefined
+    }
+  });
+  service.publish({
+    type: "version_updated",
+    occurredAt: new Date().toISOString(),
+    latestVersion: "1.1.3"
+  });
+
+  const received: Array<{ id?: string; data: string }> = [];
+  const errors: Error[] = [];
+  const subscription = service.stream({
+    lastEventId: "missing",
+    validate: () => {
+      throw new Error("admin session revoked");
+    }
+  }).subscribe({
+    next: (event) => {
+      received.push(event as { id?: string; data: string });
+    },
+    error: (error) => {
+      errors.push(error);
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  subscription.unsubscribe();
+
+  assert.equal(received.length, 0, "revoked admin SSE sessions must not receive replay events");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /admin session revoked/);
+}
+
+async function testAdminRuntimeEventStreamPreservesOrderWithAsyncValidation() {
+  const service = createAdminRuntimeEventsService({
+    subscribers: new Set(),
+    replayEvents: [],
+    eventSequence: 0,
+    prisma: {
+      $executeRaw: async () => undefined
+    }
+  });
+  let validateCount = 0;
+  const receivedTypes: string[] = [];
+  const subscription = service.stream({
+    validate: async () => {
+      validateCount += 1;
+      if (validateCount === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+  }).subscribe((event) => {
+    receivedTypes.push(JSON.parse((event as { data: string }).data).type);
+  });
+  await waitUntil(() => receivedTypes.length >= 6);
+  receivedTypes.length = 0;
+
+  service.publish({
+    type: "version_updated",
+    occurredAt: new Date().toISOString(),
+    latestVersion: "1.1.3"
+  });
+  service.publish({
+    type: "subscription_updated",
+    occurredAt: new Date().toISOString(),
+    subscriptionId: "sub_1",
+    state: "active"
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  subscription.unsubscribe();
+
+  assert.deepEqual(receivedTypes, ["version_updated", "subscription_updated"], "admin async SSE validation must not reorder business events");
 }
 
 function testReleaseArtifactPathTraversalIsRejected() {
@@ -2691,6 +2872,7 @@ async function testCreateReleaseRejectsDuplicateVersionAsConflict() {
 async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
+  const adminEvents: Array<Record<string, any>> = [];
   const service = createReleaseCenterService({
     logger: {
       warn: () => undefined
@@ -2699,6 +2881,11 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
     clientEventsPublisher: {
       publishVersionUpdated: async () => {
         throw new Error("version event failed");
+      }
+    },
+    adminRuntimeEventsService: {
+      publishVersionUpdated: (event: Record<string, any>) => {
+        adminEvents.push(event);
       }
     },
     prisma: {
@@ -2729,16 +2916,23 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
 
   assert.equal(updates.length, 1);
   assert.equal(result.status, "published");
+  assert.deepEqual(adminEvents, [{ platform: "windows", channel: "stable", latestVersion: null }]);
 }
 
 async function testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
   const publishedEvents: Array<{ platform: string; channel: string }> = [];
+  const adminEvents: Array<Record<string, any>> = [];
   const service = createReleaseCenterService({
     clientEventsPublisher: {
       publishVersionUpdated: async (platform: string, channel: string) => {
         publishedEvents.push({ platform, channel });
+      }
+    },
+    adminRuntimeEventsService: {
+      publishVersionUpdated: (event: Record<string, any>) => {
+        adminEvents.push(event);
       }
     },
     prisma: {
@@ -2768,12 +2962,14 @@ async function testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent(
   assert.equal(result.status, "draft");
   assert.equal(result.publishedAt, null);
   assert.deepEqual(publishedEvents, [{ platform: "windows", channel: "stable" }]);
+  assert.deepEqual(adminEvents, [{ platform: "windows", channel: "stable", latestVersion: null }]);
 }
 
 async function testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const warnings: string[] = [];
   const updates: Array<Record<string, any>> = [];
+  const adminEvents: Array<Record<string, any>> = [];
   const service = createReleaseCenterService({
     logger: {
       warn: (message: string) => warnings.push(message)
@@ -2781,6 +2977,11 @@ async function testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails() {
     clientEventsPublisher: {
       publishVersionUpdated: async () => {
         throw new Error("version event failed");
+      }
+    },
+    adminRuntimeEventsService: {
+      publishVersionUpdated: (event: Record<string, any>) => {
+        adminEvents.push(event);
       }
     },
     prisma: {
@@ -2806,6 +3007,7 @@ async function testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   assert.equal(updates.length, 1);
   assert.equal(result.status, "draft");
   assert.equal(result.publishedAt, null);
+  assert.deepEqual(adminEvents, [{ platform: "windows", channel: "stable", latestVersion: null }]);
   assert.match(warnings[0] ?? "", /version_updated publish failed/);
 }
 
@@ -22208,6 +22410,7 @@ async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
 async function testCreateAnnouncementPublishesUpdateEvent() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const published: Array<{ userIds: string[]; event: Record<string, any> }> = [];
+  const adminPublished: Array<Record<string, any>> = [];
   const service = createAnnouncementPolicyService({
     logger: {
       warn: () => undefined
@@ -22215,6 +22418,11 @@ async function testCreateAnnouncementPublishesUpdateEvent() {
     clientRuntimeEventsService: {
       publishToUsers: (userIds: string[], event: Record<string, any>) => {
         published.push({ userIds, event });
+      }
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, any>) => {
+        adminPublished.push(event);
       }
     },
     prisma: {
@@ -22252,6 +22460,8 @@ async function testCreateAnnouncementPublishesUpdateEvent() {
   assert.deepEqual(published[0].userIds.sort(), ["user_1", "user_2"]);
   assert.equal(published[0].event.type, "announcement_updated");
   assert.equal(published[0].event.announcementId, "announcement_1");
+  assert.equal(adminPublished[0].type, "announcement_updated");
+  assert.equal(adminPublished[0].announcementId, "announcement_1");
 }
 
 async function testUpdateAnnouncementPublishesUpdateEvent() {
@@ -22545,9 +22755,15 @@ async function testUpdatePolicyKeepsLocalSaveWhenPublishFails() {
 
 async function testUpdatePolicyDoesNotRefreshAfterLocalSave() {
   const updates: Array<Record<string, any>> = [];
+  const adminPublished: Array<Record<string, any>> = [];
   const service = createAnnouncementPolicyService({
     logger: {
       warn: () => undefined
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, any>) => {
+        adminPublished.push(event);
+      }
     },
     getAdminPolicy: async () => {
       throw new Error("policy refresh should not run after local save");
@@ -22584,6 +22800,8 @@ async function testUpdatePolicyDoesNotRefreshAfterLocalSave() {
 
   assert.equal(updates.length, 1);
   assert.equal(result.features.blockAds, false);
+  await waitUntil(() => adminPublished.length > 0);
+  assert.equal(adminPublished[0].type, "policy_updated");
 }
 
 async function testUpdatePolicyReturnsWhenPublishUserLookupStalls() {
@@ -24359,7 +24577,12 @@ async function main() {
   await testAccessTokenAuthenticationRequiresActiveBoundSession();
   testRuntimeEventStreamReplaysAfterLastEventId();
   await testRuntimeEventStreamValidatesBeforeDispatch();
+  await testRuntimeEventReplayValidatesBeforeDispatch();
   await testRuntimeEventStreamPreservesOrderWithAsyncValidation();
+  testAdminRuntimeEventStreamOpensWithAnnouncementAndPolicyRefreshEvents();
+  testAdminRuntimeEventStreamReplaysAfterLastEventId();
+  await testAdminRuntimeEventReplayValidatesBeforeDispatch();
+  await testAdminRuntimeEventStreamPreservesOrderWithAsyncValidation();
   testReleaseArtifactPathTraversalIsRejected();
   testUploadedReleaseArtifactDoesNotUseClientMirror();
   testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads();
