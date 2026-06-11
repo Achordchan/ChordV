@@ -25,6 +25,7 @@ import type {
   DisconnectUserResultDto,
   KickTeamMemberInputDto,
   KickTeamMemberResultDto,
+  PlanScope,
   ResetSubscriptionTrafficInputDto,
   ResetSubscriptionTrafficResultDto,
   RenewSubscriptionInputDto,
@@ -511,20 +512,14 @@ export class AdminSubscriptionService {
       }
     });
     if (input.maxConcurrentSessions !== undefined && input.maxConcurrentSessions !== current.maxConcurrentSessions) {
-      await this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
+      const panelSync = this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
+      return withPanelSyncStatus(
+        toAdminPlanRecord(row, subscriptionCount),
+        panelSync,
+        "套餐已更新。"
+      );
     }
-    return {
-      id: row.id,
-      name: row.name,
-      scope: row.scope,
-      totalTrafficGb: row.totalTrafficGb,
-      renewable: row.renewable,
-      maxConcurrentSessions: row.maxConcurrentSessions,
-      isActive: row.isActive,
-      subscriptionCount,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString()
-    };
+    return toAdminPlanRecord(row, subscriptionCount);
   }
 
   async updatePlanSecurity(planId: string, input: UpdatePlanSecurityInputDto): Promise<AdminPlanRecordDto> {
@@ -536,19 +531,12 @@ export class AdminSubscriptionService {
       }
     });
     const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
-    await this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
-    return {
-      id: row.id,
-      name: row.name,
-      scope: row.scope,
-      totalTrafficGb: row.totalTrafficGb,
-      renewable: row.renewable,
-      maxConcurrentSessions: row.maxConcurrentSessions,
-      isActive: row.isActive,
-      subscriptionCount,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString()
-    };
+    const panelSync = this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
+    return withPanelSyncStatus(
+      toAdminPlanRecord(row, subscriptionCount),
+      panelSync,
+      "套餐安全策略已更新。"
+    );
   }
 
   async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
@@ -2400,8 +2388,8 @@ export class AdminSubscriptionService {
     }
   }
 
-  private async reconcilePlanConcurrentLeaseLimitsBestEffort(planId: string, maxConcurrentSessions: number) {
-    this.startSubscriptionFollowUpInBackground(
+  private reconcilePlanConcurrentLeaseLimitsBestEffort(planId: string, maxConcurrentSessions: number) {
+    return this.startSubscriptionFollowUpInBackground(
       `plan lease concurrency reconciliation for ${planId}`,
       () => this.reconcilePlanConcurrentLeaseLimits(planId, maxConcurrentSessions)
     );
@@ -2936,6 +2924,34 @@ export class AdminSubscriptionService {
 
 function createId(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+function toAdminPlanRecord(
+  row: {
+    id: string;
+    name: string;
+    scope: PlanScope;
+    totalTrafficGb: number;
+    renewable: boolean;
+    maxConcurrentSessions: number;
+    isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  subscriptionCount: number
+): AdminPlanRecordDto {
+  return {
+    id: row.id,
+    name: row.name,
+    scope: row.scope,
+    totalTrafficGb: row.totalTrafficGb,
+    renewable: row.renewable,
+    maxConcurrentSessions: row.maxConcurrentSessions,
+    isActive: row.isActive,
+    subscriptionCount,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
 }
 
 function normalizePlanName(value: string) {

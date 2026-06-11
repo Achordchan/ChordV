@@ -594,7 +594,7 @@ function LeaseRevocationInlineStatus(props: {
   }
   const failed = activeJobs.filter((job) => job.status === "failed");
   const running = activeJobs.filter((job) => job.status === "running");
-  const retryable = failed[0] ?? activeJobs.find((job) => job.status === "pending") ?? null;
+  const retryable = failed[0] ?? null;
   const label =
     failed.length > 0
       ? `连接撤销待重试 ${failed.length}`

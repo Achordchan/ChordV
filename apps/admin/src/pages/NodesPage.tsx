@@ -443,11 +443,11 @@ function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[],
 }
 
 function isRetryableBackgroundSyncStatus(status: AdminPanelSyncJobDto["status"] | AdminLeaseRevocationJobDto["status"]) {
-  return status === "pending" || status === "failed";
+  return status === "failed";
 }
 
 function hasRetryableBackgroundSync(summary: { pending: number; failed: number }) {
-  return summary.pending + summary.failed > 0;
+  return summary.failed > 0;
 }
 
 function buildBackgroundSyncLabel(

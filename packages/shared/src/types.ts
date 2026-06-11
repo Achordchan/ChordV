@@ -392,6 +392,9 @@ export interface AdminPlanRecordDto {
   subscriptionCount: number;
   createdAt: string;
   updatedAt: string;
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  message?: string | null;
 }
 
 export interface AdminSubscriptionRecordDto {

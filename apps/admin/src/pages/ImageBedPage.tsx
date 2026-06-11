@@ -318,7 +318,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
   }
 
   return (
-    <SectionCard searchValue={search} onSearchChange={setSearch}>
+    <SectionCard searchValue={search} onSearchChange={setSearch} onSearchSubmit={() => void loadFiles()}>
       <Stack gap="lg">
         {error ? (
           <Alert color="red" variant="light">
@@ -393,7 +393,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
                 </Text>
               </div>
               <Button variant="default" onClick={() => void loadFiles()} loading={loadingFiles} disabled={!config?.hasToken}>
-                刷新列表
+                按当前搜索刷新
               </Button>
             </Group>
 

@@ -15141,6 +15141,56 @@ async function testRuntimeComponentDeleteReturnsWhenFileCleanupStalls() {
   }
 }
 
+async function testRuntimeComponentDeleteIgnoresInvalidStoredCleanupPathAfterLocalDelete() {
+  const warnings: string[] = [];
+  let deleteCalled = false;
+  const current = {
+    id: "component_1",
+    platform: "windows" as const,
+    architecture: "x64" as const,
+    kind: "xray" as const,
+    source: "uploaded" as const,
+    originUrl: "/api/downloads/runtime-components/component_1",
+    defaultMirrorPrefix: null,
+    allowClientMirror: false,
+    fileName: "xray.exe",
+    storedFilePath: "../outside/xray.exe",
+    fileSizeBytes: 10n,
+    fileHash: "a".repeat(64),
+    archiveEntryName: null,
+    expectedHash: "a".repeat(64),
+    enabled: true,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z")
+  };
+  const service = createRuntimeComponentsService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    ensureRuntimeComponentExists: async () => current,
+    prisma: {
+      runtimeComponent: {
+        delete: async () => {
+          deleteCalled = true;
+          return {};
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.deleteAdminRuntimeComponent("component_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("runtime component delete waited for invalid cleanup path")), 250);
+    })
+  ]);
+
+  assert.equal(deleteCalled, true);
+  assert.deepEqual(result, { id: "component_1", deleted: true });
+  await waitUntil(() => warnings.length > 0);
+  assert.match(warnings[0] ?? "", /cleanup path is invalid/);
+}
+
 async function testSubscriptionNodeAccessConcurrentReplaceIsSerialized() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -17510,6 +17560,8 @@ async function testUpdatePlanReturnsWhenConcurrencyReconciliationStallsAfterSave
   assert.equal(reconciliationStarted, true);
   assert.equal(result.id, "plan_1");
   assert.equal(result.maxConcurrentSessions, 1);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /plan lease concurrency reconciliation/);
 }
 
 async function testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave() {
@@ -17563,6 +17615,8 @@ async function testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsA
   assert.equal(reconciliationStarted, true);
   assert.equal(result.id, "plan_1");
   assert.equal(result.maxConcurrentSessions, 1);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /plan lease concurrency reconciliation/);
 }
 
 async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
@@ -22036,6 +22090,7 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesRemoteMetadata();
   await testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote();
   await testRuntimeComponentDeleteReturnsWhenFileCleanupStalls();
+  await testRuntimeComponentDeleteIgnoresInvalidStoredCleanupPathAfterLocalDelete();
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();

@@ -258,10 +258,7 @@ export class RuntimeComponentsService {
       })
     );
     this.startSharedRulesetDuplicatesCleanup(updated.kind as RuntimeComponentKind, updated.id);
-    this.startRuntimeComponentFileCleanupBestEffort(
-      staleUploadedFilePath ? resolveRuntimeComponentAbsolutePath(staleUploadedFilePath) : null,
-      "stale runtime component upload"
-    );
+    this.startRuntimeComponentStoredFileCleanupBestEffort(staleUploadedFilePath, "stale runtime component upload");
     return toAdminRuntimeComponentRecord(updated);
   }
 
@@ -304,10 +301,8 @@ export class RuntimeComponentsService {
           }
         })
       );
-      this.startRuntimeComponentFileCleanupBestEffort(
-        previousStoredFilePath && previousStoredFilePath !== preparedFile.storedFilePath
-          ? resolveRuntimeComponentAbsolutePath(previousStoredFilePath)
-          : null,
+      this.startRuntimeComponentStoredFileCleanupBestEffort(
+        previousStoredFilePath && previousStoredFilePath !== preparedFile.storedFilePath ? previousStoredFilePath : null,
         "old runtime component upload"
       );
       this.startSharedRulesetDuplicatesCleanup(input.kind, updated.id);
@@ -326,10 +321,7 @@ export class RuntimeComponentsService {
     await this.prisma.runtimeComponent.delete({
       where: { id: componentId }
     });
-    this.startRuntimeComponentFileCleanupBestEffort(
-      existing.storedFilePath ? resolveRuntimeComponentAbsolutePath(existing.storedFilePath) : null,
-      "deleted runtime component upload"
-    );
+    this.startRuntimeComponentStoredFileCleanupBestEffort(existing.storedFilePath, "deleted runtime component upload");
     return { id: componentId, deleted: true as const };
   }
 
@@ -801,6 +793,25 @@ export class RuntimeComponentsService {
       return;
     }
     const timer = setTimeout(() => {
+      void this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
+        this.logger.warn(`Runtime component saved, but background ${label} cleanup failed: ${readErrorMessage(error)}`);
+      });
+    }, 0);
+    timer.unref?.();
+  }
+
+  private startRuntimeComponentStoredFileCleanupBestEffort(storedFilePath: string | null, label: string) {
+    if (!storedFilePath) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      let absolutePath: string;
+      try {
+        absolutePath = resolveRuntimeComponentAbsolutePath(storedFilePath);
+      } catch (error) {
+        this.logger.warn(`Runtime component saved, but ${label} cleanup path is invalid: ${readErrorMessage(error)}`);
+        return;
+      }
       void this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
         this.logger.warn(`Runtime component saved, but background ${label} cleanup failed: ${readErrorMessage(error)}`);
       });

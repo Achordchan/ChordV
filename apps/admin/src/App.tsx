@@ -1366,8 +1366,8 @@ export function App() {
       }
       notifications.show({
         color: "red",
-        title: "操作失败",
-        message
+        title: "节点授权加载失败",
+        message: `${message} 未修改节点授权，请稍后重试。`
       });
     } finally {
       if (nodeAccessRequestSeqRef.current === requestSeq) {
