@@ -177,8 +177,10 @@ import {
   type UserFormState
 } from "./utils/admin-forms";
 import {
+  buildUncertainMutationMessage,
   filterByKeyword,
   isDefiniteLocalSaveFailure,
+  isLikelySavedAfterFailure,
   isPotentiallyCompletedMutationFailure,
   isUncertainRequestFailure,
   readError
@@ -1278,7 +1280,6 @@ export function App() {
       failureFallback?: string;
       uncertainMessage?: (message: string) => string;
       refreshAfter?: boolean;
-      treatHttp500AsUncertain?: boolean;
       treatUncertainAsCompleted?: boolean;
       resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
     } = {}
@@ -1318,8 +1319,8 @@ export function App() {
         return false;
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const http500Uncertain = Boolean(options.treatHttp500AsUncertain && /http\s*500/i.test(message));
-      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || http500Uncertain);
+      const completedAfterFailure = isLikelySavedAfterFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
       if (uncertain && (options.refreshAfter ?? true)) {
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
@@ -1340,14 +1341,17 @@ export function App() {
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
         message: uncertain
-          ? options.uncertainMessage?.(message) ?? `${message} 操作可能已保存，请刷新页面或列表确认。`
+          ? options.uncertainMessage?.(message) ?? buildUncertainMutationMessage("操作")
           : message
       });
-      return Boolean(uncertain && options.treatUncertainAsCompleted);
+      return Boolean(uncertain && options.treatUncertainAsCompleted && completedAfterFailure);
     }
   }
 
-  const dbFirstMutationOptions = { treatHttp500AsUncertain: true, treatUncertainAsCompleted: true } as const;
+  const dbFirstMutationOptions = {
+    treatUncertainAsCompleted: true,
+    uncertainMessage: () => buildUncertainMutationMessage("操作")
+  } as const;
 
   async function openNodeAccessEditor(subscriptionId: string, ownerLabel: string) {
     const requestSeq = nodeAccessRequestSeqRef.current + 1;
@@ -1918,7 +1922,6 @@ export function App() {
         successTitle: "探测完成",
         failureTitle: "探测失败",
         failureFallback: "节点网络探测失败",
-        treatHttp500AsUncertain: true,
         uncertainMessage: (message) => `${message} 节点探测状态不确定，请刷新节点列表确认最新探测结果。`,
         resolveSuccess: (result) => {
           const node = result as AdminNodeRecordDto;
@@ -1956,7 +1959,6 @@ export function App() {
         successTitle: "探测完成",
         failureTitle: "探测失败",
         failureFallback: "批量节点网络探测失败",
-        treatHttp500AsUncertain: true,
         uncertainMessage: (message) => `${message} 批量探测状态不确定，请刷新节点列表确认最新探测结果。`,
         resolveSuccess: (result) => {
           const nodes = Array.isArray(result) ? (result as AdminNodeRecordDto[]) : [];
@@ -1989,7 +1991,6 @@ export function App() {
       successTitle: "读取面板成功",
       failureTitle: "读取面板失败",
       failureFallback: "读取 3x-ui 面板并刷新节点失败",
-      treatHttp500AsUncertain: true,
       uncertainMessage: (message) => `${message} 面板读取状态不确定，请刷新节点列表确认节点运行时是否已更新。`,
       resolveSuccess: (result) => {
         const node = result as AdminNodeRecordDto;

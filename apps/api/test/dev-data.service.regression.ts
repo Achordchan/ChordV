@@ -4226,6 +4226,107 @@ async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
   }
 }
 
+async function testPanelSyncBatchContinuesWhenFailurePersistFails() {
+  const previousConcurrency = process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY;
+  process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY = "1";
+  const resetCalls: string[] = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const makeJob = (id: string, email: string) => ({
+    id,
+    action: "reset_client_traffic",
+    attempts: 0,
+    bindingId: `binding_${id}`,
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: `node_${id}`,
+    panelClientEmail: email,
+    panelClientId: `client_${id}`,
+    panelInboundId: 7,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    node: {
+      id: `node_${id}`,
+      name: `node ${id}`,
+      flow: "",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    },
+    binding: {
+      status: "active"
+    }
+  });
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => {
+        warnings.push(message);
+      }
+    },
+    xuiService: {
+      resetClientTraffic: async (_node: unknown, email: string) => {
+        resetCalls.push(email);
+        if (email === "fail@example.com") {
+          throw new Error("panel offline");
+        }
+        return true;
+      },
+      getClientUsage: async (_node: unknown, email: string) => ({
+        xrayUserEmail: email,
+        uplinkBytes: 0n,
+        downlinkBytes: 0n,
+        sampledAt: new Date().toISOString()
+      })
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async () => ({})
+      },
+      node: {
+        update: async () => ({})
+      },
+      panelSyncJob: {
+        findMany: async () => [makeJob("fail", "fail@example.com"), makeJob("online", "online@example.com")],
+        updateMany: async () => ({ count: 1 }),
+        update: async (payload: Record<string, any>) => {
+          if (payload.where.id === "fail" && payload.data.status === "failed") {
+            throw new Error("failed state write unavailable");
+          }
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  try {
+    await service.retryPendingPanelSyncJobs();
+  } finally {
+    if (previousConcurrency === undefined) {
+      delete process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY;
+    } else {
+      process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY = previousConcurrency;
+    }
+  }
+
+  assert.deepEqual(resetCalls, ["fail@example.com", "online@example.com"]);
+  assert.ok(warnings.some((message) => /failure state could not be saved/.test(message)));
+  assert.ok(
+    jobUpdates.some((item) => item.where.id === "online" && item.data.status === "completed"),
+    "online job must complete even when the previous failure state cannot be persisted"
+  );
+}
+
 async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
   const upserts: Array<Record<string, any>> = [];
   const service = createRuntimeSessionService({});
@@ -4361,6 +4462,83 @@ async function testLeaseRevocationBatchContinuesAfterStalledJob() {
       process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY = originalConcurrency;
     }
   }
+}
+
+async function testLeaseRevocationBatchContinuesWhenFailurePersistFails() {
+  const originalConcurrency = process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY;
+  process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY = "1";
+  const updates: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const revokedSubscriptions: string[] = [];
+  const jobs = [
+    {
+      id: "lease_job_fail",
+      attempts: 0,
+      subscriptionId: "sub_fail",
+      userId: "user_1",
+      nodeId: "node_1",
+      reason: "node_access_revoked",
+      status: "pending",
+      nextRunAt: new Date(Date.now() - 1000),
+      lockedAt: null,
+      createdAt: new Date(Date.now() - 2000)
+    },
+    {
+      id: "lease_job_online",
+      attempts: 0,
+      subscriptionId: "sub_online",
+      userId: "user_2",
+      nodeId: "node_2",
+      reason: "node_access_revoked",
+      status: "pending",
+      nextRunAt: new Date(Date.now() - 1000),
+      lockedAt: null,
+      createdAt: new Date(Date.now() - 1000)
+    }
+  ];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => {
+        warnings.push(message);
+      }
+    },
+    revokeSubscriptionLeases: async (subscriptionId: string) => {
+      if (subscriptionId === "sub_fail") {
+        throw new Error("lease store unavailable");
+      }
+      revokedSubscriptions.push(subscriptionId);
+    },
+    prisma: {
+      leaseRevocationJob: {
+        findMany: async () => jobs,
+        updateMany: async () => ({ count: 1 }),
+        update: async (payload: Record<string, any>) => {
+          if (payload.where.id === "lease_job_fail" && payload.data.status === "failed") {
+            throw new Error("failed state write unavailable");
+          }
+          updates.push(payload);
+          return {};
+        }
+      }
+    }
+  });
+
+  try {
+    await service.retryPendingLeaseRevocationJobs();
+  } finally {
+    if (originalConcurrency === undefined) {
+      delete process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY;
+    } else {
+      process.env.CHORDV_LEASE_REVOCATION_JOB_CONCURRENCY = originalConcurrency;
+    }
+  }
+
+  assert.deepEqual(revokedSubscriptions, ["sub_online"]);
+  assert.ok(warnings.some((message) => /failure state could not be saved/.test(message)));
+  assert.ok(
+    updates.some((item) => item.where.id === "lease_job_online" && item.data.status === "completed"),
+    "online lease job must complete even when the previous failure state cannot be persisted"
+  );
 }
 
 async function testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess() {
@@ -22250,9 +22428,11 @@ async function main() {
   await testPanelTrafficResetRequiresRemoteCounterConfirmation();
   await testPanelSyncBatchContinuesAfterStalledRemoteJob();
   await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
+  await testPanelSyncBatchContinuesWhenFailurePersistFails();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testLeaseRevocationBatchContinuesAfterStalledJob();
+  await testLeaseRevocationBatchContinuesWhenFailurePersistFails();
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();
   await testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline();
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();

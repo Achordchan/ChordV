@@ -1296,7 +1296,15 @@ export class RuntimeSessionService {
           continue;
         }
 
-        await this.runPanelSyncJob(job);
+        try {
+          await this.runPanelSyncJob(job);
+        } catch (error) {
+          this.logger.warn(
+            `Panel sync worker skipped a job after unexpected failure (${job.id}/${job.nodeId}/${job.panelClientEmail}): ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
       }
     });
     await Promise.all(workers);
@@ -1469,25 +1477,33 @@ export class RuntimeSessionService {
         PANEL_SYNC_RETRY_BASE_SECONDS * 2 ** Math.min(nextAttempts - 1, 6)
       );
       const message = error instanceof Error ? error.message : "3x-ui 客户端同步失败";
-      await this.prisma.$transaction([
-        this.prisma.node.update({
-          where: { id: job.nodeId },
-          data: {
-            panelStatus: "degraded",
-            panelError: message
-          }
-        }),
-        this.prisma.panelSyncJob.update({
-          where: { id: job.id },
-          data: {
-            status: "failed",
-            attempts: nextAttempts,
-            lockedAt: null,
-            lastError: message,
-            nextRunAt: new Date(Date.now() + retrySeconds * 1000)
-          }
-        })
-      ]);
+      try {
+        await this.prisma.$transaction([
+          this.prisma.node.update({
+            where: { id: job.nodeId },
+            data: {
+              panelStatus: "degraded",
+              panelError: message
+            }
+          }),
+          this.prisma.panelSyncJob.update({
+            where: { id: job.id },
+            data: {
+              status: "failed",
+              attempts: nextAttempts,
+              lockedAt: null,
+              lastError: message,
+              nextRunAt: new Date(Date.now() + retrySeconds * 1000)
+            }
+          })
+        ]);
+      } catch (persistError) {
+        this.logger.warn(
+          `Panel sync job failure state could not be saved (${job.id}/${job.nodeId}/${job.panelClientEmail}): ${
+            persistError instanceof Error ? persistError.message : String(persistError)
+          }`
+        );
+      }
       this.logger.warn(
         `面板同步任务失败，${retrySeconds} 秒后重试，${job.nodeId}/${job.panelClientEmail}: ${message}`
       );
@@ -1678,7 +1694,15 @@ export class RuntimeSessionService {
           continue;
         }
 
-        await this.runLeaseRevocationJob(job);
+        try {
+          await this.runLeaseRevocationJob(job);
+        } catch (error) {
+          this.logger.warn(
+            `Lease revocation worker skipped a job after unexpected failure (${job.id}): ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
       }
     });
     await Promise.all(workers);
@@ -1728,16 +1752,24 @@ export class RuntimeSessionService {
         LEASE_REVOCATION_RETRY_BASE_SECONDS * 2 ** Math.min(nextAttempts - 1, 6)
       );
       const message = error instanceof Error ? error.message : "lease revocation failed";
-      await this.prisma.leaseRevocationJob.update({
-        where: { id: job.id },
-        data: {
-          status: "failed",
-          attempts: nextAttempts,
-          lockedAt: null,
-          lastError: message,
-          nextRunAt: new Date(Date.now() + retrySeconds * 1000)
-        }
-      });
+      try {
+        await this.prisma.leaseRevocationJob.update({
+          where: { id: job.id },
+          data: {
+            status: "failed",
+            attempts: nextAttempts,
+            lockedAt: null,
+            lastError: message,
+            nextRunAt: new Date(Date.now() + retrySeconds * 1000)
+          }
+        });
+      } catch (persistError) {
+        this.logger.warn(
+          `Lease revocation job failure state could not be saved (${job.id}): ${
+            persistError instanceof Error ? persistError.message : String(persistError)
+          }`
+        );
+      }
       this.logger.warn(`Lease revocation job failed; retrying in ${retrySeconds}s: ${job.id}: ${message}`);
     }
   }

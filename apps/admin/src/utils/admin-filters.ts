@@ -38,7 +38,15 @@ export function isDefiniteLocalSaveFailure(message: string) {
 }
 
 export function isPotentiallyCompletedMutationFailure(message: string) {
-  return isUncertainRequestFailure(message) || /http 500|internal server error/i.test(message);
+  return isUncertainRequestFailure(message) || isLikelySavedAfterFailure(message);
+}
+
+export function buildUncertainMutationMessage(actionLabel: string) {
+  return `${actionLabel}状态不确定，请刷新列表确认最新状态；不要重复提交同一操作。`;
+}
+
+export function isLikelySavedAfterFailure(message: string) {
+  return /local .* saved|saved locally|already saved|已保存|后台处理|background processing|background retry|queued for background|still running in background|panel synchronization is pending|pending background/i.test(message);
 }
 
 export function isSupportTicketAttachmentUploadFailure(message: string) {
