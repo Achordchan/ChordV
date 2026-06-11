@@ -10465,6 +10465,159 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
   }
 }
 
+async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave() {
+  const oldNode = {
+    id: "node_old",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const newNode = {
+    ...oldNode,
+    id: "node_new",
+    name: "new",
+    recommended: true
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old", node: oldNode }];
+
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
+            },
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new", node: newNode });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        throw new Error("offline panel queue write failed");
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        throw new Error("offline lease queue write failed");
+      },
+      queueSubscriptionPanelAccessSyncTx: async () => {
+        throw new Error("offline ensure queue write failed");
+      },
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("offline panel queue write failed");
+      },
+      queueSubscriptionPanelAccessSync: async () => {
+        throw new Error("offline ensure queue write failed");
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("node access replacement must not call direct panel sync");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpReplaceRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpReplaceRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: ["node_new"] })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      200,
+      `local node access replacement must not surface queued offline panel failures as HTTP 500: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local replacement must stay saved");
+    assert.equal(body.subscriptionId, "sub_1");
+    assert.deepEqual(body.nodeIds, ["node_new"]);
+    assert.equal(body.panelSyncStatus, "pending");
+    assert.match(body.panelSyncMessage ?? "", /offline panel queue write failed/);
+    assert.match(body.panelSyncMessage ?? "", /offline ensure queue write failed/);
+  } finally {
+    await app.close();
+  }
+}
+
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -13492,7 +13645,30 @@ async function testListNodePanelInboundsPropagatesOfflinePanelError() {
         panelUsername: "admin",
         panelPassword: "password"
       }),
-    /panel offline/
+    (error) => error instanceof ServiceUnavailableException && /panel offline/.test(error.message),
+    "offline panel inbound reads must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testListNodePanelInboundsKeepsCredentialErrorsAsBadRequest() {
+  const service = createAdminNodeService({
+    xuiService: {
+      listInbounds: async () => {
+        throw new BadRequestException("3x-ui 账号或密码错误");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.listNodePanelInbounds({
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "wrong"
+      }),
+    (error) => error instanceof BadRequestException && /账号或密码错误/.test(error.message),
+    "credential errors should stay as 400 so admins can correct the panel account"
   );
 }
 
@@ -19246,6 +19422,80 @@ async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
   assert.equal(result.remainingTrafficGb, 116);
 }
 
+async function testUpdateSubscriptionReturnsPendingWhenPanelAccessSyncStalls() {
+  const updates: Array<Record<string, any>> = [];
+  let panelSyncStarted = false;
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "subscription_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 4,
+    remainingTrafficGb: 96,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Personal", maxConcurrentSessions: 3 },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => current,
+    runtimeSessionService: {
+      queueActiveLeaseSyncForSubscription: async () => 0,
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("subscription update must queue panel sync instead of direct sync");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateSubscription("subscription_1", { totalTrafficGb: 120 }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("update subscription waited for stalled panel access sync")), 750);
+    })
+  ]);
+
+  assert.equal(updates.length, 1, "local subscription update must save before panel access sync starts");
+  assert.equal(updates[0].data.totalTrafficGb, 120);
+  assert.equal(panelSyncStarted, false, "panel access sync must not start before the local response returns");
+  await waitUntil(() => panelSyncStarted);
+  assert.equal(panelSyncStarted, true, "panel access sync should still run in background");
+  assert.equal(result.totalTrafficGb, 120);
+  assert.equal(result.remainingTrafficGb, 116);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /subscription panel access sync after update/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+}
+
 async function testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails() {
   const updates: Array<Record<string, any>> = [];
   const disableQueueCalls: Array<{ subscriptionId: string; filter?: { userId?: string; nodeIds?: string[] } }> = [];
@@ -20682,6 +20932,74 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
   assert.match(result.panelSyncMessage ?? "", /queued/);
 }
 
+async function testEnableTeamReturnsPendingWhenPanelSyncStalls() {
+  const teamUpdates: Array<Record<string, any>> = [];
+  let panelSyncStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      status: "disabled"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active"
+    }),
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      status: "active",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    prisma: {
+      team: {
+        update: async (payload: Record<string, any>) => {
+          teamUpdates.push(payload);
+          return {};
+        }
+      }
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("team enable must queue panel sync instead of direct sync");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateTeam("team_1", { status: "active" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("enable team waited for stalled panel sync")), 750);
+    })
+  ]);
+
+  assert.equal(teamUpdates.length, 1, "team enable must save locally before panel sync follow-up");
+  assert.equal(teamUpdates[0].data.status, "active");
+  assert.equal(panelSyncStarted, false, "team enable panel sync must not start before local response returns");
+  await waitUntil(() => panelSyncStarted);
+  assert.equal(panelSyncStarted, true, "team enable panel sync should still run in background");
+  assert.equal(result.status, "active");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team status follow-up sync queued/);
+}
+
 async function testUpdateTeamReturnsPendingWhenRecordRefreshFails() {
   const teamUpdates: Array<Record<string, any>> = [];
   const service = createAdminSubscriptionService({
@@ -21341,6 +21659,86 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
   await waitUntil(() => queuedSubscriptions.length > 0);
   assert.deepEqual(queuedSubscriptions, ["sub_team"]);
+}
+
+async function testUpdateTeamMemberOwnerTransferReturnsPendingWhenSubscriptionLookupStalls() {
+  const memberUpdates: Array<Record<string, any>> = [];
+  const memberDemotions: Array<Record<string, any>> = [];
+  const teamUpdates: Array<Record<string, any>> = [];
+  let lookupStarted = false;
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_new_owner",
+      teamId: "team_1",
+      userId: "user_new_owner",
+      role: "member"
+    }),
+    ensureUserExists: async () => ({
+      id: "user_new_owner",
+      email: "new-owner@example.com",
+      displayName: "New Owner",
+      role: "user",
+      status: "active",
+      lastSeenAt: now,
+      maxConcurrentSessionsOverride: null
+    }),
+    findCurrentTeamSubscription: async () => {
+      lookupStarted = true;
+      return new Promise<any>(() => undefined);
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      ownerUserId: "user_new_owner",
+      ownerDisplayName: "New Owner",
+      ownerEmail: "new-owner@example.com",
+      status: "active",
+      memberCount: 2,
+      currentSubscription: null,
+      members: [],
+      usage: [],
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString()
+    }),
+    prisma: {
+      $transaction: async (operations: Array<Promise<unknown>>) => Promise.all(operations),
+      teamMember: {
+        update: async (payload: Record<string, any>) => {
+          memberUpdates.push(payload);
+          return {};
+        },
+        updateMany: async (payload: Record<string, any>) => {
+          memberDemotions.push(payload);
+          return {};
+        }
+      },
+      team: {
+        update: async (payload: Record<string, any>) => {
+          teamUpdates.push(payload);
+          return {};
+        }
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateTeamMember("team_1", "member_new_owner", { role: "owner" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("owner transfer waited for stalled team subscription lookup")), 750);
+    })
+  ]);
+
+  assert.equal(lookupStarted, true, "owner transfer should still attempt the team subscription lookup");
+  assert.equal(memberUpdates.length, 1, "new owner role must save before stalled subscription lookup finishes");
+  assert.equal(memberDemotions.length, 1, "previous owner demotion must save before stalled subscription lookup finishes");
+  assert.equal(teamUpdates.length, 1, "team owner must save before stalled subscription lookup finishes");
+  assert.equal(result.ownerUserId, "user_new_owner");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup after owner transfer/);
 }
 
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
@@ -24047,6 +24445,7 @@ async function main() {
   await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
   await testListAdminNodesUsesAggregatedPanelSyncCounts();
   await testListNodePanelInboundsPropagatesOfflinePanelError();
+  await testListNodePanelInboundsKeepsCredentialErrorsAsBadRequest();
   await testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout();
   await testImportNodeFromOfflinePanelFailsBeforeLocalSave();
   await testImportNodeFromSlowPanelFailsBeforeLocalSave();
@@ -24074,6 +24473,7 @@ async function main() {
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishThrowsSynchronously();
   await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
   await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
+  await testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
@@ -24240,6 +24640,7 @@ async function main() {
   await testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave();
   await testUpdatePlanSecurityKeepsLocalSaveWhenSubscriptionCountFails();
   await testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls();
+  await testUpdateSubscriptionReturnsPendingWhenPanelAccessSyncStalls();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
@@ -24256,6 +24657,7 @@ async function main() {
   await testEnableUserReturnsPendingWhenPanelSyncStalls();
   await testEnableUserReturnsPendingWhenSubscriptionLookupStalls();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
+  await testEnableTeamReturnsPendingWhenPanelSyncStalls();
   await testUpdateTeamReturnsPendingWhenRecordRefreshFails();
   await testUpdateTeamReturnsPendingWhenSubscriptionLookupStallsAfterLocalSave();
   await testUpdateTeamDisconnectStillQueuesLeaseJobsWhenPanelQueueStalls();
@@ -24268,6 +24670,7 @@ async function main() {
   await testCreateTeamMemberReturnsPendingWhenSubscriptionLookupStalls();
   await testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails();
   await testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync();
+  await testUpdateTeamMemberOwnerTransferReturnsPendingWhenSubscriptionLookupStalls();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();

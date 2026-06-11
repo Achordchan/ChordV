@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
   AdminLeaseRevocationJobDto,
   AdminNodePanelInboundDto,
@@ -471,6 +471,11 @@ export class AdminNodeService {
 
     try {
       return await Promise.race([guardedTask, timeoutTask]);
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException(`3x-ui inbound list read failed: ${readAdminNodeErrorMessage(error)}`);
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
