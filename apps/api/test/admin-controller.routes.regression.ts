@@ -6,9 +6,12 @@ import { AdminController } from "../src/modules/admin/admin.controller";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
 import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-events.service";
 import { AuthSessionService } from "../src/modules/common/auth-session.service";
+import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { DevDataService } from "../src/modules/common/dev-data.service";
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
+import { ClientController } from "../src/modules/client/client.controller";
+import { ClientService } from "../src/modules/client/client.service";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
 
 type RouteCall = {
@@ -31,7 +34,9 @@ Reflect.defineMetadata(
   AdminController
 );
 Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsService], DownloadsController);
+Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsService], ClientController);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+Reflect.defineMetadata("design:paramtypes", [AuthSessionService], ClientAuthGuard);
 
 const devDataServiceStub = {
   retryAdminPanelSyncJob: async (jobId: string) => {
@@ -130,22 +135,101 @@ const devDataServiceStub = {
   getReleaseArtifactDownloadDescriptor: async (artifactId: string) => {
     calls.push({ route: "release-download", value: artifactId });
     return { absolutePath: releaseDownloadPath, fileName: "ChordV_1.1.7_x64-full.zip" };
+  },
+  getAdminSupportTicketDetail: async (ticketId: string) => {
+    calls.push({ route: "ticket-detail", value: ticketId });
+    return { id: ticketId };
+  },
+  replyAdminSupportTicketWithAttachment: async (ticketId: string, body: unknown, file?: Express.Multer.File, adminId?: string | null) => {
+    calls.push({
+      route: "ticket-attachment",
+      value: ticketId,
+      body: { ...toPlainJson(body), adminId },
+      file: summarizeUploadedFile(file)
+    });
+    return { id: ticketId, body, file: summarizeUploadedFile(file) };
+  }
+};
+
+const runtimeComponentsServiceStub = {
+  listAdminRuntimeComponents: async () => {
+    calls.push({ route: "runtime-list", value: "all" });
+    return [];
+  },
+  listRuntimeComponentFailureReports: async (limit?: number) => {
+    calls.push({ route: "runtime-failures", value: String(limit ?? "") });
+    return [];
+  },
+  uploadAdminRuntimeComponent: async (body: unknown, file?: Express.Multer.File) => {
+    calls.push({ route: "runtime-upload", value: "new", body: toPlainJson(body), file: summarizeUploadedFile(file) });
+    return { id: "component_1", body, file: summarizeUploadedFile(file) };
+  },
+  replaceAdminRuntimeComponentUpload: async (componentId: string, body: unknown, file?: Express.Multer.File) => {
+    calls.push({ route: "runtime-replace-upload", value: componentId, body: toPlainJson(body), file: summarizeUploadedFile(file) });
+    return { id: componentId, body, file: summarizeUploadedFile(file) };
+  },
+  validateAdminRuntimeComponent: async (componentId: string) => {
+    calls.push({ route: "runtime-verify", value: componentId });
+    return { id: componentId, validationStatus: "ready" };
+  },
+  deleteAdminRuntimeComponent: async (componentId: string) => {
+    calls.push({ route: "runtime-delete", value: componentId });
+    return { ok: true, componentId };
+  }
+};
+
+const imageBedServiceStub = {
+  getAdminConfig: async () => {
+    calls.push({ route: "image-bed-config-get", value: "config" });
+    return { baseUrl: "https://image.example.com" };
+  },
+  updateAdminConfig: async (body: unknown) => {
+    calls.push({ route: "image-bed-config-update", value: "config", body: toPlainJson(body) });
+    return { ...toPlainJson(body), configured: true };
+  },
+  listAdminFiles: async (query: unknown) => {
+    calls.push({ route: "image-bed-files-list", value: "files", body: toPlainJson(query) });
+    return { files: [], query: toPlainJson(query) };
+  },
+  deleteAdminFile: async (query: unknown) => {
+    calls.push({ route: "image-bed-file-delete", value: "files", body: toPlainJson(query) });
+    return { ok: true, query: toPlainJson(query) };
+  }
+};
+
+const clientServiceStub = {
+  replySupportTicketWithAttachment: async (
+    ticketId: string,
+    body: unknown,
+    file?: Express.Multer.File,
+    authorization?: string
+  ) => {
+    calls.push({
+      route: "client-ticket-attachment",
+      value: ticketId,
+      body: { ...toPlainJson(body), authorization },
+      file: summarizeUploadedFile(file)
+    });
+    return { id: ticketId, body, file: summarizeUploadedFile(file) };
   }
 };
 
 @Module({
-  controllers: [AdminController, DownloadsController],
+  controllers: [AdminController, DownloadsController, ClientController],
   providers: [
     AdminAuthGuard,
+    ClientAuthGuard,
     {
       provide: AuthSessionService,
       useValue: {
-        authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        authenticateAccessToken: async (authorization?: string) =>
+          authorization === "Bearer user-test-token" ? { id: "user_1", role: "user" } : { id: "admin_1", role: "admin" }
       }
     },
     { provide: DevDataService, useValue: devDataServiceStub },
-    { provide: RuntimeComponentsService, useValue: {} },
-    { provide: ImageBedService, useValue: {} },
+    { provide: ClientService, useValue: clientServiceStub },
+    { provide: RuntimeComponentsService, useValue: runtimeComponentsServiceStub },
+    { provide: ImageBedService, useValue: imageBedServiceStub },
     { provide: AdminRuntimeEventsService, useValue: {} }
   ]
 })
@@ -183,17 +267,20 @@ async function requestMultipartJson(
   baseUrl: string,
   path: string,
   fields: Record<string, string>,
-  fileName = "ChordV_1.1.7_x64-full.zip"
+  fileName = "ChordV_1.1.7_x64-full.zip",
+  fileContent = "release artifact",
+  mimeType = "application/zip",
+  authorization = "Bearer admin-test-token"
 ) {
   const form = new FormData();
   for (const [key, value] of Object.entries(fields)) {
     form.set(key, value);
   }
-  form.set("file", new Blob(["release artifact"], { type: "application/zip" }), fileName);
+  form.set("file", new Blob([fileContent], { type: mimeType }), fileName);
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
-      authorization: "Bearer admin-test-token"
+      authorization
     },
     body: form
   });
@@ -458,6 +545,183 @@ async function main() {
       status: 204
     });
     assert.deepEqual(downloadCalls, [{ absolutePath: releaseDownloadPath, fileName: "ChordV_1.1.7_x64-full.zip" }]);
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/image-bed/config", {
+        method: "GET"
+      }),
+      {
+        status: 200,
+        body: { baseUrl: "https://image.example.com" }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/image-bed/config", {
+        method: "PATCH",
+        body: {
+          baseUrl: "https://image.example.com",
+          apiToken: "token",
+          uploadFolder: "uat",
+          uploadChannel: "telegram",
+          channelName: "UAT"
+        }
+      }),
+      {
+        status: 200,
+        body: {
+          baseUrl: "https://image.example.com",
+          apiToken: "token",
+          uploadFolder: "uat",
+          uploadChannel: "telegram",
+          channelName: "UAT",
+          configured: true
+        }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/image-bed/files?start=2&count=5&search=uat&dir=tests&recursive=true", {
+        method: "GET"
+      }),
+      {
+        status: 200,
+        body: { files: [], query: { start: "2", count: "5", search: "uat", dir: "tests", recursive: "true" } }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/image-bed/files?path=tests%2Fuat.png&folder=false", {
+        method: "DELETE"
+      }),
+      {
+        status: 200,
+        body: { ok: true, query: { path: "tests/uat.png", folder: "false" } }
+      }
+    );
+    assert.deepEqual(
+      await requestMultipartJson(
+        baseUrl,
+        "/api/admin/tickets/ticket_1/attachments",
+        { body: "带附件回复" },
+        "ticket-attachment.png",
+        "png",
+        "image/png"
+      ),
+      {
+        status: 201,
+        body: {
+          id: "ticket_1",
+          body: { body: "带附件回复" },
+          file: {
+            originalname: "ticket-attachment.png",
+            mimetype: "image/png",
+            size: 3
+          }
+        }
+      }
+    );
+    assert.deepEqual(
+      await requestMultipartJson(
+        baseUrl,
+        "/api/client/tickets/ticket_1/attachments",
+        { body: "client attachment reply" },
+        "client-ticket.png",
+        "png",
+        "image/png",
+        "Bearer user-test-token"
+      ),
+      {
+        status: 201,
+        body: {
+          id: "ticket_1",
+          body: { body: "client attachment reply" },
+          file: {
+            originalname: "client-ticket.png",
+            mimetype: "image/png",
+            size: 3
+          }
+        }
+      }
+    );
+    assert.deepEqual(
+      await requestMultipartJson(
+        baseUrl,
+        "/api/admin/runtime-components/upload",
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          fileName: "xray.zip",
+          enabled: "true"
+        },
+        "xray.zip",
+        "runtime"
+      ),
+      {
+        status: 201,
+        body: {
+          id: "component_1",
+          body: {
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            fileName: "xray.zip",
+            enabled: "true"
+          },
+          file: {
+            originalname: "xray.zip",
+            mimetype: "application/zip",
+            size: 7
+          }
+        }
+      }
+    );
+    assert.deepEqual(
+      await requestMultipartJson(
+        baseUrl,
+        "/api/admin/runtime-components/component_1/upload",
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          fileName: "xray.zip",
+          enabled: "true"
+        },
+        "xray.zip",
+        "runtime"
+      ),
+      {
+        status: 201,
+        body: {
+          id: "component_1",
+          body: {
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            fileName: "xray.zip",
+            enabled: "true"
+          },
+          file: {
+            originalname: "xray.zip",
+            mimetype: "application/zip",
+            size: 7
+          }
+        }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/runtime-components/failures?limit=10", {
+        method: "GET"
+      }),
+      { status: 200, body: [] }
+    );
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/runtime-components/component_1/verify"), {
+      status: 201,
+      body: { id: "component_1", validationStatus: "ready" }
+    });
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/runtime-components/component_1", {
+        method: "DELETE"
+      }),
+      { status: 200, body: { ok: true, componentId: "component_1" } }
+    );
 
     assert.deepEqual(calls, [
       { route: "panel-job", value: "job_1" },
@@ -522,7 +786,84 @@ async function main() {
           size: 16
         }
       },
-      { route: "release-download", value: "artifact_1" }
+      { route: "release-download", value: "artifact_1" },
+      { route: "image-bed-config-get", value: "config" },
+      {
+        route: "image-bed-config-update",
+        value: "config",
+        body: {
+          baseUrl: "https://image.example.com",
+          apiToken: "token",
+          uploadFolder: "uat",
+          uploadChannel: "telegram",
+          channelName: "UAT"
+        }
+      },
+      {
+        route: "image-bed-files-list",
+        value: "files",
+        body: { start: "2", count: "5", search: "uat", dir: "tests", recursive: "true" }
+      },
+      {
+        route: "image-bed-file-delete",
+        value: "files",
+        body: { path: "tests/uat.png", folder: "false" }
+      },
+      {
+        route: "ticket-attachment",
+        value: "ticket_1",
+        body: { body: "带附件回复", adminId: "admin_1" },
+        file: {
+          originalname: "ticket-attachment.png",
+          mimetype: "image/png",
+          size: 3
+        }
+      },
+      {
+        route: "client-ticket-attachment",
+        value: "ticket_1",
+        body: { body: "client attachment reply", authorization: "Bearer user-test-token" },
+        file: {
+          originalname: "client-ticket.png",
+          mimetype: "image/png",
+          size: 3
+        }
+      },
+      {
+        route: "runtime-upload",
+        value: "new",
+        body: {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          fileName: "xray.zip",
+          enabled: "true"
+        },
+        file: {
+          originalname: "xray.zip",
+          mimetype: "application/zip",
+          size: 7
+        }
+      },
+      {
+        route: "runtime-replace-upload",
+        value: "component_1",
+        body: {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          fileName: "xray.zip",
+          enabled: "true"
+        },
+        file: {
+          originalname: "xray.zip",
+          mimetype: "application/zip",
+          size: 7
+        }
+      },
+      { route: "runtime-failures", value: "10" },
+      { route: "runtime-verify", value: "component_1" },
+      { route: "runtime-delete", value: "component_1" }
     ]);
   } finally {
     expressApp.response.download = originalDownload;
