@@ -297,6 +297,68 @@ project = public.dict_obj()
 project.project_name = os.environ["DEPLOY_PROJECT"]
 model = main()
 print(json.dumps(model.stop_project(project), ensure_ascii=False))
+PY
+
+python3 - <<'PY'
+import os
+import signal
+import time
+
+deploy_path = os.path.realpath(os.environ["DEPLOY_PATH"])
+target = b"apps/api/dist/apps/api/src/main.js"
+matched = []
+
+for pid_name in os.listdir("/proc"):
+  if not pid_name.isdigit():
+    continue
+  pid = int(pid_name)
+  try:
+    with open(f"/proc/{pid}/cmdline", "rb") as handle:
+      cmdline = handle.read()
+    cwd = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+  except OSError:
+    continue
+  if cwd == deploy_path and target in cmdline:
+    matched.append(pid)
+
+for pid in matched:
+  try:
+    os.kill(pid, signal.SIGTERM)
+  except ProcessLookupError:
+    pass
+
+deadline = time.time() + 5
+while matched and time.time() < deadline:
+  alive = []
+  for pid in matched:
+    try:
+      os.kill(pid, 0)
+      alive.append(pid)
+    except ProcessLookupError:
+      pass
+  matched = alive
+  if matched:
+    time.sleep(0.2)
+
+for pid in matched:
+  try:
+    os.kill(pid, signal.SIGKILL)
+  except ProcessLookupError:
+    pass
+PY
+
+"${PANEL_PY}" - <<'PY'
+import json
+import os
+import sys
+
+sys.path.insert(0, "/www/server/panel/class")
+import public
+from projectModel.nodejsModel import main
+
+project = public.dict_obj()
+project.project_name = os.environ["DEPLOY_PROJECT"]
+model = main()
 print(json.dumps(model.start_project(project), ensure_ascii=False))
 PY
 
