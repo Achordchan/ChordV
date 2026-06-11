@@ -8884,6 +8884,35 @@ async function testUpdateNodeAccessMapsLocalSaveConstraintErrors() {
   );
 }
 
+async function testUpdateNodeAccessMapsUnknownLocalSaveFailure() {
+  const service = createDevDataService({
+    logger: {
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async () => {
+          throw new Error("local node access read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /节点授权保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "unknown local node access save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUpdateNodeAccessMapsTransactionCommitFailure() {
   const node = {
     id: "node_offline",
@@ -24790,6 +24819,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
   await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
+  await testUpdateNodeAccessMapsUnknownLocalSaveFailure();
   await testUpdateNodeAccessMapsTransactionCommitFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenFallbackNodeSummaryThrows();
   await testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionThrowsSynchronously();

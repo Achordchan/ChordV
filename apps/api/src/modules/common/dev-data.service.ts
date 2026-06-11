@@ -2,10 +2,12 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
   OnModuleInit,
+  ServiceUnavailableException,
   UnauthorizedException
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
@@ -2301,6 +2303,9 @@ function isPrismaRecordNotFoundError(error: unknown) {
 }
 
 function toNodeAccessLocalSaveHttpError(error: unknown) {
+  if (error instanceof HttpException) {
+    return error;
+  }
   if (isPrismaUniqueConstraintError(error)) {
     return new ConflictException("节点授权已被其他操作修改，请刷新后重试。");
   }
@@ -2309,7 +2314,7 @@ function toNodeAccessLocalSaveHttpError(error: unknown) {
   }
   const transientError = toPrismaTransientHttpError(error, "节点授权保存暂时繁忙，请刷新后重试；本次请求没有等待失联面板。");
   if (transientError) return transientError;
-  return null;
+  return new ServiceUnavailableException("节点授权保存失败，请刷新订阅和节点列表后重试；本次请求没有等待失联面板。");
 }
 
 function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
