@@ -23,6 +23,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { MeteringIncidentService } from "./metering-incident.service";
+import { isPrismaTransientError } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import {
   pickCurrentSubscription,
@@ -133,12 +134,13 @@ export class ClientAccessService {
     }
 
     const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
-    const [policies, announcements, version, supportTickets] = await Promise.all([
-      this.announcementPolicyService.getPolicies(),
-      this.announcementPolicyService.getAnnouncements(token),
-      this.getClientVersion(platform),
-      this.clientTicketService.getClientSupportTicketInbox(user.id)
-    ]);
+    const policies = await this.announcementPolicyService.getPolicies();
+    const version = await this.getClientVersion(platform);
+    const announcements = await this.loadOptionalBootstrapPart(() => this.announcementPolicyService.getAnnouncements(token), []);
+    const supportTickets = await this.loadOptionalBootstrapPart(() => this.clientTicketService.getClientSupportTicketInbox(user.id), {
+      totalCount: 0,
+      unreadCount: 0
+    });
 
     return {
       user,
@@ -297,6 +299,17 @@ export class ClientAccessService {
       ok: true,
       serverTime: new Date().toISOString()
     };
+  }
+
+  private async loadOptionalBootstrapPart<T>(task: () => Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await task();
+    } catch (error) {
+      if (isPrismaTransientError(error)) {
+        return fallback;
+      }
+      throw error;
+    }
   }
 
   private async resolveSubscriptionAccessForUser(userId: string): Promise<ClientSubscriptionAccess> {

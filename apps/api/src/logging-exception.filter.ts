@@ -1,4 +1,5 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from "@nestjs/common";
+import { isPrismaTransientError } from "./modules/common/prisma-error.utils";
 
 @Catch()
 export class LoggingExceptionFilter implements ExceptionFilter {
@@ -16,7 +17,12 @@ export class LoggingExceptionFilter implements ExceptionFilter {
     const response = context.getResponse<{
       status: (code: number) => { json: (body: unknown) => void };
     }>();
-    const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    const transientPrismaError = isPrismaTransientError(exception);
+    const status = exception instanceof HttpException
+      ? exception.getStatus()
+      : transientPrismaError
+        ? HttpStatus.SERVICE_UNAVAILABLE
+        : HttpStatus.INTERNAL_SERVER_ERROR;
     const path = request.originalUrl ?? request.url ?? "unknown";
     const requestId = readHeader(request.headers, "x-request-id") ?? readHeader(request.headers, "cf-ray") ?? "-";
 
@@ -28,7 +34,15 @@ export class LoggingExceptionFilter implements ExceptionFilter {
       );
     }
 
-    const payload = exception instanceof HttpException ? exception.getResponse() : null;
+    const payload = exception instanceof HttpException
+      ? exception.getResponse()
+      : transientPrismaError
+        ? {
+            statusCode: status,
+            message: "服务暂时繁忙，请稍后重试。",
+            path
+          }
+        : null;
     if (typeof payload === "object" && payload !== null) {
       response.status(status).json(payload);
       return;

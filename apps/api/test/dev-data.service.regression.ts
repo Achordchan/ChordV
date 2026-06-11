@@ -44,6 +44,7 @@ import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/upload
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
+import { LoggingExceptionFilter } from "../src/logging-exception.filter";
 import {
   ImportNodeDto,
   UpdateCurrentAdminSecurityDto,
@@ -13230,6 +13231,105 @@ async function testClientNodesRequirePanelEnabled() {
   assert.equal(nodes.length, 1);
 }
 
+async function testClientBootstrapDegradesOptionalSectionsOnPrismaPoolTimeout() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createClientAccessService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1", email: "user@example.com" })
+    },
+    resolveSubscriptionAccessForUser: async () => ({
+      subscription: {
+        id: "sub_1",
+        planId: "plan_1",
+        totalTrafficGb: 100,
+        usedTrafficGb: 0,
+        remainingTrafficGb: 100,
+        expireAt: new Date(Date.now() + 86_400_000),
+        state: "active",
+        renewable: true,
+        lastSyncedAt: now,
+        plan: { name: "plan", maxConcurrentSessions: 2 },
+        user: { id: "user_1", status: "active" },
+        team: null
+      },
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    }),
+    meteringIncidentService: {
+      getSubscriptionMeteringState: async () => ({
+        meteringStatus: "ok",
+        meteringMessage: null
+      })
+    },
+    announcementPolicyService: {
+      getPolicies: async () => ({
+        defaultMode: "rule",
+        modes: [],
+        features: {
+          blockAds: false,
+          chinaDirect: false,
+          aiServicesProxy: false
+        }
+      }),
+      getAnnouncements: async () => {
+        throw { code: "P2024", message: "Timed out fetching a new connection from the connection pool" };
+      }
+    },
+    clientTicketService: {
+      getClientSupportTicketInbox: async () => {
+        throw { code: "P2024", message: "Timed out fetching a new connection from the connection pool" };
+      }
+    },
+    getClientVersion: async () => ({
+      currentVersion: "1.1.6",
+      minimumVersion: "1.1.0",
+      forceUpgrade: false,
+      changelog: [],
+      downloadUrl: null
+    })
+  });
+
+  const result = await service.getBootstrap("Bearer token", "windows");
+
+  assert.deepEqual(result.announcements, []);
+  assert.deepEqual(result.supportTickets, { totalCount: 0, unreadCount: 0 });
+  assert.equal(result.subscription.id, "sub_1");
+  assert.equal(result.version.currentVersion, "1.1.6");
+}
+
+function testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable() {
+  const filter = new LoggingExceptionFilter();
+  let statusCode: number | null = null;
+  let responseBody: any = null;
+  const host = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        method: "GET",
+        originalUrl: "/api/client/bootstrap",
+        ip: "127.0.0.1",
+        headers: {}
+      }),
+      getResponse: () => ({
+        status: (code: number) => {
+          statusCode = code;
+          return {
+            json: (body: unknown) => {
+              responseBody = body;
+            }
+          };
+        }
+      })
+    })
+  } as any;
+
+  filter.catch({ code: "P2024", message: "Timed out fetching a new connection from the connection pool" }, host);
+
+  assert.equal(statusCode, 503);
+  assert.equal(responseBody.statusCode, 503);
+  assert.equal(responseBody.message, "服务暂时繁忙，请稍后重试。");
+}
+
 async function testConnectRejectsPanelDisabledNode() {
   const service = createRuntimeSessionService({
     prisma: {
@@ -22622,6 +22722,8 @@ async function main() {
   await testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFails();
   await testUpdateNodeDisablingPanelForcesOfflineStatus();
   await testClientNodesRequirePanelEnabled();
+  await testClientBootstrapDegradesOptionalSectionsOnPrismaPoolTimeout();
+  testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable();
   await testConnectRejectsPanelDisabledNode();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testConnectWithXuiRejectsNewBindingWhenPanelReadFails();
