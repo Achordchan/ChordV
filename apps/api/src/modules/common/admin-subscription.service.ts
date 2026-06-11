@@ -1740,7 +1740,14 @@ export class AdminSubscriptionService {
     if (panelResetBindings.length > 0 && panelResetQueuedAt) {
       panelSync = mergePanelSyncResults(
         panelSync,
-        await this.queuePanelTrafficResetJobsBestEffort(panelResetBindings, panelResetQueuedAt)
+        await this.withSubscriptionFollowUpBudget<PanelSyncBestEffortResult>(
+          `3x-ui traffic reset queueing for ${subscription.id}`,
+          {
+            ok: false,
+            errorMessage: "3x-ui traffic reset queueing is still running in background; local counters are already reset"
+          },
+          () => this.queuePanelTrafficResetJobsBestEffort(panelResetBindings, panelResetQueuedAt as Date)
+        )
       );
     }
     return {

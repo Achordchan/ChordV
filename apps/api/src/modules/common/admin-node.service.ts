@@ -130,7 +130,7 @@ export class AdminNodeService {
       action: row.action as AdminPanelSyncJobDto["action"],
       status: row.status as AdminPanelSyncJobDto["status"],
       nodeId: row.nodeId,
-      nodeName: row.node.name,
+      nodeName: row.node?.name ?? "已删除节点",
       panelClientEmail: row.panelClientEmail,
       attempts: row.attempts,
       nextRunAt: row.nextRunAt.toISOString(),

@@ -5633,6 +5633,107 @@ async function testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails() 
   assert.match(result.panelSyncMessage ?? "", /panel reset queue failed/);
 }
 
+async function testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAfterLocalReset() {
+  const subscriptionUpdates: Array<Record<string, any>> = [];
+  const lockedSubscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 8,
+    remainingTrafficGb: 2,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Plan" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => lockedSubscription,
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    queuePanelTrafficResetJobsBestEffort: async () => new Promise<never>(() => undefined),
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }),
+    prisma: {
+      $transaction: async (callback: (tx: any) => Promise<any>) =>
+        callback({
+          subscription: {
+            findUnique: async () => lockedSubscription,
+            update: async (payload: Record<string, any>) => {
+              subscriptionUpdates.push(payload);
+              return {
+                ...lockedSubscription,
+                ...payload.data
+              };
+            }
+          },
+          trafficSnapshot: {
+            upsert: async () => ({})
+          },
+          panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "client_1",
+                panelInboundId: 7,
+                lastUplinkBytes: 8n,
+                lastDownlinkBytes: 0n,
+                lastSyncedAt: new Date(),
+                node: {
+                  id: "node_1",
+                  panelBaseUrl: "https://panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ],
+            update: async () => ({})
+          },
+          trafficLedger: {
+            deleteMany: async () => ({}),
+            aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
+          }
+        })
+    }
+  });
+
+  const result = await Promise.race([
+    service.resetSubscriptionTraffic("sub_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("reset traffic waited for stalled panel reset queueing")), 750);
+    })
+  ]);
+
+  assert.equal(subscriptionUpdates.length, 1, "local counters must be saved before stalled panel queueing finishes");
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0);
+  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /still running in background/);
+}
+
 async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
   const subscriptionUpdates: Array<Record<string, any>> = [];
   const ledgerDeletes: Array<Record<string, any>> = [];
@@ -6976,6 +7077,40 @@ async function testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync() {
   assert.deepEqual(result.map((job) => job.id), ["job_1"]);
 }
 
+async function testListPanelSyncJobsHandlesMissingNode() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    prisma: {
+      panelSyncJob: {
+        findMany: async () => [
+          {
+            id: "job_orphan",
+            action: "delete_client",
+            status: "failed",
+            nodeId: "node_deleted",
+            node: null,
+            panelClientEmail: "user@example.com",
+            attempts: 2,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: "node was deleted manually",
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      }
+    }
+  });
+
+  const result = await service.listPanelSyncJobs();
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].nodeId, "node_deleted");
+  assert.equal(result[0].nodeName, "已删除节点");
+  assert.equal(result[0].status, "failed");
+}
+
 async function testRetryPanelSyncJobDoesNotUnlockRunningJob() {
   const updates: Array<Record<string, any>> = [];
   const service = createAdminNodeService({
@@ -7034,6 +7169,78 @@ async function testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob() {
   assert.equal(updates[0]?.where.dedupeKey, "ensure:binding_running");
   assert.deepEqual(updates[0]?.where.status, { not: "running" });
   assert.equal(updates[0]?.data.lockedAt, null);
+}
+
+async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
+  const creates: Array<Record<string, any>> = [];
+  const snapshotDeletes: Array<Record<string, any>> = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    }
+  });
+  const writer = {
+    panelClientBinding: {
+      findMany: async () => [
+        {
+          id: "binding_stale",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_stale",
+          panelClientEmail: "stale@example.com",
+          panelClientId: "client_stale",
+          panelInboundId: 1,
+          node: null
+        },
+        {
+          id: "binding_ok",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_ok",
+          panelClientEmail: "ok@example.com",
+          panelClientId: "client_ok",
+          panelInboundId: 2,
+          node: {
+            panelBaseUrl: "https://panel.example.com",
+            panelApiBasePath: "/",
+            panelUsername: "admin",
+            panelPassword: "password"
+          }
+        }
+      ],
+      updateMany: async (payload: Record<string, any>) => {
+        bindingUpdates.push(payload);
+        return { count: payload.where.id.in.length };
+      }
+    },
+    panelSyncJob: {
+      create: async (payload: Record<string, any>) => {
+        creates.push(payload);
+        if (payload.data.bindingId === "binding_stale") {
+          throw { code: "P2003" };
+        }
+        return payload.data;
+      },
+      updateMany: async () => ({ count: 0 })
+    },
+    trafficSnapshot: {
+      deleteMany: async (payload: Record<string, any>) => {
+        snapshotDeletes.push(payload);
+        return { count: 1 };
+      }
+    }
+  };
+
+  const queuedCount = await service.queuePanelDeleteJobsForSubscriptionTx(writer, "sub_1");
+
+  assert.equal(creates.length, 2, "delete job queueing should try every binding");
+  assert.equal(queuedCount, 1, "stale binding foreign key failures should not count as queued jobs");
+  assert.equal(snapshotDeletes.length, 2, "local cleanup should continue for stale and valid bindings");
+  assert.equal(bindingUpdates.length, 1);
+  assert.deepEqual(bindingUpdates[0].where.id.in, ["binding_stale", "binding_ok"]);
 }
 
 async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
@@ -21678,6 +21885,7 @@ async function main() {
   await testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails();
+  await testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAfterLocalReset();
   await testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
@@ -21694,8 +21902,10 @@ async function main() {
   await testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong();
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
+  await testListPanelSyncJobsHandlesMissingNode();
   await testRetryPanelSyncJobDoesNotUnlockRunningJob();
   await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
+  await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
   await testXuiPanelLocationStripsApiPathSuffix();
