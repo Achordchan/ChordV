@@ -1,3 +1,4 @@
+import "reflect-metadata";
 import assert from "node:assert/strict";
 import { plainToInstance } from "class-transformer";
 import { validateSync } from "class-validator";
@@ -11,10 +12,13 @@ import {
   BadGatewayException,
   BadRequestException,
   ConflictException,
+  Module,
   NotFoundException,
   ServiceUnavailableException,
+  ValidationPipe,
   type ExecutionContext
 } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
@@ -38,6 +42,7 @@ import {
 import { fetchPublicHttpUrl } from "../src/modules/common/remote-url.utils";
 import { XuiService } from "../src/modules/xui/xui.service";
 import { AuthSessionService } from "../src/modules/common/auth-session.service";
+import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
 import { ClientRuntimeEventsService } from "../src/modules/common/client-runtime-events.service";
 import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
@@ -45,6 +50,7 @@ import { ClientTicketService } from "../src/modules/common/client-ticket.service
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
 import { LoggingExceptionFilter } from "../src/logging-exception.filter";
+import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-events.service";
 import {
   ImportNodeDto,
   UpdateCurrentAdminSecurityDto,
@@ -10161,6 +10167,154 @@ async function testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalize
   assert.deepEqual(result.nodeIds, ["node_keep"]);
   assert.equal(result.panelSyncStatus, "pending");
   assert.doesNotMatch(result.panelSyncMessage ?? "", /finalize publish failed after local save/);
+}
+
+async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave() {
+  const oldNode = {
+    id: "node_old",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows = [{ id: "access_old", nodeId: "node_old", node: oldNode }];
+  let localDeleteCommitted = false;
+
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        },
+        deleteMany: async () => {
+          accessRows = [];
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        const before = [...accessRows];
+        const result = await task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = [];
+            }
+          }
+        });
+        if (!localDeleteCommitted) {
+          localDeleteCommitted = true;
+          return result;
+        }
+        accessRows = before;
+        throw new Error("offline panel queue write failed");
+      }
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("offline panel queue write failed");
+      },
+      queueLeaseRevocationJobsForSubscription: async () => {
+        throw new Error("offline lease queue write failed");
+      },
+      revokeSubscriptionLeases: async () => {
+        throw new Error("offline lease revoke failed");
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("node access removal must not call direct panel sync");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: [] })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      200,
+      `local node access removal must not surface queued offline panel failures as HTTP 500: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.deepEqual(accessRows, [], "local node access must stay cleared even when panel queue follow-up fails");
+    assert.equal(body.subscriptionId, "sub_1");
+    assert.deepEqual(body.nodeIds, []);
+    assert.equal(body.panelSyncStatus, "pending");
+    assert.match(body.panelSyncMessage ?? "", /offline panel queue write failed/);
+  } finally {
+    await app.close();
+  }
 }
 
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
@@ -23392,6 +23546,7 @@ async function main() {
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishStalls();
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishThrowsSynchronously();
   await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
+  await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
