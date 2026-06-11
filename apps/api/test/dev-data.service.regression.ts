@@ -6202,6 +6202,118 @@ async function testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAft
   assert.match(result.panelSyncMessage ?? "", /still running in background/);
 }
 
+async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall() {
+  const panelJobUpserts: Array<Record<string, any>> = [];
+  const subscriptionUpdates: Array<Record<string, any>> = [];
+  const lockedSubscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 8,
+    remainingTrafficGb: 2,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Plan" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => lockedSubscription,
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    xuiService: {
+      resetClientTraffic: async () => {
+        throw new Error("resetSubscriptionTraffic must queue panel reset instead of calling xui inline");
+      }
+    },
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }),
+    prisma: {
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelJobUpserts.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (callback: (tx: any) => Promise<any>) =>
+        callback({
+          subscription: {
+            findUnique: async () => lockedSubscription,
+            update: async (payload: Record<string, any>) => {
+              subscriptionUpdates.push(payload);
+              return {
+                ...lockedSubscription,
+                ...payload.data
+              };
+            }
+          },
+          trafficSnapshot: {
+            upsert: async () => ({})
+          },
+          panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "client_1",
+                panelInboundId: 7,
+                lastUplinkBytes: 8n,
+                lastDownlinkBytes: 0n,
+                lastSyncedAt: new Date(),
+                node: {
+                  id: "node_1",
+                  panelBaseUrl: "https://offline-panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ],
+            update: async () => ({})
+          },
+          trafficLedger: {
+            deleteMany: async () => ({}),
+            aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelJobUpserts.push(payload);
+              return {};
+            }
+          }
+        })
+    }
+  });
+
+  const result = await service.resetSubscriptionTraffic("sub_1");
+
+  assert.equal(subscriptionUpdates.length, 1, "traffic reset must save local counters before remote panel reset");
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0);
+  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
+  assert.equal(panelJobUpserts.length, 1, "traffic reset must create a reset_client_traffic retry job");
+  assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /queued/);
+}
+
 async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
   const subscriptionUpdates: Array<Record<string, any>> = [];
   const ledgerDeletes: Array<Record<string, any>> = [];
@@ -19964,6 +20076,137 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
   assert.match(result.panelSyncMessage ?? "", /queued/);
 }
 
+async function testDisableUserReturnsBeforeStalledBackgroundPanelQueue() {
+  const updates: Array<Record<string, any>> = [];
+  let backgroundPanelQueueStarted = false;
+  const currentSubscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 0,
+    remainingTrafficGb: 100,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    createdAt: new Date(),
+    plan: { name: "Plan" },
+    user: null,
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active"
+    }),
+    findCurrentPersonalSubscription: async () => ({
+      id: "sub_1"
+    }),
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "disabled",
+      lastSeenAt: new Date().toISOString(),
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 1,
+      activeSubscriptionCount: 0,
+      currentSubscription: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    findCurrentSubscriptionIdsForUser: async () => ["sub_1"],
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: payload.data.status,
+            lastSeenAt: new Date(),
+            maxConcurrentSessionsOverride: null
+          };
+        }
+      },
+      teamMember: {
+        findMany: async () => []
+      },
+      subscription: {
+        findMany: async () => [currentSubscription]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          user: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                id: "user_1",
+                email: "user@example.com",
+                displayName: "User",
+                role: "user",
+                status: payload.data.status,
+                lastSeenAt: new Date(),
+                maxConcurrentSessionsOverride: null
+              };
+            }
+          },
+          subscription: {
+            findMany: async () => [currentSubscription]
+          },
+          teamMember: {
+            findMany: async () => []
+          }
+        })
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 1,
+      markPanelBindingsDisabledForSubscription: async () => {
+        backgroundPanelQueueStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      queueLeaseRevocationJobsForSubscription: async () => 1
+    },
+    authSessionService: {
+      revokeAllUserSessions: async () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    }
+  });
+
+  const result = await Promise.race([
+    service.updateUser("user_1", { status: "disabled" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("disable user waited for stalled background panel queue")), 750);
+    })
+  ]);
+
+  assert.equal(updates.length, 1, "user disable must save locally before background panel queueing runs");
+  assert.equal(updates[0].data.status, "disabled");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /queued/);
+  assert.equal(backgroundPanelQueueStarted, false, "background panel queue must not start before the local response returns");
+  await waitUntil(() => backgroundPanelQueueStarted);
+  assert.equal(backgroundPanelQueueStarted, true, "background panel queue should still retry after the response");
+}
+
 async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
   const updates: Array<Record<string, any>> = [];
   let panelSyncStarted = false;
@@ -23479,6 +23722,7 @@ async function main() {
   await testResetSubscriptionTrafficRejectsNonStringUserId();
   await testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAfterLocalReset();
+  await testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall();
   await testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
@@ -23723,6 +23967,7 @@ async function main() {
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls();
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();
+  await testDisableUserReturnsBeforeStalledBackgroundPanelQueue();
   await testEnableUserReturnsPendingWhenPanelSyncStalls();
   await testEnableUserReturnsPendingWhenSubscriptionLookupStalls();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
