@@ -377,6 +377,8 @@ export function App() {
   const [leaseRevocationRetryBusyKey, setLeaseRevocationRetryBusyKey] = useState<string | null>(null);
   const leaseRevocationRetryBusyRef = useRef(false);
   const dashboardRefreshSeqRef = useRef(0);
+  const sectionRequestSeqRef = useRef(0);
+  const sectionMutationSeqRef = useRef(0);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -825,12 +827,18 @@ export function App() {
     if (!options?.force && loadedSections.has(targetSection)) {
       return;
     }
+    const requestSeq = sectionRequestSeqRef.current + 1;
+    sectionRequestSeqRef.current = requestSeq;
+    const mutationSeqAtStart = sectionMutationSeqRef.current;
+    const canApplySectionResult = () =>
+      sectionRequestSeqRef.current === requestSeq && sectionMutationSeqRef.current === mutationSeqAtStart;
     try {
       if (!options?.silent) {
         setSectionLoading(true);
       }
       if (targetSection === "overview") {
         const [subscriptions, nodes] = await Promise.all([fetchAdminSubscriptions(), fetchAdminNodes()]);
+        if (!canApplySectionResult()) return;
         mergeSnapshot({ subscriptions, nodes });
       } else if (targetSection === "users") {
         const [users, teams, leaseRevocationJobs] = await Promise.all([
@@ -838,9 +846,12 @@ export function App() {
           fetchAdminTeams(),
           fetchAdminLeaseRevocationJobs()
         ]);
+        if (!canApplySectionResult()) return;
         mergeSnapshot({ users, teams, leaseRevocationJobs });
       } else if (targetSection === "plans") {
-        applyListPatch("plans", await fetchAdminPlans());
+        const plans = await fetchAdminPlans();
+        if (!canApplySectionResult()) return;
+        applyListPatch("plans", plans);
       } else if (targetSection === "subscriptions") {
         const [users, plans, subscriptions, teams, leaseRevocationJobs] = await Promise.all([
           fetchAdminUsers(),
@@ -849,6 +860,7 @@ export function App() {
           fetchAdminTeams(),
           fetchAdminLeaseRevocationJobs()
         ]);
+        if (!canApplySectionResult()) return;
         mergeSnapshot({ users, plans, subscriptions, teams, leaseRevocationJobs });
       } else if (targetSection === "nodes") {
         const [nodes, panelSyncJobs, leaseRevocationJobs] = await Promise.all([
@@ -856,11 +868,16 @@ export function App() {
           fetchAdminPanelSyncJobs(),
           fetchAdminLeaseRevocationJobs()
         ]);
+        if (!canApplySectionResult()) return;
         mergeSnapshot({ nodes, panelSyncJobs, leaseRevocationJobs });
       } else if (targetSection === "announcements") {
-        applyListPatch("announcements", await fetchAdminAnnouncements());
+        const announcements = await fetchAdminAnnouncements();
+        if (!canApplySectionResult()) return;
+        applyListPatch("announcements", announcements);
       } else if (targetSection === "policies") {
-        mergeSnapshot({ policy: await fetchAdminPolicy() });
+        const policy = await fetchAdminPolicy();
+        if (!canApplySectionResult()) return;
+        mergeSnapshot({ policy });
       }
       setLoadedSections((current) => new Set(current).add(targetSection));
     } catch (reason) {
@@ -879,7 +896,7 @@ export function App() {
         throw reason;
       }
     } finally {
-      if (!options?.silent) {
+      if (!options?.silent && sectionRequestSeqRef.current === requestSeq) {
         setSectionLoading(false);
       }
     }
@@ -1265,6 +1282,7 @@ export function App() {
       resolveSuccess?: (result: unknown) => { color?: "green" | "yellow"; title?: string; message?: string } | null;
     } = {}
   ) {
+    sectionMutationSeqRef.current += 1;
     try {
       setError(null);
       const result = await action();

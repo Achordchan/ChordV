@@ -2579,17 +2579,21 @@ export class RuntimeSessionService {
       return;
     }
 
-    await this.prisma.securityEvent.create({
-      data: {
-        id: createId("security"),
-        type: reason === SECURITY_REASON_CONCURRENCY ? "session_evicted" : "session_revoked",
-        userId: lease.userId,
-        subscriptionId: lease.subscriptionId,
-        nodeId: lease.nodeId,
-        leaseId: lease.id,
-        detail: reason
-      }
-    });
+    try {
+      await this.prisma.securityEvent.create({
+        data: {
+          id: createId("security"),
+          type: reason === SECURITY_REASON_CONCURRENCY ? "session_evicted" : "session_revoked",
+          userId: lease.userId,
+          subscriptionId: lease.subscriptionId,
+          nodeId: lease.nodeId,
+          leaseId: lease.id,
+          detail: reason
+        }
+      });
+    } catch (error) {
+      this.logger.warn(`Lease ${lease.id} was revoked, but security event write failed: ${readRuntimeErrorMessage(error)}`);
+    }
 
     const details = getLeaseFailureDetails(nextStatus, reason);
     try {

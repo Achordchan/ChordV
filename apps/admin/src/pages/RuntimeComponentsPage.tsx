@@ -29,6 +29,7 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
   const [saving, setSaving] = useState(false);
   const [uploadMaxBytes, setUploadMaxBytes] = useState(DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES);
   const runtimeRequestSeqRef = useRef(0);
+  const runtimeMutationSeqRef = useRef(0);
 
   useEffect(() => {
     void loadRuntimeComponents();
@@ -54,17 +55,18 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
   async function loadRuntimeComponents() {
     const requestSeq = runtimeRequestSeqRef.current + 1;
     runtimeRequestSeqRef.current = requestSeq;
+    const mutationSeqAtStart = runtimeMutationSeqRef.current;
     try {
       setRuntimeLoading(true);
       setRuntimeError(null);
       const [components, failures] = await Promise.all([fetchAdminRuntimeComponents(), fetchAdminRuntimeComponentFailures()]);
-      if (runtimeRequestSeqRef.current !== requestSeq) {
+      if (runtimeRequestSeqRef.current !== requestSeq || runtimeMutationSeqRef.current !== mutationSeqAtStart) {
         return;
       }
       setRuntimeComponents(components);
       setRuntimeFailures(failures);
     } catch (reason) {
-      if (runtimeRequestSeqRef.current !== requestSeq) {
+      if (runtimeRequestSeqRef.current !== requestSeq || runtimeMutationSeqRef.current !== mutationSeqAtStart) {
         return;
       }
       const message = readError(reason, "加载内核组件失败");
@@ -105,6 +107,9 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
         })
       }
       onSavingChange={setSaving}
+      onMutationStart={() => {
+        runtimeMutationSeqRef.current += 1;
+      }}
     />
   );
 }

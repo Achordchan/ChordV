@@ -3549,6 +3549,56 @@ async function testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails() 
   assert.equal(securityEvents.length, 1, "security event must be recorded even when runtime event publish fails");
 }
 
+async function testLeaseRevocationKeepsLocalStateWhenSecurityEventWriteFails() {
+  const updates: Array<Record<string, unknown>> = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    prisma: {
+      nodeSessionLease: {
+        findMany: async () => [
+          {
+            id: "lease_1",
+            userId: "user_1",
+            subscriptionId: "sub_1",
+            nodeId: "node_1",
+            sessionId: "session_1",
+            status: "active",
+            expiresAt: new Date(Date.now() + 60_000),
+            node: { id: "node_1", flow: "" }
+          }
+        ],
+        findUnique: async () => ({
+          id: "lease_1",
+          userId: "user_1",
+          subscriptionId: "sub_1",
+          nodeId: "node_1",
+          sessionId: "session_1",
+          status: "active"
+        }),
+        updateMany: async (payload: Record<string, unknown>) => {
+          updates.push(payload);
+          return { count: 1 };
+        }
+      },
+      securityEvent: {
+        create: async () => {
+          throw new Error("security event database unavailable");
+        }
+      }
+    }
+  });
+
+  const count = await service.revokeSubscriptionLeases("sub_1", "node_access_revoked", { nodeIds: ["node_1"] });
+
+  assert.equal(count, 1);
+  assert.equal(updates.length, 1, "lease must remain locally revoked when security event write fails");
+}
+
 async function testPanelDisableJobCallsXuiEvenWhenNodeInactive() {
   const xuiCalls: Array<{ panelClientId: string; enabled: boolean }> = [];
   const bindingUpdates: Array<Record<string, unknown>> = [];
@@ -21438,6 +21488,7 @@ async function main() {
   await testSweepExpiredLeasesDoesNotRevokeTooEarly();
   await testPanelDisableJobPreDisablesBindingLocally();
   await testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails();
+  await testLeaseRevocationKeepsLocalStateWhenSecurityEventWriteFails();
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();

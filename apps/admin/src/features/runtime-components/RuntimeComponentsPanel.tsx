@@ -76,6 +76,7 @@ type RuntimeComponentsPanelProps = {
   onFailuresChange: (next: AdminRuntimeComponentFailureReportDto[]) => void;
   onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto | null) => void;
   onSavingChange: (next: boolean) => void;
+  onMutationStart?: () => void;
   uploadMaxBytes?: number;
 };
 
@@ -92,6 +93,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     onFailuresChange,
     onValidationChange,
     onSavingChange,
+    onMutationStart,
     uploadMaxBytes = DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES
   } = props;
 
@@ -168,9 +170,25 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         showRuntimeComponentValidation("切换为“上传到服务器”时，请先选择要上传的组件文件");
         return;
       }
+    } else {
+      const originUrl = form.originUrl.trim();
+      const expectedHash = form.expectedHash.trim();
+      if (!originUrl) {
+        showRuntimeComponentValidation("请填写远程直链下载地址");
+        return;
+      }
+      if (!/^https?:\/\//i.test(originUrl)) {
+        showRuntimeComponentValidation("远程直链下载地址必须是完整的 http/https 地址");
+        return;
+      }
+      if (!/^[a-f0-9]{64}$/i.test(expectedHash)) {
+        showRuntimeComponentValidation("远程直链必须填写 64 位 SHA-256 Hash，校验通过后才会下发给客户端");
+        return;
+      }
     }
 
     savingRef.current = true;
+    onMutationStart?.();
     try {
       onSavingChange(true);
       let record: AdminRuntimeComponentRecordDto;
@@ -279,6 +297,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
     deletingRef.current.add(record.id);
     savingRef.current = true;
+    onMutationStart?.();
     try {
       onSavingChange(true);
       await deleteAdminRuntimeComponent(record.id);
@@ -584,9 +603,14 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         variant="light"
                         color="gray"
                         onClick={() =>
-                          void navigator.clipboard.writeText(record.finalUrlPreview).then(() => {
-                            notifications.show({ color: "green", title: "内核组件", message: "最终下载地址已复制" });
-                          })
+                          void navigator.clipboard
+                            .writeText(record.finalUrlPreview)
+                            .then(() => {
+                              notifications.show({ color: "green", title: "内核组件", message: "最终下载地址已复制" });
+                            })
+                            .catch(() => {
+                              notifications.show({ color: "yellow", title: "内核组件", message: "复制失败，请手动复制下载地址" });
+                            })
                         }
                         aria-label="复制"
                       >
