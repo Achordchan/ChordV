@@ -37,7 +37,7 @@ import {
   type ReleaseEditorFormState
 } from "../features/releases/types";
 import { SectionCard } from "../features/shared/SectionCard";
-import { isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
+import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
 
 type PlatformFilter = AdminReleasePlatform | "all";
 
@@ -63,7 +63,7 @@ function showReleaseRequestFailure(reason: unknown, fallback: string) {
   notifications.show({
     color: uncertain ? "yellow" : "red",
     title: uncertain ? "发布中心请求状态不确定" : "发布中心",
-    message: uncertain ? `${message} 请求可能已被后台保存，正在刷新发布列表确认最新状态。` : message
+    message: uncertain ? buildUncertainMutationMessage("发布中心操作") : message
   });
   return { message, uncertain };
 }
@@ -155,7 +155,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         return;
       }
       if (!silent) {
-        setError(readError(reason, "发布中心接口暂不可用，请先确认后端发布中心接口是否已合并。"));
+        setError(readError(reason, "发布中心加载失败，请检查后台服务或稍后重试。"));
       }
     } finally {
       if (!silent && releaseListLoadingSeqRef.current === requestSeq) {

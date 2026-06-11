@@ -37,6 +37,7 @@ import {
   filterByKeyword,
   isPotentiallyCompletedMutationFailure,
   isSupportTicketAttachmentUploadFailure,
+  buildUncertainMutationMessage,
   isUncertainRequestFailure,
   readError
 } from "../utils/admin-filters";
@@ -220,7 +221,7 @@ export function TicketsPage(props: TicketsPageProps) {
         return;
       }
       if (!options?.silent) {
-        setError(readError(reason, "工单接口暂不可用，请先确认后端工单接口是否已合并。"));
+        setError(readError(reason, "工单加载失败，请检查后台服务或稍后重试。"));
       }
     } finally {
       if (ticketListLoadingSeqRef.current === requestSeq) {
@@ -391,7 +392,7 @@ export function TicketsPage(props: TicketsPageProps) {
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "工单状态不确定" : "工单",
-        message: uncertain ? `${message} 操作可能已完成，请刷新工单确认。` : message
+        message: uncertain ? buildUncertainMutationMessage("工单操作") : message
       });
       if (uncertain) {
         void loadTickets({ silent: true });

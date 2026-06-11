@@ -1116,7 +1116,7 @@ export function App() {
         return;
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      const uncertain = !definiteLocalSaveFailure && isUncertainRequestFailure(message);
       notifications.show({
         title: options.automatic || uncertain ? "面板入站暂不可用" : "读取失败",
         message:
@@ -1256,14 +1256,19 @@ export function App() {
     } catch (reason) {
       const message = readError(reason, "更新管理员账号失败");
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      const completedAfterFailure = isLikelySavedAfterFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
       if (uncertain) {
         void loadFullSnapshot().catch(() => undefined);
       }
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "账号安全状态不确定" : "账号安全",
-        message: uncertain ? `${message} 管理员账号安全信息可能已保存，请刷新后台确认。` : message
+        message: uncertain
+          ? completedAfterFailure
+            ? `${message} 管理员账号安全信息可能已保存，请刷新后台确认。`
+            : buildUncertainMutationMessage("账号安全")
+          : message
       });
     } finally {
       adminSecuritySavingRef.current = false;
@@ -1433,9 +1438,12 @@ export function App() {
         return;
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      const completedAfterFailure = isLikelySavedAfterFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
       if (uncertain) {
-        closeNodeAccessEditor();
+        if (completedAfterFailure) {
+          closeNodeAccessEditor();
+        }
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
@@ -1454,7 +1462,7 @@ export function App() {
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "节点授权状态不确定" : "操作失败",
-        message: uncertain ? "节点授权请求状态不确定，请刷新订阅列表和同步队列确认；不要重复提交同一操作。" : message
+        message: uncertain ? buildUncertainMutationMessage("节点授权") : message
       });
     } finally {
       nodeAccessSavingRef.current = false;
@@ -2560,7 +2568,8 @@ export function App() {
         return;
       }
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
-      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
+      const completedAfterFailure = isLikelySavedAfterFailure(message);
+      const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
       if (uncertain) {
         void fetchAdminPolicy()
           .then((policy) => {
@@ -2573,7 +2582,11 @@ export function App() {
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "请求状态不确定" : "操作失败",
-        message: uncertain ? `${message} 策略可能已保存，请刷新页面确认。` : message
+        message: uncertain
+          ? completedAfterFailure
+            ? `${message} 策略可能已保存，请刷新页面确认。`
+            : buildUncertainMutationMessage("策略")
+          : message
       });
     } finally {
       policySavingRef.current = false;

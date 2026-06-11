@@ -9,7 +9,7 @@ import {
   updateAdminImageBedConfig
 } from "../api/client";
 import { SectionCard } from "../features/shared/SectionCard";
-import { isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
+import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../utils/admin-filters";
 
 type ImageBedConfigForm = {
   baseUrl: string;
@@ -191,7 +191,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: "图床",
-        message: uncertain ? `${message}。请求状态不确定，配置可能已保存，请刷新页面确认。` : message
+        message: uncertain ? buildUncertainMutationMessage("图床配置") : message
       });
       if (uncertain) {
         void loadConfig({ silent: true, preserveForm: false }).then(() => loadFiles({ silent: true }));

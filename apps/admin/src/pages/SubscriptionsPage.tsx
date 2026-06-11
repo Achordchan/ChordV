@@ -186,6 +186,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                       <ActionIcon
                         variant="subtle"
                         onClick={() => props.onOpenNodeAccessEditor(item.id, `${item.userDisplayName ?? item.userEmail ?? "个人用户"} · ${item.planName}`)}
+                        title="节点授权"
+                        aria-label="节点授权"
                       >
                         <IconMapPin size={16} />
                       </ActionIcon>
@@ -283,7 +285,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                   变更套餐
                                 </Button>
                                 <Button size="xs" variant="default" leftSection={<IconPencil size={14} />} onClick={() => props.onOpenAdjustDrawer(currentSubscription.id)}>
-                                  校正订阅
+                                  调整订阅
                                 </Button>
                                 <Button
                                   size="xs"

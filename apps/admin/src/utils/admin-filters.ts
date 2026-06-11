@@ -14,12 +14,34 @@ export function readError(reason: unknown, fallback: string) {
     const parsed = JSON.parse(reason.message) as { message?: string[] | string; statusCode?: number; status?: number };
     const status = typeof parsed.statusCode === "number" ? parsed.statusCode : parsed.status;
     const prefix = typeof status === "number" ? `HTTP ${status}: ` : "";
-    if (Array.isArray(parsed.message)) return `${prefix}${parsed.message.join("，")}`;
-    if (typeof parsed.message === "string") return `${prefix}${parsed.message}`;
+    if (Array.isArray(parsed.message)) return normalizeAdminErrorMessage(`${prefix}${parsed.message.join("；")}`, fallback);
+    if (typeof parsed.message === "string") return normalizeAdminErrorMessage(`${prefix}${parsed.message}`, fallback);
   } catch {
-    return reason.message || fallback;
+    return normalizeAdminErrorMessage(reason.message || fallback, fallback);
   }
-  return reason.message || fallback;
+  return normalizeAdminErrorMessage(reason.message || fallback, fallback);
+}
+
+function normalizeAdminErrorMessage(message: string, fallback: string) {
+  if (!message.trim()) {
+    return fallback;
+  }
+  if (/HTTP\s*5\d\d|Internal server error/i.test(message)) {
+    return "后台服务异常，请稍后重试；如果连续出现，请查看服务器日志。";
+  }
+  if (/MulterError|payload too large|file too large|file exceeds|too large/i.test(message)) {
+    return "文件过大，已超过后台允许的上传限制。";
+  }
+  if (/Only image attachments are supported|Only image attachments/i.test(message)) {
+    return "仅支持上传图片附件。";
+  }
+  if (/Attachment file is required|Select an installer package file first/i.test(message)) {
+    return "请先选择要上传的文件。";
+  }
+  if (/Image bed API token is not configured/i.test(message)) {
+    return "图床 API Token 未配置，请先在后台图床配置中填写。";
+  }
+  return message;
 }
 
 const UNCERTAIN_REQUEST_PATTERN =

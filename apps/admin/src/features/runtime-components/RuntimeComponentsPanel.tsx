@@ -31,7 +31,7 @@ import {
   updateAdminRuntimeComponent,
   verifyAdminRuntimeComponent
 } from "../../api/client";
-import { isPotentiallyCompletedMutationFailure, readError } from "../../utils/admin-filters";
+import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../../utils/admin-filters";
 import { formatDateTime } from "../../utils/admin-format";
 import { RuntimeComponentEditorModal } from "./RuntimeComponentEditorModal";
 import {
@@ -49,9 +49,7 @@ function showRuntimeComponentFailure(reason: unknown, fallback: string, options?
   notifications.show({
     color: uncertain ? "yellow" : "red",
     title: uncertain ? "内核组件请求状态不确定" : "内核组件",
-    message: uncertain
-      ? options?.uncertainMessage?.(message) ?? `${message} 请求可能已被后台保存，请刷新组件列表确认最新状态。`
-      : message
+    message: uncertain ? options?.uncertainMessage?.(message) ?? buildUncertainMutationMessage("内核组件操作") : message
   });
   return { message, uncertain };
 }
