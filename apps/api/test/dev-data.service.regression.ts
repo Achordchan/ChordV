@@ -475,6 +475,42 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 500) {
   }
 }
 
+function createPanelDisableQueueWriter(createdJobs: Array<Record<string, any>>, disabledBindingIds: string[] = []) {
+  return {
+    panelClientBinding: {
+      findMany: async () => [
+        {
+          id: "binding_1",
+          subscriptionId: "sub_team",
+          userId: "user_1",
+          teamId: "team_1",
+          nodeId: "node_1",
+          panelClientEmail: "user@example.com",
+          panelClientId: "panel_client_1",
+          panelInboundId: 100,
+          status: "active",
+          node: {
+            panelBaseUrl: "https://panel.example.com",
+            panelApiBasePath: "/panel",
+            panelUsername: "admin",
+            panelPassword: "secret"
+          }
+        }
+      ],
+      updateMany: async (payload: Record<string, any>) => {
+        disabledBindingIds.push(...(payload.where?.id?.in ?? []));
+        return { count: payload.where?.id?.in?.length ?? 0 };
+      }
+    },
+    panelSyncJob: {
+      upsert: async (payload: Record<string, any>) => {
+        createdJobs.push(payload.create);
+        return payload.create;
+      }
+    }
+  };
+}
+
 function createUsageSyncService(overrides: Record<string, unknown> = {}) {
   return createInstance<UsageSyncService>(UsageSyncService.prototype, overrides);
 }
@@ -11104,6 +11140,76 @@ async function testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls() {
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
+async function testKickTeamMemberQueuesDisableClientWithoutDirectXuiCall() {
+  const createdJobs: Array<Record<string, any>> = [];
+  const disabledBindingIds: string[] = [];
+  let directXuiDisableCalls = 0;
+  const writer = createPanelDisableQueueWriter(createdJobs, disabledBindingIds);
+  const runtime = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => task(writer)
+    },
+    xuiService: {
+      setClientEnabled: async () => {
+        directXuiDisableCalls += 1;
+        throw new Error("team member kick must queue disable_client instead of calling x-ui inline");
+      }
+    }
+  });
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: runtime.markPanelBindingsDisabledForSubscription.bind(runtime),
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 0
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => task({})
+    },
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active",
+      ownerUserId: "owner_1",
+      ownerName: "Owner",
+      ownerEmail: "owner@example.com",
+      memberCount: 1,
+      subscription: null,
+      members: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    })
+  });
+
+  const result = await service.kickTeamMember("team_1", "member_1", { disableAccount: false });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.equal(createdJobs.length, 0, "kick member must not create panel jobs before the local response");
+  await waitUntil(() => createdJobs.length > 0);
+  assert.equal(createdJobs[0]?.action, "disable_client");
+  assert.equal(createdJobs[0]?.userId, "user_1");
+  assert.deepEqual(disabledBindingIds, ["binding_1"]);
+  assert.equal(directXuiDisableCalls, 0, "kick member must not call x-ui directly");
+}
+
 async function testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls() {
   let panelDisableCalled = false;
   let leaseRevoked = false;
@@ -19543,6 +19649,104 @@ async function testChangeSubscriptionPlanReturnsPendingWhenPanelSyncStalls() {
   assert.equal(panelSyncStarted, true);
 }
 
+async function testChangeSubscriptionPlanDisconnectReturnsPendingWhenPanelAndLeaseQueuesStall() {
+  const updates: Array<Record<string, any>> = [];
+  let panelDisableStarted = false;
+  let leaseQueueStarted = false;
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const current = {
+    id: "subscription_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_old",
+    totalTrafficGb: 100,
+    usedTrafficGb: 10,
+    remainingTrafficGb: 90,
+    expireAt: new Date(Date.now() + 60_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Old", maxConcurrentSessions: 3 },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const nextPlan = {
+    id: "plan_low",
+    name: "Low",
+    scope: "personal",
+    totalTrafficGb: 5,
+    renewable: true,
+    maxConcurrentSessions: 1,
+    isActive: true
+  };
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => current,
+    ensurePlanExists: async () => nextPlan,
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => undefined,
+      markPanelBindingsDisabledForSubscription: async () => {
+        panelDisableStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        leaseQueueStarted = true;
+        return new Promise<number>(() => undefined);
+      },
+      queueActiveLeaseSyncForSubscription: async () => 0,
+      queueSubscriptionPanelAccessSync: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("plan change disconnect must queue panel jobs instead of direct sync");
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscription: {
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...current,
+                ...payload.data,
+                planId: nextPlan.id,
+                plan: nextPlan,
+                updatedAt: new Date("2026-01-01T00:01:00.000Z")
+              };
+            }
+          }
+        }),
+      user: {
+        findMany: async () => [{ id: "user_1", maxConcurrentSessionsOverride: null }]
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.changeSubscriptionPlan("subscription_1", { planId: "plan_low" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("change plan waited for stalled disconnect queues")), 750);
+    })
+  ]);
+
+  assert.equal(updates.length, 1, "local plan change must save before disconnect queues finish");
+  assert.equal(updates[0]?.data.remainingTrafficGb, 0, "lower plan should exhaust local subscription traffic");
+  assert.equal(result.planId, "plan_low");
+  assert.equal(result.remainingTrafficGb, 0);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /subscription disconnect after plan change/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.equal(panelDisableStarted, false, "panel disable queueing must not start before local response returns");
+  assert.equal(leaseQueueStarted, false, "lease revocation queueing must not start before local response returns");
+  await waitUntil(() => panelDisableStarted && leaseQueueStarted);
+  assert.equal(panelDisableStarted, true, "panel disable queueing should continue in background");
+  assert.equal(leaseQueueStarted, true, "lease revocation queueing should continue in background");
+}
+
 async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminSubscriptionService({
@@ -22250,6 +22454,85 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
+async function testDeleteTeamMemberQueuesDisableClientWithoutDirectXuiCall() {
+  const createdJobs: Array<Record<string, any>> = [];
+  const disabledBindingIds: string[] = [];
+  let directXuiDisableCalls = 0;
+  const runtime = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      setClientEnabled: async () => {
+        directXuiDisableCalls += 1;
+        throw new Error("team member delete must queue disable_client instead of calling x-ui inline");
+      }
+    }
+  });
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => null,
+    closeSupportTicketsForUserBestEffort: async () => undefined,
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: runtime.queuePanelDisableJobsForSubscriptionTx.bind(runtime),
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 0,
+      markPanelBindingsDisabledForSubscription: async () => 0
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          ...createPanelDisableQueueWriter(createdJobs, disabledBindingIds),
+          teamMember: {
+            delete: async () => undefined
+          },
+          subscription: {
+            findMany: async () => [
+              {
+                id: "sub_team",
+                userId: null,
+                teamId: "team_1",
+                planId: "plan_team",
+                totalTrafficGb: 100,
+                usedTrafficGb: 0,
+                remainingTrafficGb: 100,
+                expireAt: new Date(Date.now() + 60_000),
+                state: "active",
+                renewable: true,
+                sourceAction: "created",
+                lastSyncedAt: new Date(),
+                plan: { name: "Team Plan" },
+                user: null,
+                team: { name: "Team" },
+                nodeAccesses: []
+              }
+            ]
+          }
+        })
+    }
+  });
+
+  const result = await service.deleteTeamMember("team_1", "member_1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.equal(createdJobs.length, 1);
+  assert.equal(createdJobs[0]?.action, "disable_client");
+  assert.equal(createdJobs[0]?.userId, "user_1");
+  assert.deepEqual(disabledBindingIds, ["binding_1"]);
+  assert.equal(directXuiDisableCalls, 0, "delete member must not call x-ui directly");
+}
+
 async function testUploadedTempFileCleanupInterceptorDeletesTempFileOnError() {
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-upload-"));
   const filePath = path.join(tempDir, "artifact.zip");
@@ -23799,6 +24082,7 @@ async function main() {
   await testUpdateNodeAccessReturnsPendingWhenResponseRefreshStalls();
   await testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails();
   await testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls();
+  await testKickTeamMemberQueuesDisableClientWithoutDirectXuiCall();
   await testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
@@ -23961,6 +24245,7 @@ async function main() {
   await testChangeSubscriptionPlanReconcilesNewConcurrencyLimit();
   await testChangeSubscriptionPlanReturnsPendingWhenConcurrencyLookupFails();
   await testChangeSubscriptionPlanReturnsPendingWhenPanelSyncStalls();
+  await testChangeSubscriptionPlanDisconnectReturnsPendingWhenPanelAndLeaseQueuesStall();
   await testCreateSubscriptionReturnsPendingWhenPanelSyncFails();
   await testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
@@ -24007,6 +24292,7 @@ async function main() {
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
+  await testDeleteTeamMemberQueuesDisableClientWithoutDirectXuiCall();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure();
