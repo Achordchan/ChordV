@@ -65,6 +65,46 @@ const devDataServiceStub = {
   probeAllNodes: async () => {
     calls.push({ route: "node-probe-all", value: "all" });
     return [{ id: "node_1", panelStatus: "degraded" }];
+  },
+  createAnnouncement: async (body: unknown) => {
+    calls.push({ route: "announcement-create", value: "new", body });
+    return { id: "announcement_1", body };
+  },
+  updateAnnouncement: async (announcementId: string, body: unknown) => {
+    calls.push({ route: "announcement-update", value: announcementId, body });
+    return { id: announcementId, body };
+  },
+  deleteAnnouncement: async (announcementId: string) => {
+    calls.push({ route: "announcement-delete", value: announcementId });
+    return { ok: true, announcementId };
+  },
+  createRelease: async (body: unknown) => {
+    calls.push({ route: "release-create", value: "new", body });
+    return { id: "release_1", body };
+  },
+  updateRelease: async (releaseId: string, body: unknown) => {
+    calls.push({ route: "release-update", value: releaseId, body });
+    return { id: releaseId, body };
+  },
+  publishRelease: async (releaseId: string) => {
+    calls.push({ route: "release-publish", value: releaseId });
+    return { id: releaseId, status: "published" };
+  },
+  unpublishRelease: async (releaseId: string) => {
+    calls.push({ route: "release-unpublish", value: releaseId });
+    return { id: releaseId, status: "draft" };
+  },
+  createReleaseArtifact: async (releaseId: string, body: unknown) => {
+    calls.push({ route: "release-artifact-create", value: releaseId, body });
+    return { id: releaseId, artifact: body };
+  },
+  updateReleaseArtifact: async (releaseId: string, artifactId: string, body: unknown) => {
+    calls.push({ route: "release-artifact-update", value: `${releaseId}:${artifactId}`, body });
+    return { id: releaseId, artifactId, artifact: body };
+  },
+  deleteReleaseArtifact: async (releaseId: string, artifactId: string) => {
+    calls.push({ route: "release-artifact-delete", value: `${releaseId}:${artifactId}` });
+    return { id: releaseId, deletedArtifactId: artifactId };
   }
 };
 
@@ -168,6 +208,104 @@ async function main() {
       status: 201,
       body: [{ id: "node_1", panelStatus: "degraded" }]
     });
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/announcements", {
+        body: { title: "公告", content: "内容", priority: "normal" }
+      }),
+      {
+        status: 201,
+        body: { id: "announcement_1", body: { title: "公告", content: "内容", priority: "normal" } }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/announcements/announcement_1", {
+        method: "PATCH",
+        body: { title: "公告更新" }
+      }),
+      {
+        status: 200,
+        body: { id: "announcement_1", body: { title: "公告更新" } }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/announcements/announcement_1", {
+        method: "DELETE"
+      }),
+      {
+        status: 200,
+        body: { ok: true, announcementId: "announcement_1" }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/releases", {
+        body: { version: "1.1.7", displayTitle: "", channel: "stable" }
+      }),
+      {
+        status: 201,
+        body: { id: "release_1", body: { version: "1.1.7", displayTitle: "", channel: "stable" } }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/releases/release_1", {
+        method: "PATCH",
+        body: { displayTitle: "" }
+      }),
+      {
+        status: 200,
+        body: { id: "release_1", body: { displayTitle: "" } }
+      }
+    );
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/releases/release_1/publish"), {
+      status: 201,
+      body: { id: "release_1", status: "published" }
+    });
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/releases/release_1/unpublish"), {
+      status: 201,
+      body: { id: "release_1", status: "draft" }
+    });
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts", {
+        body: {
+          platform: "windows",
+          architecture: "x64",
+          artifactType: "full_replace",
+          sourceType: "external",
+          downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+        }
+      }),
+      {
+        status: 201,
+        body: {
+          id: "release_1",
+          artifact: {
+            platform: "windows",
+            architecture: "x64",
+            artifactType: "full_replace",
+            sourceType: "external",
+            downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+          }
+        }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1", {
+        method: "PATCH",
+        body: { sha256: "" }
+      }),
+      {
+        status: 200,
+        body: { id: "release_1", artifactId: "artifact_1", artifact: { sha256: "" } }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1", {
+        method: "DELETE"
+      }),
+      {
+        status: 200,
+        body: { id: "release_1", deletedArtifactId: "artifact_1" }
+      }
+    );
 
     assert.deepEqual(calls, [
       { route: "panel-job", value: "job_1" },
@@ -179,7 +317,27 @@ async function main() {
       { route: "user-disconnect", value: "user_1" },
       { route: "node-update", value: "node_1", body: { isActive: false } },
       { route: "node-delete", value: "node_1" },
-      { route: "node-probe-all", value: "all" }
+      { route: "node-probe-all", value: "all" },
+      { route: "announcement-create", value: "new", body: { title: "公告", content: "内容", priority: "normal" } },
+      { route: "announcement-update", value: "announcement_1", body: { title: "公告更新" } },
+      { route: "announcement-delete", value: "announcement_1" },
+      { route: "release-create", value: "new", body: { version: "1.1.7", displayTitle: "", channel: "stable" } },
+      { route: "release-update", value: "release_1", body: { displayTitle: "" } },
+      { route: "release-publish", value: "release_1" },
+      { route: "release-unpublish", value: "release_1" },
+      {
+        route: "release-artifact-create",
+        value: "release_1",
+        body: {
+          platform: "windows",
+          architecture: "x64",
+          artifactType: "full_replace",
+          sourceType: "external",
+          downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+        }
+      },
+      { route: "release-artifact-update", value: "release_1:artifact_1", body: { sha256: "" } },
+      { route: "release-artifact-delete", value: "release_1:artifact_1" }
     ]);
   } finally {
     await app.close();

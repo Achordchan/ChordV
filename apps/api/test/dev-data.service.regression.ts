@@ -11876,6 +11876,66 @@ async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
   assert.equal(remoteDisableCalled, false, "node disable must queue panel sync instead of waiting for remote panel calls");
 }
 
+async function testReenableNodeClearsPendingDisableAndQueuesPanelEnsure() {
+  const currentNode = makeAdminNodeRow({
+    isActive: false,
+    panelEnabled: true,
+    panelStatus: "offline"
+  });
+  let updatedData: Record<string, any> | null = null;
+  let clearedNodeId: string | null = null;
+  let syncedNodeId: string | null = null;
+  let disableQueued = false;
+  let remoteEnsureCalled = false;
+  const service = createAdminNodeService({
+    runtimeSessionService: {
+      clearPendingPanelDisableJobsForNode: async (nodeId: string) => {
+        clearedNodeId = nodeId;
+        return 1;
+      },
+      syncPanelAccessForNode: async (nodeId: string) => {
+        syncedNodeId = nodeId;
+        return 1;
+      },
+      markPanelBindingsDisabledForNode: async () => {
+        disableQueued = true;
+        return 1;
+      },
+      queueLeaseRevocationJobForNode: async () => 0
+    },
+    xuiService: {
+      ensureClient: async () => {
+        remoteEnsureCalled = true;
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: Record<string, any>) => {
+          updatedData = payload.data;
+          return { ...currentNode, ...payload.data, updatedAt: new Date() };
+        }
+      }
+    }
+  });
+
+  const result = await service.updateNode("node_1", { isActive: true });
+
+  assert.equal(result.isActive, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.equal(updatedData?.isActive, true, "local node re-enable must save before panel follow-up");
+  assert.equal(clearedNodeId, null, "pending disable cleanup must not block the local node re-enable response");
+  assert.equal(syncedNodeId, null, "panel ensure queueing must not block the local node re-enable response");
+  await waitUntil(() => clearedNodeId === "node_1" && syncedNodeId === "node_1");
+  assert.equal(clearedNodeId, "node_1");
+  assert.equal(syncedNodeId, "node_1");
+  assert.equal(disableQueued, false, "re-enable must not queue panel disable work");
+  assert.equal(remoteEnsureCalled, false, "re-enable must queue panel ensure work instead of calling 3x-ui inline");
+}
+
 async function testImportNodeReturnsWhenInitialProbeStalls() {
   const upserts: Array<Record<string, any>> = [];
   let probeStarted = false;
@@ -21100,6 +21160,114 @@ async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
   assert.equal(publishLookupStarted, true, "announcement publish should still start in background");
 }
 
+async function testCreateAnnouncementPublishesUpdateEvent() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const published: Array<{ userIds: string[]; event: Record<string, any> }> = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: (userIds: string[], event: Record<string, any>) => {
+        published.push({ userIds, event });
+      }
+    },
+    prisma: {
+      announcement: {
+        create: async () => ({
+          id: "announcement_1",
+          title: "Title",
+          body: "Body",
+          level: "info",
+          publishedAt: now,
+          isActive: true,
+          displayMode: "passive",
+          countdownSeconds: 0,
+          createdAt: now,
+          updatedAt: now
+        })
+      },
+      user: {
+        findMany: async (payload: Record<string, any>) => {
+          assert.deepEqual(payload.where, { status: "active" });
+          return [{ id: "user_1" }, { id: "user_2" }, { id: "user_1" }];
+        }
+      }
+    }
+  });
+
+  const result = await service.createAnnouncement({
+    title: "Title",
+    body: "Body",
+    level: "info"
+  });
+
+  assert.equal(result.id, "announcement_1");
+  await waitUntil(() => published.length > 0);
+  assert.deepEqual(published[0].userIds.sort(), ["user_1", "user_2"]);
+  assert.equal(published[0].event.type, "announcement_updated");
+  assert.equal(published[0].event.announcementId, "announcement_1");
+}
+
+async function testUpdateAnnouncementPublishesUpdateEvent() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const published: Array<{ userIds: string[]; event: Record<string, any> }> = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: (userIds: string[], event: Record<string, any>) => {
+        published.push({ userIds, event });
+      }
+    },
+    prisma: {
+      announcement: {
+        findUnique: async () => ({
+          id: "announcement_1",
+          title: "Old",
+          body: "Body",
+          level: "info",
+          publishedAt: now,
+          isActive: true,
+          displayMode: "passive",
+          countdownSeconds: 0,
+          createdAt: now,
+          updatedAt: now
+        }),
+        update: async (payload: Record<string, any>) => ({
+          id: payload.where.id,
+          title: payload.data.title ?? "Old",
+          body: "Body",
+          level: "info",
+          publishedAt: now,
+          isActive: true,
+          displayMode: "passive",
+          countdownSeconds: 0,
+          createdAt: now,
+          updatedAt: now
+        })
+      },
+      user: {
+        findMany: async (payload: Record<string, any>) => {
+          assert.deepEqual(payload.where, { status: "active" });
+          return [{ id: "user_1" }, { id: "user_2" }];
+        }
+      }
+    }
+  });
+
+  const result = await service.updateAnnouncement("announcement_1", {
+    title: "New"
+  });
+
+  assert.equal(result.title, "New");
+  await waitUntil(() => published.length > 0);
+  assert.deepEqual(published[0].userIds.sort(), ["user_1", "user_2"]);
+  assert.equal(published[0].event.type, "announcement_updated");
+  assert.equal(published[0].event.announcementId, "announcement_1");
+}
+
 async function testDeleteAnnouncementRemovesRecordAndPublishesUpdate() {
   const calls: string[] = [];
   const publishedIds: string[] = [];
@@ -23238,6 +23406,7 @@ async function main() {
   await testListAdminTeamsDoesNotLoadTrafficLedgerUsage();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
+  await testReenableNodeClearsPendingDisableAndQueuesPanelEnsure();
   await testImportNodeReturnsWhenInitialProbeStalls();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testDisableNodeReturnsWhenAfterSaveFollowUpStalls();
@@ -23414,6 +23583,8 @@ async function main() {
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
+  await testCreateAnnouncementPublishesUpdateEvent();
+  await testUpdateAnnouncementPublishesUpdateEvent();
   await testDeleteAnnouncementRemovesRecordAndPublishesUpdate();
   await testDeleteAnnouncementRejectsMissingRecordBeforeDbDelete();
   await testDeleteAnnouncementKeepsLocalDeleteWhenPublishFails();
