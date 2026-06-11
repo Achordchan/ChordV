@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { Module } from "@nestjs/common";
+import { Module, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
@@ -9,20 +9,28 @@ import { AuthSessionService } from "../src/modules/common/auth-session.service";
 import { DevDataService } from "../src/modules/common/dev-data.service";
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
+import { DownloadsController } from "../src/modules/client/downloads.controller";
 
 type RouteCall = {
   route: string;
   value: string;
   body?: unknown;
+  file?: {
+    originalname?: string;
+    mimetype?: string;
+    size?: number;
+  } | null;
 };
 
 const calls: RouteCall[] = [];
+const releaseDownloadPath = "virtual-release.zip";
 
 Reflect.defineMetadata(
   "design:paramtypes",
   [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
   AdminController
 );
+Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsService], DownloadsController);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
 
 const devDataServiceStub = {
@@ -98,6 +106,10 @@ const devDataServiceStub = {
     calls.push({ route: "release-artifact-create", value: releaseId, body });
     return { id: releaseId, artifact: body };
   },
+  uploadReleaseArtifact: async (releaseId: string, body: unknown, file?: Express.Multer.File) => {
+    calls.push({ route: "release-artifact-upload", value: releaseId, body: toPlainJson(body), file: summarizeUploadedFile(file) });
+    return { id: releaseId, artifact: body, file: summarizeUploadedFile(file) };
+  },
   updateReleaseArtifact: async (releaseId: string, artifactId: string, body: unknown) => {
     calls.push({ route: "release-artifact-update", value: `${releaseId}:${artifactId}`, body });
     return { id: releaseId, artifactId, artifact: body };
@@ -105,11 +117,24 @@ const devDataServiceStub = {
   deleteReleaseArtifact: async (releaseId: string, artifactId: string) => {
     calls.push({ route: "release-artifact-delete", value: `${releaseId}:${artifactId}` });
     return { id: releaseId, deletedArtifactId: artifactId };
+  },
+  replaceReleaseArtifactUpload: async (releaseId: string, artifactId: string, body: unknown, file?: Express.Multer.File) => {
+    calls.push({
+      route: "release-artifact-replace-upload",
+      value: `${releaseId}:${artifactId}`,
+      body: toPlainJson(body),
+      file: summarizeUploadedFile(file)
+    });
+    return { id: releaseId, artifactId, artifact: body, file: summarizeUploadedFile(file) };
+  },
+  getReleaseArtifactDownloadDescriptor: async (artifactId: string) => {
+    calls.push({ route: "release-download", value: artifactId });
+    return { absolutePath: releaseDownloadPath, fileName: "ChordV_1.1.7_x64-full.zip" };
   }
 };
 
 @Module({
-  controllers: [AdminController],
+  controllers: [AdminController, DownloadsController],
   providers: [
     AdminAuthGuard,
     {
@@ -126,6 +151,21 @@ const devDataServiceStub = {
 })
 class TestAdminRoutesModule {}
 
+function summarizeUploadedFile(file?: Express.Multer.File) {
+  if (!file) {
+    return null;
+  }
+  return {
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: file.size
+  };
+}
+
+function toPlainJson(value: unknown) {
+  return JSON.parse(JSON.stringify(value)) as unknown;
+}
+
 async function requestJson(baseUrl: string, path: string, init?: { method?: string; body?: unknown }) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: init?.method ?? "POST",
@@ -139,10 +179,63 @@ async function requestJson(baseUrl: string, path: string, init?: { method?: stri
   return { status: response.status, body };
 }
 
+async function requestMultipartJson(
+  baseUrl: string,
+  path: string,
+  fields: Record<string, string>,
+  fileName = "ChordV_1.1.7_x64-full.zip"
+) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    form.set(key, value);
+  }
+  form.set("file", new Blob(["release artifact"], { type: "application/zip" }), fileName);
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer admin-test-token"
+    },
+    body: form
+  });
+  const body = await response.json();
+  return { status: response.status, body };
+}
+
+async function requestText(baseUrl: string, routePath: string) {
+  const response = await fetch(`${baseUrl}${routePath}`);
+  return {
+    status: response.status
+  };
+}
+
 async function main() {
   const app = await NestFactory.create(TestAdminRoutesModule, { logger: false });
   app.setGlobalPrefix("api");
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
   await app.listen(0, "127.0.0.1");
+  const expressApp = app.getHttpAdapter().getInstance() as {
+    response: {
+      download: (absolutePath: string, fileName: string, callback?: (error?: Error) => void) => unknown;
+    };
+  };
+  const originalDownload = expressApp.response.download;
+  const downloadCalls: Array<{ absolutePath: string; fileName: string }> = [];
+  expressApp.response.download = function (
+    this: { status: (code: number) => { end: () => void } },
+    absolutePath: string,
+    fileName: string,
+    callback?: (error?: Error) => void
+  ) {
+    downloadCalls.push({ absolutePath, fileName });
+    this.status(204).end();
+    callback?.();
+    return this;
+  };
 
   try {
     const baseUrl = await app.getUrl();
@@ -288,6 +381,33 @@ async function main() {
       }
     );
     assert.deepEqual(
+      await requestMultipartJson(baseUrl, "/api/admin/releases/release_1/artifacts/upload", {
+        source: "uploaded",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.7_x64-full.zip",
+        isPrimary: "true"
+      }),
+      {
+        status: 201,
+        body: {
+          id: "release_1",
+          artifact: {
+            source: "uploaded",
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            fileName: "ChordV_1.1.7_x64-full.zip",
+            isPrimary: "true"
+          },
+          file: {
+            originalname: "ChordV_1.1.7_x64-full.zip",
+            mimetype: "application/zip",
+            size: 16
+          }
+        }
+      }
+    );
+    assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1", {
         method: "PATCH",
         body: { sha256: "" }
@@ -306,6 +426,38 @@ async function main() {
         body: { id: "release_1", deletedArtifactId: "artifact_1" }
       }
     );
+    assert.deepEqual(
+      await requestMultipartJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1/upload", {
+        source: "uploaded",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.7_x64-full.zip",
+        isPrimary: "true"
+      }),
+      {
+        status: 201,
+        body: {
+          id: "release_1",
+          artifactId: "artifact_1",
+          artifact: {
+            source: "uploaded",
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            fileName: "ChordV_1.1.7_x64-full.zip",
+            isPrimary: "true"
+          },
+          file: {
+            originalname: "ChordV_1.1.7_x64-full.zip",
+            mimetype: "application/zip",
+            size: 16
+          }
+        }
+      }
+    );
+    assert.deepEqual(await requestText(baseUrl, "/api/downloads/releases/artifact_1"), {
+      status: 204
+    });
+    assert.deepEqual(downloadCalls, [{ absolutePath: releaseDownloadPath, fileName: "ChordV_1.1.7_x64-full.zip" }]);
 
     assert.deepEqual(calls, [
       { route: "panel-job", value: "job_1" },
@@ -336,10 +488,44 @@ async function main() {
           downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
         }
       },
+      {
+        route: "release-artifact-upload",
+        value: "release_1",
+        body: {
+          source: "uploaded",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          fileName: "ChordV_1.1.7_x64-full.zip",
+          isPrimary: "true"
+        },
+        file: {
+          originalname: "ChordV_1.1.7_x64-full.zip",
+          mimetype: "application/zip",
+          size: 16
+        }
+      },
       { route: "release-artifact-update", value: "release_1:artifact_1", body: { sha256: "" } },
-      { route: "release-artifact-delete", value: "release_1:artifact_1" }
+      { route: "release-artifact-delete", value: "release_1:artifact_1" },
+      {
+        route: "release-artifact-replace-upload",
+        value: "release_1:artifact_1",
+        body: {
+          source: "uploaded",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          fileName: "ChordV_1.1.7_x64-full.zip",
+          isPrimary: "true"
+        },
+        file: {
+          originalname: "ChordV_1.1.7_x64-full.zip",
+          mimetype: "application/zip",
+          size: 16
+        }
+      },
+      { route: "release-download", value: "artifact_1" }
     ]);
   } finally {
+    expressApp.response.download = originalDownload;
     await app.close();
   }
 
