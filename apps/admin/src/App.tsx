@@ -3,6 +3,7 @@ import {
   ActionIcon,
   Alert,
   AppShell,
+  Badge,
   Burger,
   Button,
   Card,
@@ -2616,6 +2617,7 @@ export function App() {
   }
 
   const backgroundSyncQueueCount = snapshot.panelSyncJobs.length + snapshot.leaseRevocationJobs.length;
+  const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
 
   return (
     <>
@@ -2641,6 +2643,13 @@ export function App() {
                   label={item.label}
                   description={item.description}
                   leftSection={item.icon}
+                  rightSection={
+                    key === "tickets" && waitingAdminTicketCount > 0 ? (
+                      <Badge size="sm" color="red" variant="filled" radius="xl">
+                        {waitingAdminTicketCount > 99 ? "99+" : waitingAdminTicketCount}
+                      </Badge>
+                    ) : undefined
+                  }
                   onClick={() => selectSection(key as SectionKey)}
                   variant="filled"
                 />

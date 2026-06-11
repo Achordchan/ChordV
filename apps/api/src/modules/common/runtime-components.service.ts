@@ -664,7 +664,9 @@ export class RuntimeComponentsService {
         status: "ready",
         message: "Remote runtime component is reachable and expectedHash matches.",
         finalUrlPreview: resolvedUrl,
-        httpStatus: response.status
+        httpStatus: response.status,
+        actualFileSizeBytes: metadata.fileSizeBytes.toString(),
+        actualFileHash
       };
     } catch (error) {
       if (error instanceof RemoteRuntimeHashSizeError) {

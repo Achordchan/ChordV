@@ -262,6 +262,16 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       setVerifyingId(record.id);
       const result = await verifyAdminRuntimeComponent(record.id);
       onValidationChange(record.id, result);
+      if (result.status === "ready" && (result.actualFileSizeBytes || result.actualFileHash)) {
+        onComponentsChange((current) =>
+          upsertRuntimeComponent(current, {
+            ...record,
+            fileSizeBytes: result.actualFileSizeBytes ?? record.fileSizeBytes,
+            fileHash: result.actualFileHash ?? record.fileHash,
+            expectedHash: result.actualFileHash ?? record.expectedHash
+          })
+        );
+      }
       notifications.show({
         color: result.status === "ready" ? "green" : result.status === "disabled" ? "yellow" : "red",
         title: "内核组件",

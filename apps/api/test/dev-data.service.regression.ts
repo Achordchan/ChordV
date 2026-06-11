@@ -16329,7 +16329,7 @@ async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   );
 }
 
-async function testPublishWindowsReleaseAllowsAnySavedArtifact() {
+async function testPublishWindowsReleaseRejectsClientUnusableArtifact() {
   const setupArtifact = makeReleaseCenterTestArtifact({
     source: "external",
     type: "setup.exe",
@@ -16346,6 +16346,34 @@ async function testPublishWindowsReleaseAllowsAnySavedArtifact() {
           makeReleaseCenterTestRelease({
             platform: "windows",
             artifacts: [setupArtifact]
+          })
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service["assertReleasePublishable"]("release_1"),
+    /client-usable artifact|Windows release artifacts/i
+  );
+}
+
+async function testPublishWindowsReleaseAllowsClientUsableArtifact() {
+  const fullZipArtifact = makeReleaseCenterTestArtifact({
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.zip",
+    fileName: "ChordV_1.1.6_x64-full.zip",
+    fileSizeBytes: 123n,
+    fileHash: "a".repeat(64)
+  });
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            platform: "windows",
+            artifacts: [fullZipArtifact]
           })
       }
     }
@@ -22191,7 +22219,8 @@ async function main() {
   await testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
-  await testPublishWindowsReleaseAllowsAnySavedArtifact();
+  await testPublishWindowsReleaseRejectsClientUnusableArtifact();
+  await testPublishWindowsReleaseAllowsClientUsableArtifact();
   await testUploadWindowsReleaseRejectsExeFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testDeleteReleaseStartsCleanupAfterLocalReturn();

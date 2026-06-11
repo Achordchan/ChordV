@@ -20,6 +20,7 @@ import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { PrismaService } from "./prisma.service";
 import { throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
 import {
+  assertReleaseArtifactClientUsable,
   assertReleaseArtifactTypeAllowed,
   buildReleaseArtifactDownloadUrl,
   compareSemver,
@@ -872,6 +873,7 @@ export class ReleaseCenterService {
     let lastArtifactError: unknown = null;
     for (const artifact of release.artifacts) {
       try {
+        assertReleaseArtifactClientUsable(artifact, release.platform as PlatformTarget);
         await this.assertStoredReleaseArtifactReadable(artifact);
         lastArtifactError = null;
         break;
@@ -880,7 +882,9 @@ export class ReleaseCenterService {
       }
     }
     if (lastArtifactError) {
-      throw lastArtifactError;
+      throw new BadRequestException(
+        `Release has no client-usable artifact for ${release.platform}: ${readReleaseErrorMessage(lastArtifactError)}`
+      );
     }
     assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
   }
@@ -1298,6 +1302,10 @@ function mapUploadedFilePreparationError(error: unknown, label: string) {
 
 function readErrorCode(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : null;
+}
+
+function readReleaseErrorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
 }
 
 function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {
