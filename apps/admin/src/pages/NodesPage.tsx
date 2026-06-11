@@ -7,6 +7,7 @@ import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
+import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import { nodePanelColor, nodeProbeColor, translatePanelStatus, translateProbeStatus } from "../utils/admin-translate";
 
 type NodesPageProps = {
@@ -109,7 +110,10 @@ export function NodesPage(props: NodesPageProps) {
                   <Table.Td>{item.probeCheckedAt ? formatDateTime(item.probeCheckedAt) : "-"}</Table.Td>
                   <Table.Td>
                     <Text size="sm" c="dimmed" lineClamp={2}>
-                      {item.panelError || item.probeError || "-"}
+                      {summarizeAdminDiagnosticMessage(
+                        item.panelError || item.probeError,
+                        item.panelError ? "面板连接失败，请检查面板配置或同步队列。" : "节点探测失败，请稍后重试。"
+                      ) ?? "-"}
                     </Text>
                   </Table.Td>
                   <Table.Td>
@@ -200,12 +204,12 @@ function NodeSyncQueueCell(props: {
       ) : null}
       {panelSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
-          {panelSummary.lastError}
+          {summarizeAdminDiagnosticMessage(panelSummary.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。")}
         </Text>
       ) : null}
       {leaseSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
-          {leaseSummary.lastError}
+          {summarizeAdminDiagnosticMessage(leaseSummary.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。")}
         </Text>
       ) : null}
       <Group gap={4}>
@@ -313,7 +317,7 @@ export function PanelSyncQueueDrawer(props: {
                     <Table.Td>{formatDateTime(job.nextRunAt)}</Table.Td>
                     <Table.Td>
                       <Text size="sm" c="dimmed" lineClamp={2}>
-                        {job.lastError ?? "-"}
+                        {summarizeAdminDiagnosticMessage(job.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。") ?? "-"}
                       </Text>
                     </Table.Td>
                     <Table.Td>
@@ -390,7 +394,7 @@ export function PanelSyncQueueDrawer(props: {
                     <Table.Td>{formatDateTime(job.nextRunAt)}</Table.Td>
                     <Table.Td>
                       <Text size="sm" c="dimmed" lineClamp={2}>
-                        {job.lastError ?? "-"}
+                        {summarizeAdminDiagnosticMessage(job.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。") ?? "-"}
                       </Text>
                     </Table.Td>
                     <Table.Td>

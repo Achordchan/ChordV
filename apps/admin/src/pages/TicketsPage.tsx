@@ -39,7 +39,8 @@ import {
   isSupportTicketAttachmentUploadFailure,
   buildUncertainMutationMessage,
   isUncertainRequestFailure,
-  readError
+  readError,
+  summarizeAdminDiagnosticMessage
 } from "../utils/admin-filters";
 import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 
@@ -341,7 +342,9 @@ export function TicketsPage(props: TicketsPageProps) {
         notifications.show({
           color: "yellow",
           title: "附件上传失败",
-          message: `文字回复已保存，附件上传失败：${detail.attachmentUploadError ?? "请稍后重试"}`
+          message: `文字回复已保存，附件上传失败：${
+            summarizeAdminDiagnosticMessage(detail.attachmentUploadError, "附件上传失败，请检查图床配置或稍后重试。") ?? "请稍后重试"
+          }`
         });
       } else {
         notifications.show({

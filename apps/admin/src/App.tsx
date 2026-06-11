@@ -183,7 +183,8 @@ import {
   isLikelySavedAfterFailure,
   isPotentiallyCompletedMutationFailure,
   isUncertainRequestFailure,
-  readError
+  readError,
+  summarizeAdminDiagnosticMessage
 } from "./utils/admin-filters";
 import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
 import {
@@ -1937,14 +1938,16 @@ export function App() {
             return {
               color: "yellow",
               title: "探测完成，面板异常",
-              message: `节点连通性已探测，但 3x-ui 面板不可达：${node.panelError ?? "请检查面板地址、路径或账号密码"}`
+              message: `节点连通性已探测，但 3x-ui 面板不可达：${
+                summarizeAdminDiagnosticMessage(node.panelError, "请检查面板地址、路径或账号密码。") ?? "请检查面板地址、路径或账号密码。"
+              }`
             };
           }
           if (node.probeStatus !== "healthy") {
             return {
               color: "yellow",
               title: "探测完成，节点异常",
-              message: node.probeError ?? "节点网络探测未通过"
+              message: summarizeAdminDiagnosticMessage(node.probeError, "节点网络探测未通过。") ?? "节点网络探测未通过。"
             };
           }
           return null;
@@ -2006,7 +2009,7 @@ export function App() {
           return {
             color: "yellow",
             title: "面板读取失败，本地配置已保留",
-            message: node.panelError ?? "3x-ui 面板暂不可用，节点本地运行参数未被覆盖。"
+            message: summarizeAdminDiagnosticMessage(node.panelError, "3x-ui 面板暂不可用，节点本地运行参数未被覆盖。") ?? "3x-ui 面板暂不可用，节点本地运行参数未被覆盖。"
           };
         }
         return null;
@@ -3159,13 +3162,13 @@ function extractActionMessage(result: unknown, fallback: string) {
   if (result && typeof result === "object" && "message" in result) {
     const message = (result as { message?: unknown }).message;
     if (typeof message === "string" && message.trim().length > 0) {
-      return message;
+      return summarizeAdminDiagnosticMessage(message, fallback) ?? fallback;
     }
   }
   if (result && typeof result === "object" && "panelSyncMessage" in result) {
     const message = (result as { panelSyncMessage?: unknown }).panelSyncMessage;
     if (typeof message === "string" && message.trim().length > 0) {
-      return message;
+      return summarizeAdminDiagnosticMessage(message, fallback) ?? fallback;
     }
   }
   return fallback;

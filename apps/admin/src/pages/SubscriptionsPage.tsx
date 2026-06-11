@@ -17,7 +17,7 @@ import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
-import { summarizeTeamUsage } from "../utils/admin-filters";
+import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
 import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
 import {
   getRenewActionText,
@@ -556,7 +556,12 @@ function PanelSyncInlineStatus(props: {
   }
   const summary = props.item.panelSyncSummary;
   const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
-  const detail = [summary?.lastError, props.item.panelSyncMessage].filter(Boolean).join(" · ");
+  const detail = [
+    summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
+    summarizeAdminDiagnosticMessage(props.item.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <Stack gap={2}>
       <Group gap={4} wrap="nowrap">
@@ -603,7 +608,10 @@ function LeaseRevocationInlineStatus(props: {
       : running.length > 0
         ? "连接撤销执行中"
         : `连接撤销待同步 ${activeJobs.length}`;
-  const lastError = failed.find((job) => job.lastError)?.lastError ?? activeJobs.find((job) => job.lastError)?.lastError ?? null;
+  const lastError = summarizeAdminDiagnosticMessage(
+    failed.find((job) => job.lastError)?.lastError ?? activeJobs.find((job) => job.lastError)?.lastError,
+    "连接撤销任务失败，请稍后重试或查看服务器日志。"
+  );
 
   return (
     <Stack gap={2}>
@@ -652,6 +660,11 @@ function buildPanelSyncInlineMessage(item: {
 }) {
   const summary = item.panelSyncSummary;
   const label = summary ? buildPanelSyncPendingLabel(summary) : "面板同步待处理";
-  const detail = [summary?.lastError, item.panelSyncMessage].filter(Boolean).join(" · ");
+  const detail = [
+    summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
+    summarizeAdminDiagnosticMessage(item.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return detail ? `${label}：${detail}` : label;
 }

@@ -2290,6 +2290,71 @@ async function testUpdateReleaseDelegatesToReleaseCenter() {
   assert.equal(result.id, "release_1");
 }
 
+async function testAdminControllerForwardsPreviouslyUncoveredManagementRoutes() {
+  const calls: string[] = [];
+  const controller = new AdminController(
+    {
+      listAdminLeaseRevocationJobs: async () => {
+        calls.push("lease:list");
+        return [{ id: "lease_job_1" }];
+      },
+      retryAdminLeaseRevocationJob: async (jobId: string) => {
+        calls.push(`lease:retry:${jobId}`);
+        return [{ id: jobId, status: "pending" }];
+      },
+      retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => {
+        calls.push(`lease:retry-node:${nodeId}`);
+        return [{ nodeId, status: "pending" }];
+      },
+      deleteAnnouncement: async (announcementId: string) => {
+        calls.push(`announcement:delete:${announcementId}`);
+        return { ok: true, announcementId };
+      },
+      getAdminPolicy: async () => {
+        calls.push("policy:get");
+        return { defaultMode: "rule" };
+      },
+      unpublishRelease: async (releaseId: string) => {
+        calls.push(`release:unpublish:${releaseId}`);
+        return { id: releaseId, status: "draft" };
+      }
+    } as any,
+    {
+      listAdminRuntimeComponents: async () => {
+        calls.push("runtime:list");
+        return [{ id: "component_1" }];
+      }
+    } as any,
+    {
+      getAdminConfig: async () => {
+        calls.push("image-bed:config");
+        return { enabled: true };
+      }
+    } as any,
+    {} as any,
+    {} as any
+  );
+
+  assert.deepEqual(await controller.getLeaseRevocationJobs(), [{ id: "lease_job_1" }]);
+  assert.deepEqual(await controller.retryLeaseRevocationJob("lease_job_1"), [{ id: "lease_job_1", status: "pending" }]);
+  assert.deepEqual(await controller.retryLeaseRevocationJobsForNode("node_1"), [{ nodeId: "node_1", status: "pending" }]);
+  assert.deepEqual(await controller.deleteAnnouncement("announcement_1"), { ok: true, announcementId: "announcement_1" });
+  assert.deepEqual(await controller.getPolicies(), { defaultMode: "rule" });
+  assert.deepEqual(await controller.getImageBedConfig(), { enabled: true });
+  assert.deepEqual(await controller.getRuntimeComponents(), [{ id: "component_1" }]);
+  assert.deepEqual(await controller.unpublishRelease("release_1"), { id: "release_1", status: "draft" });
+  assert.deepEqual(calls, [
+    "lease:list",
+    "lease:retry:lease_job_1",
+    "lease:retry-node:node_1",
+    "announcement:delete:announcement_1",
+    "policy:get",
+    "image-bed:config",
+    "runtime:list",
+    "release:unpublish:release_1"
+  ]);
+}
+
 async function testAdminReleaseListAppliesFilters() {
   const findManyPayloads: Array<Record<string, any>> = [];
   const service = createReleaseCenterService({
@@ -22392,6 +22457,7 @@ async function main() {
   await testRuntimeDownloadMapsSendFileFailureToServiceUnavailable();
   await testRuntimeDownloadIgnoresSendFileFailureAfterHeadersSent();
   await testUpdateReleaseDelegatesToReleaseCenter();
+  await testAdminControllerForwardsPreviouslyUncoveredManagementRoutes();
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();

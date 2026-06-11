@@ -22,7 +22,7 @@ export function readError(reason: unknown, fallback: string) {
   return normalizeAdminErrorMessage(reason.message || fallback, fallback);
 }
 
-function normalizeAdminErrorMessage(message: string, fallback: string) {
+export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (!message.trim()) {
     return fallback;
   }
@@ -41,7 +41,50 @@ function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (/Image bed API token is not configured/i.test(message)) {
     return "图床 API Token 未配置，请先在后台图床配置中填写。";
   }
+  if (/HTTP\s*401|Unauthorized/i.test(message)) {
+    return "登录状态已失效，请重新登录。";
+  }
+  if (/HTTP\s*403|Forbidden/i.test(message)) {
+    return "当前账号没有执行该操作的权限。";
+  }
+  if (/HTTP\s*404|Not Found/i.test(message)) {
+    return "数据不存在或已被删除，请刷新列表后重试。";
+  }
+  if (/HTTP\s*409|Conflict|unique constraint|already exists/i.test(message)) {
+    return "数据已存在或状态已变更，请刷新后重试。";
+  }
+  if (/HTTP\s*400|Bad Request|Validation failed|should not be empty|must be|is required|invalid/i.test(message)) {
+    return "提交内容不完整或格式不正确，请检查后重试。";
+  }
+  if (
+    /HTTP\s*502|HTTP\s*503|HTTP\s*504|Bad Gateway|Gateway Timeout|Service Unavailable|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|network timeout|connect timeout/i.test(
+      message
+    )
+  ) {
+    return "外部服务或面板暂不可用，已保存的操作请在同步队列中查看处理状态。";
+  }
   return message;
+}
+
+export function summarizeAdminDiagnosticMessage(message?: string | null, fallback = "后台同步任务失败，请稍后重试或查看服务器日志。") {
+  const trimmed = message?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = normalizeAdminErrorMessage(trimmed, fallback);
+  if (normalized !== trimmed) {
+    return normalized;
+  }
+  if (!hasTechnicalErrorSignal(trimmed)) {
+    return trimmed;
+  }
+  return fallback;
+}
+
+function hasTechnicalErrorSignal(message: string) {
+  return /HTTP\s*\d+|[A-Z][A-Za-z]+Error|Exception|ECONN|ETIMEDOUT|ENOTFOUND|socket|fetch|JSON|Prisma|TypeError|ReferenceError|https?:\/\/|queued|background|sync|panel|lease|node access|subscription/i.test(
+    message
+  );
 }
 
 const UNCERTAIN_REQUEST_PATTERN =

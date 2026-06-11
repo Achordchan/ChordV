@@ -193,7 +193,7 @@ export function NodeAccessEditorModal(props: {
           <Button variant="default" onClick={close} disabled={busy}>
             取消
           </Button>
-          <Button onClick={props.onSave} loading={busy}>
+          <Button onClick={props.onSave} loading={props.saving} disabled={busy}>
             保存
           </Button>
         </Group>
