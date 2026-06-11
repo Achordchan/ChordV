@@ -1896,8 +1896,9 @@ export function App() {
               dbFirstMutationOptions
             )
           : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", {
-              failureTitle: "节点导入失败，未保存",
-              failureFallback: "导入失败，未保存。请检查订阅地址或 3x-ui 面板连接后重试。",
+              failureTitle: "新增节点失败，未保存",
+              failureFallback:
+                "新增节点需要先读取可用运行参数。请填写有效订阅地址，或修复 3x-ui 面板连接并选择入站后重试。",
               ...dbFirstMutationOptions
             });
         if (success) forceCloseDrawer();

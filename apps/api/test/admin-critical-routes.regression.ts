@@ -44,10 +44,18 @@ function record(route: string, value: string, body?: unknown) {
 }
 
 const devDataServiceStub = {
+  getAdminSnapshot: async () => record("snapshot-get", "snapshot"),
+  getAdminDashboard: async () => record("dashboard-get", "dashboard"),
+  updateCurrentAdminSecurity: async (authorization: string | undefined, body: unknown) =>
+    record("admin-security", "me", { ...toPlainJson(body) as Record<string, unknown>, authorization }),
   listAdminUsers: async () => [record("users-list", "all")],
   createUser: async (body: unknown) => record("user-create", "new", body),
   updateUser: async (userId: string, body: unknown) => record("user-update", userId, body),
   updateUserSecurity: async (userId: string, body: unknown) => record("user-security", userId, body),
+  listAdminPlans: async () => [record("plans-list", "all")],
+  createPlan: async (body: unknown) => record("plan-create", "new", body),
+  updatePlan: async (planId: string, body: unknown) => record("plan-update", planId, body),
+  updatePlanSecurity: async (planId: string, body: unknown) => record("plan-security", planId, body),
   listAdminSubscriptions: async () => [record("subscriptions-list", "all")],
   createSubscription: async (body: unknown) => record("subscription-create", "new", body),
   renewSubscription: async (subscriptionId: string, body: unknown) => record("subscription-renew", subscriptionId, body),
@@ -65,6 +73,7 @@ const devDataServiceStub = {
   deleteTeamMember: async (teamId: string, memberId: string) => record("team-member-delete", `${teamId}:${memberId}`),
   kickTeamMember: async (teamId: string, memberId: string, body: unknown) => record("team-member-kick", `${teamId}:${memberId}`, body),
   createTeamSubscription: async (teamId: string, body: unknown) => record("team-subscription-create", teamId, body),
+  getTeamUsage: async (teamId: string) => record("team-usage", teamId),
   listAdminNodes: async () => [record("nodes-list", "all")],
   listAdminPanelSyncJobs: async () => [record("panel-jobs-list", "all")],
   listAdminLeaseRevocationJobs: async () => [record("lease-jobs-list", "all")],
@@ -78,6 +87,7 @@ const devDataServiceStub = {
     record("ticket-reply", ticketId, { ...toPlainJson(body) as Record<string, unknown>, adminId }),
   closeAdminSupportTicket: async (ticketId: string) => record("ticket-close", ticketId),
   reopenAdminSupportTicket: async (ticketId: string) => record("ticket-reopen", ticketId),
+  listAdminAnnouncements: async () => [record("announcements-list", "all")],
   getAdminPolicy: async () => record("policy-get", "policy"),
   updatePolicy: async (body: unknown) => record("policy-update", "policy", body),
   listAdminReleases: async (query: unknown) => [record("releases-list", "all", query)],
@@ -98,7 +108,18 @@ const runtimeComponentsServiceStub = {
 };
 
 const clientServiceStub = {
+  getBootstrap: async (authorization?: string, platform?: string) => record("client-bootstrap", "bootstrap", { authorization, platform }),
+  getSubscription: async (authorization?: string) => record("client-subscription", "subscription", { authorization }),
+  getNodes: async (authorization?: string) => [record("client-nodes", "nodes", { authorization })],
+  probeNodes: async (nodeIds: string[], authorization?: string) => record("client-nodes-probe", "nodes", { nodeIds, authorization }),
+  getPolicies: async () => record("client-policies", "policies"),
+  getAnnouncements: async (authorization?: string) => [record("client-announcements", "announcements", { authorization })],
+  markAnnouncementsRead: async (body: unknown, authorization?: string) =>
+    record("client-announcements-read", "announcements", { ...toPlainJson(body) as Record<string, unknown>, authorization }),
+  getVersion: async (platform?: string) => record("client-version", "version", { platform }),
+  ping: async (authorization?: string) => record("client-ping", "ping", { authorization }),
   checkUpdate: async (body: unknown) => record("client-update-check", "update", body),
+  getRuntime: async (sessionId?: string, authorization?: string) => record("client-runtime", sessionId ?? "", { authorization }),
   listSupportTickets: async (authorization?: string) => record("client-tickets-list", "all", { authorization }),
   getSupportTicket: async (ticketId: string, authorization?: string) => record("client-ticket-detail", ticketId, { authorization }),
   markSupportTicketRead: async (ticketId: string, authorization?: string) => record("client-ticket-read", ticketId, { authorization }),
@@ -188,6 +209,16 @@ async function main() {
     const baseUrl = await app.getUrl();
     const expireAt = "2030-01-01T00:00:00.000Z";
 
+    assert.equal((await requestJson(baseUrl, "/api/admin/snapshot", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/dashboard", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/upload-limits", { method: "GET" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/me/security", {
+        method: "PUT",
+        body: { currentPassword: "password1", email: "admin@example.com", newPassword: "password2" }
+      })).status,
+      200
+    );
     assert.equal((await requestJson(baseUrl, "/api/admin/users", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/users", {
@@ -201,6 +232,18 @@ async function main() {
         method: "PUT",
         body: { maxConcurrentSessionsOverride: 2 }
       })).status,
+      200
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/plans", { method: "GET" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/plans", {
+        body: { name: "UAT Plan", scope: "personal", totalTrafficGb: 10, renewable: true, maxConcurrentSessions: 2 }
+      })).status,
+      201
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/plans/plan_1", { method: "PATCH", body: { isActive: false } })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/plans/plan_1/security", { method: "PUT", body: { maxConcurrentSessions: 3 } })).status,
       200
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/subscriptions", { method: "GET" })).status, 200);
@@ -250,6 +293,7 @@ async function main() {
       })).status,
       201
     );
+    assert.equal((await requestJson(baseUrl, "/api/admin/teams/team_1/usage", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/panel-sync-jobs", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs", { method: "GET" })).status, 200);
@@ -272,6 +316,7 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/replies", { body: { body: "admin reply" } })).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/close")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/reopen")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/announcements", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/policies", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/policies", {
@@ -300,6 +345,39 @@ async function main() {
     assert.deepEqual(downloadCalls, [{ absolutePath: runtimeDownloadPath, fileName: "xray.zip" }]);
 
     assert.equal(
+      (await requestJson(baseUrl, "/api/client/bootstrap?platform=windows", {
+        method: "GET",
+        authorization: "Bearer user-test-token"
+      })).status,
+      200
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/client/subscription", { method: "GET", authorization: "Bearer user-test-token" })).status,
+      200
+    );
+    assert.equal((await requestJson(baseUrl, "/api/client/nodes", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/client/nodes/probe", {
+        authorization: "Bearer user-test-token",
+        body: { nodeIds: ["node_1"] }
+      })).status,
+      201
+    );
+    assert.equal((await requestJson(baseUrl, "/api/client/policies", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/client/announcements", { method: "GET", authorization: "Bearer user-test-token" })).status,
+      200
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/client/announcements/read", {
+        authorization: "Bearer user-test-token",
+        body: { announcementIds: ["announcement_1"], action: "seen" }
+      })).status,
+      201
+    );
+    assert.equal((await requestJson(baseUrl, "/api/client/version?platform=windows", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/client/ping", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
+    assert.equal(
       (await requestJson(baseUrl, "/api/client/update/check", {
         authorization: "Bearer user-test-token",
         body: { currentVersion: "1.1.6", platform: "windows", channel: "stable", artifactType: "zip" }
@@ -319,6 +397,13 @@ async function main() {
         body: { componentId: "component_1", platform: "windows", architecture: "x64", kind: "xray", reason: "download_failed" }
       })).status,
       201
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/client/runtime?sessionId=session_1", {
+        method: "GET",
+        authorization: "Bearer user-test-token"
+      })).status,
+      200
     );
     assert.equal((await requestJson(baseUrl, "/api/client/tickets", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/client/tickets/ticket_1", { method: "GET", authorization: "Bearer user-test-token" })).status, 200);
@@ -362,10 +447,17 @@ async function main() {
     assert.deepEqual(
       calls.map((call) => call.route),
       [
+        "snapshot-get",
+        "dashboard-get",
+        "admin-security",
         "users-list",
         "user-create",
         "user-update",
         "user-security",
+        "plans-list",
+        "plan-create",
+        "plan-update",
+        "plan-security",
         "subscriptions-list",
         "subscription-create",
         "subscription-renew",
@@ -381,6 +473,7 @@ async function main() {
         "team-member-delete",
         "team-member-kick",
         "team-subscription-create",
+        "team-usage",
         "nodes-list",
         "panel-jobs-list",
         "lease-jobs-list",
@@ -393,6 +486,7 @@ async function main() {
         "ticket-reply",
         "ticket-close",
         "ticket-reopen",
+        "announcements-list",
         "policy-get",
         "policy-update",
         "releases-list",
@@ -401,9 +495,19 @@ async function main() {
         "runtime-create",
         "runtime-update",
         "runtime-download",
+        "client-bootstrap",
+        "client-subscription",
+        "client-nodes",
+        "client-nodes-probe",
+        "client-policies",
+        "client-announcements",
+        "client-announcements-read",
+        "client-version",
+        "client-ping",
         "client-update-check",
         "client-runtime-plan",
         "client-runtime-failure",
+        "client-runtime",
         "client-tickets-list",
         "client-ticket-detail",
         "client-ticket-read",
