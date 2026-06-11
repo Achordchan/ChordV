@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  ServiceUnavailableException,
   UnauthorizedException
 } from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
@@ -2205,12 +2206,22 @@ function isPrismaRecordNotFoundError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "P2025";
 }
 
+function isPrismaTransientTransactionError(error: unknown) {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  return ["P1001", "P1002", "P1008", "P2024", "P2028", "P2034"].includes(String(error.code));
+}
+
 function toNodeAccessLocalSaveHttpError(error: unknown) {
   if (isPrismaUniqueConstraintError(error)) {
     return new ConflictException("节点授权已被其他操作修改，请刷新后重试。");
   }
   if (isPrismaForeignKeyConstraintError(error) || isPrismaRecordNotFoundError(error)) {
     return new BadRequestException("节点授权数据已变化，请刷新订阅和节点列表后重试。");
+  }
+  if (isPrismaTransientTransactionError(error)) {
+    return new ServiceUnavailableException("节点授权保存暂时繁忙，请刷新后重试；本次请求没有等待失联面板。");
   }
   return null;
 }

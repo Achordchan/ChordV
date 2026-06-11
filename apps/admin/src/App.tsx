@@ -1406,6 +1406,7 @@ export function App() {
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || /http\s*500/i.test(message));
       if (uncertain) {
+        closeNodeAccessEditor();
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
             color: "yellow",

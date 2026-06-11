@@ -7,7 +7,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { BadGatewayException, BadRequestException, ConflictException, NotFoundException, type ExecutionContext } from "@nestjs/common";
+import {
+  BadGatewayException,
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+  ServiceUnavailableException,
+  type ExecutionContext
+} from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { lastValueFrom, throwError } from "rxjs";
@@ -7483,6 +7490,70 @@ async function testUpdateNodeAccessMapsLocalSaveConstraintErrors() {
     () => service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] }),
     (error) => error instanceof BadRequestException && /节点授权数据已变化/.test(error.message),
     "local node access constraint errors must return a controlled 400 instead of HTTP 500"
+  );
+}
+
+async function testUpdateNodeAccessMapsTransactionCommitFailure() {
+  const node = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows = [{ id: "access_offline", nodeId: "node_offline", node }];
+  const service = createDevDataService({
+    logger: {
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        },
+        deleteMany: async () => {
+          accessRows = [];
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        await task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = [];
+            }
+          }
+        });
+        throw { code: "P2028", message: "Transaction already closed: timeout" };
+      }
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 1
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateSubscriptionNodeAccess("sub_1", { nodeIds: [] }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /节点授权保存暂时繁忙/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "transaction commit/timeout failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -21045,6 +21116,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
   await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
+  await testUpdateNodeAccessMapsTransactionCommitFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
