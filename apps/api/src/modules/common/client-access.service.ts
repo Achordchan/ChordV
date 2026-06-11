@@ -25,6 +25,7 @@ import { ClientTicketService } from "./client-ticket.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { isPrismaTransientError } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
+import { ReleaseCenterService } from "./release-center.service";
 import {
   pickCurrentSubscription,
   toSubscriptionStatusDto
@@ -72,7 +73,8 @@ export class ClientAccessService {
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly announcementPolicyService: AnnouncementPolicyService,
-    private readonly clientTicketService: ClientTicketService
+    private readonly clientTicketService: ClientTicketService,
+    private readonly releaseCenterService: ReleaseCenterService
   ) {}
 
   async login(account: string, password: string, clientIp = "unknown"): Promise<AuthSessionDto> {
@@ -267,8 +269,7 @@ export class ClientAccessService {
     const profile = await this.prisma.policyProfile.findUnique({
       where: { id: "default" }
     });
-    const latestRelease = platform ? await this.findLatestPublishedRelease("stable", platform) : null;
-    if (!latestRelease) {
+    if (!platform) {
 
       if (!profile) {
         throw new NotFoundException("版本配置不存在");
@@ -283,13 +284,33 @@ export class ClientAccessService {
       };
     }
 
-    const primaryArtifact = pickPrimaryReleaseArtifact(latestRelease.artifacts);
+    const baselineVersion = profile?.currentVersion ?? "0.0.0";
+    const update = await this.releaseCenterService.checkClientUpdate({
+      currentVersion: baselineVersion,
+      platform,
+      channel: "stable"
+    });
+
+    if (!update.recommendedArtifact && update.latestVersion === baselineVersion) {
+      if (!profile) {
+        throw new NotFoundException("版本配置不存在");
+      }
+
+      return {
+        currentVersion: profile.currentVersion,
+        minimumVersion: profile.minimumVersion,
+        forceUpgrade: profile.forceUpgrade,
+        changelog: profile.changelog,
+        downloadUrl: profile.downloadUrl
+      };
+    }
+
     return {
-      currentVersion: latestRelease.version,
-      minimumVersion: latestRelease.minimumVersion,
-      forceUpgrade: latestRelease.forceUpgrade,
-      changelog: latestRelease.changelog,
-      downloadUrl: primaryArtifact?.downloadUrl ?? null
+      currentVersion: update.latestVersion,
+      minimumVersion: update.minimumVersion,
+      forceUpgrade: update.forceUpgrade,
+      changelog: update.changelog,
+      downloadUrl: update.downloadUrl ?? null
     };
   }
 
@@ -481,32 +502,6 @@ export class ClientAccessService {
     return buckets[0]?.blockedUntil ?? null;
   }
 
-  private async findLatestPublishedRelease(channel: "stable", platform?: PlatformTarget) {
-    const rows = await this.prisma.release.findMany({
-      where: {
-        channel,
-        status: "published",
-        ...(platform ? { platform } : {})
-      },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-        }
-      }
-    });
-
-    if (rows.length === 0) {
-      return null;
-    }
-
-    return rows.sort((left, right) => {
-      const versionDiff = compareSemver(right.version, left.version);
-      if (versionDiff !== 0) {
-        return versionDiff;
-      }
-      return (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0);
-    })[0];
-  }
 }
 
 function normalizeClientProbeNodeIds(nodeIds: string[]) {
@@ -588,57 +583,6 @@ async function runWithRateLimitBucketLocks<T>(keys: string[], task: () => Promis
 
 function deriveRateLimitLockKey(key: string) {
   return createHash("sha256").update(key).digest().readInt32BE(0);
-}
-
-function compareSemver(left: string, right: string) {
-  const leftParts = parseSemver(left);
-  const rightParts = parseSemver(right);
-  for (let index = 0; index < 3; index += 1) {
-    if (leftParts.core[index] !== rightParts.core[index]) {
-      return leftParts.core[index] - rightParts.core[index];
-    }
-  }
-  if (leftParts.prerelease === rightParts.prerelease) {
-    return 0;
-  }
-  if (!leftParts.prerelease) {
-    return 1;
-  }
-  if (!rightParts.prerelease) {
-    return -1;
-  }
-  return leftParts.prerelease.localeCompare(rightParts.prerelease, undefined, { numeric: true });
-}
-
-function parseSemver(value: string) {
-  const [corePart, prerelease = ""] = value.trim().split("-", 2);
-  const core = corePart.split(".").map((item) => Number.parseInt(item, 10) || 0);
-  while (core.length < 3) {
-    core.push(0);
-  }
-  return { core, prerelease };
-}
-
-function pickPrimaryReleaseArtifact(
-  artifacts: Array<{
-    id: string;
-    releaseId: string;
-    source: string;
-    type: string;
-    deliveryMode: string;
-    downloadUrl: string;
-    defaultMirrorPrefix: string | null;
-    allowClientMirror: boolean;
-    fileName: string | null;
-    fileSizeBytes: bigint | null;
-    fileHash: string | null;
-    isPrimary: boolean;
-    isFullPackage: boolean;
-    createdAt: Date;
-    updatedAt: Date;
-  }>
-) {
-  return artifacts.find((item) => item.isPrimary) ?? artifacts[0] ?? null;
 }
 
 async function probeNodeConnectivity(

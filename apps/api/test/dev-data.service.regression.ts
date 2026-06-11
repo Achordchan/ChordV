@@ -651,7 +651,31 @@ function createAnnouncementPolicyService(overrides: Record<string, unknown> = {}
 }
 
 function createClientAccessService(overrides: Record<string, unknown> = {}) {
-  return createInstance<ClientAccessService>(ClientAccessService.prototype, overrides);
+  return createInstance<ClientAccessService>(ClientAccessService.prototype, {
+    releaseCenterService: {
+      checkClientUpdate: async () => ({
+        hasUpdate: false,
+        forceUpgrade: false,
+        blockedByMinimumVersion: false,
+        forcedByRelease: false,
+        updateRequirement: "optional",
+        currentVersion: "0.0.0",
+        latestVersion: "0.0.0",
+        minimumVersion: "0.0.0",
+        platform: "windows",
+        channel: "stable",
+        changelog: [],
+        deliveryMode: "none",
+        recommendedArtifact: null,
+        downloadUrl: null,
+        fileName: null,
+        fileSizeBytes: null,
+        fileHash: null,
+        publishedAt: null
+      })
+    },
+    ...overrides
+  });
 }
 
 function testCrc32(buffer: Buffer) {
@@ -18635,8 +18659,7 @@ async function testCurrentSubscriptionPrefersEffectiveSubscription() {
 }
 
 async function testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform() {
-  const now = new Date("2026-01-01T00:00:00.000Z");
-  const releaseQueries: Array<Record<string, any>> = [];
+  const updateQueries: Array<Record<string, any>> = [];
   const service = createClientAccessService({
     prisma: {
       policyProfile: {
@@ -18650,53 +18673,66 @@ async function testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform() 
         })
       },
       release: {
-        findMany: async (payload: Record<string, any>) => {
-          releaseQueries.push(payload);
-          return [
-            {
-              id: "release_windows",
-              platform: "windows",
-              channel: "stable",
-              version: "1.1.3",
-              minimumVersion: "1.1.0",
-              forceUpgrade: false,
-              changelog: ["Windows"],
-              publishedAt: now,
-              createdAt: now,
-              updatedAt: now,
-              artifacts: [
-                {
-                  id: "artifact_zip",
-                  releaseId: "release_windows",
-                  source: "external",
-                  type: "zip",
-                  deliveryMode: "desktop_full_replace",
-                  downloadUrl: "https://example.com/ChordV_1.1.3_x64-full.zip",
-                  defaultMirrorPrefix: null,
-                  allowClientMirror: false,
-                  fileName: "ChordV_1.1.3_x64-full.zip",
-                  fileSizeBytes: 2048n,
-                  fileHash: "a".repeat(64),
-                  isPrimary: true,
-                  isFullPackage: true,
-                  createdAt: now,
-                  updatedAt: now
-                }
-              ]
-            }
-          ];
+        findMany: async () => {
+          throw new Error("client version endpoint must use release center artifact selection");
         }
+      }
+    },
+    releaseCenterService: {
+      checkClientUpdate: async (payload: Record<string, any>) => {
+        updateQueries.push(payload);
+        return {
+          hasUpdate: true,
+          forceUpgrade: false,
+          blockedByMinimumVersion: false,
+          forcedByRelease: false,
+          updateRequirement: "optional",
+          currentVersion: payload.currentVersion,
+          latestVersion: "1.1.3",
+          minimumVersion: "1.1.0",
+          platform: "windows",
+          channel: "stable",
+          changelog: ["Windows"],
+          deliveryMode: "desktop_full_replace",
+          recommendedArtifact: {
+            id: "artifact_zip",
+            releaseId: "release_windows",
+            source: "external",
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            downloadUrl: "https://example.com/ChordV_1.1.3_x64-full.zip",
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "ChordV_1.1.3_x64-full.zip",
+            fileSizeBytes: "2048",
+            fileHash: null,
+            isPrimary: false,
+            isFullPackage: true,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z"
+          },
+          downloadUrl: "https://example.com/ChordV_1.1.3_x64-full.zip",
+          fileName: "ChordV_1.1.3_x64-full.zip",
+          fileSizeBytes: "2048",
+          fileHash: null,
+          publishedAt: "2026-01-01T00:00:00.000Z"
+        };
       }
     }
   });
 
   const fallback = await service.getClientVersion();
   assert.equal(fallback.currentVersion, "1.1.2");
-  assert.equal(releaseQueries.length, 0, "version without platform must not select the highest release across all platforms");
+  assert.equal(updateQueries.length, 0, "version without platform must not select a release");
 
   const windows = await service.getClientVersion("windows");
   assert.equal(windows.currentVersion, "1.1.3");
-  assert.equal(releaseQueries[0].where.platform, "windows");
+  assert.equal(windows.downloadUrl, "https://example.com/ChordV_1.1.3_x64-full.zip");
+  assert.deepEqual(updateQueries[0], {
+    currentVersion: "1.1.2",
+    platform: "windows",
+    channel: "stable"
+  });
 }
 
 async function testCreateTeamMemberRejectsOwnerRole() {

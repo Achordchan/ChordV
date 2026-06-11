@@ -10,7 +10,7 @@ import {
   mockSubscription,
   mockUser,
   mockVersion
-} from "@chordv/shared";
+} from "@chordv/shared/mock";
 
 const BUILTIN_ADMIN_ID = "admin_001";
 const BUILTIN_ADMIN_ACCOUNT = "admin";

@@ -9,7 +9,7 @@ import {
   mockSubscription,
   mockUser,
   mockVersion
-} from "@chordv/shared";
+} from "@chordv/shared/mock";
 import { PrismaService } from "./prisma.service";
 import { toPrismaReleaseArtifactType } from "./release-center.utils";
 import { DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";

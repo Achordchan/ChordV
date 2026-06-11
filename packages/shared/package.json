@@ -4,6 +4,16 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./mock": {
+      "types": "./dist/mock.d.ts",
+      "default": "./dist/mock.js"
+    }
+  },
   "scripts": {
     "build": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('tsconfig.tsbuildinfo',{force:true});\" && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json",
