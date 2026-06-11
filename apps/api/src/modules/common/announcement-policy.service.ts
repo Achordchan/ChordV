@@ -279,18 +279,19 @@ export class AnnouncementPolicyService {
       throw new BadRequestException("默认模式必须包含在可用模式中");
     }
 
-    await this.prisma.policyProfile.update({
+    const data = {
+      ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
+      ...(input.modes !== undefined ? { modes: nextModes } : {}),
+      ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
+      ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
+      ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {})
+    };
+    const updated = await this.prisma.policyProfile.update({
       where: { id: "default" },
-      data: {
-        ...(input.defaultMode !== undefined ? { defaultMode: input.defaultMode } : {}),
-        ...(input.modes !== undefined ? { modes: nextModes } : {}),
-        ...(input.blockAds !== undefined ? { blockAds: input.blockAds } : {}),
-        ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
-        ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {})
-      }
+      data
     });
     await this.publishPolicyUpdatedEvent();
-    return this.getAdminPolicy();
+    return toAdminPolicyRecord(updated ?? { ...current, ...data });
   }
 
   private async publishPolicyUpdatedEvent() {

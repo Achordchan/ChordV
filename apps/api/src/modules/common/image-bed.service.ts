@@ -229,6 +229,13 @@ export class ImageBedService {
     }
     let settled = false;
     const cleanupTask = this.deleteAdminFile({ path })
+      .then((result) => {
+        if (!result.success) {
+          this.logger.warn(
+            `Support ticket attachment cleanup failed for ${path}: ${result.failed.join(", ") || "delete returned unsuccessful"}`
+          );
+        }
+      })
       .catch((error) => {
         this.logger.warn(
           `Support ticket attachment cleanup failed for ${path}: ${error instanceof Error ? error.message : String(error)}`

@@ -354,11 +354,12 @@ async function testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscript
   );
 }
 
-async function testUpdateNodeAccessQueuesPanelSyncInsideLocalTransaction() {
+async function testUpdateNodeAccessQueuesPanelSyncAfterLocalTransaction() {
   const originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
   const createdRows: Array<Record<string, any>> = [];
-  let transactionScopedEnsureCalled = false;
+  let transactionFinished = false;
+  let queueStartedAfterTransaction = false;
   let deferredEnsureStarted = false;
   const node = {
     id: "node_1",
@@ -401,17 +402,19 @@ async function testUpdateNodeAccessQueuesPanelSyncInsideLocalTransaction() {
           findMany: async () => [node]
         },
         $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-          task({
+          Promise.resolve(task({
             subscriptionNodeAccess: {
               createMany: async (payload: Record<string, any>) => {
                 createdRows.push(payload);
               }
             }
+          })).finally(() => {
+            transactionFinished = true;
           })
       },
       runtimeSessionService: {
         queueSubscriptionPanelAccessSyncTx: async () => {
-          transactionScopedEnsureCalled = true;
+          queueStartedAfterTransaction = transactionFinished;
           return 1;
         },
         queueSubscriptionPanelAccessSync: async () => {
@@ -433,7 +436,7 @@ async function testUpdateNodeAccessQueuesPanelSyncInsideLocalTransaction() {
 
     assert.equal(createdRows.length, 1);
     assert.equal(createdRows[0]?.skipDuplicates, true, "node access inserts must be idempotent for concurrent saves");
-    assert.equal(transactionScopedEnsureCalled, true, "node access local transaction must also create required panel sync jobs");
+    assert.equal(queueStartedAfterTransaction, true, "panel sync jobs must be queued only after local node access commits");
     assert.deepEqual(result.nodeIds, ["node_1"]);
     assert.equal(result.panelSyncStatus, "pending");
     assert.match(result.panelSyncMessage ?? "", /panel access synchronization queued/);
@@ -1233,6 +1236,33 @@ async function testImageBedAttachmentCleanupLogsDeleteFailure() {
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /support-tickets\/failed\.png/);
   assert.match(warnings[0], /delete failed/);
+}
+
+async function testImageBedAttachmentCleanupLogsBusinessDeleteFailure() {
+  const warnings: string[] = [];
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    deleteAdminFile: async () => ({
+      success: false,
+      fileId: "support-tickets/failed.png",
+      deleted: [],
+      failed: ["already deleted"]
+    })
+  });
+
+  await service.deleteUploadedSupportTicketAttachmentBestEffort({
+    url: "https://image.example.com/file/support-tickets/failed.png",
+    providerFileId: "support-tickets/failed.png",
+    fileName: "failed.png",
+    mimeType: "image/png",
+    fileSizeBytes: 123n
+  });
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /support-tickets\/failed\.png/);
+  assert.match(warnings[0], /already deleted/);
 }
 
 async function testImageBedAttachmentCleanupReturnsWhenDeleteStalls() {
@@ -7513,6 +7543,7 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
   const createdRows: Array<Record<string, any>> = [];
   let published = false;
   let panelSyncStarted = false;
+  let transactionFinished = false;
   const node = {
     id: "node_1",
     name: "node",
@@ -7552,16 +7583,21 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
         findMany: async () => [node]
       },
       $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-        task({
+        Promise.resolve(task({
           subscriptionNodeAccess: {
             createMany: async (payload: Record<string, any>) => {
               createdRows.push(payload);
             }
           }
+        })).finally(() => {
+          transactionFinished = true;
         })
     },
     runtimeSessionService: {
-      queueSubscriptionPanelAccessSyncTx: async () => 1,
+      queueSubscriptionPanelAccessSyncTx: async () => {
+        assert.equal(transactionFinished, true, "panel sync queueing must run after local authorization commits");
+        return 1;
+      },
       queueSubscriptionPanelAccessSync: async () => {
         panelSyncStarted = true;
         throw new Error("3x-ui 面板接口路径错误，请检查面板地址或 API 基础路径");
@@ -7842,7 +7878,7 @@ async function testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails() {
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access must stay saved when panel queue fails");
   assert.deepEqual(result.nodeIds, ["node_new"]);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /background processing|panel access synchronization queued/);
+  assert.match(result.panelSyncMessage ?? "", /background processing|panel access synchronization (queued|checked)/);
 }
 
 async function testClearNodeAccessReportsPendingWhenPanelDisableQueueFails() {
@@ -19753,6 +19789,49 @@ async function testUpdatePolicyKeepsLocalSaveWhenPublishFails() {
   assert.equal(result.features.blockAds, false);
 }
 
+async function testUpdatePolicyDoesNotRefreshAfterLocalSave() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: () => undefined
+    },
+    getAdminPolicy: async () => {
+      throw new Error("policy refresh should not run after local save");
+    },
+    prisma: {
+      policyProfile: {
+        findUnique: async () => ({
+          id: "default",
+          defaultMode: "rule",
+          modes: ["rule"],
+          blockAds: true,
+          chinaDirect: true,
+          aiServicesProxy: true
+        }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "default",
+            defaultMode: "rule",
+            modes: ["rule"],
+            blockAds: payload.data.blockAds,
+            chinaDirect: true,
+            aiServicesProxy: true
+          };
+        }
+      },
+      user: {
+        findMany: async () => []
+      }
+    }
+  });
+
+  const result = await service.updatePolicy({ blockAds: false });
+
+  assert.equal(updates.length, 1);
+  assert.equal(result.features.blockAds, false);
+}
+
 async function testUpdatePolicyReturnsWhenPublishUserLookupStalls() {
   const updates: Array<Record<string, any>> = [];
   const service = createAnnouncementPolicyService({
@@ -21423,7 +21502,7 @@ async function main() {
   await testSubscriptionOwnerLockTimesOutAsRetryableConflict();
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
   await testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscriptionStalls();
-  await testUpdateNodeAccessQueuesPanelSyncInsideLocalTransaction();
+  await testUpdateNodeAccessQueuesPanelSyncAfterLocalTransaction();
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();
   testCorsAllowsProductionAndConfiguredOrigins();
@@ -21716,6 +21795,7 @@ async function main() {
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
   await testImageBedAttachmentCleanupLogsDeleteFailure();
+  await testImageBedAttachmentCleanupLogsBusinessDeleteFailure();
   await testImageBedAttachmentCleanupReturnsWhenDeleteStalls();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
@@ -21765,6 +21845,7 @@ async function main() {
   await testUpdatePolicyRejectsDuplicateModes();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
   await testUpdatePolicyKeepsLocalSaveWhenPublishFails();
+  await testUpdatePolicyDoesNotRefreshAfterLocalSave();
   await testUpdatePolicyReturnsWhenPublishUserLookupStalls();
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete();
