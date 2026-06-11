@@ -68,6 +68,7 @@ const SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS = 50;
 const PANEL_SYNC_RECENT_ERROR_LIMIT = 1_000;
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
+type QueueJobResult = { queuedCount: number; errorMessages: string[] };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
 type PanelSyncSummaryJob = {
   subscriptionId: string;
@@ -295,15 +296,18 @@ export class AdminSubscriptionService {
           data
         });
         const subscriptionIds = await this.findCurrentSubscriptionIdsForUserTx(tx, userId);
-        let queuedCount = 0;
+        let queueResult = createQueueJobResult();
         for (const subscriptionId of subscriptionIds) {
-          queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId });
-          queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "user_disabled", { userId });
+          queueResult = mergeQueueJobResults(
+            queueResult,
+            await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId }),
+            await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "user_disabled", { userId })
+          );
         }
-        return { user, queuedCount };
+        return { user, queueResult };
       });
       updatedUser = saved.user;
-      panelSync = mergePanelSyncResults(panelSync, buildQueuedPanelSyncResult(saved.queuedCount, "user disable"));
+      panelSync = mergePanelSyncResults(panelSync, buildQueuedPanelSyncResult(saved.queueResult, "user disable"));
     } else {
       updatedUser = await this.prisma.user.update({
         where: { id: userId },
@@ -329,14 +333,17 @@ export class AdminSubscriptionService {
     const user = await this.ensureUserExists(userId);
     const saved = await this.prisma.$transaction(async (tx) => {
       const subscriptionIds = await this.findCurrentSubscriptionIdsForUserTx(tx, userId);
-      let queuedCount = 0;
+      let queueResult = createQueueJobResult();
       for (const subscriptionId of subscriptionIds) {
-        queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId });
-        queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "admin_user_disconnected", { userId });
+        queueResult = mergeQueueJobResults(
+          queueResult,
+          await this.queuePanelDisableJobsForSubscriptionTx(tx, subscriptionId, { userId }),
+          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscriptionId, "admin_user_disconnected", { userId })
+        );
       }
-      return { queuedCount };
+      return { queueResult };
     });
-    const panelSync = buildQueuedPanelSyncResult(saved.queuedCount, "user disconnect");
+    const panelSync = buildQueuedPanelSyncResult(saved.queueResult, "user disconnect");
     const refreshedUser = await this.withAdminUserRefreshBestEffort(
       userId,
       user,
@@ -365,13 +372,12 @@ export class AdminSubscriptionService {
         maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
       }
     });
-    const effectiveLimit = row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
-    const panelSync =
-      effectiveLimit !== null
-        ? this.startSubscriptionFollowUpInBackground(`user concurrent lease enforcement for ${userId}`, () =>
-            this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit)
-          )
-        : { ok: true as const };
+    const panelSync = this.startSubscriptionFollowUpInBackground(`user concurrent lease enforcement for ${userId}`, async () => {
+      const effectiveLimit = row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
+      if (effectiveLimit !== null) {
+        await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
+      }
+    });
     return this.withAdminUserRefreshBestEffort(userId, row, panelSync, "账号安全策略已更新。");
   }
 
@@ -530,13 +536,49 @@ export class AdminSubscriptionService {
         maxConcurrentSessions: input.maxConcurrentSessions
       }
     });
-    const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    const subscriptionCountResult = await this.countPlanSubscriptionsBestEffort(planId);
     const panelSync = this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
     return withPanelSyncStatus(
-      toAdminPlanRecord(row, subscriptionCount),
-      panelSync,
+      toAdminPlanRecord(row, subscriptionCountResult.count),
+      mergePanelSyncResults(panelSync, subscriptionCountResult.panelSync),
       "套餐安全策略已更新。"
     );
+  }
+
+  private async countPlanSubscriptionsBestEffort(planId: string): Promise<{
+    count: number;
+    panelSync: PanelSyncBestEffortResult;
+  }> {
+    const result = await this.withSubscriptionFollowUpBudget<
+      { ok: true; count: number } | { ok: false; errorMessage: string }
+    >(
+      `plan subscription count refresh for ${planId}`,
+      {
+        ok: false,
+        errorMessage: "plan subscription count refresh is still running in background"
+      },
+      async () => {
+        try {
+          return { ok: true, count: await this.prisma.subscription.count({ where: { planId } }) };
+        } catch (error) {
+          return {
+            ok: false,
+            errorMessage: `plan subscription count refresh failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
+      }
+    );
+
+    if (result.ok) {
+      return { count: result.count, panelSync: { ok: true } };
+    }
+    return {
+      count: 0,
+      panelSync: {
+        ok: false,
+        errorMessage: result.errorMessage
+      }
+    };
   }
 
   async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
@@ -1223,14 +1265,17 @@ export class AdminSubscriptionService {
             data
           });
           const subscription = await this.findCurrentTeamSubscriptionTx(tx, teamId);
-          let queuedCount = 0;
+          let queueResult = createQueueJobResult();
           if (subscription) {
-            queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id);
-            queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_disabled");
+            queueResult = mergeQueueJobResults(
+              queueResult,
+              await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id),
+              await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_disabled")
+            );
           }
-          return { queuedCount };
+          return { queueResult };
         });
-        panelSync = mergePanelSyncResults(panelSync, buildQueuedPanelSyncResult(saved.queuedCount, "team disable"));
+        panelSync = mergePanelSyncResults(panelSync, buildQueuedPanelSyncResult(saved.queueResult, "team disable"));
       } else if (!teamUpdatedInOwnerTransaction) {
         await this.prisma.team.update({
           where: { id: teamId },
@@ -1427,19 +1472,22 @@ export class AdminSubscriptionService {
         where: { id: memberId }
       });
       const subscription = await this.findCurrentTeamSubscriptionTx(tx, member.teamId);
-      let queuedCount = 0;
+      let queueResult = createQueueJobResult();
       if (subscription) {
-        queuedCount += await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id, {
-          userId: member.userId
-        });
-        queuedCount += await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_member_removed", {
-          userId: member.userId
-        });
+        queueResult = mergeQueueJobResults(
+          queueResult,
+          await this.queuePanelDisableJobsForSubscriptionTx(tx, subscription.id, {
+            userId: member.userId
+          }),
+          await this.queueLeaseRevocationJobsForSubscriptionTx(tx, subscription.id, "team_member_removed", {
+            userId: member.userId
+          })
+        );
       }
-      return { queuedCount };
+      return { queueResult };
     });
     const panelSync = mergePanelSyncResults(
-      buildQueuedPanelSyncResult(saved.queuedCount, "team member removal"),
+      buildQueuedPanelSyncResult(saved.queueResult, "team member removal"),
       this.startTeamMemberRemovedFollowUpInBackground({
         teamId: member.teamId,
         userId: member.userId
@@ -2192,12 +2240,11 @@ export class AdminSubscriptionService {
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
     try {
-      return await this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(writer, subscriptionId, filter);
+      return createQueueJobResult(await this.runtimeSessionService.queuePanelDisableJobsForSubscriptionTx(writer, subscriptionId, filter));
     } catch (error) {
-      this.logger?.warn(
-        `Local subscription change will continue, but panel disable job queueing failed for ${subscriptionId}: ${readErrorMessage(error, "unknown error")}`
-      );
-      return 0;
+      const errorMessage = `panel disable job queueing failed for ${subscriptionId}: ${readErrorMessage(error, "unknown error")}`;
+      this.logger?.warn(`Local subscription change will continue, but ${errorMessage}`);
+      return createQueueJobResult(0, errorMessage);
     }
   }
 
@@ -2208,12 +2255,11 @@ export class AdminSubscriptionService {
     filter?: { userId?: string; nodeIds?: string[] }
   ) {
     try {
-      return await this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(writer, subscriptionId, reason, filter);
+      return createQueueJobResult(await this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(writer, subscriptionId, reason, filter));
     } catch (error) {
-      this.logger?.warn(
-        `Local subscription change will continue, but lease revocation job queueing failed for ${subscriptionId}: ${readErrorMessage(error, "unknown error")}`
-      );
-      return 0;
+      const errorMessage = `lease revocation job queueing failed for ${subscriptionId}: ${readErrorMessage(error, "unknown error")}`;
+      this.logger?.warn(`Local subscription change will continue, but ${errorMessage}`);
+      return createQueueJobResult(0, errorMessage);
     }
   }
 
@@ -2998,8 +3044,28 @@ function buildPanelSyncMessage(panelSync: PanelSyncBestEffortResult, syncedMessa
   return `${syncedMessage} ${buildPanelSyncResult(panelSync).panelSyncMessage}`;
 }
 
-function buildQueuedPanelSyncResult(queuedCount: number, label: string): PanelSyncBestEffortResult {
-  return queuedCount > 0
+function createQueueJobResult(queuedCount = 0, errorMessage?: string): QueueJobResult {
+  return {
+    queuedCount,
+    errorMessages: errorMessage ? [errorMessage] : []
+  };
+}
+
+function mergeQueueJobResults(...results: QueueJobResult[]): QueueJobResult {
+  return {
+    queuedCount: results.reduce((total, item) => total + item.queuedCount, 0),
+    errorMessages: results.flatMap((item) => item.errorMessages)
+  };
+}
+
+function buildQueuedPanelSyncResult(result: QueueJobResult, label: string): PanelSyncBestEffortResult {
+  if (result.errorMessages.length > 0) {
+    return {
+      ok: false,
+      errorMessage: `${label} background jobs need retry: ${result.errorMessages.join("; ")}`
+    };
+  }
+  return result.queuedCount > 0
     ? {
         ok: false,
         errorMessage: `${label} panel and lease jobs queued for background retry`

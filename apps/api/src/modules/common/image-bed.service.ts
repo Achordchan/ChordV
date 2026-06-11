@@ -322,7 +322,7 @@ export class ImageBedService {
     };
   }
 
-  private assertSupportTicketAttachment(file: UploadedTicketAttachmentFile) {
+  assertSupportTicketAttachment(file: UploadedTicketAttachmentFile) {
     if (!file) {
       throw new BadRequestException("Attachment file is required.");
     }

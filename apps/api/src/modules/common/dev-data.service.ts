@@ -657,14 +657,12 @@ export class DevDataService implements OnModuleInit {
     let uploaded = null as Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null;
     let attachmentUploadError: string | null = null;
     if (file) {
+      this.imageBedService.assertSupportTicketAttachment?.(file);
       try {
         uploaded = await this.imageBedService.uploadSupportTicketAttachment(file, {
           timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
         });
       } catch (error) {
-        if (error instanceof BadRequestException) {
-          throw error;
-        }
         attachmentUploadError = readPanelSyncErrorMessage(error);
         this.logger.warn(`Admin ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
       }

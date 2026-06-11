@@ -17401,6 +17401,43 @@ async function testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail() {
   assert.match(result.panelSyncMessage ?? "", /user refresh failed/);
 }
 
+async function testUpdateUserSecurityReturnsPendingWhenEffectiveLimitLookupFailsAfterSave() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({ id: "user_1" }),
+    requireAdminUserRecord: async (userId: string) => ({ id: userId }),
+    resolveEffectiveConcurrentLeaseLimitForUser: async () => {
+      throw new Error("effective limit lookup failed");
+    },
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => {
+        throw new Error("lease enforcement must not run without an effective limit");
+      }
+    },
+    prisma: {
+      user: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            id: "user_1",
+            maxConcurrentSessionsOverride: null
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.updateUserSecurity("user_1", { maxConcurrentSessionsOverride: null });
+
+  assert.equal(updates.length, 1, "local security update must survive effective limit lookup failures");
+  assert.equal((result as { id: string }).id, "user_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+}
+
 async function testUpdatePlanSecurityReconcilesUsersWithoutOverrides() {
   const enforced: Array<{ userId: string; limit: number }> = [];
   const service = createAdminSubscriptionService({
@@ -17617,6 +17654,51 @@ async function testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsA
   assert.equal(result.maxConcurrentSessions, 1);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /plan lease concurrency reconciliation/);
+}
+
+async function testUpdatePlanSecurityKeepsLocalSaveWhenSubscriptionCountFails() {
+  let planUpdated = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensurePlanExists: async () => ({ id: "plan_1" }),
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => undefined
+    },
+    prisma: {
+      plan: {
+        update: async () => {
+          planUpdated = true;
+          return {
+            id: "plan_1",
+            name: "Personal",
+            scope: "personal",
+            totalTrafficGb: 100,
+            renewable: true,
+            maxConcurrentSessions: 1,
+            isActive: true,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          };
+        }
+      },
+      subscription: {
+        count: async () => {
+          throw new Error("subscription count failed");
+        },
+        findMany: async () => []
+      }
+    }
+  });
+
+  const result = await service.updatePlanSecurity("plan_1", { maxConcurrentSessions: 1 });
+
+  assert.equal(planUpdated, true, "local plan security update must survive count refresh failures");
+  assert.equal(result.id, "plan_1");
+  assert.equal(result.subscriptionCount, 0);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /subscription count failed/);
 }
 
 async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
@@ -20731,7 +20813,7 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
-        throw new Error("image bed upload failed");
+        throw new BadRequestException("Image bed API token is not configured.");
       },
       deleteUploadedSupportTicketAttachmentBestEffort: async () => {
         cleanupCalls += 1;
@@ -20761,7 +20843,7 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
 
   assert.equal((result as { id: string }).id, "ticket_1");
   assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
+  assert.match(result.attachmentUploadError ?? "", /Image bed API token is not configured/);
   const message = writes.find((item) => item.kind === "message")?.data;
   assert.match(String(message?.body), /please see attachment/);
   assert.match(String(message?.body), /附件上传失败/);
@@ -21715,7 +21797,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
-        throw new Error("image bed upload failed");
+        throw new BadRequestException("Image bed API token is not configured.");
       },
       deleteUploadedSupportTicketAttachmentBestEffort: async () => {
         cleanupCalls += 1;
@@ -21745,7 +21827,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
 
   assert.equal((result as { id: string }).id, "ticket_1");
   assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
+  assert.match(result.attachmentUploadError ?? "", /Image bed API token is not configured/);
   const message = writes.find((item) => item.kind === "message")?.data;
   assert.match(String(message?.body), /please see attachment/);
   assert.match(String(message?.body), /Attachment upload failed/);
@@ -22153,10 +22235,12 @@ async function main() {
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail();
+  await testUpdateUserSecurityReturnsPendingWhenEffectiveLimitLookupFailsAfterSave();
   await testUpdatePlanSecurityReconcilesUsersWithoutOverrides();
   await testUpdatePlanReconcilesConcurrencyWhenLimitChanges();
   await testUpdatePlanReturnsWhenConcurrencyReconciliationStallsAfterSave();
   await testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave();
+  await testUpdatePlanSecurityKeepsLocalSaveWhenSubscriptionCountFails();
   await testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();
