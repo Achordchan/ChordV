@@ -1616,6 +1616,8 @@ export class AdminSubscriptionService {
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
+    let panelResetBindings: any[] = [];
+    let panelResetQueuedAt: Date | null = null;
 
     await runWithSubscriptionUsageLock(subscription.id, async () => {
       const resetSampledAt = new Date();
@@ -1632,6 +1634,7 @@ export class AdminSubscriptionService {
           }
         });
         clearedBindingCount = bindings.length;
+        panelResetBindings = bindings;
         const baselineSamples = bindings.map((binding: any) => ({
           binding,
           uplinkBytes: 0n,
@@ -1678,7 +1681,7 @@ export class AdminSubscriptionService {
           }
         }
 
-        await this.queuePanelTrafficResetJobsTx(tx, bindings, resetSampledAt);
+        panelResetQueuedAt = resetSampledAt;
         panelSync =
           bindings.length > 0
             ? {
@@ -1715,6 +1718,12 @@ export class AdminSubscriptionService {
 
     if (!updatedSubscription) {
       throw new NotFoundException("订阅不存在");
+    }
+    if (panelResetBindings.length > 0 && panelResetQueuedAt) {
+      panelSync = mergePanelSyncResults(
+        panelSync,
+        await this.queuePanelTrafficResetJobsBestEffort(panelResetBindings, panelResetQueuedAt)
+      );
     }
     return {
       subscription: updatedSubscription,
@@ -1838,6 +1847,25 @@ export class AdminSubscriptionService {
           panelPassword: snapshot.panelPassword ?? null
         }
       });
+    }
+  }
+
+  private async queuePanelTrafficResetJobsBestEffort(bindings: any[], panelResetQueuedAt: Date): Promise<PanelSyncBestEffortResult> {
+    try {
+      await this.queuePanelTrafficResetJobsTx(this.prisma, bindings, panelResetQueuedAt);
+      return bindings.length > 0
+        ? {
+            ok: false,
+            errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
+          }
+        : { ok: true };
+    } catch (error) {
+      const errorMessage = readErrorMessage(error, "unknown error");
+      this.logger?.warn(`Traffic reset saved locally, but panel reset job queueing failed: ${errorMessage}`);
+      return {
+        ok: false,
+        errorMessage: `3x-ui traffic reset queueing failed after local reset was saved: ${errorMessage}`
+      };
     }
   }
 

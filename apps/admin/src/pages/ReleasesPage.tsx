@@ -194,10 +194,17 @@ export function ReleasesPage(props: ReleasesPageProps) {
     setReleaseEditorOpened(true);
   }
 
-  function closeReleaseEditor() {
+  function forceCloseReleaseEditor() {
     setReleaseEditorOpened(false);
     setReleaseEditorId(null);
     setReleaseForm(emptyReleaseEditorForm());
+  }
+
+  function closeReleaseEditor() {
+    if (savingRef.current) {
+      return;
+    }
+    forceCloseReleaseEditor();
   }
 
   function openArtifactFromReleaseEditor(source: ReleaseEditorFormState["artifactSource"]) {
@@ -208,7 +215,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (!record) {
       return;
     }
-    closeReleaseEditor();
+    forceCloseReleaseEditor();
     openCreateArtifact(record.id, record.platform, source);
   }
 
@@ -277,12 +284,12 @@ export function ReleasesPage(props: ReleasesPageProps) {
                 message: `${result.message}。请在列表中继续新增安装包，或删除这条草稿。`
               });
             }
-            closeReleaseEditor();
+            forceCloseReleaseEditor();
             return;
           }
         }
         setReleases((current) => upsertRelease(current, record));
-        closeReleaseEditor();
+        forceCloseReleaseEditor();
         notifications.show({
           color: "green",
           title: "发布中心",
@@ -296,7 +303,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         changelog: payload.changelog
       });
       setReleases((current) => upsertRelease(current, record));
-      closeReleaseEditor();
+      forceCloseReleaseEditor();
       notifications.show({
         color: "green",
         title: "发布中心",
@@ -305,7 +312,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     } catch (reason) {
       const result = showReleaseRequestFailure(reason, "保存发布记录失败");
       if (result.uncertain) {
-        closeReleaseEditor();
+        forceCloseReleaseEditor();
         void loadReleases();
       }
     } finally {
@@ -420,9 +427,16 @@ export function ReleasesPage(props: ReleasesPageProps) {
       ?.artifacts.find((artifact) => artifact.id === artifactEditor.artifactId) ?? null;
   }
 
-  function closeArtifactEditor() {
+  function forceCloseArtifactEditor() {
     setArtifactEditor(null);
     setArtifactForm(emptyArtifactEditorForm());
+  }
+
+  function closeArtifactEditor() {
+    if (savingRef.current) {
+      return;
+    }
+    forceCloseArtifactEditor();
   }
 
   function isUploadFileRequired() {
@@ -506,7 +520,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         if (!record && artifactForm.source === "uploaded" && !artifactForm.selectedFile && artifactEditor.artifactId) {
           const editingArtifact = getEditingArtifact();
           if (editingArtifact?.source === "uploaded") {
-            closeArtifactEditor();
+            forceCloseArtifactEditor();
             notifications.show({
               color: "blue",
               title: "发布中心",
@@ -533,7 +547,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         throw new Error("安装包没有保存成功，请重新选择文件后再试。");
       }
       setReleases((current) => upsertRelease(current, record));
-      closeArtifactEditor();
+      forceCloseArtifactEditor();
       notifications.show({
         color: "green",
         title: "发布中心",
@@ -542,7 +556,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     } catch (reason) {
       const result = showReleaseRequestFailure(reason, "保存安装包失败");
       if (result.uncertain) {
-        closeArtifactEditor();
+        forceCloseArtifactEditor();
         void loadReleases();
       }
     } finally {

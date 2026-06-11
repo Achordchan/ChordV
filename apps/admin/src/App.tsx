@@ -1858,7 +1858,7 @@ export function App() {
           : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", {
               failureTitle: "节点导入失败，未保存",
               failureFallback: "导入失败，未保存。请检查订阅地址或 3x-ui 面板连接后重试。",
-              treatHttp500AsUncertain: true
+              ...dbFirstMutationOptions
             });
         if (success) forceCloseDrawer();
       }
@@ -2004,7 +2004,7 @@ export function App() {
       return;
     }
     try {
-      await runAction(() => deleteAnnouncement(announcementId), "公告已删除", { treatHttp500AsUncertain: true });
+      await runAction(() => deleteAnnouncement(announcementId), "公告已删除", dbFirstMutationOptions);
     } finally {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);
@@ -2017,7 +2017,7 @@ export function App() {
       deleteNodeSubmittingRef.current = true;
       setDeleteNodeSubmitting(true);
       const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已停用，面板清理任务已排队", {
-        treatHttp500AsUncertain: true
+        ...dbFirstMutationOptions
       });
       if (success) setDeleteNodeTarget(null);
     } finally {
@@ -2041,7 +2041,7 @@ export function App() {
     }
 
     try {
-      await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除", { treatHttp500AsUncertain: true });
+      await runAction(() => deleteTeamMember(teamId, memberId), "成员已移除", dbFirstMutationOptions);
     } finally {
       entityActionBusyRef.current = null;
       setEntityActionBusyKey(null);

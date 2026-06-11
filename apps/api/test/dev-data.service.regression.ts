@@ -5022,9 +5022,8 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
   assert.equal(record.remainingTrafficGb, 20);
 }
 
-async function testRenewSubscriptionResetTrafficQueueFailureRollsBackLocalUsage() {
+async function testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFails() {
   let transactionCalled = false;
-  let leaseSyncCalled = false;
   let subscriptionUpdateCalled = false;
   const lockedSubscription = {
     id: "sub_1",
@@ -5051,9 +5050,7 @@ async function testRenewSubscriptionResetTrafficQueueFailureRollsBackLocalUsage(
       resetClientTraffic: async () => false
     },
     runtimeSessionService: {
-      syncActiveLeasesForSubscription: async () => {
-        leaseSyncCalled = true;
-      },
+      syncActiveLeasesForSubscription: async () => undefined,
       syncSubscriptionPanelAccess: async () => undefined
     },
     prisma: {
@@ -5135,14 +5132,13 @@ async function testRenewSubscriptionResetTrafficQueueFailureRollsBackLocalUsage(
     }
   });
 
-  await assert.rejects(
-    () => service.renewSubscription("sub_1", { resetTraffic: true }),
-    /panel sync queue unavailable/
-  );
+  const result = await service.renewSubscription("sub_1", { resetTraffic: true });
 
   assert.equal(transactionCalled, true, "reset should attempt one atomic local transaction");
-  assert.equal(subscriptionUpdateCalled, false, "local counters must not be cleared when reset job cannot be queued atomically");
-  assert.equal(leaseSyncCalled, false, "failed local reset must not continue follow-up lease reconciliation");
+  assert.equal(subscriptionUpdateCalled, true, "local counters must be cleared even when reset job queueing fails");
+  assert.equal(result.usedTrafficGb, 0);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel sync queue unavailable/);
 }
 
 async function testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail() {
@@ -5450,7 +5446,7 @@ async function testResetSubscriptionTrafficRejectsNonStringUserId() {
   );
 }
 
-async function testResetSubscriptionTrafficRollsBackWhenPanelQueueFails() {
+async function testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails() {
   let transactionCalled = false;
   const subscriptionUpdates: Array<Record<string, any>> = [];
   const panelJobUpserts: Array<Record<string, any>> = [];
@@ -5478,13 +5474,23 @@ async function testResetSubscriptionTrafficRollsBackWhenPanelQueueFails() {
       warn: () => undefined
     },
     requireSubscription: async () => lockedSubscription,
-    publishSubscriptionUpdatedEvent: async () => {
-      throw new Error("publish should not run when panel reset queue fails");
-    },
-    requireAdminUserRecord: async () => {
-      throw new Error("user refresh should not run when panel reset queue fails");
-    },
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }),
     prisma: {
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelJobUpserts.push(payload);
+          throw new Error("panel reset queue failed");
+        }
+      },
       $transaction: async (callback: (tx: any) => Promise<any>) => {
         transactionCalled = true;
         return callback({
@@ -5526,12 +5532,6 @@ async function testResetSubscriptionTrafficRollsBackWhenPanelQueueFails() {
             ],
             update: async () => ({})
           },
-          panelSyncJob: {
-            upsert: async (payload: Record<string, any>) => {
-              panelJobUpserts.push(payload);
-              throw new Error("panel reset queue failed");
-            }
-          },
           trafficLedger: {
             deleteMany: async () => ({}),
             aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
@@ -5541,14 +5541,19 @@ async function testResetSubscriptionTrafficRollsBackWhenPanelQueueFails() {
     }
   });
 
-  await assert.rejects(() => service.resetSubscriptionTraffic("sub_1"), /panel reset queue failed/);
+  const result = await service.resetSubscriptionTraffic("sub_1");
 
   assert.equal(transactionCalled, true, "traffic reset must attempt the atomic reset transaction");
-  assert.equal(panelJobUpserts.length, 1, "panel reset must be queued inside the reset transaction");
-  assert.equal(subscriptionUpdates.length, 0, "subscription counters must not be saved when queue write fails");
+  assert.equal(panelJobUpserts.length, 1, "panel reset must still be attempted after local reset is saved");
+  assert.equal(subscriptionUpdates.length, 1, "subscription counters must be saved even when queue write fails");
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0);
+  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /panel reset queue failed/);
 }
 
-async function testResetTeamMemberTrafficRollsBackWhenPanelQueueFails() {
+async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
   const subscriptionUpdates: Array<Record<string, any>> = [];
   const ledgerDeletes: Array<Record<string, any>> = [];
   const snapshotUpserts: Array<Record<string, any>> = [];
@@ -5592,6 +5597,12 @@ async function testResetTeamMemberTrafficRollsBackWhenPanelQueueFails() {
       updatedAt: "2026-01-01T00:00:00.000Z"
     }),
     prisma: {
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelJobUpserts.push(payload);
+          throw new Error("offline panel reset queue failed");
+        }
+      },
       teamMember: {
         findFirst: async (payload: Record<string, any>) => {
           membershipQueries.push(payload);
@@ -5651,12 +5662,6 @@ async function testResetTeamMemberTrafficRollsBackWhenPanelQueueFails() {
               return {};
             }
           },
-          panelSyncJob: {
-            upsert: async (payload: Record<string, any>) => {
-              panelJobUpserts.push(payload);
-              throw new Error("offline panel reset queue failed");
-            }
-          },
           trafficLedger: {
             deleteMany: async (payload: Record<string, any>) => {
               ledgerDeletes.push(payload);
@@ -5671,10 +5676,7 @@ async function testResetTeamMemberTrafficRollsBackWhenPanelQueueFails() {
     }
   });
 
-  await assert.rejects(
-    () => service.resetSubscriptionTraffic("sub_team", { userId: "member_1" }),
-    /offline panel reset queue failed/
-  );
+  const result = await service.resetSubscriptionTraffic("sub_team", { userId: "member_1" });
 
   assert.deepEqual(membershipQueries[0]?.where, {
     teamId: "team_1",
@@ -5694,11 +5696,16 @@ async function testResetTeamMemberTrafficRollsBackWhenPanelQueueFails() {
   assert.equal(bindingUpdates.length, 1, "member traffic reset must reset binding counters locally");
   assert.equal(bindingUpdates[0].data.lastUplinkBytes, 0n);
   assert.equal(bindingUpdates[0].data.lastDownlinkBytes, 0n);
-  assert.equal(subscriptionUpdates.length, 0, "subscription counters must not be saved when queue write fails");
-  assert.equal(panelJobUpserts.length, 1, "offline panel reset must be queued inside the reset transaction");
+  assert.equal(subscriptionUpdates.length, 1, "subscription counters must be saved even when queue write fails");
+  assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 13);
+  assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 87);
+  assert.equal(panelJobUpserts.length, 1, "offline panel reset must still be attempted after local reset is saved");
   assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
   assert.equal(panelJobUpserts[0].create.userId, "member_1");
   assert.equal(panelJobUpserts[0].create.teamId, "team_1");
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /offline panel reset queue failed/);
 }
 
 async function testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls() {
@@ -21447,14 +21454,14 @@ async function main() {
   await testUsageDeltaKeepsLocalUsageWhenPublishFails();
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
-  await testRenewSubscriptionResetTrafficQueueFailureRollsBackLocalUsage();
+  await testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFails();
   await testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail();
   await testRenewSubscriptionReturnsPendingWhenPanelSyncStalls();
   await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
-  await testResetSubscriptionTrafficRollsBackWhenPanelQueueFails();
-  await testResetTeamMemberTrafficRollsBackWhenPanelQueueFails();
+  await testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails();
+  await testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenUserRefreshStalls();
   await testResetSubscriptionTrafficReturnsWhenSubscriptionPublishStalls();
   await testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines();
