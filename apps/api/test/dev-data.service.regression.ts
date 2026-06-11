@@ -474,7 +474,18 @@ function createUsageSyncService(overrides: Record<string, unknown> = {}) {
 }
 
 function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
-  return createInstance<ReleaseCenterService>(ReleaseCenterService.prototype, overrides);
+  return createInstance<ReleaseCenterService>(ReleaseCenterService.prototype, {
+    logger: {
+      warn: () => undefined
+    },
+    clientEventsPublisher: {
+      publishVersionUpdated: async () => undefined
+    },
+    adminRuntimeEventsService: {
+      publishVersionUpdated: () => undefined
+    },
+    ...overrides
+  });
 }
 
 function createRuntimeComponentsService(overrides: Record<string, unknown> = {}) {
@@ -2652,6 +2663,109 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
 
   assert.equal(updates.length, 1);
   assert.equal(result.status, "published");
+}
+
+async function testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const updates: Array<Record<string, any>> = [];
+  const publishedEvents: Array<{ platform: string; channel: string }> = [];
+  const service = createReleaseCenterService({
+    clientEventsPublisher: {
+      publishVersionUpdated: async (platform: string, channel: string) => {
+        publishedEvents.push({ platform, channel });
+      }
+    },
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            status: "published",
+            publishedAt: now
+          }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return makeReleaseCenterTestRelease({
+            status: payload.data.status,
+            publishedAt: payload.data.publishedAt
+          });
+        }
+      }
+    }
+  });
+
+  const result = await service.unpublishRelease("release_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].where.id, "release_1");
+  assert.equal(updates[0].data.status, "draft");
+  assert.equal(updates[0].data.publishedAt, null);
+  assert.equal(result.status, "draft");
+  assert.equal(result.publishedAt, null);
+  assert.deepEqual(publishedEvents, [{ platform: "windows", channel: "stable" }]);
+}
+
+async function testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const warnings: string[] = [];
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    clientEventsPublisher: {
+      publishVersionUpdated: async () => {
+        throw new Error("version event failed");
+      }
+    },
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            status: "published",
+            publishedAt: now
+          }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return makeReleaseCenterTestRelease({
+            status: payload.data.status,
+            publishedAt: payload.data.publishedAt
+          });
+        }
+      }
+    }
+  });
+
+  const result = await service.unpublishRelease("release_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(result.status, "draft");
+  assert.equal(result.publishedAt, null);
+  assert.match(warnings[0] ?? "", /version_updated publish failed/);
+}
+
+async function testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite() {
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            status: "archived"
+          }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return makeReleaseCenterTestRelease(payload.data);
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.unpublishRelease("release_1"),
+    (error) => error instanceof BadRequestException,
+    "archived releases must remain read-only when unpublishing"
+  );
+  assert.equal(updates.length, 0);
 }
 
 async function testAssertReleasePublishableDoesNotValidateArtifacts() {
@@ -17478,6 +17592,64 @@ async function testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMis
   assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
 }
 
+async function testUpdateCheckIgnoresWithdrawnNewerRelease() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const withdrawnNewerRelease = makeReleaseCenterTestRelease({
+    id: "release_withdrawn",
+    version: "1.1.7",
+    displayTitle: "ChordV 1.1.7",
+    status: "draft",
+    publishedAt: null,
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        id: "artifact_withdrawn",
+        releaseId: "release_withdrawn",
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.zip",
+        fileName: "ChordV_1.1.7_x64-full.zip"
+      })
+    ]
+  });
+  const olderPublishedRelease = makeReleaseCenterTestRelease({
+    id: "release_older",
+    version: "1.1.6",
+    displayTitle: "ChordV 1.1.6",
+    status: "published",
+    publishedAt: now,
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        id: "artifact_older",
+        releaseId: "release_older",
+        downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
+        fileName: "ChordV_1.1.6_x64-full.zip"
+      })
+    ]
+  });
+  const releaseQueries: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findMany: async (payload: Record<string, any>) => {
+          releaseQueries.push(payload);
+          return [withdrawnNewerRelease, olderPublishedRelease].filter((release) => release.status === payload.where.status);
+        }
+      }
+    }
+  });
+
+  const result = await service.checkClientUpdate({
+    currentVersion: "1.1.5",
+    platform: "windows",
+    channel: "stable",
+    artifactType: "zip"
+  });
+
+  assert.equal(releaseQueries.length, 1);
+  assert.equal(releaseQueries[0].where.status, "published");
+  assert.equal(result.hasUpdate, true);
+  assert.equal(result.latestVersion, "1.1.6");
+  assert.equal(result.recommendedArtifact?.id, "artifact_older");
+}
+
 async function testUpdateCheckAllowsUploadedArtifactWithStaleMetadata() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-storage-"));
@@ -20928,6 +21100,91 @@ async function testCreateAnnouncementReturnsWhenPublishUserLookupStalls() {
   assert.equal(publishLookupStarted, true, "announcement publish should still start in background");
 }
 
+async function testDeleteAnnouncementRemovesRecordAndPublishesUpdate() {
+  const calls: string[] = [];
+  const publishedIds: string[] = [];
+  const service = createAnnouncementPolicyService({
+    publishAnnouncementUpdatedEvent: async (announcementId: string) => {
+      publishedIds.push(announcementId);
+    },
+    prisma: {
+      announcement: {
+        findUnique: async (payload: Record<string, any>) => {
+          calls.push(`find:${payload.where.id}`);
+          return { id: payload.where.id };
+        },
+        delete: async (payload: Record<string, any>) => {
+          calls.push(`delete:${payload.where.id}`);
+          return { id: payload.where.id };
+        }
+      }
+    }
+  });
+
+  const result = await service.deleteAnnouncement("announcement_1");
+
+  assert.deepEqual(calls, ["find:announcement_1", "delete:announcement_1"]);
+  await waitUntil(() => publishedIds.length > 0);
+  assert.deepEqual(publishedIds, ["announcement_1"]);
+  assert.deepEqual(result, { ok: true, announcementId: "announcement_1" });
+}
+
+async function testDeleteAnnouncementRejectsMissingRecordBeforeDbDelete() {
+  const calls: string[] = [];
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      announcement: {
+        findUnique: async () => {
+          calls.push("find");
+          return null;
+        },
+        delete: async () => {
+          calls.push("delete");
+          throw new Error("delete should not be called for missing announcement");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteAnnouncement("announcement_missing"),
+    (error) => error instanceof NotFoundException,
+    "missing announcement deletes must return a controlled 404"
+  );
+  assert.deepEqual(calls, ["find"]);
+}
+
+async function testDeleteAnnouncementKeepsLocalDeleteWhenPublishFails() {
+  const warnings: string[] = [];
+  const calls: string[] = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      announcement: {
+        findUnique: async () => ({ id: "announcement_1" }),
+        delete: async () => {
+          calls.push("delete");
+          return { id: "announcement_1" };
+        }
+      },
+      user: {
+        findMany: async () => {
+          throw new Error("active user lookup failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.deleteAnnouncement("announcement_1");
+
+  assert.deepEqual(calls, ["delete"]);
+  assert.deepEqual(result, { ok: true, announcementId: "announcement_1" });
+  await waitUntil(() => warnings.length > 0);
+  assert.match(warnings[0] ?? "", /announcement_updated publish failed/);
+}
+
 async function testMarkAnnouncementReadKeepsLocalSaveWhenPublishFails() {
   const upserts: Array<Record<string, any>> = [];
   const warnings: string[] = [];
@@ -22837,6 +23094,9 @@ async function main() {
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
   await testCreateReleaseRejectsDuplicateVersionAsConflict();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
+  await testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent();
+  await testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails();
+  await testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite();
   await testAssertReleasePublishableDoesNotValidateArtifacts();
   await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
   await testPublishReleaseRejectsMissingUploadedArtifactFile();
@@ -23073,6 +23333,7 @@ async function main() {
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
   await testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMissing();
+  await testUpdateCheckIgnoresWithdrawnNewerRelease();
   await testUpdateCheckAllowsUploadedArtifactWithStaleMetadata();
   await testUpdateCheckAllowsUploadedArtifactWithoutMetadata();
   await testMoveUploadedFileCleansTargetWhenCrossDeviceUnlinkFails();
@@ -23153,6 +23414,9 @@ async function main() {
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
+  await testDeleteAnnouncementRemovesRecordAndPublishesUpdate();
+  await testDeleteAnnouncementRejectsMissingRecordBeforeDbDelete();
+  await testDeleteAnnouncementKeepsLocalDeleteWhenPublishFails();
   await testMarkAnnouncementReadKeepsLocalSaveWhenPublishFails();
   await testUpdatePolicyRejectsDuplicateModes();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
