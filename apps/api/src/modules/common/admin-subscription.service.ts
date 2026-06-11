@@ -1265,7 +1265,12 @@ export class AdminSubscriptionService {
       panelSync = mergePanelSyncResults(panelSync, teamSubscriptionLookup.panelSync);
       if (teamSubscription) {
         if (input.ownerUserId && input.ownerUserId !== current.ownerUserId) {
-          panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id));
+          panelSync = mergePanelSyncResults(
+            panelSync,
+            this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team owner update for ${teamSubscription.id}`, () =>
+              this.syncSubscriptionPanelAccessBestEffort(teamSubscription.id)
+            )
+          );
         }
         await this.publishSubscriptionUpdatedEvent({
           subscriptionId: teamSubscription.id,
@@ -1342,7 +1347,12 @@ export class AdminSubscriptionService {
       });
     }
     if (subscription) {
-      panelSync = await this.syncSubscriptionPanelAccessBestEffort(subscription.id);
+      panelSync = mergePanelSyncResults(
+        panelSync,
+        this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team member create for ${subscription.id}`, () =>
+          this.syncSubscriptionPanelAccessBestEffort(subscription.id)
+        )
+      );
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: subscription.id,
         teamId: subscription.teamId,
@@ -1391,12 +1401,18 @@ export class AdminSubscriptionService {
         "team subscription lookup after owner transfer"
       );
       panelSync = mergePanelSyncResults(panelSync, lookup.panelSync);
-      if (lookup.subscription) {
-        panelSync = mergePanelSyncResults(panelSync, await this.syncSubscriptionPanelAccessBestEffort(lookup.subscription.id));
+      const subscription = lookup.subscription;
+      if (subscription) {
+        panelSync = mergePanelSyncResults(
+          panelSync,
+          this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after owner transfer for ${subscription.id}`, () =>
+            this.syncSubscriptionPanelAccessBestEffort(subscription.id)
+          )
+        );
         await this.publishSubscriptionUpdatedEvent({
-          subscriptionId: lookup.subscription.id,
-          teamId: lookup.subscription.teamId,
-          state: lookup.subscription.state
+          subscriptionId: subscription.id,
+          teamId: subscription.teamId,
+          state: subscription.state
         });
       }
     } else {
@@ -1554,7 +1570,9 @@ export class AdminSubscriptionService {
       }
     });
 
-    const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
+    const panelSync = this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team subscription create for ${row.id}`, () =>
+      this.syncSubscriptionPanelAccessBestEffort(row.id)
+    );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,

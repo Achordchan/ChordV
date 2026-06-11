@@ -18097,7 +18097,11 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
 
 async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
+  let panelSyncStarted = false;
   const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
     requireTeam: async () => ({
       id: "team_1",
       name: "Team",
@@ -18114,6 +18118,7 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
     }),
     runtimeSessionService: {
       queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
         throw new Error("panel sync failed");
       }
     },
@@ -18149,7 +18154,10 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
 
   assert.equal(result.id, "sub_team");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.equal(panelSyncStarted, false, "team subscription create must not wait for panel sync before returning");
+  await waitUntil(() => panelSyncStarted);
+  assert.equal(panelSyncStarted, true, "team subscription create should still start panel sync in background");
 }
 
 async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
@@ -18936,7 +18944,11 @@ async function testCreateTeamMemberKeepsMemberWhenTicketCleanupFails() {
 }
 
 async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
+  let panelSyncStarted = false;
   const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
     requireTeam: async () => ({ id: "team_1" }),
     assertUserCanJoinTeam: async () => undefined,
     findCurrentTeamSubscription: async () => ({
@@ -18946,6 +18958,7 @@ async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
     }),
     runtimeSessionService: {
       queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
         throw new Error("panel sync failed");
       }
     },
@@ -18967,7 +18980,10 @@ async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
 
   assert.equal((result as { id: string }).id, "team_1");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.equal(panelSyncStarted, false, "team member create must not wait for panel sync before returning");
+  await waitUntil(() => panelSyncStarted);
+  assert.equal(panelSyncStarted, true, "team member create should still start panel sync in background");
 }
 
 async function testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails() {
@@ -19103,6 +19119,7 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
   const memberDemotions: Array<Record<string, any>> = [];
   const teamUpdates: Array<Record<string, any>> = [];
   const queuedSubscriptions: string[] = [];
+  let returned = false;
   const publishedSubscriptions: Array<Record<string, unknown>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
   const teamSubscription = {
@@ -19145,6 +19162,7 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
     },
     runtimeSessionService: {
       queueSubscriptionPanelAccessSync: async (subscriptionId: string) => {
+        assert.equal(returned, true, "owner transfer panel sync must run after the local response");
         queuedSubscriptions.push(subscriptionId);
         return 1;
       },
@@ -19188,6 +19206,7 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
   });
 
   const result = await service.updateTeamMember("team_1", "member_new_owner", { role: "owner" });
+  returned = true;
 
   assert.deepEqual(memberUpdates, [
     {
@@ -19210,7 +19229,7 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
       data: { ownerUserId: "user_new_owner" }
     }
   ]);
-  assert.deepEqual(queuedSubscriptions, ["sub_team"]);
+  assert.deepEqual(queuedSubscriptions, []);
   assert.deepEqual(publishedSubscriptions, [
     {
       subscriptionId: "sub_team",
@@ -19220,7 +19239,9 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
   ]);
   assert.equal(result.ownerUserId, "user_new_owner");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background retry/);
+  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  await waitUntil(() => queuedSubscriptions.length > 0);
+  assert.deepEqual(queuedSubscriptions, ["sub_team"]);
 }
 
 async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
