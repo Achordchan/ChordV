@@ -100,6 +100,7 @@ export type AdminRuntimeEventDto = {
     | "keepalive"
     | "ticket_updated"
     | "subscription_updated"
+    | "node_access_updated"
     | "version_updated"
     | "announcement_updated"
     | "announcement_read_state_updated"
@@ -110,6 +111,7 @@ export type AdminRuntimeEventDto = {
   announcementId?: string | null;
   subscriptionId?: string | null;
   subscriptionState?: string | null;
+  nodeId?: string | null;
   state?: string | null;
   platform?: AdminReleasePlatform | null;
   channel?: "stable" | null;

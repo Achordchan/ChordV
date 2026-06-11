@@ -545,6 +545,10 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
       : {};
   const prismaOverride =
     typeof overrides.prisma === "object" && overrides.prisma !== null ? (overrides.prisma as Record<string, unknown>) : {};
+  const adminRuntimeEventsOverride =
+    typeof overrides.adminRuntimeEventsService === "object" && overrides.adminRuntimeEventsService !== null
+      ? (overrides.adminRuntimeEventsService as Record<string, unknown>)
+      : {};
   return createInstance<AdminSubscriptionService>(AdminSubscriptionService.prototype, {
     ...overrides,
     prisma: {
@@ -557,6 +561,10 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
       queueLeaseRevocationJobsForSubscription: async () => 0,
       queueLeaseRevocationJobsForSubscriptionTx: async () => 0,
       ...runtimeSessionOverride
+    },
+    adminRuntimeEventsService: {
+      publishSubscriptionUpdated: () => undefined,
+      ...adminRuntimeEventsOverride
     }
   });
 }
@@ -1924,6 +1932,7 @@ function testAdminRuntimeEventStreamOpensWithAnnouncementAndPolicyRefreshEvents(
   });
   subscription.unsubscribe();
 
+  assert.ok(receivedTypes.includes("node_access_updated"), "admin SSE open must trigger node access refresh");
   assert.ok(receivedTypes.includes("announcement_updated"), "admin SSE open must trigger announcement refresh");
   assert.ok(receivedTypes.includes("policy_updated"), "admin SSE open must trigger policy refresh");
 }
@@ -2019,7 +2028,7 @@ async function testAdminRuntimeEventStreamPreservesOrderWithAsyncValidation() {
   }).subscribe((event) => {
     receivedTypes.push(JSON.parse((event as { data: string }).data).type);
   });
-  await waitUntil(() => receivedTypes.length >= 6);
+  await waitUntil(() => receivedTypes.length >= 7);
   receivedTypes.length = 0;
 
   service.publish({
@@ -19612,6 +19621,7 @@ async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
     nodeAccesses: []
   };
   let publishLookupStarted = false;
+  const adminEvents: Array<Record<string, any>> = [];
   const service = createAdminSubscriptionService({
     logger: {
       warn: () => undefined
@@ -19621,6 +19631,11 @@ async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
     syncSubscriptionPanelAccessBestEffort: async () => ({ ok: true }),
     clientRuntimeEventsService: {
       publishToUsers: () => undefined
+    },
+    adminRuntimeEventsService: {
+      publishSubscriptionUpdated: (event: Record<string, any>) => {
+        adminEvents.push(event);
+      }
     },
     prisma: {
       teamMember: {
@@ -19653,11 +19668,73 @@ async function testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls() {
   ]);
 
   assert.equal(publishLookupStarted, false, "subscription update response must return before subscription_updated publish starts");
+  assert.equal(adminEvents.length, 0, "subscription_updated publish must remain deferred until after local response returns");
+  await waitUntil(() => adminEvents.length > 0);
+  assert.deepEqual(adminEvents[0], { subscriptionId: "sub_team", state: "active" });
   await waitUntil(() => publishLookupStarted);
   assert.equal(publishLookupStarted, true, "subscription_updated publish should still start in background");
   assert.equal(updates.length, 1, "local subscription update must save before stalled publish finishes");
   assert.equal(result.totalTrafficGb, 120);
   assert.equal(result.remainingTrafficGb, 116);
+}
+
+async function testSubscriptionUpdatedStillPublishesAdminEventWhenClientPublishFails() {
+  const adminEvents: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    resolveTargetUserIdsForSubscriptionTarget: async () => ["user_1"],
+    clientRuntimeEventsService: {
+      publishToUsers: () => {
+        throw new Error("client SSE failed");
+      }
+    },
+    adminRuntimeEventsService: {
+      publishSubscriptionUpdated: (event: Record<string, any>) => {
+        adminEvents.push(event);
+      }
+    }
+  });
+
+  await service["runSubscriptionUpdatedPublishInBackground"]({
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    state: "active"
+  });
+
+  assert.deepEqual(adminEvents, [{ subscriptionId: "sub_1", state: "active" }]);
+  assert.match(warnings[0] ?? "", /subscription_updated publish failed/);
+}
+
+async function testDevDataNodeAccessStillPublishesAdminEventWhenClientPublishFails() {
+  const adminEvents: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const service = createDevDataService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdated: async () => {
+        throw new Error("client node access SSE failed");
+      }
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, any>) => {
+        adminEvents.push(event);
+      }
+    }
+  });
+
+  await service["publishNodeAccessUpdatedEvent"]({
+    subscriptionId: "sub_1",
+    userId: "user_1"
+  });
+
+  assert.equal(adminEvents[0].type, "node_access_updated");
+  assert.equal(adminEvents[0].subscriptionId, "sub_1");
+  assert.match(warnings[0] ?? "", /node_access_updated publish failed/);
 }
 
 async function testUpdateSubscriptionReturnsPendingWhenPanelAccessSyncStalls() {
@@ -24899,6 +24976,8 @@ async function main() {
   await testUpdatePlanSecurityReturnsWhenConcurrencyReconciliationStallsAfterSave();
   await testUpdatePlanSecurityKeepsLocalSaveWhenSubscriptionCountFails();
   await testUpdateSubscriptionReturnsWhenSubscriptionPublishStalls();
+  await testSubscriptionUpdatedStillPublishesAdminEventWhenClientPublishFails();
+  await testDevDataNodeAccessStillPublishesAdminEventWhenClientPublishFails();
   await testUpdateSubscriptionReturnsPendingWhenPanelAccessSyncStalls();
   await testUpdateSubscriptionReturnsPendingWhenPanelDisableQueueFails();
   await testUpdateSubscriptionReturnsPendingWhenLeaseRevocationFailsAfterPanelQueue();

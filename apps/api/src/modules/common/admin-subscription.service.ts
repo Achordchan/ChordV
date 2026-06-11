@@ -1967,16 +1967,17 @@ export class AdminSubscriptionService {
       undefined,
       async () => {
         try {
+          const occurredAt = new Date().toISOString();
+          this.adminRuntimeEventsService.publishSubscriptionUpdated({
+            subscriptionId: target.subscriptionId ?? null,
+            state: target.state ?? null
+          });
           const userIds = await this.resolveTargetUserIdsForSubscriptionTarget(target);
           this.clientRuntimeEventsService.publishToUsers(userIds, {
             type: "subscription_updated",
-            occurredAt: new Date().toISOString(),
+            occurredAt,
             subscriptionId: target.subscriptionId ?? null,
             subscriptionState: target.state ?? null,
-            state: target.state ?? null
-          });
-          this.adminRuntimeEventsService.publishSubscriptionUpdated({
-            subscriptionId: target.subscriptionId ?? null,
             state: target.state ?? null
           });
         } catch (error) {

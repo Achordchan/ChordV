@@ -14,6 +14,7 @@ type AdminRuntimeEventDto = Pick<
   | "ticketStatus"
   | "subscriptionId"
   | "subscriptionState"
+  | "nodeId"
   | "state"
   | "platform"
   | "channel"
@@ -208,6 +209,7 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
       { type: "keepalive", occurredAt },
       { type: "ticket_updated", occurredAt },
       { type: "subscription_updated", occurredAt },
+      { type: "node_access_updated", occurredAt },
       { type: "version_updated", occurredAt },
       { type: "announcement_updated", occurredAt },
       { type: "policy_updated", occurredAt }

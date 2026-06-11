@@ -322,6 +322,7 @@ export class DevDataService implements OnModuleInit {
     teamId?: string | null;
     state?: SubscriptionState | null;
   }) {
+    this.publishAdminSubscriptionEventBestEffort(target);
     await this.tryPublishEvent("subscription_updated", () => this.clientEventsPublisher.publishSubscriptionUpdated(target));
   }
 
@@ -330,7 +331,42 @@ export class DevDataService implements OnModuleInit {
     userId?: string | null;
     teamId?: string | null;
   }) {
+    this.publishAdminNodeAccessEventBestEffort(target);
     await this.tryPublishEvent("node_access_updated", () => this.clientEventsPublisher.publishNodeAccessUpdated(target));
+  }
+
+  private publishAdminSubscriptionEventBestEffort(target: {
+    subscriptionId?: string | null;
+    state?: SubscriptionState | null;
+  }) {
+    if (!this.adminRuntimeEventsService) {
+      return;
+    }
+    try {
+      this.adminRuntimeEventsService.publishSubscriptionUpdated({
+        subscriptionId: target.subscriptionId ?? null,
+        state: target.state ?? null
+      });
+    } catch (error) {
+      this.logger?.warn(`Local subscription change saved, but admin subscription_updated publish failed: ${readPanelSyncErrorMessage(error)}`);
+    }
+  }
+
+  private publishAdminNodeAccessEventBestEffort(target: {
+    subscriptionId?: string | null;
+  }) {
+    if (!this.adminRuntimeEventsService) {
+      return;
+    }
+    try {
+      this.adminRuntimeEventsService.publish({
+        type: "node_access_updated",
+        occurredAt: new Date().toISOString(),
+        subscriptionId: target.subscriptionId ?? null
+      });
+    } catch (error) {
+      this.logger?.warn(`Local node access change saved, but admin node_access_updated publish failed: ${readPanelSyncErrorMessage(error)}`);
+    }
   }
 
   private publishNodeAccessUpdatedEventInBackground(target: {
