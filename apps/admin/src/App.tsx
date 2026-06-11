@@ -818,6 +818,10 @@ export function App() {
   }
 
   function refreshCurrentSectionSilently() {
+    if (sectionRef.current === "tickets") {
+      setTicketRefreshSignal((current) => current + 1);
+      return;
+    }
     void loadSectionData(sectionRef.current, { force: true, silent: true }).catch(() => {
       // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
     });
