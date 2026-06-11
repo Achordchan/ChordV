@@ -18,6 +18,7 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { PrismaService } from "./prisma.service";
+import { throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
 import {
   assertReleaseArtifactTypeAllowed,
   buildReleaseArtifactDownloadUrl,
@@ -557,7 +558,7 @@ export class ReleaseCenterService {
       return this.getAdminReleaseBestEffort(releaseId, fallback, "upload release artifact response refresh");
     } catch (error) {
       await this.cleanupFailedReleaseArtifactUpload(prepared ? prepared.absolutePath : file.path, "failed release artifact upload");
-      throw error;
+      throwPrismaTransientAsServiceUnavailable(error, "安装包保存暂时繁忙，请刷新发布中心后重试；已清理本次上传文件。");
     }
   }
 
@@ -632,7 +633,7 @@ export class ReleaseCenterService {
         prepared ? prepared.absolutePath : file.path,
         "failed release artifact replacement upload"
       );
-      throw error;
+      throwPrismaTransientAsServiceUnavailable(error, "安装包替换暂时繁忙，请刷新发布中心后重试；已清理本次上传文件。");
     }
   }
 

@@ -10,6 +10,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
+import { throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
@@ -471,7 +472,7 @@ export class ClientTicketService {
       });
     } catch (error) {
       await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
-      throw error;
+      throwPrismaTransientAsServiceUnavailable(error, "工单回复保存暂时繁忙，请刷新后重试；已上传附件已清理。");
     }
 
     this.publishTicketEventBestEffort(user.id, {

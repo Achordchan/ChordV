@@ -13327,6 +13327,50 @@ async function testRuntimeComponentUploadMapsUniqueIdentityConflict() {
   assert.deepEqual(cleanupCalls, [{ absolutePath: "prepared-runtime.bin", label: "failed runtime component upload" }]);
 }
 
+async function testRuntimeComponentUploadMapsTransientPrismaFailure() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    findSharedRulesetRecord: async () => null,
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "prepared-runtime-transient.bin",
+      storedFilePath: "component/prepared-runtime-transient.bin",
+      fileName: "xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw { code: "P2028", message: "Transaction already closed" };
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadAdminRuntimeComponent(
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray"
+        },
+        {
+          path: "upload-runtime-transient.tmp",
+          originalname: "xray.exe",
+          size: 1
+        }
+      ),
+    ServiceUnavailableException,
+    "runtime component upload transient Prisma failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [{ absolutePath: "prepared-runtime-transient.bin", label: "failed runtime component upload" }]);
+}
+
 async function testRuntimeComponentPrepareMissingTempFileReturnsBadRequest() {
   const previousStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const storageRoot = await mkdtemp(path.join(tmpdir(), "runtime-upload-missing-"));
@@ -13482,6 +13526,69 @@ async function testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict() {
   );
   assert.deepEqual(cleanupCalls, [
     { absolutePath: "replacement-runtime.bin", label: "failed runtime component replacement upload" }
+  ]);
+}
+
+async function testRuntimeComponentReplaceUploadMapsTransientPrismaFailure() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "uploaded",
+      originUrl: "/api/downloads/runtime-components/component_1",
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
+      fileName: "xray.exe",
+      storedFilePath: "component_1/xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      archiveEntryName: null,
+      expectedHash: "a".repeat(64),
+      enabled: true
+    }),
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "replacement-runtime-transient.bin",
+      storedFilePath: "component_1/replacement-runtime-transient.bin",
+      fileName: "xray-new.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw { code: "P2034", message: "Transaction failed due to a write conflict" };
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceAdminRuntimeComponentUpload(
+        "component_1",
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray"
+        },
+        {
+          path: "replacement-upload-runtime-transient.tmp",
+          originalname: "xray-new.exe",
+          size: 1
+        }
+      ),
+    ServiceUnavailableException,
+    "runtime component replacement transient Prisma failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "replacement-runtime-transient.bin", label: "failed runtime component replacement upload" }
   ]);
 }
 
@@ -15367,6 +15474,53 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
   ]);
 }
 
+async function testUploadReleaseArtifactMapsTransientPrismaFailure() {
+  const release = makeReleaseCenterTestRelease();
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => release,
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => ({
+      absolutePath: "missing-prepared-release-transient.zip",
+      storedFilePath: "release_1/artifact_1/ChordV-full.zip",
+      fileName: "ChordV-full.zip",
+      fileSizeBytes: 123n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/releases/artifact_1"
+    }),
+    cleanupFailedReleaseArtifactUpload: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    },
+    prisma: {
+      $transaction: async () => {
+        throw { code: "P2028", message: "Transaction already closed" };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadReleaseArtifact(
+        "release_1",
+        {
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          isPrimary: true
+        },
+        {
+          path: "missing-upload-release-transient.zip",
+          originalname: "ChordV-full.zip",
+          size: 123
+        }
+      ),
+    ServiceUnavailableException,
+    "release artifact transient Prisma failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "missing-prepared-release-transient.zip", label: "failed release artifact upload" }
+  ]);
+}
+
 async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
   const release = makeReleaseCenterTestRelease();
   const artifact = makeReleaseCenterTestArtifact({
@@ -15420,6 +15574,63 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
   );
   assert.deepEqual(cleanupCalls, [
     { absolutePath: "missing-prepared-replacement-release.zip", label: "failed release artifact replacement upload" }
+  ]);
+}
+
+async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
+  const release = makeReleaseCenterTestRelease();
+  const artifact = makeReleaseCenterTestArtifact({
+    id: "artifact_1",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    storedFilePath: "release_1/artifact_1/old.zip"
+  });
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createReleaseCenterService({
+    ensureReleaseExists: async () => release,
+    assertReleaseArtifactsMutable: () => undefined,
+    prepareUploadedReleaseArtifactFile: async () => ({
+      absolutePath: "missing-prepared-replacement-release-transient.zip",
+      storedFilePath: "release_1/artifact_1/ChordV-full-new.zip",
+      fileName: "ChordV-full-new.zip",
+      fileSizeBytes: 123n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/releases/artifact_1"
+    }),
+    cleanupFailedReleaseArtifactUpload: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    },
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => artifact
+      },
+      $transaction: async () => {
+        throw { code: "P2034", message: "Transaction failed due to a write conflict" };
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceReleaseArtifactUpload(
+        "release_1",
+        "artifact_1",
+        {
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          isPrimary: true
+        },
+        {
+          path: "missing-upload-replacement-release-transient.zip",
+          originalname: "ChordV-full-new.zip",
+          size: 123
+        }
+      ),
+    ServiceUnavailableException,
+    "release artifact replacement transient Prisma failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "missing-prepared-replacement-release-transient.zip", label: "failed release artifact replacement upload" }
   ]);
 }
 
@@ -19882,6 +20093,52 @@ async function testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionF
   assert.deepEqual(deletedUploads, ["support-tickets/orphan.png"]);
 }
 
+async function testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure() {
+  const deletedUploads: string[] = [];
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/transient.png",
+    providerFileId: "support-tickets/transient.png",
+    fileName: "transient.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(1234)
+  };
+
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" })
+      },
+      $transaction: async () => {
+        throw { code: "P2028", message: "Transaction already closed" };
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => uploadedFile,
+      deleteUploadedSupportTicketAttachmentBestEffort: async (uploaded: { providerFileId: string | null; url: string }) => {
+        deletedUploads.push(uploaded.providerFileId ?? uploaded.url);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replyAdminSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "" },
+        {
+          path: path.join(tmpdir(), "transient.png"),
+          originalname: "transient.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "admin_1"
+      ),
+    ServiceUnavailableException,
+    "admin ticket attachment transient Prisma failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(deletedUploads, ["support-tickets/transient.png"]);
+}
+
 async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
@@ -20799,6 +21056,55 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
   assert.deepEqual(deletedUploads, ["support-tickets/client-orphan.png"]);
 }
 
+async function testClientReplySupportTicketAttachmentMapsTransientPrismaFailure() {
+  const deletedUploads: string[] = [];
+  const uploadedFile = {
+    url: "https://image.achord.cn/file/support-tickets/client-transient.png",
+    providerFileId: "support-tickets/client-transient.png",
+    fileName: "client-transient.png",
+    mimeType: "image/png",
+    fileSizeBytes: BigInt(1234)
+  };
+
+  const service = createClientTicketService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ({ id: "ticket_1", status: "waiting_user" })
+      },
+      $transaction: async () => {
+        throw { code: "P2028", message: "Transaction already closed" };
+      }
+    },
+    imageBedService: {
+      uploadSupportTicketAttachment: async () => uploadedFile,
+      deleteUploadedSupportTicketAttachmentBestEffort: async (uploaded: { providerFileId: string | null; url: string }) => {
+        deletedUploads.push(uploaded.providerFileId ?? uploaded.url);
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replyClientSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "" },
+        {
+          path: path.join(tmpdir(), "client-transient.png"),
+          originalname: "client-transient.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "token"
+      ),
+    ServiceUnavailableException,
+    "client ticket attachment transient Prisma failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(deletedUploads, ["support-tickets/client-transient.png"]);
+}
+
 async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
@@ -21195,9 +21501,11 @@ async function main() {
   await testRemoteRuntimeValidationRejectsMissingExpectedHash();
   await testRuntimeComponentUploadRejectsExpectedHashMismatch();
   await testRuntimeComponentUploadMapsUniqueIdentityConflict();
+  await testRuntimeComponentUploadMapsTransientPrismaFailure();
   await testRuntimeComponentPrepareMissingTempFileReturnsBadRequest();
   await testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup();
   await testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict();
+  await testRuntimeComponentReplaceUploadMapsTransientPrismaFailure();
   await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
@@ -21230,7 +21538,9 @@ async function main() {
   await testReleaseArtifactPrepareMissingTempFileReturnsBadRequest();
   await testWindowsExeUploadIsRejectedForFullReplacementUpdates();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
+  await testUploadReleaseArtifactMapsTransientPrismaFailure();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
+  await testReplaceReleaseArtifactUploadMapsTransientPrismaFailure();
   await testUpdateUploadedReleaseArtifactToExternalDeletesOldFile();
   await testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
@@ -21328,6 +21638,7 @@ async function main() {
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
+  await testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
   await testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
@@ -21340,6 +21651,7 @@ async function main() {
   await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
+  await testClientReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply();
   await testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();

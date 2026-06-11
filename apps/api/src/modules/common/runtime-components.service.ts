@@ -19,6 +19,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { PrismaService } from "./prisma.service";
+import { throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
 import { AuthSessionService } from "./auth-session.service";
 import { moveUploadedFile } from "./upload-file.utils";
 import { readZipEntryData } from "./release-center.utils";
@@ -184,7 +185,7 @@ export class RuntimeComponentsService {
         prepared ? prepared.absolutePath : file.path,
         "failed runtime component upload"
       );
-      throw error;
+      throwPrismaTransientAsServiceUnavailable(error, "内核组件保存暂时繁忙，请刷新后重试；已清理本次上传文件。");
     }
   }
 
@@ -316,7 +317,7 @@ export class RuntimeComponentsService {
         prepared ? prepared.absolutePath : file.path,
         "failed runtime component replacement upload"
       );
-      throw error;
+      throwPrismaTransientAsServiceUnavailable(error, "内核组件替换暂时繁忙，请刷新后重试；已清理本次上传文件。");
     }
   }
 
