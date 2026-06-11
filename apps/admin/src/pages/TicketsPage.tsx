@@ -46,7 +46,6 @@ import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 type TicketOwnerFilter = "all" | "personal" | "team";
 type TicketStatusFilter = "all" | SupportTicketStatus;
 
-const TICKET_AUTO_REFRESH_INTERVAL_MS = 20_000;
 const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
 const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -136,11 +135,9 @@ export function TicketsPage(props: TicketsPageProps) {
       });
     };
 
-    const timer = window.setInterval(refreshVisibleTickets, TICKET_AUTO_REFRESH_INTERVAL_MS);
     window.addEventListener("focus", refreshVisibleTickets);
     document.addEventListener("visibilitychange", refreshVisibleTickets);
     return () => {
-      window.clearInterval(timer);
       window.removeEventListener("focus", refreshVisibleTickets);
       document.removeEventListener("visibilitychange", refreshVisibleTickets);
     };
@@ -195,6 +192,15 @@ export function TicketsPage(props: TicketsPageProps) {
       })
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
   }, [keyword, ownerFilter, statusFilter, tickets, userEmailFilter]);
+
+  useEffect(() => {
+    setSelectedTicketId((current) => {
+      if (current && visibleTickets.some((item) => item.id === current)) {
+        return current;
+      }
+      return visibleTickets[0]?.id ?? null;
+    });
+  }, [visibleTickets]);
 
   async function loadTickets(options?: { silent?: boolean }) {
     const requestSeq = ++ticketListRequestSeqRef.current;

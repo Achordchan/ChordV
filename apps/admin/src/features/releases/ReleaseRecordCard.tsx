@@ -72,7 +72,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
               leftSection={<IconEdit size={14} />}
               onClick={() => props.onEditRelease(record)}
               disabled={isArchived || recordBusy || blockedByOtherMutation}
-              title={isArchived ? "Archived releases are read-only." : undefined}
+              title={isArchived ? "已归档的发布记录只读" : undefined}
             >
               编辑
             </Button>
@@ -98,7 +98,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
             </Button>
             {isArchived ? (
               <Button size="xs" variant="default" disabled>
-                Archived
+                已归档
               </Button>
             ) : record.status === "published" ? (
               <Button
@@ -252,7 +252,7 @@ function translatePlatform(platform: AdminReleasePlatform) {
 }
 
 function translateReleaseStatus(status: AdminReleaseRecordDto["status"]) {
-  if (status === "archived") return "Archived";
+  if (status === "archived") return "已归档";
   if (status === "published") return "已发布";
   return "草稿";
 }

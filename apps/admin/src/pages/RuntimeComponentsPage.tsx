@@ -24,7 +24,7 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
   const [runtimeComponents, setRuntimeComponents] = useState<AdminRuntimeComponentRecordDto[]>([]);
   const [runtimeFailures, setRuntimeFailures] = useState<AdminRuntimeComponentFailureReportDto[]>([]);
   const [runtimeValidation, setRuntimeValidation] = useState<Record<string, AdminRuntimeComponentValidationDto>>({});
-  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeLoading, setRuntimeLoading] = useState(true);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [uploadMaxBytes, setUploadMaxBytes] = useState(DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES);
