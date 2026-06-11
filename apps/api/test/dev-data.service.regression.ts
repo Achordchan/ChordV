@@ -43,6 +43,7 @@ import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { UploadedTempFileCleanupInterceptor } from "../src/modules/common/uploaded-temp-file-cleanup.interceptor";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import { AdminController } from "../src/modules/admin/admin.controller";
+import { DownloadsController } from "../src/modules/client/downloads.controller";
 import {
   ImportNodeDto,
   UpdateCurrentAdminSecurityDto,
@@ -2155,6 +2156,77 @@ async function testRuntimeDownloadMissingUploadedFileReturnsNotFound() {
     }
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+async function testReleaseDownloadMapsSendFileMissingToNotFound() {
+  const controller = new DownloadsController(
+    {
+      getReleaseArtifactDownloadDescriptor: async () => ({
+        absolutePath: path.join(tmpdir(), "missing-release-artifact.zip"),
+        fileName: "missing-release-artifact.zip"
+      })
+    } as any,
+    {} as any
+  );
+  const response = {
+    headersSent: false,
+    download: (_absolutePath: string, _fileName: string, callback: (error?: Error & { code?: string }) => void) => {
+      callback(Object.assign(new Error("missing file"), { code: "ENOENT" }));
+    }
+  };
+
+  await assert.rejects(
+    () => controller.downloadReleaseArtifact("artifact_1", response as any),
+    NotFoundException,
+    "release download send-file ENOENT races must return a controlled 404 instead of Express default handling"
+  );
+}
+
+async function testRuntimeDownloadMapsSendFileFailureToServiceUnavailable() {
+  const controller = new DownloadsController(
+    {} as any,
+    {
+      getRuntimeComponentDownloadDescriptor: async () => ({
+        absolutePath: path.join(tmpdir(), "runtime-component-denied.bin"),
+        fileName: "runtime-component-denied.bin"
+      })
+    } as any
+  );
+  const response = {
+    headersSent: false,
+    download: (_absolutePath: string, _fileName: string, callback: (error?: Error & { code?: string }) => void) => {
+      callback(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+    }
+  };
+
+  await assert.rejects(
+    () => controller.downloadRuntimeComponent("component_1", response as any),
+    ServiceUnavailableException,
+    "runtime component send-file failures must return a controlled 503 instead of Express default handling"
+  );
+}
+
+async function testRuntimeDownloadIgnoresSendFileFailureAfterHeadersSent() {
+  const controller = new DownloadsController(
+    {} as any,
+    {
+      getRuntimeComponentDownloadDescriptor: async () => ({
+        absolutePath: path.join(tmpdir(), "runtime-component-interrupted.bin"),
+        fileName: "runtime-component-interrupted.bin"
+      })
+    } as any
+  );
+  const response = {
+    headersSent: true,
+    download: (_absolutePath: string, _fileName: string, callback: (error?: Error & { code?: string }) => void) => {
+      callback(Object.assign(new Error("client aborted"), { code: "ECONNRESET" }));
+    }
+  };
+
+  await assert.doesNotReject(
+    () => controller.downloadRuntimeComponent("component_1", response as any),
+    "download errors after headers are sent must not attempt a second error response"
+  );
 }
 
 async function testUpdateReleaseDelegatesToReleaseCenter() {
@@ -21323,9 +21395,12 @@ async function main() {
   await testReleaseDownloadRejectsDraftArtifacts();
   await testReleaseDownloadAllowsUploadedArtifactWithStaleMetadata();
   await testReleaseDownloadMissingUploadedFileReturnsNotFound();
+  await testReleaseDownloadMapsSendFileMissingToNotFound();
   await testRuntimeDownloadRejectsDisabledComponents();
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
   await testRuntimeDownloadMissingUploadedFileReturnsNotFound();
+  await testRuntimeDownloadMapsSendFileFailureToServiceUnavailable();
+  await testRuntimeDownloadIgnoresSendFileFailureAfterHeadersSent();
   await testUpdateReleaseDelegatesToReleaseCenter();
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();

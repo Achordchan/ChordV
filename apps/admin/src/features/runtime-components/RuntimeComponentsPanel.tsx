@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   ActionIcon,
   Alert,
@@ -72,7 +72,7 @@ type RuntimeComponentsPanelProps = {
   error: string | null;
   saving: boolean;
   onRefresh: () => Promise<void>;
-  onComponentsChange: (next: AdminRuntimeComponentRecordDto[]) => void;
+  onComponentsChange: Dispatch<SetStateAction<AdminRuntimeComponentRecordDto[]>>;
   onFailuresChange: (next: AdminRuntimeComponentFailureReportDto[]) => void;
   onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto | null) => void;
   onSavingChange: (next: boolean) => void;
@@ -98,9 +98,11 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   const [editorOpened, setEditorOpened] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [failuresRefreshing, setFailuresRefreshing] = useState(false);
   const [form, setForm] = useState<RuntimeComponentEditorFormState>(emptyRuntimeComponentEditorForm());
   const savingRef = useRef(false);
   const verifyingRef = useRef<string | null>(null);
+  const failureRefreshSeqRef = useRef(0);
   const deletingRef = useRef<Set<string>>(new Set());
 
   const groupedSummary = useMemo(() => {
@@ -116,7 +118,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }, [components, failures.length]);
 
   function openCreate() {
-    if (saving) {
+    if (saving || savingRef.current) {
       return;
     }
     setEditingId(null);
@@ -125,7 +127,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }
 
   function openEdit(record: AdminRuntimeComponentRecordDto) {
-    if (saving) {
+    if (saving || savingRef.current) {
       return;
     }
     setEditingId(record.id);
@@ -133,10 +135,17 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     setEditorOpened(true);
   }
 
-  function closeEditor() {
+  function forceCloseEditor() {
     setEditorOpened(false);
     setEditingId(null);
     setForm(emptyRuntimeComponentEditorForm());
+  }
+
+  function closeEditor() {
+    if (saving || savingRef.current) {
+      return;
+    }
+    forceCloseEditor();
   }
 
   async function saveComponent() {
@@ -208,8 +217,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       }
 
       onValidationChange(record.id, null);
-      onComponentsChange(upsertRuntimeComponent(components, record));
-      closeEditor();
+      onComponentsChange((current) => upsertRuntimeComponent(current, record));
+      forceCloseEditor();
       notifications.show({
         color: "green",
         title: "内核组件",
@@ -274,7 +283,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       onSavingChange(true);
       await deleteAdminRuntimeComponent(record.id);
       onValidationChange(record.id, null);
-      onComponentsChange(components.filter((item) => item.id !== record.id));
+      onComponentsChange((current) => current.filter((item) => item.id !== record.id));
       notifications.show({
         color: "green",
         title: "内核组件",
@@ -293,8 +302,14 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   }
 
   async function refreshFailures() {
+    const requestSeq = failureRefreshSeqRef.current + 1;
+    failureRefreshSeqRef.current = requestSeq;
     try {
+      setFailuresRefreshing(true);
       const rows = await fetchAdminRuntimeComponentFailures();
+      if (failureRefreshSeqRef.current !== requestSeq) {
+        return;
+      }
       onFailuresChange(rows);
     } catch (reason) {
       notifications.show({
@@ -302,6 +317,10 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         title: "内核组件",
         message: readError(reason, "刷新失败上报失败")
       });
+    } finally {
+      if (failureRefreshSeqRef.current === requestSeq) {
+        setFailuresRefreshing(false);
+      }
     }
   }
 
@@ -400,7 +419,12 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
                 客户端内核下载失败后，会把失败原因上报到这里，后续可以再接邮件通知。
               </Text>
             </Stack>
-            <Button variant="light" leftSection={<IconRefresh size={16} />} onClick={() => void refreshFailures()}>
+            <Button
+              variant="light"
+              leftSection={<IconRefresh size={16} />}
+              onClick={() => void refreshFailures()}
+              loading={failuresRefreshing}
+            >
               刷新失败上报
             </Button>
           </Group>
@@ -487,6 +511,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
           <Table.Tbody>
             {records.map((record) => {
               const validation = validations[record.id];
+              const rowIsVerifying = verifyingId === record.id;
               return (
                 <Table.Tr key={record.id}>
                   <Table.Td>{displayRuntimeComponentPlatform(record)}</Table.Td>
@@ -536,7 +561,13 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                   </Table.Td>
                   <Table.Td>
                     <Group gap={6} wrap="nowrap">
-                      <ActionIcon variant="light" color="blue" onClick={() => onEdit(record)} aria-label="编辑" disabled={saving}>
+                      <ActionIcon
+                        variant="light"
+                        color="blue"
+                        onClick={() => onEdit(record)}
+                        aria-label="编辑"
+                        disabled={saving || rowIsVerifying}
+                      >
                         <IconEdit size={16} />
                       </ActionIcon>
                       <ActionIcon
@@ -544,7 +575,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         color="green"
                         onClick={() => onVerify(record)}
                         aria-label="校验"
-                        loading={verifyingId === record.id}
+                        loading={rowIsVerifying}
                         disabled={saving || (verifyingId !== null && verifyingId !== record.id)}
                       >
                         <IconCheck size={16} />
@@ -577,7 +608,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         color="red"
                         onClick={() => onRemove(record)}
                         aria-label="删除"
-                        disabled={saving}
+                        disabled={saving || rowIsVerifying}
                       >
                         <IconTrash size={16} />
                       </ActionIcon>
