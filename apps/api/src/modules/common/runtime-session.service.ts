@@ -1972,8 +1972,7 @@ export class RuntimeSessionService {
     });
     const inboundRuntime = await this.readConnectInboundRuntimeBestEffort(
       node,
-      binding.panelInboundId,
-      binding.cachedRemoteClient === true
+      binding.panelInboundId
     );
     const effectiveNode = {
       ...node,
@@ -2085,8 +2084,7 @@ export class RuntimeSessionService {
       panelUsername: string | null;
       panelPassword: string | null;
     },
-    panelInboundId: number,
-    allowCachedFallback: boolean
+    panelInboundId: number
   ) {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const readTask = this.xuiService.getInboundRuntime({
@@ -2113,11 +2111,8 @@ export class RuntimeSessionService {
       };
     } catch (error) {
       const errorMessage = readRuntimeErrorMessage(error) || "panel runtime read failed";
-      if (!allowCachedFallback) {
-        throw new BadGatewayException(`Panel client is queued but not confirmed yet: ${errorMessage}`);
-      }
       this.assertCachedNodeRuntimeUsable(node);
-      this.logger.warn(`Using cached node runtime for ${node.id} because panel runtime read failed: ${errorMessage}`);
+      this.logger.warn(`Using local node runtime for ${node.id} because panel runtime read failed: ${errorMessage}`);
       return {
         ok: false as const,
         errorMessage,

@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json",
-    "test:regression": "tsx test/admin-controller.routes.regression.ts && tsx test/dev-data.service.regression.ts",
+    "test:regression": "tsx test/admin-controller.routes.regression.ts && tsx test/admin-critical-routes.regression.ts && tsx test/dev-data.service.regression.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts"

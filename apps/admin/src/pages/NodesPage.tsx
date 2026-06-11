@@ -164,12 +164,12 @@ function NodeSyncQueueCell(props: {
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
   const queuedPanelSummary = summarizePanelSyncJobsForNode(props.panelSyncJobs, props.node.id);
-  const panelTotal = props.node.panelSyncTotalCount ?? queuedPanelSummary.total;
+  const panelTotal = Math.max(props.node.panelSyncTotalCount ?? 0, queuedPanelSummary.total);
   const panelSummary = {
     total: panelTotal,
-    pending: props.node.panelSyncPendingCount ?? queuedPanelSummary.pending,
-    running: props.node.panelSyncRunningCount ?? queuedPanelSummary.running,
-    failed: props.node.panelSyncFailedCount ?? queuedPanelSummary.failed,
+    pending: Math.max(props.node.panelSyncPendingCount ?? 0, queuedPanelSummary.pending),
+    running: Math.max(props.node.panelSyncRunningCount ?? 0, queuedPanelSummary.running),
+    failed: Math.max(props.node.panelSyncFailedCount ?? 0, queuedPanelSummary.failed),
     actionLabel: queuedPanelSummary.actionLabel,
     lastError: props.node.panelSyncLastError ?? queuedPanelSummary.lastError
   };
@@ -202,12 +202,12 @@ function NodeSyncQueueCell(props: {
           {buildBackgroundSyncLabel("连接撤销", leaseSummary)}
         </Badge>
       ) : null}
-      {panelSummary.lastError ? (
+      {panelSummary.failed > 0 && panelSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
           {summarizeAdminDiagnosticMessage(panelSummary.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。")}
         </Text>
       ) : null}
-      {leaseSummary.lastError ? (
+      {leaseSummary.failed > 0 && leaseSummary.lastError ? (
         <Text size="xs" c="dimmed" lineClamp={1}>
           {summarizeAdminDiagnosticMessage(leaseSummary.lastError, "连接撤销任务失败，请稍后重试或查看服务器日志。")}
         </Text>

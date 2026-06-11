@@ -13946,9 +13946,10 @@ async function testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls() {
   assert.deepEqual(resolvedIncidents, [], "stalled panel reads must not be marked fully resolved");
 }
 
-async function testConnectWithXuiRejectsNewBindingWhenPanelReadFails() {
+async function testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails() {
   const leaseCreates: Array<Record<string, any>> = [];
   const panelSyncJobs: Array<Record<string, any>> = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
   const node = {
     id: "node_1",
@@ -13978,6 +13979,9 @@ async function testConnectWithXuiRejectsNewBindingWhenPanelReadFails() {
     panelEnabled: true
   };
   const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
     xuiService: {
       getInboundRuntime: async () => {
         throw new Error("panel offline");
@@ -14003,43 +14007,49 @@ async function testConnectWithXuiRejectsNewBindingWhenPanelReadFails() {
           leaseCreates.push(payload);
           return payload.data;
         }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return { ...node, ...payload.data };
+        }
       }
     }
   });
 
-  await assert.rejects(
-    () =>
-      service["connectWithXui"](
-        node,
-        {
-          id: "user_1",
-          email: "user@example.com",
-          displayName: "User",
-          role: "user",
-          status: "active",
-          lastSeenAt: now.toISOString()
-        },
-        {
-          subscription: {
-            id: "sub_1",
-            userId: "user_1",
-            teamId: null,
-            state: "active",
-            remainingTrafficGb: 10,
-            expireAt: new Date(Date.now() + 86_400_000)
-          },
-          team: null,
-          memberRole: null,
-          memberUsedTrafficGb: null
-        },
-        { nodeId: "node_1", mode: "rule" },
-        null
-      ),
-    /queued but not confirmed|panel offline/,
-    "new bindings must not return a runtime config before the remote 3x-ui client is confirmed"
+  const runtime = await service["connectWithXui"](
+    node,
+    {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: now.toISOString()
+    },
+    {
+      subscription: {
+        id: "sub_1",
+        userId: "user_1",
+        teamId: null,
+        state: "active",
+        remainingTrafficGb: 10,
+        expireAt: new Date(Date.now() + 86_400_000)
+      },
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    },
+    { nodeId: "node_1", mode: "rule" },
+    null
   );
+
+  assert.equal(runtime.outbound.server, "cached.example.com");
+  assert.equal(runtime.outbound.uuid, leaseCreates[0]?.data?.xrayUserUuid);
   assert.equal(panelSyncJobs.length, 1, "new binding should still queue remote ensure for retry");
-  assert.equal(leaseCreates.length, 0, "new binding failure must not create a local lease with an unprovisioned remote client");
+  assert.equal(leaseCreates.length, 1, "new binding should create a local lease from the cached node runtime");
+  assert.equal(nodeUpdates[0]?.data?.panelStatus, "degraded");
+  assert.match(nodeUpdates[0]?.data?.panelError, /panel offline/);
 }
 
 async function testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails() {
@@ -23432,7 +23442,7 @@ async function main() {
   testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable();
   await testConnectRejectsPanelDisabledNode();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
-  await testConnectWithXuiRejectsNewBindingWhenPanelReadFails();
+  await testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails();
   await testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails();
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
   await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
