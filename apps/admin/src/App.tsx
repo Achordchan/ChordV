@@ -194,6 +194,8 @@ import {
   translateSubscriptionState
 } from "./utils/admin-translate";
 
+const MAX_NODE_ACCESS_SELECTION = 100;
+
 function requiresAdminSessionRefresh(
   result: AdminSecurityUpdateResultDto
 ): result is Extract<AdminSecurityUpdateResultDto, { sessionRefreshRequired: true }> {
@@ -1477,6 +1479,14 @@ export function App() {
       const nodeIds = Array.from(
         new Set(nodeAccessSelection.map((nodeId) => nodeId.trim()).filter((nodeId) => nodeId.length > 0))
       );
+      if (nodeIds.length > MAX_NODE_ACCESS_SELECTION) {
+        notifications.show({
+          color: "yellow",
+          title: "节点授权数量过多",
+          message: `单次最多保存 ${MAX_NODE_ACCESS_SELECTION} 个节点，请减少选择后再保存。`
+        });
+        return;
+      }
       const result = await updateSubscriptionNodeAccess(nodeAccessEditor.subscriptionId, {
         nodeIds
       });
@@ -3176,7 +3186,15 @@ export function App() {
         }}
         onSelectAll={() => {
           if (!nodeAccessLoading && !nodeAccessSaving) {
-            setNodeAccessSelection(nodeOptions.map((item) => item.value));
+            const selectedNodeIds = nodeOptions.slice(0, MAX_NODE_ACCESS_SELECTION).map((item) => item.value);
+            setNodeAccessSelection(selectedNodeIds);
+            if (nodeOptions.length > MAX_NODE_ACCESS_SELECTION) {
+              notifications.show({
+                color: "yellow",
+                title: "已选择前 100 个节点",
+                message: "节点授权单次最多保存 100 个，请按需筛选后再保存。"
+              });
+            }
           }
         }}
         onClear={() => {
