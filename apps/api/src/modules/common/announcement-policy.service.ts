@@ -15,7 +15,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { PrismaService } from "./prisma.service";
-import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 
 const EVENT_PUBLISH_BUDGET_MS = 300;
 
@@ -50,6 +50,12 @@ export function toAnnouncementDto(
   };
 }
 
+type AnnouncementDtoRow = Parameters<typeof toAnnouncementDto>[0];
+type AnnouncementReadStateRow = NonNullable<Parameters<typeof toAnnouncementDto>[1]>;
+type AnnouncementDtoRowWithReadState = AnnouncementDtoRow & {
+  readStates: AnnouncementReadStateRow[];
+};
+
 @Injectable()
 export class AnnouncementPolicyService {
   private readonly logger = new Logger(AnnouncementPolicyService.name);
@@ -62,9 +68,14 @@ export class AnnouncementPolicyService {
   ) {}
 
   async getPolicies(): Promise<PolicyBundleDto> {
-    const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" }
-    });
+    let profile: Awaited<ReturnType<PrismaService["policyProfile"]["findUnique"]>>;
+    try {
+      profile = await this.prisma.policyProfile.findUnique({
+        where: { id: "default" }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "策略配置读取失败，请稍后重试。");
+    }
 
     if (!profile) {
       throw new NotFoundException("策略配置不存在");
@@ -84,33 +95,43 @@ export class AnnouncementPolicyService {
   async getAnnouncements(token?: string): Promise<AnnouncementDto[]> {
     const user = token ? await this.authSessionService.authenticateAccessToken(token) : null;
     if (!user) {
-      const rows = await this.prisma.announcement.findMany({
+      let rows: Awaited<ReturnType<PrismaService["announcement"]["findMany"]>>;
+      try {
+        rows = await this.prisma.announcement.findMany({
+          where: {
+            isActive: true,
+            publishedAt: { lte: new Date() }
+          },
+          orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
+        });
+      } catch (error) {
+        throwLocalReadAsServiceUnavailable(error, "公告列表读取失败，请稍后重试。");
+      }
+      return rows.map((row) => toAnnouncementDto(row, null));
+    }
+
+    let rows: AnnouncementDtoRowWithReadState[];
+    try {
+      rows = await this.prisma.announcement.findMany({
         where: {
           isActive: true,
           publishedAt: { lte: new Date() }
         },
+        include: {
+          readStates: {
+            where: { userId: user.id },
+            take: 1,
+            select: {
+              passiveSeenAt: true,
+              acknowledgedAt: true
+            }
+          }
+        },
         orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
       });
-      return rows.map((row) => toAnnouncementDto(row, null));
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "公告列表读取失败，请稍后重试。");
     }
-
-    const rows = await this.prisma.announcement.findMany({
-      where: {
-        isActive: true,
-        publishedAt: { lte: new Date() }
-      },
-      include: {
-        readStates: {
-          where: { userId: user.id },
-          take: 1,
-          select: {
-            passiveSeenAt: true,
-            acknowledgedAt: true
-          }
-        }
-      },
-      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
-    });
 
     return rows.map((row) => toAnnouncementDto(row, row.readStates[0] ?? null));
   }
@@ -127,17 +148,22 @@ export class AnnouncementPolicyService {
       return { ok: true, updatedIds: [] };
     }
 
-    const rows = await this.prisma.announcement.findMany({
-      where: {
-        id: { in: announcementIds },
-        isActive: true,
-        publishedAt: { lte: new Date() }
-      },
-      select: {
-        id: true,
-        displayMode: true
-      }
-    });
+    let rows: Array<{ id: string; displayMode: "passive" | "modal_confirm" | "modal_countdown" }>;
+    try {
+      rows = await this.prisma.announcement.findMany({
+        where: {
+          id: { in: announcementIds },
+          isActive: true,
+          publishedAt: { lte: new Date() }
+        },
+        select: {
+          id: true,
+          displayMode: true
+        }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "公告状态读取失败，请稍后重试。");
+    }
 
     const targetRows = input.action === "seen" ? rows.filter((item) => item.displayMode === "passive") : rows;
     if (targetRows.length === 0) {
@@ -145,26 +171,30 @@ export class AnnouncementPolicyService {
     }
 
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      for (const item of targetRows) {
-        await tx.announcementReadState.upsert({
-          where: {
-            announcementId_userId: {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        for (const item of targetRows) {
+          await tx.announcementReadState.upsert({
+            where: {
+              announcementId_userId: {
+                announcementId: item.id,
+                userId: user.id
+              }
+            },
+            create: {
+              id: createEntityId("announcement_state"),
               announcementId: item.id,
-              userId: user.id
-            }
-          },
-          create: {
-            id: createEntityId("announcement_state"),
-            announcementId: item.id,
-            userId: user.id,
-            passiveSeenAt: input.action === "seen" ? now : null,
-            acknowledgedAt: input.action === "ack" ? now : null
-          },
-          update: input.action === "seen" ? { passiveSeenAt: now } : { acknowledgedAt: now }
-        });
-      }
-    });
+              userId: user.id,
+              passiveSeenAt: input.action === "seen" ? now : null,
+              acknowledgedAt: input.action === "ack" ? now : null
+            },
+            update: input.action === "seen" ? { passiveSeenAt: now } : { acknowledgedAt: now }
+          });
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告已读状态保存失败，请稍后重试。");
+    }
 
     for (const item of targetRows) {
       this.publishAnnouncementReadStateUpdatedBestEffort(user.id, item.id, now);

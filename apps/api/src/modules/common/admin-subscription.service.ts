@@ -933,7 +933,7 @@ export class AdminSubscriptionService {
   ): Promise<ConvertSubscriptionToTeamResultDto> {
     const owner = await this.requireSubscription(subscriptionId);
     if (!owner.userId || owner.teamId) {
-      throw new BadRequestException("鍙湁涓汉璁㈤槄鎵嶈兘杞叆 Team");
+      throw new BadRequestException("只有个人订阅才能转入 Team");
     }
     return runWithSubscriptionOwnerLock(`personal:${owner.userId}`, () =>
       this.convertPersonalSubscriptionToTeamLocked(subscriptionId, input)

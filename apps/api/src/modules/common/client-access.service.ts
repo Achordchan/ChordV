@@ -32,7 +32,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { MeteringIncidentService } from "./metering-incident.service";
-import { isPrismaTransientError } from "./prisma-error.utils";
+import { isPrismaTransientError, throwLocalReadAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import { ReleaseCenterService } from "./release-center.service";
 import {
@@ -135,6 +135,7 @@ export class ClientAccessService {
   }
 
   async getBootstrap(token?: string, platform?: PlatformTarget): Promise<ClientBootstrapDto> {
+    try {
     const user = await this.authSessionService.authenticateAccessToken(token);
     const access = await this.resolveSubscriptionAccessForUser(user.id);
     if (!access.subscription) {
@@ -166,9 +167,13 @@ export class ClientAccessService {
           }
         : null
     };
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "客户端启动数据暂时不可用，请稍后重试。");
+    }
   }
 
   async getSubscription(token?: string): Promise<SubscriptionStatusDto> {
+    try {
     const user = await this.authSessionService.authenticateAccessToken(token);
     const access = await this.resolveSubscriptionAccessForUser(user.id);
     if (!access.subscription) {
@@ -177,9 +182,13 @@ export class ClientAccessService {
 
     const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
     return toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb, metering);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "订阅数据暂时不可用，请稍后重试。");
+    }
   }
 
   async getNodes(token?: string): Promise<NodeSummaryDto[]> {
+    try {
     const user = await this.authSessionService.authenticateAccessToken(token);
     const access = await this.resolveSubscriptionAccessForUser(user.id);
     if (!access.subscription) {
@@ -208,9 +217,13 @@ export class ClientAccessService {
       }
     }
     return Array.from(nodeMap.values());
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "节点列表暂时不可用，请稍后重试。");
+    }
   }
 
   async probeClientNodes(nodeIds: string[], token?: string): Promise<ClientNodeProbeResultDto[]> {
+    try {
     const user = await this.authSessionService.authenticateAccessToken(token);
     await this.consumeRateLimit([`node-probe:user:${user.id}`], {
       limit: PROBE_RATE_LIMIT,
@@ -265,6 +278,9 @@ export class ClientAccessService {
           error: probe.error
         };
       });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "节点探测暂时不可用，请稍后重试。");
+    }
   }
 
   async getPolicies(): Promise<PolicyBundleDto> {
@@ -272,6 +288,7 @@ export class ClientAccessService {
   }
 
   async getClientVersion(platform?: PlatformTarget): Promise<ClientVersionDto> {
+    try {
     const profile = await this.prisma.policyProfile.findUnique({
       where: { id: "default" }
     });
@@ -318,6 +335,9 @@ export class ClientAccessService {
       changelog: update.changelog,
       downloadUrl: update.downloadUrl ?? null
     };
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "版本信息暂时不可用，请稍后重试。");
+    }
   }
 
   async pingClient(token?: string): Promise<ClientPingDto> {

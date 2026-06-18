@@ -26,9 +26,6 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (!message.trim()) {
     return fallback;
   }
-  if (/HTTP\s*5\d\d|Internal server error/i.test(message)) {
-    return "后台服务异常，请稍后重试；如果连续出现，请查看服务器日志。";
-  }
   if (/MulterError|payload too large|file too large|file exceeds|too large/i.test(message)) {
     return "文件过大，已超过后台允许的上传限制。";
   }
@@ -62,6 +59,9 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
     )
   ) {
     return "外部服务或面板暂不可用，已保存的操作请在同步队列中查看处理状态。";
+  }
+  if (/HTTP\s*5\d\d|Internal server error/i.test(message)) {
+    return "后台服务异常，请稍后重试；如果连续出现，请查看服务器日志。";
   }
   return message;
 }

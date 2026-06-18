@@ -199,7 +199,7 @@ export class ImageBedService {
         },
         readUploadTimeoutMs(options.timeoutMs)
       );
-      const rawBody = await response.text();
+      const rawBody = await readImageBedResponseText(response);
       if (!response.ok) {
         this.logger?.warn(`Image bed upload failed with HTTP ${response.status}: ${readImageBedError(rawBody) || "empty response"}`);
         throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
@@ -286,7 +286,7 @@ export class ImageBedService {
       },
       readImageBedManageTimeoutMs()
     );
-    const rawBody = await response.text();
+    const rawBody = await readImageBedResponseText(response);
     if (!response.ok) {
       this.logger?.warn(`Image bed request failed with HTTP ${response.status}: ${readImageBedError(rawBody) || "empty response"}`);
       throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
@@ -573,6 +573,14 @@ async function fetchImageBed(url: URL, init: RequestInit, timeoutMs: number) {
         ? `Image bed request failed: ${reason.message}`
         : "Image bed request failed.";
     throw new BadGatewayException(message);
+  }
+}
+
+async function readImageBedResponseText(response: Response) {
+  try {
+    return await response.text();
+  } catch {
+    throw new BadGatewayException("图床服务响应读取失败，请检查图床服务状态后重试。");
   }
 }
 

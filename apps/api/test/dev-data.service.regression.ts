@@ -876,6 +876,44 @@ async function testImageBedListUsesShortManageTimeout() {
   }
 }
 
+async function testImageBedListMapsResponseReadFailure() {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => {
+          throw new Error("socket body reset");
+        }
+      }) as Response) as typeof fetch;
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: "https://image.achord.cn",
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.listAdminFiles(),
+      (error) =>
+        error instanceof BadGatewayException &&
+        /图床服务响应读取失败/.test(error.message) &&
+        !/socket body reset/i.test(error.message),
+      "image bed response body read failures must return a controlled gateway error instead of HTTP 500"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 async function testImageBedListDefaultsToUploadFolder() {
   let requestPath = "";
   const server = createServer((request, response) => {
@@ -15433,6 +15471,88 @@ async function testClientBootstrapDegradesOptionalSectionsOnPrismaPoolTimeout() 
   assert.equal(result.version.currentVersion, "1.1.6");
 }
 
+async function testClientBootstrapMapsRequiredReadFailure() {
+  const service = createClientAccessService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    resolveSubscriptionAccessForUser: async () => {
+      throw new Error("client bootstrap subscription read failed");
+    }
+  });
+
+  await assert.rejects(
+    () => service.getBootstrap("Bearer token", "windows"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/client bootstrap subscription read failed/i.test(error.message),
+    "client bootstrap required read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testClientNodesMapLocalReadFailure() {
+  const now = new Date();
+  const service = createClientAccessService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    resolveSubscriptionAccessForUser: async () => ({
+      subscription: {
+        id: "sub_1",
+        planId: "plan_1",
+        totalTrafficGb: 100,
+        usedTrafficGb: 0,
+        remainingTrafficGb: 100,
+        expireAt: new Date(Date.now() + 86_400_000),
+        state: "active",
+        renewable: true,
+        lastSyncedAt: now,
+        plan: { name: "plan", maxConcurrentSessions: 2 },
+        user: { id: "user_1", status: "active" },
+        team: null
+      },
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async () => {
+          throw new Error("client node list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getNodes("Bearer token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/client node list local read failed/i.test(error.message),
+    "client node list read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testClientVersionMapsPolicyReadFailure() {
+  const service = createClientAccessService({
+    prisma: {
+      policyProfile: {
+        findUnique: async () => {
+          throw new Error("client version policy read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getClientVersion("windows"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/client version policy read failed/i.test(error.message),
+    "client version policy read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 function testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable() {
   const filter = new LoggingExceptionFilter();
   let statusCode: number | null = null;
@@ -15578,6 +15698,95 @@ async function testConnectRejectsPanelDisabledNode() {
     () => service.connect({ nodeId: "node_1", mode: "rule" }, "Bearer token"),
     /未启用面板接入/,
     "connect must reject panel-disabled nodes before creating leases"
+  );
+}
+
+async function testRuntimeConnectMapsLocalReadFailure() {
+  const service = createRuntimeSessionService({
+    prisma: {
+      node: {
+        findUnique: async () => {
+          throw new Error("runtime connect node read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.connect({ nodeId: "node_1", mode: "rule" }, "Bearer token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime connect node read failed/i.test(error.message),
+    "runtime connect local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRuntimeHeartbeatMapsLocalReadFailure() {
+  const service = createRuntimeSessionService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      nodeSessionLease: {
+        findUnique: async () => {
+          throw new Error("runtime heartbeat lease read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.heartbeatSession("session_1", "Bearer token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime heartbeat lease read failed/i.test(error.message),
+    "runtime heartbeat local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRuntimeDisconnectMapsLocalReadFailure() {
+  const service = createRuntimeSessionService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      nodeSessionLease: {
+        findUnique: async () => {
+          throw new Error("runtime disconnect lease read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.disconnect("session_1", "Bearer token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime disconnect lease read failed/i.test(error.message),
+    "runtime disconnect local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRuntimeActiveConfigMapsLocalReadFailure() {
+  const service = createRuntimeSessionService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      nodeSessionLease: {
+        findFirst: async () => {
+          throw new Error("runtime active config lease read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getActiveRuntime(undefined, "Bearer token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime active config lease read failed/i.test(error.message),
+    "runtime active config read failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -24445,6 +24654,106 @@ async function testCreateAnnouncementRejectsFractionalCountdown() {
   );
 }
 
+async function testGetPoliciesMapsLocalReadFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      policyProfile: {
+        findUnique: async () => {
+          throw new Error("policy public read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getPolicies(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /策略配置读取失败/.test(error.message) &&
+      !/policy public read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "client policy read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testGetAnnouncementsMapsLocalReadFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      announcement: {
+        findMany: async () => {
+          throw new Error("announcement public read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getAnnouncements(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /公告列表读取失败/.test(error.message) &&
+      !/announcement public read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "client announcement read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testMarkAnnouncementReadMapsLocalReadFailure() {
+  const service = createAnnouncementPolicyService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      announcement: {
+        findMany: async () => {
+          throw new Error("announcement read-state lookup failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.markClientAnnouncementsRead({ announcementIds: ["announcement_1"], action: "seen" }, "token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /公告状态读取失败/.test(error.message) &&
+      !/announcement read-state lookup failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "announcement read-state lookups must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testMarkAnnouncementReadMapsLocalSaveFailure() {
+  const service = createAnnouncementPolicyService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      announcement: {
+        findMany: async () => [
+          {
+            id: "announcement_1",
+            displayMode: "passive"
+          }
+        ]
+      },
+      $transaction: async () => {
+        throw new Error("announcement read-state save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.markClientAnnouncementsRead({ announcementIds: ["announcement_1"], action: "seen" }, "token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /公告已读状态保存失败/.test(error.message) &&
+      !/announcement read-state save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "announcement read-state save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testCreateAnnouncementMapsLocalSaveFailure() {
   const service = createAnnouncementPolicyService({
     prisma: {
@@ -27446,11 +27755,18 @@ async function main() {
   await testUpdateNodeDisablingPanelForcesOfflineStatus();
   await testClientNodesRequirePanelEnabled();
   await testClientBootstrapDegradesOptionalSectionsOnPrismaPoolTimeout();
+  await testClientBootstrapMapsRequiredReadFailure();
+  await testClientNodesMapLocalReadFailure();
+  await testClientVersionMapsPolicyReadFailure();
   testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable();
   testLoggingFilterMapsPrismaCodedErrorsToServiceUnavailable();
   testLoggingFilterMapsDatabaseTransientErrorsToServiceUnavailable();
   testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError();
   await testConnectRejectsPanelDisabledNode();
+  await testRuntimeConnectMapsLocalReadFailure();
+  await testRuntimeHeartbeatMapsLocalReadFailure();
+  await testRuntimeDisconnectMapsLocalReadFailure();
+  await testRuntimeActiveConfigMapsLocalReadFailure();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails();
   await testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail();
@@ -27580,6 +27896,7 @@ async function main() {
   testNodePanelBaseUrlAllowsBlankAsEmpty();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
+  await testImageBedListMapsResponseReadFailure();
   await testImageBedListDefaultsToUploadFolder();
   await testImageBedListUsesProviderFileIdForNestedFiles();
   await testImageBedUploadRejectsSuccessFalsePayload();
@@ -27642,6 +27959,10 @@ async function main() {
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();
   await testCreateAnnouncementRejectsFractionalCountdown();
+  await testGetPoliciesMapsLocalReadFailure();
+  await testGetAnnouncementsMapsLocalReadFailure();
+  await testMarkAnnouncementReadMapsLocalReadFailure();
+  await testMarkAnnouncementReadMapsLocalSaveFailure();
   await testCreateAnnouncementMapsLocalSaveFailure();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
   await testUpdateAnnouncementMapsLocalReadFailure();

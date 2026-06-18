@@ -24,6 +24,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { toNodeSummary } from "./node-import.utils";
 import {
   assertSubscriptionConnectable,
@@ -196,6 +197,7 @@ export class RuntimeSessionService {
   }
 
   async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {
+    try {
     const node = await this.prisma.node.findUnique({
       where: { id: request.nodeId }
     });
@@ -267,6 +269,9 @@ export class RuntimeSessionService {
       return this.connectWithXui(node, user, access, request, policy);
       });
     });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "连接状态暂时不可用，请稍后重试。");
+    }
   }
 
   async enforceUserConcurrentLeaseLimit(userId: string, maxConcurrentSessions: number) {
@@ -275,6 +280,7 @@ export class RuntimeSessionService {
   }
 
   async heartbeatSession(sessionId: string, token?: string) {
+    try {
     const user = await this.resolveActiveUserFromToken(token);
     const lease = await this.prisma.nodeSessionLease.findUnique({
       where: { sessionId },
@@ -346,9 +352,13 @@ export class RuntimeSessionService {
       reasonMessage: null,
       detailReason: null
     };
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "连接心跳暂时不可用，请稍后重试。");
+    }
   }
 
   async disconnect(sessionId: string, token?: string) {
+    try {
     const user = await this.resolveActiveUserFromToken(token);
     const lease = await this.prisma.nodeSessionLease.findUnique({
       where: { sessionId },
@@ -370,9 +380,13 @@ export class RuntimeSessionService {
       this.clearActiveRuntime(sessionId);
     }
     return { ok: true, previousSessionId: canClearPreviousRuntime ? previous?.sessionId ?? null : null };
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "断开连接暂时不可用，请稍后重试。");
+    }
   }
 
   async getActiveRuntime(sessionId?: string, token?: string) {
+    try {
     const user = await this.resolveActiveUserFromToken(token);
     const lease = await this.prisma.nodeSessionLease.findFirst({
       where: {
@@ -413,6 +427,9 @@ export class RuntimeSessionService {
     });
 
     return buildXuiRuntimeFromLease(lease, policy);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "运行配置暂时不可用，请稍后重试。");
+    }
   }
 
   getActiveRuntimeUsageContext() {

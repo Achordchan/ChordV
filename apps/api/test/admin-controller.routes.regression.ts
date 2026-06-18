@@ -241,6 +241,43 @@ async function testAdminSseRejectsNonAdminWithForbiddenException() {
   );
 }
 
+async function testAdminSseRouteMetadataAndAdminValidation() {
+  const streamEventsHandler = AdminController.prototype.streamEvents;
+  assert.equal(Reflect.getMetadata("path", streamEventsHandler), "events/stream");
+  assert.equal(Reflect.getMetadata("method", streamEventsHandler), 0);
+  assert.equal(Reflect.getMetadata("__sse__", streamEventsHandler), true);
+
+  let observedInput:
+    | {
+        lastEventId?: string;
+        validate?: () => Promise<void>;
+      }
+    | undefined;
+  const controller = new AdminController(
+    devDataServiceStub as any,
+    runtimeComponentsServiceStub as any,
+    imageBedServiceStub as any,
+    {
+      stream: (input: { lastEventId?: string; validate?: () => Promise<void> }) => {
+        observedInput = input;
+        return {};
+      }
+    } as any,
+    {
+      authenticateAccessToken: async (authorization?: string) => {
+        assert.equal(authorization, "Bearer admin-test-token");
+        return { id: "admin_1", role: "admin" };
+      }
+    } as any
+  );
+
+  controller.streamEvents("Bearer admin-test-token", "event_123");
+
+  assert.equal(observedInput?.lastEventId, "event_123");
+  assert.equal(typeof observedInput?.validate, "function");
+  await observedInput?.validate?.();
+}
+
 @Module({
   controllers: [AdminController, DownloadsController, ClientController],
   providers: [
@@ -324,6 +361,7 @@ async function requestText(baseUrl: string, routePath: string) {
 
 async function main() {
   await testAdminSseRejectsNonAdminWithForbiddenException();
+  await testAdminSseRouteMetadataAndAdminValidation();
 
   const app = await NestFactory.create(TestAdminRoutesModule, { logger: false });
   app.setGlobalPrefix("api");
