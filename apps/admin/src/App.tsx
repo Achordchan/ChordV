@@ -2344,7 +2344,7 @@ export function App() {
     }
     const targetKey = `${subscriptionId}:${userId ?? "all"}`;
     const confirmed = window.confirm(
-      `确认重置 ${ownerLabel} 的流量吗？这会同步清空 3x-ui 面板计量，并重置后台本地基线。`
+      `确认重置 ${ownerLabel} 的流量吗？后台会先立即重置本地流量，3x-ui 面板计量会进入后台同步队列。`
     );
     if (!confirmed) {
       return;

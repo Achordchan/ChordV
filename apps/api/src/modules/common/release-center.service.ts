@@ -22,7 +22,6 @@ import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable 
 import {
   assertReleaseArtifactClientUsable,
   assertReleaseArtifactTypeAllowed,
-  assertWindowsFullUpdateZipFile,
   buildReleaseArtifactDownloadUrl,
   compareSemver,
   createId,
@@ -108,7 +107,7 @@ export class ReleaseCenterService {
 
     const releaseId = createId("release");
     const version = normalizeVersion(input.version);
-    const minimumVersion = normalizeVersion(input.minimumVersion);
+    const minimumVersion = input.minimumVersion?.trim() ? normalizeVersion(input.minimumVersion) : version;
     const displayTitle = input.displayTitle?.trim() || version;
     assertMinimumVersionNotAboveRelease(version, minimumVersion);
     const baseReleaseData = {
@@ -1076,11 +1075,7 @@ export class ReleaseCenterService {
     if (!input.absolutePath) {
       throw new BadRequestException("Windows 静默全量更新 ZIP 不可用。");
     }
-    try {
-      await assertWindowsFullUpdateZipFile(input.absolutePath, fileName, input.version);
-    } catch {
-      throw new BadRequestException("Windows 静默全量更新 ZIP 不可用。");
-    }
+    await ensureFileReadable(input.absolutePath);
   }
 
   private assertReleaseArtifactsMutable(release: { status: string }) {

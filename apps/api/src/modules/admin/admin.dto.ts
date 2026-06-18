@@ -746,10 +746,10 @@ export class CreateReleaseDto {
   @IsString({ each: true })
   changelog?: string[];
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
-  minimumVersion!: string;
+  minimumVersion?: string;
 
   @IsOptional()
   @IsBoolean()

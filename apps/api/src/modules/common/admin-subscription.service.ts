@@ -312,6 +312,10 @@ export class AdminSubscriptionService {
       );
     }
 
+    if (statusChanged && input.status === "active") {
+      panelSync = mergePanelSyncResults(panelSync, await this.queueUserPanelAccessSyncAfterLocalSaveBestEffort(userId));
+    }
+
     if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
       await this.revokeAllUserSessionsBestEffort(userId, "user credentials changed");
     }
@@ -1345,6 +1349,18 @@ export class AdminSubscriptionService {
           panelSync,
           await this.queueTeamDisconnectAfterLocalSaveBestEffort(teamId, "team_disabled", "team disable")
         );
+      } else if (input.status === "active") {
+        const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+          teamId,
+          "team subscription lookup after team enable"
+        );
+        panelSync = mergePanelSyncResults(panelSync, teamSubscriptionLookup.panelSync);
+        if (teamSubscriptionLookup.subscription) {
+          panelSync = mergePanelSyncResults(
+            panelSync,
+            await this.syncSubscriptionPanelAccessBestEffort(teamSubscriptionLookup.subscription.id)
+          );
+        }
       }
       panelSync = mergePanelSyncResults(panelSync, this.startTeamStatusFollowUpInBackground(teamId, input.status));
     } else {
@@ -2121,6 +2137,30 @@ export class AdminSubscriptionService {
           return {
             ok: false as const,
             errorMessage: `${label} disconnect queueing failed: ${readErrorMessage(error, "unknown error")}`
+          };
+        }
+      }
+    );
+  }
+
+  private async queueUserPanelAccessSyncAfterLocalSaveBestEffort(userId: string): Promise<PanelSyncBestEffortResult> {
+    return this.withSubscriptionFollowUpBudget(
+      `user enable panel access queueing for ${userId}`,
+      {
+        ok: false as const,
+        errorMessage: "user enable panel access queueing is still running in background"
+      },
+      async () => {
+        try {
+          const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
+          const syncResults = await Promise.all(
+            subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId))
+          );
+          return mergePanelSyncResults(...syncResults);
+        } catch (error) {
+          return {
+            ok: false as const,
+            errorMessage: `user enable panel access queueing failed: ${readErrorMessage(error, "unknown error")}`
           };
         }
       }

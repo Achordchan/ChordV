@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEditorForm } from "../src/features/releases/types";
 
-function testCreateReleasePayloadUsesMinimumVersionAndForceUpgradeFromForm() {
+function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
   const form = {
     ...emptyReleaseEditorForm("windows"),
     version: " 1.2.0 ",
     minimumVersion: " 1.0.0 ",
     forceUpgrade: true,
     title: "  Windows 1.2.0  ",
-    changelog: " 支持强制升级 \n\n 修复后台发布 "
+    changelog: "Support release publishing\n\nFix admin release flow"
   };
 
   const payload = buildCreateReleasePayload(form);
@@ -17,14 +17,14 @@ function testCreateReleasePayloadUsesMinimumVersionAndForceUpgradeFromForm() {
     platform: "windows",
     status: "draft",
     version: "1.2.0",
-    minimumVersion: "1.0.0",
-    forceUpgrade: true,
     title: "Windows 1.2.0",
-    changelog: ["支持强制升级", "修复后台发布"]
+    changelog: ["Support release publishing", "Fix admin release flow"]
   });
+  assert.equal("minimumVersion" in payload, false, "backend should default minimumVersion to the release version");
+  assert.equal("forceUpgrade" in payload, false, "forceUpgrade must not be required for ordinary releases");
 }
 
-function testCreateReleasePayloadFallsBackMinimumVersionToVersion() {
+function testCreateReleasePayloadOmitsOptionalPublishingFlags() {
   const form = {
     ...emptyReleaseEditorForm("macos"),
     version: " 2.0.1 ",
@@ -36,30 +36,30 @@ function testCreateReleasePayloadFallsBackMinimumVersionToVersion() {
 
   const payload = buildCreateReleasePayload(form);
 
-  assert.equal(payload.minimumVersion, "2.0.1");
-  assert.equal(payload.forceUpgrade, false);
   assert.equal(payload.title, undefined);
+  assert.equal("minimumVersion" in payload, false);
+  assert.equal("forceUpgrade" in payload, false);
 }
 
-function testUpdateReleasePayloadDoesNotSendVersion() {
+function testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags() {
   const form = {
     ...emptyReleaseEditorForm("windows"),
     version: "1.1.7",
     minimumVersion: " 1.1.0 ",
     forceUpgrade: true,
     title: "  Windows 1.1.7  ",
-    changelog: " 修复后台发布 \n\n 优化下载 "
+    changelog: "Fix admin release\n\nImprove download"
   };
 
   const payload = buildUpdateReleasePayload(form);
 
   assert.deepEqual(payload, {
     title: "Windows 1.1.7",
-    changelog: ["修复后台发布", "优化下载"],
-    minimumVersion: "1.1.0",
-    forceUpgrade: true
+    changelog: ["Fix admin release", "Improve download"]
   });
   assert.equal("version" in payload, false, "release edits must not send the immutable version field");
+  assert.equal("minimumVersion" in payload, false, "simple release edits must not change minimumVersion");
+  assert.equal("forceUpgrade" in payload, false, "simple release edits must not change forceUpgrade");
 }
 
 function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
@@ -76,16 +76,14 @@ function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
 
   assert.deepEqual(payload, {
     title: "",
-    changelog: [],
-    minimumVersion: "1.1.7",
-    forceUpgrade: false
+    changelog: []
   });
   assert.equal("version" in payload, false, "blank title edits must not silently reuse version as display title");
 }
 
-testCreateReleasePayloadUsesMinimumVersionAndForceUpgradeFromForm();
-testCreateReleasePayloadFallsBackMinimumVersionToVersion();
-testUpdateReleasePayloadDoesNotSendVersion();
+testCreateReleasePayloadKeepsReleaseFieldsSimple();
+testCreateReleasePayloadOmitsOptionalPublishingFlags();
+testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
 testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
 
 console.log("release admin regression checks passed");

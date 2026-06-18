@@ -1097,7 +1097,7 @@ export interface CreateReleaseInputDto {
   version: string;
   displayTitle?: string;
   changelog?: string[];
-  minimumVersion: string;
+  minimumVersion?: string;
   forceUpgrade?: boolean;
   status?: ReleaseStatus;
   publishedAt?: string | null;

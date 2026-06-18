@@ -89,8 +89,6 @@ export function buildCreateReleasePayload(
     platform: form.platform,
     status: "draft",
     version,
-    minimumVersion: resolveReleaseMinimumVersion(form),
-    forceUpgrade: form.forceUpgrade,
     title: form.title.trim() || undefined,
     changelog: splitReleaseChangelog(form.changelog),
     ...(initialArtifact !== undefined ? { initialArtifact } : {})
@@ -100,14 +98,8 @@ export function buildCreateReleasePayload(
 export function buildUpdateReleasePayload(form: ReleaseEditorFormState): UpdateAdminReleaseInputDto {
   return {
     title: form.title.trim(),
-    changelog: splitReleaseChangelog(form.changelog),
-    minimumVersion: resolveReleaseMinimumVersion(form),
-    forceUpgrade: form.forceUpgrade
+    changelog: splitReleaseChangelog(form.changelog)
   };
-}
-
-function resolveReleaseMinimumVersion(form: ReleaseEditorFormState) {
-  return form.minimumVersion.trim() || form.version.trim();
 }
 
 function splitReleaseChangelog(value: string) {
