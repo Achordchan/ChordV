@@ -825,39 +825,76 @@ function testCrc32(buffer: Buffer) {
 }
 
 function createStoredZipWithSingleEntry(entryName: string, data: Buffer) {
-  const name = Buffer.from(entryName);
-  const crc = testCrc32(data);
-  const localHeader = Buffer.alloc(30);
-  localHeader.writeUInt32LE(0x04034b50, 0);
-  localHeader.writeUInt16LE(20, 4);
-  localHeader.writeUInt16LE(0, 6);
-  localHeader.writeUInt16LE(0, 8);
-  localHeader.writeUInt32LE(crc, 14);
-  localHeader.writeUInt32LE(data.length, 18);
-  localHeader.writeUInt32LE(data.length, 22);
-  localHeader.writeUInt16LE(name.length, 26);
+  return createStoredZipWithEntries([{ entryName, data }]);
+}
 
-  const centralDirectory = Buffer.alloc(46);
-  centralDirectory.writeUInt32LE(0x02014b50, 0);
-  centralDirectory.writeUInt16LE(20, 4);
-  centralDirectory.writeUInt16LE(20, 6);
-  centralDirectory.writeUInt16LE(0, 8);
-  centralDirectory.writeUInt16LE(0, 10);
-  centralDirectory.writeUInt32LE(crc, 16);
-  centralDirectory.writeUInt32LE(data.length, 20);
-  centralDirectory.writeUInt32LE(data.length, 24);
-  centralDirectory.writeUInt16LE(name.length, 28);
+function createStoredZipWithEntries(entries: Array<{ entryName: string; data: Buffer }>) {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.entryName);
+    const data = entry.data;
+    const crc = testCrc32(data);
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(data.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(name.length, 26);
 
-  const centralDirectoryOffset = localHeader.length + name.length + data.length;
-  const centralDirectorySize = centralDirectory.length + name.length;
+    const centralDirectory = Buffer.alloc(46);
+    centralDirectory.writeUInt32LE(0x02014b50, 0);
+    centralDirectory.writeUInt16LE(20, 4);
+    centralDirectory.writeUInt16LE(20, 6);
+    centralDirectory.writeUInt16LE(0, 8);
+    centralDirectory.writeUInt16LE(0, 10);
+    centralDirectory.writeUInt32LE(crc, 16);
+    centralDirectory.writeUInt32LE(data.length, 20);
+    centralDirectory.writeUInt32LE(data.length, 24);
+    centralDirectory.writeUInt16LE(name.length, 28);
+    centralDirectory.writeUInt32LE(offset, 42);
+
+    localParts.push(localHeader, name, data);
+    centralParts.push(centralDirectory, name);
+    offset += localHeader.length + name.length + data.length;
+  }
+
+  const centralDirectoryOffset = offset;
+  const centralDirectorySize = centralParts.reduce((total, item) => total + item.length, 0);
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(1, 8);
-  end.writeUInt16LE(1, 10);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
   end.writeUInt32LE(centralDirectorySize, 12);
   end.writeUInt32LE(centralDirectoryOffset, 16);
 
-  return Buffer.concat([localHeader, name, data, centralDirectory, name, end]);
+  return Buffer.concat([...localParts, ...centralParts, end]);
+}
+
+function createTestWindowsPeData(version = "1.1.6") {
+  const data = Buffer.alloc(1024 * 1024, 0);
+  data[0] = 0x4d;
+  data[1] = 0x5a;
+  data.writeUInt32LE(0x80, 0x3c);
+  data.writeUInt32LE(0x00004550, 0x80);
+  const [major, minor, patch] = version.split(".").map((part) => Number(part));
+  data.writeUInt32LE(0xfeef04bd, 0x200);
+  data.writeUInt32LE((major << 16) | minor, 0x210);
+  data.writeUInt32LE((patch << 16) | 0, 0x214);
+  return data;
+}
+
+function createValidWindowsFullUpdateZip(version = "1.1.6") {
+  return createStoredZipWithEntries([
+    { entryName: "ChordV.exe", data: createTestWindowsPeData(version) },
+    { entryName: "bin/xray.exe", data: createTestWindowsPeData(version) },
+    { entryName: "bin/geoip.dat", data: Buffer.alloc(64 * 1024, 1) },
+    { entryName: "bin/geosite.dat", data: Buffer.alloc(64 * 1024, 1) }
+  ]);
 }
 
 async function withPrivateRemoteUrlsAllowed<T>(task: () => Promise<T>) {
@@ -946,9 +983,10 @@ async function testImageBedListRejectsSuccessFalsePayload() {
       () => service.listAdminFiles(),
       (error) =>
         error instanceof BadGatewayException &&
-        /图床服务请求失败/.test(error.message) &&
-        !/bad token/i.test(error.message),
-      "image bed list must reject HTTP 200 business failures without exposing provider messages"
+        /图床列表读取失败/.test(error.message) &&
+        /HTTP 200/.test(error.message) &&
+        /bad token/i.test(error.message),
+      "image bed list must reject HTTP 200 business failures while preserving the provider reason"
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1163,9 +1201,10 @@ async function testImageBedUploadRejectsSuccessFalsePayload() {
         }),
       (error) =>
         error instanceof BadGatewayException &&
-        /图床服务请求失败/.test(error.message) &&
-        !/upload rejected/i.test(error.message),
-      "image bed upload must reject HTTP 200 business failures without exposing provider messages"
+        /图床上传失败/.test(error.message) &&
+        /HTTP 200/.test(error.message) &&
+        /upload rejected/i.test(error.message),
+      "image bed upload must reject HTTP 200 business failures while preserving the provider reason"
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -3881,34 +3920,33 @@ async function testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite() {
   assert.equal(updates.length, 0);
 }
 
-async function testAssertReleasePublishableDoesNotValidateArtifacts() {
-  const now = new Date("2026-01-01T00:00:00.000Z");
-  const primaryArtifact = {
+async function testAssertReleasePublishableAllowsExternalWindowsZipWithoutOptionalMetadata() {
+  const primaryArtifact = makeReleaseCenterTestArtifact({
     id: "artifact_primary",
-    releaseId: "release_1",
     source: "external",
     type: "zip",
     deliveryMode: "desktop_full_replace",
     isPrimary: true,
     fileName: "ChordV_1.1.6_windows.zip",
     downloadUrl: "https://example.com/ChordV_1.1.6_windows.zip",
-    externalUrl: "https://example.com/ChordV_1.1.6_windows.zip",
-    storagePath: null,
-    clientSha256: "a".repeat(64),
-    clientSizeBytes: BigInt(1234),
-    createdAt: now,
-    updatedAt: now
-  };
-  const secondaryArtifact = {
-    ...primaryArtifact,
+    storedFilePath: null,
+    fileHash: null,
+    fileSizeBytes: null,
+    allowClientMirror: false
+  });
+  const secondaryArtifact = makeReleaseCenterTestArtifact({
     id: "artifact_secondary",
+    source: "external",
+    type: "external",
+    deliveryMode: "desktop_installer_download",
     isPrimary: false,
     fileName: "ChordV_1.1.6_x64-setup.exe",
-    type: "setup.exe",
-    deliveryMode: "installer",
     downloadUrl: "https://example.com/ChordV_1.1.6_x64-setup.exe",
-    externalUrl: "https://example.com/ChordV_1.1.6_x64-setup.exe"
-  };
+    storedFilePath: null,
+    fileHash: null,
+    fileSizeBytes: null,
+    allowClientMirror: false
+  });
   const service = createReleaseCenterService({
     prisma: {
       release: {
@@ -3930,7 +3968,15 @@ async function testAssertReleasePublishableDoesNotValidateArtifacts() {
 }
 
 async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "release-publish-valid-zip-"));
+  const storedFilePath = path.join("release_1", "artifact_1", "ChordV_1.1.6_x64-full.zip");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, createValidWindowsFullUpdateZip("1.1.6"));
   const release = makeReleaseCenterTestRelease({
+    version: "1.1.6",
     artifacts: [
       makeReleaseCenterTestArtifact({
         source: "uploaded",
@@ -3938,24 +3984,80 @@ async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
         deliveryMode: "desktop_full_replace",
         fileName: "ChordV_1.1.6_x64-full.zip",
         downloadUrl: "/api/downloads/releases/artifact_1",
-        storedFilePath: "release_1/artifact_1/ChordV_1.1.6_x64-full.zip",
+        storedFilePath,
         fileSizeBytes: null,
         fileHash: null,
         allowClientMirror: false
       })
     ]
   });
-  const service = createReleaseCenterService({
-    prisma: {
-      release: {
-        findUnique: async () => release
-      }
-    },
-    assertStoredReleaseArtifactReadable: async () => undefined,
-    assertReleaseRecordMutable: () => undefined
-  });
+  try {
+    const service = createReleaseCenterService({
+      prisma: {
+        release: {
+          findUnique: async () => release
+        }
+      },
+      assertReleaseRecordMutable: () => undefined
+    });
 
-  await service["assertReleasePublishable"]("release_1");
+    await service["assertReleasePublishable"]("release_1");
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testPublishReleaseRejectsUnreadableUploadedWindowsZip() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "release-publish-invalid-zip-"));
+  const storedFilePath = path.join("release_1", "artifact_1", "ChordV_1.1.6_x64-full.zip");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  const absolutePath = resolveReleaseArtifactAbsolutePath(storedFilePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, Buffer.from("not a zip"));
+  const release = makeReleaseCenterTestRelease({
+    version: "1.1.6",
+    artifacts: [
+      makeReleaseCenterTestArtifact({
+        source: "uploaded",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        downloadUrl: "/api/downloads/releases/artifact_1",
+        storedFilePath,
+        fileSizeBytes: null,
+        fileHash: null,
+        allowClientMirror: false
+      })
+    ]
+  });
+  try {
+    const service = createReleaseCenterService({
+      prisma: {
+        release: {
+          findUnique: async () => release
+        }
+      },
+      assertReleaseRecordMutable: () => undefined
+    });
+
+    await assert.rejects(
+      () => service["assertReleasePublishable"]("release_1"),
+      /Windows 静默全量更新 ZIP 不可用/
+    );
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
@@ -20786,78 +20888,138 @@ async function testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl() {
   assert.equal(result.id, "release_1");
 }
 
-async function testUploadReleaseArtifactSavesWithoutHashOrZipValidation() {
+async function testUploadReleaseArtifactSavesWithoutHashAfterZipValidation() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "release-upload-valid-zip-"));
+  const preparedPath = path.join(tempDir, "ChordV_1.1.6_x64-full.zip");
+  const zip = createValidWindowsFullUpdateZip("1.1.6");
+  await writeFile(preparedPath, zip);
   const release = makeReleaseCenterTestRelease({
     version: "1.1.6"
   });
   let preparedCalled = false;
   let createdData: Record<string, any> | null = null;
-  const service = createReleaseCenterService({
-    ensureReleaseExists: async () => release,
-    assertReleaseArtifactsMutable: () => undefined,
-    prepareUploadedReleaseArtifactFile: async () => {
-      preparedCalled = true;
-      return {
-        absolutePath: "prepared-not-a-real-zip.zip",
+  try {
+    const service = createReleaseCenterService({
+      ensureReleaseExists: async () => release,
+      assertReleaseArtifactsMutable: () => undefined,
+      prepareUploadedReleaseArtifactFile: async () => {
+        preparedCalled = true;
+        return {
+          absolutePath: preparedPath,
+          storedFilePath: "release_1/artifact_created/ChordV_1.1.6_x64-full.zip",
+          fileName: "ChordV_1.1.6_x64-full.zip",
+          fileSizeBytes: BigInt(zip.byteLength),
+          fileHash: null,
+          downloadUrl: "/api/downloads/releases/artifact_created"
+        };
+      },
+      prisma: {
+        $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+          task({
+            releaseArtifact: {
+              updateMany: async () => ({ count: 0 }),
+              create: async (payload: Record<string, any>) => {
+                createdData = payload.data;
+                return makeReleaseCenterTestArtifact({
+                  id: payload.data.id,
+                  releaseId: payload.data.releaseId,
+                  source: payload.data.source,
+                  type: payload.data.type,
+                  deliveryMode: payload.data.deliveryMode,
+                  downloadUrl: payload.data.downloadUrl,
+                  fileName: payload.data.fileName,
+                  storedFilePath: payload.data.storedFilePath,
+                  fileSizeBytes: payload.data.fileSizeBytes,
+                  fileHash: payload.data.fileHash,
+                  isPrimary: payload.data.isPrimary,
+                  isFullPackage: payload.data.isFullPackage
+                });
+              }
+            }
+          }),
+        release: {
+          findUnique: async () => ({
+            ...release,
+            artifacts: []
+          })
+        }
+      }
+    });
+
+    const result = await service.uploadReleaseArtifact(
+      "release_1",
+      {
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        isPrimary: true
+      },
+      {
+        path: "uploaded-valid-zip.tmp",
+        originalname: "ChordV_1.1.6_x64-full.zip",
+        size: zip.byteLength
+      }
+    );
+
+    assert.equal(preparedCalled, true);
+    assert.equal(createdData?.fileHash, null, "uploaded release artifacts should not require SHA256 metadata");
+    assert.equal(createdData?.fileSizeBytes, BigInt(zip.byteLength));
+    assert.equal(createdData?.deliveryMode, "desktop_full_replace");
+    assert.equal(result.id, "release_1");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testUploadReleaseArtifactRejectsUnreadableWindowsZipBeforeSave() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "release-upload-invalid-zip-"));
+  const preparedPath = path.join(tempDir, "ChordV_1.1.6_x64-full.zip");
+  await writeFile(preparedPath, Buffer.from("not a zip"));
+  const release = makeReleaseCenterTestRelease({
+    version: "1.1.6"
+  });
+  let createCalled = false;
+  try {
+    const service = createReleaseCenterService({
+      ensureReleaseExists: async () => release,
+      assertReleaseArtifactsMutable: () => undefined,
+      prepareUploadedReleaseArtifactFile: async () => ({
+        absolutePath: preparedPath,
         storedFilePath: "release_1/artifact_created/ChordV_1.1.6_x64-full.zip",
         fileName: "ChordV_1.1.6_x64-full.zip",
-        fileSizeBytes: 17n,
+        fileSizeBytes: 9n,
         fileHash: null,
         downloadUrl: "/api/downloads/releases/artifact_created"
-      };
-    },
-    prisma: {
-      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-        task({
-          releaseArtifact: {
-            updateMany: async () => ({ count: 0 }),
-            create: async (payload: Record<string, any>) => {
-              createdData = payload.data;
-              return makeReleaseCenterTestArtifact({
-                id: payload.data.id,
-                releaseId: payload.data.releaseId,
-                source: payload.data.source,
-                type: payload.data.type,
-                deliveryMode: payload.data.deliveryMode,
-                downloadUrl: payload.data.downloadUrl,
-                fileName: payload.data.fileName,
-                storedFilePath: payload.data.storedFilePath,
-                fileSizeBytes: payload.data.fileSizeBytes,
-                fileHash: payload.data.fileHash,
-                isPrimary: payload.data.isPrimary,
-                isFullPackage: payload.data.isFullPackage
-              });
-            }
-          }
-        }),
-      release: {
-        findUnique: async () => ({
-          ...release,
-          artifacts: []
-        })
+      }),
+      cleanupFailedReleaseArtifactUpload: async () => undefined,
+      prisma: {
+        $transaction: async () => {
+          createCalled = true;
+          throw new Error("invalid Windows ZIP should be rejected before artifact save");
+        }
       }
-    }
-  });
+    });
 
-  const result = await service.uploadReleaseArtifact(
-    "release_1",
-    {
-      type: "zip",
-      deliveryMode: "desktop_full_replace",
-      isPrimary: true
-    },
-    {
-      path: "uploaded-not-a-real-zip.tmp",
-      originalname: "ChordV_1.1.6_x64-full.zip",
-      size: 17
-    }
-  );
-
-  assert.equal(preparedCalled, true);
-  assert.equal(createdData?.fileHash, null, "uploaded release artifacts should not require SHA256 metadata");
-  assert.equal(createdData?.fileSizeBytes, 17n);
-  assert.equal(createdData?.deliveryMode, "desktop_full_replace");
-  assert.equal(result.id, "release_1");
+    await assert.rejects(
+      () =>
+        service.uploadReleaseArtifact(
+          "release_1",
+          {
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            isPrimary: true
+          },
+          {
+            path: "uploaded-invalid-zip.tmp",
+            originalname: "ChordV_1.1.6_x64-full.zip",
+            size: 9
+          }
+        ),
+      /Windows 静默全量更新 ZIP 不可用/
+    );
+    assert.equal(createCalled, false);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function testReleaseArtifactPrepareMissingTempFileReturnsBadRequest() {
@@ -20956,6 +21118,7 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
+    assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
       absolutePath: "missing-prepared-release.zip",
       storedFilePath: "release_1/artifact_1/ChordV-full.zip",
@@ -21006,6 +21169,7 @@ async function testUploadReleaseArtifactMapsTransientPrismaFailure() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
+    assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
       absolutePath: "missing-prepared-release-transient.zip",
       storedFilePath: "release_1/artifact_1/ChordV-full.zip",
@@ -21059,6 +21223,7 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
+    assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
       absolutePath: "missing-prepared-replacement-release.zip",
       storedFilePath: "release_1/artifact_1/ChordV-full-new.zip",
@@ -21119,6 +21284,7 @@ async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
   const service = createReleaseCenterService({
     ensureReleaseExists: async () => release,
     assertReleaseArtifactsMutable: () => undefined,
+    assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
     prepareUploadedReleaseArtifactFile: async () => ({
       absolutePath: "missing-prepared-replacement-release-transient.zip",
       storedFilePath: "release_1/artifact_1/ChordV-full-new.zip",
@@ -21310,6 +21476,7 @@ async function testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess() {
   const updates: Array<Record<string, any>> = [];
   try {
     const service = createReleaseCenterService({
+      assertUploadedReleaseArtifactValidForWindowsFullUpdate: async () => undefined,
       prepareUploadedReleaseArtifactFile: async () => ({
         absolutePath: newAbsolutePath,
         storedFilePath: newStoredFilePath,
@@ -22834,6 +23001,33 @@ async function testCreateTeamMapsLocalSaveFailure() {
   );
 }
 
+async function testCreateTeamMapsOwnerUniqueConflictAsConflict() {
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "owner_1",
+      status: "active"
+    }),
+    assertUserCanJoinTeam: async () => undefined,
+    prisma: {
+      $transaction: async () => {
+        throw { code: "P2002" };
+      },
+      team: {
+        create: () => ({})
+      },
+      teamMember: {
+        create: () => ({})
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.createTeam({ name: "Team", ownerUserId: "owner_1" }),
+    (error) => error instanceof ConflictException && /belongs to another team/i.test(error.message),
+    "team owner unique conflicts must return a controlled 409 instead of a transient 503"
+  );
+}
+
 async function testUpdateTeamMapsLocalSaveFailure() {
   const service = createAdminSubscriptionService({
     requireTeam: async () => ({
@@ -22858,6 +23052,127 @@ async function testUpdateTeamMapsLocalSaveFailure() {
       !/HTTP 500/i.test(error.message),
     "team update local save failures must return a controlled 503 instead of HTTP 500"
   );
+}
+
+async function testUpdateTeamOwnerTransferRejectsConcurrentForeignMembership() {
+  let oldOwnerDemoted = false;
+  let currentTeamUpdated = false;
+  let currentTeamMemberCreated = false;
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({
+      id: "team_1",
+      ownerUserId: "owner_1",
+      status: "active"
+    }),
+    ensureUserExists: async () => ({
+      id: "new_owner",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentPersonalSubscription: async () => null,
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          teamMember: {
+            findUnique: async () => ({
+              id: "member_other",
+              teamId: "team_other",
+              userId: "new_owner",
+              role: "member"
+            }),
+            updateMany: async () => {
+              oldOwnerDemoted = true;
+              return { count: 1 };
+            },
+            update: async () => {
+              throw new Error("must not update a member from another team");
+            },
+            create: async () => {
+              currentTeamMemberCreated = true;
+              return {};
+            }
+          },
+          team: {
+            update: async () => {
+              currentTeamUpdated = true;
+              return {};
+            }
+          }
+        })
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateTeam("team_1", { ownerUserId: "new_owner" }),
+    (error) => error instanceof ConflictException && /belongs to another team/i.test(error.message),
+    "owner transfer must re-check membership inside the transaction before changing team state"
+  );
+  assert.equal(oldOwnerDemoted, false, "old owner must not be demoted after the new owner joins another team");
+  assert.equal(currentTeamMemberCreated, false, "new owner must not be added to the current team after a concurrent foreign membership");
+  assert.equal(currentTeamUpdated, false, "team ownerUserId must not point to a user from another team");
+}
+
+async function testUpdateTeamOwnerTransferUsesOwnerLock() {
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalLockTimeout = process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+  const originalLockRetry = process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+  delete process.env.DATABASE_URL;
+  process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = "25";
+  process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = "5";
+  let releaseOuterLock!: () => void;
+  let businessLogicEntered = false;
+
+  const heldLock = runWithSubscriptionOwnerLock(
+    "personal:new_owner",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const service = createAdminSubscriptionService({
+      requireTeam: async () => {
+        businessLogicEntered = true;
+        return {
+          id: "team_1",
+          ownerUserId: "owner_1",
+          status: "active"
+        };
+      }
+    });
+
+    await assert.rejects(
+      () => service.updateTeam("team_1", { ownerUserId: "new_owner" }),
+      (error) => error instanceof ConflictException && /retry shortly/.test(error.message),
+      "team owner transfer must use the subscription owner lock before entering mutation logic"
+    );
+    assert.equal(businessLogicEntered, false, "owner transfer must not enter team mutation logic while the owner lock is held");
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock.catch(() => undefined);
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl;
+    }
+    if (originalLockTimeout === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = originalLockTimeout;
+    }
+    if (originalLockRetry === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = originalLockRetry;
+    }
+  }
 }
 
 async function testUpdateTeamMemberMapsLocalSaveFailure() {
@@ -26838,6 +27153,36 @@ async function testAdminDashboardCountsOnlyPublishedActiveAnnouncements() {
   assert.ok(announcementCountPayloads[0].where.publishedAt?.lte instanceof Date);
 }
 
+async function testAdminDashboardCountsWaitingUserTicketsAsOpen() {
+  const ticketCountPayloads: Array<Record<string, any>> = [];
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        count: async (payload: Record<string, any>) => {
+          ticketCountPayloads.push(payload);
+          if (payload.where.status?.in?.includes("waiting_user")) {
+            return 3;
+          }
+          if (payload.where.status === "waiting_admin") {
+            return 2;
+          }
+          if (payload.where.status === "closed") {
+            return 1;
+          }
+          return 0;
+        }
+      }
+    }
+  });
+
+  const counts = await service["getSupportTicketDashboardCounts"]();
+
+  assert.equal(counts.openTickets, 3);
+  assert.equal(counts.waitingAdminTickets, 2);
+  assert.equal(counts.closedTickets, 1);
+  assert.deepEqual(ticketCountPayloads[0].where.status, { in: ["open", "waiting_user"] });
+}
+
 async function testCreateAnnouncementKeepsLocalSaveWhenPublishFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAnnouncementPolicyService({
@@ -29638,8 +29983,9 @@ async function main() {
   await testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent();
   await testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite();
-  await testAssertReleasePublishableDoesNotValidateArtifacts();
+  await testAssertReleasePublishableAllowsExternalWindowsZipWithoutOptionalMetadata();
   await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
+  await testPublishReleaseRejectsUnreadableUploadedWindowsZip();
   await testPublishReleaseRejectsMissingUploadedArtifactFile();
   await testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissing();
   await testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata();
@@ -29909,7 +30255,8 @@ async function main() {
   await testUpdateReleaseArtifactMapsLocalSaveFailure();
   await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
-  await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
+  await testUploadReleaseArtifactSavesWithoutHashAfterZipValidation();
+  await testUploadReleaseArtifactRejectsUnreadableWindowsZipBeforeSave();
   await testReleaseArtifactPrepareMissingTempFileReturnsBadRequest();
   await testWindowsExeUploadIsRejectedForFullReplacementUpdates();
   await testUploadReleaseArtifactFailureUsesBestEffortCleanup();
@@ -29957,7 +30304,10 @@ async function main() {
   await testChangeSubscriptionPlanMapsLocalSaveFailure();
   await testUpdateSubscriptionMapsLocalSaveFailure();
   await testCreateTeamMapsLocalSaveFailure();
+  await testCreateTeamMapsOwnerUniqueConflictAsConflict();
   await testUpdateTeamMapsLocalSaveFailure();
+  await testUpdateTeamOwnerTransferRejectsConcurrentForeignMembership();
+  await testUpdateTeamOwnerTransferUsesOwnerLock();
   await testUpdateTeamMemberMapsLocalSaveFailure();
   await testDeleteTeamMemberMapsLocalSaveFailure();
   await testCreateTeamSubscriptionMapsLocalSaveFailure();
@@ -30061,6 +30411,7 @@ async function main() {
   await testAdminSnapshotCountsOnlyClientVisibleAnnouncements();
   testAdminUploadLimitsExposePositiveControllerLimits();
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
+  await testAdminDashboardCountsWaitingUserTicketsAsOpen();
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
   await testCreateAnnouncementPublishesUpdateEvent();

@@ -22,6 +22,7 @@ import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable 
 import {
   assertReleaseArtifactClientUsable,
   assertReleaseArtifactTypeAllowed,
+  assertWindowsFullUpdateZipFile,
   buildReleaseArtifactDownloadUrl,
   compareSemver,
   createId,
@@ -504,6 +505,17 @@ export class ReleaseCenterService {
     const nextExternalFileName =
       (input.fileName !== undefined ? normalizeNullableText(input.fileName) : metadataIdentityChanged ? null : current.fileName);
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
+    if (nextSource === "uploaded") {
+      const nextUploadedFileName = input.fileName !== undefined ? normalizeNullableText(input.fileName) : current.fileName;
+      await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
+        platform,
+        type: nextType,
+        deliveryMode: nextDeliveryMode,
+        absolutePath: resolveReleaseArtifactAbsolutePath(current.storedFilePath),
+        fileName: nextUploadedFileName,
+        version: release.version
+      });
+    }
     let updatedArtifact: ReleaseFallbackArtifact;
     try {
       updatedArtifact = await this.prisma.$transaction(async (tx) => {
@@ -580,6 +592,14 @@ export class ReleaseCenterService {
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
       const preparedFile = prepared;
+      await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
+        platform,
+        type: uploadType,
+        deliveryMode,
+        absolutePath: preparedFile.absolutePath,
+        fileName: preparedFile.fileName,
+        version: release.version
+      });
       const createdArtifact = await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
@@ -655,6 +675,14 @@ export class ReleaseCenterService {
     try {
       prepared = await this.prepareUploadedReleaseArtifactFile(releaseId, artifactId, file, input.fileName);
       const preparedFile = prepared;
+      await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
+        platform,
+        type: uploadType,
+        deliveryMode,
+        absolutePath: preparedFile.absolutePath,
+        fileName: preparedFile.fileName,
+        version: release.version
+      });
       const updatedArtifact = await this.prisma.$transaction(async (tx) => {
         if (isPrimary) {
           await tx.releaseArtifact.updateMany({
@@ -960,6 +988,16 @@ export class ReleaseCenterService {
       try {
         assertReleaseArtifactClientUsable(artifact, release.platform as PlatformTarget);
         await this.assertStoredReleaseArtifactReadable(artifact);
+        if (artifact.source === "uploaded") {
+          await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
+            platform: release.platform as PlatformTarget,
+            type: fromPrismaReleaseArtifactType(artifact.type),
+            deliveryMode: artifact.deliveryMode as UpdateDeliveryMode,
+            absolutePath: artifact.storedFilePath ? resolveReleaseArtifactAbsolutePath(artifact.storedFilePath) : null,
+            fileName: artifact.fileName,
+            version: release.version
+          });
+        }
         lastArtifactError = null;
         break;
       } catch (error) {
@@ -1018,6 +1056,31 @@ export class ReleaseCenterService {
     }
     const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
     await ensureFileReadable(absolutePath);
+  }
+
+  private async assertUploadedReleaseArtifactValidForWindowsFullUpdate(input: {
+    platform: PlatformTarget;
+    type: ReleaseArtifactType;
+    deliveryMode: UpdateDeliveryMode;
+    absolutePath: string | null;
+    fileName?: string | null;
+    version: string;
+  }) {
+    if (input.platform !== "windows" || input.type !== "zip" || input.deliveryMode !== "desktop_full_replace") {
+      return;
+    }
+    const fileName = input.fileName?.trim() || (input.absolutePath ? path.basename(input.absolutePath) : "");
+    if (!fileName.toLowerCase().endsWith(".zip")) {
+      throw new BadRequestException("Windows 静默全量更新只支持 ZIP。");
+    }
+    if (!input.absolutePath) {
+      throw new BadRequestException("Windows 静默全量更新 ZIP 不可用。");
+    }
+    try {
+      await assertWindowsFullUpdateZipFile(input.absolutePath, fileName, input.version);
+    } catch {
+      throw new BadRequestException("Windows 静默全量更新 ZIP 不可用。");
+    }
   }
 
   private assertReleaseArtifactsMutable(release: { status: string }) {
@@ -1357,7 +1420,7 @@ function assertUploadedReleaseArtifactFileAllowed(platform: PlatformTarget, file
   }
   const normalized = fileName?.trim().toLowerCase() ?? "";
   if (!normalized.endsWith(".zip")) {
-    throw new BadRequestException("Windows 静默全量替换更新只支持 ZIP 安装包。");
+    throw new BadRequestException("Windows 静默全量更新只支持 ZIP。");
   }
 }
 

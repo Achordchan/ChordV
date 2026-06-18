@@ -1237,6 +1237,9 @@ export class AdminSubscriptionService {
         })
       ]);
     } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw new ConflictException("The account already belongs to another team.");
+      }
       throw toAdminLocalSaveHttpError(error, "Team 保存失败，请刷新团队列表后重试。");
     }
 
@@ -1249,6 +1252,13 @@ export class AdminSubscriptionService {
   }
 
   async updateTeam(teamId: string, input: UpdateTeamInputDto): Promise<AdminTeamRecordDto> {
+    if (input.ownerUserId) {
+      return runWithSubscriptionOwnerLock(`personal:${input.ownerUserId}`, () => this.updateTeamLocked(teamId, input));
+    }
+    return this.updateTeamLocked(teamId, input);
+  }
+
+  private async updateTeamLocked(teamId: string, input: UpdateTeamInputDto): Promise<AdminTeamRecordDto> {
     const current = await this.requireTeam(teamId);
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = input.name.trim();
@@ -1276,20 +1286,31 @@ export class AdminSubscriptionService {
       data.ownerUserId = nextOwner.id;
       try {
         await this.prisma.$transaction(async (tx) => {
+          const currentNextOwnerMembership = await tx.teamMember.findUnique({
+            where: { userId: nextOwner.id }
+          });
+          if (currentNextOwnerMembership && currentNextOwnerMembership.teamId !== teamId) {
+            throw new ConflictException("The account already belongs to another team.");
+          }
           await tx.teamMember.updateMany({
             where: { teamId, role: "owner" },
             data: { role: "member" }
           });
-          await tx.teamMember.upsert({
-            where: { userId: nextOwner.id },
-            update: { role: "owner" },
-            create: {
-              id: createId("member"),
-              teamId,
-              userId: nextOwner.id,
-              role: "owner"
-            }
-          });
+          if (currentNextOwnerMembership) {
+            await tx.teamMember.update({
+              where: { id: currentNextOwnerMembership.id },
+              data: { role: "owner" }
+            });
+          } else {
+            await tx.teamMember.create({
+              data: {
+                id: createId("member"),
+                teamId,
+                userId: nextOwner.id,
+                role: "owner"
+              }
+            });
+          }
           await tx.team.update({
             where: { id: teamId },
             data

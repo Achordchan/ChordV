@@ -17,6 +17,7 @@ const DEFAULT_IMAGE_BED_UPLOAD_FOLDER = "support-tickets";
 const DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS = 5_000;
 const IMAGE_BED_CLEANUP_BUDGET_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_CLEANUP_BUDGET_MS", 500);
+const IMAGE_BED_ERROR_DETAIL_MAX_LENGTH = 300;
 
 type StoredImageBedConfig = {
   baseUrl?: string;
@@ -130,7 +131,8 @@ export class ImageBedService {
 
     const payload = await this.requestImageBedJson<Record<string, unknown>>(
       config,
-      `/api/manage/list?${params.toString()}`
+      `/api/manage/list?${params.toString()}`,
+      { operationLabel: "列表读取" }
     );
     const rawFiles = Array.isArray(payload.files) ? payload.files : [];
     const directories = Array.isArray(payload.directories)
@@ -153,7 +155,7 @@ export class ImageBedService {
     const payload = await this.requestImageBedJson<Record<string, unknown>>(
       config,
       `/api/manage/delete/${encodePathSegments(normalizedPath)}${query}`,
-      { allowBusinessFailure: true }
+      { allowBusinessFailure: true, operationLabel: "删除" }
     );
 
     const deleted = readStringArray(payload.deleted);
@@ -209,14 +211,14 @@ export class ImageBedService {
       const rawBody = await readImageBedResponseText(response);
       if (!response.ok) {
         this.logger?.warn(`Image bed upload failed with HTTP ${response.status}: ${readImageBedError(rawBody) || "empty response"}`);
-        throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
+        throw new BadGatewayException(buildImageBedHttpFailureMessage("上传", response.status, rawBody));
       }
 
       const payload = parseJson(rawBody);
       if (payload && typeof payload === "object" && (payload as Record<string, unknown>).success === false) {
         const record = payload as Record<string, unknown>;
         this.logger?.warn(`Image bed upload business failure: ${readString(record.message) ?? readString(record.error) ?? "unknown error"}`);
-        throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
+        throw new BadGatewayException(buildImageBedBusinessFailureMessage("上传", response.status, record));
       }
       const publicUrl = extractUploadedUrl(config.baseUrl, payload);
       if (!publicUrl) {
@@ -280,7 +282,7 @@ export class ImageBedService {
   private async requestImageBedJson<T>(
     config: EffectiveImageBedConfig,
     pathAndQuery: string,
-    options: { allowBusinessFailure?: boolean } = {}
+    options: { allowBusinessFailure?: boolean; operationLabel?: string } = {}
   ): Promise<T> {
     const url = new URL(pathAndQuery, config.baseUrl);
     const response = await fetchImageBed(
@@ -296,7 +298,7 @@ export class ImageBedService {
     const rawBody = await readImageBedResponseText(response);
     if (!response.ok) {
       this.logger?.warn(`Image bed request failed with HTTP ${response.status}: ${readImageBedError(rawBody) || "empty response"}`);
-      throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
+      throw new BadGatewayException(buildImageBedHttpFailureMessage(options.operationLabel ?? "请求", response.status, rawBody));
     }
     const payload = parseJson(rawBody);
     if (!payload || typeof payload !== "object") {
@@ -305,7 +307,7 @@ export class ImageBedService {
     const record = payload as Record<string, unknown>;
     if (record.success === false && !options.allowBusinessFailure) {
       this.logger?.warn(`Image bed business failure: ${readString(record.message) ?? readString(record.error) ?? "unknown error"}`);
-      throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
+      throw new BadGatewayException(buildImageBedBusinessFailureMessage(options.operationLabel ?? "请求", response.status, record));
     }
     return payload as T;
   }
@@ -560,10 +562,66 @@ function extractUploadedFileId(publicUrl: string, payload: unknown) {
 function readImageBedError(rawBody: string) {
   const parsed = parseJson(rawBody);
   if (parsed && typeof parsed === "object") {
-    const record = parsed as Record<string, unknown>;
-    return readString(record.message) ?? readString(record.error);
+    return sanitizeImageBedErrorDetail(readProviderErrorField(parsed as Record<string, unknown>));
   }
-  return rawBody.trim().slice(0, 200);
+  return sanitizeImageBedErrorDetail(rawBody);
+}
+
+function buildImageBedHttpFailureMessage(operationLabel: string, status: number, rawBody: string) {
+  const detail = readImageBedError(rawBody);
+  return detail
+    ? `图床${operationLabel}失败（HTTP ${status}）：${detail}`
+    : `图床${operationLabel}失败（HTTP ${status}），图床未返回错误详情。`;
+}
+
+function buildImageBedBusinessFailureMessage(operationLabel: string, status: number, payload: Record<string, unknown>) {
+  const detail = sanitizeImageBedErrorDetail(readProviderErrorField(payload));
+  return detail
+    ? `图床${operationLabel}失败（HTTP ${status}）：${detail}`
+    : `图床${operationLabel}失败（HTTP ${status}），图床返回 success=false 但未提供错误详情。`;
+}
+
+function readProviderErrorField(record: Record<string, unknown>): string | null {
+  return (
+    readTextValue(record.message) ??
+    readTextValue(record.error) ??
+    readTextValue(record.detail) ??
+    readTextValue(record.reason) ??
+    readTextValue(record.msg)
+  );
+}
+
+function readTextValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return readString(value);
+  }
+  if (Array.isArray(value)) {
+    const items = value.map(readTextValue).filter((item): item is string => Boolean(item));
+    return items.length > 0 ? items.join("；") : null;
+  }
+  if (value && typeof value === "object") {
+    return readProviderErrorField(value as Record<string, unknown>);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function sanitizeImageBedErrorDetail(value: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const compacted = trimmed
+    .replace(/\s+/g, " ")
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, "$1***")
+    .replace(/([?&](?:api_?token|access_token|token|key)=)[^&\s]+/gi, "$1***")
+    .replace(/((?:api[-_ ]?token|access[_-]?token|authorization|bearer|token)\s*[:=]\s*)[A-Za-z0-9._~+/=\-]{8,}/gi, "$1***")
+    .replace(/((?:api[-_ ]?token|access[_-]?token|authorization|bearer|token)\s+)[A-Za-z0-9._~+/=\-]{8,}/gi, "$1***");
+  return compacted.length > IMAGE_BED_ERROR_DETAIL_MAX_LENGTH
+    ? `${compacted.slice(0, IMAGE_BED_ERROR_DETAIL_MAX_LENGTH)}...`
+    : compacted;
 }
 
 function parseJson(value: string): unknown {
@@ -587,10 +645,25 @@ async function fetchImageBed(url: URL, init: RequestInit, timeoutMs: number) {
     const message = reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")
       ? `图床服务请求超时，已等待 ${timeoutMs}ms。`
       : reason instanceof Error
-        ? "图床服务请求失败，请检查图床地址、网络或 Token 配置后重试。"
+        ? `图床服务请求失败：${readFetchFailureReason(reason)}`
         : "图床服务请求失败，请检查图床配置后重试。";
     throw new BadGatewayException(message);
   }
+}
+
+function readFetchFailureReason(reason: Error) {
+  const cause = readRecord((reason as Error & { cause?: unknown }).cause);
+  const causeCode = readString(cause?.code);
+  const causeMessage = readString(cause?.message);
+  const baseMessage = readString(reason.message) ?? reason.name;
+  const message = causeCode && causeMessage
+    ? `${baseMessage}（${causeCode}: ${causeMessage}）`
+    : causeCode
+      ? `${baseMessage}（${causeCode}）`
+      : causeMessage
+        ? `${baseMessage}（${causeMessage}）`
+        : baseMessage;
+  return sanitizeImageBedErrorDetail(message) ?? "请检查图床地址、网络或 Token 配置后重试。";
 }
 
 async function readImageBedResponseText(response: Response) {

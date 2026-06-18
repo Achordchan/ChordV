@@ -1292,7 +1292,7 @@ export class DevDataService implements OnModuleInit {
     try {
       counts = await Promise.all([
         this.prisma.supportTicket.count({
-          where: { status: "open" }
+          where: { status: { in: ["open", "waiting_user"] } }
         }),
         this.prisma.supportTicket.count({
           where: { status: "waiting_admin" }

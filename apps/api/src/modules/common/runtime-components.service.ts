@@ -220,6 +220,9 @@ export class RuntimeComponentsService {
     }
     const normalizedExpectedHash =
       input.expectedHash !== undefined ? normalizeExpectedHash(input.expectedHash) : current.expectedHash;
+    if (nextSource === "uploaded" && input.expectedHash !== undefined) {
+      assertExpectedHashMatchesCurrentFile(normalizedExpectedHash, current.fileHash);
+    }
     const remoteValidationInvalidated =
       nextSource !== "uploaded" &&
       (current.source === "uploaded" ||
@@ -1064,6 +1067,15 @@ function normalizeExpectedHash(value?: string | null) {
 function assertExpectedHashMatchesFile(expectedHash: string | null, actualHash: string) {
   if (expectedHash && expectedHash !== actualHash) {
     throw new BadRequestException("上传文件的 SHA256 与 expectedHash 不一致。");
+  }
+}
+
+function assertExpectedHashMatchesCurrentFile(expectedHash: string | null, currentFileHash: string | null | undefined) {
+  if (!expectedHash) {
+    return;
+  }
+  if (!isValidSha256(currentFileHash) || expectedHash !== currentFileHash.toLowerCase()) {
+    throw new BadRequestException("上传型运行组件的 expectedHash 与当前文件 SHA256 不一致。");
   }
 }
 
