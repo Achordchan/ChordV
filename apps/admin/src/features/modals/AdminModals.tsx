@@ -44,9 +44,9 @@ export function KickMemberModal(props: {
   onConfirm: () => void;
 }) {
   return (
-    <Modal opened={props.opened} onClose={props.onClose} title="提交断网任务" centered>
+    <Modal opened={props.opened} onClose={props.onClose} title="断开成员连接" centered>
       <Stack>
-        <Text>该操作会保存本地状态，并把当前连接撤销加入后台任务；不会把成员移出团队。</Text>
+        <Text>该操作会保存本地状态，并把当前连接加入后台断开队列；不会把成员移出团队。</Text>
         <Text fw={600}>{props.memberName}</Text>
         <Checkbox checked={props.disableAccount} onChange={(event) => props.onDisableAccountChange(event.currentTarget.checked)} label="同时禁用这个账号" />
         <Group justify="flex-end">
@@ -54,7 +54,7 @@ export function KickMemberModal(props: {
             取消
           </Button>
           <Button color="red" onClick={props.onConfirm} loading={props.submitting}>
-            确认断网
+            确认断开连接
           </Button>
         </Group>
       </Stack>

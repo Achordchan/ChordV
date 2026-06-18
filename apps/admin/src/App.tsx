@@ -137,7 +137,8 @@ import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawer
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
-import { NodesPage, PanelSyncQueueDrawer, type PanelSyncQueueFilter } from "./pages/NodesPage";
+import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
+import type { PanelSyncQueueFilter } from "./utils/admin-queue-filters";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
@@ -2229,7 +2230,7 @@ export function App() {
     setEntityActionBusyKey(actionKey);
     const teamScopeHint = source === "team-member" ? "这是账号级操作，不会移出团队成员。" : "";
     const confirmed = window.confirm(
-      `确认提交 ${displayName} 的连接撤销任务吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
+      `确认断开 ${displayName} 的当前连接吗？账号会保持启用，用户稍后可以重新连接。${teamScopeHint}`
     );
     if (!confirmed) {
       entityActionBusyRef.current = null;
@@ -2240,7 +2241,7 @@ export function App() {
     try {
       await runAction(
         () => disconnectUser(userId),
-        "账号连接撤销任务已提交",
+        "账号断开连接任务已提交",
         dbFirstMutationOptions
       );
     } finally {
@@ -2326,7 +2327,7 @@ export function App() {
           kickTeamMember(kickMemberTarget.teamId, kickMemberTarget.memberId, {
             disableAccount: kickDisableAccount
           }),
-        kickDisableAccount ? "成员断网任务已提交，账号已禁用" : "成员断网任务已提交",
+        kickDisableAccount ? "成员断开连接任务已提交，账号已禁用" : "成员断开连接任务已提交",
         dbFirstMutationOptions
       );
       if (success) {

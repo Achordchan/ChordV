@@ -8,15 +8,13 @@ import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
+import {
+  filterLeaseRevocationJobs,
+  filterPanelSyncJobs,
+  hasPanelSyncQueueFilter,
+  type PanelSyncQueueFilter
+} from "../utils/admin-queue-filters";
 import { nodePanelColor, nodeProbeColor, translatePanelStatus, translateProbeStatus } from "../utils/admin-translate";
-
-export type PanelSyncQueueFilter = {
-  title?: string;
-  nodeId?: string;
-  subscriptionId?: string;
-  userId?: string;
-  teamId?: string;
-};
 
 type NodesPageProps = {
   searchValue: string;
@@ -473,54 +471,8 @@ export function PanelSyncQueueDrawer(props: {
   );
 }
 
-function hasPanelSyncQueueFilter(filter?: PanelSyncQueueFilter | null) {
-  return Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId);
-}
-
 function canRetryFilteredQueueByNode(filter?: PanelSyncQueueFilter | null) {
   return !filter?.subscriptionId && !filter?.userId && !filter?.teamId;
-}
-
-function filterPanelSyncJobs(jobs: AdminPanelSyncJobDto[], filter?: PanelSyncQueueFilter | null) {
-  if (!hasPanelSyncQueueFilter(filter)) {
-    return jobs;
-  }
-  return jobs.filter((job) => {
-    if (filter?.nodeId && job.nodeId !== filter.nodeId) {
-      return false;
-    }
-    if (filter?.subscriptionId && job.subscriptionId !== filter.subscriptionId) {
-      return false;
-    }
-    if (filter?.userId && job.userId !== filter.userId) {
-      return false;
-    }
-    if (filter?.teamId && job.teamId !== filter.teamId) {
-      return false;
-    }
-    return true;
-  });
-}
-
-function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: PanelSyncQueueFilter | null) {
-  if (!hasPanelSyncQueueFilter(filter)) {
-    return jobs;
-  }
-  return jobs.filter((job) => {
-    if (filter?.nodeId && job.nodeId !== filter.nodeId) {
-      return false;
-    }
-    if (filter?.subscriptionId && job.subscriptionId !== filter.subscriptionId) {
-      return false;
-    }
-    if (filter?.userId && job.userId !== filter.userId) {
-      return false;
-    }
-    if (filter?.teamId && !filter.nodeId && !filter.subscriptionId && !filter.userId) {
-      return false;
-    }
-    return true;
-  });
 }
 
 function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[], nodeId: string) {

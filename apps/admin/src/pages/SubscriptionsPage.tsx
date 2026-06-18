@@ -15,7 +15,7 @@ import { MiniMetric } from "../features/shared/MiniMetric";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import type { PanelSyncQueueFilter } from "./NodesPage";
+import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
@@ -477,7 +477,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                               leftSection={<IconBolt size={14} />}
                                               onClick={() => props.onOpenKickMemberModal(team.id, member.id, member.displayName)}
                                             >
-                                              提交断网任务
+                                              断开连接
                                             </Button>
                                           </Group>
                                         </Group>

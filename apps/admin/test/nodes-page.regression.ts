@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import type { AdminLeaseRevocationJobDto } from "@chordv/shared";
+import { filterLeaseRevocationJobs } from "../src/utils/admin-queue-filters";
+
+function makeLeaseJob(input: Partial<AdminLeaseRevocationJobDto>): AdminLeaseRevocationJobDto {
+  return {
+    id: input.id ?? "lease_job_1",
+    reason: input.reason ?? "team_member_disconnected",
+    status: input.status ?? "pending",
+    subscriptionId: input.subscriptionId ?? null,
+    userId: input.userId ?? null,
+    nodeId: input.nodeId ?? null,
+    nodeName: input.nodeName ?? null,
+    attempts: input.attempts ?? 0,
+    nextRunAt: input.nextRunAt ?? "2026-01-01T00:00:00.000Z",
+    lockedAt: input.lockedAt ?? null,
+    lastError: input.lastError ?? null,
+    completedAt: input.completedAt ?? null,
+    createdAt: input.createdAt ?? "2026-01-01T00:00:00.000Z",
+    updatedAt: input.updatedAt ?? "2026-01-01T00:00:00.000Z"
+  };
+}
+
+function testTeamOnlyQueueFilterDoesNotHideLeaseRevocationJobs() {
+  const jobs = [
+    makeLeaseJob({
+      id: "lease_job_team",
+      subscriptionId: "subscription_team",
+      userId: "user_1"
+    })
+  ];
+
+  const result = filterLeaseRevocationJobs(jobs, { teamId: "team_1" });
+
+  assert.deepEqual(
+    result.map((job) => job.id),
+    ["lease_job_team"],
+    "team-level queue views must not hide lease revocation jobs that do not expose teamId"
+  );
+}
+
+function testSpecificQueueFiltersStillApplyToLeaseRevocationJobs() {
+  const jobs = [
+    makeLeaseJob({ id: "match", subscriptionId: "subscription_1", userId: "user_1", nodeId: "node_1" }),
+    makeLeaseJob({ id: "other", subscriptionId: "subscription_2", userId: "user_2", nodeId: "node_2" })
+  ];
+
+  assert.deepEqual(
+    filterLeaseRevocationJobs(jobs, { subscriptionId: "subscription_1" }).map((job) => job.id),
+    ["match"]
+  );
+  assert.deepEqual(
+    filterLeaseRevocationJobs(jobs, { userId: "user_1" }).map((job) => job.id),
+    ["match"]
+  );
+  assert.deepEqual(
+    filterLeaseRevocationJobs(jobs, { nodeId: "node_1" }).map((job) => job.id),
+    ["match"]
+  );
+}
+
+testTeamOnlyQueueFilterDoesNotHideLeaseRevocationJobs();
+testSpecificQueueFiltersStillApplyToLeaseRevocationJobs();
+
+console.log("admin nodes page regression checks passed");

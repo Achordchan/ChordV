@@ -6,7 +6,7 @@ import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
-import type { PanelSyncQueueFilter } from "./NodesPage";
+import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamFormState, TeamMemberFormState } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import { translateRole, translateUserStatus } from "../utils/admin-translate";
@@ -124,7 +124,7 @@ export function UsersPage(props: UsersPageProps) {
                           variant="subtle"
                           color="orange"
                           onClick={() => props.onDisconnectUser(item.id, item.displayName, "personal")}
-                          title="账号级：提交连接撤销任务"
+                          title="账号级：断开当前连接"
                           loading={props.actionBusyKey === `user-disconnect:${item.id}`}
                           disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${item.id}`}
                         >
@@ -379,7 +379,7 @@ export function UsersPage(props: UsersPageProps) {
                                       loading={props.actionBusyKey === `user-disconnect:${member.userId}`}
                                       disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${member.userId}`}
                                       onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
-                                      title="账号级：提交连接撤销任务，不移出团队"
+                                      title="账号级：断开当前连接，不移出团队"
                                     >
                                       <IconRefresh size={16} />
                                     </ActionIcon>
