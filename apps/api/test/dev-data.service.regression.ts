@@ -8911,6 +8911,35 @@ async function testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest() {
   );
 }
 
+async function testGetNodeAccessMapsUnknownReadFailure() {
+  const service = createDevDataService({
+    logger: {
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async () => {
+          throw new Error("node access read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getSubscriptionNodeAccess("sub_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /节点授权加载失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node access read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUpdateNodeAccessMapsLocalSaveConstraintErrors() {
   const service = createDevDataService({
     logger: {
@@ -25204,6 +25233,7 @@ async function main() {
   await testCreateUserRejectsUniqueEmailConflictAsConflict();
   await testCreateUserMapsUnknownLocalSaveFailure();
   await testConvertSubscriptionToTeamMapsUnknownLocalSaveFailure();
+  await testGetNodeAccessMapsUnknownReadFailure();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   await testCreatePlanRejectsBlankTrimmedName();
   await testUpdatePlanRejectsBlankTrimmedName();

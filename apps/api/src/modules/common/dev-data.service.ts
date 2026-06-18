@@ -1387,19 +1387,31 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getSubscriptionNodeAccess(subscriptionId: string): Promise<SubscriptionNodeAccessDto> {
-    const subscription = await this.requireSubscription(subscriptionId);
-    const rows = await this.prisma.subscriptionNodeAccess.findMany({
-      where: { subscriptionId },
-      include: { node: true },
-      orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
-    });
-    const deduped = dedupeNodeAccessRows(rows);
+    try {
+      const subscription = await this.requireSubscription(subscriptionId);
+      const rows = await this.prisma.subscriptionNodeAccess.findMany({
+        where: { subscriptionId },
+        include: { node: true },
+        orderBy: [{ node: { recommended: "desc" } }, { node: { latencyMs: "asc" } }, { node: { createdAt: "desc" } }]
+      });
+      const deduped = dedupeNodeAccessRows(rows);
 
-    return {
-      subscriptionId: subscription.id,
-      nodeIds: deduped.map((item) => item.nodeId),
-      nodes: deduped.map((item) => toNodeSummary(item.node))
-    };
+      return {
+        subscriptionId: subscription.id,
+        nodeIds: deduped.map((item) => item.nodeId),
+        nodes: deduped.map((item) => toNodeSummary(item.node))
+      };
+    } catch (error) {
+      const controlledError = toNodeAccessReadHttpError(error);
+      if (controlledError) {
+        throw controlledError;
+      }
+      this.logger?.error?.(
+        `Node access read failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`,
+        error instanceof Error ? error.stack : undefined
+      );
+      throw new ServiceUnavailableException("节点授权加载失败，请刷新订阅和节点列表后重试。");
+    }
   }
 
   async updateSubscriptionNodeAccess(
@@ -2315,6 +2327,18 @@ function toNodeAccessLocalSaveHttpError(error: unknown) {
   const transientError = toPrismaTransientHttpError(error, "节点授权保存暂时繁忙，请刷新后重试；本次请求没有等待失联面板。");
   if (transientError) return transientError;
   return new ServiceUnavailableException("节点授权保存失败，请刷新订阅和节点列表后重试；本次请求没有等待失联面板。");
+}
+
+function toNodeAccessReadHttpError(error: unknown) {
+  if (error instanceof HttpException) {
+    return error;
+  }
+  if (isPrismaForeignKeyConstraintError(error) || isPrismaRecordNotFoundError(error)) {
+    return new BadRequestException("节点授权数据已变化，请刷新订阅和节点列表后重试。");
+  }
+  const transientError = toPrismaTransientHttpError(error, "节点授权加载暂时繁忙，请稍后重试。");
+  if (transientError) return transientError;
+  return null;
 }
 
 function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
