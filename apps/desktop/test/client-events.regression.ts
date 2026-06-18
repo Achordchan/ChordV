@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  createClientRuntimeFallbackRefreshEventTypes,
   parseClientRuntimeEvent,
   parseServerSentEventBlock,
   splitServerSentEventBlocks
@@ -42,10 +43,29 @@ function testIgnoresCommentsAndPreservesDataSpacing() {
   assert.equal(event.type, "subscription_updated");
 }
 
+function testFallbackRefreshIncludesPolicyUpdates() {
+  assert.deepEqual(createClientRuntimeFallbackRefreshEventTypes(false), [
+    "subscription_updated",
+    "node_access_updated",
+    "announcement_updated",
+    "policy_updated",
+    "ticket_updated"
+  ]);
+  assert.deepEqual(createClientRuntimeFallbackRefreshEventTypes(true), [
+    "subscription_updated",
+    "node_access_updated",
+    "announcement_updated",
+    "policy_updated",
+    "ticket_updated",
+    "version_updated"
+  ]);
+}
+
 function main() {
   testParsesNestSseEventIdAndDataLines();
   testSplitsCrLfAndLfSseBlocks();
   testIgnoresCommentsAndPreservesDataSpacing();
+  testFallbackRefreshIncludesPolicyUpdates();
   console.log("desktop client events regression checks passed");
 }
 

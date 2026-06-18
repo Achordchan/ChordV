@@ -884,6 +884,50 @@ export function App() {
     mergeSnapshot({ [key]: value } as Pick<AdminSnapshotDto, K>);
   }
 
+  function upsertAnnouncementLocal(record: AdminAnnouncementRecordDto) {
+    const current = snapshot?.announcements ?? [];
+    const exists = current.some((item) => item.id === record.id);
+    applyListPatch(
+      "announcements",
+      exists ? current.map((item) => (item.id === record.id ? record : item)) : [record, ...current]
+    );
+  }
+
+  function removeAnnouncementLocal(announcementId: string) {
+    applyListPatch("announcements", (snapshot?.announcements ?? []).filter((item) => item.id !== announcementId));
+  }
+
+  function applyLocalActionResult(result: unknown) {
+    if (isAdminAnnouncementRecord(result)) {
+      upsertAnnouncementLocal(result);
+      return;
+    }
+    if (isAnnouncementDeleteResult(result)) {
+      removeAnnouncementLocal(result.announcementId);
+    }
+  }
+
+  function isAdminAnnouncementRecord(value: unknown): value is AdminAnnouncementRecordDto {
+    return Boolean(
+      value &&
+        typeof value === "object" &&
+        "id" in value &&
+        "title" in value &&
+        "body" in value &&
+        "level" in value &&
+        "isActive" in value
+    );
+  }
+
+  function isAnnouncementDeleteResult(value: unknown): value is { ok: boolean; announcementId: string } {
+    return Boolean(
+      value &&
+        typeof value === "object" &&
+        "announcementId" in value &&
+        typeof (value as { announcementId?: unknown }).announcementId === "string"
+    );
+  }
+
   async function loadSectionData(targetSection: SectionKey, options?: { force?: boolean; silent?: boolean }) {
     if (!options?.force && loadedSections.has(targetSection)) {
       return;
@@ -1375,6 +1419,7 @@ export function App() {
     try {
       setError(null);
       const result = await action();
+      applyLocalActionResult(result);
       const resolvedMessage = extractActionMessage(result, successText);
       const panelSyncPending = hasPendingPanelSync(result);
       const successOverride = options.resolveSuccess?.(result) ?? null;

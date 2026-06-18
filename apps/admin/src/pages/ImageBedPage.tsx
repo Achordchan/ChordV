@@ -60,7 +60,11 @@ export function ImageBedPage(props: ImageBedPageProps) {
     if (!props.refreshSignal) {
       return;
     }
-    void loadConfig({ silent: true }).then(() => loadFiles());
+    void loadConfig({ silent: true }).then((nextConfig) => {
+      if (nextConfig?.hasToken) {
+        void loadFiles({ silent: true });
+      }
+    });
   }, [props.refreshSignal]);
 
   function updateForm(patch: Partial<ImageBedConfigForm>) {
@@ -102,10 +106,12 @@ export function ImageBedPage(props: ImageBedPageProps) {
       if (options?.loadFilesAfter && nextConfig.hasToken) {
         void loadFiles({ silent: true });
       }
+      return nextConfig;
     } catch (reason) {
       if (!options?.silent) {
         setError(readError(reason, "图床配置加载失败"));
       }
+      return null;
     } finally {
       if (!options?.silent) {
         setLoadingConfig(false);

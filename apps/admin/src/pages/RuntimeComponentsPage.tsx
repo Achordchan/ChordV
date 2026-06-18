@@ -40,7 +40,7 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
     if (!props.refreshSignal) {
       return;
     }
-    void loadRuntimeComponents();
+    void loadRuntimeComponents({ silent: true });
   }, [props.refreshSignal]);
 
   async function loadUploadLimits() {
@@ -52,13 +52,15 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
     }
   }
 
-  async function loadRuntimeComponents() {
+  async function loadRuntimeComponents(options?: { silent?: boolean }) {
     const requestSeq = runtimeRequestSeqRef.current + 1;
     runtimeRequestSeqRef.current = requestSeq;
     const mutationSeqAtStart = runtimeMutationSeqRef.current;
     try {
-      setRuntimeLoading(true);
-      setRuntimeError(null);
+      if (!options?.silent) {
+        setRuntimeLoading(true);
+        setRuntimeError(null);
+      }
       const [components, failures] = await Promise.all([fetchAdminRuntimeComponents(), fetchAdminRuntimeComponentFailures()]);
       if (runtimeRequestSeqRef.current !== requestSeq || runtimeMutationSeqRef.current !== mutationSeqAtStart) {
         return;
@@ -69,15 +71,17 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
       if (runtimeRequestSeqRef.current !== requestSeq || runtimeMutationSeqRef.current !== mutationSeqAtStart) {
         return;
       }
-      const message = readError(reason, "加载内核组件失败");
-      setRuntimeError(message);
-      notifications.show({
-        color: "red",
-        title: "内核组件",
-        message
-      });
+      if (!options?.silent) {
+        const message = readError(reason, "加载内核组件失败");
+        setRuntimeError(message);
+        notifications.show({
+          color: "red",
+          title: "内核组件",
+          message
+        });
+      }
     } finally {
-      if (runtimeRequestSeqRef.current === requestSeq) {
+      if (runtimeRequestSeqRef.current === requestSeq && !options?.silent) {
         setRuntimeLoading(false);
       }
     }

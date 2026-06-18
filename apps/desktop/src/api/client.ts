@@ -84,6 +84,17 @@ type ParsedServerSentEvent = {
 
 type ClientRuntimeEventType = ClientRuntimeEventDto["type"];
 
+export function createClientRuntimeFallbackRefreshEventTypes(includeVersion: boolean): ClientRuntimeEventType[] {
+  return [
+    "subscription_updated",
+    "node_access_updated",
+    "announcement_updated",
+    "policy_updated",
+    "ticket_updated",
+    ...(includeVersion ? (["version_updated"] as const) : [])
+  ];
+}
+
 export class ApiRequestError extends Error {
   status: number | null;
   rawMessage: string;
@@ -783,12 +794,8 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
   };
 
   const emitFallbackRefresh = (includeVersion: boolean) => {
-    emitSyntheticEvent("subscription_updated");
-    emitSyntheticEvent("node_access_updated");
-    emitSyntheticEvent("announcement_updated");
-    emitSyntheticEvent("ticket_updated");
-    if (includeVersion) {
-      emitSyntheticEvent("version_updated");
+    for (const type of createClientRuntimeFallbackRefreshEventTypes(includeVersion)) {
+      emitSyntheticEvent(type);
     }
   };
 

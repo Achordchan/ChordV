@@ -5,6 +5,7 @@ import type {
   RuntimeComponentDownloadProgress,
   RuntimeDownloadFailureReason
 } from "./runtimeComponents";
+import { applyUpdateMirrorPrefix } from "./updateState";
 
 export function resolveRuntimePlanPlatform(platformTarget: RuntimeStatus["platformTarget"]): "macos" | "windows" {
   return platformTarget === "windows" ? "windows" : "macos";
@@ -20,7 +21,7 @@ export function resolveRuntimeComponentCandidate(component: RuntimeComponentDown
     const originCandidate = component.candidates.find((candidate) => candidate.source === "origin") ?? component.candidates[0];
     if (originCandidate?.url) {
       return {
-        url: `${trimRuntimeMirrorPrefix(normalizedPrefix)}/${originCandidate.url}`,
+        url: applyUpdateMirrorPrefix(originCandidate.url, trimRuntimeMirrorPrefix(normalizedPrefix)),
         source: "client_override" as const
       };
     }

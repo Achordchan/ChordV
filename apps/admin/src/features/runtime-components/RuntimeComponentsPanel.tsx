@@ -74,7 +74,7 @@ type RuntimeComponentsPanelProps = {
   loading: boolean;
   error: string | null;
   saving: boolean;
-  onRefresh: () => Promise<void>;
+  onRefresh: (options?: { silent?: boolean }) => Promise<void>;
   onComponentsChange: Dispatch<SetStateAction<AdminRuntimeComponentRecordDto[]>>;
   onFailuresChange: (next: AdminRuntimeComponentFailureReportDto[]) => void;
   onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto | null) => void;
@@ -248,7 +248,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     } catch (reason) {
       const result = showRuntimeComponentFailure(reason, "保存内核组件失败");
       if (result.uncertain) {
-        void onRefresh();
+        void onRefresh({ silent: true });
       }
     } finally {
       savingRef.current = false;
@@ -260,6 +260,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     if (verifyingRef.current) {
       return;
     }
+    onMutationStart?.();
     verifyingRef.current = record.id;
     try {
       setVerifyingId(record.id);
@@ -280,13 +281,13 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         title: "内核组件",
         message: summarizeAdminDiagnosticMessage(result.message, "内核组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "内核组件校验完成"
       });
-      void onRefresh();
+      void onRefresh({ silent: true });
     } catch (reason) {
       const result = showRuntimeComponentFailure(reason, "校验下载链接失败", {
         uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
       });
       if (result.uncertain) {
-        void onRefresh();
+        void onRefresh({ silent: true });
       }
     } finally {
       if (verifyingRef.current === record.id) {
@@ -324,7 +325,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     } catch (reason) {
       const result = showRuntimeComponentFailure(reason, "删除内核组件失败");
       if (result.uncertain) {
-        void onRefresh();
+        void onRefresh({ silent: true });
       }
     } finally {
       deletingRef.current.delete(record.id);
