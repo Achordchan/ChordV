@@ -728,6 +728,12 @@ export class DevDataService implements OnModuleInit {
       } catch (error) {
         attachmentUploadError = readPanelSyncErrorMessage(error);
         this.logger.warn(`Admin ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
+        if (!body) {
+          if (error instanceof HttpException) {
+            throw error;
+          }
+          throw new ServiceUnavailableException("附件上传失败，未保存工单回复，请稍后重试。");
+        }
       }
     }
     const now = new Date();

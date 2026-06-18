@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, HttpException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
@@ -440,6 +440,12 @@ export class ClientTicketService {
       } catch (error) {
         attachmentUploadError = readErrorMessage(error);
         this.logger.warn(`Client ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
+        if (!body) {
+          if (error instanceof HttpException) {
+            throw error;
+          }
+          throw new ServiceUnavailableException("附件上传失败，未保存工单回复，请稍后重试。");
+        }
       }
     }
     const now = new Date();

@@ -85,6 +85,7 @@ export class RuntimeComponentsService {
     if (isSharedRuleset(input.kind)) {
       const existing = await this.findSharedRulesetRecord(input.kind);
       if (existing) {
+        const staleUploadedFilePath = existing.storedFilePath;
         const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
           this.prisma.runtimeComponent.update({
             where: { id: existing.id },
@@ -107,6 +108,7 @@ export class RuntimeComponentsService {
           })
         );
         this.startSharedRulesetDuplicatesCleanup(input.kind, updated.id);
+        this.startRuntimeComponentStoredFileCleanupBestEffort(staleUploadedFilePath, "stale shared ruleset upload");
         return toAdminRuntimeComponentRecord(updated);
       }
     }

@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, Injectable, Logger, ServiceUnavailableException } from "@nestjs/common";
 import * as fs from "node:fs/promises";
 import type {
   AdminImageBedConfigDto,
@@ -187,7 +187,12 @@ export class ImageBedService {
       }
 
       const body = new FormData();
-      const buffer = await fs.readFile(file.path);
+      let buffer: Buffer;
+      try {
+        buffer = await fs.readFile(file.path);
+      } catch {
+        throw new ServiceUnavailableException("附件临时文件读取失败，请重新选择后上传。");
+      }
       body.set("file", new Blob([new Uint8Array(buffer)], { type: file.mimetype }), sanitizeFileName(file.originalname));
 
       const response = await fetchImageBed(
@@ -489,10 +494,12 @@ function normalizeImageBedFilePath(value: string) {
   } catch {
     // Plain file IDs from the list API are expected.
   }
-  try {
-    pathValue = decodeURIComponent(pathValue);
-  } catch {
-    throw new BadRequestException("图床文件路径无效。");
+  if (pathValue !== trimmed) {
+    try {
+      pathValue = decodeURIComponent(pathValue);
+    } catch {
+      throw new BadRequestException("图床文件路径无效。");
+    }
   }
   pathValue = pathValue.replace(/^\/+/, "").replace(/^file\/+/, "");
   if (!pathValue || pathValue.includes("..")) {
@@ -524,9 +531,14 @@ function extractUploadedUrl(baseUrl: string, payload: unknown): string | null {
   if (!candidate) {
     return null;
   }
-  return candidate.startsWith("http://") || candidate.startsWith("https://")
-    ? candidate
-    : new URL(candidate, baseUrl).toString();
+  try {
+    const resolved = candidate.startsWith("http://") || candidate.startsWith("https://")
+      ? new URL(candidate)
+      : new URL(candidate, baseUrl);
+    return resolved.toString();
+  } catch {
+    return null;
+  }
 }
 
 function extractUploadedFileId(publicUrl: string, payload: unknown) {

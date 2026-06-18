@@ -41,8 +41,11 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (/Attachment file is required|Select an installer package file first/i.test(message)) {
     return "请先选择要上传的文件。";
   }
-  if (/Image bed API token is not configured/i.test(message)) {
+  if (/Image bed API token is not configured|图床 API Token 未配置/i.test(message)) {
     return "图床 API Token 未配置，请先在后台图床配置中填写。";
+  }
+  if (/只填写图床域名|不要包含路径|图床文件路径无效|文件路径不能为空/i.test(message)) {
+    return message.replace(/^HTTP\s*\d+:\s*/i, "");
   }
   if (/HTTP\s*401|Unauthorized/i.test(message)) {
     return "登录状态已失效，请重新登录。";

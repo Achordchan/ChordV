@@ -1287,6 +1287,91 @@ async function testImageBedUploadSuccessParsesUrlAndCleansTempFile() {
   }
 }
 
+async function testImageBedUploadMapsMissingTempFileToServiceUnavailable() {
+  const missingPath = path.join(tmpdir(), `missing-image-bed-${Date.now()}.png`);
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    prisma: {
+      systemSetting: {
+        findUnique: async () => ({
+          value: {
+            baseUrl: "https://image.achord.cn",
+            apiToken: "test-token"
+          },
+          updatedAt: new Date("2026-01-01T00:00:00.000Z")
+        })
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadSupportTicketAttachment({
+        path: missingPath,
+        originalname: "missing.png",
+        mimetype: "image/png",
+        size: 5
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /附件临时文件读取失败/.test(error.message) &&
+      !/ENOENT|HTTP 500/i.test(error.message),
+    "missing image bed temp files must return a controlled 503 instead of leaking fs errors"
+  );
+}
+
+async function testImageBedUploadRejectsMalformedReturnedUrlAndCleansTempFile() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: true,
+        fileUrl: "https://%"
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-upload-bad-url-"));
+  const filePath = path.join(tempDir, "bad-url.png");
+  await writeFile(filePath, Buffer.from("image"));
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        service.uploadSupportTicketAttachment({
+          path: filePath,
+          originalname: "bad-url.png",
+          mimetype: "image/png",
+          size: 5
+        }),
+      (error) =>
+        error instanceof BadGatewayException &&
+        /图床上传响应缺少文件地址/.test(error.message) &&
+        !/Invalid URL|HTTP 500/i.test(error.message),
+      "malformed image bed upload URLs must return a controlled 502 instead of leaking URL parser errors"
+    );
+    assert.equal(existsSync(filePath), false, "failed image bed uploads with malformed URLs must remove the temporary file");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedUploadRejectsNonImageAndCleansTempFile() {
   const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-upload-invalid-"));
   const filePath = path.join(tempDir, "note.txt");
@@ -1443,19 +1528,59 @@ async function testImageBedDeleteUsesShortManageTimeout() {
   }
 }
 
-async function testImageBedDeleteRejectsMalformedPercentPath() {
+async function testImageBedDeleteAllowsPlainPercentFilePath() {
+  const server = createServer((request, response) => {
+    assert.equal(request.url, "/api/manage/delete/support-tickets/100%25%20legit.png");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        fileId: "support-tickets/100% legit.png",
+        deleted: ["support-tickets/100% legit.png"]
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.deleteAdminFile({ path: "support-tickets/100% legit.png" });
+
+    assert.equal(result.success, true);
+    assert.equal(result.fileId, "support-tickets/100% legit.png");
+    assert.deepEqual(result.deleted, ["support-tickets/100% legit.png"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function testImageBedDeleteRejectsMalformedPercentUrlPath() {
   const service = createInstance<ImageBedService>(ImageBedService.prototype, {
     prisma: {
       systemSetting: {
         findUnique: async () => {
-          throw new Error("malformed file path must be rejected before loading image bed config");
+          throw new Error("malformed file URL path must be rejected before loading image bed config");
         }
       }
     }
   });
 
   await assert.rejects(
-    () => service.deleteAdminFile({ path: "support-tickets/100% legit.png" }),
+    () => service.deleteAdminFile({ path: "https://image.achord.cn/file/support-tickets/100% legit.png" }),
     /图床文件路径无效/
   );
 }
@@ -18213,6 +18338,69 @@ async function testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails() {
   assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted in background");
 }
 
+async function testRemoteSharedRulesetCreateCleansPreviousUploadedFile() {
+  const expectedHash = "a".repeat(64);
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  let updatePayload: Record<string, any> | null = null;
+  const service = createRuntimeComponentsService({
+    logger: {
+      warn: () => undefined
+    },
+    findSharedRulesetRecord: async () => ({
+      id: "component_existing",
+      storedFilePath: "geoip/old-upload.dat"
+    }),
+    cleanupSharedRulesetDuplicates: async () => undefined,
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    },
+    prisma: {
+      runtimeComponent: {
+        update: async (payload: Record<string, any>) => {
+          updatePayload = payload;
+          return {
+            id: payload.where.id,
+            platform: payload.data.platform,
+            architecture: payload.data.architecture,
+            kind: payload.data.kind,
+            source: payload.data.source,
+            originUrl: payload.data.originUrl,
+            defaultMirrorPrefix: payload.data.defaultMirrorPrefix,
+            allowClientMirror: payload.data.allowClientMirror,
+            fileName: payload.data.fileName,
+            storedFilePath: payload.data.storedFilePath,
+            fileSizeBytes: payload.data.fileSizeBytes,
+            fileHash: payload.data.fileHash,
+            archiveEntryName: payload.data.archiveEntryName,
+            expectedHash: payload.data.expectedHash,
+            enabled: payload.data.enabled,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.createAdminRuntimeComponent({
+    platform: "windows",
+    architecture: "x64",
+    kind: "geoip",
+    source: "custom_remote",
+    originUrl: "https://example.com/geoip.dat",
+    fileName: "geoip.dat",
+    expectedHash
+  });
+
+  assert.equal(result.id, "component_existing");
+  assert.equal(result.source, "custom_remote");
+  assert.equal(updatePayload?.data.storedFilePath, null);
+  await waitUntil(() => cleanupCalls.length > 0);
+  assert.equal(cleanupCalls.length, 1);
+  assert.equal(cleanupCalls[0]?.label, "stale shared ruleset upload");
+  assert.match(cleanupCalls[0]?.absolutePath ?? "", /geoip[\\/]old-upload\.dat$/);
+}
+
 async function testRemoteSharedRulesetCreateReturnsWhenCleanupStalls() {
   const previousCleanupBudget = process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS;
   process.env.CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS = "25";
@@ -27326,7 +27514,7 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
-async function testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply() {
+async function testAdminReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   const service = createDevDataService({
@@ -27374,26 +27562,25 @@ async function testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailu
     }
   });
 
-  const result = await service.replyAdminSupportTicketWithAttachment(
-    "ticket_1",
-    { body: "" },
-    {
-      path: path.join(tmpdir(), "upload-failure.png"),
-      originalname: "upload-failure.png",
-      mimetype: "image/png",
-      size: 1234
-    },
-    "admin_1"
+  await assert.rejects(
+    () =>
+      service.replyAdminSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "" },
+        {
+          path: path.join(tmpdir(), "upload-failure.png"),
+          originalname: "upload-failure.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "admin_1"
+      ),
+    (error) => error instanceof ServiceUnavailableException && /附件上传失败/.test(error.message),
+    "attachment-only admin upload failures must reject instead of writing a fake ticket reply"
   );
 
-  assert.equal((result as { id: string }).id, "ticket_1");
-  assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
-  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /附件上传失败/);
-  assert.doesNotMatch(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/i);
-  assert.equal(writes.some((item) => item.kind === "attachment"), false);
-  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_user");
-  assert.equal(publishCalls, 1, "attachment-only upload failure should still save and publish the ticket reply");
+  assert.deepEqual(writes, [], "attachment-only upload failure must not write a message, attachment, or ticket status change");
+  assert.equal(publishCalls, 0, "attachment-only upload failure must not publish ticket updates");
 }
 
 async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
@@ -28554,7 +28741,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
-async function testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply() {
+async function testClientReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   const service = createClientTicketService({
@@ -28620,27 +28807,25 @@ async function testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFail
     }
   });
 
-  const result = await service.replyClientSupportTicketWithAttachment(
-    "ticket_1",
-    { body: "" },
-    {
-      path: path.join(tmpdir(), "client-upload-failure.png"),
-      originalname: "client-upload-failure.png",
-      mimetype: "image/png",
-      size: 1234
-    },
-    "token"
+  await assert.rejects(
+    () =>
+      service.replyClientSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "" },
+        {
+          path: path.join(tmpdir(), "client-upload-failure.png"),
+          originalname: "client-upload-failure.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "token"
+      ),
+    (error) => error instanceof ServiceUnavailableException && /附件上传失败/.test(error.message),
+    "attachment-only client upload failures must reject instead of writing a fake ticket reply"
   );
 
-  assert.equal((result as { id: string }).id, "ticket_1");
-  assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
-  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /附件上传失败/);
-  assert.doesNotMatch(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/i);
-  assert.equal(writes.some((item) => item.kind === "attachment"), false);
-  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_admin");
-  assert.equal(writes.some((item) => item.kind === "read"), true);
-  assert.equal(publishCalls, 1, "attachment-only upload failure should still save and publish the ticket reply");
+  assert.deepEqual(writes, [], "attachment-only upload failure must not write a message, attachment, read state, or ticket status change");
+  assert.equal(publishCalls, 0, "attachment-only upload failure must not publish ticket updates");
 }
 
 async function main() {
@@ -28948,6 +29133,7 @@ async function main() {
   await testRuntimeComponentReplaceUploadMapsLocalSaveFailure();
   await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
+  await testRemoteSharedRulesetCreateCleansPreviousUploadedFile();
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
   await testRemoteRuntimeValidationChecksExpectedHashWithGet();
   await testRemoteRuntimeValidationReturnsUnreachableForHttp500();
@@ -29057,11 +29243,14 @@ async function main() {
   await testImageBedUploadRejectsSuccessFalsePayload();
   await testImageBedUploadUsesCallerTimeout();
   await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
+  await testImageBedUploadMapsMissingTempFileToServiceUnavailable();
+  await testImageBedUploadRejectsMalformedReturnedUrlAndCleansTempFile();
   await testImageBedUploadRejectsNonImageAndCleansTempFile();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
   await testImageBedDeleteAcceptsDeletedListWithoutSuccessTrue();
   await testImageBedDeleteUsesShortManageTimeout();
-  await testImageBedDeleteRejectsMalformedPercentPath();
+  await testImageBedDeleteAllowsPlainPercentFilePath();
+  await testImageBedDeleteRejectsMalformedPercentUrlPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testGetImageBedConfigMapsLocalReadFailure();
   await testUpdateImageBedConfigMapsLocalSaveFailure();
@@ -29154,7 +29343,7 @@ async function main() {
   await testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testAdminReplySupportTicketMapsLocalSaveFailure();
   await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
-  await testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
+  await testAdminReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketPublishesClientAndAdminEvents();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
@@ -29176,7 +29365,7 @@ async function main() {
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply();
-  await testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
+  await testClientReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();
   console.log("dev-data and usage regression checks passed");
