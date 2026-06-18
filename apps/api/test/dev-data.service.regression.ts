@@ -9786,6 +9786,84 @@ async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
   assert.equal(panelSyncStarted, false, "required panel sync jobs must not depend on a deferred timer");
 }
 
+async function testUpdateNodeAccessAddOnlyReturnsPendingWhenPanelEnsureQueueStalls() {
+  const createdRows: Array<Record<string, any>> = [];
+  let transactionFinished = false;
+  let queueStarted = false;
+  const node = {
+    id: "node_1",
+    name: "node",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return [];
+          }
+          return [{ nodeId: "node_1", node }];
+        }
+      },
+      node: {
+        findMany: async () => [node]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        const result = await task({
+          subscriptionNodeAccess: {
+            createMany: async (payload: Record<string, any>) => {
+              createdRows.push(payload);
+            }
+          }
+        });
+        transactionFinished = true;
+        return result;
+      }
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSyncTx: async () => {
+        queueStarted = true;
+        assert.equal(transactionFinished, true, "panel ensure queueing must start after local authorization commits");
+        return new Promise<number>(() => undefined);
+      },
+      queueSubscriptionPanelAccessSync: async () => 0,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("node access add-only must not call x-ui inline");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await Promise.race([
+    service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_1"] }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("updateSubscriptionNodeAccess waited for stalled panel ensure queue")), 750);
+    })
+  ]);
+
+  assert.equal(createdRows.length, 1, "local node authorization must be saved before stalled panel ensure queueing");
+  assert.equal(queueStarted, true, "panel ensure queueing should still be attempted after local save");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /background|pending/i);
+}
+
 async function testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest() {
   const service = createDevDataService();
 
@@ -26113,6 +26191,74 @@ async function testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAft
   assert.equal(lookupStarted, true, "subscription lookup should still run under a bounded follow-up budget");
 }
 
+async function testDeleteTeamMemberReturnsPendingWhenPanelDisableQueueStallsAndLeaseQueueContinues() {
+  const calls: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active"
+    }),
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async () => {
+        calls.push("mark_panel_disabled");
+        return new Promise<number>(() => undefined);
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        calls.push("queue_lease_revocation_tx");
+        return 1;
+      }
+    },
+    closeSupportTicketsForUserBestEffort: async () => {
+      calls.push("close_tickets");
+    },
+    publishSubscriptionUpdatedEvent: async () => {
+      calls.push("publish_subscription");
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => {
+        calls.push("publish_user");
+      }
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          teamMember: {
+            delete: async () => {
+              calls.push("delete_member");
+            }
+          },
+          subscription: {
+            findMany: async () => []
+          }
+        })
+    }
+  });
+
+  const result = await Promise.race([
+    service.deleteTeamMember("team_1", "member_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("deleteTeamMember waited for stalled panel disable queue")), 750);
+    })
+  ]);
+
+  assert.equal(calls[0], "delete_member", "local team member delete must commit before panel follow-up work");
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /background|queued|pending/i);
+  await waitUntil(() => calls.includes("mark_panel_disabled") && calls.includes("queue_lease_revocation_tx"));
+  assert.ok(calls.includes("queue_lease_revocation_tx"), "lease revocation queueing must continue even when panel disable stalls");
+}
+
 async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails() {
   const calls: string[] = [];
   const service = createAdminSubscriptionService({
@@ -28138,6 +28284,7 @@ async function main() {
   await testRefreshNodeMapsLocalSaveFailure();
   await testUpdateNodeMapsLocalSaveFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
+  await testUpdateNodeAccessAddOnlyReturnsPendingWhenPanelEnsureQueueStalls();
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
   await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
   await testUpdateNodeAccessMapsUnknownLocalSaveFailure();
@@ -28445,6 +28592,7 @@ async function main() {
   await testUpdatePolicyReturnsWhenPublishUserLookupStalls();
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete();
+  await testDeleteTeamMemberReturnsPendingWhenPanelDisableQueueStallsAndLeaseQueueContinues();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testDeleteTeamMemberQueuesDisableClientWithoutDirectXuiCall();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
