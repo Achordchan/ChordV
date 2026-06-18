@@ -14704,6 +14704,70 @@ function testLoggingFilterMapsPrismaCodedErrorsToServiceUnavailable() {
   assert.notEqual(responseBody.message, "Internal server error");
 }
 
+function testLoggingFilterMapsDatabaseTransientErrorsToServiceUnavailable() {
+  const filter = new LoggingExceptionFilter();
+  let statusCode: number | null = null;
+  let responseBody: any = null;
+  const host = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        method: "PATCH",
+        originalUrl: "/api/admin/users/user_1",
+        ip: "127.0.0.1",
+        headers: {}
+      }),
+      getResponse: () => ({
+        status: (code: number) => {
+          statusCode = code;
+          return {
+            json: (body: unknown) => {
+              responseBody = body;
+            }
+          };
+        }
+      })
+    })
+  } as any;
+
+  filter.catch(new Error("server closed the connection unexpectedly"), host);
+
+  assert.equal(statusCode, 503);
+  assert.equal(responseBody.statusCode, 503);
+  assert.notEqual(responseBody.message, "Internal server error");
+}
+
+function testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError() {
+  const filter = new LoggingExceptionFilter();
+  let statusCode: number | null = null;
+  let responseBody: any = null;
+  const host = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        method: "PATCH",
+        originalUrl: "/api/admin/users/user_1",
+        ip: "127.0.0.1",
+        headers: {}
+      }),
+      getResponse: () => ({
+        status: (code: number) => {
+          statusCode = code;
+          return {
+            json: (body: unknown) => {
+              responseBody = body;
+            }
+          };
+        }
+      })
+    })
+  } as any;
+
+  filter.catch(new Error("unexpected programmer error"), host);
+
+  assert.equal(statusCode, 500);
+  assert.equal(responseBody.statusCode, 500);
+  assert.equal(responseBody.message, "Internal server error");
+}
+
 async function testConnectRejectsPanelDisabledNode() {
   const service = createRuntimeSessionService({
     prisma: {
@@ -17842,7 +17906,11 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
           size: 123
         }
       ),
-    /release artifact create failed/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /安装包保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release artifact local save failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [
     { absolutePath: "missing-prepared-release.zip", label: "failed release artifact upload" }
@@ -17945,7 +18013,11 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
           size: 123
         }
       ),
-    /release artifact update failed/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /安装包替换失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release artifact replacement local save failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [
     { absolutePath: "missing-prepared-replacement-release.zip", label: "failed release artifact replacement upload" }
@@ -23714,7 +23786,11 @@ async function testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionF
         },
         "admin_1"
       ),
-    /db write failed/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /工单回复保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin ticket attachment local save failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(deletedUploads, ["support-tickets/orphan.png"]);
 }
@@ -25145,6 +25221,8 @@ async function main() {
   await testClientBootstrapDegradesOptionalSectionsOnPrismaPoolTimeout();
   testLoggingFilterMapsPrismaPoolTimeoutToServiceUnavailable();
   testLoggingFilterMapsPrismaCodedErrorsToServiceUnavailable();
+  testLoggingFilterMapsDatabaseTransientErrorsToServiceUnavailable();
+  testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError();
   await testConnectRejectsPanelDisabledNode();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails();

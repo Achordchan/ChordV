@@ -126,7 +126,7 @@ import {
   toNodeSummary
 } from "./node-import.utils";
 import { PrismaService } from "./prisma.service";
-import { toPrismaTransientHttpError, throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
+import { toPrismaTransientHttpError, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { createId } from "./release-center.utils";
 import { ReleaseCenterService } from "./release-center.service";
 import {
@@ -749,7 +749,7 @@ export class DevDataService implements OnModuleInit {
       });
     } catch (error) {
       await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
-      throwPrismaTransientAsServiceUnavailable(error, "工单回复保存暂时繁忙，请刷新后重试；已上传附件已清理。");
+      throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试；已上传附件已清理。");
     }
 
     this.publishClientEventToUser(current.userId, {

@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { Module, ValidationPipe } from "@nestjs/common";
+import { ForbiddenException, Module, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
@@ -214,6 +214,33 @@ const clientServiceStub = {
   }
 };
 
+async function testAdminSseRejectsNonAdminWithForbiddenException() {
+  let validate: (() => Promise<void>) | undefined;
+  const controller = new AdminController(
+    devDataServiceStub as any,
+    runtimeComponentsServiceStub as any,
+    imageBedServiceStub as any,
+    {
+      stream: (input: { validate?: () => Promise<void> }) => {
+        validate = input.validate;
+        return {};
+      }
+    } as any,
+    {
+      authenticateAccessToken: async () => ({ id: "user_1", role: "user" })
+    } as any
+  );
+
+  controller.streamEvents("Bearer user-test-token");
+
+  assert.equal(typeof validate, "function");
+  await assert.rejects(
+    () => validate?.() ?? Promise.resolve(),
+    (error) => error instanceof ForbiddenException && /需要管理员权限/.test(error.message),
+    "admin SSE non-admin validation must return 403 instead of leaking a default HTTP 500"
+  );
+}
+
 @Module({
   controllers: [AdminController, DownloadsController, ClientController],
   providers: [
@@ -296,6 +323,8 @@ async function requestText(baseUrl: string, routePath: string) {
 }
 
 async function main() {
+  await testAdminSseRejectsNonAdminWithForbiddenException();
+
   const app = await NestFactory.create(TestAdminRoutesModule, { logger: false });
   app.setGlobalPrefix("api");
   app.useGlobalPipes(

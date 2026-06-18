@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Headers,
   Param,
@@ -117,7 +118,7 @@ export class AdminController {
       validate: async () => {
         const user = await this.authSessionService.authenticateAccessToken(authorization);
         if (user.role !== "admin") {
-          throw new Error("需要管理员权限");
+          throw new ForbiddenException("需要管理员权限");
         }
       }
     });
