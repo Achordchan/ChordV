@@ -75,6 +75,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const [releaseSaveStep, setReleaseSaveStep] = useState<"creating" | "uploading" | null>(null);
   const [releaseEditorId, setReleaseEditorId] = useState<string | null>(null);
   const [releaseEditorOpened, setReleaseEditorOpened] = useState(false);
   const [releaseForm, setReleaseForm] = useState<ReleaseEditorFormState>(emptyReleaseEditorForm());
@@ -184,12 +185,14 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
   function openCreateRelease() {
     setReleaseEditorId(null);
+    setReleaseSaveStep(null);
     setReleaseForm(emptyReleaseEditorForm(platformFilter === "all" ? "windows" : platformFilter));
     setReleaseEditorOpened(true);
   }
 
   function openEditRelease(record: AdminReleaseRecordDto) {
     setReleaseEditorId(record.id);
+    setReleaseSaveStep(null);
     setReleaseForm(toReleaseEditorForm(record));
     setReleaseEditorOpened(true);
   }
@@ -197,6 +200,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
   function forceCloseReleaseEditor() {
     setReleaseEditorOpened(false);
     setReleaseEditorId(null);
+    setReleaseSaveStep(null);
     setReleaseForm(emptyReleaseEditorForm());
   }
 
@@ -264,9 +268,11 @@ export function ReleasesPage(props: ReleasesPageProps) {
       };
 
       if (!releaseEditorId) {
+        setReleaseSaveStep("creating");
         let record = await createAdminRelease(payload);
         if (releaseForm.artifactSource === "uploaded" && releaseForm.selectedFile) {
           try {
+            setReleaseSaveStep("uploading");
             record = await uploadAdminReleaseArtifact(
               record.id,
               buildUploadedArtifactPayload(releaseForm.platform, releaseForm.selectedFile, releaseForm.fileName, true),
@@ -741,6 +747,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         opened={releaseEditorOpened}
         editing={Boolean(releaseEditorId)}
         saving={saving === "release-editor"}
+        savingMessage={buildReleaseEditorSavingMessage(releaseSaveStep, Boolean(releaseEditorId), releaseForm)}
         title={releaseEditorId ? "编辑发布记录" : "新建发布记录"}
         submitLabel={releaseEditorId ? "保存发布记录" : "创建发布"}
         form={releaseForm}
@@ -977,6 +984,26 @@ function inferUrlPathname(downloadUrl: string) {
 
 function releaseFormHasArtifact(form: ReleaseEditorFormState) {
   return form.artifactSource === "uploaded" ? Boolean(form.selectedFile) : Boolean(form.downloadUrl.trim());
+}
+
+function buildReleaseEditorSavingMessage(
+  step: "creating" | "uploading" | null,
+  editing: boolean,
+  form: ReleaseEditorFormState
+) {
+  if (step === "creating") {
+    return "正在创建发布记录。记录创建成功后会继续处理安装包。";
+  }
+  if (step === "uploading") {
+    return "正在上传安装包。大文件上传期间请等待，不要重复提交。";
+  }
+  if (editing) {
+    return "正在保存发布记录，请等待当前请求返回。";
+  }
+  if (form.artifactSource === "uploaded" && form.selectedFile) {
+    return "正在创建发布记录并上传安装包，大文件上传期间请等待当前请求返回。";
+  }
+  return "正在创建发布记录，请等待当前请求返回。";
 }
 
 function validateReleaseArtifactFile(platform: AdminReleasePlatform | undefined, file: File) {

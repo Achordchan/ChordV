@@ -6,6 +6,7 @@ type ReleaseEditorModalProps = {
   opened: boolean;
   editing: boolean;
   saving: boolean;
+  savingMessage?: string | null;
   title: string;
   submitLabel: string;
   form: ReleaseEditorFormState;
@@ -23,13 +24,14 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
     }
   };
   const savingMessage =
-    !props.saving
+    props.savingMessage ??
+    (!props.saving
       ? null
       : !props.editing && props.form.artifactSource === "uploaded" && props.form.selectedFile
         ? "正在创建发布记录并上传安装包，大文件上传期间请等待当前请求返回。"
         : props.editing
           ? "正在保存发布记录，请等待当前请求返回。"
-          : "正在创建发布记录，请等待当前请求返回。";
+          : "正在创建发布记录，请等待当前请求返回。");
 
   return (
     <Modal

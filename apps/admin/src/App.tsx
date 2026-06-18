@@ -383,6 +383,7 @@ export function App() {
   const dashboardRefreshSeqRef = useRef(0);
   const sectionRequestSeqRef = useRef(0);
   const sectionMutationSeqRef = useRef(0);
+  const pendingSyncQueueRefreshRef = useRef(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -492,6 +493,10 @@ export function App() {
       if (document.visibilityState === "hidden") {
         return;
       }
+      if (pendingSyncQueueRefreshRef.current) {
+        pendingSyncQueueRefreshRef.current = false;
+        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+      }
       if (sectionRef.current === "releases") {
         setReleaseRefreshSignal((current) => current + 1);
       }
@@ -511,7 +516,19 @@ export function App() {
       return;
     }
     return subscribeAdminRuntimeEvents((event) => {
-      if (event.type === "keepalive" || document.visibilityState === "hidden") {
+      if (event.type === "keepalive") {
+        return;
+      }
+      if (event.type === "sync_queue_updated") {
+        if (document.visibilityState === "hidden") {
+          pendingSyncQueueRefreshRef.current = true;
+          return;
+        }
+        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+        void refreshDashboard({ silent: true });
+        return;
+      }
+      if (document.visibilityState === "hidden") {
         return;
       }
       if (event.type === "version_updated") {
@@ -647,7 +664,7 @@ export function App() {
     () =>
       (snapshot?.nodes ?? []).map((item) => ({
         value: item.id,
-        label: `${item.name} · ${item.region} · ${item.provider}`
+        label: buildNodeAccessOptionLabel(item)
       })),
     [snapshot?.nodes]
   );
@@ -3194,6 +3211,30 @@ function hasPendingPanelSync(result: unknown): boolean {
     return true;
   }
   return ["data", "result", "payload", "response"].some((key) => hasPendingPanelSync(record[key]));
+}
+
+function buildNodeAccessOptionLabel(node: AdminNodeRecordDto) {
+  const statusParts = [
+    translateNodeAccessPanelStatus(node),
+    node.panelSyncPendingCount ? `待同步 ${node.panelSyncPendingCount}` : null,
+    node.panelSyncRunningCount ? `同步中 ${node.panelSyncRunningCount}` : null,
+    node.panelSyncFailedCount ? `失败 ${node.panelSyncFailedCount}` : null
+  ].filter(Boolean);
+  const statusSuffix = statusParts.length > 0 ? ` · ${statusParts.join(" / ")}` : "";
+  return `${node.name} · ${node.region} · ${node.provider}${statusSuffix}`;
+}
+
+function translateNodeAccessPanelStatus(node: AdminNodeRecordDto) {
+  if (!node.panelEnabled) {
+    return "面板停用";
+  }
+  if (node.panelStatus === "offline") {
+    return "离线";
+  }
+  if (node.panelStatus === "degraded") {
+    return "异常";
+  }
+  return null;
 }
 
 function splitCsv(value: string) {

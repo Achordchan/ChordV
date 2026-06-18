@@ -82,6 +82,7 @@ type ActiveRuntimeUsageContext = {
 };
 
 const NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS = 300;
+const NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS = 300;
 const CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS = Number(process.env.CHORDV_CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS ?? 1500);
 
 type PanelBindingFilter = {
@@ -976,7 +977,10 @@ export class RuntimeSessionService {
     let disabledCount = 0;
     for (const subscription of subscriptions) {
       try {
-        disabledCount += await this.markPanelBindingsDisabledForSubscription(subscription.id, { nodeIds: [nodeId] });
+        disabledCount += await withNodePanelBindingSubscriptionBudget(
+          () => this.markPanelBindingsDisabledForSubscription(subscription.id, { nodeIds: [nodeId] }),
+          `Node ${nodeId} panel disable queueing for subscription ${subscription.id}`
+        );
       } catch (error) {
         this.logger.warn(
           `Node ${nodeId} panel disable queueing failed for subscription ${subscription.id}; remaining subscriptions will continue: ${readRuntimeErrorMessage(error)}`
@@ -1004,7 +1008,10 @@ export class RuntimeSessionService {
     let updated = 0;
     for (const subscription of subscriptions) {
       try {
-        const result = await this.disablePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] });
+        const result = await withNodePanelBindingSubscriptionBudget(
+          () => this.disablePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] }),
+          `Node ${nodeId} panel binding disable for subscription ${subscription.id}`
+        );
         requested += result.requested;
         updated += result.updated;
         failed.push(...result.failed);
@@ -1044,7 +1051,10 @@ export class RuntimeSessionService {
     let updated = 0;
     for (const subscription of subscriptions) {
       try {
-        const result = await this.removePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] }, panelConfig);
+        const result = await withNodePanelBindingSubscriptionBudget(
+          () => this.removePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] }, panelConfig),
+          `Node ${nodeId} panel binding deletion for subscription ${subscription.id}`
+        );
         requested += result.requested;
         updated += result.updated;
         failed.push(...result.failed);
@@ -2889,6 +2899,38 @@ function createId(prefix: string) {
 
 function readRuntimeErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function withNodePanelBindingSubscriptionBudget<T>(taskFactory: () => Promise<T>, label: string): Promise<T> {
+  let settled = false;
+  const task = Promise.resolve()
+    .then(taskFactory)
+    .then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      if (!settled) {
+        reject(new Error(`${label} exceeded ${NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS}ms; remaining subscriptions will continue`));
+      }
+    }, NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([task, timeoutTask]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+    void task.catch(() => undefined);
+  }
 }
 
 function buildNodePanelBindingFailure(nodeId: string, subscriptionId: string, error: unknown): PanelBindingFailure {

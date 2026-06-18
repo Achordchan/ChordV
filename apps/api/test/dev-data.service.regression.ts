@@ -524,6 +524,71 @@ async function testNodePanelDeleteContinuesWhenOneSubscriptionQueueFails() {
   assert.deepEqual(calls, ["sub_fail", "sub_ok"], "one subscription queue failure must not block remaining node deletions");
 }
 
+async function testNodePanelDisableContinuesWhenOneSubscriptionQueueStalls() {
+  const calls: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      subscription: {
+        findMany: async () => [{ id: "sub_stalled" }, { id: "sub_ok" }]
+      }
+    },
+    markPanelBindingsDisabledForSubscription: async (subscriptionId: string) => {
+      calls.push(subscriptionId);
+      if (subscriptionId === "sub_stalled") {
+        return new Promise<number>(() => undefined);
+      }
+      return 1;
+    }
+  });
+
+  const disabledCount = await Promise.race([
+    service.markPanelBindingsDisabledForNode("node_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("stalled subscription blocked remaining node disables")), 750);
+    })
+  ]);
+
+  assert.equal(disabledCount, 1);
+  assert.deepEqual(calls, ["sub_stalled", "sub_ok"]);
+}
+
+async function testNodePanelDeleteContinuesWhenOneSubscriptionQueueStalls() {
+  const calls: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      subscription: {
+        findMany: async () => [{ id: "sub_stalled" }, { id: "sub_ok" }]
+      }
+    },
+    removePanelBindingsForSubscription: async (subscriptionId: string) => {
+      calls.push(subscriptionId);
+      if (subscriptionId === "sub_stalled") {
+        return new Promise(() => undefined);
+      }
+      return { requested: 1, updated: 1, failed: [] };
+    }
+  });
+
+  const result = await Promise.race([
+    service.removePanelBindingsForNode("node_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("stalled subscription blocked remaining node deletions")), 750);
+    })
+  ]);
+
+  assert.equal(result.requested, 1);
+  assert.equal(result.updated, 1);
+  assert.equal(result.failed.length, 1);
+  assert.match(result.failed[0].error, /exceeded 300ms/);
+  assert.deepEqual(calls, ["sub_stalled", "sub_ok"]);
+}
+
 async function waitUntil(predicate: () => boolean, timeoutMs = 500) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
@@ -27924,6 +27989,8 @@ async function main() {
   await testPanelSyncBatchContinuesWhenFailurePersistFails();
   await testNodePanelDisableContinuesWhenOneSubscriptionQueueFails();
   await testNodePanelDeleteContinuesWhenOneSubscriptionQueueFails();
+  await testNodePanelDisableContinuesWhenOneSubscriptionQueueStalls();
+  await testNodePanelDeleteContinuesWhenOneSubscriptionQueueStalls();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testLeaseRevocationBatchContinuesAfterStalledJob();
