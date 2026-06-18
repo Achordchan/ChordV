@@ -328,7 +328,12 @@ body {
 }
 
 .admin-ticket-attachment-actions {
+  flex: 1 1 260px;
   min-width: 0;
+}
+
+.admin-ticket-send-button {
+  flex: 0 0 auto;
 }
 
 .admin-ticket-attachment-pill {
@@ -423,5 +428,26 @@ body {
     flex: 0 0 auto;
     min-width: 0;
     padding-inline: 10px;
+  }
+
+  .admin-ticket-reply__toolbar {
+    align-items: stretch !important;
+  }
+
+  .admin-ticket-attachment-actions,
+  .admin-ticket-send-button {
+    width: 100%;
+  }
+
+  .admin-ticket-attachment-actions {
+    flex: 1 1 100%;
+  }
+
+  .admin-ticket-attachment-actions > button {
+    flex: 1 1 auto;
+  }
+
+  .admin-ticket-attachment-pill {
+    max-width: 100%;
   }
 }

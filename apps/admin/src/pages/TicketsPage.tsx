@@ -346,9 +346,9 @@ export function TicketsPage(props: TicketsPageProps) {
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "回复状态不确定" : attachmentUploadFailed ? "附件上传失败" : "工单",
         message: uncertain
-          ? `${message} 回复可能已发送，请刷新工单确认。`
+          ? buildTicketReplyUncertainMessage(message)
           : attachmentUploadFailed
-            ? `${message} 附件上传失败，工单回复未保存，请稍后重试或先发送纯文字回复。`
+            ? buildTicketAttachmentFailureMessage(message)
             : message
       });
       if (uncertain && selectedTicket) {
@@ -682,7 +682,7 @@ export function TicketsPage(props: TicketsPageProps) {
                           onChange={(event) => setReplyDraft(event.currentTarget.value)}
                           disabled={replyClosed}
                         />
-                        <Group justify="space-between" align="center" className="admin-ticket-reply__toolbar">
+                        <Group justify="space-between" align="center" wrap="wrap" className="admin-ticket-reply__toolbar">
                           <Group gap="xs" className="admin-ticket-attachment-actions">
                             {replyAttachment ? (
                               <Button
@@ -717,6 +717,7 @@ export function TicketsPage(props: TicketsPageProps) {
                             </FileButton>
                           </Group>
                           <Button
+                            className="admin-ticket-send-button"
                             leftSection={<IconSend size={15} />}
                             onClick={() => void handleReply()}
                             loading={replySaving}
@@ -780,4 +781,12 @@ function formatUploadBytes(value: number) {
     return `${(value / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")}MB`;
   }
   return `${value}B`;
+}
+
+function buildTicketReplyUncertainMessage(message: string) {
+  return `${message} 请求没有返回确认结果，回复可能已保存；请刷新工单详情确认，避免重复提交。`;
+}
+
+function buildTicketAttachmentFailureMessage(message: string) {
+  return `${message} 请求没有返回成功结果；如果工单里没有出现新回复，请先发送纯文字回复或调整附件后重试。`;
 }

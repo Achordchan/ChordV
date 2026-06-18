@@ -213,7 +213,7 @@ export class ImageBedService {
       }
       const publicUrl = extractUploadedUrl(config.baseUrl, payload);
       if (!publicUrl) {
-        throw new BadGatewayException("Image bed upload response did not include a file URL.");
+        throw new BadGatewayException("图床上传响应缺少文件地址，请检查图床服务状态。");
       }
 
       return {
@@ -293,7 +293,7 @@ export class ImageBedService {
     }
     const payload = parseJson(rawBody);
     if (!payload || typeof payload !== "object") {
-      throw new BadGatewayException("Image bed response was not valid JSON.");
+      throw new BadGatewayException("图床服务响应格式异常，请检查图床服务状态。");
     }
     const record = payload as Record<string, unknown>;
     if (record.success === false && !options.allowBusinessFailure) {
@@ -334,16 +334,16 @@ export class ImageBedService {
 
   assertSupportTicketAttachment(file: UploadedTicketAttachmentFile) {
     if (!file) {
-      throw new BadRequestException("Attachment file is required.");
+      throw new BadRequestException("请先选择要上传的附件。");
     }
     if (!file.mimetype?.startsWith("image/")) {
-      throw new BadRequestException("Only image attachments are supported.");
+      throw new BadRequestException("仅支持上传图片附件。");
     }
     if (!Number.isFinite(file.size) || file.size <= 0) {
-      throw new BadRequestException("Attachment file is empty.");
+      throw new BadRequestException("附件文件为空，请重新选择。");
     }
     if (file.size > SUPPORT_TICKET_ATTACHMENT_MAX_BYTES) {
-      throw new BadRequestException(`Attachment file exceeds ${SUPPORT_TICKET_ATTACHMENT_MAX_BYTES} bytes.`);
+      throw new BadRequestException(`附件文件不能超过 ${SUPPORT_TICKET_ATTACHMENT_MAX_BYTES} 字节。`);
     }
   }
 
@@ -354,7 +354,7 @@ export class ImageBedService {
     const apiToken = storedToken ?? envToken;
     const tokenSource = storedToken ? "database" : envToken ? "environment" : "none";
     if (requireToken && !apiToken) {
-      throw new BadRequestException("Image bed API token is not configured.");
+      throw new BadRequestException("图床 API Token 未配置，请先在后台图床配置中填写。");
     }
 
     return {
@@ -437,16 +437,16 @@ function buildAdminImageBedConfigDto(value: StoredImageBedConfig, updatedAt: Dat
 function normalizeHttpBaseUrl(value: string, fieldName: string) {
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!trimmed) {
-    throw new BadRequestException(`${fieldName} is required.`);
+    throw new BadRequestException(`${fieldName} 不能为空。`);
   }
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
   } catch {
-    throw new BadRequestException(`${fieldName} must be a valid URL.`);
+    throw new BadRequestException(`${fieldName} 必须是有效 URL。`);
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new BadRequestException(`${fieldName} must be an HTTP URL.`);
+    throw new BadRequestException(`${fieldName} 必须是 HTTP 或 HTTPS URL。`);
   }
   return parsed.origin;
 }
@@ -475,7 +475,7 @@ function normalizeOptionalPath(value: unknown) {
 function normalizeImageBedFilePath(value: string) {
   const trimmed = value.trim();
   if (!trimmed) {
-    throw new BadRequestException("File path is required.");
+    throw new BadRequestException("文件路径不能为空。");
   }
   let pathValue = trimmed;
   try {
@@ -487,11 +487,11 @@ function normalizeImageBedFilePath(value: string) {
   try {
     pathValue = decodeURIComponent(pathValue);
   } catch {
-    throw new BadRequestException("Invalid image bed file path.");
+    throw new BadRequestException("图床文件路径无效。");
   }
   pathValue = pathValue.replace(/^\/+/, "").replace(/^file\/+/, "");
   if (!pathValue || pathValue.includes("..")) {
-    throw new BadRequestException("Invalid image bed file path.");
+    throw new BadRequestException("图床文件路径无效。");
   }
   return pathValue;
 }
@@ -568,10 +568,10 @@ async function fetchImageBed(url: URL, init: RequestInit, timeoutMs: number) {
     });
   } catch (reason) {
     const message = reason instanceof Error && (reason.name === "AbortError" || reason.name === "TimeoutError")
-      ? `Image bed request timed out after ${timeoutMs}ms.`
+      ? `图床服务请求超时，已等待 ${timeoutMs}ms。`
       : reason instanceof Error
-        ? `Image bed request failed: ${reason.message}`
-        : "Image bed request failed.";
+        ? "图床服务请求失败，请检查图床地址、网络或 Token 配置后重试。"
+        : "图床服务请求失败，请检查图床配置后重试。";
     throw new BadGatewayException(message);
   }
 }

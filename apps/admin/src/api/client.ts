@@ -29,7 +29,7 @@ import type {
 } from "@chordv/shared";
 import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
 
-const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 * 1000;
+const IMAGE_BED_MANAGE_TIMEOUT_MS = 8 * 1000;
 const TICKET_ATTACHMENT_TIMEOUT_MS = 20 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;

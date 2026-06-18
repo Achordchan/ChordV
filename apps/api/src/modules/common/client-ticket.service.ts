@@ -822,11 +822,12 @@ function readErrorMessage(error: unknown) {
 }
 
 function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackBody: string, attachmentUploadError: string | null) {
-  const baseBody = body || attachmentFallbackBody || "Attachment upload failed";
+  const baseBody = body || attachmentFallbackBody || "附件上传失败";
   if (!attachmentUploadError) {
     return baseBody;
   }
-  return `${baseBody}\n\nAttachment upload failed; text reply was saved first: ${attachmentUploadError}`;
+  const notice = "附件上传失败，文字回复已保存。请检查图床配置或稍后重试。";
+  return body ? `${baseBody}\n\n${notice}` : notice;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

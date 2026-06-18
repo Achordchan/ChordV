@@ -53,7 +53,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const deletingPathRef = useRef<string | null>(null);
 
   useEffect(() => {
-    void loadConfig();
+    void loadConfig({ loadFilesAfter: true });
   }, []);
 
   useEffect(() => {
@@ -68,7 +68,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
     setForm((current) => ({ ...current, ...patch }));
   }
 
-  async function loadConfig(options?: { silent?: boolean; preserveForm?: boolean }) {
+  async function loadConfig(options?: { silent?: boolean; preserveForm?: boolean; loadFilesAfter?: boolean }) {
     try {
       if (!options?.silent) {
         setLoadingConfig(true);
@@ -98,6 +98,9 @@ export function ImageBedPage(props: ImageBedPageProps) {
       if (!preserveForm && endpointChanged) {
         setFiles([]);
         setFileListError(null);
+      }
+      if (options?.loadFilesAfter && nextConfig.hasToken) {
+        void loadFiles({ silent: true });
       }
     } catch (reason) {
       if (!options?.silent) {
@@ -311,9 +314,30 @@ export function ImageBedPage(props: ImageBedPageProps) {
 
   if (loadingConfig) {
     return (
-      <Group justify="center" py="xl">
+      <Group justify="center" py="xl" gap="sm">
         <Loader size="sm" />
+        <Text c="dimmed">正在加载图床配置...</Text>
       </Group>
+    );
+  }
+
+  if (!config && error) {
+    return (
+      <SectionCard searchValue={search} onSearchChange={setSearch} onSearchSubmit={() => void loadFiles()}>
+        <Alert color="red" variant="light">
+          <Stack gap="sm">
+            <Text>{error}</Text>
+            <Text size="sm">
+              配置没有成功加载，已暂停展示默认配置，避免误保存覆盖现有图床参数。
+            </Text>
+            <Group>
+              <Button variant="default" onClick={() => void loadConfig({ loadFilesAfter: true })}>
+                重新加载配置
+              </Button>
+            </Group>
+          </Stack>
+        </Alert>
+      </SectionCard>
     );
   }
 

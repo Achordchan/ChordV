@@ -22,6 +22,14 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
       props.onClose();
     }
   };
+  const savingMessage =
+    !props.saving
+      ? null
+      : !props.editing && props.form.artifactSource === "uploaded" && props.form.selectedFile
+        ? "正在创建发布记录并上传安装包，大文件上传期间请等待当前请求返回。"
+        : props.editing
+          ? "正在保存发布记录，请等待当前请求返回。"
+          : "正在创建发布记录，请等待当前请求返回。";
 
   return (
     <Modal
@@ -34,6 +42,12 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
       closeOnEscape={!props.saving}
     >
       <Stack gap="md">
+        {savingMessage ? (
+          <Alert color="yellow" variant="light">
+            {savingMessage}
+          </Alert>
+        ) : null}
+
         <Select
           label="平台"
           data={releasePlatformOptions as unknown as { value: string; label: string }[]}
@@ -47,7 +61,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
               fileName: ""
             })
           }
-          disabled={props.editing}
+          disabled={props.editing || props.saving}
         />
 
         <TextInput
@@ -55,7 +69,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           placeholder="例如 1.1.6"
           value={props.form.version}
           onChange={(event) => props.onChange({ ...props.form, version: event.currentTarget.value })}
-          disabled={props.editing}
+          disabled={props.editing || props.saving}
         />
 
         <TextInput
@@ -63,6 +77,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           placeholder="例如 ChordV 1.1.6 · Windows"
           value={props.form.title}
           onChange={(event) => props.onChange({ ...props.form, title: event.currentTarget.value })}
+          disabled={props.saving}
         />
 
         {!props.editing ? (
@@ -79,6 +94,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 { value: "external", label: "外链地址" },
                 { value: "uploaded", label: "上传文件" }
               ]}
+              disabled={props.saving}
             />
 
             {props.form.artifactSource === "external" ? (
@@ -87,6 +103,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
                 value={props.form.downloadUrl}
                 onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+                disabled={props.saving}
               />
             ) : (
               <FileInput
@@ -104,6 +121,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                   })
                 }
                 clearable
+                disabled={props.saving}
               />
             )}
 
@@ -123,7 +141,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 <Button
                   size="xs"
                   variant="default"
-                  disabled={props.artifactEditingDisabled || !props.onManageArtifact}
+                  disabled={props.saving || props.artifactEditingDisabled || !props.onManageArtifact}
                   onClick={() => props.onManageArtifact?.("external")}
                 >
                   添加外链
@@ -131,7 +149,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                 <Button
                   size="xs"
                   variant="light"
-                  disabled={props.artifactEditingDisabled || !props.onManageArtifact}
+                  disabled={props.saving || props.artifactEditingDisabled || !props.onManageArtifact}
                   onClick={() => props.onManageArtifact?.("uploaded")}
                 >
                   上传文件
@@ -152,6 +170,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
           placeholder={"每行一条更新说明\n例如：修复 Windows 托盘断开异常"}
           value={props.form.changelog}
           onChange={(event) => props.onChange({ ...props.form, changelog: event.currentTarget.value })}
+          disabled={props.saving}
         />
 
         <Group justify="flex-end">

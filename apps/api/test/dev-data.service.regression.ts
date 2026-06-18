@@ -862,7 +862,7 @@ async function testImageBedListUsesShortManageTimeout() {
     const startedAt = Date.now();
     await assert.rejects(
       () => service.listAdminFiles(),
-      /timed out after 25ms/,
+      /图床服务请求超时，已等待 25ms/,
       "image bed file list should use the short management timeout"
     );
     assert.equal(Date.now() - startedAt < 1000, true, "image bed file list must not wait on the long upload timeout");
@@ -1090,7 +1090,7 @@ async function testImageBedUploadUsesCallerTimeout() {
           },
           { timeoutMs: 25 }
         ),
-      /timed out after 25ms/
+      /图床服务请求超时，已等待 25ms/
     );
     assert.equal(Date.now() - startedAt < 1000, true, "image bed upload must respect the caller timeout");
     assert.equal(existsSync(filePath), false, "timed-out image bed uploads must remove the temporary file");
@@ -1189,7 +1189,7 @@ async function testImageBedUploadRejectsNonImageAndCleansTempFile() {
           mimetype: "text/plain",
           size: 8
         }),
-      /Only image attachments are supported/
+      /仅支持上传图片附件/
     );
     assert.equal(existsSync(filePath), false, "rejected image bed uploads must remove the temporary file");
   } finally {
@@ -1252,7 +1252,7 @@ async function testImageBedDeleteRejectsMalformedPercentPath() {
 
   await assert.rejects(
     () => service.deleteAdminFile({ path: "support-tickets/100% legit.png" }),
-    /Invalid image bed file path/
+    /图床文件路径无效/
   );
 }
 
@@ -7924,6 +7924,46 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
     "publish_event"
   ]);
   assert.deepEqual(publishedUserIds, []);
+}
+
+async function testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls() {
+  const adminEvents: Array<Record<string, any>> = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    clientEventsPublisher: {
+      resolveUserIdsForNodeAccess: async () => new Promise<string[]>(() => undefined),
+      publishNodeAccessUpdatedToUsers: () => undefined
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, any>) => {
+        adminEvents.push(event);
+      }
+    },
+    runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => undefined,
+      removePanelBindingsForNode: async () => ({ requested: 1, updated: 1, failed: [] })
+    },
+    prisma: {
+      node: {
+        findUnique: async () => ({ id: "node_1" }),
+        update: async () => ({})
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.deleteNode("node_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("deleteNode waited for stalled event target resolution")), 750);
+    })
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.equal(adminEvents.length, 1);
+  assert.equal(adminEvents[0].type, "node_access_updated");
+  assert.equal(adminEvents[0].nodeId, "node_1");
 }
 
 async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
@@ -26242,7 +26282,7 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
-        throw new BadRequestException("Image bed API token is not configured.");
+        throw new BadRequestException("图床 API Token 未配置，请先在后台图床配置中填写。");
       },
       deleteUploadedSupportTicketAttachmentBestEffort: async () => {
         cleanupCalls += 1;
@@ -26272,10 +26312,11 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
 
   assert.equal((result as { id: string }).id, "ticket_1");
   assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /Image bed API token is not configured/);
+  assert.match(result.attachmentUploadError ?? "", /图床 API Token 未配置/);
   const message = writes.find((item) => item.kind === "message")?.data;
   assert.match(String(message?.body), /please see attachment/);
   assert.match(String(message?.body), /附件上传失败/);
+  assert.doesNotMatch(String(message?.body), /图床 API Token|Image bed API token|fetch failed/i);
   assert.equal(writes.some((item) => item.kind === "attachment"), false);
   assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_user");
   assert.equal(publishCalls, 1, "admin ticket reply should still publish after text reply is saved");
@@ -26345,7 +26386,8 @@ async function testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailu
   assert.equal((result as { id: string }).id, "ticket_1");
   assert.equal(result.attachmentUploadStatus, "failed");
   assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
-  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/);
+  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /附件上传失败/);
+  assert.doesNotMatch(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/i);
   assert.equal(writes.some((item) => item.kind === "attachment"), false);
   assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_user");
   assert.equal(publishCalls, 1, "attachment-only upload failure should still save and publish the ticket reply");
@@ -26387,6 +26429,48 @@ async function testAdminReplySupportTicketKeepsSaveWhenPublishFails() {
 
   assert.deepEqual(writes.sort(), ["message", "ticket"]);
   assert.equal((result as { id: string }).id, "ticket_1");
+}
+
+async function testAdminReplySupportTicketPublishesClientAndAdminEvents() {
+  const clientEvents: Array<{ userId: string; event: Record<string, unknown> }> = [];
+  const adminEvents: Array<Record<string, unknown>> = [];
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" }),
+        update: async () => ({})
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      },
+      supportTicketMessage: {
+        create: async () => ({})
+      }
+    },
+    clientRuntimeEventsService: {
+      publishToUser: (userId: string, event: Record<string, unknown>) => {
+        clientEvents.push({ userId, event });
+      }
+    },
+    adminRuntimeEventsService: {
+      publishTicketUpdated: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
+    getAdminSupportTicketDetail: async (ticketId: string) => ({ id: ticketId })
+  });
+
+  await service.replyAdminSupportTicket("ticket_1", { body: "reply" }, "admin_1");
+
+  assert.equal(clientEvents.length, 1);
+  assert.equal(clientEvents[0].userId, "user_1");
+  assert.equal(clientEvents[0].event.type, "ticket_updated");
+  assert.equal(clientEvents[0].event.ticketId, "ticket_1");
+  assert.equal(clientEvents[0].event.ticketStatus, "waiting_user");
+  assert.deepEqual(adminEvents, [{ ticketId: "ticket_1", ticketStatus: "waiting_user" }]);
 }
 
 async function testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails() {
@@ -27425,7 +27509,7 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
     },
     imageBedService: {
       uploadSupportTicketAttachment: async () => {
-        throw new BadRequestException("Image bed API token is not configured.");
+        throw new BadRequestException("图床 API Token 未配置，请先在后台图床配置中填写。");
       },
       deleteUploadedSupportTicketAttachmentBestEffort: async () => {
         cleanupCalls += 1;
@@ -27455,10 +27539,11 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
 
   assert.equal((result as { id: string }).id, "ticket_1");
   assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /Image bed API token is not configured/);
+  assert.match(result.attachmentUploadError ?? "", /图床 API Token 未配置/);
   const message = writes.find((item) => item.kind === "message")?.data;
   assert.match(String(message?.body), /please see attachment/);
-  assert.match(String(message?.body), /Attachment upload failed/);
+  assert.match(String(message?.body), /附件上传失败/);
+  assert.doesNotMatch(String(message?.body), /图床 API Token|Image bed API token|fetch failed/i);
   assert.equal(writes.some((item) => item.kind === "attachment"), false);
   assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_admin");
   assert.equal(writes.some((item) => item.kind === "read"), true);
@@ -27547,7 +27632,8 @@ async function testClientReplySupportTicketAttachmentOnlyUploadFailureWritesFail
   assert.equal((result as { id: string }).id, "ticket_1");
   assert.equal(result.attachmentUploadStatus, "failed");
   assert.match(result.attachmentUploadError ?? "", /image bed upload failed/);
-  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/);
+  assert.match(String(writes.find((item) => item.kind === "message")?.data.body), /附件上传失败/);
+  assert.doesNotMatch(String(writes.find((item) => item.kind === "message")?.data.body), /image bed upload failed/i);
   assert.equal(writes.some((item) => item.kind === "attachment"), false);
   assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_admin");
   assert.equal(writes.some((item) => item.kind === "read"), true);
@@ -27686,6 +27772,7 @@ async function main() {
   await testCompletedResetSmallUsageSampleBecomesBaselineWithoutBilling();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
+  await testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls();
   await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();
   await testDeleteNodeMapsLocalSaveFailure();
   await testListAdminNodesMapsLocalReadFailure();
@@ -28046,6 +28133,7 @@ async function main() {
   await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
   await testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
+  await testAdminReplySupportTicketPublishesClientAndAdminEvents();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();

@@ -2435,7 +2435,8 @@ function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackB
   if (!attachmentUploadError) {
     return baseBody;
   }
-  return `${baseBody}\n\n附件上传失败，已先保存文字回复：${attachmentUploadError}`;
+  const notice = "附件上传失败，文字回复已保存。请检查图床配置或稍后重试。";
+  return body ? `${baseBody}\n\n${notice}` : notice;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

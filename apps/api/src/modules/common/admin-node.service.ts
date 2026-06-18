@@ -11,6 +11,7 @@ import { XuiService } from "../xui/xui.service";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { createId } from "./release-center.utils";
 import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import {
@@ -45,7 +46,8 @@ export class AdminNodeService {
     private readonly prisma: PrismaService,
     private readonly xuiService: XuiService,
     private readonly runtimeSessionService: RuntimeSessionService,
-    private readonly clientEventsPublisher: ClientEventsPublisher
+    private readonly clientEventsPublisher: ClientEventsPublisher,
+    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
   ) {}
 
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
@@ -451,7 +453,7 @@ export class AdminNodeService {
         );
       }
       await this.tryRunAfterLocalNodeSave("publish node access update after node import", () =>
-        this.clientEventsPublisher.publishNodeAccessUpdatedForNode(row.id)
+        this.publishNodeAccessUpdatedForNode(row.id)
       );
     }
     return panelSyncPending ? withNodePanelSyncPending(record) : record;
@@ -749,7 +751,7 @@ export class AdminNodeService {
       Boolean(derived);
     if (shouldPublishNodeUpdated) {
       await this.tryRunAfterLocalNodeSave("publish node access update after node update", () =>
-        this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
+        this.publishNodeAccessUpdatedForNode(nodeId)
       );
     }
 
@@ -866,7 +868,7 @@ export class AdminNodeService {
     }
 
     await this.tryRunAfterLocalNodeSave("publish node access update after node refresh", () =>
-      this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
+      this.publishNodeAccessUpdatedForNode(nodeId)
     );
     return toAdminNodeRecord(row);
   }
@@ -1271,6 +1273,7 @@ export class AdminNodeService {
       [] as string[],
       () => this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId)
     );
+    this.publishAdminNodeAccessUpdatedBestEffort(nodeId);
     try {
       this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     } catch (error) {
@@ -1282,6 +1285,30 @@ export class AdminNodeService {
       panelSyncMessage: NODE_PANEL_SYNC_PENDING_MESSAGE,
       message: NODE_PANEL_SYNC_PENDING_MESSAGE
     };
+  }
+
+  private async publishNodeAccessUpdatedForNode(nodeId: string) {
+    this.publishAdminNodeAccessUpdatedBestEffort(nodeId);
+    await this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId);
+  }
+
+  private publishAdminNodeAccessUpdatedBestEffort(nodeId: string) {
+    if (!this.adminRuntimeEventsService) {
+      return;
+    }
+    try {
+      this.adminRuntimeEventsService.publish({
+        type: "node_access_updated",
+        occurredAt: new Date().toISOString(),
+        nodeId
+      });
+    } catch (error) {
+      this.logger?.warn(
+        `Local node change saved, but admin node_access_updated publish failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
   }
 
   private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {

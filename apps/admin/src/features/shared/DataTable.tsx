@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
-import { ScrollArea, Table } from "@mantine/core";
+import { Table } from "@mantine/core";
 
-export function DataTable({ children }: { children: ReactNode }) {
+export function DataTable({ children, minWidth = 960 }: { children: ReactNode; minWidth?: number }) {
   return (
-    <ScrollArea>
+    <Table.ScrollContainer minWidth={minWidth}>
       <Table verticalSpacing="sm" horizontalSpacing="md" highlightOnHover>
         {children}
       </Table>
-    </ScrollArea>
+    </Table.ScrollContainer>
   );
 }

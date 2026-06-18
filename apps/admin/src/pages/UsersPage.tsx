@@ -100,7 +100,7 @@ export function UsersPage(props: UsersPageProps) {
                         <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号">
                           <IconPencil size={16} />
                         </ActionIcon>
-                        {item.subscriptionCount > 0 ? (
+                        {item.subscriptionCount > 0 || item.currentSubscription ? (
                           <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
                             <IconListDetails size={16} />
                           </ActionIcon>
@@ -419,18 +419,19 @@ function PanelSyncInlineStatus(props: {
         <Badge color="yellow" variant="light">
           {label}
         </Badge>
-        <ActionIcon
+        <Button
           size="xs"
           variant="subtle"
           color="yellow"
+          leftSection={<IconListDetails size={12} />}
           onClick={(event) => {
             event.stopPropagation();
             props.onOpenPanelSyncQueue();
           }}
           title="查看后台同步队列"
         >
-          <IconListDetails size={12} />
-        </ActionIcon>
+          查看队列
+        </Button>
       </Group>
       {detail ? (
         <Text size="xs" c="dimmed" lineClamp={2}>

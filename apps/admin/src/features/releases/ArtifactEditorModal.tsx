@@ -23,6 +23,12 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
       props.onClose();
     }
   };
+  const savingMessage =
+    !props.saving
+      ? null
+      : props.form.source === "uploaded" && props.form.selectedFile
+        ? "正在上传安装包，大文件上传期间请等待当前请求返回。"
+        : "正在保存安装包信息，请等待当前请求返回。";
 
   return (
     <Modal
@@ -35,6 +41,12 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
       closeOnEscape={!props.saving}
     >
       <Stack gap="md">
+        {savingMessage ? (
+          <Alert color="yellow" variant="light">
+            {savingMessage}
+          </Alert>
+        ) : null}
+
         <SegmentedControl
           value={props.form.source}
           onChange={(value) =>
@@ -48,6 +60,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             { value: "external", label: "外链地址" },
             { value: "uploaded", label: "上传文件" }
           ]}
+          disabled={props.saving}
         />
 
         {props.form.source === "external" ? (
@@ -56,6 +69,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
             value={props.form.downloadUrl}
             onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+            disabled={props.saving}
           />
         ) : (
           <FileInput
@@ -75,6 +89,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             }
             error={props.uploadFileRequired && !props.form.selectedFile ? "请先选择要上传的安装包文件。" : undefined}
             clearable
+            disabled={props.saving}
           />
         )}
 
