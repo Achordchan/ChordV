@@ -180,6 +180,7 @@ export function UsersPage(props: UsersPageProps) {
                           onOpenPanelSyncQueue={() =>
                             props.onOpenPanelSyncQueue({
                               subscriptionId: item.currentSubscription?.id,
+                              teamId: item.id,
                               title: item.name
                             })
                           }
@@ -333,15 +334,14 @@ export function UsersPage(props: UsersPageProps) {
                                         props.onOpenPanelSyncQueue({
                                           subscriptionId: item.currentSubscription?.id,
                                           userId: member.userId,
+                                          teamId: item.id,
                                           title: `${member.displayName} · ${item.name}`
                                         })
                                       }
                                     />
                                     <LeaseRevocationInlineStatus
-                                      jobs={props.leaseRevocationJobs.filter(
-                                        (job) =>
-                                          job.userId === member.userId &&
-                                          (item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id || job.subscriptionId === null : true)
+                                      jobs={props.leaseRevocationJobs.filter((job) =>
+                                        isTeamMemberLeaseRevocationJob(job, member.userId, item.currentSubscription?.id)
                                       )}
                                       retryBusyKey={props.leaseRevocationRetryBusyKey}
                                       onRetryJob={props.onRetryLeaseRevocationJob}
@@ -467,6 +467,13 @@ function PanelSyncInlineStatus(props: {
       ) : null}
     </Stack>
   );
+}
+
+function isTeamMemberLeaseRevocationJob(job: AdminLeaseRevocationJobDto, userId: string, subscriptionId?: string | null) {
+  if (job.userId !== userId) {
+    return false;
+  }
+  return subscriptionId ? job.subscriptionId === subscriptionId || job.subscriptionId === null : true;
 }
 
 function LeaseRevocationInlineStatus(props: {

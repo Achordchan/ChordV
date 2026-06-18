@@ -15,6 +15,7 @@ export type PanelSyncQueueFilter = {
   nodeId?: string;
   subscriptionId?: string;
   userId?: string;
+  teamId?: string;
 };
 
 type NodesPageProps = {
@@ -325,9 +326,11 @@ export function PanelSyncQueueDrawer(props: {
               ) : (
                 filteredJobs.map((job) => {
                   const retryable = isRetryableBackgroundSyncStatus(job.status);
-                  const nodeRetryable = filteredJobs.some(
-                    (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
-                  );
+                  const nodeRetryable =
+                    canRetryFilteredQueueByNode(props.filter) &&
+                    filteredJobs.some(
+                      (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
+                    );
                   return (
                   <Table.Tr key={job.id}>
                     <Table.Td>
@@ -365,16 +368,18 @@ export function PanelSyncQueueDrawer(props: {
                         >
                           重试
                         </Button>
-                        <Button
-                          size="xs"
-                          variant="subtle"
-                          loading={props.panelRetryBusyKey === `node:${job.nodeId}`}
-                          disabled={!nodeRetryable || (props.panelRetryBusyKey !== null && props.panelRetryBusyKey !== `node:${job.nodeId}`)}
-                          onClick={() => props.onRetryNode(job.nodeId)}
-                          title={nodeRetryable ? "重试这个节点的待同步任务" : "这个节点暂无可重试任务"}
-                        >
-                          重试节点
-                        </Button>
+                        {canRetryFilteredQueueByNode(props.filter) ? (
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            loading={props.panelRetryBusyKey === `node:${job.nodeId}`}
+                            disabled={!nodeRetryable || (props.panelRetryBusyKey !== null && props.panelRetryBusyKey !== `node:${job.nodeId}`)}
+                            onClick={() => props.onRetryNode(job.nodeId)}
+                            title={nodeRetryable ? "重试这个节点的待同步任务" : "这个节点暂无可重试任务"}
+                          >
+                            重试节点
+                          </Button>
+                        ) : null}
                       </Group>
                     </Table.Td>
                   </Table.Tr>
@@ -409,7 +414,7 @@ export function PanelSyncQueueDrawer(props: {
               ) : (
                 filteredLeaseRevocationJobs.map((job) => {
                   const retryable = isRetryableBackgroundSyncStatus(job.status);
-                  const nodeRetryable = job.nodeId
+                  const nodeRetryable = job.nodeId && canRetryFilteredQueueByNode(props.filter)
                     ? filteredLeaseRevocationJobs.some(
                         (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
                       )
@@ -442,7 +447,7 @@ export function PanelSyncQueueDrawer(props: {
                         >
                           重试
                         </Button>
-                        {job.nodeId ? (
+                        {job.nodeId && canRetryFilteredQueueByNode(props.filter) ? (
                           <Button
                             size="xs"
                             variant="subtle"
@@ -469,7 +474,11 @@ export function PanelSyncQueueDrawer(props: {
 }
 
 function hasPanelSyncQueueFilter(filter?: PanelSyncQueueFilter | null) {
-  return Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId);
+  return Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId || filter?.teamId);
+}
+
+function canRetryFilteredQueueByNode(filter?: PanelSyncQueueFilter | null) {
+  return !filter?.subscriptionId && !filter?.userId && !filter?.teamId;
 }
 
 function filterPanelSyncJobs(jobs: AdminPanelSyncJobDto[], filter?: PanelSyncQueueFilter | null) {
@@ -484,6 +493,9 @@ function filterPanelSyncJobs(jobs: AdminPanelSyncJobDto[], filter?: PanelSyncQue
       return false;
     }
     if (filter?.userId && job.userId !== filter.userId) {
+      return false;
+    }
+    if (filter?.teamId && job.teamId !== filter.teamId) {
       return false;
     }
     return true;
@@ -502,6 +514,9 @@ function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: 
       return false;
     }
     if (filter?.userId && job.userId !== filter.userId) {
+      return false;
+    }
+    if (filter?.teamId && !filter.nodeId && !filter.subscriptionId && !filter.userId) {
       return false;
     }
     return true;

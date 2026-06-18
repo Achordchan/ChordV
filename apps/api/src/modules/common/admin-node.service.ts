@@ -153,6 +153,7 @@ export class AdminNodeService {
       nodeId: row.nodeId,
       subscriptionId: row.subscriptionId,
       userId: row.userId,
+      teamId: row.teamId,
       nodeName: row.node?.name ?? "已删除节点",
       panelClientEmail: row.panelClientEmail,
       attempts: row.attempts,

@@ -12905,6 +12905,74 @@ async function testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs() {
   ]);
 }
 
+async function testDisconnectUserReturnsPendingWhenPanelQueueStallsAndContinuesOtherSubscriptions() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const panelStarted: string[] = [];
+  const leaseStarted: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    ensureUserExists: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: now,
+      maxConcurrentSessionsOverride: null
+    }),
+    findCurrentSubscriptionIdsForUser: async () => ["sub_stalled", "sub_ok"],
+    requireAdminUserRecord: async () => ({
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      accountType: "personal",
+      teamId: null,
+      teamName: null,
+      subscriptionCount: 2,
+      activeSubscriptionCount: 2,
+      currentSubscription: null,
+      subscriptions: [],
+      teamMemberships: [],
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      lastSeenAt: now.toISOString()
+    }),
+    runtimeSessionService: {
+      markPanelBindingsDisabledForSubscription: async (subscriptionId: string) => {
+        panelStarted.push(subscriptionId);
+        if (subscriptionId === "sub_stalled") {
+          return new Promise<number>(() => undefined);
+        }
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async (_writer: unknown, subscriptionId: string) => {
+        leaseStarted.push(subscriptionId);
+        return 1;
+      }
+    },
+    prisma: {
+      $transaction: async (task: (tx: Record<string, unknown>) => Promise<unknown>) => task({})
+    }
+  });
+
+  const result = await Promise.race([
+    service.disconnectUser("user_1"),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("disconnectUser waited for stalled panel disable queue")), 750);
+    })
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /background|queued|pending/i);
+  await waitUntil(() => panelStarted.includes("sub_stalled") && panelStarted.includes("sub_ok"));
+  await waitUntil(() => leaseStarted.includes("sub_stalled") && leaseStarted.includes("sub_ok"));
+}
+
 async function testDisconnectUserReturnsPendingWhenUserRefreshFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminSubscriptionService({
@@ -28329,6 +28397,7 @@ async function main() {
   await testDisableUserReturnsBeforeStalledBackgroundPanelQueue();
   await testEnableUserReturnsPendingWhenPanelSyncStalls();
   await testEnableUserReturnsPendingWhenSubscriptionLookupStalls();
+  await testDisconnectUserReturnsPendingWhenPanelQueueStallsAndContinuesOtherSubscriptions();
   await testDisableTeamReturnsPendingWhenPanelDisconnectFails();
   await testEnableTeamReturnsPendingWhenPanelSyncStalls();
   await testUpdateTeamReturnsPendingWhenRecordRefreshFails();

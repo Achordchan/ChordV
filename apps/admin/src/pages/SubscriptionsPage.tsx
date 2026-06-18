@@ -29,6 +29,12 @@ import {
   translateUserStatus
 } from "../utils/admin-translate";
 
+type PanelSyncInlineItem = {
+  panelSyncStatus?: "synced" | "pending";
+  panelSyncMessage?: string | null;
+  panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
+} | null | undefined;
+
 type SubscriptionsPageProps = {
   searchValue: string;
   onSearchChange: (value: string) => void;
@@ -226,6 +232,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
               const teamSubscriptionRecord = team.currentSubscription
                 ? props.allSubscriptions.find((item) => item.id === team.currentSubscription?.id)
                 : null;
+              const teamPanelSyncItem = pickPanelSyncInlineItem(teamSubscriptionRecord, team);
               const renewable = teamSubscriptionRecord?.renewable ?? false;
               const usageLoaded = Object.prototype.hasOwnProperty.call(props.teamUsageByTeamId, team.id);
               const usageLoading = Boolean(props.teamUsageLoadingByTeamId[team.id]);
@@ -253,19 +260,11 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                           </Text>
                         ) : null}
                         <PanelSyncInlineStatus
-                          item={team}
+                          item={teamPanelSyncItem}
                           onOpenPanelSyncQueue={() =>
                             props.onOpenPanelSyncQueue({
-                              subscriptionId: currentSubscription?.id,
-                              title: `${team.name} · Team 待同步任务`
-                            })
-                          }
-                        />
-                        <PanelSyncInlineStatus
-                          item={teamSubscriptionRecord}
-                          onOpenPanelSyncQueue={() =>
-                            props.onOpenPanelSyncQueue({
-                              subscriptionId: teamSubscriptionRecord?.id,
+                              subscriptionId: teamSubscriptionRecord?.id ?? currentSubscription?.id,
+                              teamId: team.id,
                               title: `${team.name} · ${teamSubscriptionRecord?.planName ?? "Team 订阅"}`
                             })
                           }
@@ -430,13 +429,14 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                   props.onOpenPanelSyncQueue({
                                                     subscriptionId: currentSubscription?.id,
                                                     userId: member.userId,
+                                                    teamId: team.id,
                                                     title: `${member.displayName} · ${team.name}`
                                                   })
                                                 }
                                               />
                                               <LeaseRevocationInlineStatus
-                                                jobs={props.leaseRevocationJobs.filter(
-                                                  (job) => job.subscriptionId === currentSubscription?.id && job.userId === member.userId
+                                                jobs={props.leaseRevocationJobs.filter((job) =>
+                                                  isTeamMemberLeaseRevocationJob(job, member.userId, currentSubscription?.id)
                                                 )}
                                                 retryBusyKey={props.leaseRevocationRetryBusyKey}
                                                 onRetryJob={props.onRetryLeaseRevocationJob}
@@ -578,12 +578,17 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
   );
 }
 
+function pickPanelSyncInlineItem(primary: PanelSyncInlineItem, fallback: PanelSyncInlineItem): PanelSyncInlineItem {
+  return hasPanelSyncInlineData(primary) ? primary : fallback;
+}
+
+function hasPanelSyncInlineData(item: PanelSyncInlineItem) {
+  const summary = item?.panelSyncSummary;
+  return item?.panelSyncStatus === "pending" || (summary?.total ?? 0) > 0;
+}
+
 function PanelSyncInlineStatus(props: {
-  item?: {
-    panelSyncStatus?: "synced" | "pending";
-    panelSyncMessage?: string | null;
-    panelSyncSummary?: { pending: number; running: number; failed: number; total: number; lastError: string | null } | null;
-  } | null;
+  item?: PanelSyncInlineItem;
   onOpenPanelSyncQueue: () => void;
 }) {
   const summary = props.item?.panelSyncSummary;
@@ -624,6 +629,13 @@ function PanelSyncInlineStatus(props: {
       ) : null}
     </Stack>
   );
+}
+
+function isTeamMemberLeaseRevocationJob(job: AdminLeaseRevocationJobDto, userId: string, subscriptionId?: string | null) {
+  if (job.userId !== userId) {
+    return false;
+  }
+  return subscriptionId ? job.subscriptionId === subscriptionId || job.subscriptionId === null : true;
 }
 
 function LeaseRevocationInlineStatus(props: {

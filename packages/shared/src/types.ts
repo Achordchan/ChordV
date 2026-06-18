@@ -487,6 +487,7 @@ export interface AdminPanelSyncJobDto {
   nodeName: string;
   subscriptionId: string;
   userId: string | null;
+  teamId: string | null;
   panelClientEmail: string;
   attempts: number;
   nextRunAt: string;
