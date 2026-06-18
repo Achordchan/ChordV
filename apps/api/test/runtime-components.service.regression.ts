@@ -30,6 +30,18 @@ function makeUploadedComponent(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeRemoteComponent(overrides: Record<string, unknown> = {}) {
+  return makeUploadedComponent({
+    source: "custom_remote",
+    originUrl: "https://cdn.example.com/xray.exe",
+    storedFilePath: null,
+    fileSizeBytes: null,
+    fileHash: null,
+    expectedHash: null,
+    ...overrides
+  });
+}
+
 async function testUploadedRuntimeComponentRejectsMismatchedExpectedHashOnPatch() {
   let updateCalled = false;
   const service = createRuntimeComponentsService({
@@ -85,9 +97,94 @@ async function testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch() 
   assert.equal(result.fileHash, "a".repeat(64));
 }
 
+async function testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async () => [makeRemoteComponent({ expectedHash: null })]
+      }
+    }
+  });
+
+  const [result] = await service.listAdminRuntimeComponents();
+
+  assert.equal(result.clientDeliverable, false);
+  assert.equal(result.clientDeliveryStatus, "pending_validation");
+  assert.match(result.clientDeliveryMessage, /不会下发|校验/);
+}
+
+async function testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async () => [
+          makeUploadedComponent({
+            storedFilePath: "component_1/definitely-missing.zip"
+          })
+        ]
+      }
+    }
+  });
+
+  const [result] = await service.listAdminRuntimeComponents();
+
+  assert.equal(result.clientDeliverable, false);
+  assert.equal(result.clientDeliveryStatus, "missing_file");
+  assert.match(result.clientDeliveryMessage, /文件不可用|不会下发/);
+}
+
+async function testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable() {
+  const hash = "a".repeat(64);
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async () => [
+          makeRemoteComponent({
+            fileSizeBytes: 1024n,
+            fileHash: hash.toUpperCase(),
+            expectedHash: hash
+          })
+        ]
+      }
+    }
+  });
+
+  const [result] = await service.listAdminRuntimeComponents();
+
+  assert.equal(result.clientDeliverable, true);
+  assert.equal(result.clientDeliveryStatus, "ready");
+  assert.match(result.clientDeliveryMessage, /可下发/);
+}
+
+async function testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async () => [
+          makeRemoteComponent({
+            fileSizeBytes: 1024n,
+            fileHash: "b".repeat(64),
+            expectedHash: "a".repeat(64)
+          })
+        ]
+      }
+    }
+  });
+
+  const [result] = await service.listAdminRuntimeComponents();
+
+  assert.equal(result.clientDeliverable, false);
+  assert.equal(result.clientDeliveryStatus, "metadata_mismatch");
+  assert.match(result.clientDeliveryMessage, /Hash/);
+}
+
 async function main() {
   await testUploadedRuntimeComponentRejectsMismatchedExpectedHashOnPatch();
   await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
+  await testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable();
+  await testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable();
+  await testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable();
+  await testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable();
   console.log("runtime component service regression checks passed");
 }
 

@@ -9,6 +9,14 @@ export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_re
 export type RuntimeComponentArchitecture = "x64" | "arm64";
 export type RuntimeComponentKind = "xray" | "geoip" | "geosite";
 export type RuntimeComponentSource = "uploaded" | "github_remote" | "custom_remote";
+export type RuntimeComponentClientDeliveryStatus =
+  | "ready"
+  | "disabled"
+  | "pending_validation"
+  | "missing_hash"
+  | "metadata_mismatch"
+  | "missing_file"
+  | "invalid_url";
 export type RuntimeComponentValidationStatus =
   | "ready"
   | "disabled"
@@ -215,6 +223,9 @@ export interface AdminRuntimeComponentRecordDto {
   fileSizeBytes?: string | null;
   fileHash?: string | null;
   enabled: boolean;
+  clientDeliverable?: boolean;
+  clientDeliveryStatus?: RuntimeComponentClientDeliveryStatus;
+  clientDeliveryMessage?: string;
   finalUrlPreview: string;
   createdAt: string;
   updatedAt: string;

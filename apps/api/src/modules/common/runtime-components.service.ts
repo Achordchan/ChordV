@@ -63,7 +63,7 @@ export class RuntimeComponentsService {
       const rows = await this.prisma.runtimeComponent.findMany({
         orderBy: [{ updatedAt: "desc" }, { platform: "asc" }, { architecture: "asc" }, { kind: "asc" }]
       });
-      return dedupeSharedRulesets(rows).map(toAdminRuntimeComponentRecord);
+      return await Promise.all(dedupeSharedRulesets(rows).map(toAdminRuntimeComponentRecord));
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "Runtime component list is temporarily unavailable.");
     }
@@ -951,7 +951,7 @@ function resolveRuntimeComponentUrl(
   return component.originUrl.trim();
 }
 
-function toAdminRuntimeComponentRecord(row: {
+async function toAdminRuntimeComponentRecord(row: {
   id: string;
   platform: "macos" | "windows" | "android" | "ios";
   architecture: "x64" | "arm64";
@@ -969,7 +969,8 @@ function toAdminRuntimeComponentRecord(row: {
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
-}): AdminRuntimeComponentRecordDto {
+}): Promise<AdminRuntimeComponentRecordDto> {
+  const clientDelivery = await resolveAdminRuntimeComponentClientDelivery(row);
   return {
     id: row.id,
     platform: row.platform,
@@ -985,9 +986,99 @@ function toAdminRuntimeComponentRecord(row: {
     archiveEntryName: row.archiveEntryName,
     expectedHash: row.expectedHash,
     enabled: row.enabled,
+    clientDeliverable: clientDelivery.deliverable,
+    clientDeliveryStatus: clientDelivery.status,
+    clientDeliveryMessage: clientDelivery.message,
     finalUrlPreview: resolveRuntimeComponentUrl(row, null),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
+  };
+}
+
+async function resolveAdminRuntimeComponentClientDelivery(row: {
+  source: "uploaded" | "github_remote" | "custom_remote";
+  originUrl: string;
+  storedFilePath: string | null;
+  fileSizeBytes: bigint | null;
+  fileHash: string | null;
+  expectedHash: string | null;
+  enabled: boolean;
+}): Promise<{
+  deliverable: boolean;
+  status: NonNullable<AdminRuntimeComponentRecordDto["clientDeliveryStatus"]>;
+  message: string;
+}> {
+  if (!row.enabled) {
+    return {
+      deliverable: false,
+      status: "disabled",
+      message: "该组件已停用，客户端不会获取。"
+    };
+  }
+  if (row.source === "uploaded") {
+    if (!row.storedFilePath) {
+      return {
+        deliverable: false,
+        status: "missing_file",
+        message: "上传型组件缺少服务器文件记录，不会下发给客户端。"
+      };
+    }
+    try {
+      await assertStoredRuntimeComponentReadable(row);
+    } catch (error) {
+      return {
+        deliverable: false,
+        status: "missing_file",
+        message: `上传型组件服务器文件不可用，不会下发给客户端：${readErrorMessage(error)}`
+      };
+    }
+    return {
+      deliverable: true,
+      status: "ready",
+      message: "上传型组件会从本服务器下发给客户端。"
+    };
+  }
+  if (!isHttpUrl(row.originUrl)) {
+    return {
+      deliverable: false,
+      status: "invalid_url",
+      message: "远程直链不是有效的 http/https 地址，不会下发给客户端。"
+    };
+  }
+  if (!hasPositiveFileSize(row.fileSizeBytes)) {
+    return {
+      deliverable: false,
+      status: "pending_validation",
+      message: "远程直链还没有文件大小，校验前不会下发。"
+    };
+  }
+  const expectedHash = isValidSha256(row.expectedHash) ? row.expectedHash.toLowerCase() : null;
+  const fileHash = isValidSha256(row.fileHash) ? row.fileHash.toLowerCase() : null;
+  if (!expectedHash) {
+    return {
+      deliverable: false,
+      status: "missing_hash",
+      message: "远程直链缺少 expectedHash，不会下发给客户端。"
+    };
+  }
+  if (!fileHash) {
+    return {
+      deliverable: false,
+      status: "pending_validation",
+      message: "远程直链还没有校验结果，不会下发给客户端。"
+    };
+  }
+  if (fileHash !== expectedHash) {
+    return {
+      deliverable: false,
+      status: "metadata_mismatch",
+      message: "远程文件 Hash 与预期不一致，不会下发给客户端。"
+    };
+  }
+  return {
+    deliverable: true,
+    status: "ready",
+    message: "远程直链已校验通过，可下发给客户端。"
   };
 }
 

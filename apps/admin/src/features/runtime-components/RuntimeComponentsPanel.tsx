@@ -38,6 +38,7 @@ import {
   summarizeAdminDiagnosticMessage
 } from "../../utils/admin-filters";
 import { formatDateTime } from "../../utils/admin-format";
+import { getRuntimeComponentDeliveryState } from "./delivery-state";
 import { RuntimeComponentEditorModal } from "./RuntimeComponentEditorModal";
 import {
   emptyRuntimeComponentEditorForm,
@@ -536,7 +537,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
               <Table.Th>来源</Table.Th>
               <Table.Th>文件信息</Table.Th>
               <Table.Th>下载地址</Table.Th>
-              <Table.Th>状态</Table.Th>
+              <Table.Th>启用 / 下发</Table.Th>
               <Table.Th>验证结果</Table.Th>
               <Table.Th>操作</Table.Th>
             </Table.Tr>
@@ -545,6 +546,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
             {records.map((record) => {
               const validation = validations[record.id];
               const rowIsVerifying = verifyingId === record.id;
+              const deliveryState = getRuntimeComponentDeliveryState(record);
               return (
                 <Table.Tr key={record.id}>
                   <Table.Td>{displayRuntimeComponentPlatform(record)}</Table.Td>
@@ -578,9 +580,17 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                     </Stack>
                   </Table.Td>
                   <Table.Td>
-                    <Badge color={record.enabled ? "green" : "gray"} variant="light">
-                      {record.enabled ? "已启用" : "已停用"}
-                    </Badge>
+                    <Stack gap={2}>
+                      <Badge color={record.enabled ? "green" : "gray"} variant="light">
+                        {record.enabled ? "已启用" : "已停用"}
+                      </Badge>
+                      <Badge color={deliveryState.color} variant="light">
+                        {deliveryState.label}
+                      </Badge>
+                      <Text size="xs" c="dimmed" lineClamp={2}>
+                        {deliveryState.description}
+                      </Text>
+                    </Stack>
                   </Table.Td>
                   <Table.Td>
                     <Stack gap={2}>
