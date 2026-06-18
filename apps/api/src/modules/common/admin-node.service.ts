@@ -12,6 +12,7 @@ import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { createId } from "./release-center.utils";
+import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import {
   fetchSubscriptionNode,
   normalizePanelApiBasePath,
@@ -307,69 +308,74 @@ export class AdminNodeService {
     const panelWillBeDisabled = Boolean(current?.panelEnabled && !nextPanelEnabled);
     const nodeWillBeDisabled = Boolean(current?.isActive && input.isActive === false);
 
-    const row = await this.prisma.node.upsert({
-      where: { id: nodeId },
-      create: {
-        id: nodeId,
-        name: input.name?.trim() || imported.name,
-        countryCode: nextCountry.countryCode,
-        region: nextCountry.region,
-        provider: input.provider?.trim() || "自有节点",
-        tags: normalizeTags(input.tags, imported.name),
-        isActive: input.isActive ?? true,
-        recommended: input.recommended ?? true,
-        latencyMs: 0,
-        protocol: "vless",
-        security: "reality",
-        serverHost: imported.serverHost,
-        serverPort: imported.serverPort,
-        uuid: imported.uuid,
-        flow: imported.flow,
-        realityPublicKey: imported.realityPublicKey,
-        shortId: imported.shortId,
-        serverName: imported.serverName,
-        fingerprint: imported.fingerprint,
-        spiderX: imported.spiderX,
-        mldsa65Verify: imported.mldsa65Verify ?? "",
-        subscriptionUrl: input.subscriptionUrl?.trim() || null,
-        panelBaseUrl: nextPanelBaseUrl,
-        panelApiBasePath: nextPanelApiBasePath,
-        panelUsername: nextPanelUsername,
-        panelPassword: nextPanelPassword,
-        panelInboundId: nextPanelInboundId,
-        panelEnabled: nextPanelEnabled,
-        panelStatus: nextPanelEnabled ? current?.panelStatus ?? "offline" : "offline",
-        panelError: nextPanelEnabled ? current?.panelError ?? null : null
-      },
-      update: {
-        name: input.name?.trim() || imported.name,
-        countryCode: nextCountry.countryCode,
-        region: nextCountry.region,
-        provider: input.provider?.trim() || "自有节点",
-        tags: normalizeTags(input.tags, imported.name),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-        recommended: input.recommended ?? true,
-        latencyMs: 0,
-        serverHost: imported.serverHost,
-        serverPort: imported.serverPort,
-        uuid: imported.uuid,
-        flow: imported.flow,
-        realityPublicKey: imported.realityPublicKey,
-        shortId: imported.shortId,
-        serverName: imported.serverName,
-        fingerprint: imported.fingerprint,
-        spiderX: imported.spiderX,
-        mldsa65Verify: imported.mldsa65Verify ?? "",
-        subscriptionUrl: input.subscriptionUrl?.trim() || null,
-        panelBaseUrl: nextPanelBaseUrl,
-        panelApiBasePath: nextPanelApiBasePath,
-        panelUsername: nextPanelUsername,
-        panelPassword: nextPanelPassword,
-        panelInboundId: nextPanelInboundId,
-        panelEnabled: nextPanelEnabled,
-        ...(!nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {})
-      }
-    });
+    let row: any;
+    try {
+      row = await this.prisma.node.upsert({
+        where: { id: nodeId },
+        create: {
+          id: nodeId,
+          name: input.name?.trim() || imported.name,
+          countryCode: nextCountry.countryCode,
+          region: nextCountry.region,
+          provider: input.provider?.trim() || "自有节点",
+          tags: normalizeTags(input.tags, imported.name),
+          isActive: input.isActive ?? true,
+          recommended: input.recommended ?? true,
+          latencyMs: 0,
+          protocol: "vless",
+          security: "reality",
+          serverHost: imported.serverHost,
+          serverPort: imported.serverPort,
+          uuid: imported.uuid,
+          flow: imported.flow,
+          realityPublicKey: imported.realityPublicKey,
+          shortId: imported.shortId,
+          serverName: imported.serverName,
+          fingerprint: imported.fingerprint,
+          spiderX: imported.spiderX,
+          mldsa65Verify: imported.mldsa65Verify ?? "",
+          subscriptionUrl: input.subscriptionUrl?.trim() || null,
+          panelBaseUrl: nextPanelBaseUrl,
+          panelApiBasePath: nextPanelApiBasePath,
+          panelUsername: nextPanelUsername,
+          panelPassword: nextPanelPassword,
+          panelInboundId: nextPanelInboundId,
+          panelEnabled: nextPanelEnabled,
+          panelStatus: nextPanelEnabled ? current?.panelStatus ?? "offline" : "offline",
+          panelError: nextPanelEnabled ? current?.panelError ?? null : null
+        },
+        update: {
+          name: input.name?.trim() || imported.name,
+          countryCode: nextCountry.countryCode,
+          region: nextCountry.region,
+          provider: input.provider?.trim() || "自有节点",
+          tags: normalizeTags(input.tags, imported.name),
+          ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+          recommended: input.recommended ?? true,
+          latencyMs: 0,
+          serverHost: imported.serverHost,
+          serverPort: imported.serverPort,
+          uuid: imported.uuid,
+          flow: imported.flow,
+          realityPublicKey: imported.realityPublicKey,
+          shortId: imported.shortId,
+          serverName: imported.serverName,
+          fingerprint: imported.fingerprint,
+          spiderX: imported.spiderX,
+          mldsa65Verify: imported.mldsa65Verify ?? "",
+          subscriptionUrl: input.subscriptionUrl?.trim() || null,
+          panelBaseUrl: nextPanelBaseUrl,
+          panelApiBasePath: nextPanelApiBasePath,
+          panelUsername: nextPanelUsername,
+          panelPassword: nextPanelPassword,
+          panelInboundId: nextPanelInboundId,
+          panelEnabled: nextPanelEnabled,
+          ...(!nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {})
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "节点导入保存失败，请刷新节点列表后重试。");
+    }
 
     let panelSyncPending = false;
     if (current && panelConnectionChanged && !nodeWillBeDisabled) {
@@ -601,48 +607,53 @@ export class AdminNodeService {
         })
       : null;
 
-    const row = await this.prisma.node.update({
-      where: { id: current.id },
-      data: {
-        ...(input.name !== undefined ? { name: input.name.trim() } : {}),
-        ...(nextCountry ? { countryCode: nextCountry.countryCode, region: nextCountry.region } : {}),
-        ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
-        ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-        ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
-        ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl?.trim() || null } : {}),
-        ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
-        ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
-        ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),
-        ...(input.panelPassword !== undefined ? { panelPassword: input.panelPassword?.trim() || null } : {}),
-        ...(input.panelInboundId !== undefined
-          ? { panelInboundId: input.panelInboundId }
-          : shouldPersistDerivedInboundId
-            ? { panelInboundId: derivedInboundId }
-            : {}),
-        ...(input.panelEnabled !== undefined
-          ? { panelEnabled: input.panelEnabled }
-          : shouldPersistPanelEnabledByDefault
-            ? { panelEnabled: nextPanelEnabled }
-            : {}),
-        ...(input.isActive === false || !nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {}),
-        ...(panelRuntimeError ? { panelStatus: "degraded", panelError: panelRuntimeError } : {}),
-        ...(derived
-          ? {
-              serverHost: derived.serverHost,
-              serverPort: derived.serverPort,
-              uuid: derived.uuid,
-              flow: derived.flow,
-              realityPublicKey: derived.realityPublicKey,
-              shortId: derived.shortId,
-              serverName: derived.serverName,
-              fingerprint: derived.fingerprint,
-              spiderX: derived.spiderX,
-              mldsa65Verify: derived.mldsa65Verify ?? ""
-            }
-          : {})
-      }
-    });
+    let row: any;
+    try {
+      row = await this.prisma.node.update({
+        where: { id: current.id },
+        data: {
+          ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+          ...(nextCountry ? { countryCode: nextCountry.countryCode, region: nextCountry.region } : {}),
+          ...(input.provider !== undefined ? { provider: input.provider.trim() } : {}),
+          ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
+          ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+          ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
+          ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl?.trim() || null } : {}),
+          ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
+          ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
+          ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),
+          ...(input.panelPassword !== undefined ? { panelPassword: input.panelPassword?.trim() || null } : {}),
+          ...(input.panelInboundId !== undefined
+            ? { panelInboundId: input.panelInboundId }
+            : shouldPersistDerivedInboundId
+              ? { panelInboundId: derivedInboundId }
+              : {}),
+          ...(input.panelEnabled !== undefined
+            ? { panelEnabled: input.panelEnabled }
+            : shouldPersistPanelEnabledByDefault
+              ? { panelEnabled: nextPanelEnabled }
+              : {}),
+          ...(input.isActive === false || !nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {}),
+          ...(panelRuntimeError ? { panelStatus: "degraded", panelError: panelRuntimeError } : {}),
+          ...(derived
+            ? {
+                serverHost: derived.serverHost,
+                serverPort: derived.serverPort,
+                uuid: derived.uuid,
+                flow: derived.flow,
+                realityPublicKey: derived.realityPublicKey,
+                shortId: derived.shortId,
+                serverName: derived.serverName,
+                fingerprint: derived.fingerprint,
+                spiderX: derived.spiderX,
+                mldsa65Verify: derived.mldsa65Verify ?? ""
+              }
+            : {})
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "节点保存失败，请刷新节点列表后重试。");
+    }
 
     let panelSyncPending = false;
     if (panelConnectionChanged && !nodeWillBeDisabled) {
@@ -789,21 +800,26 @@ export class AdminNodeService {
     } catch (error) {
       return this.markNodeRuntimeRefreshDegraded(current, readAdminNodeErrorMessage(error));
     }
-    const row = await this.prisma.node.update({
-      where: { id: nodeId },
-      data: {
-        serverHost: derived.serverHost,
-        serverPort: derived.serverPort,
-        uuid: derived.uuid,
-        flow: derived.flow,
-        realityPublicKey: derived.realityPublicKey,
-        shortId: derived.shortId,
-        serverName: derived.serverName,
-        fingerprint: derived.fingerprint,
-        spiderX: derived.spiderX,
-        mldsa65Verify: derived.mldsa65Verify ?? ""
-      }
-    });
+    let row: any;
+    try {
+      row = await this.prisma.node.update({
+        where: { id: nodeId },
+        data: {
+          serverHost: derived.serverHost,
+          serverPort: derived.serverPort,
+          uuid: derived.uuid,
+          flow: derived.flow,
+          realityPublicKey: derived.realityPublicKey,
+          shortId: derived.shortId,
+          serverName: derived.serverName,
+          fingerprint: derived.fingerprint,
+          spiderX: derived.spiderX,
+          mldsa65Verify: derived.mldsa65Verify ?? ""
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "节点刷新结果保存失败，请稍后重试。");
+    }
 
     await this.tryRunAfterLocalNodeSave("publish node access update after node refresh", () =>
       this.clientEventsPublisher.publishNodeAccessUpdatedForNode(nodeId)
@@ -1168,15 +1184,19 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
-    await this.prisma.node.update({
-      where: { id: current.id },
-      data: {
-        isActive: false,
-        recommended: false,
-        panelStatus: "offline",
-        panelError: null
-      }
-    });
+    try {
+      await this.prisma.node.update({
+        where: { id: current.id },
+        data: {
+          isActive: false,
+          recommended: false,
+          panelStatus: "offline",
+          panelError: null
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "节点删除保存失败，请刷新节点列表后重试。");
+    }
     await this.tryRunAfterLocalNodeSave("queue lease revocation after node delete", () =>
       this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
     );

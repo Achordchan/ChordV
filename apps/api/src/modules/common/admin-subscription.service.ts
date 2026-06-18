@@ -3132,5 +3132,5 @@ function toAdminLocalSaveHttpError(error: unknown, message: string) {
   if (isPrismaCodedError(error)) {
     return toPrismaTransientHttpError(error, message) ?? new ServiceUnavailableException(message);
   }
-  return error;
+  return new ServiceUnavailableException(message);
 }

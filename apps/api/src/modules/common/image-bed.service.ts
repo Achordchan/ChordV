@@ -8,6 +8,7 @@ import type {
   UpdateAdminImageBedConfigInputDto
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
+import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "./upload-limits";
 
 const IMAGE_BED_SETTING_KEY = "image-bed";
@@ -85,16 +86,21 @@ export class ImageBedService {
     }
 
     const storedValue = compactStoredConfig(next);
-    const saved = await this.prisma.systemSetting.upsert({
-      where: { key: IMAGE_BED_SETTING_KEY },
-      create: {
-        key: IMAGE_BED_SETTING_KEY,
-        value: storedValue
-      },
-      update: {
-        value: storedValue
-      }
-    });
+    let saved: { value: unknown; updatedAt: Date | null };
+    try {
+      saved = await this.prisma.systemSetting.upsert({
+        where: { key: IMAGE_BED_SETTING_KEY },
+        create: {
+          key: IMAGE_BED_SETTING_KEY,
+          value: storedValue
+        },
+        update: {
+          value: storedValue
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "图床配置保存失败，请稍后重试。");
+    }
 
     return buildAdminImageBedConfigDto(parseStoredConfig(saved.value), saved.updatedAt ?? null);
   }
@@ -362,9 +368,14 @@ export class ImageBedService {
   }
 
   private async readStoredConfig(): Promise<{ value: StoredImageBedConfig; updatedAt: Date | null }> {
-    const row = await this.prisma.systemSetting.findUnique({
-      where: { key: IMAGE_BED_SETTING_KEY }
-    });
+    let row: { value: unknown; updatedAt: Date | null } | null;
+    try {
+      row = await this.prisma.systemSetting.findUnique({
+        where: { key: IMAGE_BED_SETTING_KEY }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "图床配置读取失败，请稍后重试。");
+    }
     if (!row) {
       return { value: {}, updatedAt: null };
     }

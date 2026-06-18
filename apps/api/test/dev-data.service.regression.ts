@@ -1267,6 +1267,52 @@ async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
   }
 }
 
+async function testGetImageBedConfigMapsLocalReadFailure() {
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    prisma: {
+      systemSetting: {
+        findUnique: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getAdminConfig(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /图床配置读取失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "image bed config read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateImageBedConfigMapsLocalSaveFailure() {
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    prisma: {
+      systemSetting: {
+        findUnique: async () => ({
+          value: {},
+          updatedAt: null
+        }),
+        upsert: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAdminConfig({ apiToken: "imgbed_token" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /图床配置保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "image bed config save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray() {
   const server = createServer((request, response) => {
     assert.equal(request.url, "/api/manage/delete/support-tickets/missing.png");
@@ -7506,6 +7552,50 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
   assert.deepEqual(publishedUserIds, ["user_1"]);
 }
 
+async function testDeleteNodeMapsLocalSaveFailure() {
+  let leaseQueued = false;
+  let panelCleanupStarted = false;
+  let publishStarted = false;
+  const service = createAdminNodeService({
+    clientEventsPublisher: {
+      resolveUserIdsForNodeAccess: async () => {
+        publishStarted = true;
+        return ["user_1"];
+      },
+      publishNodeAccessUpdatedToUsers: () => undefined
+    },
+    runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        leaseQueued = true;
+      },
+      removePanelBindingsForNode: async () => {
+        panelCleanupStarted = true;
+        return { requested: 0, updated: 0, failed: [] };
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => ({ id: "node_1" }),
+        update: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteNode("node_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /节点删除保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node delete local save failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.equal(leaseQueued, false);
+  assert.equal(panelCleanupStarted, false);
+  assert.equal(publishStarted, false);
+}
+
 async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const makeNode = (id: string) => ({
@@ -12659,7 +12749,10 @@ async function testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbac
 
   await assert.rejects(
     () => service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
-    /local archive failed/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/local archive failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message)
   );
   assert.equal(createdMemberships.length, 0, "failed local transaction must not leave created team membership");
   assert.equal(deletedMemberships.length, 0, "local transaction failures must not use old manual rollback");
@@ -12870,6 +12963,52 @@ async function testImportNodeReturnsWhenInitialProbeStalls() {
   assert.equal(upserts.length, 1, "local node import must save before stalled initial probe finishes");
   assert.equal(result.id, "node_example_com_443");
   assert.equal(result.name, "Imported Node");
+}
+
+async function testImportNodeMapsLocalSaveFailure() {
+  let probeStarted = false;
+  const importedRuntime = {
+    name: "Imported Node",
+    serverHost: "node.example.com",
+    serverPort: 443,
+    uuid: "11111111-1111-4111-8111-111111111111",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "public-key",
+    shortId: "short",
+    serverName: "node.example.com",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: ""
+  };
+  const service = createAdminNodeService({
+    resolveNodeRuntimeSource: async () => importedRuntime,
+    probeNode: async () => {
+      probeStarted = true;
+      return { status: "ok" };
+    },
+    prisma: {
+      node: {
+        findUnique: async () => null,
+        upsert: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.importNodeFromSubscription({
+        name: "Imported Node",
+        panelEnabled: false
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/server closed the connection unexpectedly/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node import local save failures must return a controlled 503 instead of leaking HTTP 500"
+  );
+  assert.equal(probeStarted, false, "initial probe must not start before local node import is saved");
 }
 
 async function testDisableNodeKeepsLocalSaveWhenEffectsFail() {
@@ -14219,6 +14358,88 @@ async function testRefreshNodeSlowPanelReturnsDegradedWithinBudget() {
   assert.equal(Date.now() - startedAt < 1500, true, "slow panel refresh should return inside the local follow-up budget");
 }
 
+async function testRefreshNodeMapsLocalSaveFailure() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: true
+  });
+  const service = createAdminNodeService({
+    xuiService: {
+      getInboundRuntime: async () => ({
+        inboundId: 7,
+        name: "node",
+        serverHost: "new.example.com",
+        serverPort: 443,
+        uuid: "uuid",
+        flow: "xtls-rprx-vision",
+        realityPublicKey: "public_key",
+        shortId: "short_id",
+        serverName: "new.example.com",
+        fingerprint: "chrome",
+        spiderX: "/"
+      })
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.refreshNode("node_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/server closed the connection unexpectedly/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node refresh local save failures must return a controlled 503 instead of leaking HTTP 500"
+  );
+}
+
+async function testUpdateNodeMapsLocalSaveFailure() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: false,
+    panelStatus: "offline",
+    panelError: null
+  });
+  let publishStarted = false;
+  let panelSyncStarted = false;
+  const service = createAdminNodeService({
+    runtimeSessionService: {
+      syncPanelAccessForNode: async () => {
+        panelSyncStarted = true;
+        return 1;
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => {
+        publishStarted = true;
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateNode("node_1", { name: "Renamed Node" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/server closed the connection unexpectedly/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node update local save failures must return a controlled 503 instead of leaking HTTP 500"
+  );
+  assert.equal(publishStarted, false);
+  assert.equal(panelSyncStarted, false);
+}
+
 async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails() {
   const currentNode = makeAdminNodeRow();
   const updates: Array<Record<string, unknown>> = [];
@@ -14477,7 +14698,10 @@ async function testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFa
         panelBaseUrl: "https://new-panel.example.com",
         panelApiBasePath: "/new"
       }),
-    /local save failed/,
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
     "panel migration must not remove old remote clients before local node save succeeds"
   );
   assert.deepEqual(calls, []);
@@ -19235,7 +19459,7 @@ async function testCreateTeamMemberMapsUnknownLocalSaveFailure() {
     prisma: {
       teamMember: {
         create: async () => {
-          throw { code: "P2010", message: "team member local save failed" };
+          throw new Error("team member local save failed");
         }
       }
     }
@@ -19282,7 +19506,7 @@ async function testCreateUserMapsUnknownLocalSaveFailure() {
       user: {
         findUnique: async () => null,
         create: async () => {
-          throw { code: "P2010", message: "user local save failed" };
+          throw new Error("user local save failed");
         }
       }
     }
@@ -19334,7 +19558,7 @@ async function testConvertSubscriptionToTeamMapsUnknownLocalSaveFailure() {
     }),
     prisma: {
       $transaction: async () => {
-        throw { code: "P2010", message: "convert subscription local save failed" };
+        throw new Error("convert subscription local save failed");
       }
     }
   });
@@ -25110,6 +25334,7 @@ async function main() {
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();
+  await testDeleteNodeMapsLocalSaveFailure();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
@@ -25147,6 +25372,8 @@ async function main() {
   await testImportNodeFromSlowPanelFailsBeforeLocalSave();
   await testRefreshNodeOfflinePanelKeepsLocalRuntime();
   await testRefreshNodeSlowPanelReturnsDegradedWithinBudget();
+  await testRefreshNodeMapsLocalSaveFailure();
+  await testUpdateNodeMapsLocalSaveFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
   await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
@@ -25198,6 +25425,7 @@ async function main() {
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testReenableNodeClearsPendingDisableAndQueuesPanelEnsure();
   await testImportNodeReturnsWhenInitialProbeStalls();
+  await testImportNodeMapsLocalSaveFailure();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testDisableNodeReturnsWhenAfterSaveFollowUpStalls();
   await testPanelDisableJobUpsertResetsStaleFailureState();
@@ -25331,6 +25559,8 @@ async function main() {
   await testImageBedDeleteReturnsStructuredBusinessFailure();
   await testImageBedDeleteRejectsMalformedPercentPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
+  await testGetImageBedConfigMapsLocalReadFailure();
+  await testUpdateImageBedConfigMapsLocalSaveFailure();
   await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
   await testImageBedAttachmentCleanupLogsDeleteFailure();
   await testImageBedAttachmentCleanupLogsBusinessDeleteFailure();
