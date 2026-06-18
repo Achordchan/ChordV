@@ -378,18 +378,10 @@ export class RuntimeComponentsService {
           component.archiveEntryName
         );
       }
-      if (!component.expectedHash) {
-        return {
-          componentId,
-          status: "metadata_mismatch",
-          message: "远程内核组件缺少 SHA256 expectedHash，客户端不会下发该组件。请填写校验哈希后重新验证。",
-          finalUrlPreview: resolvedUrl
-        };
-      }
       return {
         componentId,
         status: "metadata_mismatch",
-        message: "远程内核组件缺少 SHA256 expectedHash，客户端不会下发该组件。请填写校验哈希后重新验证。",
+        message: "远程内核组件缺少 SHA256 expectedHash，当前 Windows 客户端暂不能下发该组件。请填写校验哈希后重新验证。",
         finalUrlPreview: resolvedUrl
       };
     } catch (error) {

@@ -124,7 +124,7 @@ export type CreateAdminReleaseInputDto = {
   version: string;
   minimumVersion: string;
   forceUpgrade: boolean;
-  title: string;
+  title?: string;
   changelog: string[];
   initialArtifact?: CreateAdminReleaseArtifactInputDto | null;
 };
@@ -230,11 +230,12 @@ export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
 
 export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const version = input.version.trim();
+  const title = input.title?.trim();
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
     channel: "stable",
     version,
-    displayTitle: input.title.trim() || version,
+    ...(title ? { displayTitle: title } : {}),
     changelog: input.changelog,
     minimumVersion: input.minimumVersion,
     forceUpgrade: input.forceUpgrade,

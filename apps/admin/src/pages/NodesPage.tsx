@@ -436,7 +436,7 @@ export function PanelSyncQueueDrawer(props: {
 }
 
 function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[], nodeId: string) {
-  const related = jobs.filter((job) => job.nodeId === nodeId);
+  const related = jobs.filter((job) => job.nodeId === nodeId && job.status !== "completed");
   return {
     total: related.length,
     pending: related.filter((job) => job.status === "pending").length,

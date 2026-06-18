@@ -1990,12 +1990,6 @@ export class DevDataService implements OnModuleInit {
       subscriptionId,
       filter
     );
-    await this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(
-      writer,
-      subscriptionId,
-      "node_access_revoked",
-      filter
-    );
     if (pendingPanelSyncCount > 0) {
       return "3x-ui disable job queued; local node access and active sessions are invalidated.";
     }
@@ -2031,21 +2025,49 @@ export class DevDataService implements OnModuleInit {
     subscriptionId: string,
     filter: { nodeIds?: string[] } | undefined
   ) {
+    const messages: string[] = [];
+    let failed = false;
+
     try {
-      return (
-        (await this.prisma.$transaction((tx) => this.queuePanelDisableJobsForNodeAccessRevocationTx(tx, subscriptionId, filter))) ??
-        "3x-ui client disable and lease revocation jobs queued; local node access is already invalid."
+      const panelMessage = await this.prisma.$transaction((tx) =>
+        this.queuePanelDisableJobsForNodeAccessRevocationTx(tx, subscriptionId, filter)
       );
+      if (panelMessage) {
+        messages.push(panelMessage);
+      }
     } catch (error) {
+      failed = true;
       const errorMessage = readPanelSyncErrorMessage(error);
-      this.logger?.warn(`Node access saved, but revocation queueing failed for ${subscriptionId}: ${errorMessage}`);
-      return [
-        `node access revocation queueing failed: ${errorMessage}`,
-        this.startNodeAccessRevocationEffects(subscriptionId, filter, "node_access_revoked")
-      ]
-        .filter(Boolean)
-        .join(" ");
+      this.logger?.warn(`Node access saved, but panel disable job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      messages.push(`3x-ui disable job queueing failed: ${errorMessage}`);
     }
+
+    try {
+      const leaseJobCount = await this.prisma.$transaction((tx) =>
+        this.runtimeSessionService.queueLeaseRevocationJobsForSubscriptionTx(
+          tx,
+          subscriptionId,
+          "node_access_revoked",
+          filter
+        )
+      );
+      if (leaseJobCount > 0) {
+        messages.push("lease revocation queued for background retry.");
+      }
+    } catch (error) {
+      failed = true;
+      const errorMessage = readPanelSyncErrorMessage(error);
+      this.logger?.warn(`Node access saved, but lease revocation job queueing failed for ${subscriptionId}: ${errorMessage}`);
+      messages.push(`lease revocation job queueing failed: ${errorMessage}`);
+    }
+
+    if (failed) {
+      messages.push(this.startNodeAccessRevocationEffects(subscriptionId, filter, "node_access_revoked"));
+    }
+
+    return messages.length > 0
+      ? messages.join(" ")
+      : "3x-ui client disable and lease revocation jobs queued; local node access is already invalid.";
   }
 
   private async queueLeaseRevocationJobsForNodeAccessRevocation(

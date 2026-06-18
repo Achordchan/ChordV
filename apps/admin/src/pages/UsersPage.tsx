@@ -100,15 +100,16 @@ export function UsersPage(props: UsersPageProps) {
                         <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号">
                           <IconPencil size={16} />
                         </ActionIcon>
-                        {item.currentSubscription ? (
+                        {item.subscriptionCount > 0 ? (
                           <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
                             <IconListDetails size={16} />
                           </ActionIcon>
-                        ) : (
+                        ) : null}
+                        {!item.currentSubscription ? (
                           <ActionIcon variant="subtle" color="blue" onClick={() => props.onCreateSubscriptionForUser(item)} title="为此用户创建订阅">
                             <IconPlus size={16} />
                           </ActionIcon>
-                        )}
+                        ) : null}
                         <ActionIcon
                           variant="subtle"
                           color="orange"
@@ -182,6 +183,9 @@ export function UsersPage(props: UsersPageProps) {
                           这里只处理团队组织、负责人和成员关系，不展示共享订阅、节点和流量账单。
                         </Text>
                         <RowActions>
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamSubscriptions(item)} title="Team 订阅：打开共享订阅管理">
+                            <IconListDetails size={16} />
+                          </ActionIcon>
                           <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)} title="编辑团队资料">
                             <IconPencil size={16} />
                           </ActionIcon>
@@ -325,13 +329,6 @@ export function UsersPage(props: UsersPageProps) {
                                       title="账号级：编辑账号资料"
                                     >
                                       <IconPencil size={16} />
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      onClick={() => props.onOpenTeamSubscriptions(item)}
-                                      title="Team 订阅：打开共享订阅管理"
-                                    >
-                                      <IconListDetails size={16} />
                                     </ActionIcon>
                                     <ActionIcon
                                       variant="subtle"

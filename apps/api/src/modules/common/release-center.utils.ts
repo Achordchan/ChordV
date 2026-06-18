@@ -1062,49 +1062,6 @@ function parseContentDispositionFileName(value: string | null) {
   return fileNameMatch[1].trim().replace(/^"+|"+$/g, "") || null;
 }
 
-export function assertExternalReleaseArtifactUrlMatchesType(type: ReleaseArtifactType, rawUrl: string) {
-  const url = rawUrl.trim();
-  if (!url || !/^https?:\/\//i.test(url)) {
-    throw new BadRequestException("外部下载地址为空或格式不正确，请填写完整的 http/https 地址。");
-  }
-  if (type === "external") {
-    return;
-  }
-
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    throw new BadRequestException("外部下载地址格式不正确，请检查链接。");
-  }
-
-  const pathname = parsedUrl.pathname.toLowerCase();
-
-  if (type === "dmg" && !pathname.endsWith(".dmg")) {
-    throw new BadRequestException("当前产物类型是 DMG 安装包，下载地址必须指向 .dmg 文件。");
-  }
-  if (type === "setup.exe" && !pathname.endsWith(".exe")) {
-    throw new BadRequestException("当前产物类型是 Setup 安装器，下载地址必须指向 .exe 文件。");
-  }
-  if (type === "zip" && !pathname.endsWith(".zip")) {
-    throw new BadRequestException("ZIP full update artifact URLs must point to a .zip file.");
-  }
-  if (type === "zip" && parsedUrl.protocol !== "https:" && !isLocalhostUrl(parsedUrl)) {
-    throw new BadRequestException("ZIP full update artifact URLs must use HTTPS.");
-  }
-  if (type === "apk" && !pathname.endsWith(".apk")) {
-    throw new BadRequestException("当前产物类型是 APK 安装包，下载地址必须指向 .apk 文件。");
-  }
-  if (type === "ipa" && !pathname.endsWith(".ipa")) {
-    throw new BadRequestException("当前产物类型是 IPA 安装包，下载地址必须指向 .ipa 文件。");
-  }
-}
-
-function isLocalhostUrl(url: URL) {
-  const hostname = url.hostname.toLowerCase();
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-}
-
 export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
   const normalized = rawUrl.trim();
   if (!normalized) {
@@ -1114,11 +1071,7 @@ export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
     if (normalized.startsWith("/")) {
       return;
     }
-    throw new BadRequestException("Full replacement update download URLs must be HTTPS or server-relative paths.");
-  }
-  const parsedUrl = new URL(normalized);
-  if (parsedUrl.protocol !== "https:" && !isLocalhostUrl(parsedUrl)) {
-    throw new BadRequestException("Full replacement update download URLs must use HTTPS.");
+    throw new BadRequestException("Full replacement update download URLs must be complete http/https URLs or server-relative paths.");
   }
 }
 

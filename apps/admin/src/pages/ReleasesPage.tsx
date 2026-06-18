@@ -255,7 +255,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         version,
         minimumVersion: version,
         forceUpgrade: false,
-        title: releaseForm.title.trim() || version,
+        title: releaseForm.title.trim() || undefined,
         changelog: splitLines(releaseForm.changelog),
         initialArtifact:
           !releaseEditorId && releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim()
@@ -305,7 +305,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       }
 
       const record = await updateAdminRelease(releaseEditorId, {
-        title: payload.title,
+        title: releaseForm.title.trim(),
         changelog: payload.changelog
       });
       setReleases((current) => upsertRelease(current, record));
@@ -475,13 +475,6 @@ export function ReleasesPage(props: ReleasesPageProps) {
     }
     if (artifactForm.source === "external" && !/^https?:\/\//i.test(artifactForm.downloadUrl.trim())) {
       return "外链下载地址必须是完整的 http/https 地址。";
-    }
-    if (
-      artifactForm.source === "external" &&
-      (artifactEditor.platform === "windows" || artifactEditor.platform === "macos") &&
-      !/^https:\/\//i.test(artifactForm.downloadUrl.trim())
-    ) {
-      return "桌面端安装包外链必须使用 HTTPS 地址，否则客户端会拒绝下载。";
     }
     return null;
   }
@@ -818,9 +811,6 @@ function validateReleaseEditorInput(
   }
   if (!/^https?:\/\//i.test(downloadUrl)) {
     return "外链下载地址必须是完整的 http/https 地址。";
-  }
-  if ((platform === "windows" || platform === "macos") && !/^https:\/\//i.test(downloadUrl)) {
-    return "桌面端安装包外链必须使用 HTTPS 地址。";
   }
   return null;
 }

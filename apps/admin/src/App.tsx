@@ -1331,11 +1331,12 @@ export function App() {
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const completedAfterFailure = isLikelySavedAfterFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
+      const savedPendingSync = uncertain && completedAfterFailure;
       if (uncertain && (options.refreshAfter ?? true)) {
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: "请求状态不确定",
+            title: savedPendingSync ? "已保存，后台同步待处理" : "请求状态不确定",
             message: readError(refreshReason, "状态刷新失败")
           });
         });
@@ -1349,9 +1350,9 @@ export function App() {
       }
       notifications.show({
         color: uncertain ? "yellow" : "red",
-        title: uncertain ? "请求状态不确定" : options.failureTitle ?? "操作失败",
+        title: uncertain ? (savedPendingSync ? "已保存，后台同步待处理" : "请求状态不确定") : options.failureTitle ?? "操作失败",
         message: uncertain
-          ? options.uncertainMessage?.(message) ?? buildUncertainMutationMessage("操作")
+          ? options.uncertainMessage?.(message) ?? buildUncertainMutationMessage("操作", message)
           : message
       });
       return Boolean(uncertain && options.treatUncertainAsCompleted && completedAfterFailure);
@@ -1360,7 +1361,7 @@ export function App() {
 
   const dbFirstMutationOptions = {
     treatUncertainAsCompleted: true,
-    uncertainMessage: () => buildUncertainMutationMessage("操作")
+    uncertainMessage: (message: string) => buildUncertainMutationMessage("操作", message)
   } as const;
 
   async function openNodeAccessEditor(subscriptionId: string, ownerLabel: string) {
@@ -1449,6 +1450,7 @@ export function App() {
       const definiteLocalSaveFailure = isDefiniteLocalSaveFailure(message);
       const completedAfterFailure = isLikelySavedAfterFailure(message);
       const uncertain = !definiteLocalSaveFailure && (isUncertainRequestFailure(message) || completedAfterFailure);
+      const savedPendingSync = uncertain && completedAfterFailure;
       if (uncertain) {
         if (completedAfterFailure) {
           closeNodeAccessEditor();
@@ -1456,7 +1458,7 @@ export function App() {
         void refreshCurrentDataAfterAction().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: "节点授权状态不确定",
+            title: savedPendingSync ? "节点授权已保存，后台同步待处理" : "节点授权状态不确定",
             message: readError(refreshReason, "节点授权状态刷新失败")
           });
         });
@@ -1470,8 +1472,8 @@ export function App() {
       }
       notifications.show({
         color: uncertain ? "yellow" : "red",
-        title: uncertain ? "节点授权状态不确定" : "操作失败",
-        message: uncertain ? buildUncertainMutationMessage("节点授权") : message
+        title: uncertain ? (savedPendingSync ? "节点授权已保存，后台同步待处理" : "节点授权状态不确定") : "操作失败",
+        message: uncertain ? buildUncertainMutationMessage("节点授权", message) : message
       });
     } finally {
       nodeAccessSavingRef.current = false;

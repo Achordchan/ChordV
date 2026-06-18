@@ -2888,6 +2888,32 @@ async function testReleaseDownloadMapsSendFileMissingToNotFound() {
   );
 }
 
+function testReleaseArtifactClientUsableAllowsHttpFullReplacementUrl() {
+  assert.doesNotThrow(() =>
+    assertReleaseArtifactClientUsable(
+      {
+        id: "artifact_1",
+        releaseId: "release_1",
+        source: "external",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        downloadUrl: "http://download.example.com/ChordV_1.1.6_x64-full.zip",
+        originDownloadUrl: null,
+        defaultMirrorPrefix: null,
+        allowClientMirror: false,
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        fileSizeBytes: null,
+        fileHash: null,
+        isPrimary: true,
+        isFullPackage: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      },
+      "windows"
+    )
+  );
+}
+
 async function testRuntimeDownloadMapsSendFileFailureToServiceUnavailable() {
   const controller = new DownloadsController(
     {} as any,
@@ -11901,6 +11927,9 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
     name: "new"
   };
   let accessRows = [{ id: "access_old", nodeId: "node_old" }];
+  let transactionCalls = 0;
+  const panelQueueTransactions: string[] = [];
+  const leaseQueueTransactions: string[] = [];
   const service = createDevDataService({
     logger: {
       warn: () => undefined
@@ -11928,8 +11957,18 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
       node: {
         findMany: async () => [newNode]
       },
-      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
-        task({
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        transactionCalls += 1;
+        const txName =
+          transactionCalls === 1
+            ? "local"
+            : transactionCalls === 2
+              ? "panel"
+              : transactionCalls === 3
+                ? "lease"
+                : "ensure";
+        return task({
+          __txName: txName,
           subscriptionNodeAccess: {
             deleteMany: async () => {
               accessRows = accessRows.filter((row) => row.nodeId !== "node_old");
@@ -11938,12 +11977,19 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
               accessRows.push({ id: "access_new", nodeId: "node_new" });
             }
           }
-        })
+        });
+      }
     },
     runtimeSessionService: {
       markPanelBindingsDisabledForSubscription: async () => 1,
-      queuePanelDisableJobsForSubscriptionTx: async () => 1,
-      queueLeaseRevocationJobsForSubscriptionTx: async () => undefined,
+      queuePanelDisableJobsForSubscriptionTx: async (writer: Record<string, any>) => {
+        panelQueueTransactions.push(writer.__txName);
+        return 1;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async (writer: Record<string, any>) => {
+        leaseQueueTransactions.push(writer.__txName);
+        throw new Error("lease revocation job queue failed");
+      },
       revokeSubscriptionLeases: async () => {
         throw new Error("lease revoke failed");
       },
@@ -11957,7 +12003,10 @@ async function testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPa
   const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
 
   assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local node access replacement can commit after disable jobs are durable");
+  assert.deepEqual(panelQueueTransactions, ["panel"], "panel disable jobs must be persisted in their own post-commit transaction");
+  assert.deepEqual(leaseQueueTransactions, ["lease"], "lease revocation failure must not roll back already queued panel sync jobs");
   assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /lease revocation job queue failed/);
   assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
 }
 
@@ -27547,6 +27596,7 @@ async function main() {
   testReleaseArtifactPathTraversalIsRejected();
   testUploadedReleaseArtifactDoesNotUseClientMirror();
   testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads();
+  testReleaseArtifactClientUsableAllowsHttpFullReplacementUrl();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
   await testExternalReleaseMetadataMapsHttp500ToBadRequest();

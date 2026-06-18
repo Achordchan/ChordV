@@ -407,7 +407,6 @@ export class ReleaseCenterService {
     const source = "external";
 
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
-    assertDesktopReleaseArtifactUsesHttps(release.platform as PlatformTarget, input.downloadUrl);
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
     let createdArtifact: ReleaseFallbackArtifact;
@@ -491,7 +490,6 @@ export class ReleaseCenterService {
 
     if (nextSource === "external") {
       assertExternalReleaseArtifactDownloadUrl(nextDownloadUrl);
-      assertDesktopReleaseArtifactUsesHttps(release.platform as PlatformTarget, nextDownloadUrl);
     }
     const nextDeliveryMode = resolveReleaseArtifactDeliveryMode(
       platform,
@@ -1046,7 +1044,6 @@ export class ReleaseCenterService {
     assertReleaseArtifactTypeAllowed(platform, input.type);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
     assertExternalReleaseArtifactDownloadUrl(input.downloadUrl);
-    assertDesktopReleaseArtifactUsesHttps(platform, input.downloadUrl);
     const artifactId = createId("artifact");
 
     return {
@@ -1409,12 +1406,6 @@ function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {
   const normalized = rawUrl.trim();
   if (!normalized || !/^https?:\/\//i.test(normalized)) {
     throw new BadRequestException("External release artifact download URL must be a complete http/https URL.");
-  }
-}
-
-function assertDesktopReleaseArtifactUsesHttps(platform: PlatformTarget, rawUrl: string) {
-  if ((platform === "windows" || platform === "macos") && !/^https:\/\//i.test(rawUrl.trim())) {
-    throw new BadRequestException("Desktop release artifact download URL must use HTTPS.");
   }
 }
 
