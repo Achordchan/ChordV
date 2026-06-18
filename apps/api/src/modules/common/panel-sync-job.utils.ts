@@ -23,6 +23,18 @@ async function createOrRefreshQueuedJob(model: any, dedupeKey: string, input: Cr
     if ((updated?.count ?? 0) > 0) {
       return;
     }
+    const existing = typeof model.findFirst === "function"
+      ? await model.findFirst({
+          where: {
+            dedupeKey,
+            status: { not: "running" }
+          },
+          select: { id: true }
+        })
+      : null;
+    if (existing?.id) {
+      return;
+    }
     await model.createMany({
       data: input.create,
       skipDuplicates: true

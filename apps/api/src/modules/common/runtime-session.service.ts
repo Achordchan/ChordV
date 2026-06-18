@@ -2488,7 +2488,7 @@ export class RuntimeSessionService {
       };
     }
 
-    if (typeof writer.panelClientBinding.upsert === "function") {
+    if (typeof writer.panelClientBinding.create !== "function") {
       return {
         binding: await writer.panelClientBinding.upsert({
           where: {
@@ -2508,10 +2508,38 @@ export class RuntimeSessionService {
       };
     }
 
-    return {
-      binding: await writer.panelClientBinding.create({ data }),
-      cachedRemoteClient: false
-    };
+    try {
+      return {
+        binding: await writer.panelClientBinding.create({ data }),
+        cachedRemoteClient: false
+      };
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      const recovered = await writer.panelClientBinding.findFirst({
+        where: {
+          subscriptionId: data.subscriptionId,
+          nodeId: data.nodeId,
+          userId: data.userId
+        },
+        orderBy: { createdAt: "desc" }
+      });
+      if (!recovered) {
+        throw error;
+      }
+      const binding = await writer.panelClientBinding.update({
+        where: { id: recovered.id },
+        data: {
+          teamId: data.teamId,
+          status: "active"
+        }
+      });
+      return {
+        binding,
+        cachedRemoteClient: recovered.status !== "deleted"
+      };
+    }
   }
 
   private async ensureTrafficSnapshotBaseline(writer: any, input: {
@@ -3156,4 +3184,8 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
       )
     );
   }
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "P2002");
 }

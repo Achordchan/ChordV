@@ -9813,6 +9813,50 @@ async function testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob() {
   assert.equal(createManyCalls[0]?.data.dedupeKey, "ensure:binding_running");
 }
 
+async function testPanelSyncJobBusinessRequeueSkipsCreateWhenDedupeAlreadyExists() {
+  const updates: Array<Record<string, any>> = [];
+  const lookups: Array<Record<string, any>> = [];
+  const createManyCalls: Array<Record<string, any>> = [];
+  await createOrRefreshPanelSyncJob(
+    {
+      panelSyncJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 0 };
+        },
+        findFirst: async (payload: Record<string, any>) => {
+          lookups.push(payload);
+          return { id: "job_existing" };
+        },
+        createMany: async (payload: Record<string, any>) => {
+          createManyCalls.push(payload);
+          return { count: 0 };
+        }
+      }
+    },
+    "ensure:binding_existing",
+    {
+      create: {
+        id: "job_new",
+        dedupeKey: "ensure:binding_existing",
+        status: "pending"
+      },
+      update: {
+        status: "pending",
+        lockedAt: null,
+        attempts: 0,
+        lastError: null
+      }
+    }
+  );
+
+  assert.equal(updates.length, 1);
+  assert.equal(lookups.length, 1);
+  assert.equal(lookups[0]?.where.dedupeKey, "ensure:binding_existing");
+  assert.deepEqual(lookups[0]?.where.status, { not: "running" });
+  assert.equal(createManyCalls.length, 0, "existing dedupe keys must not create duplicate queue rows when production lacks a unique index");
+}
+
 async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
   const creates: Array<Record<string, any>> = [];
   const snapshotDeletes: Array<Record<string, any>> = [];
@@ -17463,6 +17507,110 @@ async function testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails
   assert.equal(leaseCreates.length, 1, "new binding should create a local lease from the cached node runtime");
   assert.equal(nodeUpdates[0]?.data?.panelStatus, "degraded");
   assert.match(nodeUpdates[0]?.data?.panelError, /panel offline/);
+}
+
+async function testConnectWithXuiCreatesBindingWithoutPrismaUpsertUniqueDependency() {
+  const bindingCreates: Array<Record<string, any>> = [];
+  const bindingUpserts: Array<Record<string, any>> = [];
+  const panelSyncJobs: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const node = {
+    id: "node_1",
+    name: "Node",
+    region: "US",
+    provider: "xui",
+    tags: [],
+    recommended: true,
+    latencyMs: 20,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "cached.example.com",
+    serverPort: 443,
+    serverName: "cached.example.com",
+    uuid: "template_uuid",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "cached_public_key",
+    shortId: "cached_sid",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: "cached_verify",
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 7,
+    panelEnabled: true
+  };
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      getInboundRuntime: async () => {
+        throw new Error("panel offline");
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findFirst: async () => null,
+        create: async (payload: Record<string, any>) => {
+          bindingCreates.push(payload);
+          return payload.data;
+        },
+        upsert: async (payload: Record<string, any>) => {
+          bindingUpserts.push(payload);
+          return payload.create;
+        }
+      },
+      trafficSnapshot: {
+        findUnique: async () => null,
+        upsert: async () => ({})
+      },
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelSyncJobs.push(payload);
+          return {};
+        }
+      },
+      nodeSessionLease: {
+        create: async (payload: Record<string, any>) => payload.data
+      },
+      node: {
+        update: async (payload: Record<string, any>) => ({ ...node, ...payload.data })
+      }
+    }
+  });
+
+  await service["connectWithXui"](
+    node,
+    {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: now.toISOString()
+    },
+    {
+      subscription: {
+        id: "sub_1",
+        userId: "user_1",
+        teamId: null,
+        state: "active",
+        remainingTrafficGb: 10,
+        expireAt: new Date(Date.now() + 86_400_000)
+      },
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    },
+    { nodeId: "node_1", mode: "rule" },
+    null
+  );
+
+  assert.equal(bindingCreates.length, 1, "production binding creation must use create, not Prisma upsert");
+  assert.equal(bindingUpserts.length, 0, "binding creation must not depend on a missing production compound unique index");
+  assert.equal(panelSyncJobs.length, 1);
 }
 
 async function testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail() {
@@ -29578,6 +29726,7 @@ async function main() {
   await testRetryPanelSyncJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
   await testRetryPanelSyncJobsForNodeRejectsWhenNoRetryableJobsExist();
   await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
+  await testPanelSyncJobBusinessRequeueSkipsCreateWhenDedupeAlreadyExists();
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
@@ -29698,6 +29847,7 @@ async function main() {
   await testRuntimeActiveConfigMapsLocalReadFailure();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails();
+  await testConnectWithXuiCreatesBindingWithoutPrismaUpsertUniqueDependency();
   await testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail();
   await testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails();
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
