@@ -8976,6 +8976,155 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
   assert.equal(result[1]?.probeStatus, "healthy");
 }
 
+async function testProbeAllNodesHttpContinuesWhenSingleNodeProbeFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const makeNode = (id: string) => ({
+    id,
+    name: id,
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "node.example.com",
+    serverPort: 443,
+    serverName: "node.example.com",
+    shortId: "short",
+    spiderX: "/",
+    mldsa65Verify: null,
+    subscriptionUrl: null,
+    statsLastSyncedAt: null,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 1,
+    panelEnabled: true,
+    panelStatus: "online" as const,
+    panelLastSyncedAt: null,
+    panelError: null,
+    probeStatus: "unknown" as const,
+    probeCheckedAt: null,
+    probeError: null,
+    createdAt: now,
+    updatedAt: now
+  });
+  const nodes = [makeNode("node_bad"), makeNode("node_good")];
+  const probed: string[] = [];
+  const adminNodeService = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    probeNode: async (nodeId: string) => {
+      probed.push(nodeId);
+      if (nodeId === "node_bad") {
+        throw new Error("panel unavailable");
+      }
+      return {
+        id: nodeId,
+        probeStatus: "healthy",
+        panelStatus: "online"
+      };
+    },
+    prisma: {
+      node: {
+        findMany: async () => nodes,
+        update: async (payload: Record<string, any>) => ({
+          ...nodes.find((node) => node.id === payload.where.id),
+          ...payload.data,
+          updatedAt: new Date("2026-01-01T00:01:00.000Z")
+        })
+      }
+    }
+  });
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    adminNodeService
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class ProbeAllNodesHttpRegressionModule {}
+
+  const app = await NestFactory.create(ProbeAllNodesHttpRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/nodes/probe-all`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      }
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      201,
+      `bulk probe must not surface a single offline panel as HTTP 500: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.deepEqual(probed, ["node_bad", "node_good"], "HTTP bulk probe must continue after one node fails");
+    assert.deepEqual(
+      body.map((item: { id: string }) => item.id),
+      ["node_bad", "node_good"]
+    );
+    assert.equal(body[0]?.probeStatus, "unknown");
+    assert.equal(body[0]?.panelStatus, "degraded");
+    assert.match(body[0]?.panelError ?? "", /panel unavailable/);
+    assert.equal(body[1]?.probeStatus, "healthy");
+  } finally {
+    await app.close();
+  }
+}
+
 async function testProbeAllNodesContinuesWhenSingleNodeProbeStalls() {
   const previousProbeBudget = process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
   process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = "25";
@@ -29323,6 +29472,7 @@ async function main() {
   await testListAdminNodesMapsLocalReadFailure();
   await testUpdateNodeMapsLocalReadFailure();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
+  await testProbeAllNodesHttpContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
   await testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong();
