@@ -112,37 +112,16 @@ export function TicketsPage(props: TicketsPageProps) {
     if (!props.refreshSignal) {
       return;
     }
-    void loadTickets();
+    void loadTickets({ silent: true });
     const ticketId = selectedTicketIdRef.current;
     if (ticketId) {
-      void loadTicketDetail(ticketId);
+      void loadTicketDetail(ticketId, { silent: true });
     }
   }, [props.refreshSignal]);
 
   useEffect(() => {
     selectedTicketIdRef.current = selectedTicketId;
   }, [selectedTicketId]);
-
-  useEffect(() => {
-    const refreshVisibleTickets = () => {
-      if (document.visibilityState === "hidden") {
-        return;
-      }
-      void loadTickets({ silent: true }).then(() => {
-        const ticketId = selectedTicketIdRef.current;
-        if (ticketId) {
-          void loadTicketDetail(ticketId, { silent: true });
-        }
-      });
-    };
-
-    window.addEventListener("focus", refreshVisibleTickets);
-    document.addEventListener("visibilitychange", refreshVisibleTickets);
-    return () => {
-      window.removeEventListener("focus", refreshVisibleTickets);
-      document.removeEventListener("visibilitychange", refreshVisibleTickets);
-    };
-  }, []);
 
   useEffect(() => {
     if (!selectedTicketId) {

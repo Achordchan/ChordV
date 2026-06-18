@@ -28487,6 +28487,7 @@ async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls
 
 async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
   let updatedStatus: string | null = null;
+  let capturedFindUniqueArgs: Record<string, any> | null = null;
   const ticketRow = {
     id: "ticket_1",
     title: "Need help",
@@ -28510,7 +28511,10 @@ async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStall
     },
     prisma: {
       supportTicket: {
-        findUnique: async () => ticketRow,
+        findUnique: async (args: Record<string, any>) => {
+          capturedFindUniqueArgs = args;
+          return ticketRow;
+        },
         update: async ({ data }: { data: Record<string, unknown> }) => {
           updatedStatus = data.status as string;
           return {};
@@ -28531,6 +28535,7 @@ async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStall
   ]);
 
   assert.equal(updatedStatus, "open");
+  assert.equal(capturedFindUniqueArgs?.include?.messages?.take, 300, "admin ticket reopen must cap returned messages");
   assert.equal(result.id, "ticket_1");
   assert.equal(result.status, "open");
   assert.equal(result.closedAt, null);

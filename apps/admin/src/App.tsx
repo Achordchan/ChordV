@@ -557,6 +557,12 @@ export function App() {
         setReleaseRefreshSignal((current) => current + 1);
       }
       void refreshDashboard({ silent: true });
+      if (sectionRef.current === "tickets") {
+        if (event.type === "ticket_updated") {
+          setTicketRefreshSignal((current) => current + 1);
+        }
+        return;
+      }
       void refreshCurrentSectionSilently();
     });
   }, [authenticated]);

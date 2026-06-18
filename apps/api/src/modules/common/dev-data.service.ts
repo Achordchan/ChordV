@@ -1039,7 +1039,8 @@ export class DevDataService implements OnModuleInit {
               authorUser: { select: { id: true, email: true, displayName: true } },
               attachments: { orderBy: { createdAt: "asc" } }
             },
-            orderBy: { createdAt: "asc" }
+            orderBy: { createdAt: "desc" },
+            take: ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT
           },
         }
       });
@@ -1049,6 +1050,10 @@ export class DevDataService implements OnModuleInit {
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
+    current = {
+      ...current,
+      messages: [...(current.messages ?? [])].reverse()
+    };
     const now = new Date();
     if (current.status === "closed") {
       try {
