@@ -5,7 +5,7 @@ export function readError(reason: unknown, fallback: string) {
     return fallback;
   }
   if (reason.name === "AbortError" || reason.message === "signal is aborted without reason" || /请求超时/i.test(reason.message)) {
-    return "请求超时，后台未在限定时间内返回。当前操作状态可能不确定，请刷新列表或同步队列确认最新状态。";
+    return "请求超时，后台未在限定时间内返回，请刷新或稍后重试。";
   }
   if (/Failed to fetch|NetworkError/i.test(reason.message)) {
     return "网络请求失败，请检查后台服务、网络连接或跨域配置后重试。";
@@ -67,7 +67,7 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   }
   if (isServiceUnavailableMessage(message)) {
     if (!hasSavedAfterFailureSignal(message)) {
-      return "后台或外部服务暂不可用，本次操作未确认完成，请稍后重试。";
+      return "后台或外部服务暂不可用，请稍后重试。";
     }
     return "外部服务或面板暂不可用，已保存的操作请在同步队列中查看处理状态。";
   }
