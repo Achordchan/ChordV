@@ -448,6 +448,9 @@ function normalizeHttpBaseUrl(value: string, fieldName: string) {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new BadRequestException(`${fieldName} 必须是 HTTP 或 HTTPS URL。`);
   }
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new BadRequestException(`${fieldName} 只填写图床域名，不要包含路径、参数或 # 片段。`);
+  }
   return parsed.origin;
 }
 

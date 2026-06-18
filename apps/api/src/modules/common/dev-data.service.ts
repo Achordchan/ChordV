@@ -1297,9 +1297,14 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("请输入新的管理员账号");
     }
 
-    const admin = await this.prisma.user.findUnique({
-      where: { id: currentAdmin.id }
-    });
+    let admin: Awaited<ReturnType<PrismaService["user"]["findUnique"]>>;
+    try {
+      admin = await this.prisma.user.findUnique({
+        where: { id: currentAdmin.id }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "管理员账号读取失败，请稍后重试。");
+    }
     if (!admin || admin.role !== "admin" || admin.status !== "active") {
       throw new ForbiddenException("当前管理员不可用");
     }
@@ -1309,39 +1314,53 @@ export class DevDataService implements OnModuleInit {
       throw new UnauthorizedException("当前密码错误");
     }
 
-    const existing = await this.prisma.user.findUnique({
-      where: { email: nextEmail }
-    });
+    let existing: Awaited<ReturnType<PrismaService["user"]["findUnique"]>>;
+    try {
+      existing = await this.prisma.user.findUnique({
+        where: { email: nextEmail }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "管理员账号邮箱校验失败，请稍后重试。");
+    }
     if (existing && existing.id !== admin.id) {
       throw new ConflictException("该账号已被占用");
     }
 
     const nextPassword = input.newPassword?.trim();
-    const updated = await this.updateCurrentAdminSecurityWithUniqueEmailGuard(async () =>
-      this.prisma.$transaction(async (tx) => {
-        const row = await tx.user.update({
-          where: { id: admin.id },
-          data: {
-            email: nextEmail,
-            ...(nextPassword ? { passwordHash: await bcrypt.hash(nextPassword, 10) } : {}),
-            authVersion: { increment: 1 },
-            lastSeenAt: new Date()
-          }
-        });
-        await tx.refreshToken.updateMany({
-          where: {
-            userId: admin.id,
-            revokedAt: null
-          },
-          data: {
-            revokedAt: new Date()
-          }
-        });
-        return row;
-      })
-    );
+    let updated: Awaited<ReturnType<PrismaService["user"]["update"]>>;
+    try {
+      updated = await this.updateCurrentAdminSecurityWithUniqueEmailGuard(async () =>
+        this.prisma.$transaction(async (tx) => {
+          const row = await tx.user.update({
+            where: { id: admin.id },
+            data: {
+              email: nextEmail,
+              ...(nextPassword ? { passwordHash: await bcrypt.hash(nextPassword, 10) } : {}),
+              authVersion: { increment: 1 },
+              lastSeenAt: new Date()
+            }
+          });
+          await tx.refreshToken.updateMany({
+            where: {
+              userId: admin.id,
+              revokedAt: null
+            },
+            data: {
+              revokedAt: new Date()
+            }
+          });
+          return row;
+        })
+      );
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "管理员安全设置保存失败，请稍后重试。");
+    }
 
-    return this.authSessionService.issueSession(updated.id);
+    try {
+      return await this.authSessionService.issueSession(updated.id);
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "管理员安全设置已保存，但新登录状态签发失败，请重新登录。");
+    }
   }
 
   async createUser(input: CreateUserInputDto): Promise<AdminUserRecordDto> {

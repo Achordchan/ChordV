@@ -187,7 +187,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("面板同步任务不存在或已完成");
     }
-    return this.listPanelSyncJobs();
+    return this.listPanelSyncJobsAfterRetry();
   }
 
   async retryPanelSyncJobsForNode(nodeId: string): Promise<AdminPanelSyncJobDto[]> {
@@ -211,7 +211,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("该节点暂无可重试的面板同步任务");
     }
-    return this.listPanelSyncJobs();
+    return this.listPanelSyncJobsAfterRetry();
   }
 
   async listLeaseRevocationJobs(): Promise<AdminLeaseRevocationJobDto[]> {
@@ -276,7 +276,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("连接撤销任务不存在或已完成");
     }
-    return this.listLeaseRevocationJobs();
+    return this.listLeaseRevocationJobsAfterRetry();
   }
 
   async retryLeaseRevocationJobsForNode(nodeId: string): Promise<AdminLeaseRevocationJobDto[]> {
@@ -300,7 +300,25 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("该节点暂无可重试的连接撤销任务");
     }
-    return this.listLeaseRevocationJobs();
+    return this.listLeaseRevocationJobsAfterRetry();
+  }
+
+  private async listPanelSyncJobsAfterRetry(): Promise<AdminPanelSyncJobDto[]> {
+    try {
+      return await this.listPanelSyncJobs();
+    } catch (error) {
+      this.logger.warn(`Panel sync retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`);
+      return [];
+    }
+  }
+
+  private async listLeaseRevocationJobsAfterRetry(): Promise<AdminLeaseRevocationJobDto[]> {
+    try {
+      return await this.listLeaseRevocationJobs();
+    } catch (error) {
+      this.logger.warn(`Lease revocation retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`);
+      return [];
+    }
   }
 
   async importNodeFromSubscription(input: ImportNodeInputDto): Promise<AdminNodeRecordDto> {

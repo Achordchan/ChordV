@@ -1360,6 +1360,48 @@ async function testImageBedDeleteReturnsStructuredBusinessFailure() {
   }
 }
 
+async function testImageBedDeleteUsesShortManageTimeout() {
+  const previousTimeout = process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS;
+  process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS = "25";
+  const server = createServer(() => {
+    // Intentionally never respond; admin delete should use the same short management budget as listing.
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => service.deleteAdminFile({ path: "support-tickets/stalled.png" }),
+      /图床服务请求超时，已等待 25ms/,
+      "image bed delete should use the short management timeout"
+    );
+    assert.equal(Date.now() - startedAt < 1000, true, "image bed delete must not wait on the long upload timeout");
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS = previousTimeout;
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedDeleteRejectsMalformedPercentPath() {
   const service = createInstance<ImageBedService>(ImageBedService.prototype, {
     prisma: {
@@ -1430,6 +1472,30 @@ async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
   } finally {
     globalThis.fetch = originalFetch;
   }
+}
+
+async function testUpdateImageBedConfigRejectsBaseUrlWithPath() {
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    prisma: {
+      systemSetting: {
+        findUnique: async () => ({
+          value: {},
+          updatedAt: null
+        }),
+        upsert: async () => {
+          throw new Error("baseUrl with path must be rejected before saving");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAdminConfig({ baseUrl: "https://image.example.com/cfbed?token=abc" }),
+    (error) =>
+      error instanceof BadRequestException &&
+      /只填写图床域名/.test(error.message),
+    "image bed baseUrl with path must be rejected instead of being silently truncated"
+  );
 }
 
 async function testGetImageBedConfigMapsLocalReadFailure() {
@@ -8868,6 +8934,34 @@ async function testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync() {
   assert.deepEqual(result.map((job) => job.id), ["job_1"]);
 }
 
+async function testRetryPanelSyncJobKeepsSavedRetryWhenListRefreshFails() {
+  const updates: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      panelSyncJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 1 };
+        },
+        findMany: async () => {
+          throw new Error("queue list refresh failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.retryPanelSyncJob("job_1");
+
+  assert.equal(updates.length, 1, "retry state must be saved before queue refresh");
+  assert.deepEqual(result, [], "saved retry should not be reported as failed when the follow-up list refresh fails");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /queue refresh failed/);
+}
+
 async function testListPanelSyncJobsHandlesMissingNode() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const service = createAdminNodeService({
@@ -9209,6 +9303,34 @@ async function testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff() {
   assert.equal(updates[0]?.data.attempts, 0);
   assert.equal(updates[0]?.data.lastError, null);
   assert.deepEqual(result.map((job) => job.id), ["lease_job_1"]);
+}
+
+async function testRetryLeaseRevocationJobKeepsSavedRetryWhenListRefreshFails() {
+  const updates: Array<Record<string, any>> = [];
+  const warnings: string[] = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      leaseRevocationJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 1 };
+        },
+        findMany: async () => {
+          throw new Error("lease queue list refresh failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.retryLeaseRevocationJob("lease_job_1");
+
+  assert.equal(updates.length, 1, "retry state must be saved before lease queue refresh");
+  assert.deepEqual(result, [], "saved lease retry should not be reported as failed when the follow-up list refresh fails");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /queue refresh failed/);
 }
 
 async function testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode() {
@@ -22133,6 +22255,185 @@ async function testUpdateCurrentAdminSecurityRejectsUniqueEmailConflictAsConflic
   );
 }
 
+async function testUpdateCurrentAdminSecurityMapsCurrentAdminReadFailure() {
+  const service = createDevDataService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({
+        id: "admin_1",
+        role: "admin"
+      })
+    },
+    prisma: {
+      user: {
+        findUnique: async () => {
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateCurrentAdminSecurity("Bearer admin-token", {
+        currentPassword: "current-password",
+        email: "admin@example.com"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /管理员账号读取失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin security current admin read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateCurrentAdminSecurityMapsEmailPreflightReadFailure() {
+  const passwordHash = await bcrypt.hash("current-password", 10);
+  const service = createDevDataService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({
+        id: "admin_1",
+        role: "admin"
+      })
+    },
+    prisma: {
+      user: {
+        findUnique: async (payload: Record<string, any>) => {
+          if (payload.where.id === "admin_1") {
+            return {
+              id: "admin_1",
+              email: "admin@example.com",
+              role: "admin",
+              status: "active",
+              passwordHash
+            };
+          }
+          throw new Error("server closed the connection unexpectedly");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateCurrentAdminSecurity("Bearer admin-token", {
+        currentPassword: "current-password",
+        email: "admin@example.com"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /管理员账号邮箱校验失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin security email preflight read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateCurrentAdminSecurityMapsTransactionFailure() {
+  const passwordHash = await bcrypt.hash("current-password", 10);
+  const service = createDevDataService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({
+        id: "admin_1",
+        role: "admin"
+      }),
+      issueSession: async () => {
+        throw new Error("session should not be issued after a failed local save");
+      }
+    },
+    prisma: {
+      user: {
+        findUnique: async (payload: Record<string, any>) => {
+          if (payload.where.id === "admin_1") {
+            return {
+              id: "admin_1",
+              email: "admin@example.com",
+              role: "admin",
+              status: "active",
+              passwordHash
+            };
+          }
+          return null;
+        }
+      },
+      $transaction: async () => {
+        throw new Error("server closed the connection unexpectedly");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateCurrentAdminSecurity("Bearer admin-token", {
+        currentPassword: "current-password",
+        email: "admin@example.com"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /管理员安全设置保存失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin security transaction failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateCurrentAdminSecurityMapsSessionIssueFailureAfterSave() {
+  const passwordHash = await bcrypt.hash("current-password", 10);
+  let transactionSaved = false;
+  const service = createDevDataService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({
+        id: "admin_1",
+        role: "admin"
+      }),
+      issueSession: async () => {
+        throw new Error("refresh token write failed");
+      }
+    },
+    prisma: {
+      user: {
+        findUnique: async (payload: Record<string, any>) => {
+          if (payload.where.id === "admin_1") {
+            return {
+              id: "admin_1",
+              email: "admin@example.com",
+              role: "admin",
+              status: "active",
+              passwordHash
+            };
+          }
+          return null;
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => {
+        const result = await task({
+          user: {
+            update: async () => {
+              transactionSaved = true;
+              return { id: "admin_1" };
+            }
+          },
+          refreshToken: {
+            updateMany: async () => ({ count: 1 })
+          }
+        });
+        return result;
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateCurrentAdminSecurity("Bearer admin-token", {
+        currentPassword: "current-password",
+        email: "admin@example.com"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /新登录状态签发失败/.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin security session issue failures after local save must return a controlled 503 instead of HTTP 500"
+  );
+  assert.equal(transactionSaved, true, "the local admin security change should have been saved before session issue failed");
+}
+
 function testNodePanelBaseUrlAllowsBlankAsEmpty() {
   const imported = plainToInstance(ImportNodeDto, { panelBaseUrl: "   " });
   const updated = plainToInstance(UpdateNodeDto, { panelBaseUrl: "" });
@@ -28312,6 +28613,7 @@ async function main() {
   await testProbeNodeReturnsFallbackWhenResultSaveFails();
   await testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
+  await testRetryPanelSyncJobKeepsSavedRetryWhenListRefreshFails();
   await testListPanelSyncJobsHandlesMissingNode();
   await testRetryPanelSyncJobDoesNotUnlockRunningJob();
   await testRetryPanelSyncJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
@@ -28320,6 +28622,7 @@ async function main() {
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
+  await testRetryLeaseRevocationJobKeepsSavedRetryWhenListRefreshFails();
   await testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
   await testRetryLeaseRevocationJobsForNodeRejectsWhenNoRetryableJobsExist();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
@@ -28560,6 +28863,10 @@ async function main() {
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
   testUpdateCurrentAdminSecurityDtoRequiresEmail();
   await testUpdateCurrentAdminSecurityRejectsUniqueEmailConflictAsConflict();
+  await testUpdateCurrentAdminSecurityMapsCurrentAdminReadFailure();
+  await testUpdateCurrentAdminSecurityMapsEmailPreflightReadFailure();
+  await testUpdateCurrentAdminSecurityMapsTransactionFailure();
+  await testUpdateCurrentAdminSecurityMapsSessionIssueFailureAfterSave();
   testNodePanelBaseUrlAllowsBlankAsEmpty();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
@@ -28571,6 +28878,7 @@ async function main() {
   await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
   await testImageBedUploadRejectsNonImageAndCleansTempFile();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
+  await testImageBedDeleteUsesShortManageTimeout();
   await testImageBedDeleteRejectsMalformedPercentPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testGetImageBedConfigMapsLocalReadFailure();
@@ -28579,6 +28887,7 @@ async function main() {
   await testImageBedAttachmentCleanupLogsDeleteFailure();
   await testImageBedAttachmentCleanupLogsBusinessDeleteFailure();
   await testImageBedAttachmentCleanupReturnsWhenDeleteStalls();
+  await testUpdateImageBedConfigRejectsBaseUrlWithPath();
   await testUpdateUserSecurityReconcilesActiveLeases();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail();
