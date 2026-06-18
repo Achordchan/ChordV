@@ -557,11 +557,12 @@ export class UpdateNodeDto {
   @IsBoolean()
   recommended?: boolean;
 
-  @ValidateIf((_object, value) => value !== undefined)
+  @IsOptional()
+  @Transform(({ value }) => transformBlankStringToNull(value))
   @IsUrl({
     require_tld: false
   })
-  subscriptionUrl?: string;
+  subscriptionUrl?: string | null;
 
   @IsOptional()
   @Transform(({ value }) => transformBlankStringToNull(value))

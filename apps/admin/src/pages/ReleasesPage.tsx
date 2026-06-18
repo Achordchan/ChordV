@@ -7,7 +7,6 @@ import type {
   AdminReleaseArtifactType,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
-  CreateAdminReleaseInputDto,
   UploadAdminReleaseArtifactInputDto
 } from "../api/client";
 import {
@@ -30,6 +29,7 @@ import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
 import {
   emptyArtifactEditorForm,
   emptyReleaseEditorForm,
+  buildCreateReleasePayload,
   buildUpdateReleasePayload,
   releasePlatformOptions,
   toArtifactEditorForm,
@@ -241,9 +241,10 @@ export function ReleasesPage(props: ReleasesPageProps) {
       const version = releaseForm.version.trim();
       const validationMessage = validateReleaseEditorInput(
         version,
-        releaseEditorId ? undefined : releaseForm,
+        releaseForm,
         releaseForm.platform,
-        uploadMaxBytes
+        uploadMaxBytes,
+        !releaseEditorId
       );
       if (validationMessage) {
         notifications.show({
@@ -254,24 +255,17 @@ export function ReleasesPage(props: ReleasesPageProps) {
         return;
       }
       releaseMutationSeqRef.current += 1;
-      const payload: CreateAdminReleaseInputDto = {
-        platform: releaseForm.platform,
-        status: "draft",
-        version,
-        minimumVersion: version,
-        forceUpgrade: false,
-        title: releaseForm.title.trim() || undefined,
-        changelog: splitLines(releaseForm.changelog),
-        initialArtifact:
-          !releaseEditorId && releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim()
-            ? buildExternalArtifactPayload(
-                releaseForm.platform,
-                releaseForm.downloadUrl,
-                true,
-                releaseForm.externalDeliveryMode
-              )
-            : undefined
-      };
+      const payload = buildCreateReleasePayload(
+        releaseForm,
+        !releaseEditorId && releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim()
+          ? buildExternalArtifactPayload(
+              releaseForm.platform,
+              releaseForm.downloadUrl,
+              true,
+              releaseForm.externalDeliveryMode
+            )
+          : undefined
+      );
 
       if (!releaseEditorId) {
         setReleaseSaveStep("creating");
@@ -785,18 +779,12 @@ function upsertRelease(current: AdminReleaseRecordDto[], next: AdminReleaseRecor
   return current.map((item) => (item.id === next.id ? next : item));
 }
 
-function splitLines(value: string) {
-  return value
-    .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function validateReleaseEditorInput(
   version: string,
   form?: ReleaseEditorFormState,
   platform?: AdminReleasePlatform,
-  uploadMaxBytes = DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES
+  uploadMaxBytes = DEFAULT_ADMIN_RELEASE_MAX_UPLOAD_BYTES,
+  validateArtifact = true
 ) {
   if (!version) {
     return "请填写版本号，例如 1.1.6。";
@@ -805,6 +793,13 @@ function validateReleaseEditorInput(
     return "版本号格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
   }
   if (!form) {
+    return null;
+  }
+  const minimumVersion = form.minimumVersion.trim();
+  if (minimumVersion && !RELEASE_VERSION_PATTERN.test(minimumVersion)) {
+    return "最低版本格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
+  }
+  if (!validateArtifact) {
     return null;
   }
   if (form.artifactSource === "uploaded") {

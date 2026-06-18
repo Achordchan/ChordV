@@ -56,6 +56,12 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
         />
       </Group>
       <TextInput
+        label="订阅地址"
+        placeholder="https://example.com/sub"
+        value={props.nodeForm.subscriptionUrl}
+        onChange={(event) => props.setNodeForm((current) => ({ ...current, subscriptionUrl: event.currentTarget.value }))}
+      />
+      <TextInput
         label="地区/城市"
         placeholder="Los Angeles / Tokyo / Singapore"
         value={props.nodeForm.region}

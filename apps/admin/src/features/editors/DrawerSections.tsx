@@ -375,6 +375,12 @@ export function TeamSubscriptionEditorSection(props: {
         value={props.teamSubscriptionForm.totalTrafficGb}
         onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
       />
+      <NumberInput
+        label="已用流量 GB"
+        min={0}
+        value={props.teamSubscriptionForm.usedTrafficGb}
+        onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
+      />
       <TextInput
         label="到期时间"
         type="datetime-local"

@@ -4,6 +4,7 @@ import type {
   AnnouncementDisplayMode,
   AnnouncementLevel,
   ConnectionMode,
+  CreateTeamSubscriptionInputDto,
   PlanScope,
   SubscriptionState,
   TeamMemberRole,
@@ -11,7 +12,7 @@ import type {
   UserRole,
   UserStatus
 } from "@chordv/shared";
-import { addDays, toDateTimeLocal } from "./admin-format";
+import { addDays, fromDateTimeLocal, toDateTimeLocal } from "./admin-format";
 
 export type UserFormState = {
   email: string;
@@ -77,6 +78,7 @@ export type TeamMemberFormState = {
 export type TeamSubscriptionFormState = {
   planId: string;
   totalTrafficGb: number;
+  usedTrafficGb: number;
   expireAt: string;
 };
 
@@ -230,6 +232,7 @@ export function emptyTeamSubscriptionForm(): TeamSubscriptionFormState {
   return {
     planId: "",
     totalTrafficGb: 100,
+    usedTrafficGb: 0,
     expireAt: toDateTimeLocal(addDays(new Date(), 30).toISOString())
   };
 }
@@ -313,5 +316,17 @@ export function applyPlanToTeamSubscriptionForm(
     ...current,
     planId,
     totalTrafficGb: plan.totalTrafficGb
+  };
+}
+
+export function buildCreateTeamSubscriptionPayload(
+  form: TeamSubscriptionFormState,
+  fallbackExpireAt = new Date().toISOString()
+): CreateTeamSubscriptionInputDto {
+  return {
+    planId: form.planId,
+    totalTrafficGb: form.totalTrafficGb,
+    usedTrafficGb: form.usedTrafficGb,
+    expireAt: fromDateTimeLocal(form.expireAt) ?? fallbackExpireAt
   };
 }

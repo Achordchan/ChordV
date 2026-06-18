@@ -43,11 +43,9 @@ import type {
   CreateTeamMemberInputDto,
   CreateTeamSubscriptionInputDto,
   CreateUserInputDto,
-  ImportNodeInputDto,
   PlanScope,
   RenewSubscriptionInputDto,
   UpdateAnnouncementInputDto,
-  UpdateNodeInputDto,
   UpdatePlanInputDto,
   UpdatePolicyInputDto,
   UpdateSubscriptionInputDto,
@@ -153,6 +151,7 @@ import {
   applyPlanToChangePlanForm,
   applyPlanToCreateForm,
   applyPlanToTeamSubscriptionForm,
+  buildCreateTeamSubscriptionPayload,
   emptyAnnouncementForm,
   emptyNodeForm,
   emptyPlanForm,
@@ -189,6 +188,7 @@ import {
   summarizeAdminDiagnosticMessage
 } from "./utils/admin-filters";
 import { addDays, formatDateTime, formatTrafficGb, fromDateTimeLocal, toDateTimeLocal } from "./utils/admin-format";
+import { buildImportNodePayload, buildUpdateNodePayload } from "./utils/admin-node-payloads";
 import {
   getRenewActionDescription,
   subscriptionStateColor,
@@ -1734,6 +1734,7 @@ export function App() {
       setTeamSubscriptionForm({
         planId: defaultPlan?.id ?? "",
         totalTrafficGb: defaultPlan?.totalTrafficGb ?? 100,
+        usedTrafficGb: 0,
         expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString())
       });
     }
@@ -1954,11 +1955,7 @@ export function App() {
       if (drawer.type === "team-subscription" && drawer.parentId) {
         const success = await runAction(
           () =>
-            createTeamSubscription(drawer.parentId!, {
-              planId: teamSubscriptionForm.planId,
-              totalTrafficGb: teamSubscriptionForm.totalTrafficGb,
-              expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
-            } satisfies CreateTeamSubscriptionInputDto),
+            createTeamSubscription(drawer.parentId!, buildCreateTeamSubscriptionPayload(teamSubscriptionForm) satisfies CreateTeamSubscriptionInputDto),
           "团队套餐已分配",
           dbFirstMutationOptions
         );
@@ -1982,53 +1979,15 @@ export function App() {
           return;
         }
 
-        const updatePayload = {
-          subscriptionUrl: undefined,
-          name: nodeForm.name || undefined,
-          countryCode: nodeForm.countryCode || undefined,
-          region: nodeForm.region || undefined,
-          provider: nodeForm.provider || undefined,
-          tags: splitCsv(nodeForm.tags),
-          isActive: nodeForm.isActive,
-          recommended: nodeForm.recommended,
-          panelBaseUrl: nodeForm.panelBaseUrl || null,
-          panelApiBasePath: nodeForm.panelApiBasePath || null,
-          panelUsername: nodeForm.panelUsername || null,
-          panelPassword: nodeForm.panelPassword || null,
-          panelInboundId: Number(nodeForm.panelInboundId) || null,
-          panelEnabled: nodeForm.panelEnabled
-        };
-        const importPayload = {
-          ...updatePayload,
-          panelBaseUrl: updatePayload.panelBaseUrl ?? undefined,
-          panelApiBasePath: updatePayload.panelApiBasePath ?? undefined,
-          panelUsername: updatePayload.panelUsername ?? undefined,
-          panelPassword: updatePayload.panelPassword ?? undefined,
-          panelInboundId: updatePayload.panelInboundId ?? undefined
-        };
+        const updatePayload = buildUpdateNodePayload(nodeForm);
+        const importPayload = buildImportNodePayload(nodeForm);
         const success = drawer.recordId
           ? await runAction(
-              () =>
-                updateNode(drawer.recordId!, {
-                  subscriptionUrl: updatePayload.subscriptionUrl || undefined,
-                  name: updatePayload.name,
-                  countryCode: updatePayload.countryCode,
-                  region: updatePayload.region,
-                  provider: updatePayload.provider,
-                  tags: updatePayload.tags,
-                  isActive: updatePayload.isActive,
-                  recommended: updatePayload.recommended,
-                  panelBaseUrl: updatePayload.panelBaseUrl,
-                  panelApiBasePath: updatePayload.panelApiBasePath,
-                  panelUsername: updatePayload.panelUsername,
-                  panelPassword: updatePayload.panelPassword,
-                  panelInboundId: updatePayload.panelInboundId,
-                  panelEnabled: updatePayload.panelEnabled
-                } satisfies UpdateNodeInputDto),
+              () => updateNode(drawer.recordId!, updatePayload),
               "节点已更新",
               dbFirstMutationOptions
             )
-          : await runAction(() => importNode(importPayload satisfies ImportNodeInputDto), "节点已添加", {
+          : await runAction(() => importNode(importPayload), "节点已添加", {
               failureTitle: "新增节点失败，未保存",
               failureFallback:
                 "新增节点需要先读取可用运行参数。请填写有效订阅地址，或修复 3x-ui 面板连接并选择入站后重试。",
@@ -2593,6 +2552,7 @@ export function App() {
     setTeamSubscriptionForm({
       planId: defaultPlan?.id ?? "",
       totalTrafficGb: defaultPlan?.totalTrafficGb ?? 100,
+      usedTrafficGb: 0,
       expireAt: toDateTimeLocal(team?.currentSubscription?.expireAt ?? addDays(new Date(), 30).toISOString())
     });
     setTeamSubscriptionInlineEditorId(teamId);
@@ -2622,11 +2582,7 @@ export function App() {
       setTeamSubscriptionBusyKey(teamId);
       const success = await runAction(
         () =>
-          createTeamSubscription(teamId, {
-            planId: teamSubscriptionForm.planId,
-            totalTrafficGb: teamSubscriptionForm.totalTrafficGb,
-            expireAt: fromDateTimeLocal(teamSubscriptionForm.expireAt) ?? new Date().toISOString()
-          } satisfies CreateTeamSubscriptionInputDto),
+          createTeamSubscription(teamId, buildCreateTeamSubscriptionPayload(teamSubscriptionForm) satisfies CreateTeamSubscriptionInputDto),
         "团队套餐已分配",
         dbFirstMutationOptions
       );
@@ -3361,13 +3317,6 @@ function translateNodeAccessPanelStatus(node: AdminNodeRecordDto) {
     return "异常";
   }
   return null;
-}
-
-function splitCsv(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function drawerTitle(type: DrawerType) {

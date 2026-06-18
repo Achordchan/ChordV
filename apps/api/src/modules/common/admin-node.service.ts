@@ -648,8 +648,9 @@ export class AdminNodeService {
 
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null = null;
     let panelRuntimeError: string | null = null;
-    if (input.subscriptionUrl !== undefined && input.subscriptionUrl.trim()) {
-      const runtime = await this.readSubscriptionNodeForNodeSaveBestEffort(input.subscriptionUrl.trim());
+    const nextSubscriptionUrl = typeof input.subscriptionUrl === "string" ? input.subscriptionUrl.trim() : "";
+    if (nextSubscriptionUrl) {
+      const runtime = await this.readSubscriptionNodeForNodeSaveBestEffort(nextSubscriptionUrl);
       derived = runtime.derived;
       panelRuntimeError = runtime.errorMessage;
     } else if (nextPanelEnabled && panelConfigTouched) {
@@ -688,7 +689,7 @@ export class AdminNodeService {
           ...(input.tags !== undefined ? { tags: normalizeTags(input.tags, input.name?.trim() || current.name) } : {}),
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
           ...(input.recommended !== undefined ? { recommended: input.recommended } : {}),
-          ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: input.subscriptionUrl?.trim() || null } : {}),
+          ...(input.subscriptionUrl !== undefined ? { subscriptionUrl: nextSubscriptionUrl || null } : {}),
           ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
           ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
           ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),

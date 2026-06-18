@@ -4,6 +4,8 @@ import type {
   AdminReleasePlatform,
   AdminReleaseRecordDto,
   AdminReleaseStatus,
+  CreateAdminReleaseInputDto,
+  CreateAdminReleaseArtifactInputDto,
   UpdateAdminReleaseInputDto
 } from "../../api/client";
 
@@ -11,6 +13,8 @@ export type ReleaseEditorFormState = {
   platform: AdminReleasePlatform;
   status: AdminReleaseStatus;
   version: string;
+  minimumVersion: string;
+  forceUpgrade: boolean;
   title: string;
   artifactSource: "uploaded" | "external";
   externalDeliveryMode: "auto" | "windows_full_replace_zip";
@@ -42,6 +46,8 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     platform,
     status: "draft",
     version: "",
+    minimumVersion: "",
+    forceUpgrade: false,
     title: "",
     artifactSource: "external",
     externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "auto",
@@ -57,6 +63,8 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     platform: record.platform,
     status: record.status,
     version: record.version,
+    minimumVersion: record.minimumVersion,
+    forceUpgrade: record.forceUpgrade,
     title: record.title,
     artifactSource: record.artifacts.find((artifact) => artifact.isPrimary)?.source ?? "external",
     externalDeliveryMode:
@@ -72,14 +80,41 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
   };
 }
 
+export function buildCreateReleasePayload(
+  form: ReleaseEditorFormState,
+  initialArtifact?: CreateAdminReleaseArtifactInputDto
+): CreateAdminReleaseInputDto {
+  const version = form.version.trim();
+  return {
+    platform: form.platform,
+    status: "draft",
+    version,
+    minimumVersion: resolveReleaseMinimumVersion(form),
+    forceUpgrade: form.forceUpgrade,
+    title: form.title.trim() || undefined,
+    changelog: splitReleaseChangelog(form.changelog),
+    ...(initialArtifact !== undefined ? { initialArtifact } : {})
+  };
+}
+
 export function buildUpdateReleasePayload(form: ReleaseEditorFormState): UpdateAdminReleaseInputDto {
   return {
     title: form.title.trim(),
-    changelog: form.changelog
-      .split("\n")
-      .map((item) => item.trim())
-      .filter(Boolean)
+    changelog: splitReleaseChangelog(form.changelog),
+    minimumVersion: resolveReleaseMinimumVersion(form),
+    forceUpgrade: form.forceUpgrade
   };
+}
+
+function resolveReleaseMinimumVersion(form: ReleaseEditorFormState) {
+  return form.minimumVersion.trim() || form.version.trim();
+}
+
+function splitReleaseChangelog(value: string) {
+  return value
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export function emptyArtifactEditorForm(

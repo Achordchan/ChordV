@@ -979,7 +979,7 @@ export interface UpdateNodeInputDto {
   tags?: string[];
   isActive?: boolean;
   recommended?: boolean;
-  subscriptionUrl?: string;
+  subscriptionUrl?: string | null;
   panelBaseUrl?: string | null;
   panelApiBasePath?: string | null;
   panelUsername?: string | null;

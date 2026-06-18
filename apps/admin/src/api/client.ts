@@ -232,13 +232,14 @@ export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
 export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const version = input.version.trim();
   const title = input.title?.trim() || version;
+  const minimumVersion = input.minimumVersion.trim() || version;
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
     channel: "stable",
     version,
     displayTitle: title,
     changelog: input.changelog,
-    minimumVersion: input.minimumVersion,
+    minimumVersion,
     forceUpgrade: input.forceUpgrade,
     status: input.status,
     initialArtifact: input.initialArtifact ?? undefined
@@ -253,10 +254,11 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
 
 export async function updateAdminRelease(releaseId: string, input: UpdateAdminReleaseInputDto) {
   const title = input.title?.trim();
+  const minimumVersion = input.minimumVersion?.trim();
   const payload: UpdateReleaseInputDto = {
     ...(input.title !== undefined ? { displayTitle: title } : {}),
     ...(input.changelog !== undefined ? { changelog: input.changelog } : {}),
-    ...(input.minimumVersion !== undefined ? { minimumVersion: input.minimumVersion } : {}),
+    ...(minimumVersion !== undefined ? { minimumVersion } : {}),
     ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
     ...(input.status !== undefined ? { status: input.status } : {}),
     ...(input.publishedAt !== undefined ? { publishedAt: input.publishedAt } : {})

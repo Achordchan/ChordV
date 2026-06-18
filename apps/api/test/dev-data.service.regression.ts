@@ -16310,6 +16310,44 @@ async function testUpdateNodeSubscriptionUrlFailureKeepsLocalSave() {
   assert.match(record.panelError ?? "", /fetch failed|ECONNREFUSED|subscription runtime read/i);
 }
 
+async function testUpdateNodeClearsSubscriptionUrlWithNull() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: false,
+    panelStatus: "offline",
+    panelError: null,
+    subscriptionUrl: "https://old.example.com/sub"
+  });
+  let savedData: Record<string, unknown> | null = null;
+  const service = createAdminNodeService({
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    readSubscriptionNodeForNodeSaveBestEffort: async () => {
+      throw new Error("clearing subscriptionUrl must not fetch subscription runtime");
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => {
+          savedData = payload.data;
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const record = await service.updateNode("node_1", {
+    subscriptionUrl: null
+  });
+
+  assert.equal(savedData?.subscriptionUrl, null);
+  assert.equal(record.subscriptionUrl, null);
+}
+
 function makeAdminNodeRow(overrides: Record<string, any> = {}) {
   const now = new Date();
   return {
@@ -23689,7 +23727,6 @@ function testAdminPatchDtosRejectNullForNonNullableFields() {
   assertDtoRejectsFieldNull(UpdateTeamDto, "name");
   assertDtoRejectsFieldNull(UpdateTeamDto, "status");
   assertDtoRejectsFieldNull(UpdateNodeDto, "name");
-  assertDtoRejectsFieldNull(UpdateNodeDto, "subscriptionUrl");
   assertDtoRejectsFieldNull(UpdateNodeDto, "isActive");
   assertDtoRejectsFieldNull(UpdateNodeDto, "recommended");
   assertDtoRejectsFieldNull(UpdateNodeDto, "panelEnabled");
@@ -23702,6 +23739,11 @@ function testAdminPatchDtosRejectNullForNonNullableFields() {
   assertDtoRejectsFieldNull(UpdatePolicyDto, "blockAds");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "chinaDirect");
   assertDtoRejectsFieldNull(UpdatePolicyDto, "aiServicesProxy");
+}
+
+function testUpdateNodeDtoAllowsNullSubscriptionUrlForClearing() {
+  const errors = validateSync(plainToInstance(UpdateNodeDto, { subscriptionUrl: null }));
+  assert.equal(errors.length, 0, "subscriptionUrl null should be accepted so admins can clear subscription-node URLs");
 }
 
 function testUpdateReleaseDtoAllowsBlankDisplayTitle() {
@@ -30520,6 +30562,7 @@ async function main() {
   await testUsageSyncDoesNotLetStalledNodesBlockHealthyNode();
   await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
   await testUpdateNodeSubscriptionUrlFailureKeepsLocalSave();
+  await testUpdateNodeClearsSubscriptionUrlWithNull();
   await testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails();
   await testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails();
   await testUpdateNodePanelMigrationReturnsWhenOldPanelCleanupStalls();
@@ -30670,6 +30713,7 @@ async function main() {
   await testCreatePlanRejectsBlankTrimmedName();
   await testUpdatePlanRejectsBlankTrimmedName();
   testAdminPatchDtosRejectNullForNonNullableFields();
+  testUpdateNodeDtoAllowsNullSubscriptionUrlForClearing();
   testUpdateReleaseDtoAllowsBlankDisplayTitle();
   testUpdateCurrentAdminSecurityDtoRequiresEmail();
   await testUpdateCurrentAdminSecurityRejectsUniqueEmailConflictAsConflict();
