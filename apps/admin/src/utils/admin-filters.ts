@@ -26,6 +26,9 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (!message.trim()) {
     return fallback;
   }
+  if (hasSavedAfterFailureSignal(message) && hasSavedAfterFailureWarningSignal(message)) {
+    return "操作已保存，后台同步待处理，请在同步队列中查看处理状态。";
+  }
   if (hasDefiniteLocalSaveFailureSignal(message) && !hasSavedAfterFailureSignal(message)) {
     return "后台本地数据保存失败，本次操作未保存，请稍后重试。";
   }
@@ -96,7 +99,7 @@ export function isUncertainRequestFailure(message: string) {
   return (
     UNCERTAIN_REQUEST_PATTERN.test(message) ||
     isServiceUnavailableMessage(message) ||
-    /still being processed|still running in background|running in background|background retry|queued for background|retry shortly|正在处理|并发/i.test(message)
+    /still being processed|still running in background|running in background|background retry|queued for background|retry shortly|partial|partially|正在处理|并发|部分成功|部分完成/i.test(message)
   );
 }
 
@@ -141,7 +144,13 @@ function hasDefiniteLocalSaveFailureSignal(message: string) {
 }
 
 function hasSavedAfterFailureSignal(message: string) {
-  return /local .* saved|saved locally|already saved|已保存|后台处理|background processing|background retry|queued for background|still running in background|panel synchronization is pending|pending background/i.test(
+  return /local .* saved|saved locally|already saved|已保存|后台处理|background processing|background retry|queued for background|still running in background|panel synchronization is pending|pending background|partial success|partially completed|部分成功|部分完成/i.test(
+    message
+  );
+}
+
+function hasSavedAfterFailureWarningSignal(message: string) {
+  return /HTTP\s*5\d\d|failed|failure|error|Exception|暂不可用|失败|异常|background|pending|queued|同步待|后台处理|部分成功|部分完成/i.test(
     message
   );
 }

@@ -12221,6 +12221,142 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
   }
 }
 
+async function testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueueFailsAfterLocalSave() {
+  const newNode = {
+    id: "node_new",
+    name: "new",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows: Array<{ id: string; nodeId: string; node: typeof newNode }> = [];
+  const prismaQueueError = Object.assign(new Error("server closed the connection unexpectedly"), { code: "P2010" });
+
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new", node: newNode });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSyncTx: async () => {
+        throw prismaQueueError;
+      },
+      queueSubscriptionPanelAccessSync: async () => {
+        throw prismaQueueError;
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("node access add-only must not call direct panel sync");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpAddOnlyRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpAddOnlyRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: ["node_new"] })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      200,
+      `local node access add-only must not surface queued panel ensure failures as HTTP 500: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local add-only authorization must stay saved");
+    assert.equal(body.subscriptionId, "sub_1");
+    assert.deepEqual(body.nodeIds, ["node_new"]);
+    assert.equal(body.panelSyncStatus, "pending");
+    assert.match(body.panelSyncMessage ?? "", /server closed the connection unexpectedly/);
+    assert.notEqual(body.message, "Internal server error");
+  } finally {
+    await app.close();
+  }
+}
+
 async function testReplaceNodeAccessDoesNotWaitForHeldUsageLock() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -28719,6 +28855,7 @@ async function main() {
   await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
   await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
   await testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave();
+  await testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueueFailsAfterLocalSave();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();
