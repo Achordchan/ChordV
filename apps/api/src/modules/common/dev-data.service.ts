@@ -1505,7 +1505,7 @@ export class DevDataService implements OnModuleInit {
           `Node access local save failed for ${subscriptionId}: ${readPanelSyncErrorMessage(error)}`,
           error instanceof Error ? error.stack : undefined
         );
-        throw error;
+        throw new ServiceUnavailableException("节点授权保存失败，请刷新订阅和节点列表后重试；本次请求没有等待失联面板。");
       }
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access local save completed, but finalize failed for ${subscriptionId}: ${errorMessage}`);

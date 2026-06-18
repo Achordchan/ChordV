@@ -9531,6 +9531,74 @@ async function testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionThrow
   assert.match(result.panelSyncMessage ?? "", /panel ensure transaction failed/);
 }
 
+async function testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionQueueIsMissing() {
+  const node = {
+    id: "node_new",
+    name: "new",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows: Array<{ id: string; nodeId: string }> = [];
+  let deferredPanelSyncStarted = false;
+  const service = createDevDataService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows;
+          }
+          return accessRows.map((row) => ({ ...row, node }));
+        },
+        createMany: async () => {
+          accessRows.push({ id: "access_new", nodeId: "node_new" });
+        }
+      },
+      node: {
+        findMany: async () => [node]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new" });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async () => {
+        deferredPanelSyncStarted = true;
+        return 0;
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const result = await service.updateSubscriptionNodeAccess("sub_1", { nodeIds: ["node_new"] });
+
+  assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"], "local authorization must stay saved");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /transaction-scoped panel access queueing/);
+  await waitUntil(() => deferredPanelSyncStarted);
+  assert.equal(deferredPanelSyncStarted, true, "missing transaction queue support should still start deferred panel sync");
+}
+
 async function testClearNodeAccessReturnsPendingWhenRevocationQueueTransactionThrowsSynchronously() {
   const oldNode = {
     id: "node_old",
@@ -20028,6 +20096,110 @@ async function testLoginRateLimitWritesDoNotUseInteractiveTransaction() {
   assert.equal(upserts.length, 3, "failed login must still update all rate-limit buckets");
 }
 
+async function testLoginMapsClearFailuresLocalWriteFailure() {
+  const passwordHash = await bcrypt.hash("correct-password", 4);
+  const service = createClientAccessService({
+    prisma: {
+      rateLimitBucket: {
+        findMany: async () => [],
+        deleteMany: async () => {
+          throw new Error("login clear failures local write failed");
+        }
+      },
+      user: {
+        findUnique: async () => ({
+          id: "user_1",
+          email: "admin@example.com",
+          displayName: "Admin",
+          role: "admin",
+          status: "active",
+          passwordHash
+        })
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.login("admin@example.com", "correct-password", "127.0.0.1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/login clear failures local write failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "successful login cleanup write failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testLoginMapsLastSeenLocalWriteFailure() {
+  const passwordHash = await bcrypt.hash("correct-password", 4);
+  const service = createClientAccessService({
+    prisma: {
+      rateLimitBucket: {
+        findMany: async () => [],
+        deleteMany: async () => ({ count: 0 })
+      },
+      user: {
+        findUnique: async () => ({
+          id: "user_1",
+          email: "admin@example.com",
+          displayName: "Admin",
+          role: "admin",
+          status: "active",
+          passwordHash
+        }),
+        update: async () => {
+          throw new Error("login last seen local write failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.login("admin@example.com", "correct-password", "127.0.0.1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/login last seen local write failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "successful login user update failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testLoginMapsIssueSessionLocalWriteFailure() {
+  const passwordHash = await bcrypt.hash("correct-password", 4);
+  const service = createClientAccessService({
+    prisma: {
+      rateLimitBucket: {
+        findMany: async () => [],
+        deleteMany: async () => ({ count: 0 })
+      },
+      user: {
+        findUnique: async () => ({
+          id: "user_1",
+          email: "admin@example.com",
+          displayName: "Admin",
+          role: "admin",
+          status: "active",
+          passwordHash
+        }),
+        update: async () => ({ id: "user_1" })
+      }
+    },
+    authSessionService: {
+      issueSession: async () => {
+        throw new Error("login refresh token local write failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.login("admin@example.com", "correct-password", "127.0.0.1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/login refresh token local write failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "successful login session write failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform() {
   const updateQueries: Array<Record<string, any>> = [];
   const service = createClientAccessService({
@@ -26838,6 +27010,7 @@ async function main() {
   await testUpdateNodeAccessMapsTransactionCommitFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenFallbackNodeSummaryThrows();
   await testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionThrowsSynchronously();
+  await testUpdateNodeAccessReturnsPendingWhenPanelEnsureTransactionQueueIsMissing();
   await testClearNodeAccessReturnsPendingWhenRevocationQueueTransactionThrowsSynchronously();
   await testUpdateNodeAccessKeepsLocalSaveWhenPublishFails();
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
@@ -27000,6 +27173,9 @@ async function main() {
   await testWindowsUpdateCheckSkipsInstallerOnlyRelease();
   await testCurrentSubscriptionPrefersEffectiveSubscription();
   await testLoginRateLimitWritesDoNotUseInteractiveTransaction();
+  await testLoginMapsClearFailuresLocalWriteFailure();
+  await testLoginMapsLastSeenLocalWriteFailure();
+  await testLoginMapsIssueSessionLocalWriteFailure();
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
   await testCreateTeamMemberRejectsOwnerRole();
   await testCreateTeamMemberRejectsUniqueConflictAsConflict();

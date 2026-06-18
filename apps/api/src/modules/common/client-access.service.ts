@@ -111,12 +111,7 @@ export class ClientAccessService {
         throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
       }
 
-      await this.clearLoginFailures(loginKeys, { lockHeld: true });
-      const updated = await this.prisma.user.update({
-        where: { id: user.id },
-        data: { lastSeenAt: new Date() }
-      });
-      return this.authSessionService.issueSession(updated.id);
+      return this.createLoginSessionAfterSuccess(user.id, loginKeys);
     });
   }
 
@@ -463,6 +458,22 @@ export class ClientAccessService {
       return;
     }
     await runWithRateLimitBucketLocks(keys, clear);
+  }
+
+  private async createLoginSessionAfterSuccess(userId: string, loginKeys: string[]) {
+    try {
+      await this.clearLoginFailures(loginKeys, { lockHeld: true });
+      const updated = await this.prisma.user.update({
+        where: { id: userId },
+        data: { lastSeenAt: new Date() }
+      });
+      return await this.authSessionService.issueSession(updated.id);
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException("登录状态保存失败，请稍后重试。");
+    }
   }
 
   private async consumeRateLimit(
