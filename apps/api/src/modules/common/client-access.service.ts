@@ -413,10 +413,9 @@ export class ClientAccessService {
 
   private async recordFailedLogin(keys: string[], options?: { lockHeld?: boolean }) {
     const record = async () => {
-    const now = Date.now();
-    await this.prisma.$transaction(async (tx) => {
+      const now = Date.now();
       for (const key of keys) {
-        const current = await tx.rateLimitBucket.findUnique({ where: { key } });
+        const current = await this.prisma.rateLimitBucket.findUnique({ where: { key } });
         const isExpired = !current || current.updatedAt.getTime() + LOGIN_BUCKET_TTL_MS < now;
         const count = (isExpired ? 0 : current.count) + 1;
         const excess = Math.max(0, count - LOGIN_FAILURE_LIMIT);
@@ -424,7 +423,7 @@ export class ClientAccessService {
           excess > 0
             ? new Date(now + Math.min(LOGIN_MAX_BACKOFF_MS, LOGIN_BASE_BACKOFF_MS * 2 ** Math.min(excess - 1, 8)))
             : null;
-        await tx.rateLimitBucket.upsert({
+        await this.prisma.rateLimitBucket.upsert({
           where: { key },
           create: {
             key,
@@ -437,7 +436,6 @@ export class ClientAccessService {
           }
         });
       }
-    });
     };
     if (options?.lockHeld) {
       return record();
@@ -467,13 +465,12 @@ export class ClientAccessService {
         throw new HttpException(options.message, HttpStatus.TOO_MANY_REQUESTS);
       }
 
-      await this.prisma.$transaction(async (tx) => {
       for (const key of keys) {
-        const current = await tx.rateLimitBucket.findUnique({ where: { key } });
+        const current = await this.prisma.rateLimitBucket.findUnique({ where: { key } });
         const isExpired = !current || current.updatedAt.getTime() + options.windowMs < now;
         const count = (isExpired ? 0 : current.count) + 1;
         const blockedUntil = count > options.limit ? new Date(now + options.blockMs) : null;
-        await tx.rateLimitBucket.upsert({
+        await this.prisma.rateLimitBucket.upsert({
           where: { key },
           create: {
             key,
@@ -486,7 +483,6 @@ export class ClientAccessService {
           }
         });
       }
-      });
     });
   }
 

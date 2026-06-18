@@ -1663,6 +1663,47 @@ async function testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken() {
   assert.ok(refreshUpdates[0].where.expiresAt.gt instanceof Date);
 }
 
+async function testRefreshTokenRotationUsesExtendedTransactionTimeout() {
+  const transactionCalls: Array<Record<string, any> | undefined> = [];
+  const user = {
+    id: "user_1",
+    email: "user@example.com",
+    displayName: "User",
+    role: "user" as const,
+    status: "active" as const,
+    lastSeenAt: new Date(),
+    authVersion: 1
+  };
+  const service = createAuthSessionService({
+    jwtSecret: "test-secret-for-auth-session-regression",
+    jwtIssuer: "chordv-test",
+    prisma: {
+      refreshToken: {
+        findUnique: async () => ({
+          id: "refresh_1",
+          userId: "user_1",
+          revokedAt: null,
+          expiresAt: new Date(Date.now() + 60_000),
+          user
+        })
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>, options?: Record<string, any>) => {
+        void task;
+        transactionCalls.push(options);
+        throw new Error("transaction stopped after options capture");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.rotateRefreshToken("refresh-token"),
+    /transaction stopped after options capture/
+  );
+
+  assert.equal(transactionCalls.length, 1);
+  assert.equal(transactionCalls[0]?.timeout, 15_000, "refresh rotation must not rely on Prisma's 5s default transaction timeout");
+}
+
 async function testAccessTokenLogoutRevokesOnlyBoundSession() {
   const secret = "test-secret-for-auth-session-regression";
   const issuer = "chordv-test";
@@ -8070,14 +8111,16 @@ async function testRetryPanelSyncJobsForNodeRejectsWhenNoRetryableJobsExist() {
 
 async function testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob() {
   const updates: Array<Record<string, any>> = [];
+  const createManyCalls: Array<Record<string, any>> = [];
   await createOrRefreshPanelSyncJob(
     {
       panelSyncJob: {
-        create: async () => {
-          throw { code: "P2002" };
-        },
         updateMany: async (payload: Record<string, any>) => {
           updates.push(payload);
+          return { count: 0 };
+        },
+        createMany: async (payload: Record<string, any>) => {
+          createManyCalls.push(payload);
           return { count: 0 };
         }
       }
@@ -8102,6 +8145,9 @@ async function testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob() {
   assert.equal(updates[0]?.where.dedupeKey, "ensure:binding_running");
   assert.deepEqual(updates[0]?.where.status, { not: "running" });
   assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(createManyCalls.length, 1, "dedupe conflicts must be ignored without aborting the surrounding transaction");
+  assert.equal(createManyCalls[0]?.skipDuplicates, true);
+  assert.equal(createManyCalls[0]?.data.dedupeKey, "ensure:binding_running");
 }
 
 async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
@@ -8178,14 +8224,16 @@ async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
 
 async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
   const updates: Array<Record<string, any>> = [];
+  const createManyCalls: Array<Record<string, any>> = [];
   await createOrRefreshLeaseRevocationJob(
     {
       leaseRevocationJob: {
-        create: async () => {
-          throw { code: "P2002" };
-        },
         updateMany: async (payload: Record<string, any>) => {
           updates.push(payload);
+          return { count: 0 };
+        },
+        createMany: async (payload: Record<string, any>) => {
+          createManyCalls.push(payload);
           return { count: 0 };
         }
       }
@@ -8210,6 +8258,9 @@ async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
   assert.equal(updates[0]?.where.dedupeKey, "lease:subscription_running");
   assert.deepEqual(updates[0]?.where.status, { not: "running" });
   assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(createManyCalls.length, 1, "dedupe conflicts must be ignored without aborting the surrounding transaction");
+  assert.equal(createManyCalls[0]?.skipDuplicates, true);
+  assert.equal(createManyCalls[0]?.data.dedupeKey, "lease:subscription_running");
 }
 
 async function testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode() {
@@ -18930,6 +18981,36 @@ async function testCurrentSubscriptionPrefersEffectiveSubscription() {
   assert.equal(result?.id, "sub_active", "current subscription lookup must prefer effective active subscriptions");
 }
 
+async function testLoginRateLimitWritesDoNotUseInteractiveTransaction() {
+  const upserts: Array<Record<string, any>> = [];
+  const service = createClientAccessService({
+    prisma: {
+      rateLimitBucket: {
+        findMany: async () => [],
+        findUnique: async () => null,
+        upsert: async (payload: Record<string, any>) => {
+          upserts.push(payload);
+          return payload.create;
+        }
+      },
+      user: {
+        findUnique: async () => null
+      },
+      $transaction: async () => {
+        throw new Error("login rate limit writes must not use Prisma interactive transactions");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.login("missing@example.com", "bad-password", "127.0.0.1"),
+    /账号或密码错误/,
+    "missing user login should still fail as unauthorized"
+  );
+
+  assert.equal(upserts.length, 3, "failed login must still update all rate-limit buckets");
+}
+
 async function testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform() {
   const updateQueries: Array<Record<string, any>> = [];
   const service = createClientAccessService({
@@ -24807,6 +24888,7 @@ async function main() {
   await testUpdateUserReturnsPendingWhenResponseRefreshFails();
   await testUpdateUserReturnsPendingWhenResponseRefreshStalls();
   await testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken();
+  await testRefreshTokenRotationUsesExtendedTransactionTimeout();
   await testAccessTokenLogoutRevokesOnlyBoundSession();
   await testAccessTokenAuthenticationRequiresActiveBoundSession();
   testRuntimeEventStreamReplaysAfterLastEventId();
@@ -25098,6 +25180,7 @@ async function main() {
   await testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata();
   await testWindowsUpdateCheckSkipsInstallerOnlyRelease();
   await testCurrentSubscriptionPrefersEffectiveSubscription();
+  await testLoginRateLimitWritesDoNotUseInteractiveTransaction();
   await testClientVersionDoesNotUseCrossPlatformReleaseWithoutPlatform();
   await testCreateTeamMemberRejectsOwnerRole();
   await testCreateTeamMemberRejectsUniqueConflictAsConflict();

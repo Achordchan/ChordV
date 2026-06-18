@@ -36,6 +36,7 @@ type RefreshTokenWriter = {
 };
 
 const MIN_JWT_SECRET_LENGTH = 32;
+const AUTH_REFRESH_TRANSACTION_TIMEOUT_MS = 15_000;
 
 @Injectable()
 export class AuthSessionService {
@@ -72,29 +73,32 @@ export class AuthSessionService {
       throw new ForbiddenException("Current user is disabled.");
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: current.userId } });
-      if (!user || user.status !== "active") {
-        throw new ForbiddenException("Current user is disabled.");
-      }
-      if (user.authVersion !== current.user.authVersion) {
-        throw new UnauthorizedException("Refresh token is stale; please sign in again.");
-      }
+    return this.prisma.$transaction(
+      async (tx) => {
+        const user = await tx.user.findUnique({ where: { id: current.userId } });
+        if (!user || user.status !== "active") {
+          throw new ForbiddenException("Current user is disabled.");
+        }
+        if (user.authVersion !== current.user.authVersion) {
+          throw new UnauthorizedException("Refresh token is stale; please sign in again.");
+        }
 
-      const rotated = await tx.refreshToken.updateMany({
-        where: {
-          id: current.id,
-          revokedAt: null,
-          expiresAt: { gt: new Date() }
-        },
-        data: { revokedAt: new Date() }
-      });
-      if (rotated.count !== 1) {
-        throw new UnauthorizedException("Refresh token is no longer valid.");
-      }
+        const rotated = await tx.refreshToken.updateMany({
+          where: {
+            id: current.id,
+            revokedAt: null,
+            expiresAt: { gt: new Date() }
+          },
+          data: { revokedAt: new Date() }
+        });
+        if (rotated.count !== 1) {
+          throw new UnauthorizedException("Refresh token is no longer valid.");
+        }
 
-      return this.createSessionForUser(user, tx);
-    });
+        return this.createSessionForUser(user, tx);
+      },
+      { timeout: AUTH_REFRESH_TRANSACTION_TIMEOUT_MS }
+    );
   }
 
   async authenticateAccessToken(authorization?: string): Promise<UserProfileDto> {
