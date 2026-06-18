@@ -1688,6 +1688,53 @@ async function testUpdateUserReturnsPendingWhenResponseRefreshStalls() {
   assert.match(result.panelSyncMessage ?? "", /still running in background/);
 }
 
+async function testListAdminUsersMapsLocalReadFailure() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findMany: async () => {
+          throw new Error("admin user list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listAdminUsers(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/admin user list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin user list local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testCreateSubscriptionMapsPreflightUserReadFailure() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findUnique: async () => {
+          throw new Error("subscription preflight user read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createSubscription({
+        userId: "user_1",
+        planId: "plan_1",
+        expireAt: new Date(Date.now() + 86_400_000).toISOString()
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/subscription preflight user read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "subscription preflight user read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken() {
   const refreshUpdates: Array<Record<string, any>> = [];
   const service = createAuthSessionService({
@@ -7649,6 +7696,48 @@ async function testDeleteNodeMapsLocalSaveFailure() {
   assert.equal(leaseQueued, false);
   assert.equal(panelCleanupStarted, false);
   assert.equal(publishStarted, false);
+}
+
+async function testListAdminNodesMapsLocalReadFailure() {
+  const service = createAdminNodeService({
+    prisma: {
+      node: {
+        findMany: async () => {
+          throw new Error("node list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listAdminNodes(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/node list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node list local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateNodeMapsLocalReadFailure() {
+  const service = createAdminNodeService({
+    prisma: {
+      node: {
+        findUnique: async () => {
+          throw new Error("node read failed before update");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateNode("node_1", { name: "Node" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/node read failed before update/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node pre-update read failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
@@ -26449,6 +26538,8 @@ async function main() {
   await testUpdateUserSecurityReturnsPendingWhenLeaseEnforcementStalls();
   await testUpdateUserReturnsPendingWhenResponseRefreshFails();
   await testUpdateUserReturnsPendingWhenResponseRefreshStalls();
+  await testListAdminUsersMapsLocalReadFailure();
+  await testCreateSubscriptionMapsPreflightUserReadFailure();
   await testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken();
   await testRefreshTokenRotationUsesExtendedTransactionTimeout();
   await testAccessTokenLogoutRevokesOnlyBoundSession();
@@ -26554,6 +26645,8 @@ async function main() {
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();
   await testDeleteNodeMapsLocalSaveFailure();
+  await testListAdminNodesMapsLocalReadFailure();
+  await testUpdateNodeMapsLocalReadFailure();
   await testProbeAllNodesContinuesWhenSingleNodeProbeFails();
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();

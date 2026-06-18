@@ -49,29 +49,13 @@ export class AdminNodeService {
   ) {}
 
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
-    const rows = await this.prisma.node.findMany({
-      orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
-    });
-    const jobCounts = await this.prisma.panelSyncJob.groupBy({
-      by: ["nodeId", "status"],
-      where: {
-        status: { in: ["pending", "running", "failed"] }
-      },
-      _count: { _all: true }
-    });
-    const recentFailedJobs = await this.prisma.panelSyncJob.findMany({
-      where: {
-        status: "failed",
-        lastError: { not: null }
-      },
-      select: {
-        nodeId: true,
-        lastError: true,
-        updatedAt: true
-      },
-      orderBy: [{ updatedAt: "desc" }],
-      take: NODE_PANEL_SYNC_RECENT_ERROR_LIMIT
-    });
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findMany({
+        orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
+      }),
+      "节点列表读取失败，请刷新后重试。"
+    );
+    const { jobCounts, recentFailedJobs } = await this.readNodePanelSyncSummaryBestEffort();
     const summaryByNode = new Map<
       string,
       { pending: number; running: number; failed: number; lastError: string | null }
@@ -110,21 +94,55 @@ export class AdminNodeService {
     });
   }
 
-  async listPanelSyncJobs(): Promise<AdminPanelSyncJobDto[]> {
-    const rows = await this.prisma.panelSyncJob.findMany({
-      where: {
-        status: { in: ["pending", "running", "failed"] }
-      },
-      include: {
-        node: {
+  private async readNodePanelSyncSummaryBestEffort() {
+    try {
+      const [jobCounts, recentFailedJobs] = await Promise.all([
+        this.prisma.panelSyncJob.groupBy({
+          by: ["nodeId", "status"],
+          where: {
+            status: { in: ["pending", "running", "failed"] }
+          },
+          _count: { _all: true }
+        }),
+        this.prisma.panelSyncJob.findMany({
+          where: {
+            status: "failed",
+            lastError: { not: null }
+          },
           select: {
-            name: true
+            nodeId: true,
+            lastError: true,
+            updatedAt: true
+          },
+          orderBy: [{ updatedAt: "desc" }],
+          take: NODE_PANEL_SYNC_RECENT_ERROR_LIMIT
+        })
+      ]);
+      return { jobCounts, recentFailedJobs };
+    } catch (error) {
+      this.logger.warn(`Node list loaded without panel sync summary: ${readAdminNodeErrorMessage(error)}`);
+      return { jobCounts: [], recentFailedJobs: [] };
+    }
+  }
+
+  async listPanelSyncJobs(): Promise<AdminPanelSyncJobDto[]> {
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.panelSyncJob.findMany({
+        where: {
+          status: { in: ["pending", "running", "failed"] }
+        },
+        include: {
+          node: {
+            select: {
+              name: true
+            }
           }
-        }
-      },
-      orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
-      take: 200
-    });
+        },
+        orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
+        take: 200
+      }),
+      "面板同步队列读取失败，请刷新后重试。"
+    );
 
     return rows.map((row) => ({
       id: row.id,
@@ -144,19 +162,22 @@ export class AdminNodeService {
   }
 
   async retryPanelSyncJob(jobId: string): Promise<AdminPanelSyncJobDto[]> {
-    const updated = await this.prisma.panelSyncJob.updateMany({
-      where: {
-        id: jobId,
-        status: { in: ["pending", "failed"] }
-      },
-      data: {
-        status: "pending",
-        nextRunAt: new Date(),
-        lockedAt: null,
-        completedAt: null,
-        lastError: null
-      }
-    });
+    const updated = await runAdminNodeLocalOperation(
+      () => this.prisma.panelSyncJob.updateMany({
+        where: {
+          id: jobId,
+          status: { in: ["pending", "failed"] }
+        },
+        data: {
+          status: "pending",
+          nextRunAt: new Date(),
+          lockedAt: null,
+          completedAt: null,
+          lastError: null
+        }
+      }),
+      "面板同步任务重试保存失败，请稍后重试。"
+    );
     if (updated.count === 0) {
       throw new NotFoundException("面板同步任务不存在或已完成");
     }
@@ -164,19 +185,22 @@ export class AdminNodeService {
   }
 
   async retryPanelSyncJobsForNode(nodeId: string): Promise<AdminPanelSyncJobDto[]> {
-    const updated = await this.prisma.panelSyncJob.updateMany({
-      where: {
-        nodeId,
-        status: { in: ["pending", "failed"] }
-      },
-      data: {
-        status: "pending",
-        nextRunAt: new Date(),
-        lockedAt: null,
-        completedAt: null,
-        lastError: null
-      }
-    });
+    const updated = await runAdminNodeLocalOperation(
+      () => this.prisma.panelSyncJob.updateMany({
+        where: {
+          nodeId,
+          status: { in: ["pending", "failed"] }
+        },
+        data: {
+          status: "pending",
+          nextRunAt: new Date(),
+          lockedAt: null,
+          completedAt: null,
+          lastError: null
+        }
+      }),
+      "节点面板同步任务重试保存失败，请稍后重试。"
+    );
     if (updated.count === 0) {
       throw new NotFoundException("该节点暂无可重试的面板同步任务");
     }
@@ -184,21 +208,26 @@ export class AdminNodeService {
   }
 
   async listLeaseRevocationJobs(): Promise<AdminLeaseRevocationJobDto[]> {
-    const rows = await this.prisma.leaseRevocationJob.findMany({
-      where: {
-        status: { in: ["pending", "running", "failed"] }
-      },
-      orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
-      take: 200
-    });
+    const rows = await runAdminNodeLocalOperation(
+      () => this.prisma.leaseRevocationJob.findMany({
+        where: {
+          status: { in: ["pending", "running", "failed"] }
+        },
+        orderBy: [{ status: "asc" }, { nextRunAt: "asc" }, { createdAt: "desc" }],
+        take: 200
+      }),
+      "连接撤销队列读取失败，请刷新后重试。"
+    );
     const nodeIds = Array.from(new Set(rows.map((row) => row.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId))));
-    const nodes =
-      nodeIds.length > 0
-        ? await this.prisma.node.findMany({
+    const nodes = nodeIds.length > 0
+      ? await runAdminNodeLocalOperation(
+          () => this.prisma.node.findMany({
             where: { id: { in: nodeIds } },
             select: { id: true, name: true }
-          })
-        : [];
+          }),
+          "连接撤销队列节点信息读取失败，请刷新后重试。"
+        )
+      : [];
     const nodeNameById = new Map(nodes.map((node) => [node.id, node.name]));
 
     return rows.map((row) => ({
@@ -220,19 +249,22 @@ export class AdminNodeService {
   }
 
   async retryLeaseRevocationJob(jobId: string): Promise<AdminLeaseRevocationJobDto[]> {
-    const updated = await this.prisma.leaseRevocationJob.updateMany({
-      where: {
-        id: jobId,
-        status: { in: ["pending", "failed"] }
-      },
-      data: {
-        status: "pending",
-        nextRunAt: new Date(),
-        lockedAt: null,
-        completedAt: null,
-        lastError: null
-      }
-    });
+    const updated = await runAdminNodeLocalOperation(
+      () => this.prisma.leaseRevocationJob.updateMany({
+        where: {
+          id: jobId,
+          status: { in: ["pending", "failed"] }
+        },
+        data: {
+          status: "pending",
+          nextRunAt: new Date(),
+          lockedAt: null,
+          completedAt: null,
+          lastError: null
+        }
+      }),
+      "连接撤销任务重试保存失败，请稍后重试。"
+    );
     if (updated.count === 0) {
       throw new NotFoundException("连接撤销任务不存在或已完成");
     }
@@ -240,19 +272,22 @@ export class AdminNodeService {
   }
 
   async retryLeaseRevocationJobsForNode(nodeId: string): Promise<AdminLeaseRevocationJobDto[]> {
-    const updated = await this.prisma.leaseRevocationJob.updateMany({
-      where: {
-        nodeId,
-        status: { in: ["pending", "failed"] }
-      },
-      data: {
-        status: "pending",
-        nextRunAt: new Date(),
-        lockedAt: null,
-        completedAt: null,
-        lastError: null
-      }
-    });
+    const updated = await runAdminNodeLocalOperation(
+      () => this.prisma.leaseRevocationJob.updateMany({
+        where: {
+          nodeId,
+          status: { in: ["pending", "failed"] }
+        },
+        data: {
+          status: "pending",
+          nextRunAt: new Date(),
+          lockedAt: null,
+          completedAt: null,
+          lastError: null
+        }
+      }),
+      "节点连接撤销任务重试保存失败，请稍后重试。"
+    );
     if (updated.count === 0) {
       throw new NotFoundException("该节点暂无可重试的连接撤销任务");
     }
@@ -273,7 +308,10 @@ export class AdminNodeService {
     });
     const imported = await this.resolveNodeRuntimeSource(input, panelEnabled);
     const nodeId = toNodeId(imported.serverHost, imported.serverPort);
-    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    const current = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
+      "节点信息读取失败，请稍后重试。"
+    );
     const nextPanelBaseUrl = panelBaseUrl ?? current?.panelBaseUrl ?? null;
     const nextPanelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/");
     const nextPanelUsername = panelUsername ?? current?.panelUsername ?? null;
@@ -535,7 +573,10 @@ export class AdminNodeService {
   }
 
   async updateNode(nodeId: string, input: UpdateNodeInputDto): Promise<AdminNodeRecordDto> {
-    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    const current = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
+      "节点信息读取失败，请稍后重试。"
+    );
     if (!current) {
       throw new NotFoundException("节点不存在");
     }
@@ -765,7 +806,10 @@ export class AdminNodeService {
   }
 
   async refreshNode(nodeId: string): Promise<AdminNodeRecordDto> {
-    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    const current = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
+      "节点信息读取失败，请稍后重试。"
+    );
     if (!current) {
       throw new NotFoundException("节点不存在");
     }
@@ -914,7 +958,10 @@ export class AdminNodeService {
   }
 
   async probeNode(nodeId: string): Promise<AdminNodeRecordDto> {
-    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    const current = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
+      "节点信息读取失败，请稍后重试。"
+    );
     if (!current) {
       throw new NotFoundException("节点不存在");
     }
@@ -1039,7 +1086,10 @@ export class AdminNodeService {
   }
 
   async probeAllNodes() {
-    const nodes = await this.prisma.node.findMany({ orderBy: { createdAt: "desc" } });
+    const nodes = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findMany({ orderBy: { createdAt: "desc" } }),
+      "节点列表读取失败，请刷新后重试。"
+    );
     const results = new Array<AdminNodeRecordDto>(nodes.length);
     let nextIndex = 0;
     const requestBudgetMs = readBulkNodeProbeRequestBudgetMs();
@@ -1189,7 +1239,10 @@ export class AdminNodeService {
   }
 
   async deleteNode(nodeId: string) {
-    const current = await this.prisma.node.findUnique({ where: { id: nodeId } });
+    const current = await runAdminNodeLocalOperation(
+      () => this.prisma.node.findUnique({ where: { id: nodeId } }),
+      "节点信息读取失败，请稍后重试。"
+    );
     if (!current) {
       throw new NotFoundException("节点不存在");
     }
@@ -1411,6 +1464,14 @@ export class AdminNodeService {
 
 function readAdminNodeErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+}
+
+async function runAdminNodeLocalOperation<T>(operation: () => Promise<T>, message: string): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throwLocalSaveAsServiceUnavailable(error, message);
+  }
 }
 
 function withNodePanelSyncPending(record: AdminNodeRecordDto): AdminNodeRecordDto {

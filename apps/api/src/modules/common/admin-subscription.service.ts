@@ -188,30 +188,33 @@ export class AdminSubscriptionService {
   }
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
-    const [rows, panelSyncJobs] = await Promise.all([
-      this.prisma.user.findMany({
-        include: {
-          subscriptions: {
-            include: { plan: true },
-            orderBy: [{ createdAt: "desc" }]
-          },
-          teamMemberships: {
-            include: {
-              team: {
-                include: {
-                  subscriptions: {
-                    include: { plan: true },
-                    orderBy: [{ createdAt: "desc" }]
+    const [rows, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
+      () => Promise.all([
+        this.prisma.user.findMany({
+          include: {
+            subscriptions: {
+              include: { plan: true },
+              orderBy: [{ createdAt: "desc" }]
+            },
+            teamMemberships: {
+              include: {
+                team: {
+                  include: {
+                    subscriptions: {
+                      include: { plan: true },
+                      orderBy: [{ createdAt: "desc" }]
+                    }
                   }
                 }
               }
             }
-          }
-        },
-        orderBy: { createdAt: "asc" }
-      }),
-      this.listActivePanelSyncJobs()
-    ]);
+          },
+          orderBy: { createdAt: "asc" }
+        }),
+        this.listActivePanelSyncJobs()
+      ]),
+      "用户列表加载失败，请稍后重试。"
+    );
     const panelSyncByUserId = buildPanelSyncSummaryMap(panelSyncJobs, "userId");
 
     return rows.map((row) => {
@@ -584,18 +587,21 @@ export class AdminSubscriptionService {
   }
 
   async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
-    const [rows, panelSyncJobs] = await Promise.all([
-      this.prisma.subscription.findMany({
-        include: {
-          plan: true,
-          user: true,
-          team: true,
-          nodeAccesses: true
-        },
-        orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-      }),
-      this.listActivePanelSyncJobs()
-    ]);
+    const [rows, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
+      () => Promise.all([
+        this.prisma.subscription.findMany({
+          include: {
+            plan: true,
+            user: true,
+            team: true,
+            nodeAccesses: true
+          },
+          orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+        }),
+        this.listActivePanelSyncJobs()
+      ]),
+      "订阅列表加载失败，请稍后重试。"
+    );
     const panelSyncBySubscriptionId = buildPanelSyncSummaryMap(panelSyncJobs, "subscriptionId");
     return rows.map((row) => withPanelSyncSummary(toAdminSubscriptionRecord(row), panelSyncBySubscriptionId.get(row.id)));
   }
@@ -1041,23 +1047,26 @@ export class AdminSubscriptionService {
   }
 
   async listAdminTeams(): Promise<AdminTeamRecordDto[]> {
-    const [teams, panelSyncJobs] = await Promise.all([
-      this.prisma.team.findMany({
-        include: {
-          owner: true,
-          members: {
-            include: { user: true },
-            orderBy: { createdAt: "asc" }
+    const [teams, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
+      () => Promise.all([
+        this.prisma.team.findMany({
+          include: {
+            owner: true,
+            members: {
+              include: { user: true },
+              orderBy: { createdAt: "asc" }
+            },
+            subscriptions: {
+              include: { plan: true },
+              orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+            }
           },
-          subscriptions: {
-            include: { plan: true },
-            orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-          }
-        },
-        orderBy: { createdAt: "asc" }
-      }),
-      this.listActivePanelSyncJobs()
-    ]);
+          orderBy: { createdAt: "asc" }
+        }),
+        this.listActivePanelSyncJobs()
+      ]),
+      "Team 列表加载失败，请稍后重试。"
+    );
     const panelSyncByTeamId = buildPanelSyncSummaryMap(panelSyncJobs, "teamId");
     return teams.map((team) =>
       withPanelSyncSummary(toAdminTeamRecord({
@@ -1086,25 +1095,31 @@ export class AdminSubscriptionService {
       return result;
     }
 
-    const rows = await this.prisma.trafficLedger.groupBy({
-      by: ["teamId", "userId", "subscriptionId", "nodeId"],
-      where: { teamId: { in: teamIds } },
-      _sum: { usedTrafficGb: true },
-      _count: { _all: true },
-      _max: { recordedAt: true }
-    });
+    const rows = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.trafficLedger.groupBy({
+        by: ["teamId", "userId", "subscriptionId", "nodeId"],
+        where: { teamId: { in: teamIds } },
+        _sum: { usedTrafficGb: true },
+        _count: { _all: true },
+        _max: { recordedAt: true }
+      }),
+      "Team 用量加载失败，请稍后重试。"
+    );
     const userIds = Array.from(new Set(rows.map((row) => row.userId)));
     const nodeIds = Array.from(new Set(rows.map((row) => row.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId))));
-    const [users, nodes] = await Promise.all([
-      this.prisma.user.findMany({
-        where: { id: { in: userIds } },
-        select: { id: true, displayName: true, email: true }
-      }),
-      this.prisma.node.findMany({
-        where: { id: { in: nodeIds } },
-        select: { id: true, name: true, region: true }
-      })
-    ]);
+    const [users, nodes] = await runAdminSubscriptionLocalOperation(
+      () => Promise.all([
+        this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, displayName: true, email: true }
+        }),
+        this.prisma.node.findMany({
+          where: { id: { in: nodeIds } },
+          select: { id: true, name: true, region: true }
+        })
+      ]),
+      "Team 用量明细加载失败，请稍后重试。"
+    );
     const userById = new Map(users.map((user) => [user.id, user]));
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
@@ -2564,13 +2579,16 @@ export class AdminSubscriptionService {
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
-    const rows = await this.prisma.subscription.findMany({
-      where: {
-        userId
-      },
-      include: { plan: true, user: true, team: true, nodeAccesses: true },
-      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-    });
+    const rows = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.subscription.findMany({
+        where: {
+          userId
+        },
+        include: { plan: true, user: true, team: true, nodeAccesses: true },
+        orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+      }),
+      "用户订阅读取失败，请稍后重试。"
+    );
     return pickCurrentSubscription(rows as SubscriptionWithSecurityPlan[]);
   }
 
@@ -2586,11 +2604,14 @@ export class AdminSubscriptionService {
   }
 
   private async findCurrentTeamSubscription(teamId: string) {
-    const rows = await this.prisma.subscription.findMany({
-      where: { teamId },
-      include: { plan: true, user: true, team: true, nodeAccesses: true },
-      orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
-    });
+    const rows = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.subscription.findMany({
+        where: { teamId },
+        include: { plan: true, user: true, team: true, nodeAccesses: true },
+        orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+      }),
+      "Team 订阅读取失败，请稍后重试。"
+    );
     return pickCurrentSubscription(rows);
   }
 
@@ -2641,9 +2662,12 @@ export class AdminSubscriptionService {
   }
 
   private async getUserMembership(userId: string) {
-    return this.prisma.teamMember.findUnique({
-      where: { userId }
-    });
+    return runAdminSubscriptionLocalOperation(
+      () => this.prisma.teamMember.findUnique({
+        where: { userId }
+      }),
+      "用户 Team 关系读取失败，请稍后重试。"
+    );
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
@@ -2654,7 +2678,10 @@ export class AdminSubscriptionService {
   }
 
   private async ensureUserExists(userId: string) {
-    const row = await this.prisma.user.findUnique({ where: { id: userId } });
+    const row = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.user.findUnique({ where: { id: userId } }),
+      "用户信息读取失败，请稍后重试。"
+    );
     if (!row) {
       throw new NotFoundException("用户不存在");
     }
@@ -2729,7 +2756,10 @@ export class AdminSubscriptionService {
   }
 
   private async ensurePlanExists(planId: string) {
-    const row = await this.prisma.plan.findUnique({ where: { id: planId } });
+    const row = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.plan.findUnique({ where: { id: planId } }),
+      "套餐信息读取失败，请稍后重试。"
+    );
     if (!row) {
       throw new NotFoundException("套餐不存在");
     }
@@ -2737,15 +2767,18 @@ export class AdminSubscriptionService {
   }
 
   private async requireSubscription(subscriptionId: string) {
-    const row = await this.prisma.subscription.findUnique({
-      where: { id: subscriptionId },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      }
-    });
+    const row = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.subscription.findUnique({
+        where: { id: subscriptionId },
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        }
+      }),
+      "订阅信息读取失败，请稍后重试。"
+    );
     if (!row) {
       throw new NotFoundException("订阅不存在");
     }
@@ -2753,7 +2786,10 @@ export class AdminSubscriptionService {
   }
 
   private async requireTeam(teamId: string) {
-    const row = await this.prisma.team.findUnique({ where: { id: teamId } });
+    const row = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.team.findUnique({ where: { id: teamId } }),
+      "Team 信息读取失败，请稍后重试。"
+    );
     if (!row) {
       throw new NotFoundException("团队不存在");
     }
@@ -2845,25 +2881,28 @@ export class AdminSubscriptionService {
   }
 
   private async loadBasicTeamRecord(teamId: string): Promise<AdminTeamRecordDto> {
-    const row = await this.prisma.team.findUnique({
-      where: { id: teamId },
-      include: {
-        owner: {
-          select: { displayName: true, email: true }
-        },
-        members: {
-          include: {
-            user: {
-              select: { email: true, displayName: true }
+    const row = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.team.findUnique({
+        where: { id: teamId },
+        include: {
+          owner: {
+            select: { displayName: true, email: true }
+          },
+          members: {
+            include: {
+              user: {
+                select: { email: true, displayName: true }
+              }
             }
+          },
+          subscriptions: {
+            include: { plan: true },
+            orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
           }
-        },
-        subscriptions: {
-          include: { plan: true },
-          orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
         }
-      }
-    });
+      }),
+      "Team 信息读取失败，请稍后重试。"
+    );
     if (!row) {
       throw new NotFoundException("Team not found");
     }
@@ -2874,9 +2913,12 @@ export class AdminSubscriptionService {
   }
 
   private async requireTeamMember(memberId: string) {
-    const row = await this.prisma.teamMember.findUnique({
-      where: { id: memberId }
-    });
+    const row = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.teamMember.findUnique({
+        where: { id: memberId }
+      }),
+      "Team 成员信息读取失败，请稍后重试。"
+    );
     if (!row) {
       throw new NotFoundException("团队成员不存在");
     }
@@ -3211,4 +3253,18 @@ function toAdminLocalSaveHttpError(error: unknown, message: string) {
     return toPrismaTransientHttpError(error, message) ?? new ServiceUnavailableException(message);
   }
   return new ServiceUnavailableException(message);
+}
+
+async function runAdminSubscriptionLocalOperation<T>(operation: () => Promise<T>, message: string): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+    if (isPrismaCodedError(error)) {
+      throw toPrismaTransientHttpError(error, message) ?? new ServiceUnavailableException(message);
+    }
+    throw new ServiceUnavailableException(message);
+  }
 }
