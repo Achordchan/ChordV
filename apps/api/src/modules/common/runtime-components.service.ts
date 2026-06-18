@@ -19,7 +19,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { PrismaService } from "./prisma.service";
-import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { AuthSessionService } from "./auth-session.service";
 import { moveUploadedFile } from "./upload-file.utils";
 import { readZipEntryData } from "./release-center.utils";
@@ -59,10 +59,14 @@ export class RuntimeComponentsService {
   ) {}
 
   async listAdminRuntimeComponents(): Promise<AdminRuntimeComponentRecordDto[]> {
-    const rows = await this.prisma.runtimeComponent.findMany({
-      orderBy: [{ updatedAt: "desc" }, { platform: "asc" }, { architecture: "asc" }, { kind: "asc" }]
-    });
-    return dedupeSharedRulesets(rows).map(toAdminRuntimeComponentRecord);
+    try {
+      const rows = await this.prisma.runtimeComponent.findMany({
+        orderBy: [{ updatedAt: "desc" }, { platform: "asc" }, { architecture: "asc" }, { kind: "asc" }]
+      });
+      return dedupeSharedRulesets(rows).map(toAdminRuntimeComponentRecord);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Runtime component list is temporarily unavailable.");
+    }
   }
 
   async createAdminRuntimeComponent(input: CreateRuntimeComponentInputDto): Promise<AdminRuntimeComponentRecordDto> {
@@ -330,9 +334,14 @@ export class RuntimeComponentsService {
   }
 
   async validateAdminRuntimeComponent(componentId: string): Promise<AdminRuntimeComponentValidationDto> {
-    const component = await this.prisma.runtimeComponent.findUnique({
-      where: { id: componentId }
-    });
+    let component: Awaited<ReturnType<typeof this.prisma.runtimeComponent.findUnique>>;
+    try {
+      component = await this.prisma.runtimeComponent.findUnique({
+        where: { id: componentId }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Runtime component detail is temporarily unavailable.");
+    }
     if (!component) {
       throw new NotFoundException("内核组件不存在");
     }
@@ -397,13 +406,18 @@ export class RuntimeComponentsService {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       throw new BadRequestException("Runtime failure report limit must be an integer between 1 and 200.");
     }
-    const rows = await this.prisma.runtimeComponentFailureReport.findMany({
-      orderBy: [{ createdAt: "desc" }],
-      take: limit,
-      include: {
-        component: true
-      }
-    });
+    let rows: any[];
+    try {
+      rows = await this.prisma.runtimeComponentFailureReport.findMany({
+        orderBy: [{ createdAt: "desc" }],
+        take: limit,
+        include: {
+          component: true
+        }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Runtime failure report list is temporarily unavailable.");
+    }
     return rows.map((row) => ({
       id: row.id,
       componentId: row.componentId,
@@ -423,24 +437,29 @@ export class RuntimeComponentsService {
   }
 
   async getClientRuntimeComponentsPlan(input: ClientRuntimeComponentsPlanInputDto): Promise<ClientRuntimeComponentsPlanDto> {
-    const runtimeRows = await this.prisma.runtimeComponent.findMany({
-      where: {
-        platform: input.platform,
-        architecture: input.architecture,
-        kind: "xray",
-        enabled: true
-      },
-      orderBy: [{ kind: "asc" }]
-    });
-    const sharedRulesetRows = dedupeSharedRulesets(
-      await this.prisma.runtimeComponent.findMany({
+    let runtimeRows: Awaited<ReturnType<typeof this.prisma.runtimeComponent.findMany>>;
+    let sharedRuleRowsRaw: Awaited<ReturnType<typeof this.prisma.runtimeComponent.findMany>>;
+    try {
+      runtimeRows = await this.prisma.runtimeComponent.findMany({
+        where: {
+          platform: input.platform,
+          architecture: input.architecture,
+          kind: "xray",
+          enabled: true
+        },
+        orderBy: [{ kind: "asc" }]
+      });
+      sharedRuleRowsRaw = await this.prisma.runtimeComponent.findMany({
         where: {
           kind: { in: ["geoip", "geosite"] },
           enabled: true
         },
         orderBy: [{ updatedAt: "desc" }]
-      })
-    );
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Runtime component plan is temporarily unavailable.");
+    }
+    const sharedRulesetRows = dedupeSharedRulesets(sharedRuleRowsRaw);
     const rows = await filterClientUsableRuntimeComponents([...runtimeRows, ...sharedRulesetRows]);
 
     if (!hasCompleteRuntimeComponentSet(rows)) {
@@ -516,10 +535,15 @@ export class RuntimeComponentsService {
 
     const componentId = normalizeNullableText(input.componentId);
     if (componentId) {
-      const component = await this.prisma.runtimeComponent.findUnique({
-        where: { id: componentId },
-        select: { id: true }
-      });
+      let component: { id: string } | null;
+      try {
+        component = await this.prisma.runtimeComponent.findUnique({
+          where: { id: componentId },
+          select: { id: true }
+        });
+      } catch (error) {
+        throwLocalReadAsServiceUnavailable(error, "Runtime component detail is temporarily unavailable.");
+      }
       if (!component) {
         throw new BadRequestException("Runtime component does not exist.");
       }
@@ -548,9 +572,14 @@ export class RuntimeComponentsService {
   }
 
   async getRuntimeComponentDownloadDescriptor(componentId: string) {
-    const component = await this.prisma.runtimeComponent.findUnique({
-      where: { id: componentId }
-    });
+    let component: Awaited<ReturnType<typeof this.prisma.runtimeComponent.findUnique>>;
+    try {
+      component = await this.prisma.runtimeComponent.findUnique({
+        where: { id: componentId }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Runtime component download lookup is temporarily unavailable.");
+    }
     if (!component || component.source !== "uploaded" || !component.storedFilePath || !component.enabled) {
       throw new NotFoundException("内核组件不存在");
     }
@@ -562,9 +591,14 @@ export class RuntimeComponentsService {
   }
 
   private async ensureRuntimeComponentExists(componentId: string) {
-    const existing = await this.prisma.runtimeComponent.findUnique({
-      where: { id: componentId }
-    });
+    let existing: Awaited<ReturnType<typeof this.prisma.runtimeComponent.findUnique>>;
+    try {
+      existing = await this.prisma.runtimeComponent.findUnique({
+        where: { id: componentId }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Runtime component detail is temporarily unavailable.");
+    }
     if (!existing) {
       throw new NotFoundException("内核组件不存在");
     }
@@ -575,10 +609,14 @@ export class RuntimeComponentsService {
     if (!isSharedRuleset(kind)) {
       return null;
     }
-    return this.prisma.runtimeComponent.findFirst({
-      where: { kind },
-      orderBy: [{ updatedAt: "desc" }]
-    });
+    try {
+      return await this.prisma.runtimeComponent.findFirst({
+        where: { kind },
+        orderBy: [{ updatedAt: "desc" }]
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Shared runtime ruleset lookup is temporarily unavailable.");
+    }
   }
 
   private async validateRemoteRuntimeComponentHash(

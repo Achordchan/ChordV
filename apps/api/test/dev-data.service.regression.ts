@@ -26184,6 +26184,149 @@ async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
   assert.equal((result as { id: string }).id, "ticket_1");
 }
 
+async function testClientSupportTicketListMapsLocalReadFailure() {
+  const service = createClientTicketService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findMany: async () => {
+          throw new Error("client ticket list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listClientSupportTickets("token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/client ticket list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "client ticket list read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testAdminSupportTicketListMapsLocalReadFailure() {
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findMany: async () => {
+          throw new Error("admin ticket list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listAdminSupportTickets(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/admin ticket list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin ticket list read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testReleaseListMapsLocalReadFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findMany: async () => {
+          throw new Error("release list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listAdminReleases(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release list read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testClientUpdateCheckMapsLocalReadFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findMany: async () => {
+          throw new Error("release candidates local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.checkClientUpdate({
+        currentVersion: "1.1.6",
+        platform: "windows",
+        channel: "stable"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release candidates local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "client update release reads must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRuntimeComponentListMapsLocalReadFailure() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async () => {
+          throw new Error("runtime component list local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listAdminRuntimeComponents(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime component list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component list read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRuntimePlanMapsLocalReadFailure() {
+  let calls = 0;
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async () => {
+          calls += 1;
+          if (calls === 1) {
+            return [];
+          }
+          throw new Error("runtime shared ruleset local read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.getClientRuntimeComponentsPlan({
+        platform: "windows",
+        architecture: "x64"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime shared ruleset local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component plan reads must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testClientCreateSupportTicketMapsLocalSaveFailure() {
   const service = createClientTicketService({
     authSessionService: {
@@ -26992,6 +27135,12 @@ async function main() {
   await testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
+  await testClientSupportTicketListMapsLocalReadFailure();
+  await testAdminSupportTicketListMapsLocalReadFailure();
+  await testReleaseListMapsLocalReadFailure();
+  await testClientUpdateCheckMapsLocalReadFailure();
+  await testRuntimeComponentListMapsLocalReadFailure();
+  await testRuntimePlanMapsLocalReadFailure();
   await testClientCreateSupportTicketMapsLocalSaveFailure();
   await testClientReplySupportTicketMapsLocalSaveFailure();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();

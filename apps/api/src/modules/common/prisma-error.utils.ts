@@ -57,6 +57,13 @@ export function throwLocalSaveAsServiceUnavailable(error: unknown, message: stri
   throw new ServiceUnavailableException(message);
 }
 
+export function throwLocalReadAsServiceUnavailable(error: unknown, message: string): never {
+  if (error instanceof HttpException) {
+    throw error;
+  }
+  throw new ServiceUnavailableException(message);
+}
+
 function readErrorMessage(error: unknown) {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;

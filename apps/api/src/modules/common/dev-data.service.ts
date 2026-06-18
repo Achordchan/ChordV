@@ -126,7 +126,7 @@ import {
   toNodeSummary
 } from "./node-import.utils";
 import { PrismaService } from "./prisma.service";
-import { toPrismaTransientHttpError, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalReadAsServiceUnavailable, toPrismaTransientHttpError, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { createId } from "./release-center.utils";
 import { ReleaseCenterService } from "./release-center.service";
 import {
@@ -532,15 +532,21 @@ export class DevDataService implements OnModuleInit {
 
   async getAdminDashboard(): Promise<DashboardSnapshotDto> {
     const now = new Date();
-    const [users, teams, activePlans, activeSubscriptions, activeNodes, announcements, ticketCounts] = await Promise.all([
-      this.prisma.user.count(),
-      this.prisma.team.count(),
-      this.prisma.plan.count({ where: { isActive: true } }),
-      this.prisma.subscription.count({ where: { state: "active", expireAt: { gt: now }, remainingTrafficGb: { gt: 0 } } }),
-      this.prisma.node.count({ where: { isActive: true } }),
-      this.prisma.announcement.count({ where: { isActive: true, publishedAt: { lte: now } } }),
-      this.getSupportTicketDashboardCounts()
-    ]);
+    let counts: [number, number, number, number, number, number, Awaited<ReturnType<typeof this.getSupportTicketDashboardCounts>>];
+    try {
+      counts = await Promise.all([
+        this.prisma.user.count(),
+        this.prisma.team.count(),
+        this.prisma.plan.count({ where: { isActive: true } }),
+        this.prisma.subscription.count({ where: { state: "active", expireAt: { gt: now }, remainingTrafficGb: { gt: 0 } } }),
+        this.prisma.node.count({ where: { isActive: true } }),
+        this.prisma.announcement.count({ where: { isActive: true, publishedAt: { lte: now } } }),
+        this.getSupportTicketDashboardCounts()
+      ]);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin dashboard is temporarily unavailable.");
+    }
+    const [users, teams, activePlans, activeSubscriptions, activeNodes, announcements, ticketCounts] = counts;
 
     return {
       users,
@@ -556,23 +562,27 @@ export class DevDataService implements OnModuleInit {
   }
 
   async listAdminSupportTickets(): Promise<AdminSupportTicketSummaryDto[]> {
-    const rows = await this.prisma.supportTicket.findMany({
-      include: {
-        user: {
-          select: { id: true, email: true, displayName: true }
+    try {
+      const rows = await this.prisma.supportTicket.findMany({
+        include: {
+          user: {
+            select: { id: true, email: true, displayName: true }
+          },
+          team: {
+            select: { id: true, name: true }
+          },
+          messages: {
+            select: { body: true, createdAt: true },
+            orderBy: { createdAt: "desc" },
+            take: 1
+          }
         },
-        team: {
-          select: { id: true, name: true }
-        },
-        messages: {
-          select: { body: true, createdAt: true },
-          orderBy: { createdAt: "desc" },
-          take: 1
-        }
-      },
-      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
-    });
-    return rows.map(toAdminSupportTicketSummary);
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+      });
+      return rows.map(toAdminSupportTicketSummary);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin support ticket list is temporarily unavailable.");
+    }
   }
 
   async getAdminSupportTicketDetail(ticketId: string): Promise<AdminSupportTicketDetailDto> {
@@ -594,20 +604,25 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("Reply body must not exceed 4000 characters.");
     }
 
-    const current = await this.prisma.supportTicket.findUnique({
-      where: { id: ticketId },
-      include: {
-        user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } },
-        messages: {
-          include: {
-            authorUser: { select: { id: true, email: true, displayName: true } },
-            attachments: { orderBy: { createdAt: "asc" } }
+    let current: any;
+    try {
+      current = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: {
+          user: { select: { id: true, email: true, displayName: true } },
+          team: { select: { id: true, name: true } },
+          messages: {
+            include: {
+              authorUser: { select: { id: true, email: true, displayName: true } },
+              attachments: { orderBy: { createdAt: "asc" } }
+            },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin support ticket detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
@@ -675,20 +690,25 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("Reply body must not exceed 4000 characters.");
     }
 
-    const current = await this.prisma.supportTicket.findUnique({
-      where: { id: ticketId },
-      include: {
-        user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } },
-        messages: {
-          include: {
-            authorUser: { select: { id: true, email: true, displayName: true } },
-            attachments: { orderBy: { createdAt: "asc" } }
+    let current: any;
+    try {
+      current = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: {
+          user: { select: { id: true, email: true, displayName: true } },
+          team: { select: { id: true, name: true } },
+          messages: {
+            include: {
+              authorUser: { select: { id: true, email: true, displayName: true } },
+              attachments: { orderBy: { createdAt: "asc" } }
+            },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin support ticket detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
@@ -930,20 +950,25 @@ export class DevDataService implements OnModuleInit {
   }
 
   async closeAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
-    const current = await this.prisma.supportTicket.findUnique({
-      where: { id: ticketId },
-      include: {
-        user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } },
-        messages: {
-          include: {
-            authorUser: { select: { id: true, email: true, displayName: true } },
-            attachments: { orderBy: { createdAt: "asc" } }
+    let current: any;
+    try {
+      current = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: {
+          user: { select: { id: true, email: true, displayName: true } },
+          team: { select: { id: true, name: true } },
+          messages: {
+            include: {
+              authorUser: { select: { id: true, email: true, displayName: true } },
+              attachments: { orderBy: { createdAt: "asc" } }
+            },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin support ticket detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
@@ -977,20 +1002,25 @@ export class DevDataService implements OnModuleInit {
   }
 
   async reopenAdminSupportTicket(ticketId: string): Promise<AdminSupportTicketDetailDto> {
-    const current = await this.prisma.supportTicket.findUnique({
-      where: { id: ticketId },
-      include: {
-        user: { select: { id: true, email: true, displayName: true } },
-        team: { select: { id: true, name: true } },
-        messages: {
-          include: {
-            authorUser: { select: { id: true, email: true, displayName: true } },
-            attachments: { orderBy: { createdAt: "asc" } }
+    let current: any;
+    try {
+      current = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: {
+          user: { select: { id: true, email: true, displayName: true } },
+          team: { select: { id: true, name: true } },
+          messages: {
+            include: {
+              authorUser: { select: { id: true, email: true, displayName: true } },
+              attachments: { orderBy: { createdAt: "asc" } }
+            },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin support ticket detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
@@ -1095,25 +1125,29 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async getClientSupportTicketInbox(userId: string) {
-    const rows = await this.prisma.supportTicket.findMany({
-      where: { userId },
-      select: {
-        id: true,
-        readStates: {
-          where: { userId },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
+    try {
+      const rows = await this.prisma.supportTicket.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          readStates: {
+            where: { userId },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          }
         }
-      }
-    });
-    const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
-    const unreadCount = rows.filter((row) =>
-      hasUnreadTicketMessages(latestAdminMessageMap.get(row.id) ?? null, row.readStates[0] ?? null)
-    ).length;
-    return {
-      totalCount: rows.length,
-      unreadCount
-    };
+      });
+      const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
+      const unreadCount = rows.filter((row) =>
+        hasUnreadTicketMessages(latestAdminMessageMap.get(row.id) ?? null, row.readStates[0] ?? null)
+      ).length;
+      return {
+        totalCount: rows.length,
+        unreadCount
+      };
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket inbox is temporarily unavailable.");
+    }
   }
 
   private async loadLatestAdminTicketMessageMap(ticketIds: string[]) {
@@ -1122,17 +1156,22 @@ export class DevDataService implements OnModuleInit {
     if (uniqueTicketIds.length === 0) {
       return result;
     }
-    const rows = await this.prisma.supportTicketMessage.findMany({
-      where: {
-        ticketId: { in: uniqueTicketIds },
-        authorRole: "admin"
-      },
-      select: {
-        ticketId: true,
-        createdAt: true
-      },
-      orderBy: [{ createdAt: "desc" }]
-    });
+    let rows: Array<{ ticketId: string; createdAt: Date }>;
+    try {
+      rows = await this.prisma.supportTicketMessage.findMany({
+        where: {
+          ticketId: { in: uniqueTicketIds },
+          authorRole: "admin"
+        },
+        select: {
+          ticketId: true,
+          createdAt: true
+        },
+        orderBy: [{ createdAt: "desc" }]
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket unread state is temporarily unavailable.");
+    }
     for (const row of rows) {
       if (!result.has(row.ticketId)) {
         result.set(row.ticketId, row.createdAt);
@@ -1142,33 +1181,38 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async requireClientSupportTicketDetail(ticketId: string, userId: string) {
-    const row = await this.prisma.supportTicket.findFirst({
-      where: {
-        id: ticketId,
-        userId
-      },
-      include: {
-        team: {
-          select: { id: true, name: true }
+    let row: any;
+    try {
+      row = await this.prisma.supportTicket.findFirst({
+        where: {
+          id: ticketId,
+          userId
         },
-        messages: {
-          include: {
-            authorUser: {
-              select: { id: true, email: true, displayName: true }
-            },
-            attachments: {
-              orderBy: { createdAt: "asc" }
-            }
+        include: {
+          team: {
+            select: { id: true, name: true }
           },
-          orderBy: { createdAt: "asc" }
-        },
-        readStates: {
-          where: { userId },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
+          messages: {
+            include: {
+              authorUser: {
+                select: { id: true, email: true, displayName: true }
+              },
+              attachments: {
+                orderBy: { createdAt: "asc" }
+              }
+            },
+            orderBy: { createdAt: "asc" }
+          },
+          readStates: {
+            where: { userId },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket detail is temporarily unavailable.");
+    }
     if (!row) {
       throw new NotFoundException("工单不存在");
     }
@@ -1176,28 +1220,33 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async requireAdminSupportTicketDetail(ticketId: string) {
-    const row = await this.prisma.supportTicket.findUnique({
-      where: { id: ticketId },
-      include: {
-        user: {
-          select: { id: true, email: true, displayName: true }
-        },
-        team: {
-          select: { id: true, name: true }
-        },
-        messages: {
-          include: {
-            authorUser: {
-              select: { id: true, email: true, displayName: true }
-            },
-            attachments: {
-              orderBy: { createdAt: "asc" }
-            }
+    let row: any;
+    try {
+      row = await this.prisma.supportTicket.findUnique({
+        where: { id: ticketId },
+        include: {
+          user: {
+            select: { id: true, email: true, displayName: true }
           },
-          orderBy: { createdAt: "asc" }
+          team: {
+            select: { id: true, name: true }
+          },
+          messages: {
+            include: {
+              authorUser: {
+                select: { id: true, email: true, displayName: true }
+              },
+              attachments: {
+                orderBy: { createdAt: "asc" }
+              }
+            },
+            orderBy: { createdAt: "asc" }
+          },
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Admin support ticket detail is temporarily unavailable.");
+    }
     if (!row) {
       throw new NotFoundException("工单不存在");
     }
@@ -1205,17 +1254,23 @@ export class DevDataService implements OnModuleInit {
   }
 
   private async getSupportTicketDashboardCounts() {
-    const [openTickets, waitingAdminTickets, closedTickets] = await Promise.all([
-      this.prisma.supportTicket.count({
-        where: { status: "open" }
-      }),
-      this.prisma.supportTicket.count({
-        where: { status: "waiting_admin" }
-      }),
-      this.prisma.supportTicket.count({
-        where: { status: "closed" }
-      })
-    ]);
+    let counts: [number, number, number];
+    try {
+      counts = await Promise.all([
+        this.prisma.supportTicket.count({
+          where: { status: "open" }
+        }),
+        this.prisma.supportTicket.count({
+          where: { status: "waiting_admin" }
+        }),
+        this.prisma.supportTicket.count({
+          where: { status: "closed" }
+        })
+      ]);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket dashboard counts are temporarily unavailable.");
+    }
+    const [openTickets, waitingAdminTickets, closedTickets] = counts;
 
     return {
       openTickets,

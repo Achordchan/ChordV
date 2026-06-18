@@ -18,7 +18,7 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { PrismaService } from "./prisma.service";
-import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import {
   assertReleaseArtifactClientUsable,
   assertReleaseArtifactTypeAllowed,
@@ -81,19 +81,23 @@ export class ReleaseCenterService {
   ) {}
 
   async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
-    const rows = await this.prisma.release.findMany({
-      where: {
-        ...(input?.platform ? { platform: input.platform } : {}),
-        ...(input?.status ? { status: input.status } : {})
-      },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-        }
-      },
-      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
-    });
-    return rows.map(toAdminReleaseRecord);
+    try {
+      const rows = await this.prisma.release.findMany({
+        where: {
+          ...(input?.platform ? { platform: input.platform } : {}),
+          ...(input?.status ? { status: input.status } : {})
+        },
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
+        },
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+      });
+      return rows.map(toAdminReleaseRecord);
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release list is temporarily unavailable.");
+    }
   }
 
   async createRelease(input: CreateReleaseInputDto): Promise<AdminReleaseRecordDto> {
@@ -309,12 +313,17 @@ export class ReleaseCenterService {
   }
 
   async deleteRelease(releaseId: string): Promise<{ ok: true; releaseId: string }> {
-    const release = await this.prisma.release.findUnique({
-      where: { id: releaseId },
-      include: {
-        artifacts: true
-      }
-    });
+    let release: any;
+    try {
+      release = await this.prisma.release.findUnique({
+        where: { id: releaseId },
+        include: {
+          artifacts: true
+        }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release detail is temporarily unavailable.");
+    }
     if (!release) {
       throw new NotFoundException("Release record does not exist.");
     }
@@ -322,8 +331,8 @@ export class ReleaseCenterService {
     this.assertReleaseRecordMutable(release);
 
     const storedFilePaths = release.artifacts
-      .map((artifact) => artifact.storedFilePath)
-      .filter((value): value is string => Boolean(value));
+      .map((artifact: { storedFilePath?: string | null }) => artifact.storedFilePath)
+      .filter((value: string | null | undefined): value is string => Boolean(value));
 
     try {
       await this.prisma.release.delete({
@@ -335,7 +344,7 @@ export class ReleaseCenterService {
 
     this.startReleaseCleanupBestEffort("release artifact files after release delete", async () => {
       await Promise.all(
-        storedFilePaths.map((storedFilePath) =>
+        storedFilePaths.map((storedFilePath: string) =>
           removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
         )
       );
@@ -444,9 +453,14 @@ export class ReleaseCenterService {
     artifactId: string,
     input: UpdateReleaseArtifactInputDto
   ): Promise<AdminReleaseRecordDto> {
-    const current = await this.prisma.releaseArtifact.findFirst({
-      where: { id: artifactId, releaseId }
-    });
+    let current: any;
+    try {
+      current = await this.prisma.releaseArtifact.findFirst({
+        where: { id: artifactId, releaseId }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release artifact detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("Release artifact does not exist.");
     }
@@ -680,16 +694,26 @@ export class ReleaseCenterService {
   async deleteReleaseArtifact(releaseId: string, artifactId: string): Promise<AdminReleaseRecordDto> {
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
-    const artifact = await this.prisma.releaseArtifact.findFirst({
-      where: { id: artifactId, releaseId }
-    });
+    let artifact: any;
+    try {
+      artifact = await this.prisma.releaseArtifact.findFirst({
+        where: { id: artifactId, releaseId }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release artifact detail is temporarily unavailable.");
+    }
     if (!artifact) {
       throw new NotFoundException("Release artifact does not exist.");
     }
-    const siblings = await this.prisma.releaseArtifact.findMany({
-      where: { releaseId },
-      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
-    });
+    let siblings: any[];
+    try {
+      siblings = await this.prisma.releaseArtifact.findMany({
+        where: { releaseId },
+        orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release artifact list is temporarily unavailable.");
+    }
     const nextPrimary = artifact.isPrimary ? siblings.find((item) => item.id !== artifactId) ?? null : null;
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -724,10 +748,15 @@ export class ReleaseCenterService {
   }
 
   async getReleaseArtifactDownloadDescriptor(artifactId: string) {
-    const artifact = await this.prisma.releaseArtifact.findUnique({
-      where: { id: artifactId },
-      include: { release: true }
-    });
+    let artifact: any;
+    try {
+      artifact = await this.prisma.releaseArtifact.findUnique({
+        where: { id: artifactId },
+        include: { release: true }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Installer package lookup is temporarily unavailable.");
+    }
     if (!artifact || artifact.source !== "uploaded" || !artifact.storedFilePath || artifact.release.status !== "published") {
       throw new NotFoundException("Installer package does not exist.");
     }
@@ -870,18 +899,23 @@ export class ReleaseCenterService {
   }
 
   private async findPublishedReleaseCandidates(channel: ReleaseChannel, platform?: ClientUpdateCheckDto["platform"]) {
-    const rows = await this.prisma.release.findMany({
-      where: {
-        channel,
-        status: "published",
-        ...(platform ? { platform } : {})
-      },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+    let rows: ReleaseRowLike[];
+    try {
+      rows = await this.prisma.release.findMany({
+        where: {
+          channel,
+          status: "published",
+          ...(platform ? { platform } : {})
+        },
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Published release lookup is temporarily unavailable.");
+    }
 
     if (rows.length === 0) {
       return [];
@@ -897,14 +931,19 @@ export class ReleaseCenterService {
   }
 
   private async assertReleasePublishable(releaseId: string) {
-    const release = await this.prisma.release.findUnique({
-      where: { id: releaseId },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+    let release: ReleaseRowLike | null;
+    try {
+      release = await this.prisma.release.findUnique({
+        where: { id: releaseId },
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release publish check is temporarily unavailable.");
+    }
     if (!release) {
       throw new NotFoundException("Release record does not exist.");
     }
@@ -1106,14 +1145,19 @@ export class ReleaseCenterService {
   }
 
   private async getAdminRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
-    const row = await this.prisma.release.findUnique({
-      where: { id: releaseId },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+    let row: ReleaseRowLike | null;
+    try {
+      row = await this.prisma.release.findUnique({
+        where: { id: releaseId },
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release detail is temporarily unavailable.");
+    }
     if (!row) {
       throw new NotFoundException("Release record does not exist.");
     }
@@ -1237,26 +1281,31 @@ export class ReleaseCenterService {
   }
 
   private async ensureReleaseExists(releaseId: string) {
-    const row = await this.prisma.release.findUnique({
-      where: { id: releaseId },
-      select: {
-        id: true,
-        platform: true,
-        channel: true,
-        status: true,
-        version: true,
-        displayTitle: true,
-        changelog: true,
-        minimumVersion: true,
-        forceUpgrade: true,
-        publishedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+    let row: any;
+    try {
+      row = await this.prisma.release.findUnique({
+        where: { id: releaseId },
+        select: {
+          id: true,
+          platform: true,
+          channel: true,
+          status: true,
+          version: true,
+          displayTitle: true,
+          changelog: true,
+          minimumVersion: true,
+          forceUpgrade: true,
+          publishedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release detail is temporarily unavailable.");
+    }
     if (!row) {
       throw new NotFoundException("Release record does not exist.");
     }

@@ -10,7 +10,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
-import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
@@ -51,53 +51,61 @@ export class ClientTicketService {
   ) {}
 
   async getClientSupportTicketInbox(userId: string) {
-    const rows = await this.prisma.supportTicket.findMany({
-      where: { userId },
-      select: {
-        id: true,
-        readStates: {
-          where: { userId },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
+    try {
+      const rows = await this.prisma.supportTicket.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          readStates: {
+            where: { userId },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          }
         }
-      }
-    });
+      });
 
-    const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
-    const unreadCount = rows.filter((row) =>
-      hasUnreadTicketMessages(latestAdminMessageMap.get(row.id) ?? null, row.readStates[0] ?? null)
-    ).length;
+      const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
+      const unreadCount = rows.filter((row) =>
+        hasUnreadTicketMessages(latestAdminMessageMap.get(row.id) ?? null, row.readStates[0] ?? null)
+      ).length;
 
-    return {
-      totalCount: rows.length,
-      unreadCount
-    };
+      return {
+        totalCount: rows.length,
+        unreadCount
+      };
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket inbox is temporarily unavailable.");
+    }
   }
 
   async listClientSupportTickets(token?: string): Promise<ClientSupportTicketSummaryDto[]> {
     const user = await this.authSessionService.authenticateAccessToken(token);
-    const rows = await this.prisma.supportTicket.findMany({
-      where: { userId: user.id },
-      include: {
-        team: {
-          select: { id: true, name: true }
+    try {
+      const rows = await this.prisma.supportTicket.findMany({
+        where: { userId: user.id },
+        include: {
+          team: {
+            select: { id: true, name: true }
+          },
+          messages: {
+            select: { body: true, createdAt: true },
+            orderBy: { createdAt: "desc" },
+            take: 1
+          },
+          readStates: {
+            where: { userId: user.id },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          }
         },
-        messages: {
-          select: { body: true, createdAt: true },
-          orderBy: { createdAt: "desc" },
-          take: 1
-        },
-        readStates: {
-          where: { userId: user.id },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
-        }
-      },
-      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
-    });
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+      });
 
-    const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
-    return rows.map((row) => toClientSupportTicketSummary(row, latestAdminMessageMap.get(row.id) ?? null));
+      const latestAdminMessageMap = await this.loadLatestAdminTicketMessageMap(rows.map((item) => item.id));
+      return rows.map((row) => toClientSupportTicketSummary(row, latestAdminMessageMap.get(row.id) ?? null));
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket list is temporarily unavailable.");
+    }
   }
 
   async getClientSupportTicketDetail(ticketId: string, token?: string): Promise<ClientSupportTicketDetailDto> {
@@ -111,21 +119,26 @@ export class ClientTicketService {
     token?: string
   ): Promise<{ ok: boolean; ticketId: string; lastReadAt: string }> {
     const user = await this.authSessionService.authenticateAccessToken(token);
-    const row = await this.prisma.supportTicket.findFirst({
-      where: {
-        id: ticketId,
-        userId: user.id
-      },
-      select: {
-        id: true,
-        messages: {
-          where: { authorRole: "admin" },
-          select: { createdAt: true },
-          orderBy: { createdAt: "desc" },
-          take: 1
+    let row: { id: string; messages: Array<{ createdAt: Date }> } | null;
+    try {
+      row = await this.prisma.supportTicket.findFirst({
+        where: {
+          id: ticketId,
+          userId: user.id
+        },
+        select: {
+          id: true,
+          messages: {
+            where: { authorRole: "admin" },
+            select: { createdAt: true },
+            orderBy: { createdAt: "desc" },
+            take: 1
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket read state is temporarily unavailable.");
+    }
 
     if (!row) {
       throw new NotFoundException("工单不存在");
@@ -260,34 +273,39 @@ export class ClientTicketService {
       throw new BadRequestException("回复内容不能为空");
     }
 
-    const current = await this.prisma.supportTicket.findFirst({
-      where: { id: ticketId, userId: user.id },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        source: true,
-        subscriptionId: true,
-        teamId: true,
-        lastMessageAt: true,
-        closedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        team: { select: { name: true } },
-        messages: {
-          include: {
-            authorUser: { select: { displayName: true } },
-            attachments: { orderBy: { createdAt: "asc" } }
+    let current: any;
+    try {
+      current = await this.prisma.supportTicket.findFirst({
+        where: { id: ticketId, userId: user.id },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          source: true,
+          subscriptionId: true,
+          teamId: true,
+          lastMessageAt: true,
+          closedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          team: { select: { name: true } },
+          messages: {
+            include: {
+              authorUser: { select: { displayName: true } },
+              attachments: { orderBy: { createdAt: "asc" } }
+            },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
-        },
-        readStates: {
-          where: { userId: user.id },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
+          readStates: {
+            where: { userId: user.id },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          },
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
@@ -371,34 +389,39 @@ export class ClientTicketService {
       throw new BadRequestException("Reply body must not exceed 4000 characters.");
     }
 
-    const current = await this.prisma.supportTicket.findFirst({
-      where: { id: ticketId, userId: user.id },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        source: true,
-        subscriptionId: true,
-        teamId: true,
-        lastMessageAt: true,
-        closedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        team: { select: { name: true } },
-        messages: {
-          include: {
-            authorUser: { select: { displayName: true } },
-            attachments: { orderBy: { createdAt: "asc" } }
+    let current: any;
+    try {
+      current = await this.prisma.supportTicket.findFirst({
+        where: { id: ticketId, userId: user.id },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          source: true,
+          subscriptionId: true,
+          teamId: true,
+          lastMessageAt: true,
+          closedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          team: { select: { name: true } },
+          messages: {
+            include: {
+              authorUser: { select: { displayName: true } },
+              attachments: { orderBy: { createdAt: "asc" } }
+            },
+            orderBy: { createdAt: "asc" }
           },
-          orderBy: { createdAt: "asc" }
-        },
-        readStates: {
-          where: { userId: user.id },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
+          readStates: {
+            where: { userId: user.id },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          },
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
@@ -690,33 +713,38 @@ export class ClientTicketService {
   }
 
   private async requireClientSupportTicketDetail(ticketId: string, userId: string) {
-    const row = await this.prisma.supportTicket.findFirst({
-      where: {
-        id: ticketId,
-        userId
-      },
-      include: {
-        team: {
-          select: { id: true, name: true }
+    let row: any;
+    try {
+      row = await this.prisma.supportTicket.findFirst({
+        where: {
+          id: ticketId,
+          userId
         },
-        messages: {
-          include: {
-            authorUser: {
-              select: { displayName: true }
-            },
-            attachments: {
-              orderBy: { createdAt: "asc" }
-            }
+        include: {
+          team: {
+            select: { id: true, name: true }
           },
-          orderBy: { createdAt: "asc" }
-        },
-        readStates: {
-          where: { userId },
-          select: { lastReadAt: true, lastReadMessageAt: true },
-          take: 1
+          messages: {
+            include: {
+              authorUser: {
+                select: { displayName: true }
+              },
+              attachments: {
+                orderBy: { createdAt: "asc" }
+              }
+            },
+            orderBy: { createdAt: "asc" }
+          },
+          readStates: {
+            where: { userId },
+            select: { lastReadAt: true, lastReadMessageAt: true },
+            take: 1
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket detail is temporarily unavailable.");
+    }
 
     if (!row) {
       throw new NotFoundException("工单不存在");
@@ -725,47 +753,51 @@ export class ClientTicketService {
   }
 
   private async resolveSubscriptionAccessForUser(userId: string): Promise<ClientSubscriptionAccess> {
-    const membership = await this.prisma.teamMember.findUnique({
-      where: { userId },
-      include: {
-        team: {
-          include: {
-            subscriptions: {
-              include: { plan: true, user: true, team: true },
-              orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+    try {
+      const membership = await this.prisma.teamMember.findUnique({
+        where: { userId },
+        include: {
+          team: {
+            include: {
+              subscriptions: {
+                include: { plan: true, user: true, team: true },
+                orderBy: [{ expireAt: "desc" }, { createdAt: "desc" }]
+              }
             }
           }
         }
+      });
+
+      if (membership) {
+        const pickedSubscription = pickCurrentSubscription(membership.team.subscriptions);
+        const subscription = pickedSubscription
+          ? await this.prisma.subscription.findUnique({
+              where: { id: pickedSubscription.id },
+              include: { plan: true, user: true, team: true }
+            })
+          : null;
+        const memberUsedTrafficGb = subscription
+          ? await this.getMemberUsedTrafficGb(membership.teamId, userId, subscription.id)
+          : 0;
+
+        return {
+          subscription,
+          team: membership.team,
+          memberRole: membership.role as TeamMemberRole,
+          memberUsedTrafficGb
+        };
       }
-    });
 
-    if (membership) {
-      const pickedSubscription = pickCurrentSubscription(membership.team.subscriptions);
-      const subscription = pickedSubscription
-        ? await this.prisma.subscription.findUnique({
-            where: { id: pickedSubscription.id },
-            include: { plan: true, user: true, team: true }
-          })
-        : null;
-      const memberUsedTrafficGb = subscription
-        ? await this.getMemberUsedTrafficGb(membership.teamId, userId, subscription.id)
-        : 0;
-
+      const subscription = await this.findCurrentPersonalSubscription(userId);
       return {
         subscription,
-        team: membership.team,
-        memberRole: membership.role as TeamMemberRole,
-        memberUsedTrafficGb
+        team: null,
+        memberRole: null,
+        memberUsedTrafficGb: null
       };
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket subscription access is temporarily unavailable.");
     }
-
-    const subscription = await this.findCurrentPersonalSubscription(userId);
-    return {
-      subscription,
-      team: null,
-      memberRole: null,
-      memberUsedTrafficGb: null
-    };
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
