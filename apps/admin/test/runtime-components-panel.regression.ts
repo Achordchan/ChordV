@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { getRuntimeComponentDeliveryState } from "../src/features/runtime-components/delivery-state";
-import type { AdminRuntimeComponentRecordDto } from "../src/api/client";
+import { applyRuntimeComponentValidationToDelivery, getRuntimeComponentDeliveryState } from "../src/features/runtime-components/delivery-state";
+import type { AdminRuntimeComponentRecordDto, AdminRuntimeComponentValidationDto } from "../src/api/client";
 
 function makeRuntimeComponent(overrides: Partial<AdminRuntimeComponentRecordDto> = {}): AdminRuntimeComponentRecordDto {
   return {
@@ -76,9 +76,52 @@ function testMissingDeliveryFieldsAreShownAsUnknown() {
   assert.equal(state.label, "状态未知");
 }
 
+function testReadyValidationUpdatesDeliveryState() {
+  const hash = "c".repeat(64);
+  const next = applyRuntimeComponentValidationToDelivery(
+    makeRuntimeComponent(),
+    {
+      componentId: "component_1",
+      status: "ready",
+      message: "校验通过",
+      finalUrlPreview: "https://cdn.example.com/xray.exe",
+      actualFileSizeBytes: "2048",
+      actualFileHash: hash
+    } satisfies AdminRuntimeComponentValidationDto
+  );
+
+  assert.equal(next.clientDeliverable, true);
+  assert.equal(next.clientDeliveryStatus, "ready");
+  assert.equal(next.fileSizeBytes, "2048");
+  assert.equal(next.fileHash, hash);
+  assert.equal(getRuntimeComponentDeliveryState(next).label, "可下发");
+}
+
+function testFailedValidationBlocksDeliveryState() {
+  const next = applyRuntimeComponentValidationToDelivery(
+    makeRuntimeComponent({
+      clientDeliverable: true,
+      clientDeliveryStatus: "ready",
+      clientDeliveryMessage: "旧状态可下发"
+    }),
+    {
+      componentId: "component_1",
+      status: "metadata_mismatch",
+      message: "Hash 不一致",
+      finalUrlPreview: "https://cdn.example.com/xray.exe"
+    } satisfies AdminRuntimeComponentValidationDto
+  );
+
+  assert.equal(next.clientDeliverable, false);
+  assert.equal(next.clientDeliveryStatus, "metadata_mismatch");
+  assert.equal(getRuntimeComponentDeliveryState(next).label, "Hash 不一致");
+}
+
 testEnabledRemotePendingValidationIsNotShownAsDeliverable();
 testEnabledRemoteHashMismatchIsShownAsBlocked();
 testDeliverableComponentIsShownAsDeliverable();
 testMissingDeliveryFieldsAreShownAsUnknown();
+testReadyValidationUpdatesDeliveryState();
+testFailedValidationBlocksDeliveryState();
 
 console.log("runtime components panel regression checks passed");

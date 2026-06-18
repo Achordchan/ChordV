@@ -3803,6 +3803,28 @@ async function testPublishReleaseMapsLocalSaveFailure() {
   );
 }
 
+async function testUpdateReleaseMapsLocalSaveFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => makeReleaseCenterTestRelease(),
+        update: async () => {
+          throw new Error("release update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateRelease("release_1", { displayTitle: "ChordV 1.1.7" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
@@ -3893,6 +3915,31 @@ async function testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   assert.equal(result.publishedAt, null);
   assert.deepEqual(adminEvents, [{ platform: "windows", channel: "stable", latestVersion: null }]);
   assert.match(warnings[0] ?? "", /version_updated publish failed/);
+}
+
+async function testUnpublishReleaseMapsLocalSaveFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            status: "published"
+          }),
+        update: async () => {
+          throw new Error("release unpublish local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.unpublishRelease("release_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release unpublish local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release unpublish local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite() {
@@ -27118,6 +27165,40 @@ async function testUpdateAnnouncementMapsLocalReadFailure() {
   );
 }
 
+async function testUpdateAnnouncementMapsLocalSaveFailure() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      announcement: {
+        findUnique: async () => ({
+          id: "announcement_1",
+          title: "Title",
+          body: "Body",
+          level: "info",
+          publishedAt: now,
+          isActive: true,
+          displayMode: "passive",
+          countdownSeconds: 0,
+          createdAt: now,
+          updatedAt: now
+        }),
+        update: async () => {
+          throw new Error("announcement update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAnnouncement("announcement_1", { title: "Updated" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/announcement update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "announcement update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testDeleteAnnouncementMapsLocalSaveFailure() {
   const service = createAnnouncementPolicyService({
     prisma: {
@@ -29078,6 +29159,42 @@ async function testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls
   assert.equal(result.status, "closed");
 }
 
+async function testCloseAdminSupportTicketMapsLocalSaveFailure() {
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "waiting_admin",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: null,
+    teamId: null,
+    closedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: { id: "user_1", email: "user@example.com", displayName: "User" },
+    team: null,
+    messages: []
+  };
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow,
+        update: async () => {
+          throw new Error("admin ticket close local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.closeAdminSupportTicket("ticket_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/admin ticket close local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin ticket close local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
   let updatedStatus: string | null = null;
   let capturedFindUniqueArgs: Record<string, any> | null = null;
@@ -29132,6 +29249,42 @@ async function testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStall
   assert.equal(result.id, "ticket_1");
   assert.equal(result.status, "open");
   assert.equal(result.closedAt, null);
+}
+
+async function testReopenAdminSupportTicketMapsLocalSaveFailure() {
+  const ticketRow = {
+    id: "ticket_1",
+    title: "Need help",
+    status: "closed",
+    source: "desktop",
+    userId: "user_1",
+    subscriptionId: null,
+    teamId: null,
+    closedAt: new Date("2026-01-02T00:00:00.000Z"),
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    user: { id: "user_1", email: "user@example.com", displayName: "User" },
+    team: null,
+    messages: []
+  };
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ticketRow,
+        update: async () => {
+          throw new Error("admin ticket reopen local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.reopenAdminSupportTicket("ticket_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/admin ticket reopen local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin ticket reopen local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls() {
@@ -30072,8 +30225,10 @@ async function main() {
   await testCreateReleaseMapsLocalSaveFailure();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testPublishReleaseMapsLocalSaveFailure();
+  await testUpdateReleaseMapsLocalSaveFailure();
   await testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent();
   await testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails();
+  await testUnpublishReleaseMapsLocalSaveFailure();
   await testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite();
   await testAssertReleasePublishableAllowsExternalWindowsZipWithoutOptionalMetadata();
   await testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata();
@@ -30499,6 +30654,7 @@ async function main() {
   await testMarkAnnouncementReadMapsLocalReadFailure();
   await testMarkAnnouncementReadMapsLocalSaveFailure();
   await testCreateAnnouncementMapsLocalSaveFailure();
+  await testUpdateAnnouncementMapsLocalSaveFailure();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
   await testUpdateAnnouncementMapsLocalReadFailure();
   await testAdminSnapshotCountsOnlyClientVisibleAnnouncements();
@@ -30538,7 +30694,9 @@ async function main() {
   await testAdminReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshFails();
   await testAdminReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testCloseAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testCloseAdminSupportTicketMapsLocalSaveFailure();
   await testReopenAdminSupportTicketReturnsFallbackWhenDetailRefreshStalls();
+  await testReopenAdminSupportTicketMapsLocalSaveFailure();
   await testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();

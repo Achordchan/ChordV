@@ -3,7 +3,8 @@ import type {
   AdminReleaseArtifactType,
   AdminReleasePlatform,
   AdminReleaseRecordDto,
-  AdminReleaseStatus
+  AdminReleaseStatus,
+  UpdateAdminReleaseInputDto
 } from "../../api/client";
 
 export type ReleaseEditorFormState = {
@@ -68,6 +69,16 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     fileName: record.artifacts.find((artifact) => artifact.isPrimary)?.fileName ?? "",
     selectedFile: null,
     changelog: record.changelog.join("\n")
+  };
+}
+
+export function buildUpdateReleasePayload(form: ReleaseEditorFormState): UpdateAdminReleaseInputDto {
+  return {
+    title: form.title.trim(),
+    changelog: form.changelog
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean)
   };
 }
 

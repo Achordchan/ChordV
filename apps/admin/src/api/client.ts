@@ -132,7 +132,6 @@ export type CreateAdminReleaseInputDto = {
 
 export type UpdateAdminReleaseInputDto = {
   title?: string;
-  version?: string;
   changelog?: string[];
   minimumVersion?: string;
   forceUpgrade?: boolean;
@@ -254,9 +253,8 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
 
 export async function updateAdminRelease(releaseId: string, input: UpdateAdminReleaseInputDto) {
   const title = input.title?.trim();
-  const version = input.version?.trim();
   const payload: UpdateReleaseInputDto = {
-    ...(input.title !== undefined && (title || version) ? { displayTitle: title || version } : {}),
+    ...(input.title !== undefined ? { displayTitle: title } : {}),
     ...(input.changelog !== undefined ? { changelog: input.changelog } : {}),
     ...(input.minimumVersion !== undefined ? { minimumVersion: input.minimumVersion } : {}),
     ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),

@@ -30,6 +30,7 @@ import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
 import {
   emptyArtifactEditorForm,
   emptyReleaseEditorForm,
+  buildUpdateReleasePayload,
   releasePlatformOptions,
   toArtifactEditorForm,
   toReleaseEditorForm,
@@ -315,11 +316,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
         return;
       }
 
-      const record = await updateAdminRelease(releaseEditorId, {
-        title: releaseForm.title.trim(),
-        version,
-        changelog: payload.changelog
-      });
+      const record = await updateAdminRelease(releaseEditorId, buildUpdateReleasePayload(releaseForm));
       setReleases((current) => upsertRelease(current, record));
       forceCloseReleaseEditor();
       notifications.show({
