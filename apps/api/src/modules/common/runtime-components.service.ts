@@ -72,11 +72,11 @@ export class RuntimeComponentsService {
   async createAdminRuntimeComponent(input: CreateRuntimeComponentInputDto): Promise<AdminRuntimeComponentRecordDto> {
     const rawSource = (input as { source?: string }).source;
     if (rawSource === "uploaded") {
-      throw new BadRequestException("Uploaded runtime components must be created through the upload endpoint.");
+      throw new BadRequestException("上传型运行组件请通过上传入口创建。");
     }
     const originUrl = input.originUrl?.trim();
     if (!originUrl || !isHttpUrl(originUrl)) {
-      throw new BadRequestException("Remote runtime components require a valid HTTP(S) origin URL.");
+      throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
     const source = input.source ?? "github_remote";
     const expectedHash = normalizeExpectedHash(input.expectedHash);
@@ -205,16 +205,16 @@ export class RuntimeComponentsService {
     const nextFileName =
       input.fileName !== undefined ? normalizeRequiredText(input.fileName, "fileName") : current.fileName;
     if (nextSource === "uploaded" && current.source !== "uploaded") {
-      throw new BadRequestException("Uploaded runtime components must be created through the upload endpoint.");
+      throw new BadRequestException("上传型运行组件请通过上传入口创建。");
     }
     if (nextSource === "uploaded" && input.originUrl !== undefined && nextOriginUrl !== current.originUrl) {
-      throw new BadRequestException("Uploaded runtime component URLs are managed by the upload endpoint.");
+      throw new BadRequestException("上传型运行组件的下载地址由上传入口管理。");
     }
     if (nextSource === "uploaded" && !current.storedFilePath) {
-      throw new BadRequestException("Uploaded runtime component is missing its stored file.");
+      throw new BadRequestException("上传型运行组件缺少已保存文件。");
     }
     if (nextSource !== "uploaded" && (!nextOriginUrl || !isHttpUrl(nextOriginUrl))) {
-      throw new BadRequestException("Remote runtime components require a valid HTTP(S) origin URL.");
+      throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
     const normalizedExpectedHash =
       input.expectedHash !== undefined ? normalizeExpectedHash(input.expectedHash) : current.expectedHash;
@@ -404,7 +404,7 @@ export class RuntimeComponentsService {
 
   async listRuntimeComponentFailureReports(limit = 100): Promise<AdminRuntimeComponentFailureReportDto[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-      throw new BadRequestException("Runtime failure report limit must be an integer between 1 and 200.");
+      throw new BadRequestException("运行组件失败记录数量必须是 1 到 200 之间的整数。");
     }
     let rows: any[];
     try {
@@ -545,7 +545,7 @@ export class RuntimeComponentsService {
         throwLocalReadAsServiceUnavailable(error, "Runtime component detail is temporarily unavailable.");
       }
       if (!component) {
-        throw new BadRequestException("Runtime component does not exist.");
+        throw new BadRequestException("运行组件不存在。");
       }
     }
 
@@ -1062,14 +1062,14 @@ function normalizeExpectedHash(value?: string | null) {
     return null;
   }
   if (!/^[a-f0-9]{64}$/i.test(normalized)) {
-    throw new BadRequestException("SHA256 must be a 64-character hexadecimal string.");
+    throw new BadRequestException("校验值 SHA256 必须是 64 位十六进制字符串。");
   }
   return normalized.toLowerCase();
 }
 
 function assertExpectedHashMatchesFile(expectedHash: string | null, actualHash: string) {
   if (expectedHash && expectedHash !== actualHash) {
-    throw new BadRequestException("Uploaded runtime component SHA256 does not match expectedHash.");
+    throw new BadRequestException("上传文件的 SHA256 与 expectedHash 不一致。");
   }
 }
 
@@ -1148,20 +1148,20 @@ async function assertStoredRuntimeComponentReadable(component: {
   expectedHash?: string | null;
 }) {
   if (!component.storedFilePath) {
-    throw new NotFoundException("Uploaded runtime component is missing its stored file.");
+    throw new NotFoundException("上传型运行组件缺少已保存文件。");
   }
   const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
   await ensureFileReadable(absolutePath);
   const stat = await fs.stat(absolutePath);
   const actualSize = BigInt(stat.size);
   if (!hasPositiveFileSize(component.fileSizeBytes) || toBigInt(component.fileSizeBytes) !== actualSize) {
-    throw new BadRequestException("Uploaded runtime component size metadata does not match the stored file.");
+    throw new BadRequestException("上传型运行组件的文件大小元数据与已保存文件不一致。");
   }
   if (!isValidSha256(component.fileHash)) {
-    throw new BadRequestException("Uploaded runtime component is missing SHA256 metadata.");
+    throw new BadRequestException("上传型运行组件缺少 SHA256 元数据。");
   }
   if (component.expectedHash && component.expectedHash !== component.fileHash) {
-    throw new BadRequestException("Uploaded runtime component expectedHash does not match the stored file.");
+    throw new BadRequestException("上传型运行组件的 expectedHash 与已保存文件不一致。");
   }
   return {
     absolutePath,
@@ -1362,5 +1362,5 @@ function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {
   if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
     return;
   }
-  throw new BadRequestException("Stored runtime component path resolves outside the runtime storage root.");
+  throw new BadRequestException("已保存的运行组件路径超出存储目录。");
 }

@@ -380,7 +380,7 @@ export class AdminSubscriptionService {
   ): Promise<ResetSubscriptionTrafficResultDto> {
     const subscription = await this.requireSubscription(subscriptionId);
     if (input.userId !== undefined && input.userId !== null && typeof input.userId !== "string") {
-      throw new BadRequestException("reset traffic userId must be a string.");
+      throw new BadRequestException("重置流量时 userId 必须是字符串。");
     }
     const reset = await this.resetSubscriptionTrafficCounters(subscription, {
       requestedUserId: typeof input.userId === "string" ? input.userId : undefined,
@@ -507,7 +507,7 @@ export class AdminSubscriptionService {
       "套餐订阅数量读取失败，请稍后重试。"
     );
     if (input.scope !== undefined && input.scope !== current.scope && subscriptionCount > 0) {
-      throw new BadRequestException("Plan scope cannot be changed while subscriptions are using this plan.");
+      throw new BadRequestException("套餐类型已有订阅使用，不能修改。");
     }
     const name = input.name !== undefined ? normalizePlanName(input.name) : undefined;
     let row: Awaited<ReturnType<PrismaService["plan"]["update"]>>;
@@ -1024,7 +1024,7 @@ export class AdminSubscriptionService {
       this.startSubscriptionFollowUpInBackground(`personal ticket cleanup after team conversion for ${user.id}`, () =>
         this.closePersonalSupportTicketsForUser(
           user.id,
-          "Current account has switched to Team ownership. Previous personal subscription tickets are closed. Please create a new ticket under the current Team if needed."
+          "当前账号已转入 Team，原个人订阅工单已关闭。如需继续沟通，请在当前 Team 下重新创建工单。"
         )
       )
     );
@@ -1370,7 +1370,7 @@ export class AdminSubscriptionService {
   private async createTeamMemberLocked(teamId: string, input: CreateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
     await this.requireTeam(teamId);
     if (input.role === "owner") {
-      throw new BadRequestException("Use the team owner transfer flow to assign an owner.");
+      throw new BadRequestException("请使用团队负责人转移流程指定负责人。");
     }
     await this.assertUserCanJoinTeam(input.userId);
 
@@ -1446,18 +1446,18 @@ export class AdminSubscriptionService {
   async updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
     const member = await this.requireTeamMember(memberId);
     if (member.teamId !== teamId) {
-      throw new BadRequestException("Team member does not belong to the requested team.");
+      throw new BadRequestException("团队成员不属于当前团队。");
     }
     const nextRole = input.role ?? member.role;
     if (member.role === "owner" && nextRole !== "owner") {
-      throw new BadRequestException("Use the team owner transfer flow before changing the current owner role.");
+      throw new BadRequestException("修改当前负责人角色前，请先转移负责人。");
     }
 
     let panelSync: PanelSyncBestEffortResult = { ok: true };
     if (nextRole === "owner") {
       const ownerUser = await this.ensureUserExists(member.userId);
       if (ownerUser.status !== "active") {
-        throw new BadRequestException("Team owner account must be active.");
+        throw new BadRequestException("负责人账号必须处于启用状态。");
       }
       try {
         await this.prisma.$transaction([
@@ -1516,7 +1516,7 @@ export class AdminSubscriptionService {
   async deleteTeamMember(teamId: string, memberId: string) {
     const member = await this.requireTeamMember(memberId);
     if (member.teamId !== teamId) {
-      throw new BadRequestException("Team member does not belong to the requested team.");
+      throw new BadRequestException("团队成员不属于当前团队。");
     }
     if (member.role === "owner") {
       throw new BadRequestException("负责人不能直接移除，请先转移负责人");
@@ -1712,7 +1712,7 @@ export class AdminSubscriptionService {
       } else if (options.allowTeamWideReset) {
         targetUserId = null;
       } else {
-        throw new BadRequestException("Team 订阅重置流量时必须指定成员账号");
+        throw new BadRequestException("团队订阅重置流量时必须指定成员账号");
       }
     } else {
       if (!subscription.userId) {
@@ -2918,7 +2918,7 @@ export class AdminSubscriptionService {
       "Team 信息读取失败，请稍后重试。"
     );
     if (!row) {
-      throw new NotFoundException("Team not found");
+      throw new NotFoundException("团队不存在。");
     }
     return toAdminTeamRecord({
       ...row,
@@ -3116,7 +3116,7 @@ function toAdminPlanRecord(
 function normalizePlanName(value: string) {
   const trimmed = value.trim();
   if (!trimmed) {
-    throw new BadRequestException("Plan name must not be empty.");
+    throw new BadRequestException("套餐名称不能为空。");
   }
   return trimmed;
 }
@@ -3248,10 +3248,10 @@ function assertPlanScopeMatchesSubscription(
   subscription: { userId: string | null; teamId: string | null }
 ) {
   if (subscription.userId && planScope !== "personal") {
-    throw new BadRequestException("Personal subscriptions can only use personal plans.");
+    throw new BadRequestException("个人订阅只能使用个人套餐。");
   }
   if (subscription.teamId && planScope !== "team") {
-    throw new BadRequestException("Team subscriptions can only use team plans.");
+    throw new BadRequestException("团队订阅只能使用 Team 套餐。");
   }
 }
 

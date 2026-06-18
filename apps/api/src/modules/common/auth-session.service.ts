@@ -59,7 +59,7 @@ export class AuthSessionService {
       throwLocalReadAsServiceUnavailable(error, "登录用户读取失败，请稍后重试。");
     }
     if (!user || user.status !== "active") {
-      throw new UnauthorizedException("User is not active.");
+      throw new UnauthorizedException("账号不可用，请联系管理员处理。");
     }
 
     return this.createSessionForUser(user, this.prisma);
@@ -86,10 +86,10 @@ export class AuthSessionService {
     }
 
     if (!current || current.revokedAt || current.expiresAt.getTime() <= Date.now()) {
-      throw new UnauthorizedException("Refresh token is invalid.");
+      throw new UnauthorizedException("登录已失效，请重新登录。");
     }
     if (current.user.status !== "active") {
-      throw new ForbiddenException("Current user is disabled.");
+      throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
     }
 
     try {
@@ -97,10 +97,10 @@ export class AuthSessionService {
         async (tx) => {
           const user = await tx.user.findUnique({ where: { id: current.userId } });
           if (!user || user.status !== "active") {
-            throw new ForbiddenException("Current user is disabled.");
+            throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
           }
           if (user.authVersion !== current.user.authVersion) {
-            throw new UnauthorizedException("Refresh token is stale; please sign in again.");
+            throw new UnauthorizedException("登录状态已过期，请重新登录。");
           }
 
           const rotated = await tx.refreshToken.updateMany({
@@ -112,7 +112,7 @@ export class AuthSessionService {
             data: { revokedAt: new Date() }
           });
           if (rotated.count !== 1) {
-            throw new UnauthorizedException("Refresh token is no longer valid.");
+            throw new UnauthorizedException("登录状态已失效，请重新登录。");
           }
 
           return this.createSessionForUser(user, tx);
@@ -137,16 +137,16 @@ export class AuthSessionService {
     }
 
     if (!user) {
-      throw new UnauthorizedException("User does not exist.");
+      throw new UnauthorizedException("账号不存在，请重新登录。");
     }
     if (user.status !== "active") {
-      throw new ForbiddenException("Current user is disabled.");
+      throw new ForbiddenException("当前账号已禁用，请联系管理员处理。");
     }
     if (user.role !== payload.role) {
-      throw new UnauthorizedException("Login session is stale; please sign in again.");
+      throw new UnauthorizedException("登录状态已过期，请重新登录。");
     }
     if (user.authVersion !== payload.ver) {
-      throw new UnauthorizedException("Login session expired; please sign in again.");
+      throw new UnauthorizedException("登录状态已过期，请重新登录。");
     }
     let session: { userId: string; revokedAt: Date | null; expiresAt: Date } | null;
     try {
@@ -162,7 +162,7 @@ export class AuthSessionService {
       throwLocalReadAsServiceUnavailable(error, "登录状态读取失败，请稍后重试。");
     }
     if (!session || session.userId !== payload.sub || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
-      throw new UnauthorizedException("Login session expired; please sign in again.");
+      throw new UnauthorizedException("登录状态已过期，请重新登录。");
     }
 
     return toUserProfile(user);
@@ -310,7 +310,7 @@ export class AuthSessionService {
         issuer: this.jwtIssuer
       });
       if (!payload || typeof payload !== "object") {
-        throw new UnauthorizedException("Access token is invalid.");
+        throw new UnauthorizedException("登录凭证无效，请重新登录。");
       }
 
       const sub = Reflect.get(payload, "sub");
@@ -325,7 +325,7 @@ export class AuthSessionService {
         typeof ver !== "number" ||
         typeof sid !== "string"
       ) {
-        throw new UnauthorizedException("Access token is invalid.");
+        throw new UnauthorizedException("登录凭证无效，请重新登录。");
       }
 
       return {
@@ -336,17 +336,17 @@ export class AuthSessionService {
         sid
       };
     } catch {
-      throw new UnauthorizedException("Access token is invalid.");
+      throw new UnauthorizedException("登录凭证无效，请重新登录。");
     }
   }
 
   private extractBearerToken(authorization?: string) {
     if (!authorization || !authorization.startsWith("Bearer ")) {
-      throw new UnauthorizedException("Missing access token.");
+      throw new UnauthorizedException("缺少登录凭证，请重新登录。");
     }
     const token = authorization.slice("Bearer ".length).trim();
     if (!token) {
-      throw new UnauthorizedException("Missing access token.");
+      throw new UnauthorizedException("缺少登录凭证，请重新登录。");
     }
     return token;
   }

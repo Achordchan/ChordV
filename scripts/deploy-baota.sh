@@ -143,8 +143,10 @@ rsync -az --delete \
   "${API_STAGE}/" "${REMOTE}:${DEPLOY_STAGE_PATH}/"
 
 ssh ${SSH_OPTS} "${REMOTE}" \
+  DEPLOY_PATH="${DEPLOY_PATH}" \
   DEPLOY_STAGE_PATH="${DEPLOY_STAGE_PATH}" \
   DEPLOY_NODE_VERSION="${DEPLOY_NODE_VERSION}" \
+  DEPLOY_RUN_DB_PUSH="${DEPLOY_RUN_DB_PUSH}" \
   'bash -s' <<'REMOTE_STAGE_SCHEMA'
 set -euo pipefail
 
@@ -168,6 +170,16 @@ fi
 
 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" install --frozen-lockfile
 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:generate
+
+LIVE_SCHEMA="${DEPLOY_PATH}/apps/api/prisma/schema.prisma"
+STAGE_SCHEMA="${DEPLOY_STAGE_PATH}/apps/api/prisma/schema.prisma"
+if [ -f "${LIVE_SCHEMA}" ] && [ -f "${STAGE_SCHEMA}" ] && ! cmp -s "${LIVE_SCHEMA}" "${STAGE_SCHEMA}"; then
+  if [ "${DEPLOY_RUN_DB_PUSH}" != "true" ]; then
+    echo "Prisma schema changed, but DEPLOY_RUN_DB_PUSH is not true. Refusing to sync incompatible API code before an explicit database update."
+    exit 1
+  fi
+  echo "Prisma schema changed and DEPLOY_RUN_DB_PUSH=true; database push will run after live code sync and before restart."
+fi
 REMOTE_STAGE_SCHEMA
 
 echo "同步 API 到宝塔项目：${DEPLOY_PROJECT}"

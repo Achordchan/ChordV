@@ -9,7 +9,7 @@ export class ClientAuthGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<{ headers: { authorization?: string }; authUser?: unknown }>();
     const user = await this.authSessionService.authenticateAccessToken(request.headers.authorization);
     if (user.role !== "user") {
-      throw new ForbiddenException("Client endpoints require a normal user account.");
+      throw new ForbiddenException("当前接口仅支持普通用户账号。");
     }
     request.authUser = user;
     return true;

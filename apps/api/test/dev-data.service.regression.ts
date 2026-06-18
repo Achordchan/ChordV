@@ -2076,7 +2076,7 @@ async function testAccessTokenAuthenticationRequiresActiveBoundSession() {
   };
   await assert.rejects(
     () => service.authenticateAccessToken(`Bearer ${accessToken}`),
-    /Login session expired/,
+    /登录状态已过期/,
     "revoked refresh session must invalidate its already-issued access token"
   );
 }
@@ -2814,7 +2814,7 @@ async function testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata() {
 
     await assert.rejects(
       () => service.getRuntimeComponentDownloadDescriptor("component_1"),
-      /metadata/,
+      /元数据/,
       "runtime download descriptor must not serve tampered uploaded components"
     );
   } finally {
@@ -6717,7 +6717,7 @@ async function testResetSubscriptionTrafficRejectsNonStringUserId() {
 
   await assert.rejects(
     () => service.resetSubscriptionTraffic("subscription_1", { userId: 1 } as any),
-    /userId must be a string/,
+    /userId 必须是字符串/,
     "reset-traffic must reject non-string userId with 400 instead of throwing TypeError later"
   );
 }
@@ -16473,7 +16473,7 @@ async function testRuntimeComponentCreateRejectsUploadedSource() {
       originUrl: "https://example.com/xray.zip",
       fileName: "xray.zip"
     } as any),
-    /upload endpoint/,
+    /上传入口/,
     "ordinary runtime component create must not create uploaded records"
   );
 }
@@ -16703,8 +16703,8 @@ async function testRuntimeFailureReportLimitRejectsInvalidValues() {
     }
   });
 
-  await assert.rejects(() => service.listRuntimeComponentFailureReports(Number.NaN), /limit/);
-  await assert.rejects(() => service.listRuntimeComponentFailureReports(1000), /limit/);
+  await assert.rejects(() => service.listRuntimeComponentFailureReports(Number.NaN), /失败记录数量/);
+  await assert.rejects(() => service.listRuntimeComponentFailureReports(1000), /失败记录数量/);
 }
 
 async function testRuntimeComponentFailureRejectsUnknownComponentId() {
@@ -16737,7 +16737,7 @@ async function testRuntimeComponentFailureRejectsUnknownComponentId() {
         },
         "Bearer token"
       ),
-    /does not exist/,
+    /运行组件不存在/,
     "unknown runtime component ids should be rejected before Prisma foreign key enforcement"
   );
   assert.equal(createCalled, false);
@@ -18285,7 +18285,7 @@ async function testRuntimeComponentPatchCannotSwitchToUploadedSource() {
 
   await assert.rejects(
     () => service.updateAdminRuntimeComponent("component_1", { source: "uploaded" }),
-    /upload endpoint/,
+    /上传入口/,
     "ordinary PATCH must not create semantic uploaded records without a stored file"
   );
 }
@@ -20801,7 +20801,7 @@ async function testCreateTeamMemberRejectsOwnerRole() {
 
   await assert.rejects(
     () => service.createTeamMember("team_1", { userId: "user_1", role: "owner" }),
-    /owner transfer/,
+    /负责人转移/,
     "adding a team member must not silently create another owner"
   );
 }
@@ -21446,7 +21446,7 @@ async function testUpdatePlanRejectsScopeChangeWhenUsed() {
 
   await assert.rejects(
     () => service.updatePlan("plan_1", { scope: "team" }),
-    /scope cannot be changed/,
+    /套餐类型已有订阅使用/,
     "plan scope changes must be blocked when existing subscriptions use the plan"
   );
 }
@@ -21470,7 +21470,7 @@ async function testCreatePlanRejectsBlankTrimmedName() {
         totalTrafficGb: 100,
         renewable: true
       }),
-    /Plan name must not be empty/,
+    /套餐名称不能为空/,
     "plan creation must reject names that are blank after trimming"
   );
 }
@@ -21502,7 +21502,7 @@ async function testUpdatePlanRejectsBlankTrimmedName() {
 
   await assert.rejects(
     () => service.updatePlan("plan_1", { name: "   " }),
-    /Plan name must not be empty/,
+    /套餐名称不能为空/,
     "plan updates must reject names that are blank after trimming"
   );
 }
@@ -24477,7 +24477,7 @@ async function testTeamMemberMutationRejectsMismatchedTeamRoute() {
 
   await assert.rejects(
     () => service.updateTeamMember("team_route", "member_1", { role: "member" }),
-    /requested team/,
+    /当前团队/,
     "team member mutations must validate the team id from the route"
   );
 }
@@ -24501,7 +24501,7 @@ async function testTeamMemberMutationRejectsOwnerDemotion() {
 
   await assert.rejects(
     () => service.updateTeamMember("team_1", "member_owner", { role: "member" }),
-    /owner transfer/,
+    /负责人/,
     "team owner role must not be demoted without transferring ownership"
   );
 }
@@ -24528,7 +24528,7 @@ async function testClientAuthGuardRejectsAdminTokens() {
 
   await assert.rejects(
     () => guard.canActivate(context),
-    /normal user/,
+    /普通用户/,
     "admin access tokens must not be accepted by client-only endpoints"
   );
   assert.equal(request.authUser, undefined);

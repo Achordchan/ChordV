@@ -223,11 +223,11 @@ export class RuntimeSessionService {
       return runWithSubscriptionUsageLock(lockedSubscriptionId, async () => {
       const access = await this.resolveSubscriptionAccessForUser(user.id);
       if (!access.subscription) {
-        throw new NotFoundException("褰撳墠娌℃湁鍙敤璁㈤槄");
+        throw new NotFoundException("当前没有可用订阅");
       }
 
       if (access.subscription.id !== lockedSubscriptionId) {
-        throw new ForbiddenException("Current subscription changed while connecting. Please retry.");
+        throw new ForbiddenException("当前订阅状态已变化，请重新连接。");
       }
 
       assertRuntimeAccessConnectable(access);
@@ -2855,16 +2855,16 @@ function readRuntimeErrorMessage(error: unknown) {
 function assertRuntimeAccessConnectable(access: ResolvedSubscriptionAccess) {
   const subscription = access.subscription;
   if (!subscription) {
-    throw new NotFoundException("Current subscription is unavailable.");
+    throw new NotFoundException("当前没有可用订阅。");
   }
   if (subscription.user?.status === "disabled") {
-    throw new ForbiddenException("Current account is disabled.");
+    throw new ForbiddenException("当前账号已禁用，连接已失效。");
   }
   if (access.team?.status && access.team.status !== "active") {
-    throw new ForbiddenException("Current team is disabled.");
+    throw new ForbiddenException("当前团队已停用，连接已失效。");
   }
   if (subscription.team?.status && subscription.team.status !== "active") {
-    throw new ForbiddenException("Current team is disabled.");
+    throw new ForbiddenException("当前团队已停用，连接已失效。");
   }
 }
 
