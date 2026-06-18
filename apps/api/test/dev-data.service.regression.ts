@@ -8213,13 +8213,15 @@ async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
     }
   };
 
-  const queuedCount = await service.queuePanelDeleteJobsForSubscriptionTx(writer, "sub_1");
+  await assert.rejects(
+    () => service.queuePanelDeleteJobsForSubscriptionTx(writer, "sub_1"),
+    (error: any) => error?.code === "P2003",
+    "foreign key failures inside a transaction must bubble instead of poisoning the transaction with 25P02"
+  );
 
-  assert.equal(creates.length, 2, "delete job queueing should try every binding");
-  assert.equal(queuedCount, 1, "stale binding foreign key failures should not count as queued jobs");
-  assert.equal(snapshotDeletes.length, 2, "local cleanup should continue for stale and valid bindings");
-  assert.equal(bindingUpdates.length, 1);
-  assert.deepEqual(bindingUpdates[0].where.id.in, ["binding_stale", "binding_ok"]);
+  assert.equal(creates.length, 1, "delete job queueing must stop at the failed transaction write");
+  assert.equal(snapshotDeletes.length, 0, "local cleanup must not continue after a transaction-aborting FK failure");
+  assert.equal(bindingUpdates.length, 0);
 }
 
 async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
@@ -11838,7 +11840,7 @@ async function testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs() {
       lastSeenAt: now,
       maxConcurrentSessionsOverride: null
     }),
-    findCurrentSubscriptionIdsForUserTx: async () => ["sub_personal", "sub_team"],
+    findCurrentSubscriptionIdsForUser: async () => ["sub_personal", "sub_team"],
     requireAdminUserRecord: async () => ({
       id: "user_1",
       email: "user@example.com",
@@ -11858,8 +11860,7 @@ async function testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs() {
       lastSeenAt: now.toISOString()
     }),
     runtimeSessionService: {
-      queuePanelDisableJobsForSubscriptionTx: async (
-        _writer: unknown,
+      markPanelBindingsDisabledForSubscription: async (
         subscriptionId: string,
         filter?: { userId?: string }
       ) => {
@@ -11887,6 +11888,7 @@ async function testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs() {
   assert.equal(result.action, "disconnect_session");
   assert.equal(result.reasonCode, "admin_paused_connection");
   assert.equal(result.panelSyncStatus, "pending");
+  await waitUntil(() => panelCalls.length === 2 && leaseCalls.length === 2);
   assert.deepEqual(panelCalls, [
     { subscriptionId: "sub_personal", filter: { userId: "user_1" } },
     { subscriptionId: "sub_team", filter: { userId: "user_1" } }
@@ -11912,12 +11914,12 @@ async function testDisconnectUserReturnsPendingWhenUserRefreshFails() {
       lastSeenAt: now,
       maxConcurrentSessionsOverride: null
     }),
-    findCurrentSubscriptionIdsForUserTx: async () => ["sub_1"],
+    findCurrentSubscriptionIdsForUser: async () => ["sub_1"],
     requireAdminUserRecord: async () => {
       throw new Error("user refresh failed after disconnect");
     },
     runtimeSessionService: {
-      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      markPanelBindingsDisabledForSubscription: async () => 1,
       queueLeaseRevocationJobsForSubscriptionTx: async () => 1
     },
     prisma: {
@@ -13084,11 +13086,13 @@ async function testPanelDisableJobSkipsStaleBindingConstraintFailure() {
     }
   });
 
-  const queuedCount = await service.markPanelBindingsDisabledForSubscription("sub_1");
+  await assert.rejects(
+    () => service.markPanelBindingsDisabledForSubscription("sub_1"),
+    (error: any) => error?.code === "P2003",
+    "transaction-aborting stale binding errors must bubble to the post-commit best-effort wrapper"
+  );
 
-  assert.equal(queuedCount, 0, "stale binding job failures must not be counted as queued panel sync jobs");
-  assert.deepEqual(disabledIds, [["binding_stale"]], "local binding disable should still be attempted after stale job skip");
-  assert.match(warnings[0] ?? "", /Skipping stale panel disable job/);
+  assert.deepEqual(disabledIds, [], "local binding disable must not continue inside an aborted transaction");
 }
 
 async function testPanelDisableJobStoresAndUsesPanelSnapshot() {
@@ -21075,8 +21079,8 @@ async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
 
   assert.equal(updates.length, 1, "user status must save before panel disconnect side effects");
   assert.equal(updates[0].data.status, "disabled");
-  assert.equal(durablePanelQueued, true, "user disable must queue panel jobs in the local transaction");
-  assert.equal(durableLeaseQueued, true, "user disable must queue lease revocation jobs in the local transaction");
+  assert.equal(durablePanelQueued, false, "user disable must not queue panel jobs inside the local save transaction");
+  assert.equal(durableLeaseQueued, true, "user disable must queue lease revocation jobs after the local save commits");
   await waitUntil(() => backgroundPanelQueueStarted);
   assert.equal(backgroundPanelQueueStarted, true, "user disable panel queueing should still run in background as a fallback");
   assert.equal(result.panelSyncStatus, "pending");
@@ -21209,9 +21213,7 @@ async function testDisableUserReturnsBeforeStalledBackgroundPanelQueue() {
   assert.equal(updates[0].data.status, "disabled");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued/);
-  assert.equal(backgroundPanelQueueStarted, false, "background panel queue must not start before the local response returns");
-  await waitUntil(() => backgroundPanelQueueStarted);
-  assert.equal(backgroundPanelQueueStarted, true, "background panel queue should still retry after the response");
+  assert.equal(backgroundPanelQueueStarted, true, "post-commit panel queue should start before the response but must not block on a stalled panel");
 }
 
 async function testEnableUserReturnsPendingWhenPanelSyncStalls() {
@@ -21477,8 +21479,8 @@ async function testDisableTeamReturnsPendingWhenPanelDisconnectFails() {
 
   assert.equal(teamUpdates.length, 1, "team status must save before panel disconnect side effects");
   assert.equal(teamUpdates[0].data.status, "disabled");
-  assert.equal(durablePanelQueued, true, "team disable must queue panel jobs in the local transaction");
-  assert.equal(durableLeaseQueued, true, "team disable must queue lease revocation jobs in the local transaction");
+  assert.equal(durablePanelQueued, false, "team disable must not queue panel jobs inside the local save transaction");
+  assert.equal(durableLeaseQueued, true, "team disable must queue lease revocation jobs after the local save commits");
   await waitUntil(() => backgroundPanelQueueStarted);
   assert.equal(backgroundPanelQueueStarted, true, "team disable panel queueing should still run in background as a fallback");
   assert.equal(result.panelSyncStatus, "pending");
@@ -21720,14 +21722,12 @@ async function testUpdateTeamDisconnectStillQueuesLeaseJobsWhenPanelQueueStalls(
   ]);
 
   assert.ok(calls.includes("update_team"));
-  assert.ok(calls.includes("queue_panel_disable_tx"), "team disable must persist panel jobs before the local response");
-  assert.ok(calls.includes("queue_lease_job"), "team disable must persist lease jobs before the local response");
-  assert.ok(!calls.includes("queue_panel_disable"), "remote-facing panel follow-up must still be deferred");
-  await waitUntil(() => calls.includes("queue_panel_disable"));
+  assert.ok(!calls.includes("queue_panel_disable_tx"), "team disable must not write panel jobs inside the local save transaction");
+  assert.ok(calls.includes("queue_lease_job"), "team disable must write lease jobs after the local save commits");
+  assert.ok(calls.includes("queue_panel_disable"), "post-commit panel follow-up should start but not block on a stalled panel");
   assert.ok(calls.includes("queue_panel_disable"));
-  await waitUntil(() => calls.filter((call) => call === "queue_lease_job").length >= 2);
   assert.ok(
-    calls.filter((call) => call === "queue_lease_job").length >= 2,
+    calls.includes("queue_lease_job"),
     "lease revocation job queueing must continue even when panel queue stalls"
   );
   assert.equal(result.panelSyncStatus, "pending");
@@ -23241,19 +23241,19 @@ async function testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails() {
   assert.equal(result.ok, true);
   assert.deepEqual(
     calls,
-    ["delete_member", "queue_panel_disabled_tx", "queue_lease_revocation_tx"],
-    "team member delete must persist local delete and durable queues before ticket cleanup follow-up"
+    ["delete_member", "mark_panel_disabled", "queue_lease_revocation_tx"],
+    "team member delete must persist the local delete before post-commit disconnect queueing"
   );
   await waitUntil(
     () =>
       calls.includes("close_tickets") &&
       calls.includes("mark_panel_disabled") &&
-      calls.filter((call) => call === "queue_lease_revocation_tx").length >= 2
+      calls.includes("queue_lease_revocation_tx")
   );
   assert.ok(calls.includes("close_tickets"));
   assert.ok(calls.includes("mark_panel_disabled"));
   assert.ok(
-    calls.filter((call) => call === "queue_lease_revocation_tx").length >= 2,
+    calls.includes("queue_lease_revocation_tx"),
     "team member delete follow-up must keep lease revocation queued without direct revoke"
   );
   assert.equal(result.panelSyncStatus, "pending");
@@ -23311,15 +23311,12 @@ async function testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAft
       setTimeout(() => reject(new Error("delete team member waited for stalled subscription lookup")), 750);
     })
   ]);
-
-  assert.equal(lookupStarted, false, "subscription lookup must be deferred until after the local member delete response");
+  assert.equal(lookupStarted, true, "subscription lookup may start after the local delete commits but must not block the response");
   assert.equal(calls[0], "delete_member", "local member delete must save before ticket cleanup and subscription lookup");
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
-  await waitUntil(() => lookupStarted);
-  assert.equal(lookupStarted, true, "subscription lookup should still run in background");
-  assert.ok(calls.includes("close_tickets"));
+  assert.equal(lookupStarted, true, "subscription lookup should still run under a bounded follow-up budget");
 }
 
 async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails() {
@@ -23404,19 +23401,19 @@ async function testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFa
 
   assert.deepEqual(
     calls,
-    ["delete_member", "queue_panel_disabled_tx", "queue_lease_revocation"],
-    "team member delete must queue durable panel and lease jobs with the local delete"
+    ["delete_member", "queue_panel_disabled", "queue_lease_revocation"],
+    "team member delete must queue panel and lease jobs after the local delete commits"
   );
   await waitUntil(
     () =>
       calls.includes("close_tickets") &&
       calls.includes("queue_panel_disabled") &&
-      calls.filter((item) => item === "queue_lease_revocation").length >= 2 &&
+      calls.includes("queue_lease_revocation") &&
       calls.includes("publish_subscription") &&
       calls.filter((item) => item === "publish_user").length === 2
   );
   assert.ok(calls.includes("queue_panel_disabled"));
-  assert.ok(calls.filter((item) => item === "queue_lease_revocation").length >= 2);
+  assert.ok(calls.includes("queue_lease_revocation"));
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
@@ -23446,12 +23443,30 @@ async function testDeleteTeamMemberQueuesDisableClientWithoutDirectXuiCall() {
       userId: "user_1",
       role: "member"
     }),
-    findCurrentTeamSubscription: async () => null,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      userId: null,
+      teamId: "team_1",
+      planId: "plan_team",
+      totalTrafficGb: 100,
+      usedTrafficGb: 0,
+      remainingTrafficGb: 100,
+      expireAt: new Date(Date.now() + 60_000),
+      state: "active",
+      renewable: true,
+      sourceAction: "created",
+      lastSyncedAt: new Date(),
+      plan: { name: "Team Plan" },
+      user: null,
+      team: { name: "Team" },
+      nodeAccesses: []
+    }),
     closeSupportTicketsForUserBestEffort: async () => undefined,
     runtimeSessionService: {
       queuePanelDisableJobsForSubscriptionTx: runtime.queuePanelDisableJobsForSubscriptionTx.bind(runtime),
       queueLeaseRevocationJobsForSubscriptionTx: async () => 0,
-      markPanelBindingsDisabledForSubscription: async () => 0
+      markPanelBindingsDisabledForSubscription: async (subscriptionId: string, filter?: { userId?: string; nodeIds?: string[] }) =>
+        runtime.queuePanelDisableJobsForSubscriptionTx(createPanelDisableQueueWriter(createdJobs, disabledBindingIds), subscriptionId, filter)
     },
     clientRuntimeEventsService: {
       publishToUser: () => undefined
@@ -23493,6 +23508,7 @@ async function testDeleteTeamMemberQueuesDisableClientWithoutDirectXuiCall() {
 
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
+  await waitUntil(() => createdJobs.length === 1);
   assert.equal(createdJobs.length, 1);
   assert.equal(createdJobs[0]?.action, "disable_client");
   assert.equal(createdJobs[0]?.userId, "user_1");

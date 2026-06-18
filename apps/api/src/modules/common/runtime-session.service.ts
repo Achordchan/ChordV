@@ -730,56 +730,47 @@ export class RuntimeSessionService {
     for (const binding of bindings) {
       const snapshot = binding.node ?? {};
       const dedupeKey = `disable:${binding.id}`;
-      try {
-        await createOrRefreshPanelSyncJob(writer, dedupeKey, {
-          create: {
-            id: randomUUID(),
-            dedupeKey,
-            action: "disable_client",
-            bindingId: binding.id,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            panelBaseUrl: snapshot.panelBaseUrl ?? null,
-            panelApiBasePath: snapshot.panelApiBasePath ?? null,
-            panelUsername: snapshot.panelUsername ?? null,
-            panelPassword: snapshot.panelPassword ?? null,
-            status: "pending",
-            nextRunAt: now
-          },
-          update: {
-            status: "pending",
-            nextRunAt: now,
-            lockedAt: null,
-            completedAt: null,
-            attempts: 0,
-            lastError: null,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            panelBaseUrl: snapshot.panelBaseUrl ?? null,
-            panelApiBasePath: snapshot.panelApiBasePath ?? null,
-            panelUsername: snapshot.panelUsername ?? null,
-            panelPassword: snapshot.panelPassword ?? null
-          }
-        });
-        queuedCount += 1;
-      } catch (error) {
-        if (!isPrismaReferentialIntegrityError(error)) {
-          throw error;
+      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
+        create: {
+          id: randomUUID(),
+          dedupeKey,
+          action: "disable_client",
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: snapshot.panelBaseUrl ?? null,
+          panelApiBasePath: snapshot.panelApiBasePath ?? null,
+          panelUsername: snapshot.panelUsername ?? null,
+          panelPassword: snapshot.panelPassword ?? null,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          status: "pending",
+          nextRunAt: now,
+          lockedAt: null,
+          completedAt: null,
+          attempts: 0,
+          lastError: null,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: snapshot.panelBaseUrl ?? null,
+          panelApiBasePath: snapshot.panelApiBasePath ?? null,
+          panelUsername: snapshot.panelUsername ?? null,
+          panelPassword: snapshot.panelPassword ?? null
         }
-        this.logger?.warn(
-          `Skipping stale panel disable job for binding ${binding.id}: ${readRuntimeErrorMessage(error)}`
-        );
-      }
+      });
+      queuedCount += 1;
     }
 
     await markPanelBindingsDisabledLocally(writer, bindings.map((binding: { id: string }) => binding.id));
@@ -824,56 +815,47 @@ export class RuntimeSessionService {
     let queuedCount = 0;
     for (const binding of bindings) {
       const dedupeKey = `delete:${binding.id}`;
-      try {
-        await createOrRefreshPanelSyncJob(writer, dedupeKey, {
-          create: {
-            id: randomUUID(),
-            dedupeKey,
-            action: "delete_client",
-            bindingId: binding.id,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node?.panelBaseUrl ?? null,
-            panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node?.panelApiBasePath ?? null,
-            panelUsername: panelConfig?.panelUsername ?? binding.node?.panelUsername ?? null,
-            panelPassword: panelConfig?.panelPassword ?? binding.node?.panelPassword ?? null,
-            status: "pending",
-            nextRunAt: now
-          },
-          update: {
-            status: "pending",
-            nextRunAt: now,
-            lockedAt: null,
-            completedAt: null,
-            attempts: 0,
-            lastError: null,
-            subscriptionId: binding.subscriptionId,
-            userId: binding.userId,
-            teamId: binding.teamId,
-            nodeId: binding.nodeId,
-            panelClientEmail: binding.panelClientEmail,
-            panelClientId: binding.panelClientId,
-            panelInboundId: binding.panelInboundId,
-            panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node?.panelBaseUrl ?? null,
-            panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node?.panelApiBasePath ?? null,
-            panelUsername: panelConfig?.panelUsername ?? binding.node?.panelUsername ?? null,
-            panelPassword: panelConfig?.panelPassword ?? binding.node?.panelPassword ?? null
-          }
-        });
-        queuedCount += 1;
-      } catch (error) {
-        if (!isPrismaReferentialIntegrityError(error)) {
-          throw error;
+      await createOrRefreshPanelSyncJob(writer, dedupeKey, {
+        create: {
+          id: randomUUID(),
+          dedupeKey,
+          action: "delete_client",
+          bindingId: binding.id,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node?.panelBaseUrl ?? null,
+          panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node?.panelApiBasePath ?? null,
+          panelUsername: panelConfig?.panelUsername ?? binding.node?.panelUsername ?? null,
+          panelPassword: panelConfig?.panelPassword ?? binding.node?.panelPassword ?? null,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          status: "pending",
+          nextRunAt: now,
+          lockedAt: null,
+          completedAt: null,
+          attempts: 0,
+          lastError: null,
+          subscriptionId: binding.subscriptionId,
+          userId: binding.userId,
+          teamId: binding.teamId,
+          nodeId: binding.nodeId,
+          panelClientEmail: binding.panelClientEmail,
+          panelClientId: binding.panelClientId,
+          panelInboundId: binding.panelInboundId,
+          panelBaseUrl: panelConfig?.panelBaseUrl ?? binding.node?.panelBaseUrl ?? null,
+          panelApiBasePath: panelConfig?.panelApiBasePath ?? binding.node?.panelApiBasePath ?? null,
+          panelUsername: panelConfig?.panelUsername ?? binding.node?.panelUsername ?? null,
+          panelPassword: panelConfig?.panelPassword ?? binding.node?.panelPassword ?? null
         }
-        this.logger?.warn(
-          `Skipping stale panel delete job for binding ${binding.id}: ${readRuntimeErrorMessage(error)}`
-        );
-      }
+      });
+      queuedCount += 1;
 
       await writer.trafficSnapshot.deleteMany({
         where: {
@@ -2363,17 +2345,6 @@ export class RuntimeSessionService {
     lastSyncedAt: Date;
     status: string;
   }) {
-    try {
-      return {
-        binding: await writer.panelClientBinding.create({ data }),
-        cachedRemoteClient: false
-      };
-    } catch (error) {
-      if (!isPrismaUniqueConstraintError(error)) {
-        throw error;
-      }
-    }
-
     const existing: any = await writer.panelClientBinding.findFirst({
       where: {
         subscriptionId: data.subscriptionId,
@@ -2382,19 +2353,43 @@ export class RuntimeSessionService {
       },
       orderBy: { createdAt: "desc" }
     });
-    if (!existing) {
-      throw new BadGatewayException("Panel client binding was created concurrently but could not be reloaded.");
+    if (existing) {
+      const binding = await writer.panelClientBinding.update({
+        where: { id: existing.id },
+        data: {
+          teamId: data.teamId,
+          status: "active"
+        }
+      });
+      return {
+        binding,
+        cachedRemoteClient: existing.status !== "deleted"
+      };
     }
-    const binding = await writer.panelClientBinding.update({
-      where: { id: existing.id },
-      data: {
-        teamId: data.teamId,
-        status: "active"
-      }
-    });
+
+    if (typeof writer.panelClientBinding.upsert === "function") {
+      return {
+        binding: await writer.panelClientBinding.upsert({
+          where: {
+            subscriptionId_userId_nodeId: {
+              subscriptionId: data.subscriptionId,
+              userId: data.userId,
+              nodeId: data.nodeId
+            }
+          },
+          create: data,
+          update: {
+            teamId: data.teamId,
+            status: "active"
+          }
+        }),
+        cachedRemoteClient: false
+      };
+    }
+
     return {
-      binding,
-      cachedRemoteClient: existing.status !== "deleted"
+      binding: await writer.panelClientBinding.create({ data }),
+      cachedRemoteClient: false
     };
   }
 
@@ -2822,19 +2817,6 @@ function buildLeaseRevocationJobKey(
 
 function buildNodeLeaseRevocationJobKey(nodeId: string, reason: string) {
   return `lease-node:${nodeId}:${reason}`;
-}
-
-function isPrismaUniqueConstraintError(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
-}
-
-function isPrismaReferentialIntegrityError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "P2003" || error.code === "P2025")
-  );
 }
 
 function isPanelSyncAction(action: string): action is PanelSyncAction {
