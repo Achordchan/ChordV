@@ -27,51 +27,6 @@ type AuthSessionResponse = {
 let refreshPromise: Promise<string | null> | null = null;
 let adminAccessToken: string | null = null;
 
-function isPanelSyncPendingPayload(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return record.panelSyncStatus === "pending";
-}
-
-function findPanelSyncPendingPayload(value: unknown, depth = 0): unknown | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  if (isPanelSyncPendingPayload(value)) {
-    return value;
-  }
-  if (depth >= 4) {
-    return null;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const nested = findPanelSyncPendingPayload(item, depth + 1);
-      if (nested) {
-        return nested;
-      }
-    }
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  for (const key of ["data", "result", "payload", "error", "response"]) {
-    const nested = findPanelSyncPendingPayload(record[key], depth + 1);
-    if (nested) {
-      return nested;
-    }
-  }
-  return null;
-}
-
-function parsePanelSyncPendingPayload(text: string) {
-  try {
-    return findPanelSyncPendingPayload(JSON.parse(text));
-  } catch {
-    return null;
-  }
-}
-
 function buildHttpErrorMessage(status: number, text: string) {
   const trimmed = text.trim();
   if (trimmed.length === 0) {
@@ -231,10 +186,6 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
 
   if (!response.ok) {
     const text = await response.text();
-    const panelSyncPendingPayload = parsePanelSyncPendingPayload(text);
-    if (panelSyncPendingPayload) {
-      return panelSyncPendingPayload as T;
-    }
     if (useAuth && isAccessTokenError(response.status, text)) {
       const refreshedAccessToken = await refreshAdminAccessToken();
       if (refreshedAccessToken) {
@@ -250,10 +201,6 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
 
   if (!response.ok) {
     const text = await response.text();
-    const panelSyncPendingPayload = parsePanelSyncPendingPayload(text);
-    if (panelSyncPendingPayload) {
-      return panelSyncPendingPayload as T;
-    }
     if (useAuth && isAccessTokenError(response.status, text)) {
       clearStoredAdminSession({ notify: true });
       throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);

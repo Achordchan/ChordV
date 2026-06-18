@@ -651,11 +651,7 @@ export class RuntimeSessionService {
       }
     });
 
-    for (const lease of activeLeases) {
-      await this.revokeLease(lease.id, lease.node, reason);
-    }
-
-    return activeLeases.length;
+    return this.revokeLeasesBestEffort(activeLeases, reason);
   }
 
   async revokeSubscriptionLeases(
@@ -682,11 +678,7 @@ export class RuntimeSessionService {
       }
     });
 
-    for (const lease of activeLeases) {
-      await this.revokeLease(lease.id, lease.node, reason);
-    }
-
-    return activeLeases.length;
+    return this.revokeLeasesBestEffort(activeLeases, reason);
   }
 
   async revokeNodeLeases(nodeId: string, reason: string) {
@@ -707,11 +699,25 @@ export class RuntimeSessionService {
       }
     });
 
-    for (const lease of activeLeases) {
-      await this.revokeLease(lease.id, lease.node, reason);
-    }
+    return this.revokeLeasesBestEffort(activeLeases, reason);
+  }
 
-    return activeLeases.length;
+  private async revokeLeasesBestEffort(
+    leases: Array<{ id: string; sessionId?: string; userId?: string; subscriptionId?: string; nodeId?: string; node: { id: string; flow: string } }>,
+    reason: string
+  ) {
+    let revokedCount = 0;
+    for (const lease of leases) {
+      try {
+        await this.revokeLease(lease.id, lease.node, reason);
+        revokedCount += 1;
+      } catch (error) {
+        this.logger.warn(
+          `Lease revocation skipped after local failure (${lease.id}/${lease.subscriptionId ?? "-"}/${lease.nodeId ?? "-"}): ${readRuntimeErrorMessage(error)}`
+        );
+      }
+    }
+    return revokedCount;
   }
 
   async disablePanelBindingsForSubscription(

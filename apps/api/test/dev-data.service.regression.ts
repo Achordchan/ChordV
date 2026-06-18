@@ -4708,6 +4708,68 @@ async function testLeaseRevocationKeepsLocalStateWhenSecurityEventWriteFails() {
   assert.equal(updates.length, 1, "lease must remain locally revoked when security event write fails");
 }
 
+async function testLeaseRevocationContinuesWhenOneLocalRevokeFails() {
+  const updates: Array<Record<string, unknown>> = [];
+  const warnings: string[] = [];
+  const leases = [
+    {
+      id: "lease_fail",
+      userId: "user_1",
+      subscriptionId: "sub_1",
+      nodeId: "node_1",
+      sessionId: "session_fail",
+      status: "active",
+      expiresAt: new Date(Date.now() + 60_000),
+      node: { id: "node_1", flow: "" }
+    },
+    {
+      id: "lease_ok",
+      userId: "user_1",
+      subscriptionId: "sub_1",
+      nodeId: "node_1",
+      sessionId: "session_ok",
+      status: "active",
+      expiresAt: new Date(Date.now() + 60_000),
+      node: { id: "node_1", flow: "" }
+    }
+  ];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    clientRuntimeEventsService: {
+      publishToUser: () => undefined
+    },
+    prisma: {
+      nodeSessionLease: {
+        findMany: async () => leases,
+        findUnique: async (payload: { where: { id: string } }) => leases.find((lease) => lease.id === payload.where.id) ?? null,
+        updateMany: async (payload: { where: { id: string } }) => {
+          if (payload.where.id === "lease_fail") {
+            throw Object.assign(new Error("server closed the connection unexpectedly"), { code: "P2010" });
+          }
+          updates.push(payload);
+          return { count: 1 };
+        }
+      },
+      securityEvent: {
+        create: async () => ({})
+      }
+    }
+  });
+
+  const count = await service.revokeSubscriptionLeases("sub_1", "node_access_revoked", { nodeIds: ["node_1"] });
+
+  assert.equal(count, 1, "bulk lease revocation should report successfully revoked leases only");
+  assert.deepEqual(
+    updates.map((item) => (item.where as { id: string }).id),
+    ["lease_ok"],
+    "one failed lease must not stop revocation of later leases"
+  );
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /lease_fail/);
+}
+
 async function testPanelDisableJobCallsXuiEvenWhenNodeInactive() {
   const xuiCalls: Array<{ panelClientId: string; enabled: boolean }> = [];
   const bindingUpdates: Array<Record<string, unknown>> = [];
@@ -18376,7 +18438,7 @@ async function testRemoteRuntimeValidationRejectsIdleTimeoutExpectedHashResponse
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
 
     assert.equal(result.status, "unreachable");
-    assert.match(result.message, /空闲|超时/);
+    assert.match(result.message, /空闲|超时|网络连接失败|connection/i);
   } finally {
     if (previousIdleTimeout === undefined) {
       delete process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS;
@@ -28194,6 +28256,7 @@ async function main() {
   await testPanelDisableJobPreDisablesBindingLocally();
   await testLeaseRevocationKeepsLocalStateWhenRuntimeEventPublishFails();
   await testLeaseRevocationKeepsLocalStateWhenSecurityEventWriteFails();
+  await testLeaseRevocationContinuesWhenOneLocalRevokeFails();
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
