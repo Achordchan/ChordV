@@ -46,7 +46,7 @@ import {
   type RuntimeComponentEditorFormState
 } from "./types";
 
-export const DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+export const DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 function showRuntimeComponentFailure(reason: unknown, fallback: string, options?: { uncertainMessage?: (message: string) => string }) {
   const message = readError(reason, fallback);

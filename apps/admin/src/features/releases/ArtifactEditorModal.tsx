@@ -1,4 +1,4 @@
-import { Alert, Button, FileInput, Group, Modal, SegmentedControl, Stack, TextInput } from "@mantine/core";
+import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Stack, TextInput } from "@mantine/core";
 import type { ArtifactEditorFormState } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
 
@@ -64,13 +64,29 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
         />
 
         {props.form.source === "external" ? (
-          <TextInput
-            label="外链下载地址"
-            placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
-            value={props.form.downloadUrl}
-            onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-            disabled={props.saving}
-          />
+          <>
+            <TextInput
+              label="外链下载地址"
+              placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+              value={props.form.downloadUrl}
+              onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+              disabled={props.saving}
+            />
+            {props.platform === "windows" ? (
+              <Checkbox
+                label="按 Windows 全量替换 ZIP 发布"
+                description="外链地址即使没有 .zip 后缀，也会让客户端执行静默全量替换。"
+                checked={props.form.externalDeliveryMode === "windows_full_replace_zip"}
+                onChange={(event) =>
+                  props.onChange({
+                    ...props.form,
+                    externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "auto"
+                  })
+                }
+                disabled={props.saving}
+              />
+            ) : null}
+          </>
         ) : (
           <FileInput
             description={`单文件最大 ${formatUploadBytes(props.uploadMaxBytes)}。大文件上传需要等待，请不要重复点击。`}

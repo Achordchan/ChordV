@@ -25769,7 +25769,8 @@ function testAdminUploadLimitsExposePositiveControllerLimits() {
   assert.equal(Number.isInteger(limits.runtimeComponentMaxBytes), true);
   assert.equal(Number.isInteger(limits.supportTicketAttachmentMaxBytes), true);
   assert.equal(limits.releaseArtifactMaxBytes > 0, true);
-  assert.equal(limits.runtimeComponentMaxBytes, limits.releaseArtifactMaxBytes);
+  assert.equal(limits.runtimeComponentMaxBytes > 0, true);
+  assert.equal(limits.runtimeComponentMaxBytes < limits.releaseArtifactMaxBytes, true);
   assert.equal(limits.supportTicketAttachmentMaxBytes > 0, true);
 }
 

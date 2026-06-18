@@ -1,4 +1,4 @@
-import { Alert, Button, FileInput, Group, Modal, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -60,7 +60,8 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
               ...props.form,
               platform: value as ReleaseEditorFormState["platform"],
               selectedFile: null,
-              fileName: ""
+              fileName: "",
+              externalDeliveryMode: value === "windows" ? "windows_full_replace_zip" : "auto"
             })
           }
           disabled={props.editing || props.saving}
@@ -100,13 +101,29 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
             />
 
             {props.form.artifactSource === "external" ? (
-              <TextInput
-                label="外链下载地址"
-                placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
-                value={props.form.downloadUrl}
-                onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-                disabled={props.saving}
-              />
+              <>
+                <TextInput
+                  label="外链下载地址"
+                  placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+                  value={props.form.downloadUrl}
+                  onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+                  disabled={props.saving}
+                />
+                {props.form.platform === "windows" ? (
+                  <Checkbox
+                    label="按 Windows 全量替换 ZIP 发布"
+                    description="外链地址即使没有 .zip 后缀，也会让客户端执行静默全量替换。"
+                    checked={props.form.externalDeliveryMode === "windows_full_replace_zip"}
+                    onChange={(event) =>
+                      props.onChange({
+                        ...props.form,
+                        externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "auto"
+                      })
+                    }
+                    disabled={props.saving}
+                  />
+                ) : null}
+              </>
             ) : (
               <FileInput
                 label="上传安装包文件"

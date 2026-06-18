@@ -31,6 +31,7 @@ import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file
 import {
   getAdminUploadLimits,
   RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
+  RUNTIME_COMPONENT_MAX_UPLOAD_BYTES,
   SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
 } from "../common/upload-limits";
 import {
@@ -468,7 +469,7 @@ export class AdminController {
         }
       }),
       limits: {
-        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+        fileSize: RUNTIME_COMPONENT_MAX_UPLOAD_BYTES
       }
     })
   )
@@ -492,7 +493,7 @@ export class AdminController {
         }
       }),
       limits: {
-        fileSize: RELEASE_ARTIFACT_MAX_UPLOAD_BYTES
+        fileSize: RUNTIME_COMPONENT_MAX_UPLOAD_BYTES
       }
     })
   )

@@ -263,7 +263,12 @@ export function ReleasesPage(props: ReleasesPageProps) {
         changelog: splitLines(releaseForm.changelog),
         initialArtifact:
           !releaseEditorId && releaseForm.artifactSource === "external" && releaseForm.downloadUrl.trim()
-            ? buildExternalArtifactPayload(releaseForm.platform, releaseForm.downloadUrl, true)
+            ? buildExternalArtifactPayload(
+                releaseForm.platform,
+                releaseForm.downloadUrl,
+                true,
+                releaseForm.externalDeliveryMode
+              )
             : undefined
       };
 
@@ -517,7 +522,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
           const externalPayload = buildExternalArtifactPayload(
             artifactEditor.platform,
             artifactForm.downloadUrl,
-            artifactForm.isPrimary
+            artifactForm.isPrimary,
+            artifactForm.externalDeliveryMode
           );
           record = artifactEditor.artifactId
             ? await updateAdminReleaseArtifact(releaseId!, artifactEditor.artifactId, externalPayload)
@@ -897,8 +903,16 @@ function buildUploadedArtifactPayload(
   };
 }
 
-function buildExternalArtifactPayload(platform: AdminReleasePlatform, downloadUrl: string, isPrimary: boolean) {
-  const type = inferExternalArtifactType(platform, downloadUrl);
+function buildExternalArtifactPayload(
+  platform: AdminReleasePlatform,
+  downloadUrl: string,
+  isPrimary: boolean,
+  externalDeliveryMode: "auto" | "windows_full_replace_zip" = "auto"
+) {
+  const type =
+    platform === "windows" && externalDeliveryMode === "windows_full_replace_zip"
+      ? "zip"
+      : inferExternalArtifactType(platform, downloadUrl);
   return {
     source: "external" as const,
     type,
