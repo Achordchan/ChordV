@@ -307,8 +307,9 @@ export class AdminNodeService {
     try {
       return await this.listPanelSyncJobs();
     } catch (error) {
-      this.logger.warn(`Panel sync retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`);
-      return [];
+      const message = `Panel sync retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`;
+      this.logger.warn(message);
+      throw new ServiceUnavailableException(message);
     }
   }
 
@@ -316,8 +317,9 @@ export class AdminNodeService {
     try {
       return await this.listLeaseRevocationJobs();
     } catch (error) {
-      this.logger.warn(`Lease revocation retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`);
-      return [];
+      const message = `Lease revocation retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`;
+      this.logger.warn(message);
+      throw new ServiceUnavailableException(message);
     }
   }
 

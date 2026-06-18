@@ -9619,10 +9619,14 @@ async function testRetryPanelSyncJobKeepsSavedRetryWhenListRefreshFails() {
     }
   });
 
-  const result = await service.retryPanelSyncJob("job_1");
+  await assert.rejects(
+    () => service.retryPanelSyncJob("job_1"),
+    (error: unknown) =>
+      error instanceof ServiceUnavailableException &&
+      /Panel sync retry was saved, but queue refresh failed/.test(error.message)
+  );
 
   assert.equal(updates.length, 1, "retry state must be saved before queue refresh");
-  assert.deepEqual(result, [], "saved retry should not be reported as failed when the follow-up list refresh fails");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /queue refresh failed/);
 }
@@ -9990,10 +9994,14 @@ async function testRetryLeaseRevocationJobKeepsSavedRetryWhenListRefreshFails() 
     }
   });
 
-  const result = await service.retryLeaseRevocationJob("lease_job_1");
+  await assert.rejects(
+    () => service.retryLeaseRevocationJob("lease_job_1"),
+    (error: unknown) =>
+      error instanceof ServiceUnavailableException &&
+      /Lease revocation retry was saved, but queue refresh failed/.test(error.message)
+  );
 
   assert.equal(updates.length, 1, "retry state must be saved before lease queue refresh");
-  assert.deepEqual(result, [], "saved lease retry should not be reported as failed when the follow-up list refresh fails");
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /queue refresh failed/);
 }

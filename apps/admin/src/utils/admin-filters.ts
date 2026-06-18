@@ -47,6 +47,9 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (/只填写图床域名|不要包含路径|图床文件路径无效|文件路径不能为空/i.test(message)) {
     return message.replace(/^HTTP\s*\d+:\s*/i, "");
   }
+  if (isSupportTicketAttachmentUploadFailure(message)) {
+    return message.replace(/^HTTP\s*\d+:\s*/i, "");
+  }
   if (/HTTP\s*401|Unauthorized/i.test(message)) {
     return "登录状态已失效，请重新登录。";
   }

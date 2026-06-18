@@ -53,7 +53,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const deletingPathRef = useRef<string | null>(null);
 
   useEffect(() => {
-    void loadConfig({ loadFilesAfter: true });
+    void loadConfig();
   }, []);
 
   useEffect(() => {
@@ -456,6 +456,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
                         <img
                           src={file.url}
                           alt={file.name}
+                          loading="lazy"
                           style={{ width: 56, height: 40, objectFit: "cover", borderRadius: 8 }}
                         />
                       </Table.Td>

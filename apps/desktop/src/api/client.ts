@@ -155,13 +155,18 @@ function readApiBaseUrl() {
 
 async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestInit, "body">) {
   const startedAt = performance.now();
-  const response = await fetch(`${API_BASE}/api${path}`, {
-    ...init,
-    body,
-    headers: {
-      ...(init?.headers ?? {})
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api${path}`, {
+      ...init,
+      body,
+      headers: {
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch (error) {
+    throw normalizeNetworkRequestError(error);
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -174,6 +179,14 @@ async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestI
     status: response.status,
     elapsedMs: Math.max(0, Math.round(performance.now() - startedAt))
   };
+}
+
+function normalizeNetworkRequestError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Failed to fetch|NetworkError|fetch failed|Load failed/i.test(message)) {
+    return new ApiRequestError(null, "网络请求失败，请检查后台服务或网络连接后重试。", message);
+  }
+  return error;
 }
 
 async function loadNativeInvoke(): Promise<NativeInvoke | null> {

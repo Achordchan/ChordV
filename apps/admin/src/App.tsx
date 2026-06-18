@@ -979,6 +979,11 @@ export function App() {
     mergeSnapshot({ panelSyncJobs, leaseRevocationJobs, nodes });
   }
 
+  async function refreshLeaseRevocationJobsAfterPending() {
+    const [leaseRevocationJobs, nodes] = await Promise.all([fetchAdminLeaseRevocationJobs(), fetchAdminNodes()]);
+    mergeSnapshot({ leaseRevocationJobs, nodes });
+  }
+
   function refreshAdminNodesAfterPanelSyncRetry() {
     void fetchAdminNodes()
       .then((nodes) => {
@@ -1091,7 +1096,7 @@ export function App() {
       const retryMessage = readError(reason, "连接撤销任务重新排队失败");
       const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
       if (retryUncertain) {
-        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+        void refreshLeaseRevocationJobsAfterPending().catch(() => undefined);
       }
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
@@ -1123,7 +1128,7 @@ export function App() {
       const retryMessage = readError(reason, "节点连接撤销任务重新排队失败");
       const retryUncertain = isPotentiallyCompletedMutationFailure(retryMessage);
       if (retryUncertain) {
-        void refreshPanelSyncJobsAfterPending().catch(() => undefined);
+        void refreshLeaseRevocationJobsAfterPending().catch(() => undefined);
       }
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
