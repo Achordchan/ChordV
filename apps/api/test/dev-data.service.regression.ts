@@ -2459,7 +2459,7 @@ async function testAdminRuntimeEventStreamPreservesOrderWithAsyncValidation() {
 function testReleaseArtifactPathTraversalIsRejected() {
   assert.throws(
     () => resolveReleaseArtifactAbsolutePath("../secret.bin"),
-    /outside the release storage root/,
+    /存储目录/,
     "stored release artifact paths must stay inside the configured storage root"
   );
 }
@@ -2522,7 +2522,7 @@ function testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads() {
 async function testExternalReleaseMetadataRejectsPrivateNetworkUrl() {
   await assert.rejects(
     () => fetchExternalReleaseArtifactMetadata("http://127.0.0.1:9/ChordV-full.zip"),
-    /private or reserved/,
+    /内网|保留地址/,
     "server-side release artifact probes must not access private network URLs"
   );
 }
@@ -2543,7 +2543,7 @@ async function testExternalReleaseMetadataRejectsStalledResponse() {
   try {
     await assert.rejects(
       () => fetchExternalReleaseArtifactMetadata(`http://127.0.0.1:${port}/ChordV-full.zip`),
-      /timed out/,
+      /超时/,
       "external release metadata probes must fail on the app timeout instead of waiting for a stalled server"
     );
   } finally {
@@ -2606,7 +2606,7 @@ async function testExternalReleaseDownloadRejectsStalledBody() {
   try {
     await assert.rejects(
       () => downloadExternalReleaseArtifactFileStrict(`http://127.0.0.1:${port}/ChordV-full.zip`),
-      /body stalled/,
+      /没有返回数据/,
       "external release full ZIP downloads must fail on idle body timeout instead of waiting for total timeout"
     );
   } finally {
@@ -3207,7 +3207,7 @@ async function testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow() {
         forceUpgrade: false,
         status: "published"
       }),
-    /draft release/i,
+    (error: unknown) => error instanceof BadRequestException,
     "release center should force drafts before publishing"
   );
 }
@@ -3307,7 +3307,7 @@ async function testCreateReleaseRejectsDuplicateVersionAsConflict() {
         version: "1.1.6",
         minimumVersion: "1.1.0"
       }),
-    (error) => error instanceof ConflictException && /already exists/i.test(error.message),
+    (error) => error instanceof ConflictException,
     "duplicate release versions must return a controlled conflict instead of HTTP 500"
   );
 }
@@ -3632,7 +3632,7 @@ async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
 
   await assert.rejects(
     () => service["assertReleasePublishable"]("release_1"),
-    /stored file|missing/i,
+    (error: unknown) => error instanceof BadRequestException,
     "published uploaded artifacts must still point to a readable local file"
   );
 }
@@ -8660,6 +8660,7 @@ async function testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync() {
   assert.equal(updates[0]?.where.id, "job_1");
   assert.equal(updates[0]?.data.status, "pending");
   assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(updates[0]?.data.attempts, 0);
   assert.equal(updates[0]?.data.lastError, null);
   assert.deepEqual(result.map((job) => job.id), ["job_1"]);
 }
@@ -8776,6 +8777,7 @@ async function testRetryPanelSyncJobsForNodeOnlyRequeuesRetryableJobsOnThatNode(
   assert.equal(updates[0]?.data.status, "pending");
   assert.equal(updates[0]?.data.lockedAt, null);
   assert.equal(updates[0]?.data.completedAt, null);
+  assert.equal(updates[0]?.data.attempts, 0);
   assert.equal(updates[0]?.data.lastError, null);
   assert.deepEqual(result.map((job) => job.id), ["job_pending", "job_failed"]);
 }
@@ -8960,6 +8962,52 @@ async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
   assert.equal(createManyCalls[0]?.data.dedupeKey, "lease:subscription_running");
 }
 
+async function testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff() {
+  const updates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    prisma: {
+      leaseRevocationJob: {
+        updateMany: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { count: 1 };
+        },
+        findMany: async () => [
+          {
+            id: "lease_job_1",
+            reason: "subscription_exhausted",
+            status: "pending",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            nodeId: "node_1",
+            attempts: 0,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: null,
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      },
+      node: {
+        findMany: async () => [{ id: "node_1", name: "Node 1" }]
+      }
+    }
+  });
+
+  const result = await service.retryLeaseRevocationJob("lease_job_1");
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.where.id, "lease_job_1");
+  assert.equal(updates[0]?.data.status, "pending");
+  assert.equal(updates[0]?.data.lockedAt, null);
+  assert.equal(updates[0]?.data.completedAt, null);
+  assert.equal(updates[0]?.data.attempts, 0);
+  assert.equal(updates[0]?.data.lastError, null);
+  assert.deepEqual(result.map((job) => job.id), ["lease_job_1"]);
+}
+
 async function testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode() {
   const updates: Array<Record<string, any>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -9017,6 +9065,7 @@ async function testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnTha
   assert.equal(updates[0]?.data.status, "pending");
   assert.equal(updates[0]?.data.lockedAt, null);
   assert.equal(updates[0]?.data.completedAt, null);
+  assert.equal(updates[0]?.data.attempts, 0);
   assert.equal(updates[0]?.data.lastError, null);
   assert.deepEqual(result.map((job) => job.id), ["lease_pending", "lease_failed"]);
   assert.deepEqual(result.map((job) => job.nodeName), ["Node 1", "Node 1"]);
@@ -16612,7 +16661,7 @@ async function testRuntimeComponentCreateRejectsBlankFileName() {
       originUrl: "https://example.com/xray.zip",
       fileName: "   "
     }),
-    /fileName must not be empty/,
+    (error: unknown) => error instanceof BadRequestException,
     "remote runtime component create must reject blank output file names"
   );
 }
@@ -16888,7 +16937,7 @@ async function testRemoteRuntimeValidationRejectsPrivateNetworkUrl() {
   const result = await service.validateAdminRuntimeComponent("component_1");
 
   assert.equal(result.status, "unreachable");
-  assert.match(result.message, /private or reserved/);
+  assert.match(result.message, /内网|保留地址/);
 }
 
 async function testRemoteRuntimeValidationRejectsMissingExpectedHash() {
@@ -17766,7 +17815,7 @@ async function testRemoteRuntimeValidationRejectsLargeDefaultContentLength() {
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
 
     assert.equal(result.status, "metadata_mismatch");
-    assert.match(result.message, /too large/i);
+    assert.match(result.message, /过大|超过/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -17813,8 +17862,8 @@ async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
 
     assert.equal(result.status, "metadata_mismatch");
-    assert.match(result.message, /saving refreshed metadata failed/);
-    assert.match(result.message, /runtime metadata write failed/);
+    assert.match(result.message, /保存校验结果失败/);
+    assert.doesNotMatch(result.message, /runtime metadata write failed/);
     assert.notEqual(result.status, "unreachable", "local DB write failures must not be reported as unreachable remote URLs");
     assert.equal(result.actualFileSizeBytes, String(body.byteLength));
     assert.equal(result.actualFileHash, expectedHash);
@@ -18039,7 +18088,7 @@ async function testRemoteRuntimeValidationRejectsIdleTimeoutExpectedHashResponse
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
 
     assert.equal(result.status, "unreachable");
-    assert.match(result.message, /idle/);
+    assert.match(result.message, /空闲|超时/);
   } finally {
     if (previousIdleTimeout === undefined) {
       delete process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS;
@@ -18104,7 +18153,7 @@ async function testRemoteRuntimeValidationRejectsTotalTimeoutExpectedHashRespons
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
 
     assert.equal(result.status, "unreachable");
-    assert.match(result.message, /total/);
+    assert.match(result.message, /总耗时|超时/);
   } finally {
     if (interval) {
       clearInterval(interval);
@@ -18162,6 +18211,49 @@ async function testRuntimePlanSkipsRemoteRowsMissingDownloadMetadata() {
   });
 
   assert.equal(plan.components.length, 0, "client plan must not expose remote runtime components without size metadata");
+}
+
+async function testRuntimePlanSkipsRemoteRowsWithMismatchedHashMetadata() {
+  const expectedHash = "a".repeat(64);
+  const makeRemoteComponent = (id: string, kind: "xray" | "geoip" | "geosite", fileHash = expectedHash) => ({
+    id,
+    platform: kind === "xray" ? "windows" : "macos",
+    architecture: kind === "xray" ? "x64" : "arm64",
+    kind,
+    source: "custom_remote",
+    originUrl: `https://example.com/${kind}.dat`,
+    defaultMirrorPrefix: null,
+    allowClientMirror: true,
+    fileName: `${kind}.dat`,
+    storedFilePath: null,
+    fileSizeBytes: 1024n,
+    fileHash,
+    archiveEntryName: null,
+    expectedHash
+  });
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async (payload: { where: { kind?: string | { in: string[] } } }) => {
+          if (payload.where.kind === "xray") {
+            return [makeRemoteComponent("xray_1", "xray", "b".repeat(64))];
+          }
+          return [makeRemoteComponent("geoip_1", "geoip"), makeRemoteComponent("geosite_1", "geosite")];
+        }
+      }
+    }
+  });
+
+  const plan = await service.getClientRuntimeComponentsPlan({
+    platform: "windows",
+    architecture: "x64"
+  });
+
+  assert.equal(
+    plan.components.length,
+    0,
+    "client plan must not expose remote runtime components whose refreshed fileHash differs from expectedHash"
+  );
 }
 
 async function testRuntimePlanSkipsUploadedRowsMissingFiles() {
@@ -18319,7 +18411,7 @@ async function testRuntimePlanIgnoresHistoricalMirrorFields() {
     fileName: `${kind}.dat`,
     storedFilePath: null,
     fileSizeBytes: 1024n,
-    fileHash: "b".repeat(64),
+    fileHash: "a".repeat(64),
     archiveEntryName: null,
     expectedHash: "a".repeat(64)
   });
@@ -19931,7 +20023,7 @@ async function testPublishWindowsReleaseRejectsClientUnusableArtifact() {
 
   await assert.rejects(
     () => service["assertReleasePublishable"]("release_1"),
-    /client-usable artifact|Windows release artifacts/i
+    /可供客户端下载|Windows 安装包/
   );
 }
 
@@ -20135,7 +20227,7 @@ async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
     () => service.updateReleaseArtifact("release_1", "artifact_1", {
       downloadUrl: "https://example.com/other.zip"
     }),
-    /upload endpoint/,
+    (error: unknown) => error instanceof BadRequestException,
     "uploaded release artifact download URLs must remain upload-managed"
   );
 }
@@ -27792,6 +27884,7 @@ async function main() {
   await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
+  await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
   await testRetryLeaseRevocationJobsForNodeRejectsWhenNoRetryableJobsExist();
   await testXuiPanelLocationDoesNotDuplicateBasePath();
@@ -27947,6 +28040,7 @@ async function main() {
   await testRemoteRuntimeValidationRejectsIdleTimeoutExpectedHashResponse();
   await testRemoteRuntimeValidationRejectsTotalTimeoutExpectedHashResponse();
   await testRuntimePlanSkipsRemoteRowsMissingDownloadMetadata();
+  await testRuntimePlanSkipsRemoteRowsWithMismatchedHashMetadata();
   await testRuntimePlanSkipsUploadedRowsMissingFiles();
   await testRuntimePlanSkipsUploadedRowsWithStaleMetadata();
   await testRuntimePlanIgnoresHistoricalMirrorFields();

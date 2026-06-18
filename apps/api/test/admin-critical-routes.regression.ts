@@ -444,57 +444,111 @@ async function main() {
       201
     );
 
+    const adminCalls = calls.slice(0, 48);
+    const clientCalls = calls.slice(48);
+
     assert.deepEqual(
-      calls.map((call) => call.route),
+      adminCalls,
       [
-        "snapshot-get",
-        "dashboard-get",
-        "admin-security",
-        "users-list",
-        "user-create",
-        "user-update",
-        "user-security",
-        "plans-list",
-        "plan-create",
-        "plan-update",
-        "plan-security",
-        "subscriptions-list",
-        "subscription-create",
-        "subscription-renew",
-        "subscription-change-plan",
-        "subscription-update",
-        "subscription-convert-team",
-        "subscription-nodes-get",
-        "teams-list",
-        "team-create",
-        "team-update",
-        "team-member-create",
-        "team-member-update",
-        "team-member-delete",
-        "team-member-kick",
-        "team-subscription-create",
-        "team-usage",
-        "nodes-list",
-        "panel-jobs-list",
-        "lease-jobs-list",
-        "node-import",
-        "node-panel-inbounds",
-        "node-refresh",
-        "node-probe",
-        "tickets-list",
-        "ticket-detail",
-        "ticket-reply",
-        "ticket-close",
-        "ticket-reopen",
-        "announcements-list",
-        "policy-get",
-        "policy-update",
-        "releases-list",
-        "release-delete",
-        "runtime-list",
-        "runtime-create",
-        "runtime-update",
-        "runtime-download",
+        { route: "snapshot-get", value: "snapshot" },
+        { route: "dashboard-get", value: "dashboard" },
+        {
+          route: "admin-security",
+          value: "me",
+          body: {
+            currentPassword: "password1",
+            email: "admin@example.com",
+            newPassword: "password2",
+            authorization: "Bearer admin-test-token"
+          }
+        },
+        { route: "users-list", value: "all" },
+        {
+          route: "user-create",
+          value: "new",
+          body: { email: "uat@example.com", password: "password1", displayName: "UAT User", role: "user" }
+        },
+        { route: "user-update", value: "user_1", body: { status: "disabled" } },
+        { route: "user-security", value: "user_1", body: { maxConcurrentSessionsOverride: 2 } },
+        { route: "plans-list", value: "all" },
+        {
+          route: "plan-create",
+          value: "new",
+          body: { name: "UAT Plan", scope: "personal", totalTrafficGb: 10, renewable: true, maxConcurrentSessions: 2 }
+        },
+        { route: "plan-update", value: "plan_1", body: { isActive: false } },
+        { route: "plan-security", value: "plan_1", body: { maxConcurrentSessions: 3 } },
+        { route: "subscriptions-list", value: "all" },
+        { route: "subscription-create", value: "new", body: { userId: "user_1", planId: "plan_1", expireAt, totalTrafficGb: 10 } },
+        { route: "subscription-renew", value: "subscription_1", body: { expireAt, resetTraffic: true, totalTrafficGb: 20 } },
+        { route: "subscription-change-plan", value: "subscription_1", body: { planId: "plan_2", totalTrafficGb: 30, expireAt } },
+        { route: "subscription-update", value: "subscription_1", body: { state: "paused" } },
+        { route: "subscription-convert-team", value: "subscription_1", body: { targetTeamId: "team_1" } },
+        { route: "subscription-nodes-get", value: "subscription_1" },
+        { route: "teams-list", value: "all" },
+        { route: "team-create", value: "new", body: { name: "UAT Team", ownerUserId: "user_1" } },
+        { route: "team-update", value: "team_1", body: { status: "disabled" } },
+        { route: "team-member-create", value: "team_1", body: { userId: "user_2", role: "member" } },
+        { route: "team-member-update", value: "team_1:member_1", body: { role: "owner" } },
+        { route: "team-member-delete", value: "team_1:member_1" },
+        { route: "team-member-kick", value: "team_1:member_1", body: { disableAccount: true } },
+        { route: "team-subscription-create", value: "team_1", body: { planId: "plan_1", expireAt, totalTrafficGb: 10 } },
+        { route: "team-usage", value: "team_1" },
+        { route: "nodes-list", value: "all" },
+        { route: "panel-jobs-list", value: "all" },
+        { route: "lease-jobs-list", value: "all" },
+        {
+          route: "node-import",
+          value: "new",
+          body: { subscriptionUrl: "https://node.example.com/sub", name: "UAT Node", countryCode: "US" }
+        },
+        {
+          route: "node-panel-inbounds",
+          value: "panel",
+          body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "password" }
+        },
+        { route: "node-refresh", value: "node_1" },
+        { route: "node-probe", value: "node_1" },
+        { route: "tickets-list", value: "all" },
+        { route: "ticket-detail", value: "ticket_1" },
+        { route: "ticket-reply", value: "ticket_1", body: { body: "admin reply", adminId: "admin_1" } },
+        { route: "ticket-close", value: "ticket_1" },
+        { route: "ticket-reopen", value: "ticket_1" },
+        { route: "announcements-list", value: "all" },
+        { route: "policy-get", value: "policy" },
+        { route: "policy-update", value: "policy", body: { modes: ["global", "rule"], defaultMode: "rule", blockAds: true } },
+        { route: "releases-list", value: "all", body: { platform: "windows", status: "draft" } },
+        { route: "release-delete", value: "release_1" },
+        { route: "runtime-list", value: "all" },
+        {
+          route: "runtime-create",
+          value: "new",
+          body: {
+            platform: "windows",
+            architecture: "x64",
+            kind: "xray",
+            source: "custom_remote",
+            originUrl: "https://cdn.example.com/xray.zip",
+            fileName: "xray.zip"
+          }
+        },
+        {
+          route: "runtime-update",
+          value: "component_1",
+          body: {
+            source: "custom_remote",
+            originUrl: "https://cdn.example.com/xray.zip",
+            fileName: "xray.zip",
+            enabled: true
+          }
+        },
+        { route: "runtime-download", value: "component_1" }
+      ]
+    );
+
+    assert.deepEqual(
+      clientCalls.map((call) => call.route),
+      [
         "client-bootstrap",
         "client-subscription",
         "client-nodes",

@@ -388,7 +388,7 @@ export class RuntimeComponentsService {
       return {
         componentId,
         status: "unreachable",
-        message: `当前链接不可访问：${error instanceof Error ? error.message : String(error)}`,
+        message: `当前链接不可访问：${toUserRuntimeValidationMessage(error)}`,
         finalUrlPreview: resolvedUrl
       };
     }
@@ -635,7 +635,7 @@ export class RuntimeComponentsService {
         return {
           componentId,
           status: "unreachable",
-          message: `Remote runtime component is not reachable: HTTP ${response.status}`,
+          message: `远程组件当前不可访问，HTTP ${response.status}。`,
           finalUrlPreview: resolvedUrl,
           httpStatus: response.status
         };
@@ -646,7 +646,7 @@ export class RuntimeComponentsService {
         return {
           componentId,
           status: "metadata_mismatch",
-          message: `Remote runtime component is too large: ${contentLength} bytes exceeds ${limits.maxBytes} bytes.`,
+          message: `远程组件文件过大：${contentLength} 字节，超过 ${limits.maxBytes} 字节限制。`,
           finalUrlPreview: resolvedUrl,
           httpStatus: response.status
         };
@@ -670,7 +670,7 @@ export class RuntimeComponentsService {
         return {
           componentId,
           status: "metadata_mismatch",
-          message: "Remote runtime component SHA256 does not match expectedHash.",
+          message: "远程组件 SHA256 与预期 Hash 不一致。",
           finalUrlPreview: resolvedUrl,
           httpStatus: response.status
         };
@@ -689,7 +689,7 @@ export class RuntimeComponentsService {
         return {
           componentId,
           status: "metadata_mismatch",
-          message: `Remote runtime component is reachable and expectedHash matches, but saving refreshed metadata failed: ${readErrorMessage(error)}`,
+          message: "远程组件可访问且 Hash 匹配，但保存校验结果失败，请稍后重试。",
           finalUrlPreview: resolvedUrl,
           httpStatus: response.status,
           actualFileSizeBytes: metadata.fileSizeBytes.toString(),
@@ -700,7 +700,7 @@ export class RuntimeComponentsService {
       return {
         componentId,
         status: "ready",
-        message: "Remote runtime component is reachable and expectedHash matches.",
+        message: "远程组件可访问，SHA256 已匹配。",
         finalUrlPreview: resolvedUrl,
         httpStatus: response.status,
         actualFileSizeBytes: metadata.fileSizeBytes.toString(),
@@ -721,7 +721,7 @@ export class RuntimeComponentsService {
         return {
           componentId,
           status: "unreachable",
-          message: `Remote runtime component download timed out after ${timeoutMs}ms (${timeoutReason}).`,
+          message: `远程组件下载校验超时：${timeoutMs}ms（${timeoutReason === "total" ? "总耗时" : "读数据空闲"}）。`,
           finalUrlPreview: resolvedUrl
         };
       }
@@ -929,7 +929,7 @@ export class RuntimeComponentsService {
       return await task();
     } catch (error) {
       if (isPrismaUniqueConstraintError(error)) {
-        throw new ConflictException("A runtime component already exists for this platform, architecture, and kind.");
+        throw new ConflictException("相同平台、架构和类型的内核组件已存在。");
       }
       throwLocalSaveAsServiceUnavailable(error, "内核组件保存失败，请刷新后重试。");
     }
@@ -1043,7 +1043,7 @@ function isHttpUrl(value: string) {
 function normalizeRequiredText(value: string | null | undefined, fieldName: string) {
   const trimmed = value?.trim();
   if (!trimmed) {
-    throw new BadRequestException(`${fieldName} must not be empty.`);
+    throw new BadRequestException(`${translateRuntimeComponentField(fieldName)}不能为空。`);
   }
   return trimmed;
 }
@@ -1087,19 +1087,14 @@ async function hashResponseBody(
     read: () => Promise<{ done: boolean; value?: Uint8Array }>;
     releaseLock: () => void;
   };
-  let idleTimeout: ReturnType<typeof setTimeout> | null = null;
   const output = options.writePath ? await fs.open(options.writePath, "w") : null;
-  const resetIdleTimeout = () => {
-    if (idleTimeout) {
-      clearTimeout(idleTimeout);
-    }
-    idleTimeout = setTimeout(options.onIdleTimeout, options.idleTimeoutMs);
-  };
   try {
-    resetIdleTimeout();
     while (true) {
-      const { done, value } = await reader.read();
-      resetIdleTimeout();
+      const { done, value } = await readRuntimeComponentBodyChunkWithIdleTimeout(
+        reader,
+        options.idleTimeoutMs,
+        options.onIdleTimeout
+      );
       if (done) {
         break;
       }
@@ -1112,15 +1107,10 @@ async function hashResponseBody(
       }
       fileSizeBytes += BigInt(value.byteLength);
       if (fileSizeBytes > BigInt(options.maxBytes)) {
-        throw new RemoteRuntimeHashSizeError(
-          `Remote runtime component is too large: streamed bytes exceed ${options.maxBytes} bytes.`
-        );
+        throw new RemoteRuntimeHashSizeError(`远程组件文件过大：已下载内容超过 ${options.maxBytes} 字节限制。`);
       }
     }
   } finally {
-    if (idleTimeout) {
-      clearTimeout(idleTimeout);
-    }
     if (output) {
       await output.close();
     }
@@ -1131,6 +1121,30 @@ async function hashResponseBody(
     fileSizeBytes,
     fileHash: hash.digest("hex")
   };
+}
+
+async function readRuntimeComponentBodyChunkWithIdleTimeout(
+  reader: {
+    read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+  },
+  idleTimeoutMs: number,
+  onIdleTimeout: () => void
+) {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      onIdleTimeout();
+      reject(new Error("远程组件下载读数据超时。"));
+    }, idleTimeoutMs);
+    timeoutHandle.unref?.();
+  });
+  try {
+    return await Promise.race([reader.read(), timeoutTask]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 }
 
 async function assertStoredRuntimeComponentReadable(component: {
@@ -1217,7 +1231,17 @@ async function filterClientUsableRuntimeComponents<T extends {
   const usableRows: T[] = [];
   for (const row of rows) {
     if (row.source !== "uploaded") {
-      if (isHttpUrl(row.originUrl) && hasPositiveFileSize(row.fileSizeBytes) && isValidSha256(row.expectedHash)) {
+      const rawExpectedHash = row.expectedHash;
+      const rawFileHash = row.fileHash;
+      const expectedHash = isValidSha256(rawExpectedHash) ? rawExpectedHash.toLowerCase() : null;
+      const fileHash = isValidSha256(rawFileHash) ? rawFileHash.toLowerCase() : null;
+      if (
+        isHttpUrl(row.originUrl) &&
+        hasPositiveFileSize(row.fileSizeBytes) &&
+        expectedHash !== null &&
+        fileHash !== null &&
+        fileHash === expectedHash
+      ) {
         usableRows.push(row);
       }
       continue;
@@ -1249,12 +1273,42 @@ function toBigInt(value: bigint | number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? BigInt(value) : null;
 }
 
-function isValidSha256(value: string | null | undefined) {
+function isValidSha256(value: string | null | undefined): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
 
 function readErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+}
+
+function toUserRuntimeValidationMessage(error: unknown) {
+  const message = readErrorMessage(error);
+  if (/private or reserved/i.test(message)) {
+    return "不能使用内网或保留地址。";
+  }
+  if (/HTTP\s*(\d+)/i.test(message)) {
+    return `远程服务返回 HTTP ${RegExp.$1}。`;
+  }
+  if (/too large/i.test(message)) {
+    return "远程文件超过允许大小。";
+  }
+  if (/timed out|timeout|aborted|abort/i.test(message)) {
+    return "请求超时，请稍后重试。";
+  }
+  if (/fetch failed|ECONN|ENOTFOUND|ETIMEDOUT|socket/i.test(message)) {
+    return "网络连接失败，请检查下载地址。";
+  }
+  return "请检查下载地址是否可直接访问。";
+}
+
+function translateRuntimeComponentField(fieldName: string) {
+  if (fieldName === "fileName") {
+    return "输出文件名";
+  }
+  if (fieldName === "originUrl") {
+    return "远程直链下载地址";
+  }
+  return fieldName;
 }
 
 function translatePlatform(platform: "macos" | "windows" | "android" | "ios") {
@@ -1335,18 +1389,24 @@ function mapUploadedFilePreparationError(error: unknown, label: string) {
     return error;
   }
   const code = readErrorCode(error);
-  const message = error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
   if (code === "ENOSPC" || code === "EACCES" || code === "EPERM") {
-    return new ServiceUnavailableException(`${label} storage is currently unavailable: ${code ?? message}`);
+    return new ServiceUnavailableException(`${translateUploadPreparationLabel(label)}存储暂不可用，请检查服务器磁盘空间或目录权限。`);
   }
   if (code === "ENOENT") {
-    return new BadRequestException(`${label} temporary file is missing; please select the file again and retry.`);
+    return new BadRequestException(`${translateUploadPreparationLabel(label)}临时文件不存在，请重新选择文件后再上传。`);
   }
-  return new ServiceUnavailableException(`${label} file preparation failed: ${message}`);
+  return new ServiceUnavailableException(`${translateUploadPreparationLabel(label)}文件处理失败，请稍后重试。`);
 }
 
 function readErrorCode(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : null;
+}
+
+function translateUploadPreparationLabel(label: string) {
+  if (label === "runtime component upload") {
+    return "运行组件上传";
+  }
+  return label;
 }
 
 function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {

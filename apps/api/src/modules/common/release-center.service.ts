@@ -96,13 +96,13 @@ export class ReleaseCenterService {
       });
       return rows.map(toAdminReleaseRecord);
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release list is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "发布列表暂时不可用，请稍后重试。");
     }
   }
 
   async createRelease(input: CreateReleaseInputDto): Promise<AdminReleaseRecordDto> {
     if ((input.status ?? "draft") === "published") {
-      throw new BadRequestException("Create a draft release and add an artifact before publishing.");
+      throw new BadRequestException("请先创建草稿并添加安装包，再发布版本。");
     }
 
     const releaseId = createId("release");
@@ -322,10 +322,10 @@ export class ReleaseCenterService {
         }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release detail is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "发布记录暂时不可用，请稍后重试。");
     }
     if (!release) {
-      throw new NotFoundException("Release record does not exist.");
+      throw new NotFoundException("发布记录不存在。");
     }
 
     this.assertReleaseRecordMutable(release);
@@ -398,11 +398,11 @@ export class ReleaseCenterService {
     );
     const rawSource = (input as { source?: string }).source;
     if (rawSource === "uploaded") {
-      throw new BadRequestException("Use the upload endpoint to create uploaded artifacts.");
+      throw new BadRequestException("上传型安装包请通过上传入口创建。");
     }
 
     if (rawSource !== undefined && rawSource !== "external") {
-      throw new BadRequestException("Release artifact source must be external.");
+      throw new BadRequestException("安装包来源必须是外部链接。");
     }
     const source = "external";
 
@@ -461,7 +461,7 @@ export class ReleaseCenterService {
       throwLocalReadAsServiceUnavailable(error, "发布包信息读取失败，请稍后重试。");
     }
     if (!current) {
-      throw new NotFoundException("Release artifact does not exist.");
+      throw new NotFoundException("安装包不存在。");
     }
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
@@ -478,14 +478,14 @@ export class ReleaseCenterService {
         : undefined;
     const nextType = input.type ?? inferredExternalType ?? currentType;
     if (input.source === "uploaded" && current.source !== "uploaded") {
-      throw new BadRequestException("Use the upload endpoint to switch to an uploaded artifact.");
+      throw new BadRequestException("切换为上传型安装包时，请使用上传入口。");
     }
 
     if (nextSource === "uploaded" && input.downloadUrl !== undefined && input.downloadUrl.trim() !== current.downloadUrl) {
-      throw new BadRequestException("Uploaded release artifact URLs are managed by the upload endpoint.");
+      throw new BadRequestException("上传型安装包的下载地址由上传入口管理。");
     }
     if (nextSource === "uploaded" && !current.storedFilePath) {
-      throw new BadRequestException("Uploaded release artifact is missing its stored file.");
+      throw new BadRequestException("上传型安装包缺少已保存文件。");
     }
 
     if (nextSource === "external") {
@@ -559,7 +559,7 @@ export class ReleaseCenterService {
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
     if (!file) {
-      throw new BadRequestException("Select an installer package file first.");
+      throw new BadRequestException("请先选择要上传的安装包文件。");
     }
     const platform = release.platform as PlatformTarget;
     const uploadType = inferUploadedReleaseArtifactType(platform, input.fileName || file.originalname, input.type);
@@ -621,7 +621,7 @@ export class ReleaseCenterService {
     file?: UploadedReleaseFile
   ): Promise<AdminReleaseRecordDto> {
     if (!file) {
-      throw new BadRequestException("Select an installer package file first.");
+      throw new BadRequestException("请先选择要上传的安装包文件。");
     }
     let current: any;
     try {
@@ -629,10 +629,10 @@ export class ReleaseCenterService {
         where: { id: artifactId, releaseId }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release artifact detail is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "安装包信息暂时不可用，请稍后重试。");
     }
     if (!current) {
-      throw new NotFoundException("Release artifact does not exist.");
+      throw new NotFoundException("安装包不存在。");
     }
     const release = await this.ensureReleaseExists(releaseId);
     this.assertReleaseArtifactsMutable(release);
@@ -703,10 +703,10 @@ export class ReleaseCenterService {
         where: { id: artifactId, releaseId }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release artifact detail is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "安装包信息暂时不可用，请稍后重试。");
     }
     if (!artifact) {
-      throw new NotFoundException("Release artifact does not exist.");
+      throw new NotFoundException("安装包不存在。");
     }
     let siblings: any[];
     try {
@@ -715,7 +715,7 @@ export class ReleaseCenterService {
         orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release artifact list is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "安装包列表暂时不可用，请稍后重试。");
     }
     const nextPrimary = artifact.isPrimary ? siblings.find((item) => item.id !== artifactId) ?? null : null;
     try {
@@ -758,10 +758,10 @@ export class ReleaseCenterService {
         include: { release: true }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Installer package lookup is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "安装包下载信息暂时不可用，请稍后重试。");
     }
     if (!artifact || artifact.source !== "uploaded" || !artifact.storedFilePath || artifact.release.status !== "published") {
-      throw new NotFoundException("Installer package does not exist.");
+      throw new NotFoundException("安装包不存在。");
     }
     await this.assertStoredReleaseArtifactReadable(artifact);
     const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
@@ -917,7 +917,7 @@ export class ReleaseCenterService {
         }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Published release lookup is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "已发布版本查询暂时不可用，请稍后重试。");
     }
 
     if (rows.length === 0) {
@@ -945,15 +945,15 @@ export class ReleaseCenterService {
         }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release publish check is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "发布前检查暂时不可用，请稍后重试。");
     }
     if (!release) {
-      throw new NotFoundException("Release record does not exist.");
+      throw new NotFoundException("发布记录不存在。");
     }
     this.assertReleaseRecordMutable(release);
     const primaryArtifact = release.artifacts.find((item) => item.isPrimary) ?? release.artifacts[0];
     if (!primaryArtifact) {
-      throw new BadRequestException("Add at least one installer artifact before publishing.");
+      throw new BadRequestException("发布前请至少添加一个安装包。");
     }
     let lastArtifactError: unknown = null;
     for (const artifact of release.artifacts) {
@@ -968,7 +968,7 @@ export class ReleaseCenterService {
     }
     if (lastArtifactError) {
       throw new BadRequestException(
-        `Release has no client-usable artifact for ${release.platform}: ${readReleaseErrorMessage(lastArtifactError)}`
+        `当前发布没有可供客户端下载的 ${release.platform} 安装包：${readReleaseErrorMessage(lastArtifactError)}`
       );
     }
     assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
@@ -1014,7 +1014,7 @@ export class ReleaseCenterService {
       return;
     }
     if (!artifact.storedFilePath) {
-      throw new BadRequestException("Uploaded release artifact is missing its stored file.");
+      throw new BadRequestException("上传型安装包缺少已保存文件。");
     }
     const absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
     await ensureFileReadable(absolutePath);
@@ -1022,13 +1022,13 @@ export class ReleaseCenterService {
 
   private assertReleaseArtifactsMutable(release: { status: string }) {
     if (release.status !== "draft") {
-      throw new BadRequestException("Withdraw the release before editing artifacts.");
+      throw new BadRequestException("请先撤回发布，再编辑安装包。");
     }
   }
 
   private assertReleaseRecordMutable(release: { status: string }) {
     if (release.status === "archived") {
-      throw new BadRequestException("Archived releases are read-only.");
+      throw new BadRequestException("已归档的发布记录只读。");
     }
   }
 
@@ -1039,7 +1039,7 @@ export class ReleaseCenterService {
   ) {
     const source = input.source ?? "external";
     if (source !== "external") {
-      throw new BadRequestException("The initial artifact only supports external links; create a draft first, then use the upload endpoint.");
+      throw new BadRequestException("创建发布时只能直接添加外链安装包；如需上传文件，请先创建草稿再使用上传入口。");
     }
     assertReleaseArtifactTypeAllowed(platform, input.type);
     const deliveryMode = resolveReleaseArtifactDeliveryMode(platform, input.type, input.deliveryMode);
@@ -1140,7 +1140,7 @@ export class ReleaseCenterService {
       return await task();
     } catch (error) {
       if (isPrismaUniqueConstraintError(error)) {
-        throw new ConflictException("Release version already exists for this platform and channel.");
+        throw new ConflictException("相同平台和渠道下已存在这个版本号。");
       }
       throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
     }
@@ -1158,10 +1158,10 @@ export class ReleaseCenterService {
         }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release detail is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "发布记录暂时不可用，请稍后重试。");
     }
     if (!row) {
-      throw new NotFoundException("Release record does not exist.");
+      throw new NotFoundException("发布记录不存在。");
     }
     return toAdminReleaseRecord(row);
   }
@@ -1306,10 +1306,10 @@ export class ReleaseCenterService {
         }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release detail is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "发布记录暂时不可用，请稍后重试。");
     }
     if (!row) {
-      throw new NotFoundException("Release record does not exist.");
+      throw new NotFoundException("发布记录不存在。");
     }
     return row;
   }
@@ -1357,7 +1357,7 @@ function assertUploadedReleaseArtifactFileAllowed(platform: PlatformTarget, file
   }
   const normalized = fileName?.trim().toLowerCase() ?? "";
   if (!normalized.endsWith(".zip")) {
-    throw new BadRequestException("Windows silent full replacement updates only support ZIP artifacts.");
+    throw new BadRequestException("Windows 静默全量替换更新只支持 ZIP 安装包。");
   }
 }
 
@@ -1371,7 +1371,7 @@ function inferUrlPathname(downloadUrl: string) {
 
 function assertMinimumVersionNotAboveRelease(version: string, minimumVersion: string) {
   if (compareSemver(minimumVersion, version) > 0) {
-    throw new BadRequestException("minimumVersion must not be greater than release version.");
+    throw new BadRequestException("最低可用版本不能高于发布版本。");
   }
 }
 
@@ -1384,14 +1384,13 @@ function mapUploadedFilePreparationError(error: unknown, label: string) {
     return error;
   }
   const code = readErrorCode(error);
-  const message = error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
   if (code === "ENOSPC" || code === "EACCES" || code === "EPERM") {
-    return new ServiceUnavailableException(`${label} storage is currently unavailable: ${code ?? message}`);
+    return new ServiceUnavailableException(`${translateReleaseUploadPreparationLabel(label)}存储暂不可用，请检查服务器磁盘空间或目录权限。`);
   }
   if (code === "ENOENT") {
-    return new BadRequestException(`${label} temporary file is missing; please select the file again and retry.`);
+    return new BadRequestException(`${translateReleaseUploadPreparationLabel(label)}临时文件不存在，请重新选择文件后再上传。`);
   }
-  return new ServiceUnavailableException(`${label} file preparation failed: ${message}`);
+  return new ServiceUnavailableException(`${translateReleaseUploadPreparationLabel(label)}文件处理失败，请稍后重试。`);
 }
 
 function readErrorCode(error: unknown) {
@@ -1405,8 +1404,15 @@ function readReleaseErrorMessage(error: unknown) {
 function assertExternalReleaseArtifactDownloadUrl(rawUrl: string) {
   const normalized = rawUrl.trim();
   if (!normalized || !/^https?:\/\//i.test(normalized)) {
-    throw new BadRequestException("External release artifact download URL must be a complete http/https URL.");
+    throw new BadRequestException("外链安装包下载地址必须是完整的 http/https 地址。");
   }
+}
+
+function translateReleaseUploadPreparationLabel(label: string) {
+  if (label === "release artifact upload") {
+    return "安装包上传";
+  }
+  return label;
 }
 
 function mergeReleaseFallbackArtifacts(

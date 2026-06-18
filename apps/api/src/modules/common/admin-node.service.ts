@@ -175,6 +175,7 @@ export class AdminNodeService {
           nextRunAt: new Date(),
           lockedAt: null,
           completedAt: null,
+          attempts: 0,
           lastError: null
         }
       }),
@@ -198,6 +199,7 @@ export class AdminNodeService {
           nextRunAt: new Date(),
           lockedAt: null,
           completedAt: null,
+          attempts: 0,
           lastError: null
         }
       }),
@@ -262,6 +264,7 @@ export class AdminNodeService {
           nextRunAt: new Date(),
           lockedAt: null,
           completedAt: null,
+          attempts: 0,
           lastError: null
         }
       }),
@@ -285,6 +288,7 @@ export class AdminNodeService {
           nextRunAt: new Date(),
           lockedAt: null,
           completedAt: null,
+          attempts: 0,
           lastError: null
         }
       }),

@@ -108,7 +108,7 @@ export function normalizeVersion(value: string) {
     throw new BadRequestException("版本号不能为空");
   }
   if (!STRICT_SEMVER_PATTERN.test(normalized)) {
-    throw new BadRequestException("Version must use semantic version format, for example 1.2.3 or 1.2.3-beta.1.");
+    throw new BadRequestException("版本号必须使用 SemVer 格式，例如 1.2.3 或 1.2.3-beta.1。");
   }
   return normalized;
 }
@@ -147,7 +147,7 @@ export function normalizeFileSizeBytes(value: string | number | bigint | null | 
     return null;
   }
   if (!/^[1-9]\d*$/.test(normalized)) {
-    throw new BadRequestException("File size must be a positive integer byte count.");
+    throw new BadRequestException("文件大小必须是正整数，单位为字节。");
   }
   return BigInt(normalized);
 }
@@ -161,7 +161,7 @@ export function normalizeSha256Input(value: string | null | undefined) {
   }
   const normalized = value.trim().toLowerCase();
   if (!SHA256_PATTERN.test(normalized)) {
-    throw new BadRequestException("SHA256 must be a 64-character hexadecimal string.");
+    throw new BadRequestException("SHA256 必须是 64 位十六进制字符串。");
   }
   return normalized;
 }
@@ -217,7 +217,7 @@ export function parseSemver(value: string) {
   const normalized = normalizeVersion(value);
   const match = normalized.match(STRICT_SEMVER_PATTERN);
   if (!match) {
-    throw new BadRequestException("Version must use semantic version format, for example 1.2.3 or 1.2.3-beta.1.");
+    throw new BadRequestException("版本号必须使用 SemVer 格式，例如 1.2.3 或 1.2.3-beta.1。");
   }
   return {
     core: [Number(match[1]), Number(match[2]), Number(match[3])],
@@ -274,7 +274,7 @@ export function assertReleaseArtifactDeliveryAllowed(
       return;
     }
     throw new BadRequestException(
-      "Windows release artifacts must use zip + desktop_full_replace or external + external_download."
+      "Windows 安装包必须使用 zip + desktop_full_replace，或 external + external_download。"
     );
   }
 
@@ -282,20 +282,20 @@ export function assertReleaseArtifactDeliveryAllowed(
     if ((type === "dmg" && deliveryMode === "desktop_installer_download") || (type === "external" && deliveryMode === "external_download")) {
       return;
     }
-    throw new BadRequestException("macOS release artifacts must use dmg + desktop_installer_download or external + external_download.");
+    throw new BadRequestException("macOS 安装包必须使用 dmg + desktop_installer_download，或 external + external_download。");
   }
 
   if (platform === "android") {
     if ((type === "apk" && deliveryMode === "apk_download") || (type === "external" && deliveryMode === "external_download")) {
       return;
     }
-    throw new BadRequestException("Android release artifacts must use apk + apk_download or external + external_download.");
+    throw new BadRequestException("Android 安装包必须使用 apk + apk_download，或 external + external_download。");
   }
 
   if ((type === "ipa" && deliveryMode === "external_download") || (type === "external" && deliveryMode === "external_download")) {
     return;
   }
-  throw new BadRequestException("iOS release artifacts must use ipa/external + external_download.");
+  throw new BadRequestException("iOS 安装包必须使用 ipa/external + external_download。");
 }
 
 export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLike, platform: PlatformTarget) {
@@ -309,7 +309,7 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   }
 
   if (artifact.fileSizeBytes !== null && artifact.fileSizeBytes !== undefined && artifact.fileSizeBytes <= 0n) {
-    throw new BadRequestException("Release artifact file size metadata must be positive when provided.");
+    throw new BadRequestException("安装包文件大小元数据必须是正数。");
   }
 
   if (deliveryMode === "desktop_full_replace") {
@@ -343,7 +343,7 @@ export async function ensureFileReadable(filePath: string) {
 export async function assertWindowsFullUpdateZipFile(filePath: string, fileName?: string | null, expectedVersion?: string | null) {
   const displayName = fileName ?? path.basename(filePath);
   if (!displayName.toLowerCase().endsWith(".zip")) {
-    throw new BadRequestException("Windows full replacement artifacts must be .zip files.");
+    throw new BadRequestException("Windows 全量替换安装包必须是 .zip 文件。");
   }
 
   const entries = await readZipCentralDirectoryEntries(filePath);
@@ -373,12 +373,12 @@ export async function assertWindowsFullUpdateZipFile(filePath: string, fileName?
   }
 
   if (!hasRootExe) {
-    throw new BadRequestException("Windows full replacement ZIP must contain ChordV.exe or chordv-desktop.exe at the root.");
+    throw new BadRequestException("Windows 全量替换 ZIP 根目录必须包含 ChordV.exe 或 chordv-desktop.exe。");
   }
 
   const missingEntries = [...WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES].filter((entry) => !normalizedEntries.has(entry));
   if (missingEntries.length > 0) {
-    throw new BadRequestException(`Windows full replacement ZIP is missing required files: ${missingEntries.join(", ")}`);
+    throw new BadRequestException(`Windows 全量替换 ZIP 缺少必要文件：${missingEntries.join(", ")}`);
   }
 }
 
@@ -386,12 +386,12 @@ export async function readZipEntryData(filePath: string, entryName: string) {
   assertZipEntryPathSafe(entryName);
   const normalizedTarget = normalizeZipEntryName(entryName);
   if (!normalizedTarget || normalizedTarget.endsWith("/")) {
-    throw new BadRequestException("ZIP entry name must point to a file.");
+    throw new BadRequestException("ZIP 条目名称必须指向文件。");
   }
   const entries = await readZipCentralDirectoryEntries(filePath);
   const entry = entries.find((item) => normalizeZipEntryName(item.name) === normalizedTarget);
   if (!entry) {
-    throw new BadRequestException(`ZIP entry not found: ${entryName}`);
+    throw new BadRequestException(`ZIP 中找不到指定文件：${entryName}`);
   }
   assertZipEntryPathSafe(entry.name);
   return verifyZipEntryData(filePath, entry);
@@ -402,30 +402,30 @@ async function readZipCentralDirectoryEntries(filePath: string) {
   try {
     const stat = await handle.stat();
     if (stat.size < 22) {
-      throw new BadRequestException("ZIP file is too small to contain a valid central directory.");
+      throw new BadRequestException("ZIP 文件过小，缺少有效的中央目录。");
     }
     const tailLength = Math.min(stat.size, 65_557);
     const tail = Buffer.alloc(tailLength);
     await handle.read(tail, 0, tailLength, stat.size - tailLength);
     const eocdOffsetInTail = findEndOfCentralDirectory(tail);
     if (eocdOffsetInTail < 0) {
-      throw new BadRequestException("Invalid ZIP file: missing end of central directory.");
+      throw new BadRequestException("ZIP 文件无效：缺少中央目录结束标记。");
     }
 
     const centralDirectorySize = tail.readUInt32LE(eocdOffsetInTail + 12);
     const centralDirectoryOffset = tail.readUInt32LE(eocdOffsetInTail + 16);
     if (centralDirectorySize === 0xffffffff || centralDirectoryOffset === 0xffffffff) {
-      throw new BadRequestException("ZIP64 full replacement packages are not supported by the release validator.");
+      throw new BadRequestException("发布校验暂不支持 ZIP64 全量替换安装包。");
     }
     if (centralDirectoryOffset + centralDirectorySize > stat.size) {
-      throw new BadRequestException("Invalid ZIP file: central directory points outside the package.");
+      throw new BadRequestException("ZIP 文件无效：中央目录指向文件范围之外。");
     }
 
     const centralDirectory = Buffer.alloc(centralDirectorySize);
     await handle.read(centralDirectory, 0, centralDirectorySize, centralDirectoryOffset);
     const entries = parseZipCentralDirectoryEntries(centralDirectory);
     if (entries.length > MAX_ZIP_VALIDATION_ENTRIES) {
-      throw new BadRequestException(`ZIP file has too many entries: ${entries.length} exceeds ${MAX_ZIP_VALIDATION_ENTRIES}.`);
+      throw new BadRequestException(`ZIP 文件条目过多：${entries.length} 个，超过 ${MAX_ZIP_VALIDATION_ENTRIES} 个限制。`);
     }
     let totalCompressedSize = 0;
     let totalUncompressedSize = 0;
@@ -433,7 +433,7 @@ async function readZipCentralDirectoryEntries(filePath: string) {
       totalCompressedSize += entry.compressedSize;
       totalUncompressedSize += entry.uncompressedSize;
       if (totalCompressedSize > MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES || totalUncompressedSize > MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES) {
-        throw new BadRequestException("ZIP file expands beyond the validation size limit.");
+        throw new BadRequestException("ZIP 解压后超过校验大小限制。");
       }
     }
     return entries;
@@ -465,7 +465,7 @@ function parseZipCentralDirectoryEntries(buffer: Buffer) {
   let offset = 0;
   while (offset < buffer.length) {
     if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) {
-      throw new BadRequestException("Invalid ZIP file: malformed central directory entry.");
+      throw new BadRequestException("ZIP 文件无效：中央目录条目格式错误。");
     }
     const compressionMethod = buffer.readUInt16LE(offset + 10);
     const crc32 = buffer.readUInt32LE(offset + 16);
@@ -478,14 +478,14 @@ function parseZipCentralDirectoryEntries(buffer: Buffer) {
     const fileNameStart = offset + 46;
     const fileNameEnd = fileNameStart + fileNameLength;
     if (fileNameEnd > buffer.length) {
-      throw new BadRequestException("Invalid ZIP file: malformed entry name.");
+      throw new BadRequestException("ZIP 文件无效：条目名称格式错误。");
     }
     if (
       compressedSize === 0xffffffff ||
       uncompressedSize === 0xffffffff ||
       localHeaderOffset === 0xffffffff
     ) {
-      throw new BadRequestException("ZIP64 full replacement package entries are not supported by the release validator.");
+      throw new BadRequestException("发布校验暂不支持 ZIP64 全量替换安装包条目。");
     }
     entries.push({
       name: buffer.subarray(fileNameStart, fileNameEnd).toString("utf8"),
@@ -505,14 +505,14 @@ async function verifyZipEntryData(filePath: string, entry: ZipCentralDirectoryEn
     return Buffer.alloc(0);
   }
   if (entry.compressionMethod !== 0 && entry.compressionMethod !== 8) {
-    throw new BadRequestException(`Unsupported ZIP compression method for ${entry.name}: ${entry.compressionMethod}`);
+    throw new BadRequestException(`ZIP 条目 ${entry.name} 使用了暂不支持的压缩方式：${entry.compressionMethod}`);
   }
   if (
     entry.compressedSize > MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES ||
     entry.uncompressedSize > MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES
   ) {
     throw new BadRequestException(
-      `ZIP entry ${entry.name} exceeds the per-file validation limit of ${MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES} bytes.`
+      `ZIP 条目 ${entry.name} 超过单文件校验限制：${MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES} 字节。`
     );
   }
 
@@ -522,31 +522,31 @@ async function verifyZipEntryData(filePath: string, entry: ZipCentralDirectoryEn
     const localHeader = Buffer.alloc(30);
     const localHeaderRead = await handle.read(localHeader, 0, localHeader.length, entry.localHeaderOffset);
     if (localHeaderRead.bytesRead !== localHeader.length) {
-      throw new BadRequestException(`Invalid ZIP local header for ${entry.name}: short read.`);
+      throw new BadRequestException(`ZIP 条目 ${entry.name} 的本地文件头读取不完整。`);
     }
     if (localHeader.readUInt32LE(0) !== 0x04034b50) {
-      throw new BadRequestException(`Invalid ZIP local header for ${entry.name}.`);
+      throw new BadRequestException(`ZIP 条目 ${entry.name} 的本地文件头无效。`);
     }
     const localFileNameLength = localHeader.readUInt16LE(26);
     const localExtraLength = localHeader.readUInt16LE(28);
     const dataOffset = entry.localHeaderOffset + 30 + localFileNameLength + localExtraLength;
     if (dataOffset + entry.compressedSize > stat.size) {
-      throw new BadRequestException(`ZIP entry ${entry.name} points outside the package.`);
+      throw new BadRequestException(`ZIP 条目 ${entry.name} 指向文件范围之外。`);
     }
     const compressedData = Buffer.alloc(entry.compressedSize);
     const dataRead = await handle.read(compressedData, 0, entry.compressedSize, dataOffset);
     if (dataRead.bytesRead !== entry.compressedSize) {
-      throw new BadRequestException(`ZIP entry ${entry.name} data is truncated.`);
+      throw new BadRequestException(`ZIP 条目 ${entry.name} 数据不完整。`);
     }
     const data =
       entry.compressionMethod === 0
         ? compressedData
         : inflateRawSync(compressedData, { finishFlush: 2 });
     if (data.length !== entry.uncompressedSize) {
-      throw new BadRequestException(`ZIP entry ${entry.name} has an invalid uncompressed size.`);
+      throw new BadRequestException(`ZIP 条目 ${entry.name} 的解压大小不一致。`);
     }
     if (crc32(data) !== entry.crc32) {
-      throw new BadRequestException(`ZIP entry ${entry.name} failed CRC validation.`);
+      throw new BadRequestException(`ZIP 条目 ${entry.name} 未通过 CRC 校验。`);
     }
     return data;
   } finally {
@@ -556,18 +556,18 @@ async function verifyZipEntryData(filePath: string, entry: ZipCentralDirectoryEn
 
 function assertMinimumEntrySize(data: Buffer, label: string, minBytes: number) {
   if (data.length < minBytes) {
-    throw new BadRequestException(`${label} is too small: expected at least ${minBytes} bytes, got ${data.length}.`);
+    throw new BadRequestException(`${label} 文件过小：至少需要 ${minBytes} 字节，实际 ${data.length} 字节。`);
   }
 }
 
 function assertWindowsPeData(data: Buffer, label: string, minBytes: number) {
   assertMinimumEntrySize(data, label, minBytes);
   if (data.length < 0x40 || data[0] !== 0x4d || data[1] !== 0x5a) {
-    throw new BadRequestException(`${label} is not a Windows PE executable.`);
+    throw new BadRequestException(`${label} 不是有效的 Windows PE 可执行文件。`);
   }
   const peHeaderOffset = data.readUInt32LE(0x3c);
   if (peHeaderOffset <= 0 || peHeaderOffset + 4 > data.length || data.readUInt32LE(peHeaderOffset) !== 0x00004550) {
-    throw new BadRequestException(`${label} has an invalid Windows PE header.`);
+    throw new BadRequestException(`${label} 的 Windows PE 文件头无效。`);
   }
 }
 
@@ -577,13 +577,13 @@ function assertWindowsPeProductVersion(data: Buffer, label: string, expectedVers
   }
   const version = readWindowsPeProductVersion(data);
   if (!version) {
-    throw new BadRequestException(`${label} does not contain a readable Windows product version.`);
+    throw new BadRequestException(`${label} 缺少可读取的 Windows 产品版本。`);
   }
   const actualCore = version.slice(0, 3);
   const matches = expectedVersionCore.every((part, index) => actualCore[index] === part);
   if (!matches) {
     throw new BadRequestException(
-      `${label} product version ${version.join(".")} does not match release version ${expectedVersionCore.join(".")}.`
+      `${label} 产品版本 ${version.join(".")} 与发布版本 ${expectedVersionCore.join(".")} 不一致。`
     );
   }
 }
@@ -628,11 +628,11 @@ function normalizeZipEntryName(entry: string) {
 function assertZipEntryPathSafe(entry: string) {
   const normalized = entry.replaceAll("\\", "/");
   if (!normalized || normalized.startsWith("/") || /^[a-z]:\//i.test(normalized)) {
-    throw new BadRequestException(`Unsafe ZIP entry path: ${entry}`);
+    throw new BadRequestException(`ZIP 条目路径不安全：${entry}`);
   }
   const parts = normalized.split("/");
   if (parts.some((part, index) => part === ".." || (part === "" && index !== parts.length - 1))) {
-    throw new BadRequestException(`Unsafe ZIP entry path: ${entry}`);
+    throw new BadRequestException(`ZIP 条目路径不安全：${entry}`);
   }
 }
 
@@ -798,7 +798,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
   const dispatcher = createDispatcher(120_000, false);
   const timeout = createAbortTimeout(
     readPositiveIntegerEnv("CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS", DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS),
-    "External full update ZIP request"
+    "外部全量更新 ZIP 下载请求"
   );
   let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
   try {
@@ -817,12 +817,12 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
     response = fetched.response;
     const resolvedUrl = fetched.resolvedUrl;
     if (!response.ok) {
-      throw new BadRequestException(`External full update ZIP is not accessible: HTTP ${response.status}`);
+      throw new BadRequestException(`外部全量更新 ZIP 当前不可访问，HTTP ${response.status}。`);
     }
     assertFullUpdateDownloadUrlAllowed(resolvedUrl);
     const contentLength = readExternalFileSize(response.headers);
     if (contentLength !== null && contentLength > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
-      throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
+      throw new BadRequestException(`外部全量更新 ZIP 超过 ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} 字节限制。`);
     }
     const absolutePath = path.join(tmpdir(), `chordv-release-artifact-${randomUUID()}.zip`);
     const hash = createHash("sha256");
@@ -830,7 +830,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
     let fileHandle: Awaited<ReturnType<typeof fs.open>> | null = null;
     try {
       if (!response.body) {
-        throw new BadRequestException("External full update ZIP response body is empty.");
+        throw new BadRequestException("外部全量更新 ZIP 响应内容为空。");
       }
       fileHandle = await fs.open(absolutePath, "wx");
       const reader = (response.body as {
@@ -840,7 +840,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
         };
       }).getReader?.();
       if (!reader) {
-        throw new BadRequestException("External full update ZIP response body is not readable.");
+        throw new BadRequestException("外部全量更新 ZIP 响应内容不可读取。");
       }
       try {
         while (true) {
@@ -854,7 +854,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
           const buffer = Buffer.from(value);
           fileSizeBytes += BigInt(buffer.byteLength);
           if (fileSizeBytes > BigInt(MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES)) {
-            throw new BadRequestException(`External full update ZIP exceeds the ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} byte limit.`);
+            throw new BadRequestException(`外部全量更新 ZIP 超过 ${MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES} 字节限制。`);
           }
           hash.update(buffer);
           await fileHandle.write(buffer);
@@ -880,7 +880,7 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
       }
     };
   } catch (error) {
-    throw new BadRequestException(error instanceof Error ? error.message : "External full update ZIP validation failed.");
+    throw new BadRequestException(toUserExternalReleaseArtifactMessage(error, "外部全量更新 ZIP 校验失败。"));
   } finally {
     timeout.clear();
     try {
@@ -900,7 +900,7 @@ async function readExternalReleaseBodyChunkWithIdleTimeout(reader: {
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutTask = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => {
-      reject(new Error(`External full update ZIP body stalled for ${idleTimeoutMs}ms.`));
+      reject(new Error(`外部全量更新 ZIP 连续 ${idleTimeoutMs}ms 没有返回数据。`));
     }, idleTimeoutMs);
     timeoutHandle.unref?.();
   });
@@ -937,7 +937,7 @@ async function requestExternalReleaseArtifactMetadata(
   let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
   const timeout = createAbortTimeout(
     readPositiveIntegerEnv("CHORDV_RELEASE_EXTERNAL_METADATA_TIMEOUT_MS", DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS),
-    `External release artifact ${method} request`
+    `外部安装包 ${method} 请求`
   );
   try {
     const fetched = await fetchPublicHttpUrl(
@@ -972,9 +972,9 @@ async function requestExternalReleaseArtifactMetadata(
     }
     if (timeout.signal.aborted) {
       const reason = timeout.signal.reason;
-      throw new BadRequestException(reason instanceof Error ? reason.message : `${method} request timed out.`);
+      throw new BadRequestException(reason instanceof Error ? reason.message : `${method} 请求超时。`);
     }
-    throw new BadRequestException(error instanceof Error ? error.message : "外部下载地址校验失败");
+    throw new BadRequestException(toUserExternalReleaseArtifactMessage(error, "外部下载地址校验失败"));
   } finally {
     timeout.clear();
     try {
@@ -1065,13 +1065,13 @@ function parseContentDispositionFileName(value: string | null) {
 export function assertFullUpdateDownloadUrlAllowed(rawUrl: string) {
   const normalized = rawUrl.trim();
   if (!normalized) {
-    throw new BadRequestException("Full replacement update download URL is empty.");
+    throw new BadRequestException("全量替换更新下载地址不能为空。");
   }
   if (!/^https?:\/\//i.test(normalized)) {
     if (normalized.startsWith("/")) {
       return;
     }
-    throw new BadRequestException("Full replacement update download URLs must be complete http/https URLs or server-relative paths.");
+    throw new BadRequestException("全量替换更新下载地址必须是完整的 http/https 地址或服务器相对路径。");
   }
 }
 
@@ -1132,12 +1132,35 @@ function createDispatcher(timeoutMs: number, allowInsecureTls: boolean) {
 function createAbortTimeout(timeoutMs: number, label: string) {
   const controller = new AbortController();
   const handle = setTimeout(() => {
-    controller.abort(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    controller.abort(new Error(`${label}超时：${timeoutMs}ms。`));
   }, timeoutMs);
   return {
     signal: controller.signal,
     clear: () => clearTimeout(handle)
   };
+}
+
+function toUserExternalReleaseArtifactMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);
+  if (!message.trim()) {
+    return fallback;
+  }
+  if (/private or reserved/i.test(message)) {
+    return "外部下载地址不能指向内网或保留地址。";
+  }
+  if (/HTTP\s*(\d+)/i.test(message)) {
+    return `外部下载地址当前不可访问，HTTP ${RegExp.$1}。`;
+  }
+  if (/timed out|timeout|超时|stalled/i.test(message)) {
+    return message.includes("外部") ? message : "外部下载地址请求超时，请稍后重试。";
+  }
+  if (/fetch failed|ECONN|ENOTFOUND|ETIMEDOUT|socket/i.test(message)) {
+    return "外部下载地址网络连接失败，请检查地址是否可直接访问。";
+  }
+  if (/too large|exceeds|超过/i.test(message)) {
+    return message.includes("外部") ? message : "外部下载文件超过允许大小。";
+  }
+  return message.includes("External") ? fallback : message;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {
@@ -1154,5 +1177,5 @@ function assertPathInsideRoot(storageRoot: string, resolvedPath: string) {
   if (relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
     return;
   }
-  throw new BadRequestException("Stored release artifact path resolves outside the release storage root.");
+  throw new BadRequestException("已保存的安装包路径超出存储目录。");
 }
