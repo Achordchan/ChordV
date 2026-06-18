@@ -11645,6 +11645,7 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
     recommended: true
   };
   let accessRows = [{ id: "access_old", nodeId: "node_old", node: oldNode }];
+  const prismaQueueError = Object.assign(new Error("server closed the connection unexpectedly"), { code: "P2010" });
 
   const devDataService = createDevDataService({
     logger: {
@@ -11683,19 +11684,19 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
     },
     runtimeSessionService: {
       queuePanelDisableJobsForSubscriptionTx: async () => {
-        throw new Error("offline panel queue write failed");
+        throw prismaQueueError;
       },
       queueLeaseRevocationJobsForSubscriptionTx: async () => {
-        throw new Error("offline lease queue write failed");
+        throw prismaQueueError;
       },
       queueSubscriptionPanelAccessSyncTx: async () => {
-        throw new Error("offline ensure queue write failed");
+        throw prismaQueueError;
       },
       markPanelBindingsDisabledForSubscription: async () => {
-        throw new Error("offline panel queue write failed");
+        throw prismaQueueError;
       },
       queueSubscriptionPanelAccessSync: async () => {
-        throw new Error("offline ensure queue write failed");
+        throw prismaQueueError;
       },
       syncSubscriptionPanelAccess: async () => {
         throw new Error("node access replacement must not call direct panel sync");
@@ -11769,8 +11770,8 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
     assert.equal(body.subscriptionId, "sub_1");
     assert.deepEqual(body.nodeIds, ["node_new"]);
     assert.equal(body.panelSyncStatus, "pending");
-    assert.match(body.panelSyncMessage ?? "", /offline panel queue write failed/);
-    assert.match(body.panelSyncMessage ?? "", /offline ensure queue write failed/);
+    assert.match(body.panelSyncMessage ?? "", /server closed the connection unexpectedly/);
+    assert.notEqual(body.message, "Internal server error");
   } finally {
     await app.close();
   }
@@ -22908,6 +22909,7 @@ async function testChangeSubscriptionPlanDisconnectReturnsPendingWhenPanelAndLea
 
 async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
+  const publishedTargets: Array<Record<string, unknown>> = [];
   const service = createAdminSubscriptionService({
     ensureUserExists: async () => ({
       id: "user_1",
@@ -22931,7 +22933,9 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
         throw new Error("panel add failed");
       }
     },
-    publishSubscriptionUpdatedEvent: async () => undefined,
+    publishSubscriptionUpdatedEvent: async (target: Record<string, unknown>) => {
+      publishedTargets.push(target);
+    },
     prisma: {
       subscription: {
         create: async () => ({
@@ -22965,6 +22969,9 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /subscription panel access sync after create/);
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.deepEqual(publishedTargets, [
+    { subscriptionId: "sub_1", userId: "user_1", teamId: null, state: "active" }
+  ]);
   assert.match(result.message ?? "", /订阅已创建/);
 }
 
@@ -23224,6 +23231,7 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
 
 async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
+  const publishedTargets: Array<Record<string, unknown>> = [];
   let panelSyncStarted = false;
   const service = createAdminSubscriptionService({
     logger: {
@@ -23249,7 +23257,9 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
         throw new Error("panel sync failed");
       }
     },
-    publishSubscriptionUpdatedEvent: async () => undefined,
+    publishSubscriptionUpdatedEvent: async (target: Record<string, unknown>) => {
+      publishedTargets.push(target);
+    },
     prisma: {
       subscription: {
         create: async () => ({
@@ -23282,6 +23292,9 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
   assert.equal(result.id, "sub_team");
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.deepEqual(publishedTargets, [
+    { subscriptionId: "sub_team", userId: null, teamId: "team_1", state: "active" }
+  ]);
   assert.equal(panelSyncStarted, false, "team subscription create must not wait for panel sync before returning");
   await waitUntil(() => panelSyncStarted);
   assert.equal(panelSyncStarted, true, "team subscription create should still start panel sync in background");
