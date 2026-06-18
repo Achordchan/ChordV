@@ -76,25 +76,6 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
         />
 
         <TextInput
-          label="最低版本"
-          description="留空时默认等于版本号。"
-          placeholder="例如 1.0.0"
-          style={{ display: "none" }}
-          value={props.form.minimumVersion}
-          onChange={(event) => props.onChange({ ...props.form, minimumVersion: event.currentTarget.value })}
-          disabled={props.saving}
-        />
-
-        <Checkbox
-          label="强制升级"
-          description="勾选后客户端必须安装此版本。"
-          style={{ display: "none" }}
-          checked={props.form.forceUpgrade}
-          onChange={(event) => props.onChange({ ...props.form, forceUpgrade: event.currentTarget.checked })}
-          disabled={props.saving}
-        />
-
-        <TextInput
           label="发布标题"
           placeholder="例如 ChordV 1.1.6 · Windows"
           value={props.form.title}
