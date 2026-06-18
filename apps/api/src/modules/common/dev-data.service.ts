@@ -164,6 +164,8 @@ const NODE_ACCESS_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_ACCESS_DEFERRED_EFFECT_DELAY_MS = 50;
 const EVENT_PUBLISH_BUDGET_MS = 300;
 const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
+const ADMIN_SUPPORT_TICKET_LIST_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_LIST_LIMIT", 200);
+const ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT", 300);
 const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 12_000);
 
 type NodeAccessRevocationEffects = {
@@ -578,7 +580,8 @@ export class DevDataService implements OnModuleInit {
             take: 1
           }
         },
-        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+        take: ADMIN_SUPPORT_TICKET_LIST_LIMIT
       });
       return rows.map(toAdminSupportTicketSummary);
     } catch (error) {
@@ -617,7 +620,8 @@ export class DevDataService implements OnModuleInit {
               authorUser: { select: { id: true, email: true, displayName: true } },
               attachments: { orderBy: { createdAt: "asc" } }
             },
-            orderBy: { createdAt: "asc" }
+            orderBy: { createdAt: "desc" },
+            take: ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT
           },
         }
       });
@@ -631,6 +635,10 @@ export class DevDataService implements OnModuleInit {
       throw new BadRequestException("当前工单已关闭，请先重新打开。");
     }
 
+    current = {
+      ...current,
+      messages: [...(current.messages ?? [])].reverse()
+    };
     const now = new Date();
     const messageId = createId("ticket_msg");
     try {
@@ -703,7 +711,8 @@ export class DevDataService implements OnModuleInit {
               authorUser: { select: { id: true, email: true, displayName: true } },
               attachments: { orderBy: { createdAt: "asc" } }
             },
-            orderBy: { createdAt: "asc" }
+            orderBy: { createdAt: "desc" },
+            take: ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT
           },
         }
       });
@@ -713,6 +722,10 @@ export class DevDataService implements OnModuleInit {
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
+    current = {
+      ...current,
+      messages: [...(current.messages ?? [])].reverse()
+    };
     if (current.status === "closed") {
       throw new BadRequestException("当前工单已关闭，请先重新打开。");
     }
@@ -969,7 +982,8 @@ export class DevDataService implements OnModuleInit {
               authorUser: { select: { id: true, email: true, displayName: true } },
               attachments: { orderBy: { createdAt: "asc" } }
             },
-            orderBy: { createdAt: "asc" }
+            orderBy: { createdAt: "desc" },
+            take: ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT
           },
         }
       });
@@ -979,6 +993,10 @@ export class DevDataService implements OnModuleInit {
     if (!current) {
       throw new NotFoundException("工单不存在");
     }
+    current = {
+      ...current,
+      messages: [...(current.messages ?? [])].reverse()
+    };
     const now = new Date();
     const closedAt = current.status === "closed" ? current.closedAt ?? now : now;
     if (current.status !== "closed") {
@@ -1247,7 +1265,8 @@ export class DevDataService implements OnModuleInit {
                 orderBy: { createdAt: "asc" }
               }
             },
-            orderBy: { createdAt: "asc" }
+            orderBy: { createdAt: "desc" },
+            take: ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT
           },
         }
       });
@@ -1257,7 +1276,10 @@ export class DevDataService implements OnModuleInit {
     if (!row) {
       throw new NotFoundException("工单不存在");
     }
-    return row;
+    return {
+      ...row,
+      messages: [...(row.messages ?? [])].reverse()
+    };
   }
 
   private async getSupportTicketDashboardCounts() {

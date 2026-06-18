@@ -28893,6 +28893,85 @@ async function testAdminSupportTicketListMapsLocalReadFailure() {
   );
 }
 
+async function testAdminSupportTicketListUsesBoundedQuery() {
+  let capturedArgs: Record<string, any> | null = null;
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findMany: async (args: Record<string, any>) => {
+          capturedArgs = args;
+          return [];
+        }
+      }
+    }
+  });
+
+  const result = await service.listAdminSupportTickets();
+
+  assert.deepEqual(result, []);
+  assert.equal(capturedArgs?.take, 200, "admin ticket list must cap returned tickets");
+  assert.equal(capturedArgs?.include?.messages?.take, 1, "admin ticket list must only read the latest message preview");
+}
+
+async function testAdminSupportTicketDetailUsesBoundedRecentMessagesInAscendingOrder() {
+  let capturedArgs: Record<string, any> | null = null;
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async (args: Record<string, any>) => {
+          capturedArgs = args;
+          return {
+            id: "ticket_1",
+            title: "Need help",
+            status: "waiting_admin",
+            source: "desktop",
+            userId: "user_1",
+            subscriptionId: "sub_1",
+            teamId: null,
+            lastMessageAt: new Date("2026-01-01T00:02:00.000Z"),
+            closedAt: null,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:02:00.000Z"),
+            user: { id: "user_1", email: "user@example.com", displayName: "User" },
+            team: null,
+            messages: [
+              {
+                id: "msg_new",
+                ticketId: "ticket_1",
+                authorRole: "admin",
+                authorUserId: null,
+                body: "new",
+                createdAt: new Date("2026-01-01T00:02:00.000Z"),
+                authorUser: null,
+                attachments: []
+              },
+              {
+                id: "msg_old",
+                ticketId: "ticket_1",
+                authorRole: "user",
+                authorUserId: "user_1",
+                body: "old",
+                createdAt: new Date("2026-01-01T00:01:00.000Z"),
+                authorUser: { id: "user_1", email: "user@example.com", displayName: "User" },
+                attachments: []
+              }
+            ]
+          };
+        }
+      }
+    }
+  });
+
+  const result = await service.getAdminSupportTicketDetail("ticket_1");
+
+  assert.equal(capturedArgs?.include?.messages?.take, 300, "admin ticket detail must cap returned messages");
+  assert.deepEqual(
+    result.messages.map((message) => message.id),
+    ["msg_old", "msg_new"],
+    "admin ticket detail must return the bounded recent messages in ascending chat order"
+  );
+}
+
 async function testReleaseListMapsLocalReadFailure() {
   const service = createReleaseCenterService({
     prisma: {
@@ -29858,6 +29937,8 @@ async function main() {
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
   await testClientSupportTicketListMapsLocalReadFailure();
   await testAdminSupportTicketListMapsLocalReadFailure();
+  await testAdminSupportTicketListUsesBoundedQuery();
+  await testAdminSupportTicketDetailUsesBoundedRecentMessagesInAscendingOrder();
   await testReleaseListMapsLocalReadFailure();
   await testClientUpdateCheckMapsLocalReadFailure();
   await testRuntimeComponentListMapsLocalReadFailure();
