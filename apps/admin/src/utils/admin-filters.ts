@@ -71,6 +71,10 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
     return "数据已存在或状态已变更，请刷新后重试。";
   }
   if (/HTTP\s*400|Bad Request|Validation failed|should not be empty|must be|is required|invalid/i.test(message)) {
+    const badRequestDetail = stripHttpStatusPrefix(message);
+    if (shouldPreserveBadRequestDetail(badRequestDetail)) {
+      return badRequestDetail;
+    }
     return "提交内容不完整或格式不正确，请检查后重试。";
   }
   if (isServiceUnavailableMessage(message)) {
@@ -148,6 +152,21 @@ export function filterByKeyword<T>(items: T[], keyword: string, projector: (item
 function isServiceUnavailableMessage(message: string) {
   return /HTTP\s*502|HTTP\s*503|HTTP\s*504|Bad Gateway|Gateway Timeout|Service Unavailable|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|network timeout|connect timeout/i.test(
     message
+  );
+}
+
+function stripHttpStatusPrefix(message: string) {
+  return message.replace(/^HTTP\s*\d+:\s*/i, "").trim();
+}
+
+function shouldPreserveBadRequestDetail(message: string) {
+  if (!message || /^(Bad Request|Validation failed)$/i.test(message)) {
+    return false;
+  }
+  return (
+    /expectedHash|SHA256|sha256|Windows|ZIP|zip|URL|download|external|artifact|release|runtime component|installer|image bed|Token/i.test(
+      message
+    ) || /[\u4e00-\u9fff]/.test(message)
   );
 }
 

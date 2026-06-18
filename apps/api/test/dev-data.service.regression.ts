@@ -16760,6 +16760,90 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
   assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "sync_new"]);
 }
 
+async function testUpdateNodePanelMigrationReturnsWhenOldPanelCleanupStalls() {
+  const currentNode = makeAdminNodeRow();
+  const updates: Array<Record<string, unknown>> = [];
+  const calls: string[] = [];
+  const warnings: string[] = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: (message: string) => {
+        warnings.push(message);
+      }
+    },
+    xuiService: {
+      getInboundRuntime: async () => ({
+        inboundId: 7,
+        name: "node",
+        serverHost: "new.example.com",
+        serverPort: 443,
+        uuid: "uuid",
+        flow: "xtls-rprx-vision",
+        realityPublicKey: "public_key",
+        shortId: "short_id",
+        serverName: "new.example.com",
+        fingerprint: "chrome",
+        spiderX: "/"
+      })
+    },
+    runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
+      revokeNodeLeases: async () => {
+        throw new Error("panel migration should queue lease revocation instead of direct active revoke");
+      },
+      removePanelBindingsForNode: async () => {
+        calls.push("remove_old");
+        return new Promise<never>(() => undefined);
+      },
+      markPanelBindingsDeletedForNode: async () => {
+        calls.push("mark_deleted");
+      },
+      syncPanelAccessForNode: async () => {
+        calls.push("sync_new");
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => {
+          updates.push(payload.data);
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const record = await Promise.race([
+    service.updateNode("node_1", {
+      panelBaseUrl: "https://new-panel.example.com",
+      panelApiBasePath: "/new"
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("node update waited for stalled old panel cleanup")), 750);
+    })
+  ]);
+
+  assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
+  assert.equal(record.panelApiBasePath, "/new");
+  assert.equal(record.panelSyncStatus, "pending");
+  assert.deepEqual(calls, [], "old panel cleanup must start after the local response has returned");
+  assert.equal(updates.length, 1, "panel migration must save the new local config before old panel cleanup finishes");
+  await waitUntil(() => calls.includes("remove_old"));
+  await waitUntil(() => warnings.some((message) => /queue old panel binding deletion/.test(message) && /exceeded 300ms/.test(message)));
+  await waitUntil(() => calls.includes("sync_new"));
+  assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "sync_new"]);
+  assert.equal(calls.includes("mark_deleted"), false, "stalled old panel cleanup must not mark bindings deleted without a failed result");
+}
+
 async function testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls() {
   const currentNode = makeAdminNodeRow();
   const updates: Array<Record<string, unknown>> = [];
@@ -30174,6 +30258,7 @@ async function main() {
   await testUpdateNodeSubscriptionUrlFailureKeepsLocalSave();
   await testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails();
   await testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails();
+  await testUpdateNodePanelMigrationReturnsWhenOldPanelCleanupStalls();
   await testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls();
   await testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFails();
   await testUpdateNodeDisablingPanelForcesOfflineStatus();

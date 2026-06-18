@@ -32,8 +32,31 @@ function testReadErrorKeepsGenericServiceUnavailableFallback() {
   assert.equal(message, "后台或外部服务暂不可用，请稍后重试。");
 }
 
+function testReadErrorPreservesSpecificBadRequestDetail() {
+  assert.equal(
+    readError(backendError(400, "上传型运行组件的 expectedHash 与当前文件 SHA256 不一致。"), "fallback"),
+    "上传型运行组件的 expectedHash 与当前文件 SHA256 不一致。"
+  );
+  assert.equal(
+    readError(backendError(400, "Windows 静默全量更新 ZIP 不可用。"), "fallback"),
+    "Windows 静默全量更新 ZIP 不可用。"
+  );
+  assert.equal(
+    readError(backendError(400, "External download URL must start with http:// or https://."), "fallback"),
+    "External download URL must start with http:// or https://."
+  );
+}
+
+function testReadErrorKeepsGenericBadRequestFallback() {
+  const message = readError(backendError(400, "Bad Request"), "fallback");
+
+  assert.equal(message, "提交内容不完整或格式不正确，请检查后重试。");
+}
+
 testReadErrorPreservesImageBedProviderHttpError();
 testReadErrorPreservesImageBedTimeout();
 testReadErrorKeepsGenericServiceUnavailableFallback();
+testReadErrorPreservesSpecificBadRequestDetail();
+testReadErrorKeepsGenericBadRequestFallback();
 
 console.log("admin filter regression checks passed");
