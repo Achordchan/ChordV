@@ -6878,6 +6878,181 @@ async function testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFai
   assert.match(result.panelSyncMessage ?? "", /panel sync queue unavailable/);
 }
 
+async function testRenewSubscriptionHttpReturnsPendingWhenResetTrafficPanelQueueFails() {
+  const subscriptionUpdates: Array<Record<string, any>> = [];
+  const panelJobUpserts: Array<Record<string, any>> = [];
+  const lockedSubscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 10,
+    usedTrafficGb: 8,
+    remainingTrafficGb: 2,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Plan" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+
+  const adminSubscriptionService = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireSubscription: async () => lockedSubscription,
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    prisma: {
+      panelSyncJob: {
+        upsert: async (payload: Record<string, any>) => {
+          panelJobUpserts.push(payload);
+          throw Object.assign(new Error("offline renew reset queue failed"), { code: "P2010" });
+        }
+      },
+      $transaction: async (callback: (tx: any) => Promise<any>) =>
+        callback({
+          subscription: {
+            findUnique: async () => lockedSubscription,
+            update: async (payload: Record<string, any>) => {
+              subscriptionUpdates.push(payload);
+              return {
+                ...lockedSubscription,
+                ...payload.data
+              };
+            }
+          },
+          trafficSnapshot: {
+            upsert: async () => ({})
+          },
+          panelClientBinding: {
+            findMany: async () => [
+              {
+                id: "binding_1",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_1",
+                panelClientEmail: "user@example.com",
+                panelClientId: "client_1",
+                panelInboundId: 7,
+                lastUplinkBytes: 8n,
+                lastDownlinkBytes: 0n,
+                lastSyncedAt: new Date(),
+                node: {
+                  id: "node_1",
+                  panelBaseUrl: "https://panel.example.com",
+                  panelApiBasePath: "/",
+                  panelUsername: "admin",
+                  panelPassword: "password"
+                }
+              }
+            ],
+            update: async () => ({})
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              panelJobUpserts.push(payload);
+              throw Object.assign(new Error("offline renew reset queue failed"), { code: "P2010" });
+            }
+          },
+          trafficLedger: {
+            deleteMany: async () => ({}),
+            aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
+          }
+        })
+    }
+  });
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    adminSubscriptionService
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class RenewResetTrafficHttpRegressionModule {}
+
+  const app = await NestFactory.create(RenewResetTrafficHttpRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/renew`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ resetTraffic: true })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      201,
+      `renew reset must not surface queued offline panel failures as HTTP 500: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.equal(panelJobUpserts.length, 1);
+    assert.equal(subscriptionUpdates.length, 1);
+    assert.equal(subscriptionUpdates[0].data.usedTrafficGb, 0);
+    assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
+    assert.equal(subscriptionUpdates[0].data.sourceAction, "renewed");
+    assert.equal(body.id, "sub_1");
+    assert.equal(body.usedTrafficGb, 0);
+    assert.equal(body.remainingTrafficGb, 10);
+    assert.equal(body.sourceAction, "renewed");
+    assert.equal(body.panelSyncStatus, "pending");
+    assert.match(body.panelSyncMessage ?? "", /offline renew reset queue failed/);
+    assert.notEqual(body.message, "Internal server error");
+  } finally {
+    await app.close();
+  }
+}
+
 async function testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail() {
   const updates: Array<Record<string, any>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -29122,6 +29297,7 @@ async function main() {
   await testInitialUsageDeltaUsesBindingCountersForUuidMapping();
   await testRenewSubscriptionResetTrafficClearsPanelBaselines();
   await testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFails();
+  await testRenewSubscriptionHttpReturnsPendingWhenResetTrafficPanelQueueFails();
   await testRenewSubscriptionReturnsPendingWhenLeaseAndPanelSyncFail();
   await testRenewSubscriptionReturnsPendingWhenPanelSyncStalls();
   await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
