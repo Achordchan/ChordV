@@ -53,6 +53,10 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
             props.onChange({
               ...props.form,
               source: value as ArtifactEditorFormState["source"],
+              externalDeliveryMode:
+                value === "external" && props.platform === "windows"
+                  ? "windows_full_replace_zip"
+                  : props.form.externalDeliveryMode,
               selectedFile: value === "external" ? null : props.form.selectedFile
             })
           }

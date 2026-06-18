@@ -1,4 +1,4 @@
-import type { AuthSessionDto, UpdateCurrentAdminSecurityInputDto } from "@chordv/shared";
+import type { AdminSecurityUpdateResultDto, AuthSessionDto, UpdateCurrentAdminSecurityInputDto } from "@chordv/shared";
 import {
   clearStoredAdminSession,
   getStoredAdminProfile,
@@ -40,7 +40,7 @@ export function logoutAdminSession() {
 }
 
 export function updateCurrentAdminSecurity(input: UpdateCurrentAdminSecurityInputDto) {
-  return request<AuthSessionDto>("/admin/me/security", {
+  return request<AdminSecurityUpdateResultDto>("/admin/me/security", {
     method: "PUT",
     body: JSON.stringify(input),
     timeoutMs: ADMIN_ACTION_TIMEOUT_MS

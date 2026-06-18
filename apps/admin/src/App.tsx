@@ -29,6 +29,7 @@ import type {
   AdminPanelSyncJobDto,
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
+  AdminSecurityUpdateResultDto,
   AdminSnapshotDto,
   AdminSubscriptionRecordDto,
   AdminTeamRecordDto,
@@ -192,6 +193,12 @@ import {
   subscriptionStateColor,
   translateSubscriptionState
 } from "./utils/admin-translate";
+
+function requiresAdminSessionRefresh(
+  result: AdminSecurityUpdateResultDto
+): result is Extract<AdminSecurityUpdateResultDto, { sessionRefreshRequired: true }> {
+  return "sessionRefreshRequired" in result && result.sessionRefreshRequired === true;
+}
 
 type SectionKey =
   | "overview"
@@ -852,9 +859,17 @@ export function App() {
       setTicketRefreshSignal((current) => current + 1);
       return;
     }
+    if (sectionRef.current === "imageBed") {
+      setImageBedRefreshSignal((current) => current + 1);
+      return;
+    }
     void loadSectionData(sectionRef.current, { force: true, silent: true }).catch(() => {
       // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
     });
+  }
+
+  function refreshDashboardAfterTicketMutation() {
+    void refreshDashboard({ silent: true }).catch(() => undefined);
   }
 
   function applyListPatch<K extends SnapshotListKey>(key: K, value: AdminSnapshotDto[K]) {
@@ -1265,6 +1280,25 @@ export function App() {
         currentPassword: adminSecurityForm.currentPassword,
         ...(newPassword ? { newPassword } : {})
       });
+      if (requiresAdminSessionRefresh(session)) {
+        clearAdminSession();
+        setAuthenticated(false);
+        setAuthError(null);
+        setAuthForm({ account: email, password: "" });
+        setAdminSecurityOpened(false);
+        setAdminSecurityForm({
+          email: "",
+          currentPassword: "",
+          newPassword: "",
+          confirmPassword: ""
+        });
+        notifications.show({
+          color: "yellow",
+          title: "账号安全",
+          message: session.message || "管理员安全设置已保存，请重新登录。"
+        });
+        return;
+      }
       persistAdminSession(session);
       setAuthForm({ account: email, password: "" });
       setAdminSecurityOpened(false);
@@ -2922,7 +2956,9 @@ export function App() {
               />
             ) : null}
 
-            {section === "tickets" ? <TicketsPage refreshSignal={ticketRefreshSignal} /> : null}
+            {section === "tickets" ? (
+              <TicketsPage refreshSignal={ticketRefreshSignal} onTicketMutated={refreshDashboardAfterTicketMutation} />
+            ) : null}
 
             {section === "nodes" ? (
               <NodesPage

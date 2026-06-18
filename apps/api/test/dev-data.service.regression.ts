@@ -1360,6 +1360,47 @@ async function testImageBedDeleteReturnsStructuredBusinessFailure() {
   }
 }
 
+async function testImageBedDeleteAcceptsDeletedListWithoutSuccessTrue() {
+  const server = createServer((request, response) => {
+    assert.equal(request.url, "/api/manage/delete/support-tickets/removed.png");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        fileId: "support-tickets/removed.png",
+        deleted: ["support-tickets/removed.png"]
+      })
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  try {
+    const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+      prisma: {
+        systemSetting: {
+          findUnique: async () => ({
+            value: {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              apiToken: "test-token"
+            },
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          })
+        }
+      }
+    });
+
+    const result = await service.deleteAdminFile({ path: "support-tickets/removed.png" });
+
+    assert.equal(result.success, true);
+    assert.equal(result.fileId, "support-tickets/removed.png");
+    assert.deepEqual(result.deleted, ["support-tickets/removed.png"]);
+    assert.deepEqual(result.failed, []);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function testImageBedDeleteUsesShortManageTimeout() {
   const previousTimeout = process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS;
   process.env.CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS = "25";
@@ -22374,7 +22415,7 @@ async function testUpdateCurrentAdminSecurityMapsTransactionFailure() {
   );
 }
 
-async function testUpdateCurrentAdminSecurityMapsSessionIssueFailureAfterSave() {
+async function testUpdateCurrentAdminSecurityReturnsReauthRequiredWhenSessionIssueFailsAfterSave() {
   const passwordHash = await bcrypt.hash("current-password", 10);
   let transactionSaved = false;
   const service = createDevDataService({
@@ -22419,17 +22460,19 @@ async function testUpdateCurrentAdminSecurityMapsSessionIssueFailureAfterSave() 
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.updateCurrentAdminSecurity("Bearer admin-token", {
-        currentPassword: "current-password",
-        email: "admin@example.com"
-      }),
-    (error) =>
-      error instanceof ServiceUnavailableException &&
-      /新登录状态签发失败/.test(error.message) &&
-      !/HTTP 500/i.test(error.message),
-    "admin security session issue failures after local save must return a controlled 503 instead of HTTP 500"
+  const result = await service.updateCurrentAdminSecurity("Bearer admin-token", {
+    currentPassword: "current-password",
+    email: "admin@example.com"
+  });
+
+  assert.deepEqual(
+    result,
+    {
+      ok: true,
+      sessionRefreshRequired: true,
+      message: "管理员安全设置已保存，请重新登录。"
+    },
+    "admin security session issue failures after local save should keep the local save and ask the admin to sign in again"
   );
   assert.equal(transactionSaved, true, "the local admin security change should have been saved before session issue failed");
 }
@@ -28867,7 +28910,7 @@ async function main() {
   await testUpdateCurrentAdminSecurityMapsCurrentAdminReadFailure();
   await testUpdateCurrentAdminSecurityMapsEmailPreflightReadFailure();
   await testUpdateCurrentAdminSecurityMapsTransactionFailure();
-  await testUpdateCurrentAdminSecurityMapsSessionIssueFailureAfterSave();
+  await testUpdateCurrentAdminSecurityReturnsReauthRequiredWhenSessionIssueFailsAfterSave();
   testNodePanelBaseUrlAllowsBlankAsEmpty();
   await testImageBedListRejectsSuccessFalsePayload();
   await testImageBedListUsesShortManageTimeout();
@@ -28879,6 +28922,7 @@ async function main() {
   await testImageBedUploadSuccessParsesUrlAndCleansTempFile();
   await testImageBedUploadRejectsNonImageAndCleansTempFile();
   await testImageBedDeleteReturnsStructuredBusinessFailure();
+  await testImageBedDeleteAcceptsDeletedListWithoutSuccessTrue();
   await testImageBedDeleteUsesShortManageTimeout();
   await testImageBedDeleteRejectsMalformedPercentPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();

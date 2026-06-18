@@ -303,6 +303,9 @@ export function ImageBedPage(props: ImageBedPageProps) {
       });
       if (uncertain) {
         void loadFiles({ silent: true });
+        window.setTimeout(() => {
+          void loadFiles({ silent: true });
+        }, 3000);
       }
     } finally {
       if (deletingPathRef.current === file.name) {

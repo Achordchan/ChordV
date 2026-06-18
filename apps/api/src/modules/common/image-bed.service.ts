@@ -156,11 +156,13 @@ export class ImageBedService {
       { allowBusinessFailure: true }
     );
 
+    const deleted = readStringArray(payload.deleted);
     const failed = readStringArray(payload.failed);
+    const success = (payload.success === true || deleted.length > 0) && failed.length === 0;
     return {
-      success: payload.success === true && failed.length === 0,
+      success,
       fileId: readString(payload.fileId) ?? normalizedPath,
-      deleted: readStringArray(payload.deleted),
+      deleted,
       failed: failed.length > 0 ? failed : payload.success === false ? [readString(payload.message) ?? readString(payload.error) ?? normalizedPath] : []
     };
   }

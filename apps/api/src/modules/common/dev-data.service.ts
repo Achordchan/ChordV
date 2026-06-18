@@ -18,6 +18,7 @@ import type {
   AdminPlanRecordDto,
   AdminPolicyRecordDto,
   AdminReleaseRecordDto,
+  AdminSecurityUpdateResultDto,
   AdminSnapshotDto,
   AdminSupportTicketDetailDto,
   AdminSupportTicketSummaryDto,
@@ -1286,7 +1287,7 @@ export class DevDataService implements OnModuleInit {
   async updateCurrentAdminSecurity(
     authorization: string | undefined,
     input: UpdateCurrentAdminSecurityInputDto
-  ): Promise<AuthSessionDto> {
+  ): Promise<AdminSecurityUpdateResultDto> {
     const currentAdmin = await this.authSessionService.authenticateAccessToken(authorization);
     if (currentAdmin.role !== "admin") {
       throw new ForbiddenException("需要管理员权限");
@@ -1359,7 +1360,14 @@ export class DevDataService implements OnModuleInit {
     try {
       return await this.authSessionService.issueSession(updated.id);
     } catch (error) {
-      throwLocalSaveAsServiceUnavailable(error, "管理员安全设置已保存，但新登录状态签发失败，请重新登录。");
+      this.logger?.warn(
+        `Admin security was saved, but issuing a replacement session failed for ${updated.id}: ${readPanelSyncErrorMessage(error)}`
+      );
+      return {
+        ok: true,
+        sessionRefreshRequired: true,
+        message: "管理员安全设置已保存，请重新登录。"
+      };
     }
   }
 

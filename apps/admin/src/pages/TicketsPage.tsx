@@ -65,6 +65,7 @@ const ownerTypeOptions = [
 
 type TicketsPageProps = {
   refreshSignal?: number;
+  onTicketMutated?: () => void;
 };
 
 export function TicketsPage(props: TicketsPageProps) {
@@ -323,6 +324,7 @@ export function TicketsPage(props: TicketsPageProps) {
         replyAttachmentResetRef.current?.();
       }
       upsertTicketSummary(detail);
+      props.onTicketMutated?.();
       if (detail.attachmentUploadStatus === "failed") {
         notifications.show({
           color: "yellow",
@@ -340,8 +342,8 @@ export function TicketsPage(props: TicketsPageProps) {
       }
     } catch (reason) {
       const message = readError(reason, "发送回复失败");
-      const attachmentUploadFailed = Boolean(replyAttachment) && isSupportTicketAttachmentUploadFailure(message);
-      const uncertain = !attachmentUploadFailed && isPotentiallyCompletedMutationFailure(message);
+      const uncertain = isPotentiallyCompletedMutationFailure(message);
+      const attachmentUploadFailed = Boolean(replyAttachment) && !uncertain && isSupportTicketAttachmentUploadFailure(message);
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: uncertain ? "回复状态不确定" : attachmentUploadFailed ? "附件上传失败" : "工单",
@@ -375,6 +377,7 @@ export function TicketsPage(props: TicketsPageProps) {
         setSelectedTicket(detail);
       }
       upsertTicketSummary(detail);
+      props.onTicketMutated?.();
       notifications.show({
         color: "green",
         title: "工单",

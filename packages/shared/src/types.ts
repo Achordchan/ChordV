@@ -803,6 +803,14 @@ export interface AuthSessionDto {
   user: UserProfileDto;
 }
 
+export type AdminSecurityUpdateResultDto =
+  | AuthSessionDto
+  | {
+      ok: true;
+      sessionRefreshRequired: true;
+      message: string;
+    };
+
 export interface CreateUserInputDto {
   email: string;
   password: string;
