@@ -10,6 +10,13 @@ import { formatDateTime } from "../utils/admin-format";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import { nodePanelColor, nodeProbeColor, translatePanelStatus, translateProbeStatus } from "../utils/admin-translate";
 
+export type PanelSyncQueueFilter = {
+  title?: string;
+  nodeId?: string;
+  subscriptionId?: string;
+  userId?: string;
+};
+
 type NodesPageProps = {
   searchValue: string;
   onSearchChange: (value: string) => void;
@@ -22,7 +29,7 @@ type NodesPageProps = {
   probingNodeId: string | null;
   probingAll: boolean;
   refreshingNodeId: string | null;
-  onOpenPanelSyncQueue: () => void;
+  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
   onClosePanelSyncQueue: () => void;
   onRetryPanelSyncJob: (jobId: string) => void;
   onRetryNodePanelSyncJobs: (nodeId: string) => void;
@@ -45,7 +52,7 @@ export function NodesPage(props: NodesPageProps) {
             <Button
               variant="default"
               leftSection={<IconListDetails size={16} />}
-              onClick={props.onOpenPanelSyncQueue}
+              onClick={() => props.onOpenPanelSyncQueue()}
             >
               同步队列
               {queueCount > 0 ? ` · ${queueCount}` : ""}
@@ -99,6 +106,7 @@ export function NodesPage(props: NodesPageProps) {
                       leaseRevocationJobs={props.leaseRevocationJobs}
                       panelRetryBusyKey={props.panelSyncRetryBusyKey}
                       leaseRetryBusyKey={props.leaseRevocationRetryBusyKey}
+                      onOpenPanelSyncQueue={props.onOpenPanelSyncQueue}
                       onRetryNodePanelSyncJobs={props.onRetryNodePanelSyncJobs}
                       onRetryNodeLeaseRevocationJobs={props.onRetryNodeLeaseRevocationJobs}
                     />
@@ -160,6 +168,7 @@ function NodeSyncQueueCell(props: {
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   panelRetryBusyKey: string | null;
   leaseRetryBusyKey: string | null;
+  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
   onRetryNodePanelSyncJobs: (nodeId: string) => void;
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
 }) {
@@ -213,6 +222,13 @@ function NodeSyncQueueCell(props: {
         </Text>
       ) : null}
       <Group gap={4}>
+        <Button
+          size="xs"
+          variant="subtle"
+          onClick={() => props.onOpenPanelSyncQueue({ nodeId: props.node.id, title: props.node.name })}
+        >
+          查看队列
+        </Button>
         {panelRetryable ? (
           <Button
             size="xs"
@@ -258,15 +274,32 @@ export function PanelSyncQueueDrawer(props: {
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   panelRetryBusyKey: string | null;
   leaseRetryBusyKey: string | null;
+  filter?: PanelSyncQueueFilter | null;
   onClose: () => void;
+  onShowAll?: () => void;
   onRetryJob: (jobId: string) => void;
   onRetryNode: (nodeId: string) => void;
   onRetryLeaseJob: (jobId: string) => void;
   onRetryLeaseNode: (nodeId: string) => void;
 }) {
+  const filteredJobs = filterPanelSyncJobs(props.jobs, props.filter);
+  const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
+  const hasFilter = hasPanelSyncQueueFilter(props.filter);
+  const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待同步任务" : "后台同步队列";
+
   return (
-    <Drawer opened={props.opened} onClose={props.onClose} title="后台同步队列" position="right" size="xl">
+    <Drawer opened={props.opened} onClose={props.onClose} title={drawerTitle} position="right" size="xl">
       <Stack gap="lg">
+        {hasFilter ? (
+          <Group justify="space-between" gap="sm">
+            <Text size="sm" c="dimmed">
+              仅显示当前对象相关的后台同步任务。
+            </Text>
+            <Button size="xs" variant="default" onClick={props.onShowAll}>
+              查看全部
+            </Button>
+          </Group>
+        ) : null}
         <Stack gap="xs">
           <Text fw={600}>面板客户端同步</Text>
           <DataTable>
@@ -283,16 +316,16 @@ export function PanelSyncQueueDrawer(props: {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {props.jobs.length === 0 ? (
+              {filteredJobs.length === 0 ? (
                 <Table.Tr>
                   <Table.Td colSpan={8}>
                     <Text c="dimmed">暂无面板客户端同步任务</Text>
                   </Table.Td>
                 </Table.Tr>
               ) : (
-                props.jobs.map((job) => {
+                filteredJobs.map((job) => {
                   const retryable = isRetryableBackgroundSyncStatus(job.status);
-                  const nodeRetryable = props.jobs.some(
+                  const nodeRetryable = filteredJobs.some(
                     (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
                   );
                   return (
@@ -367,17 +400,17 @@ export function PanelSyncQueueDrawer(props: {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {props.leaseRevocationJobs.length === 0 ? (
+              {filteredLeaseRevocationJobs.length === 0 ? (
                 <Table.Tr>
                   <Table.Td colSpan={7}>
                     <Text c="dimmed">暂无连接撤销同步任务</Text>
                   </Table.Td>
                 </Table.Tr>
               ) : (
-                props.leaseRevocationJobs.map((job) => {
+                filteredLeaseRevocationJobs.map((job) => {
                   const retryable = isRetryableBackgroundSyncStatus(job.status);
                   const nodeRetryable = job.nodeId
-                    ? props.leaseRevocationJobs.some(
+                    ? filteredLeaseRevocationJobs.some(
                         (candidate) => candidate.nodeId === job.nodeId && isRetryableBackgroundSyncStatus(candidate.status)
                       )
                     : false;
@@ -433,6 +466,46 @@ export function PanelSyncQueueDrawer(props: {
       </Stack>
     </Drawer>
   );
+}
+
+function hasPanelSyncQueueFilter(filter?: PanelSyncQueueFilter | null) {
+  return Boolean(filter?.nodeId || filter?.subscriptionId || filter?.userId);
+}
+
+function filterPanelSyncJobs(jobs: AdminPanelSyncJobDto[], filter?: PanelSyncQueueFilter | null) {
+  if (!hasPanelSyncQueueFilter(filter)) {
+    return jobs;
+  }
+  return jobs.filter((job) => {
+    if (filter?.nodeId && job.nodeId !== filter.nodeId) {
+      return false;
+    }
+    if (filter?.subscriptionId && job.subscriptionId !== filter.subscriptionId) {
+      return false;
+    }
+    if (filter?.userId && job.userId !== filter.userId) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function filterLeaseRevocationJobs(jobs: AdminLeaseRevocationJobDto[], filter?: PanelSyncQueueFilter | null) {
+  if (!hasPanelSyncQueueFilter(filter)) {
+    return jobs;
+  }
+  return jobs.filter((job) => {
+    if (filter?.nodeId && job.nodeId !== filter.nodeId) {
+      return false;
+    }
+    if (filter?.subscriptionId && job.subscriptionId !== filter.subscriptionId) {
+      return false;
+    }
+    if (filter?.userId && job.userId !== filter.userId) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[], nodeId: string) {

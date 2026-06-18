@@ -138,7 +138,7 @@ import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawer
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
-import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
+import { NodesPage, PanelSyncQueueDrawer, type PanelSyncQueueFilter } from "./pages/NodesPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
@@ -228,6 +228,11 @@ type AdminSecurityFormState = {
   currentPassword: string;
   newPassword: string;
   confirmPassword: string;
+};
+
+type PanelSyncQueueState = {
+  opened: boolean;
+  filter: PanelSyncQueueFilter | null;
 };
 
 const sectionMeta: Record<SectionKey, { label: string; description: string; icon: ReactNode }> = {
@@ -409,7 +414,15 @@ export function App() {
   const nodeAccessRequestSeqRef = useRef(0);
   const [nodePanelInbounds, setNodePanelInbounds] = useState<AdminNodePanelInboundDto[]>([]);
   const [nodePanelInboundsLoading, setNodePanelInboundsLoading] = useState(false);
-  const [panelSyncQueueOpened, setPanelSyncQueueOpened] = useState(false);
+  const [panelSyncQueue, setPanelSyncQueue] = useState<PanelSyncQueueState>({ opened: false, filter: null });
+
+  const openPanelSyncQueue = (filter?: PanelSyncQueueFilter) => {
+    setPanelSyncQueue({ opened: true, filter: filter ?? null });
+  };
+
+  const closePanelSyncQueue = () => {
+    setPanelSyncQueue((current) => ({ ...current, opened: false }));
+  };
 
   const selectSection = (nextSection: SectionKey) => {
     setSection(nextSection);
@@ -712,7 +725,7 @@ export function App() {
     setNodeAccessSaving(false);
     setNodePanelInbounds([]);
     setNodePanelInboundsLoading(false);
-    setPanelSyncQueueOpened(false);
+    setPanelSyncQueue({ opened: false, filter: null });
     setDrawerBusy(false);
     setTeamProfileBusyKey(null);
     teamProfileBusyRef.current = null;
@@ -2739,7 +2752,7 @@ export function App() {
               <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void handleHeaderRefresh()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
               </Button>
-              <Button variant="default" leftSection={<IconListDetails size={16} />} onClick={() => setPanelSyncQueueOpened(true)}>
+              <Button variant="default" leftSection={<IconListDetails size={16} />} onClick={() => openPanelSyncQueue()}>
                 同步队列{backgroundSyncQueueCount > 0 ? ` · ${backgroundSyncQueueCount}` : ""}
               </Button>
               <Button variant="default" onClick={openAdminSecurityModal}>
@@ -2853,7 +2866,7 @@ export function App() {
                 }
                 onDisconnectUser={(userId, displayName, source) => void handleDisconnectUser(userId, displayName, source)}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
-                onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
+                onOpenPanelSyncQueue={openPanelSyncQueue}
               />
             ) : null}
 
@@ -2905,7 +2918,7 @@ export function App() {
                 teamUsageLoadingByTeamId={teamUsageLoadingByTeamId}
                 teamUsageErrorByTeamId={teamUsageErrorByTeamId}
                 onLoadTeamUsage={(teamId, options) => void loadTeamUsage(teamId, options)}
-                onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
+                onOpenPanelSyncQueue={openPanelSyncQueue}
               />
             ) : null}
 
@@ -2918,14 +2931,14 @@ export function App() {
                 nodes={nodes}
                 panelSyncJobs={snapshot.panelSyncJobs}
                 leaseRevocationJobs={snapshot.leaseRevocationJobs}
-                panelSyncQueueOpened={panelSyncQueueOpened}
+                panelSyncQueueOpened={panelSyncQueue.opened}
                 panelSyncRetryBusyKey={panelSyncRetryBusyKey}
                 leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
                 refreshingNodeId={refreshingNodeId}
-                onOpenPanelSyncQueue={() => setPanelSyncQueueOpened(true)}
-                onClosePanelSyncQueue={() => setPanelSyncQueueOpened(false)}
+                onOpenPanelSyncQueue={openPanelSyncQueue}
+                onClosePanelSyncQueue={closePanelSyncQueue}
                 onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
                 onRetryNodePanelSyncJobs={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
                 onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
@@ -3099,12 +3112,14 @@ export function App() {
       />
 
       <PanelSyncQueueDrawer
-        opened={panelSyncQueueOpened}
+        opened={panelSyncQueue.opened}
         jobs={snapshot.panelSyncJobs}
         leaseRevocationJobs={snapshot.leaseRevocationJobs}
         panelRetryBusyKey={panelSyncRetryBusyKey}
         leaseRetryBusyKey={leaseRevocationRetryBusyKey}
-        onClose={() => setPanelSyncQueueOpened(false)}
+        filter={panelSyncQueue.filter}
+        onClose={closePanelSyncQueue}
+        onShowAll={() => openPanelSyncQueue()}
         onRetryJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
         onRetryNode={(nodeId) => void handleRetryNodePanelSyncJobs(nodeId)}
         onRetryLeaseJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}

@@ -6,6 +6,7 @@ import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
+import type { PanelSyncQueueFilter } from "./NodesPage";
 import type { TeamFormState, TeamMemberFormState } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import { translateRole, translateUserStatus } from "../utils/admin-translate";
@@ -45,7 +46,7 @@ type UsersPageProps = {
   onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
   onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
   onRetryLeaseRevocationJob: (jobId: string) => void;
-  onOpenPanelSyncQueue: () => void;
+  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
 };
 
 export function UsersPage(props: UsersPageProps) {
@@ -87,7 +88,16 @@ export function UsersPage(props: UsersPageProps) {
                     <Table.Td>
                       <Stack gap={4}>
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
-                        <PanelSyncInlineStatus item={item} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
+                        <PanelSyncInlineStatus
+                          item={item}
+                          onOpenPanelSyncQueue={() =>
+                            props.onOpenPanelSyncQueue({
+                              subscriptionId: item.currentSubscription?.id,
+                              userId: item.id,
+                              title: item.displayName
+                            })
+                          }
+                        />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) => job.userId === item.id)}
                           retryBusyKey={props.leaseRevocationRetryBusyKey}
@@ -165,7 +175,15 @@ export function UsersPage(props: UsersPageProps) {
                       </Group>
                       <Stack gap={4} align="flex-end">
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
-                        <PanelSyncInlineStatus item={item} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
+                        <PanelSyncInlineStatus
+                          item={item}
+                          onOpenPanelSyncQueue={() =>
+                            props.onOpenPanelSyncQueue({
+                              subscriptionId: item.currentSubscription?.id,
+                              title: item.name
+                            })
+                          }
+                        />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) =>
                             item.currentSubscription?.id ? job.subscriptionId === item.currentSubscription.id && job.userId === null : false
@@ -309,7 +327,16 @@ export function UsersPage(props: UsersPageProps) {
                                       color={userRecord?.status === "active" ? "green" : "gray"}
                                       label={translateUserStatus(userRecord?.status ?? "disabled")}
                                     />
-                                    <PanelSyncInlineStatus item={userRecord} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
+                                    <PanelSyncInlineStatus
+                                      item={userRecord}
+                                      onOpenPanelSyncQueue={() =>
+                                        props.onOpenPanelSyncQueue({
+                                          subscriptionId: item.currentSubscription?.id,
+                                          userId: member.userId,
+                                          title: `${member.displayName} · ${item.name}`
+                                        })
+                                      }
+                                    />
                                     <LeaseRevocationInlineStatus
                                       jobs={props.leaseRevocationJobs.filter(
                                         (job) =>

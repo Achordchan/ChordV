@@ -151,6 +151,8 @@ export class AdminNodeService {
       action: row.action as AdminPanelSyncJobDto["action"],
       status: row.status as AdminPanelSyncJobDto["status"],
       nodeId: row.nodeId,
+      subscriptionId: row.subscriptionId,
+      userId: row.userId,
       nodeName: row.node?.name ?? "已删除节点",
       panelClientEmail: row.panelClientEmail,
       attempts: row.attempts,

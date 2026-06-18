@@ -15,6 +15,7 @@ import { MiniMetric } from "../features/shared/MiniMetric";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
+import type { PanelSyncQueueFilter } from "./NodesPage";
 import type { TeamSubscriptionFormState } from "../utils/admin-forms";
 import { applyPlanToTeamSubscriptionForm } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
@@ -67,7 +68,7 @@ type SubscriptionsPageProps = {
   teamUsageLoadingByTeamId: Record<string, boolean>;
   teamUsageErrorByTeamId: Record<string, string | null>;
   onLoadTeamUsage: (teamId: string, options?: { force?: boolean }) => void;
-  onOpenPanelSyncQueue: () => void;
+  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
 };
 
 export function SubscriptionsPage(props: SubscriptionsPageProps) {
@@ -137,7 +138,16 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                           {formatSubscriptionStateReason(item.stateReasonMessage)}
                         </Text>
                       ) : null}
-                      <PanelSyncInlineStatus item={item} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
+                      <PanelSyncInlineStatus
+                        item={item}
+                        onOpenPanelSyncQueue={() =>
+                          props.onOpenPanelSyncQueue({
+                            subscriptionId: item.id,
+                            userId: item.userId ?? undefined,
+                            title: `${item.userDisplayName ?? item.userEmail ?? "当前用户"} · ${item.planName}`
+                          })
+                        }
+                      />
                       <LeaseRevocationInlineStatus
                         jobs={props.leaseRevocationJobs.filter((job) => job.subscriptionId === item.id)}
                         retryBusyKey={props.leaseRevocationRetryBusyKey}
@@ -242,8 +252,24 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                             {formatSubscriptionStateReason(currentSubscription.stateReasonMessage)}
                           </Text>
                         ) : null}
-                        <PanelSyncInlineStatus item={team} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
-                        <PanelSyncInlineStatus item={teamSubscriptionRecord} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
+                        <PanelSyncInlineStatus
+                          item={team}
+                          onOpenPanelSyncQueue={() =>
+                            props.onOpenPanelSyncQueue({
+                              subscriptionId: currentSubscription?.id,
+                              title: `${team.name} · Team 待同步任务`
+                            })
+                          }
+                        />
+                        <PanelSyncInlineStatus
+                          item={teamSubscriptionRecord}
+                          onOpenPanelSyncQueue={() =>
+                            props.onOpenPanelSyncQueue({
+                              subscriptionId: teamSubscriptionRecord?.id,
+                              title: `${team.name} · ${teamSubscriptionRecord?.planName ?? "Team 订阅"}`
+                            })
+                          }
+                        />
                         <LeaseRevocationInlineStatus
                           jobs={props.leaseRevocationJobs.filter((job) =>
                             currentSubscription?.id ? job.subscriptionId === currentSubscription.id && job.userId === null : false
@@ -398,7 +424,16 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 color={userRecord?.status === "active" ? "green" : "gray"}
                                                 label={translateUserStatus(userRecord?.status ?? "disabled")}
                                               />
-                                              <PanelSyncInlineStatus item={userRecord} onOpenPanelSyncQueue={props.onOpenPanelSyncQueue} />
+                                              <PanelSyncInlineStatus
+                                                item={userRecord}
+                                                onOpenPanelSyncQueue={() =>
+                                                  props.onOpenPanelSyncQueue({
+                                                    subscriptionId: currentSubscription?.id,
+                                                    userId: member.userId,
+                                                    title: `${member.displayName} · ${team.name}`
+                                                  })
+                                                }
+                                              />
                                               <LeaseRevocationInlineStatus
                                                 jobs={props.leaseRevocationJobs.filter(
                                                   (job) => job.subscriptionId === currentSubscription?.id && job.userId === member.userId
