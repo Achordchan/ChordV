@@ -986,46 +986,56 @@ export class AdminNodeService {
         panelError = error instanceof Error ? error.message : "3x-ui 面板探测失败";
       }
     }
-    const row = await this.prisma.node.update({
-      where: { id: current.id },
-      data: {
-        probeStatus: result.status,
-        probeLatencyMs: result.latencyMs,
-        probeCheckedAt: new Date(),
-        probeError: result.error,
-        latencyMs: result.latencyMs ?? current.latencyMs,
-        panelStatus,
-        panelError,
-        panelLastSyncedAt
-      }
-    });
+    const checkedAt = new Date();
+    const data = {
+      probeStatus: result.status,
+      probeLatencyMs: result.latencyMs,
+      probeCheckedAt: checkedAt,
+      probeError: result.error,
+      latencyMs: result.latencyMs ?? current.latencyMs,
+      panelStatus,
+      panelError,
+      panelLastSyncedAt
+    };
+    let row: any;
+    try {
+      row = await this.prisma.node.update({
+        where: { id: current.id },
+        data
+      });
+    } catch (error) {
+      this.logger?.warn(`Node ${current.id} probe result update failed: ${readAdminNodeErrorMessage(error)}`);
+      row = {
+        ...current,
+        ...data,
+        updatedAt: checkedAt
+      };
+    }
 
     return toAdminNodeRecord(row);
   }
 
-  private async markNodeProbeTimedOut(current: any, timeoutMs: number) {
+  private markNodeProbeTimedOut(current: any, timeoutMs: number) {
     const checkedAt = new Date();
     const message = `node probe exceeded ${timeoutMs}ms`;
     const fallbackStatus = current.isActive && current.panelEnabled ? "degraded" : "offline";
     this.logger.warn(`Node ${current.id} probe exceeded ${timeoutMs}ms and will continue in background.`);
-    try {
-      const row = await this.prisma.node.update({
+    void this.prisma.node.update({
         where: { id: current.id },
         data: {
           panelStatus: fallbackStatus,
           panelError: fallbackStatus === "degraded" ? message : null
         }
+      })
+      .catch((error) => {
+        this.logger.warn(`Node ${current.id} probe timeout fallback update failed: ${readAdminNodeErrorMessage(error)}`);
       });
-      return toAdminNodeRecord(row);
-    } catch (error) {
-      this.logger.warn(`Node ${current.id} probe timeout fallback update failed: ${readAdminNodeErrorMessage(error)}`);
-      return toAdminNodeRecord({
-        ...current,
-        panelStatus: fallbackStatus,
-        panelError: fallbackStatus === "degraded" ? message : null,
-        updatedAt: checkedAt
-      });
-    }
+    return toAdminNodeRecord({
+      ...current,
+      panelStatus: fallbackStatus,
+      panelError: fallbackStatus === "degraded" ? message : null,
+      updatedAt: checkedAt
+    });
   }
 
   async probeAllNodes() {
@@ -1053,7 +1063,7 @@ export class AdminNodeService {
       this.logger.warn(
         `Bulk node probe request budget ${requestBudgetMs}ms exhausted; ${skippedNodes.length} nodes were marked for retry.`
       );
-      await this.markBulkProbeSkippedNodes(skippedNodes, requestBudgetMs, checkedAt);
+      void this.markBulkProbeSkippedNodes(skippedNodes, requestBudgetMs, checkedAt);
       for (const node of skippedNodes) {
         const index = nodes.findIndex((item) => item.id === node.id);
         results[index] = this.buildBulkProbeSkippedRecord(node, requestBudgetMs, checkedAt);

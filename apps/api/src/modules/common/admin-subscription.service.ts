@@ -291,10 +291,14 @@ export class AdminSubscriptionService {
     let panelSync: PanelSyncBestEffortResult = { ok: true };
     let updatedUser: Awaited<ReturnType<PrismaService["user"]["update"]>>;
 
-    updatedUser = await this.prisma.user.update({
-      where: { id: userId },
-      data
-    });
+    try {
+      updatedUser = await this.prisma.user.update({
+        where: { id: userId },
+        data
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "账号保存失败，请刷新用户列表后重试。");
+    }
     if (statusChanged && input.status === "disabled") {
       panelSync = mergePanelSyncResults(
         panelSync,
@@ -344,12 +348,17 @@ export class AdminSubscriptionService {
 
   async updateUserSecurity(userId: string, input: UpdateUserSecurityInputDto): Promise<AdminUserRecordDto> {
     await this.ensureUserExists(userId);
-    const row = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
-      }
-    });
+    let row: Awaited<ReturnType<PrismaService["user"]["update"]>>;
+    try {
+      row = await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          maxConcurrentSessionsOverride: input.maxConcurrentSessionsOverride ?? null
+        }
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "账号安全策略保存失败，请刷新用户列表后重试。");
+    }
     const panelSync = this.startSubscriptionFollowUpInBackground(`user concurrent lease enforcement for ${userId}`, async () => {
       const effectiveLimit = row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
       if (effectiveLimit !== null) {
@@ -451,17 +460,22 @@ export class AdminSubscriptionService {
 
   async createPlan(input: CreatePlanInputDto): Promise<AdminPlanRecordDto> {
     const name = normalizePlanName(input.name);
-    const row = await this.prisma.plan.create({
-      data: {
-        id: createId("plan"),
-        name,
-        scope: input.scope,
-        totalTrafficGb: input.totalTrafficGb,
-        renewable: input.renewable,
-        maxConcurrentSessions: input.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS,
-        isActive: input.isActive ?? true
-      }
-    });
+    let row: Awaited<ReturnType<PrismaService["plan"]["create"]>>;
+    try {
+      row = await this.prisma.plan.create({
+        data: {
+          id: createId("plan"),
+          name,
+          scope: input.scope,
+          totalTrafficGb: input.totalTrafficGb,
+          renewable: input.renewable,
+          maxConcurrentSessions: input.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS,
+          isActive: input.isActive ?? true
+        }
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "套餐保存失败，请刷新套餐列表后重试。");
+    }
 
     return {
       id: row.id,
@@ -484,17 +498,22 @@ export class AdminSubscriptionService {
       throw new BadRequestException("Plan scope cannot be changed while subscriptions are using this plan.");
     }
     const name = input.name !== undefined ? normalizePlanName(input.name) : undefined;
-    const row = await this.prisma.plan.update({
-      where: { id: planId },
-      data: {
-        ...(name !== undefined ? { name } : {}),
-        ...(input.scope !== undefined ? { scope: input.scope } : {}),
-        ...(input.totalTrafficGb !== undefined ? { totalTrafficGb: input.totalTrafficGb } : {}),
-        ...(input.renewable !== undefined ? { renewable: input.renewable } : {}),
-        ...(input.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: input.maxConcurrentSessions } : {}),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
-      }
-    });
+    let row: Awaited<ReturnType<PrismaService["plan"]["update"]>>;
+    try {
+      row = await this.prisma.plan.update({
+        where: { id: planId },
+        data: {
+          ...(name !== undefined ? { name } : {}),
+          ...(input.scope !== undefined ? { scope: input.scope } : {}),
+          ...(input.totalTrafficGb !== undefined ? { totalTrafficGb: input.totalTrafficGb } : {}),
+          ...(input.renewable !== undefined ? { renewable: input.renewable } : {}),
+          ...(input.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: input.maxConcurrentSessions } : {}),
+          ...(input.isActive !== undefined ? { isActive: input.isActive } : {})
+        }
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "套餐保存失败，请刷新套餐列表后重试。");
+    }
     if (input.maxConcurrentSessions !== undefined && input.maxConcurrentSessions !== current.maxConcurrentSessions) {
       const panelSync = this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
       return withPanelSyncStatus(
@@ -508,12 +527,17 @@ export class AdminSubscriptionService {
 
   async updatePlanSecurity(planId: string, input: UpdatePlanSecurityInputDto): Promise<AdminPlanRecordDto> {
     await this.ensurePlanExists(planId);
-    const row = await this.prisma.plan.update({
-      where: { id: planId },
-      data: {
-        maxConcurrentSessions: input.maxConcurrentSessions
-      }
-    });
+    let row: Awaited<ReturnType<PrismaService["plan"]["update"]>>;
+    try {
+      row = await this.prisma.plan.update({
+        where: { id: planId },
+        data: {
+          maxConcurrentSessions: input.maxConcurrentSessions
+        }
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "套餐安全策略保存失败，请刷新套餐列表后重试。");
+    }
     const subscriptionCountResult = await this.countPlanSubscriptionsBestEffort(planId);
     const panelSync = this.reconcilePlanConcurrentLeaseLimitsBestEffort(planId, row.maxConcurrentSessions);
     return withPanelSyncStatus(
@@ -614,27 +638,32 @@ export class AdminSubscriptionService {
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState(input.state ?? "active", remainingTrafficGb, expireAt);
 
-    const row = await this.prisma.subscription.create({
-      data: {
-        id: createId("subscription"),
-        userId: input.userId,
-        planId: input.planId,
-        totalTrafficGb,
-        usedTrafficGb,
-        remainingTrafficGb,
-        expireAt,
-        state,
-        renewable: plan.renewable,
-        sourceAction: "created",
-        lastSyncedAt: new Date()
-      },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      }
-    });
+    let row: AdminSubscriptionEntity;
+    try {
+      row = await this.prisma.subscription.create({
+        data: {
+          id: createId("subscription"),
+          userId: input.userId,
+          planId: input.planId,
+          totalTrafficGb,
+          usedTrafficGb,
+          remainingTrafficGb,
+          expireAt,
+          state,
+          renewable: plan.renewable,
+          sourceAction: "created",
+          lastSyncedAt: new Date()
+        },
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        }
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "订阅保存失败，请刷新订阅列表后重试。");
+    }
 
     const panelSync = mergePanelSyncResults(
       this.startSubscriptionFollowUpInBackground(`team ticket cleanup after personal subscription create for ${input.userId}`, () =>
@@ -685,25 +714,29 @@ export class AdminSubscriptionService {
           expireAt: nextExpireAt
         });
 
-        return this.prisma.$transaction(async (tx) =>
-          tx.subscription.update({
-            where: { id: subscriptionId },
-            data: {
-              totalTrafficGb,
-              remainingTrafficGb,
-              expireAt: nextExpireAt,
-              state,
-              sourceAction: "renewed",
-              lastSyncedAt: new Date()
-            },
-            include: {
-              plan: true,
-              user: true,
-              team: true,
-              nodeAccesses: true
-            }
-          })
-        );
+        try {
+          return await this.prisma.$transaction(async (tx) =>
+            tx.subscription.update({
+              where: { id: subscriptionId },
+              data: {
+                totalTrafficGb,
+                remainingTrafficGb,
+                expireAt: nextExpireAt,
+                state,
+                sourceAction: "renewed",
+                lastSyncedAt: new Date()
+              },
+              include: {
+                plan: true,
+                user: true,
+                team: true,
+                nodeAccesses: true
+              }
+            })
+          );
+        } catch (error) {
+          throw toAdminLocalSaveHttpError(error, "订阅续期保存失败，请刷新订阅列表后重试。");
+        }
       });
     }
 
@@ -759,27 +792,31 @@ export class AdminSubscriptionService {
         expireAt
       });
 
-      return this.prisma.$transaction(async (tx) => {
-        return tx.subscription.update({
-          where: { id: subscriptionId },
-          data: {
-            planId: plan.id,
-            totalTrafficGb,
-            remainingTrafficGb,
-            expireAt,
-            renewable: plan.renewable,
-            state,
-            sourceAction: "plan_changed",
-            lastSyncedAt: new Date()
-          },
-          include: {
-            plan: true,
-            user: true,
-            team: true,
-            nodeAccesses: true
-          }
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          return tx.subscription.update({
+            where: { id: subscriptionId },
+            data: {
+              planId: plan.id,
+              totalTrafficGb,
+              remainingTrafficGb,
+              expireAt,
+              renewable: plan.renewable,
+              state,
+              sourceAction: "plan_changed",
+              lastSyncedAt: new Date()
+            },
+            include: {
+              plan: true,
+              user: true,
+              team: true,
+              nodeAccesses: true
+            }
+          });
         });
-      });
+      } catch (error) {
+        throw toAdminLocalSaveHttpError(error, "订阅套餐保存失败，请刷新订阅列表后重试。");
+      }
     });
 
     const panelSync = mergePanelSyncResults(
@@ -826,26 +863,30 @@ export class AdminSubscriptionService {
         expireAt
       });
 
-      return this.prisma.$transaction(async (tx) => {
-        return tx.subscription.update({
-          where: { id: subscriptionId },
-          data: {
-            totalTrafficGb,
-            usedTrafficGb,
-            remainingTrafficGb,
-            expireAt,
-            state,
-            sourceAction: "adjusted",
-            lastSyncedAt: new Date()
-          },
-          include: {
-            plan: true,
-            user: true,
-            team: true,
-            nodeAccesses: true
-          }
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          return tx.subscription.update({
+            where: { id: subscriptionId },
+            data: {
+              totalTrafficGb,
+              usedTrafficGb,
+              remainingTrafficGb,
+              expireAt,
+              state,
+              sourceAction: "adjusted",
+              lastSyncedAt: new Date()
+            },
+            include: {
+              plan: true,
+              user: true,
+              team: true,
+              nodeAccesses: true
+            }
+          });
         });
-      });
+      } catch (error) {
+        throw toAdminLocalSaveHttpError(error, "订阅保存失败，请刷新订阅列表后重试。");
+      }
     });
 
     const panelSync = mergePanelSyncResults(
@@ -1152,24 +1193,28 @@ export class AdminSubscriptionService {
     await this.assertUserCanJoinTeam(owner.id);
 
     const teamId = createId("team");
-    await this.prisma.$transaction([
-      this.prisma.team.create({
-        data: {
-          id: teamId,
-          name: input.name.trim(),
-          ownerUserId: owner.id,
-          status: input.status ?? "active"
-        }
-      }),
-      this.prisma.teamMember.create({
-        data: {
-          id: createId("member"),
-          teamId,
-          userId: owner.id,
-          role: "owner"
-        }
-      })
-    ]);
+    try {
+      await this.prisma.$transaction([
+        this.prisma.team.create({
+          data: {
+            id: teamId,
+            name: input.name.trim(),
+            ownerUserId: owner.id,
+            status: input.status ?? "active"
+          }
+        }),
+        this.prisma.teamMember.create({
+          data: {
+            id: createId("member"),
+            teamId,
+            userId: owner.id,
+            role: "owner"
+          }
+        })
+      ]);
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "Team 保存失败，请刷新团队列表后重试。");
+    }
 
     await this.closePersonalSupportTicketsForUserBestEffort(
       owner.id,
@@ -1205,26 +1250,30 @@ export class AdminSubscriptionService {
       }
 
       data.ownerUserId = nextOwner.id;
-      await this.prisma.$transaction(async (tx) => {
-        await tx.teamMember.updateMany({
-          where: { teamId, role: "owner" },
-          data: { role: "member" }
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.teamMember.updateMany({
+            where: { teamId, role: "owner" },
+            data: { role: "member" }
+          });
+          await tx.teamMember.upsert({
+            where: { userId: nextOwner.id },
+            update: { role: "owner" },
+            create: {
+              id: createId("member"),
+              teamId,
+              userId: nextOwner.id,
+              role: "owner"
+            }
+          });
+          await tx.team.update({
+            where: { id: teamId },
+            data
+          });
         });
-        await tx.teamMember.upsert({
-          where: { userId: nextOwner.id },
-          update: { role: "owner" },
-          create: {
-            id: createId("member"),
-            teamId,
-            userId: nextOwner.id,
-            role: "owner"
-          }
-        });
-        await tx.team.update({
-          where: { id: teamId },
-          data
-        });
-      });
+      } catch (error) {
+        throw toAdminLocalSaveHttpError(error, "Team 保存失败，请刷新团队列表后重试。");
+      }
       teamUpdatedInOwnerTransaction = true;
 
       if (joinsCurrentTeamAsNewOwner) {
@@ -1237,10 +1286,14 @@ export class AdminSubscriptionService {
 
     if (input.status !== undefined && input.status !== current.status) {
       if (!teamUpdatedInOwnerTransaction) {
-        await this.prisma.team.update({
-          where: { id: teamId },
-          data
-        });
+        try {
+          await this.prisma.team.update({
+            where: { id: teamId },
+            data
+          });
+        } catch (error) {
+          throw toAdminLocalSaveHttpError(error, "Team 保存失败，请刷新团队列表后重试。");
+        }
       }
       if (input.status === "disabled") {
         panelSync = mergePanelSyncResults(
@@ -1251,10 +1304,14 @@ export class AdminSubscriptionService {
       panelSync = mergePanelSyncResults(panelSync, this.startTeamStatusFollowUpInBackground(teamId, input.status));
     } else {
       if (!teamUpdatedInOwnerTransaction) {
-        await this.prisma.team.update({
-          where: { id: teamId },
-          data
-        });
+        try {
+          await this.prisma.team.update({
+            where: { id: teamId },
+            data
+          });
+        } catch (error) {
+          throw toAdminLocalSaveHttpError(error, "Team 保存失败，请刷新团队列表后重试。");
+        }
       }
       const teamSubscriptionLookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
         teamId,
@@ -1378,23 +1435,27 @@ export class AdminSubscriptionService {
       if (ownerUser.status !== "active") {
         throw new BadRequestException("Team owner account must be active.");
       }
-      await this.prisma.$transaction([
-        this.prisma.teamMember.update({
-          where: { id: memberId },
-          data: { role: "owner" }
-        }),
-        this.prisma.teamMember.updateMany({
-          where: {
-            teamId: member.teamId,
-            NOT: { id: memberId }
-          },
-          data: { role: "member" }
-        }),
-        this.prisma.team.update({
-          where: { id: member.teamId },
-          data: { ownerUserId: member.userId }
-        })
-      ]);
+      try {
+        await this.prisma.$transaction([
+          this.prisma.teamMember.update({
+            where: { id: memberId },
+            data: { role: "owner" }
+          }),
+          this.prisma.teamMember.updateMany({
+            where: {
+              teamId: member.teamId,
+              NOT: { id: memberId }
+            },
+            data: { role: "member" }
+          }),
+          this.prisma.team.update({
+            where: { id: member.teamId },
+            data: { ownerUserId: member.userId }
+          })
+        ]);
+      } catch (error) {
+        throw toAdminLocalSaveHttpError(error, "Team 成员保存失败，请刷新团队列表后重试。");
+      }
       const lookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
         member.teamId,
         "team subscription lookup after owner transfer"
@@ -1415,10 +1476,14 @@ export class AdminSubscriptionService {
         });
       }
     } else {
-      await this.prisma.teamMember.update({
-        where: { id: memberId },
-        data: { role: nextRole }
-      });
+      try {
+        await this.prisma.teamMember.update({
+          where: { id: memberId },
+          data: { role: nextRole }
+        });
+      } catch (error) {
+        throw toAdminLocalSaveHttpError(error, "Team 成员保存失败，请刷新团队列表后重试。");
+      }
     }
 
     return this.withTeamRecordRefreshBestEffort(member.teamId, panelSync, "Team 成员已更新。");
@@ -1433,11 +1498,15 @@ export class AdminSubscriptionService {
       throw new BadRequestException("负责人不能直接移除，请先转移负责人");
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.teamMember.delete({
-        where: { id: memberId }
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.teamMember.delete({
+          where: { id: memberId }
+        });
       });
-    });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "Team 成员移除保存失败，请刷新团队列表后重试。");
+    }
     const panelSync = mergePanelSyncResults(
       await this.queueTeamDisconnectAfterLocalSaveBestEffort(member.teamId, "team_member_removed", "team member removal", {
         userId: member.userId
@@ -1538,27 +1607,32 @@ export class AdminSubscriptionService {
     const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
     const state = resolveSubscriptionState("active", remainingTrafficGb, expireAt);
 
-    const row = await this.prisma.subscription.create({
-      data: {
-        id: createId("subscription"),
-        teamId,
-        planId: input.planId,
-        totalTrafficGb,
-        usedTrafficGb,
-        remainingTrafficGb,
-        expireAt,
-        state,
-        renewable: plan.renewable,
-        sourceAction: "created",
-        lastSyncedAt: new Date()
-      },
-      include: {
-        plan: true,
-        user: true,
-        team: true,
-        nodeAccesses: true
-      }
-    });
+    let row: AdminSubscriptionEntity;
+    try {
+      row = await this.prisma.subscription.create({
+        data: {
+          id: createId("subscription"),
+          teamId,
+          planId: input.planId,
+          totalTrafficGb,
+          usedTrafficGb,
+          remainingTrafficGb,
+          expireAt,
+          state,
+          renewable: plan.renewable,
+          sourceAction: "created",
+          lastSyncedAt: new Date()
+        },
+        include: {
+          plan: true,
+          user: true,
+          team: true,
+          nodeAccesses: true
+        }
+      });
+    } catch (error) {
+      throw toAdminLocalSaveHttpError(error, "Team 订阅保存失败，请刷新订阅列表后重试。");
+    }
 
     const panelSync = this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team subscription create for ${row.id}`, () =>
       this.syncSubscriptionPanelAccessBestEffort(row.id)
@@ -1630,98 +1704,102 @@ export class AdminSubscriptionService {
     await runWithSubscriptionUsageLock(subscription.id, async () => {
       const resetSampledAt = new Date();
 
-      updatedSubscription = await this.prisma.$transaction(async (tx) => {
-        const bindings = await tx.panelClientBinding.findMany({
-          where: {
-            subscriptionId: subscription.id,
-            ...(targetUserId ? { userId: targetUserId } : {}),
-            status: { in: ["active", "disabled"] }
-          },
-          include: {
-            node: true
-          }
-        });
-        clearedBindingCount = bindings.length;
-        panelResetBindings = bindings;
-        const baselineSamples = bindings.map((binding: any) => ({
-          binding,
-          uplinkBytes: 0n,
-          downlinkBytes: 0n,
-          sampledAt: resetSampledAt
-        }));
-
-        const lockedSubscription = await tx.subscription.findUnique({
-          where: { id: subscription.id },
-          include: {
-            plan: true,
-            user: true,
-            team: true,
-            nodeAccesses: true
-          }
-        });
-        if (!lockedSubscription) {
-          return null;
-        }
-
-        await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
-        const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
-        const expireAt =
-          options.renewExpireAt !== undefined
-            ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
-            : options.expireAt ?? new Date(lockedSubscription.expireAt);
-        let usedTrafficGb = 0;
-
-        if (lockedSubscription.teamId) {
-          await tx.trafficLedger.deleteMany({
+      try {
+        updatedSubscription = await this.prisma.$transaction(async (tx) => {
+          const bindings = await tx.panelClientBinding.findMany({
             where: {
-              teamId: lockedSubscription.teamId,
-              subscriptionId: lockedSubscription.id,
-              ...(targetUserId ? { userId: targetUserId } : {})
+              subscriptionId: subscription.id,
+              ...(targetUserId ? { userId: targetUserId } : {}),
+              status: { in: ["active", "disabled"] }
+            },
+            include: {
+              node: true
             }
           });
+          clearedBindingCount = bindings.length;
+          panelResetBindings = bindings;
+          const baselineSamples = bindings.map((binding: any) => ({
+            binding,
+            uplinkBytes: 0n,
+            downlinkBytes: 0n,
+            sampledAt: resetSampledAt
+          }));
 
-          if (targetUserId) {
-            const aggregate = await tx.trafficLedger.aggregate({
-              where: { subscriptionId: lockedSubscription.id },
-              _sum: { usedTrafficGb: true }
-            });
-            usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+          const lockedSubscription = await tx.subscription.findUnique({
+            where: { id: subscription.id },
+            include: {
+              plan: true,
+              user: true,
+              team: true,
+              nodeAccesses: true
+            }
+          });
+          if (!lockedSubscription) {
+            return null;
           }
-        }
 
-        panelResetQueuedAt = resetSampledAt;
-        panelSync =
-          bindings.length > 0
-            ? {
-                ok: false,
-                errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
+          await this.persistTrafficResetBaselineSamples(baselineSamples.filter((item): item is NonNullable<typeof item> => Boolean(item)), tx);
+          const totalTrafficGb = options.totalTrafficGb ?? lockedSubscription.totalTrafficGb;
+          const expireAt =
+            options.renewExpireAt !== undefined
+              ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
+              : options.expireAt ?? new Date(lockedSubscription.expireAt);
+          let usedTrafficGb = 0;
+
+          if (lockedSubscription.teamId) {
+            await tx.trafficLedger.deleteMany({
+              where: {
+                teamId: lockedSubscription.teamId,
+                subscriptionId: lockedSubscription.id,
+                ...(targetUserId ? { userId: targetUserId } : {})
               }
-            : { ok: true };
+            });
 
-        const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
-        return tx.subscription.update({
-          where: { id: lockedSubscription.id },
-          data: {
-            totalTrafficGb,
-            usedTrafficGb,
-            remainingTrafficGb,
-            expireAt,
-            state: resolveSubscriptionState(
-              options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
-              remainingTrafficGb,
-              expireAt
-            ),
-            ...(options.sourceAction ? { sourceAction: options.sourceAction } : {}),
-            lastSyncedAt: new Date()
-          },
-          include: {
-            plan: true,
-            user: true,
-            team: true,
-            nodeAccesses: true
+            if (targetUserId) {
+              const aggregate = await tx.trafficLedger.aggregate({
+                where: { subscriptionId: lockedSubscription.id },
+                _sum: { usedTrafficGb: true }
+              });
+              usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+            }
           }
+
+          panelResetQueuedAt = resetSampledAt;
+          panelSync =
+            bindings.length > 0
+              ? {
+                  ok: false,
+                  errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
+                }
+              : { ok: true };
+
+          const remainingTrafficGb = Math.max(0, totalTrafficGb - usedTrafficGb);
+          return tx.subscription.update({
+            where: { id: lockedSubscription.id },
+            data: {
+              totalTrafficGb,
+              usedTrafficGb,
+              remainingTrafficGb,
+              expireAt,
+              state: resolveSubscriptionState(
+                options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
+                remainingTrafficGb,
+                expireAt
+              ),
+              ...(options.sourceAction ? { sourceAction: options.sourceAction } : {}),
+              lastSyncedAt: new Date()
+            },
+            include: {
+              plan: true,
+              user: true,
+              team: true,
+              nodeAccesses: true
+            }
+          });
         });
-      });
+      } catch (error) {
+        throw toAdminLocalSaveHttpError(error, "订阅流量重置保存失败，请刷新订阅列表后重试。");
+      }
     });
 
     if (!updatedSubscription) {

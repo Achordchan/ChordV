@@ -201,13 +201,15 @@ export class ImageBedService {
       );
       const rawBody = await response.text();
       if (!response.ok) {
-        throw new BadGatewayException(readImageBedError(rawBody) || `Image bed upload failed with HTTP ${response.status}.`);
+        this.logger?.warn(`Image bed upload failed with HTTP ${response.status}: ${readImageBedError(rawBody) || "empty response"}`);
+        throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
       }
 
       const payload = parseJson(rawBody);
       if (payload && typeof payload === "object" && (payload as Record<string, unknown>).success === false) {
         const record = payload as Record<string, unknown>;
-        throw new BadGatewayException(readString(record.message) ?? readString(record.error) ?? "Image bed upload failed.");
+        this.logger?.warn(`Image bed upload business failure: ${readString(record.message) ?? readString(record.error) ?? "unknown error"}`);
+        throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
       }
       const publicUrl = extractUploadedUrl(config.baseUrl, payload);
       if (!publicUrl) {
@@ -286,7 +288,8 @@ export class ImageBedService {
     );
     const rawBody = await response.text();
     if (!response.ok) {
-      throw new BadGatewayException(readImageBedError(rawBody) || `Image bed request failed with HTTP ${response.status}.`);
+      this.logger?.warn(`Image bed request failed with HTTP ${response.status}: ${readImageBedError(rawBody) || "empty response"}`);
+      throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
     }
     const payload = parseJson(rawBody);
     if (!payload || typeof payload !== "object") {
@@ -294,7 +297,8 @@ export class ImageBedService {
     }
     const record = payload as Record<string, unknown>;
     if (record.success === false && !options.allowBusinessFailure) {
-      throw new BadGatewayException(readString(record.message) ?? readString(record.error) ?? "Image bed request failed.");
+      this.logger?.warn(`Image bed business failure: ${readString(record.message) ?? readString(record.error) ?? "unknown error"}`);
+      throw new BadGatewayException("图床服务请求失败，请检查配置后重试。");
     }
     return payload as T;
   }

@@ -10,7 +10,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
-import { throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
@@ -132,25 +132,29 @@ export class ClientTicketService {
     }
 
     const now = new Date();
-    await this.prisma.supportTicketReadState.upsert({
-      where: {
-        ticketId_userId: {
+    try {
+      await this.prisma.supportTicketReadState.upsert({
+        where: {
+          ticketId_userId: {
+            ticketId: row.id,
+            userId: user.id
+          }
+        },
+        create: {
+          id: createId("ticket_read"),
           ticketId: row.id,
-          userId: user.id
+          userId: user.id,
+          lastReadMessageAt: row.messages[0]?.createdAt ?? null,
+          lastReadAt: now
+        },
+        update: {
+          lastReadMessageAt: row.messages[0]?.createdAt ?? null,
+          lastReadAt: now
         }
-      },
-      create: {
-        id: createId("ticket_read"),
-        ticketId: row.id,
-        userId: user.id,
-        lastReadMessageAt: row.messages[0]?.createdAt ?? null,
-        lastReadAt: now
-      },
-      update: {
-        lastReadMessageAt: row.messages[0]?.createdAt ?? null,
-        lastReadAt: now
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "工单已读状态保存失败，请刷新后重试。");
+    }
 
     this.publishTicketEventBestEffort(user.id, {
       type: "ticket_read_state_updated",
@@ -184,34 +188,38 @@ export class ClientTicketService {
     const now = new Date();
     const ticketId = createId("ticket");
     const messageId = createId("ticket_msg");
-    await this.prisma.supportTicket.create({
-      data: {
-        id: ticketId,
-        userId: user.id,
-        subscriptionId: access.subscription?.id ?? null,
-        teamId: access.team?.id ?? null,
-        title,
-        status: "waiting_admin",
-        source: "desktop",
-        lastMessageAt: now,
-        readStates: {
-          create: {
-            id: createId("ticket_read"),
-            userId: user.id,
-            lastReadMessageAt: now,
-            lastReadAt: now
-          }
-        },
-        messages: {
-          create: {
-            id: messageId,
-            authorRole: "user",
-            authorUserId: user.id,
-            body
+    try {
+      await this.prisma.supportTicket.create({
+        data: {
+          id: ticketId,
+          userId: user.id,
+          subscriptionId: access.subscription?.id ?? null,
+          teamId: access.team?.id ?? null,
+          title,
+          status: "waiting_admin",
+          source: "desktop",
+          lastMessageAt: now,
+          readStates: {
+            create: {
+              id: createId("ticket_read"),
+              userId: user.id,
+              lastReadMessageAt: now,
+              lastReadAt: now
+            }
+          },
+          messages: {
+            create: {
+              id: messageId,
+              authorRole: "user",
+              authorUserId: user.id,
+              body
+            }
           }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "工单保存失败，请刷新后重试。");
+    }
 
     this.publishTicketEventBestEffort(user.id, {
       type: "ticket_updated",
@@ -289,44 +297,48 @@ export class ClientTicketService {
 
     const now = new Date();
     const messageId = createId("ticket_msg");
-    await this.prisma.$transaction(async (tx) => {
-      await tx.supportTicketMessage.create({
-        data: {
-          id: messageId,
-          ticketId,
-          authorRole: "user",
-          authorUserId: user.id,
-          body
-        }
-      });
-      await tx.supportTicket.update({
-        where: { id: ticketId },
-        data: {
-          status: "waiting_admin",
-          lastMessageAt: now,
-          closedAt: null
-        }
-      });
-      await tx.supportTicketReadState.upsert({
-        where: {
-          ticketId_userId: {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.supportTicketMessage.create({
+          data: {
+            id: messageId,
             ticketId,
-            userId: user.id
+            authorRole: "user",
+            authorUserId: user.id,
+            body
           }
-        },
-        create: {
-          id: createId("ticket_read"),
-          ticketId,
-          userId: user.id,
-          lastReadMessageAt: now,
-          lastReadAt: now
-        },
-        update: {
-          lastReadMessageAt: now,
-          lastReadAt: now
-        }
+        });
+        await tx.supportTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "waiting_admin",
+            lastMessageAt: now,
+            closedAt: null
+          }
+        });
+        await tx.supportTicketReadState.upsert({
+          where: {
+            ticketId_userId: {
+              ticketId,
+              userId: user.id
+            }
+          },
+          create: {
+            id: createId("ticket_read"),
+            ticketId,
+            userId: user.id,
+            lastReadMessageAt: now,
+            lastReadAt: now
+          },
+          update: {
+            lastReadMessageAt: now,
+            lastReadAt: now
+          }
+        });
       });
-    });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试。");
+    }
 
     this.publishTicketEventBestEffort(user.id, {
       type: "ticket_updated",
@@ -470,7 +482,7 @@ export class ClientTicketService {
       });
     } catch (error) {
       await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
-      throwPrismaTransientAsServiceUnavailable(error, "工单回复保存暂时繁忙，请刷新后重试；已上传附件已清理。");
+      throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试；已上传附件已清理。");
     }
 
     this.publishTicketEventBestEffort(user.id, {

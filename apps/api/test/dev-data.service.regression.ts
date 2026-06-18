@@ -823,8 +823,11 @@ async function testImageBedListRejectsSuccessFalsePayload() {
 
     await assert.rejects(
       () => service.listAdminFiles(),
-      /bad token/,
-      "image bed list must reject HTTP 200 business failures instead of showing an empty list"
+      (error) =>
+        error instanceof BadGatewayException &&
+        /图床服务请求失败/.test(error.message) &&
+        !/bad token/i.test(error.message),
+      "image bed list must reject HTTP 200 business failures without exposing provider messages"
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -999,8 +1002,11 @@ async function testImageBedUploadRejectsSuccessFalsePayload() {
           mimetype: "image/png",
           size: 5
         }),
-      /upload rejected/,
-      "image bed upload must reject HTTP 200 business failures even when a URL is present"
+      (error) =>
+        error instanceof BadGatewayException &&
+        /图床服务请求失败/.test(error.message) &&
+        !/upload rejected/i.test(error.message),
+      "image bed upload must reject HTTP 200 business failures without exposing provider messages"
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -2965,6 +2971,33 @@ async function testCreateReleaseRejectsDuplicateVersionAsConflict() {
   );
 }
 
+async function testCreateReleaseMapsLocalSaveFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        create: async () => {
+          throw new Error("release create local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createRelease({
+        platform: "windows",
+        channel: "stable",
+        version: "1.1.6",
+        minimumVersion: "1.1.0"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const updates: Array<Record<string, any>> = [];
@@ -3013,6 +3046,28 @@ async function testPublishReleaseKeepsLocalSaveWhenVersionEventFails() {
   assert.equal(updates.length, 1);
   assert.equal(result.status, "published");
   assert.deepEqual(adminEvents, [{ platform: "windows", channel: "stable", latestVersion: null }]);
+}
+
+async function testPublishReleaseMapsLocalSaveFailure() {
+  const service = createReleaseCenterService({
+    assertReleasePublishable: async () => undefined,
+    prisma: {
+      release: {
+        update: async () => {
+          throw new Error("release publish local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.publishRelease("release_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release publish local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release publish local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent() {
@@ -8014,6 +8069,93 @@ async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
       delete process.env.CHORDV_NODE_PROBE_TIMEOUT_MS;
     } else {
       process.env.CHORDV_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+  }
+}
+
+async function testProbeNodeReturnsFallbackWhenResultSaveFails() {
+  const currentNode = makeAdminNodeRow({
+    serverHost: "127.0.0.1",
+    serverPort: 9
+  });
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      checkNodeHealth: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async () => {
+          throw new Error("node probe result save failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.probeNode("node_1");
+
+  assert.equal(result.id, "node_1");
+  assert.notEqual(result.probeStatus, "unknown");
+}
+
+async function testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls() {
+  const previousProbeBudget = process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+  const previousRequestBudget = process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS;
+  const previousProbeConcurrency = process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY;
+  process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = "50";
+  process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS = "80";
+  process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY = "1";
+  try {
+    const nodes = [
+      makeAdminNodeRow({ id: "node_stalled" }),
+      makeAdminNodeRow({ id: "node_stalled_2" }),
+      makeAdminNodeRow({ id: "node_skipped" })
+    ];
+    let updateManyStarted = false;
+    const service = createAdminNodeService({
+      logger: {
+        warn: () => undefined
+      },
+      probeNode: async () => new Promise<never>(() => undefined),
+      prisma: {
+        node: {
+          findMany: async () => nodes,
+          updateMany: async () => {
+            updateManyStarted = true;
+            return new Promise(() => undefined);
+          }
+        }
+      }
+    });
+
+    const result = await Promise.race([
+      service.probeAllNodes(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("bulk skipped fallback save blocked the response")), 250);
+      })
+    ]);
+
+    assert.equal(updateManyStarted, true);
+    assert.deepEqual(result.map((item) => item.id), ["node_stalled", "node_stalled_2", "node_skipped"]);
+    assert.match(result[2]?.panelError ?? "", /request budget 80ms exhausted/);
+  } finally {
+    if (previousProbeBudget === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
+    }
+    if (previousRequestBudget === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS = previousRequestBudget;
+    }
+    if (previousProbeConcurrency === undefined) {
+      delete process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY;
+    } else {
+      process.env.CHORDV_BULK_NODE_PROBE_CONCURRENCY = previousProbeConcurrency;
     }
   }
 }
@@ -17748,6 +17890,34 @@ async function testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls(
   assert.equal(result.artifacts[0]?.id, createdArtifactId);
 }
 
+async function testCreateReleaseArtifactMapsLocalSaveFailure() {
+  const release = makeReleaseCenterTestRelease();
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => release
+      },
+      $transaction: async () => {
+        throw new Error("release artifact create local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createReleaseArtifact("release_1", {
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        downloadUrl: "https://example.com/ChordV_1.1.6_x64-full.zip"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release artifact create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release artifact create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave() {
   const release = makeReleaseCenterTestRelease();
   const currentArtifact = makeReleaseCenterTestArtifact({
@@ -17813,6 +17983,38 @@ async function testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBefore
   assert.equal(updates[0].data.fileSizeBytes, null);
   assert.equal(updates[0].data.fileHash, null);
   assert.equal(result.id, "release_1");
+}
+
+async function testUpdateReleaseArtifactMapsLocalSaveFailure() {
+  const release = makeReleaseCenterTestRelease();
+  const currentArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_existing"
+  });
+  const service = createReleaseCenterService({
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => currentArtifact
+      },
+      release: {
+        findUnique: async () => release
+      },
+      $transaction: async () => {
+        throw new Error("release artifact update local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateReleaseArtifact("release_1", "artifact_existing", {
+        fileName: "ChordV_1.1.6_x64-full.zip"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release artifact update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release artifact update local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testUpdateWindowsExternalReleaseInfersExternalForExeUrl() {
@@ -18546,6 +18748,33 @@ async function testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails() {
   assert.deepEqual(result.artifacts, []);
 }
 
+async function testDeleteReleaseArtifactMapsLocalSaveFailure() {
+  const artifact = makeReleaseCenterTestArtifact();
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => makeReleaseCenterTestRelease({ artifacts: [artifact] })
+      },
+      releaseArtifact: {
+        findFirst: async () => artifact,
+        findMany: async () => [artifact]
+      },
+      $transaction: async () => {
+        throw new Error("release artifact delete local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteReleaseArtifact("release_1", "artifact_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release artifact delete local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release artifact delete local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testCreateReleaseArtifactRejectsBlankExternalDownloadUrl() {
   const service = createReleaseCenterService({
     prisma: {
@@ -18735,6 +18964,28 @@ async function testDeleteReleaseStartsCleanupAfterLocalReturn() {
   assert.equal(cleanupStarted, false, "cleanup must not run before local delete response returns");
   await waitUntil(() => cleanupStarted);
   assert.equal(cleanupStarted, true, "cleanup should still run in background");
+}
+
+async function testDeleteReleaseMapsLocalSaveFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      release: {
+        findUnique: async () => makeReleaseCenterTestRelease(),
+        delete: async () => {
+          throw new Error("release delete local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteRelease("release_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release delete local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release delete local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testReleaseArtifactPatchCannotRewriteUploadedUrl() {
@@ -19570,6 +19821,422 @@ async function testConvertSubscriptionToTeamMapsUnknownLocalSaveFailure() {
       /订阅转入 Team 保存失败/.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "subscription-to-team local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateUserMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      role: "user",
+      status: "active"
+    }),
+    prisma: {
+      user: {
+        update: async () => {
+          throw new Error("user update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateUser("user_1", { displayName: "Renamed" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/user update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "user update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateUserSecurityMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({ id: "user_1" }),
+    prisma: {
+      user: {
+        update: async () => {
+          throw new Error("user security local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateUserSecurity("user_1", { maxConcurrentSessionsOverride: 2 }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/user security local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "user security local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testCreateSubscriptionMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentPersonalSubscription: async () => null,
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      scope: "personal",
+      isActive: true,
+      totalTrafficGb: 100,
+      renewable: true
+    }),
+    prisma: {
+      subscription: {
+        create: async () => {
+          throw new Error("subscription create local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createSubscription({
+        userId: "user_1",
+        planId: "plan_1",
+        expireAt: new Date(Date.now() + 86_400_000).toISOString()
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/subscription create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "personal subscription local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRenewSubscriptionMapsLocalSaveFailure() {
+  const current = {
+    id: "sub_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 10,
+    remainingTrafficGb: 90,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    userId: "user_1",
+    teamId: null
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => current,
+    prisma: {
+      $transaction: async () => {
+        throw new Error("subscription renew local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.renewSubscription("sub_1", { totalTrafficGb: 120 }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/subscription renew local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "subscription renew local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testChangeSubscriptionPlanMapsLocalSaveFailure() {
+  const current = {
+    id: "sub_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 10,
+    remainingTrafficGb: 90,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    userId: "user_1",
+    teamId: null
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => current,
+    ensurePlanExists: async () => ({
+      id: "plan_2",
+      scope: "personal",
+      isActive: true,
+      totalTrafficGb: 200,
+      renewable: true
+    }),
+    prisma: {
+      $transaction: async () => {
+        throw new Error("subscription plan local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.changeSubscriptionPlan("sub_1", { planId: "plan_2" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/subscription plan local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "subscription plan local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateSubscriptionMapsLocalSaveFailure() {
+  const current = {
+    id: "sub_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 10,
+    remainingTrafficGb: 90,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active",
+    userId: "user_1",
+    teamId: null
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => current,
+    prisma: {
+      $transaction: async () => {
+        throw new Error("subscription update local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateSubscription("sub_1", { totalTrafficGb: 120 }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/subscription update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "subscription update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testCreateTeamMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "owner_1",
+      status: "active"
+    }),
+    assertUserCanJoinTeam: async () => undefined,
+    prisma: {
+      $transaction: async () => {
+        throw new Error("team create local save failed");
+      },
+      team: {
+        create: () => ({})
+      },
+      teamMember: {
+        create: () => ({})
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.createTeam({ name: "Team", ownerUserId: "owner_1" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/team create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateTeamMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({
+      id: "team_1",
+      ownerUserId: "owner_1",
+      status: "active"
+    }),
+    prisma: {
+      team: {
+        update: async () => {
+          throw new Error("team update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateTeam("team_1", { name: "Renamed Team" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/team update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdateTeamMemberMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    prisma: {
+      teamMember: {
+        update: async () => {
+          throw new Error("team member update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateTeamMember("team_1", "member_1", { role: "admin" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/team member update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team member update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testDeleteTeamMemberMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    prisma: {
+      $transaction: async () => {
+        throw new Error("team member delete local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteTeamMember("team_1", "member_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/team member delete local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team member delete local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testCreateTeamSubscriptionMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => null,
+    ensurePlanExists: async () => ({
+      id: "plan_team",
+      scope: "team",
+      isActive: true,
+      totalTrafficGb: 500,
+      renewable: true
+    }),
+    prisma: {
+      subscription: {
+        create: async () => {
+          throw new Error("team subscription local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createTeamSubscription("team_1", {
+        planId: "plan_team",
+        expireAt: new Date(Date.now() + 86_400_000).toISOString()
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/team subscription local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team subscription local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testCreatePlanMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      plan: {
+        create: async () => {
+          throw new Error("plan create local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createPlan({
+        name: "Plan",
+        scope: "personal",
+        totalTrafficGb: 100,
+        renewable: true
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/plan create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "plan create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdatePlanMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      name: "Plan",
+      scope: "personal",
+      totalTrafficGb: 100,
+      renewable: true,
+      maxConcurrentSessions: 3,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    }),
+    prisma: {
+      subscription: {
+        count: async () => 0
+      },
+      plan: {
+        update: async () => {
+          throw new Error("plan update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updatePlan("plan_1", { name: "Renamed Plan" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/plan update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "plan update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdatePlanSecurityMapsLocalSaveFailure() {
+  const service = createAdminSubscriptionService({
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      maxConcurrentSessions: 3
+    }),
+    prisma: {
+      plan: {
+        update: async () => {
+          throw new Error("plan security local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updatePlanSecurity("plan_1", { maxConcurrentSessions: 5 }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/plan security local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "plan security local save failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -24065,6 +24732,32 @@ async function testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure()
   assert.deepEqual(deletedUploads, ["support-tickets/transient.png"]);
 }
 
+async function testAdminReplySupportTicketMapsLocalSaveFailure() {
+  const service = createDevDataService({
+    prisma: {
+      supportTicket: {
+        findUnique: async () => ({ id: "ticket_1", status: "waiting_admin", userId: "user_1" }),
+        update: () => ({})
+      },
+      supportTicketMessage: {
+        create: () => ({})
+      },
+      $transaction: async () => {
+        throw new Error("admin ticket reply local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.replyAdminSupportTicket("ticket_1", { body: "reply" }, "admin_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/admin ticket reply local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin ticket reply local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
@@ -24934,6 +25627,59 @@ async function testClientReplySupportTicketKeepsSaveWhenPublishFails() {
   assert.equal((result as { id: string }).id, "ticket_1");
 }
 
+async function testClientCreateSupportTicketMapsLocalSaveFailure() {
+  const service = createClientTicketService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    resolveSubscriptionAccessForUser: async () => ({
+      subscription: { id: "sub_1" },
+      team: null
+    }),
+    prisma: {
+      supportTicket: {
+        create: async () => {
+          throw new Error("client ticket create local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.createClientSupportTicket({ title: "Need help", body: "Body" }, "token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/client ticket create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "client ticket create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testClientReplySupportTicketMapsLocalSaveFailure() {
+  const service = createClientTicketService({
+    authSessionService: {
+      authenticateAccessToken: async () => ({ id: "user_1" })
+    },
+    prisma: {
+      supportTicket: {
+        findFirst: async () => ({ id: "ticket_1", status: "waiting_user" })
+      },
+      $transaction: async () => {
+        throw new Error("client ticket reply local save failed");
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.replyClientSupportTicket("ticket_1", { body: "reply" }, "token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/client ticket reply local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "client ticket reply local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails() {
   const deletedUploads: string[] = [];
   const uploadedFile = {
@@ -24977,7 +25723,10 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
         },
         "token"
       ),
-    /db write failed/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/db write failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message)
   );
   assert.deepEqual(deletedUploads, ["support-tickets/client-orphan.png"]);
 }
@@ -25269,7 +26018,9 @@ async function main() {
   await testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow();
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
   await testCreateReleaseRejectsDuplicateVersionAsConflict();
+  await testCreateReleaseMapsLocalSaveFailure();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
+  await testPublishReleaseMapsLocalSaveFailure();
   await testUnpublishReleaseClearsPublishedStateAndPublishesVersionEvent();
   await testUnpublishReleaseKeepsLocalSaveWhenVersionEventFails();
   await testUnpublishReleaseRejectsArchivedReleaseBeforeDbWrite();
@@ -25340,6 +26091,8 @@ async function main() {
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
   await testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong();
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
+  await testProbeNodeReturnsFallbackWhenResultSaveFails();
+  await testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testListPanelSyncJobsHandlesMissingNode();
   await testRetryPanelSyncJobDoesNotUnlockRunningJob();
@@ -25501,7 +26254,9 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls();
+  await testCreateReleaseArtifactMapsLocalSaveFailure();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
+  await testUpdateReleaseArtifactMapsLocalSaveFailure();
   await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashOrZipValidation();
@@ -25514,12 +26269,14 @@ async function main() {
   await testUpdateUploadedReleaseArtifactToExternalDeletesOldFile();
   await testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
+  await testDeleteReleaseArtifactMapsLocalSaveFailure();
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseRejectsClientUnusableArtifact();
   await testPublishWindowsReleaseAllowsClientUsableArtifact();
   await testUploadWindowsReleaseRejectsExeFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testDeleteReleaseStartsCleanupAfterLocalReturn();
+  await testDeleteReleaseMapsLocalSaveFailure();
   await testReleaseArtifactPatchCannotRewriteUploadedUrl();
   await testUpdateCheckSkipsUploadedArtifactMissingStoredFile();
   await testUpdateCheckFallsBackToOlderUsableReleaseWhenLatestArtifactMissing();
@@ -25539,6 +26296,20 @@ async function main() {
   await testCreateUserRejectsUniqueEmailConflictAsConflict();
   await testCreateUserMapsUnknownLocalSaveFailure();
   await testConvertSubscriptionToTeamMapsUnknownLocalSaveFailure();
+  await testUpdateUserMapsLocalSaveFailure();
+  await testUpdateUserSecurityMapsLocalSaveFailure();
+  await testCreateSubscriptionMapsLocalSaveFailure();
+  await testRenewSubscriptionMapsLocalSaveFailure();
+  await testChangeSubscriptionPlanMapsLocalSaveFailure();
+  await testUpdateSubscriptionMapsLocalSaveFailure();
+  await testCreateTeamMapsLocalSaveFailure();
+  await testUpdateTeamMapsLocalSaveFailure();
+  await testUpdateTeamMemberMapsLocalSaveFailure();
+  await testDeleteTeamMemberMapsLocalSaveFailure();
+  await testCreateTeamSubscriptionMapsLocalSaveFailure();
+  await testCreatePlanMapsLocalSaveFailure();
+  await testUpdatePlanMapsLocalSaveFailure();
+  await testUpdatePlanSecurityMapsLocalSaveFailure();
   await testGetNodeAccessMapsUnknownReadFailure();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
   await testCreatePlanRejectsBlankTrimmedName();
@@ -25636,6 +26407,7 @@ async function main() {
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure();
+  await testAdminReplySupportTicketMapsLocalSaveFailure();
   await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
   await testAdminReplySupportTicketAttachmentOnlyUploadFailureWritesFailureReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
@@ -25647,6 +26419,8 @@ async function main() {
   await testClientCreateSupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketReturnsFallbackWhenDetailRefreshStalls();
   await testClientReplySupportTicketAttachmentReturnsFallbackWhenDetailRefreshStalls();
+  await testClientCreateSupportTicketMapsLocalSaveFailure();
+  await testClientReplySupportTicketMapsLocalSaveFailure();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply();

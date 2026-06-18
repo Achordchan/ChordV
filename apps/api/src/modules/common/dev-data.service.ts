@@ -617,25 +617,29 @@ export class DevDataService implements OnModuleInit {
 
     const now = new Date();
     const messageId = createId("ticket_msg");
-    await this.prisma.$transaction([
-      this.prisma.supportTicketMessage.create({
-        data: {
-          id: messageId,
-          ticketId,
-          authorRole: "admin",
-          authorUserId: adminUserId ?? null,
-          body
-        }
-      }),
-      this.prisma.supportTicket.update({
-        where: { id: ticketId },
-        data: {
-          status: "waiting_user",
-          lastMessageAt: now,
-          closedAt: null
-        }
-      })
-    ]);
+    try {
+      await this.prisma.$transaction([
+        this.prisma.supportTicketMessage.create({
+          data: {
+            id: messageId,
+            ticketId,
+            authorRole: "admin",
+            authorUserId: adminUserId ?? null,
+            body
+          }
+        }),
+        this.prisma.supportTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "waiting_user",
+            lastMessageAt: now,
+            closedAt: null
+          }
+        })
+      ]);
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试。");
+    }
 
     this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
@@ -946,13 +950,17 @@ export class DevDataService implements OnModuleInit {
     const now = new Date();
     const closedAt = current.status === "closed" ? current.closedAt ?? now : now;
     if (current.status !== "closed") {
-      await this.prisma.supportTicket.update({
-        where: { id: ticketId },
-        data: {
-          status: "closed",
-          closedAt
-        }
-      });
+      try {
+        await this.prisma.supportTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "closed",
+            closedAt
+          }
+        });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "工单保存失败，请刷新后重试。");
+      }
     }
     this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",
@@ -988,13 +996,17 @@ export class DevDataService implements OnModuleInit {
     }
     const now = new Date();
     if (current.status === "closed") {
-      await this.prisma.supportTicket.update({
-        where: { id: ticketId },
-        data: {
-          status: "open",
-          closedAt: null
-        }
-      });
+      try {
+        await this.prisma.supportTicket.update({
+          where: { id: ticketId },
+          data: {
+            status: "open",
+            closedAt: null
+          }
+        });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "工单保存失败，请刷新后重试。");
+      }
     }
     this.publishClientEventToUser(current.userId, {
       type: "ticket_updated",

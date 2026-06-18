@@ -175,19 +175,24 @@ export class ReleaseCenterService {
 
     if (input.status === "published") {
       await this.assertReleasePublishable(releaseId);
-      const updated = await this.prisma.release.update({
-        where: { id: releaseId },
-        data: {
-          ...baseData,
-          status: "published",
-          publishedAt: normalizePublishedAt("published", input.publishedAt ?? undefined)
-        },
-        include: {
-          artifacts: {
-            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+      let updated: ReleaseRowLike;
+      try {
+        updated = await this.prisma.release.update({
+          where: { id: releaseId },
+          data: {
+            ...baseData,
+            status: "published",
+            publishedAt: normalizePublishedAt("published", input.publishedAt ?? undefined)
+          },
+          include: {
+            artifacts: {
+              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+            }
           }
-        }
-      });
+        });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
+      }
       this.publishVersionUpdatedBestEffort(
         updated.platform as PlatformTarget,
         updated.channel as ReleaseChannel
@@ -196,19 +201,24 @@ export class ReleaseCenterService {
     }
 
     if (input.status === "draft") {
-      const updated = await this.prisma.release.update({
-        where: { id: releaseId },
-        data: {
-          ...baseData,
-          status: "draft",
-          publishedAt: null
-        },
-        include: {
-          artifacts: {
-            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+      let updated: ReleaseRowLike;
+      try {
+        updated = await this.prisma.release.update({
+          where: { id: releaseId },
+          data: {
+            ...baseData,
+            status: "draft",
+            publishedAt: null
+          },
+          include: {
+            artifacts: {
+              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+            }
           }
-        }
-      });
+        });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
+      }
       if (current.status === "published") {
         this.publishVersionUpdatedBestEffort(
           updated.platform as PlatformTarget,
@@ -219,15 +229,20 @@ export class ReleaseCenterService {
     }
 
     if (Object.keys(baseData).length > 0) {
-      const updated = await this.prisma.release.update({
-        where: { id: releaseId },
-        data: baseData,
-        include: {
-          artifacts: {
-            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+      let updated: ReleaseRowLike;
+      try {
+        updated = await this.prisma.release.update({
+          where: { id: releaseId },
+          data: baseData,
+          include: {
+            artifacts: {
+              orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+            }
           }
-        }
-      });
+        });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
+      }
       if (current.status === "published") {
         this.publishVersionUpdatedBestEffort(
           updated.platform as PlatformTarget,
@@ -242,18 +257,23 @@ export class ReleaseCenterService {
 
   async publishRelease(releaseId: string, publishedAt?: string | null): Promise<AdminReleaseRecordDto> {
     await this.assertReleasePublishable(releaseId);
-    const updated = await this.prisma.release.update({
-      where: { id: releaseId },
-      data: {
-        status: "published",
-        publishedAt: normalizePublishedAt("published", publishedAt)
-      },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+    let updated: ReleaseRowLike;
+    try {
+      updated = await this.prisma.release.update({
+        where: { id: releaseId },
+        data: {
+          status: "published",
+          publishedAt: normalizePublishedAt("published", publishedAt)
+        },
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
+    }
     this.publishVersionUpdatedBestEffort(
       updated.platform as PlatformTarget,
       updated.channel as ReleaseChannel
@@ -264,18 +284,23 @@ export class ReleaseCenterService {
   async unpublishRelease(releaseId: string): Promise<AdminReleaseRecordDto> {
     const current = await this.ensureReleaseExists(releaseId);
     this.assertReleaseRecordMutable(current);
-    const updated = await this.prisma.release.update({
-      where: { id: releaseId },
-      data: {
-        status: "draft",
-        publishedAt: null
-      },
-      include: {
-        artifacts: {
-          orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+    let updated: ReleaseRowLike;
+    try {
+      updated = await this.prisma.release.update({
+        where: { id: releaseId },
+        data: {
+          status: "draft",
+          publishedAt: null
+        },
+        include: {
+          artifacts: {
+            orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
+          }
         }
-      }
-    });
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
+    }
     this.publishVersionUpdatedBestEffort(
       updated.platform as PlatformTarget,
       updated.channel as ReleaseChannel
@@ -300,9 +325,13 @@ export class ReleaseCenterService {
       .map((artifact) => artifact.storedFilePath)
       .filter((value): value is string => Boolean(value));
 
-    await this.prisma.release.delete({
-      where: { id: releaseId }
-    });
+    try {
+      await this.prisma.release.delete({
+        where: { id: releaseId }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "发布记录删除失败，请刷新发布中心后重试。");
+    }
 
     this.startReleaseCleanupBestEffort("release artifact files after release delete", async () => {
       await Promise.all(
@@ -372,32 +401,37 @@ export class ReleaseCenterService {
     assertDesktopReleaseArtifactUsesHttps(release.platform as PlatformTarget, input.downloadUrl);
     const artifactId = createId("artifact");
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
-    const createdArtifact = await this.prisma.$transaction(async (tx) => {
-      if (isPrimary) {
-        await tx.releaseArtifact.updateMany({
-          where: { releaseId },
-          data: { isPrimary: false }
-        });
-      }
-      return tx.releaseArtifact.create({
-        data: {
-          id: artifactId,
-          releaseId,
-          source,
-          type: toPrismaReleaseArtifactType(input.type),
-          deliveryMode,
-          downloadUrl: input.downloadUrl.trim(),
-          defaultMirrorPrefix: null,
-          allowClientMirror: false,
-          fileName: normalizeNullableText(input.fileName),
-          storedFilePath: null,
-          fileSizeBytes: null,
-          fileHash: null,
-          isPrimary: isPrimary ?? false,
-          isFullPackage: true
+    let createdArtifact: ReleaseFallbackArtifact;
+    try {
+      createdArtifact = await this.prisma.$transaction(async (tx) => {
+        if (isPrimary) {
+          await tx.releaseArtifact.updateMany({
+            where: { releaseId },
+            data: { isPrimary: false }
+          });
         }
+        return tx.releaseArtifact.create({
+          data: {
+            id: artifactId,
+            releaseId,
+            source,
+            type: toPrismaReleaseArtifactType(input.type),
+            deliveryMode,
+            downloadUrl: input.downloadUrl.trim(),
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: normalizeNullableText(input.fileName),
+            storedFilePath: null,
+            fileSizeBytes: null,
+            fileHash: null,
+            isPrimary: isPrimary ?? false,
+            isFullPackage: true
+          }
+        });
       });
-    });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "安装包信息保存失败，请刷新发布中心后重试。");
+    }
     return this.getAdminReleaseBestEffort(
       releaseId,
       this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(createdArtifact)]),
@@ -458,38 +492,43 @@ export class ReleaseCenterService {
     const nextExternalFileName =
       (input.fileName !== undefined ? normalizeNullableText(input.fileName) : metadataIdentityChanged ? null : current.fileName);
     const isPrimary = normalizeOptionalBoolean(input.isPrimary);
-    const updatedArtifact = await this.prisma.$transaction(async (tx) => {
-      if (isPrimary) {
-        await tx.releaseArtifact.updateMany({
-          where: { releaseId },
-          data: { isPrimary: false }
-        });
-      }
-      return tx.releaseArtifact.update({
-        where: { id: artifactId },
-        data: {
-          ...(input.source !== undefined ? { source: input.source } : {}),
-          ...(input.type !== undefined || inferredExternalType !== undefined ? { type: toPrismaReleaseArtifactType(nextType) } : {}),
-          ...(input.deliveryMode !== undefined || input.type !== undefined || inferredExternalType !== undefined
-            ? { deliveryMode: nextDeliveryMode }
-            : {}),
-          ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
-          ...(nextSource === "external" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
-          ...(nextSource !== "external" ? { defaultMirrorPrefix: null } : {}),
-          ...(nextSource === "external"
-            ? {
-                fileName: nextExternalFileName,
-                fileSizeBytes: null,
-                fileHash: null
-              }
-            : {}),
-          ...(nextSource !== "external" && input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),
-          ...(isPrimary !== undefined ? { isPrimary } : {}),
-          ...(input.source === "external" ? { storedFilePath: null } : {}),
-          ...(input.source === "uploaded" ? { allowClientMirror: false } : {})
+    let updatedArtifact: ReleaseFallbackArtifact;
+    try {
+      updatedArtifact = await this.prisma.$transaction(async (tx) => {
+        if (isPrimary) {
+          await tx.releaseArtifact.updateMany({
+            where: { releaseId },
+            data: { isPrimary: false }
+          });
         }
+        return tx.releaseArtifact.update({
+          where: { id: artifactId },
+          data: {
+            ...(input.source !== undefined ? { source: input.source } : {}),
+            ...(input.type !== undefined || inferredExternalType !== undefined ? { type: toPrismaReleaseArtifactType(nextType) } : {}),
+            ...(input.deliveryMode !== undefined || input.type !== undefined || inferredExternalType !== undefined
+              ? { deliveryMode: nextDeliveryMode }
+              : {}),
+            ...(input.downloadUrl !== undefined ? { downloadUrl: input.downloadUrl.trim() } : {}),
+            ...(nextSource === "external" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
+            ...(nextSource !== "external" ? { defaultMirrorPrefix: null } : {}),
+            ...(nextSource === "external"
+              ? {
+                  fileName: nextExternalFileName,
+                  fileSizeBytes: null,
+                  fileHash: null
+                }
+              : {}),
+            ...(nextSource !== "external" && input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),
+            ...(isPrimary !== undefined ? { isPrimary } : {}),
+            ...(input.source === "external" ? { storedFilePath: null } : {}),
+            ...(input.source === "uploaded" ? { allowClientMirror: false } : {})
+          }
+        });
       });
-    });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "安装包信息保存失败，请刷新发布中心后重试。");
+    }
     if (current.storedFilePath && input.source === "external") {
       this.startRemoveReleaseArtifactFileBestEffort(current.storedFilePath, "old uploaded release artifact after switching to external");
     }
@@ -652,17 +691,21 @@ export class ReleaseCenterService {
       orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }]
     });
     const nextPrimary = artifact.isPrimary ? siblings.find((item) => item.id !== artifactId) ?? null : null;
-    await this.prisma.$transaction(async (tx) => {
-      await tx.releaseArtifact.delete({
-        where: { id: artifactId }
-      });
-      if (nextPrimary) {
-        await tx.releaseArtifact.update({
-          where: { id: nextPrimary.id },
-          data: { isPrimary: true }
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.releaseArtifact.delete({
+          where: { id: artifactId }
         });
-      }
-    });
+        if (nextPrimary) {
+          await tx.releaseArtifact.update({
+            where: { id: nextPrimary.id },
+            data: { isPrimary: true }
+          });
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "安装包信息删除失败，请刷新发布中心后重试。");
+    }
     if (artifact.storedFilePath) {
       this.startRemoveReleaseArtifactFileBestEffort(artifact.storedFilePath, "deleted release artifact file");
     }
@@ -1058,7 +1101,7 @@ export class ReleaseCenterService {
       if (isPrismaUniqueConstraintError(error)) {
         throw new ConflictException("Release version already exists for this platform and channel.");
       }
-      throw error;
+      throwLocalSaveAsServiceUnavailable(error, "发布记录保存失败，请刷新发布中心后重试。");
     }
   }
 
