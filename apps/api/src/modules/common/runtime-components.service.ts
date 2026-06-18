@@ -19,7 +19,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { PrismaService } from "./prisma.service";
-import { throwPrismaTransientAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { AuthSessionService } from "./auth-session.service";
 import { moveUploadedFile } from "./upload-file.utils";
 import { readZipEntryData } from "./release-center.utils";
@@ -185,7 +185,7 @@ export class RuntimeComponentsService {
         prepared ? prepared.absolutePath : file.path,
         "failed runtime component upload"
       );
-      throwPrismaTransientAsServiceUnavailable(error, "内核组件保存暂时繁忙，请刷新后重试；已清理本次上传文件。");
+      throwLocalSaveAsServiceUnavailable(error, "内核组件保存失败，请刷新后重试；已清理本次上传文件。");
     }
   }
 
@@ -312,15 +312,19 @@ export class RuntimeComponentsService {
         prepared ? prepared.absolutePath : file.path,
         "failed runtime component replacement upload"
       );
-      throwPrismaTransientAsServiceUnavailable(error, "内核组件替换暂时繁忙，请刷新后重试；已清理本次上传文件。");
+      throwLocalSaveAsServiceUnavailable(error, "内核组件替换失败，请刷新后重试；已清理本次上传文件。");
     }
   }
 
   async deleteAdminRuntimeComponent(componentId: string) {
     const existing = await this.ensureRuntimeComponentExists(componentId);
-    await this.prisma.runtimeComponent.delete({
-      where: { id: componentId }
-    });
+    try {
+      await this.prisma.runtimeComponent.delete({
+        where: { id: componentId }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "内核组件删除失败，请刷新后重试。");
+    }
     this.startRuntimeComponentStoredFileCleanupBestEffort(existing.storedFilePath, "deleted runtime component upload");
     return { id: componentId, deleted: true as const };
   }
@@ -521,20 +525,24 @@ export class RuntimeComponentsService {
       }
     }
 
-    await this.prisma.runtimeComponentFailureReport.create({
-      data: {
-        id: createId("rtfail"),
-        componentId,
-        platform: input.platform,
-        architecture: input.architecture,
-        kind: input.kind,
-        reason: input.reason,
-        message: normalizeNullableText(input.message),
-        effectiveUrl: normalizeNullableText(input.effectiveUrl),
-        appVersion: normalizeNullableText(input.appVersion),
-        userId
-      }
-    });
+    try {
+      await this.prisma.runtimeComponentFailureReport.create({
+        data: {
+          id: createId("rtfail"),
+          componentId,
+          platform: input.platform,
+          architecture: input.architecture,
+          kind: input.kind,
+          reason: input.reason,
+          message: normalizeNullableText(input.message),
+          effectiveUrl: normalizeNullableText(input.effectiveUrl),
+          appVersion: normalizeNullableText(input.appVersion),
+          userId
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "运行组件失败记录保存失败，请稍后重试。");
+    }
 
     return { ok: true };
   }
@@ -691,7 +699,7 @@ export class RuntimeComponentsService {
     } finally {
       clearTimeout(totalTimeout);
       if (archiveDownloadPath) {
-        await this.removeRuntimeComponentFileBestEffort(archiveDownloadPath, "temporary remote runtime archive");
+        this.startRuntimeComponentFileCleanupBestEffort(archiveDownloadPath, "temporary remote runtime archive");
       }
     }
   }
@@ -893,7 +901,7 @@ export class RuntimeComponentsService {
       if (isPrismaUniqueConstraintError(error)) {
         throw new ConflictException("A runtime component already exists for this platform, architecture, and kind.");
       }
-      throw error;
+      throwLocalSaveAsServiceUnavailable(error, "内核组件保存失败，请刷新后重试。");
     }
   }
 }

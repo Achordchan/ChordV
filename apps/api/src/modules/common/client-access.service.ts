@@ -1,4 +1,13 @@
-import { ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import {
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+  UnauthorizedException
+} from "@nestjs/common";
 import * as bcrypt from "bcryptjs";
 import { createHash } from "node:crypto";
 import * as net from "node:net";
@@ -44,6 +53,8 @@ const MAX_CLIENT_NODE_PROBE_IDS = 32;
 const MAX_CLIENT_NODE_ID_LENGTH = 128;
 const MAX_CONCURRENT_NODE_PROBES = 6;
 const RATE_LIMIT_LOCK_KEY_1 = 420_705;
+const DEFAULT_RATE_LIMIT_LOCK_WAIT_TIMEOUT_MS = 5_000;
+const DEFAULT_RATE_LIMIT_LOCK_RETRY_INTERVAL_MS = 100;
 
 type ClientSubscriptionAccess = {
   subscription: {
@@ -558,13 +569,26 @@ async function runWithRateLimitBucketLocks<T>(keys: string[], task: () => Promis
   }
 
   const uniqueKeys = Array.from(new Set(keys)).sort();
-  const lockClient = new PgClient({ connectionString });
+  const lockClient = new PgClient({
+    connectionString,
+    connectionTimeoutMillis: readPositiveIntegerEnv(
+      "CHORDV_RATE_LIMIT_LOCK_CONNECT_TIMEOUT_MS",
+      readRateLimitLockWaitTimeoutMs()
+    )
+  });
   const lockedKeys: string[] = [];
   try {
-    await lockClient.connect();
-    for (const key of uniqueKeys) {
-      await lockClient.query("select pg_advisory_lock($1, $2)", [RATE_LIMIT_LOCK_KEY_1, deriveRateLimitLockKey(key)]);
-      lockedKeys.push(key);
+    try {
+      await lockClient.connect();
+      for (const key of uniqueKeys) {
+        await acquireRateLimitPgLock(lockClient, key);
+        lockedKeys.push(key);
+      }
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException("登录限流锁暂时不可用，请稍后重试。");
     }
     return await task();
   } finally {
@@ -579,6 +603,43 @@ async function runWithRateLimitBucketLocks<T>(keys: string[], task: () => Promis
 
 function deriveRateLimitLockKey(key: string) {
   return createHash("sha256").update(key).digest().readInt32BE(0);
+}
+
+async function acquireRateLimitPgLock(client: PgClient, key: string) {
+  const timeoutMs = readRateLimitLockWaitTimeoutMs();
+  const retryIntervalMs = readRateLimitLockRetryIntervalMs();
+  const deadline = Date.now() + timeoutMs;
+  const args: [number, number] = [RATE_LIMIT_LOCK_KEY_1, deriveRateLimitLockKey(key)];
+
+  for (;;) {
+    const result = await client.query("select pg_try_advisory_lock($1, $2) as locked", args);
+    if (result.rows[0]?.locked === true) {
+      return;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new ConflictException("rate limit bucket is still being processed; please retry shortly.");
+    }
+    await delay(Math.min(retryIntervalMs, remainingMs));
+  }
+}
+
+function readRateLimitLockWaitTimeoutMs() {
+  return readPositiveIntegerEnv("CHORDV_RATE_LIMIT_LOCK_WAIT_TIMEOUT_MS", DEFAULT_RATE_LIMIT_LOCK_WAIT_TIMEOUT_MS);
+}
+
+function readRateLimitLockRetryIntervalMs() {
+  return readPositiveIntegerEnv("CHORDV_RATE_LIMIT_LOCK_RETRY_INTERVAL_MS", DEFAULT_RATE_LIMIT_LOCK_RETRY_INTERVAL_MS);
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function probeNodeConnectivity(

@@ -15,6 +15,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { PrismaService } from "./prisma.service";
+import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 
 const EVENT_PUBLISH_BUDGET_MS = 300;
 
@@ -176,9 +177,14 @@ export class AnnouncementPolicyService {
   }
 
   async listAdminAnnouncements(): Promise<AdminAnnouncementRecordDto[]> {
-    const rows = await this.prisma.announcement.findMany({
-      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
-    });
+    let rows: Awaited<ReturnType<PrismaService["announcement"]["findMany"]>>;
+    try {
+      rows = await this.prisma.announcement.findMany({
+        orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }]
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告列表读取失败，请刷新后重试。");
+    }
     return rows.map(toAdminAnnouncementRecord);
   }
 
@@ -187,18 +193,23 @@ export class AnnouncementPolicyService {
     const body = normalizeRequiredText(input.body, "body");
     const displayMode = input.displayMode ?? "passive";
     const countdownSeconds = displayMode === "modal_countdown" ? normalizeCountdownSeconds(input.countdownSeconds ?? 5) : 0;
-    const row = await this.prisma.announcement.create({
-      data: {
-        id: createEntityId("announcement"),
-        title,
-        body,
-        level: input.level,
-        publishedAt: input.publishedAt ? new Date(input.publishedAt) : new Date(),
-        isActive: input.isActive ?? true,
-        displayMode,
-        countdownSeconds
-      }
-    });
+    let row: Awaited<ReturnType<PrismaService["announcement"]["create"]>>;
+    try {
+      row = await this.prisma.announcement.create({
+        data: {
+          id: createEntityId("announcement"),
+          title,
+          body,
+          level: input.level,
+          publishedAt: input.publishedAt ? new Date(input.publishedAt) : new Date(),
+          isActive: input.isActive ?? true,
+          displayMode,
+          countdownSeconds
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告保存失败，请刷新后重试。");
+    }
     this.publishAnnouncementUpdatedEventInBackground(row.id);
     return toAdminAnnouncementRecord(row);
   }
@@ -207,9 +218,14 @@ export class AnnouncementPolicyService {
     announcementId: string,
     input: UpdateAnnouncementInputDto
   ): Promise<AdminAnnouncementRecordDto> {
-    const current = await this.prisma.announcement.findUnique({
-      where: { id: announcementId }
-    });
+    let current: Awaited<ReturnType<PrismaService["announcement"]["findUnique"]>>;
+    try {
+      current = await this.prisma.announcement.findUnique({
+        where: { id: announcementId }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告读取失败，请刷新后重试。");
+    }
     if (!current) {
       throw new NotFoundException("公告不存在");
     }
@@ -222,34 +238,48 @@ export class AnnouncementPolicyService {
     const countdownSeconds = displayMode === "modal_countdown" ? normalizeCountdownSeconds(countdownBase) : 0;
     const title = input.title !== undefined ? normalizeRequiredText(input.title, "title") : undefined;
     const body = input.body !== undefined ? normalizeRequiredText(input.body, "body") : undefined;
-    const row = await this.prisma.announcement.update({
-      where: { id: announcementId },
-      data: {
-        ...(title !== undefined ? { title } : {}),
-        ...(body !== undefined ? { body } : {}),
-        ...(input.level !== undefined ? { level: input.level } : {}),
-        ...(input.publishedAt !== undefined ? { publishedAt: new Date(input.publishedAt) } : {}),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-        ...(input.displayMode !== undefined ? { displayMode } : {}),
-        ...(input.displayMode !== undefined || input.countdownSeconds !== undefined ? { countdownSeconds } : {})
-      }
-    });
+    let row: Awaited<ReturnType<PrismaService["announcement"]["update"]>>;
+    try {
+      row = await this.prisma.announcement.update({
+        where: { id: announcementId },
+        data: {
+          ...(title !== undefined ? { title } : {}),
+          ...(body !== undefined ? { body } : {}),
+          ...(input.level !== undefined ? { level: input.level } : {}),
+          ...(input.publishedAt !== undefined ? { publishedAt: new Date(input.publishedAt) } : {}),
+          ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+          ...(input.displayMode !== undefined ? { displayMode } : {}),
+          ...(input.displayMode !== undefined || input.countdownSeconds !== undefined ? { countdownSeconds } : {})
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告保存失败，请刷新后重试。");
+    }
     this.publishAnnouncementUpdatedEventInBackground(row.id);
     return toAdminAnnouncementRecord(row);
   }
 
   async deleteAnnouncement(announcementId: string): Promise<{ ok: boolean; announcementId: string }> {
-    const current = await this.prisma.announcement.findUnique({
-      where: { id: announcementId },
-      select: { id: true }
-    });
+    let current: { id: string } | null;
+    try {
+      current = await this.prisma.announcement.findUnique({
+        where: { id: announcementId },
+        select: { id: true }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告读取失败，请刷新后重试。");
+    }
     if (!current) {
       throw new NotFoundException("公告不存在");
     }
 
-    await this.prisma.announcement.delete({
-      where: { id: announcementId }
-    });
+    try {
+      await this.prisma.announcement.delete({
+        where: { id: announcementId }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "公告删除失败，请刷新后重试。");
+    }
     this.publishAnnouncementUpdatedEventInBackground(announcementId);
 
     return {
@@ -259,9 +289,14 @@ export class AnnouncementPolicyService {
   }
 
   async getAdminPolicy(): Promise<AdminPolicyRecordDto> {
-    const profile = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" }
-    });
+    let profile: Awaited<ReturnType<PrismaService["policyProfile"]["findUnique"]>>;
+    try {
+      profile = await this.prisma.policyProfile.findUnique({
+        where: { id: "default" }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "策略配置读取失败，请刷新后重试。");
+    }
     if (!profile) {
       throw new NotFoundException("策略配置不存在");
     }
@@ -269,9 +304,14 @@ export class AnnouncementPolicyService {
   }
 
   async updatePolicy(input: UpdatePolicyInputDto): Promise<AdminPolicyRecordDto> {
-    const current = await this.prisma.policyProfile.findUnique({
-      where: { id: "default" }
-    });
+    let current: Awaited<ReturnType<PrismaService["policyProfile"]["findUnique"]>>;
+    try {
+      current = await this.prisma.policyProfile.findUnique({
+        where: { id: "default" }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "策略配置读取失败，请刷新后重试。");
+    }
     if (!current) {
       throw new NotFoundException("策略配置不存在");
     }
@@ -288,10 +328,15 @@ export class AnnouncementPolicyService {
       ...(input.chinaDirect !== undefined ? { chinaDirect: input.chinaDirect } : {}),
       ...(input.aiServicesProxy !== undefined ? { aiServicesProxy: input.aiServicesProxy } : {})
     };
-    const updated = await this.prisma.policyProfile.update({
-      where: { id: "default" },
-      data
-    });
+    let updated: Awaited<ReturnType<PrismaService["policyProfile"]["update"]>>;
+    try {
+      updated = await this.prisma.policyProfile.update({
+        where: { id: "default" },
+        data
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "策略配置保存失败，请刷新后重试。");
+    }
     this.publishPolicyUpdatedEventInBackground();
     return toAdminPolicyRecord(updated ?? { ...current, ...data });
   }

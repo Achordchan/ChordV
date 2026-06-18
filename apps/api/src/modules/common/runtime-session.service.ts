@@ -1,10 +1,13 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
+  HttpException,
   Injectable,
   Logger,
-  NotFoundException
+  NotFoundException,
+  ServiceUnavailableException
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { createHash, randomUUID } from "node:crypto";
@@ -99,6 +102,8 @@ const DEFAULT_LEASE_REVOCATION_JOB_TIMEOUT_MS = 30_000;
 const LEASE_REVOCATION_RETRY_BASE_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_BASE_SECONDS ?? 15);
 const LEASE_REVOCATION_RETRY_MAX_SECONDS = Number(process.env.CHORDV_LEASE_REVOCATION_RETRY_MAX_SECONDS ?? 900);
 const CONNECT_LOCK_KEY_1 = 420_702;
+const DEFAULT_CONNECT_LOCK_WAIT_TIMEOUT_MS = 5_000;
+const DEFAULT_CONNECT_LOCK_RETRY_INTERVAL_MS = 100;
 
 @Injectable()
 export class RuntimeSessionService {
@@ -141,12 +146,25 @@ export class RuntimeSessionService {
         return task();
       }
 
-      const lockClient = new PgClient({ connectionString });
+      const lockClient = new PgClient({
+        connectionString,
+        connectionTimeoutMillis: readPositiveIntegerEnv(
+          "CHORDV_CONNECT_LOCK_CONNECT_TIMEOUT_MS",
+          readConnectLockWaitTimeoutMs()
+        )
+      });
       let locked = false;
       const userLockKey = deriveUserAdvisoryLockKey(userId);
       try {
-        await lockClient.connect();
-        await lockClient.query("select pg_advisory_lock($1, $2)", [CONNECT_LOCK_KEY_1, userLockKey]);
+        try {
+          await lockClient.connect();
+          await acquirePgAdvisoryLock(lockClient, "runtime connection", [CONNECT_LOCK_KEY_1, userLockKey]);
+        } catch (error) {
+          if (error instanceof HttpException) {
+            throw error;
+          }
+          throw new ServiceUnavailableException("连接锁暂时不可用，请稍后重试。");
+        }
         locked = true;
         return await task();
       } finally {
@@ -2025,27 +2043,58 @@ export class RuntimeSessionService {
       teamId: subscription.teamId
     };
 
-    await this.prisma.node.update({
-      where: { id: node.id },
-      data: {
-        serverHost: effectiveNode.serverHost,
-        serverPort: effectiveNode.serverPort,
-        uuid: effectiveNode.uuid,
-        flow: effectiveNode.flow,
-        realityPublicKey: effectiveNode.realityPublicKey,
-        shortId: effectiveNode.shortId,
-        serverName: effectiveNode.serverName,
-        fingerprint: effectiveNode.fingerprint,
-        spiderX: effectiveNode.spiderX,
-        mldsa65Verify: effectiveNode.mldsa65Verify ?? "",
-        panelStatus: inboundRuntime.ok ? "online" : "degraded",
-        panelError: inboundRuntime.ok ? null : inboundRuntime.errorMessage
-      }
-    });
+    await this.updateConnectedNodeRuntimeBestEffort(node.id, effectiveNode, inboundRuntime);
     if (inboundRuntime.ok) {
-      await this.meteringIncidentService.resolve(subscription.id, node.id, METERING_REASON_NODE_UNAVAILABLE);
+      await this.resolveNodeMeteringIncidentBestEffort(subscription.id, node.id);
     }
     return runtime;
+  }
+
+  private async updateConnectedNodeRuntimeBestEffort(
+    nodeId: string,
+    effectiveNode: {
+      serverHost: string;
+      serverPort: number;
+      uuid: string;
+      flow: string;
+      realityPublicKey: string;
+      shortId: string;
+      serverName: string;
+      fingerprint: string;
+      spiderX: string;
+      mldsa65Verify?: string | null;
+    },
+    inboundRuntime: { ok: boolean; errorMessage?: string | null }
+  ) {
+    try {
+      await this.prisma.node.update({
+        where: { id: nodeId },
+        data: {
+          serverHost: effectiveNode.serverHost,
+          serverPort: effectiveNode.serverPort,
+          uuid: effectiveNode.uuid,
+          flow: effectiveNode.flow,
+          realityPublicKey: effectiveNode.realityPublicKey,
+          shortId: effectiveNode.shortId,
+          serverName: effectiveNode.serverName,
+          fingerprint: effectiveNode.fingerprint,
+          spiderX: effectiveNode.spiderX,
+          mldsa65Verify: effectiveNode.mldsa65Verify ?? "",
+          panelStatus: inboundRuntime.ok ? "online" : "degraded",
+          panelError: inboundRuntime.ok ? null : inboundRuntime.errorMessage
+        }
+      });
+    } catch (error) {
+      this.logger.warn(`Runtime lease created, but node runtime cache update failed: ${readRuntimeErrorMessage(error)}`);
+    }
+  }
+
+  private async resolveNodeMeteringIncidentBestEffort(subscriptionId: string, nodeId: string) {
+    try {
+      await this.meteringIncidentService.resolve(subscriptionId, nodeId, METERING_REASON_NODE_UNAVAILABLE);
+    } catch (error) {
+      this.logger.warn(`Runtime lease created, but metering incident resolve failed: ${readRuntimeErrorMessage(error)}`);
+    }
   }
 
   private async readConnectInboundRuntimeBestEffort(
@@ -2804,6 +2853,42 @@ function assertRuntimeAccessConnectable(access: ResolvedSubscriptionAccess) {
 
 function deriveUserAdvisoryLockKey(userId: string) {
   return createHash("sha256").update(userId).digest().readInt32BE(0);
+}
+
+async function acquirePgAdvisoryLock(client: PgClient, label: string, args: [number, number]) {
+  const timeoutMs = readConnectLockWaitTimeoutMs();
+  const retryIntervalMs = readConnectLockRetryIntervalMs();
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const result = await client.query("select pg_try_advisory_lock($1, $2) as locked", args);
+    if (result.rows[0]?.locked === true) {
+      return;
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new ConflictException(`${label} is still being processed; please retry shortly.`);
+    }
+    await delay(Math.min(retryIntervalMs, remainingMs));
+  }
+}
+
+function readConnectLockWaitTimeoutMs() {
+  return readPositiveIntegerEnv("CHORDV_CONNECT_LOCK_WAIT_TIMEOUT_MS", DEFAULT_CONNECT_LOCK_WAIT_TIMEOUT_MS);
+}
+
+function readConnectLockRetryIntervalMs() {
+  return readPositiveIntegerEnv("CHORDV_CONNECT_LOCK_RETRY_INTERVAL_MS", DEFAULT_CONNECT_LOCK_RETRY_INTERVAL_MS);
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildLeaseRevocationJobKey(

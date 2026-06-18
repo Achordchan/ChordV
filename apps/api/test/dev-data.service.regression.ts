@@ -15410,6 +15410,120 @@ async function testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails
   assert.match(nodeUpdates[0]?.data?.panelError, /panel offline/);
 }
 
+async function testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail() {
+  const warnings: string[] = [];
+  const leaseCreates: Array<Record<string, any>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const node = {
+    id: "node_1",
+    name: "Node",
+    region: "US",
+    provider: "xui",
+    tags: [],
+    recommended: true,
+    latencyMs: 20,
+    protocol: "vless",
+    security: "reality",
+    serverHost: "cached.example.com",
+    serverPort: 443,
+    serverName: "cached.example.com",
+    uuid: "template_uuid",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "cached_public_key",
+    shortId: "cached_sid",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: "cached_verify",
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 7,
+    panelEnabled: true
+  };
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    ensurePanelClientBinding: async () => ({
+      id: "binding_1",
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: null,
+      nodeId: "node_1",
+      panelClientEmail: "user@example.com",
+      panelClientId: "panel_uuid",
+      panelInboundId: 7,
+      status: "active"
+    }),
+    readConnectInboundRuntimeBestEffort: async () => ({
+      ok: true,
+      serverHost: "live.example.com",
+      serverPort: 8443,
+      uuid: "live_uuid",
+      flow: "xtls-rprx-vision",
+      realityPublicKey: "live_public_key",
+      shortId: "live_sid",
+      serverName: "live.example.com",
+      fingerprint: "chrome",
+      spiderX: "/",
+      mldsa65Verify: "live_verify"
+    }),
+    meteringIncidentService: {
+      resolve: async () => {
+        throw new Error("metering resolve local save failed");
+      }
+    },
+    prisma: {
+      nodeSessionLease: {
+        create: async (payload: Record<string, any>) => {
+          leaseCreates.push(payload);
+          return payload.data;
+        }
+      },
+      node: {
+        update: async () => {
+          throw new Error("node runtime cache local save failed");
+        }
+      }
+    }
+  });
+
+  const runtime = await service["connectWithXui"](
+    node,
+    {
+      id: "user_1",
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: now.toISOString()
+    },
+    {
+      subscription: {
+        id: "sub_1",
+        userId: "user_1",
+        teamId: null,
+        state: "active",
+        remainingTrafficGb: 10,
+        expireAt: new Date(Date.now() + 86_400_000)
+      },
+      team: null,
+      memberRole: null,
+      memberUsedTrafficGb: null
+    },
+    { nodeId: "node_1", mode: "rule" },
+    { blockAds: true, chinaDirect: true, aiServicesProxy: true }
+  );
+
+  assert.equal(runtime.outbound.server, "live.example.com");
+  assert.equal(runtime.outbound.uuid, "panel_uuid");
+  assert.equal(leaseCreates.length, 1, "connect must create the local lease before best-effort status writes");
+  assert.equal(warnings.length, 2, "post-lease node cache and metering writes should be logged only");
+  assert.match(warnings[0], /node runtime cache update failed/);
+  assert.match(warnings[1], /metering incident resolve failed/);
+}
+
 async function testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails() {
   const leaseCreates: Array<Record<string, any>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -15839,6 +15953,36 @@ async function testRuntimeComponentCreateMapsUniqueIdentityConflict() {
   );
 }
 
+async function testRuntimeComponentCreateMapsLocalSaveFailure() {
+  const service = createRuntimeComponentsService({
+    findSharedRulesetRecord: async () => null,
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw new Error("runtime component create local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createAdminRuntimeComponent({
+        platform: "windows",
+        architecture: "x64",
+        kind: "xray",
+        source: "custom_remote",
+        originUrl: "https://example.com/xray.exe",
+        fileName: "xray.exe"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime component create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testRuntimeComponentUpdateMapsUniqueIdentityConflict() {
   const service = createRuntimeComponentsService({
     ensureRuntimeComponentExists: async () => ({
@@ -15871,6 +16015,44 @@ async function testRuntimeComponentUpdateMapsUniqueIdentityConflict() {
     () => service.updateAdminRuntimeComponent("component_1", { fileName: "xray-new.exe" }),
     ConflictException,
     "runtime component update duplicate identity must return a controlled 409 instead of HTTP 500"
+  );
+}
+
+async function testRuntimeComponentUpdateMapsLocalSaveFailure() {
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "custom_remote",
+      originUrl: "https://example.com/xray.exe",
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
+      fileName: "xray.exe",
+      storedFilePath: null,
+      fileSizeBytes: null,
+      fileHash: null,
+      archiveEntryName: null,
+      expectedHash: null,
+      enabled: true
+    }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw new Error("runtime component update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAdminRuntimeComponent("component_1", { fileName: "xray-new.exe" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime component update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component update local save failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -15923,6 +16105,34 @@ async function testRuntimeComponentFailureRejectsUnknownComponentId() {
     "unknown runtime component ids should be rejected before Prisma foreign key enforcement"
   );
   assert.equal(createCalled, false);
+}
+
+async function testRuntimeComponentFailureReportMapsLocalSaveFailure() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponentFailureReport: {
+        create: async () => {
+          throw new Error("runtime failure report local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.reportRuntimeComponentFailure({
+        platform: "windows",
+        architecture: "x64",
+        kind: "xray",
+        reason: "download_failed",
+        message: "download failed"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime failure report local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component failure report local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testRemoteRuntimeValidationRejectsPrivateNetworkUrl() {
@@ -16116,6 +16326,53 @@ async function testRuntimeComponentUploadMapsTransientPrismaFailure() {
     "runtime component upload transient Prisma failures must return a controlled 503 instead of HTTP 500"
   );
   assert.deepEqual(cleanupCalls, [{ absolutePath: "prepared-runtime-transient.bin", label: "failed runtime component upload" }]);
+}
+
+async function testRuntimeComponentUploadMapsLocalSaveFailure() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    findSharedRulesetRecord: async () => null,
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "prepared-runtime-local-failure.bin",
+      storedFilePath: "component/prepared-runtime-local-failure.bin",
+      fileName: "xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw new Error("runtime component upload local save failed");
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.uploadAdminRuntimeComponent(
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray"
+        },
+        {
+          path: "upload-runtime-local-failure.tmp",
+          originalname: "xray.exe",
+          size: 1
+        }
+      ),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime component upload local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component upload local save failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [{ absolutePath: "prepared-runtime-local-failure.bin", label: "failed runtime component upload" }]);
 }
 
 async function testRuntimeComponentPrepareMissingTempFileReturnsBadRequest() {
@@ -16336,6 +16593,72 @@ async function testRuntimeComponentReplaceUploadMapsTransientPrismaFailure() {
   );
   assert.deepEqual(cleanupCalls, [
     { absolutePath: "replacement-runtime-transient.bin", label: "failed runtime component replacement upload" }
+  ]);
+}
+
+async function testRuntimeComponentReplaceUploadMapsLocalSaveFailure() {
+  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "uploaded",
+      originUrl: "/api/downloads/runtime-components/component_1",
+      defaultMirrorPrefix: null,
+      allowClientMirror: false,
+      fileName: "xray.exe",
+      storedFilePath: "component_1/xray.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      archiveEntryName: null,
+      expectedHash: "a".repeat(64),
+      enabled: true
+    }),
+    prepareUploadedRuntimeComponentFile: async () => ({
+      absolutePath: "replacement-runtime-local-failure.bin",
+      storedFilePath: "component_1/replacement-runtime-local-failure.bin",
+      fileName: "xray-new.exe",
+      fileSizeBytes: 1n,
+      fileHash: "a".repeat(64),
+      downloadUrl: "/api/downloads/runtime-components/component_1"
+    }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw new Error("runtime component replacement local save failed");
+        }
+      }
+    },
+    removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceAdminRuntimeComponentUpload(
+        "component_1",
+        {
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray"
+        },
+        {
+          path: "replacement-upload-runtime-local-failure.tmp",
+          originalname: "xray-new.exe",
+          size: 1
+        }
+      ),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime component replacement local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component replacement local save failures must return a controlled 503 instead of HTTP 500"
+  );
+  assert.deepEqual(cleanupCalls, [
+    { absolutePath: "replacement-runtime-local-failure.bin", label: "failed runtime component replacement upload" }
   ]);
 }
 
@@ -16849,7 +17172,7 @@ async function testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup()
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const service = createRuntimeComponentsService({
-      removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
+      startRuntimeComponentFileCleanupBestEffort: (absolutePath: string | null, label: string) => {
         cleanupCalls.push({ absolutePath, label });
       },
       prisma: {
@@ -17724,6 +18047,31 @@ async function testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChang
   assert.equal(updates[0].data.storedFilePath, null);
   assert.equal(updates[0].data.fileSizeBytes, null);
   assert.equal(updates[0].data.fileHash, null);
+}
+
+async function testRuntimeComponentDeleteMapsLocalSaveFailure() {
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => ({
+      id: "component_1",
+      storedFilePath: "component_1/xray.exe"
+    }),
+    prisma: {
+      runtimeComponent: {
+        delete: async () => {
+          throw new Error("runtime component delete local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteAdminRuntimeComponent("component_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/runtime component delete local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "runtime component delete local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 function makeReleaseCenterTestRelease(overrides: Record<string, any> = {}) {
@@ -23475,6 +23823,32 @@ async function testCreateAnnouncementRejectsFractionalCountdown() {
   );
 }
 
+async function testCreateAnnouncementMapsLocalSaveFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      announcement: {
+        create: async () => {
+          throw new Error("announcement create local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createAnnouncement({
+        title: "Title",
+        body: "Body",
+        level: "info"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/announcement create local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "announcement create local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode() {
   const updates: Array<Record<string, any>> = [];
   const now = new Date("2026-01-01T00:00:00.000Z");
@@ -23517,6 +23891,49 @@ async function testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode() {
 
   assert.equal(updates[0].data.countdownSeconds, 5);
   assert.equal(result.countdownSeconds, 5);
+}
+
+async function testUpdateAnnouncementMapsLocalReadFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      announcement: {
+        findUnique: async () => {
+          throw new Error("announcement read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAnnouncement("announcement_1", { title: "Title" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/announcement read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "announcement update read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testDeleteAnnouncementMapsLocalSaveFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      announcement: {
+        findUnique: async () => ({ id: "announcement_1" }),
+        delete: async () => {
+          throw new Error("announcement delete local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.deleteAnnouncement("announcement_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/announcement delete local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "announcement delete local save failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testAdminSnapshotCountsOnlyClientVisibleAnnouncements() {
@@ -23986,6 +24403,57 @@ async function testUpdatePolicyRejectsDuplicateModes() {
     () => service.updatePolicy({ modes: ["rule", "rule"] }),
     /duplicates/,
     "policy modes must not contain duplicates"
+  );
+}
+
+async function testGetAdminPolicyMapsLocalReadFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      policyProfile: {
+        findUnique: async () => {
+          throw new Error("policy read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.getAdminPolicy(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/policy read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin policy read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdatePolicyMapsLocalSaveFailure() {
+  const service = createAnnouncementPolicyService({
+    prisma: {
+      policyProfile: {
+        findUnique: async () => ({
+          id: "default",
+          defaultMode: "rule",
+          modes: ["rule"],
+          blockAds: false,
+          chinaDirect: true,
+          aiServicesProxy: true,
+          updatedAt: new Date()
+        }),
+        update: async () => {
+          throw new Error("policy update local save failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updatePolicy({ blockAds: true }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/policy update local save failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "admin policy save failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -26207,6 +26675,7 @@ async function main() {
   await testConnectRejectsPanelDisabledNode();
   await testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls();
   await testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails();
+  await testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail();
   await testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails();
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
   await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
@@ -26216,18 +26685,23 @@ async function main() {
   await testRuntimeComponentCreateRejectsBlankFileName();
   await testRuntimeComponentCreateIgnoresRemoteMirrorFields();
   await testRuntimeComponentCreateMapsUniqueIdentityConflict();
+  await testRuntimeComponentCreateMapsLocalSaveFailure();
   await testRuntimeComponentUpdateMapsUniqueIdentityConflict();
+  await testRuntimeComponentUpdateMapsLocalSaveFailure();
   await testRuntimeFailureReportLimitRejectsInvalidValues();
   await testRuntimeComponentFailureRejectsUnknownComponentId();
+  await testRuntimeComponentFailureReportMapsLocalSaveFailure();
   await testRemoteRuntimeValidationRejectsPrivateNetworkUrl();
   await testRemoteRuntimeValidationRejectsMissingExpectedHash();
   await testRuntimeComponentUploadRejectsExpectedHashMismatch();
   await testRuntimeComponentUploadMapsUniqueIdentityConflict();
   await testRuntimeComponentUploadMapsTransientPrismaFailure();
+  await testRuntimeComponentUploadMapsLocalSaveFailure();
   await testRuntimeComponentPrepareMissingTempFileReturnsBadRequest();
   await testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup();
   await testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict();
   await testRuntimeComponentReplaceUploadMapsTransientPrismaFailure();
+  await testRuntimeComponentReplaceUploadMapsLocalSaveFailure();
   await testRuntimeComponentUploadKeepsSavedFileWhenSharedCleanupFails();
   await testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails();
   await testRemoteSharedRulesetCreateReturnsWhenCleanupStalls();
@@ -26252,6 +26726,7 @@ async function main() {
   await testRuntimeComponentDeleteIgnoresInvalidStoredCleanupPathAfterLocalDelete();
   await testSubscriptionNodeAccessConcurrentReplaceIsSerialized();
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
+  await testRuntimeComponentDeleteMapsLocalSaveFailure();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls();
   await testCreateReleaseArtifactMapsLocalSaveFailure();
@@ -26383,7 +26858,9 @@ async function main() {
   await testTeamMemberMutationRejectsOwnerDemotion();
   await testCreateAnnouncementRejectsBlankTrimmedText();
   await testCreateAnnouncementRejectsFractionalCountdown();
+  await testCreateAnnouncementMapsLocalSaveFailure();
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
+  await testUpdateAnnouncementMapsLocalReadFailure();
   await testAdminSnapshotCountsOnlyClientVisibleAnnouncements();
   testAdminUploadLimitsExposePositiveControllerLimits();
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
@@ -26393,9 +26870,12 @@ async function main() {
   await testUpdateAnnouncementPublishesUpdateEvent();
   await testDeleteAnnouncementRemovesRecordAndPublishesUpdate();
   await testDeleteAnnouncementRejectsMissingRecordBeforeDbDelete();
+  await testDeleteAnnouncementMapsLocalSaveFailure();
   await testDeleteAnnouncementKeepsLocalDeleteWhenPublishFails();
   await testMarkAnnouncementReadKeepsLocalSaveWhenPublishFails();
   await testUpdatePolicyRejectsDuplicateModes();
+  await testGetAdminPolicyMapsLocalReadFailure();
+  await testUpdatePolicyMapsLocalSaveFailure();
   await testUpdatePolicyAllowsUnrelatedChangeWithHistoricalDuplicateModes();
   await testUpdatePolicyKeepsLocalSaveWhenPublishFails();
   await testUpdatePolicyDoesNotRefreshAfterLocalSave();
