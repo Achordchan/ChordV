@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json",
-    "test:regression": "tsx test/admin-controller.routes.regression.ts && tsx test/admin-critical-routes.regression.ts && tsx test/dev-data.service.regression.ts && tsx test/runtime-components.service.regression.ts && tsx test/image-bed-error-fidelity.regression.ts && tsx ../admin/test/admin-filters.regression.ts && tsx ../admin/test/runtime-components-panel.regression.ts && tsx ../admin/test/releases.regression.ts",
+    "test:regression": "tsx test/admin-controller.routes.regression.ts && tsx test/admin-critical-routes.regression.ts && tsx test/dev-data.service.regression.ts && tsx test/runtime-components.service.regression.ts && tsx test/image-bed-error-fidelity.regression.ts && tsx ../admin/test/admin-filters.regression.ts && tsx ../admin/test/runtime-components-panel.regression.ts && tsx ../admin/test/releases.regression.ts && tsx ../admin/test/admin-runtime-events.regression.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts"

@@ -148,6 +148,7 @@ import { RuntimeComponentsPage } from "./pages/RuntimeComponentsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { TicketsPage } from "./pages/TicketsPage";
 import { UsersPage } from "./pages/UsersPage";
+import { shouldRefreshTicketsForAdminEvent } from "./utils/admin-runtime-events";
 import {
   applyPlanToChangePlanForm,
   applyPlanToCreateForm,
@@ -558,7 +559,7 @@ export function App() {
       }
       void refreshDashboard({ silent: true });
       if (sectionRef.current === "tickets") {
-        if (event.type === "ticket_updated") {
+        if (shouldRefreshTicketsForAdminEvent(event)) {
           setTicketRefreshSignal((current) => current + 1);
         }
         return;

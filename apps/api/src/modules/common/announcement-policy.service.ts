@@ -389,12 +389,14 @@ export class AnnouncementPolicyService {
   }
 
   private async publishPolicyUpdatedEvent() {
-    await this.runPublishEventBestEffort("policy_updated", async () => {
-      const occurredAt = new Date().toISOString();
+    const occurredAt = new Date().toISOString();
+    await this.runPublishEventBestEffort("admin policy_updated", async () => {
       this.adminRuntimeEventsService.publish({
         type: "policy_updated",
         occurredAt
       });
+    });
+    await this.runPublishEventBestEffort("client policy_updated", async () => {
       const rows = await this.prisma.user.findMany({
         where: { status: "active" },
         select: { id: true }
@@ -408,13 +410,15 @@ export class AnnouncementPolicyService {
   }
 
   private async publishAnnouncementUpdatedEvent(announcementId: string) {
-    await this.runPublishEventBestEffort("announcement_updated", async () => {
-      const occurredAt = new Date().toISOString();
+    const occurredAt = new Date().toISOString();
+    await this.runPublishEventBestEffort("admin announcement_updated", async () => {
       this.adminRuntimeEventsService.publish({
         type: "announcement_updated",
         occurredAt,
         announcementId
       });
+    });
+    await this.runPublishEventBestEffort("client announcement_updated", async () => {
       const rows = await this.prisma.user.findMany({
         where: { status: "active" },
         select: { id: true }

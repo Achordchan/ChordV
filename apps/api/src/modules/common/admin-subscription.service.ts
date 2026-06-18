@@ -3096,6 +3096,16 @@ export class AdminSubscriptionService {
         ticketId: ticket.id,
         ticketStatus: "closed"
       });
+      try {
+        this.adminRuntimeEventsService.publishTicketUpdated({
+          ticketId: ticket.id,
+          ticketStatus: "closed"
+        });
+      } catch (error) {
+        this.logger?.warn(
+          `Local support ticket cleanup saved, but admin ticket_updated publish failed for ${ticket.id}: ${readErrorMessage(error, "unknown error")}`
+        );
+      }
     }
 
     return tickets.length;

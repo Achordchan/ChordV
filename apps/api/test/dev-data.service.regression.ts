@@ -14282,6 +14282,56 @@ async function testDisconnectUserReturnsPendingWhenUserRefreshFails() {
   assert.equal(result.user.panelSyncStatus, "pending");
 }
 
+async function testCloseSupportTicketsPublishesClientAndAdminEvents() {
+  const clientEvents: Array<{ userId: string; event: Record<string, unknown> }> = [];
+  const adminEvents: Array<Record<string, unknown>> = [];
+  const warnings: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    clientRuntimeEventsService: {
+      publishToUser: (userId: string, event: Record<string, unknown>) => {
+        clientEvents.push({ userId, event });
+      }
+    },
+    adminRuntimeEventsService: {
+      publishTicketUpdated: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+        throw new Error("admin ticket sse failed");
+      }
+    },
+    prisma: {
+      supportTicket: {
+        findMany: async () => [
+          {
+            id: "ticket_1",
+            userId: "user_1"
+          }
+        ],
+        updateMany: async () => ({ count: 1 })
+      },
+      supportTicketMessage: {
+        createMany: async () => ({ count: 1 })
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  const count = await (service as any).closePersonalSupportTicketsForUser("user_1", "membership changed");
+
+  assert.equal(count, 1);
+  assert.equal(clientEvents.length, 1);
+  assert.equal(clientEvents[0].userId, "user_1");
+  assert.equal(clientEvents[0].event.type, "ticket_updated");
+  assert.equal(clientEvents[0].event.ticketId, "ticket_1");
+  assert.equal(clientEvents[0].event.ticketStatus, "closed");
+  assert.deepEqual(adminEvents, [{ ticketId: "ticket_1", ticketStatus: "closed" }]);
+  assert.match(warnings.join("\n"), /admin ticket sse failed/);
+}
+
 async function testKickTeamMemberReturnsRevokedCountAndDisableAccountPending() {
   let leaseJobQueued = false;
   const service = createAdminSubscriptionService({
@@ -27504,6 +27554,57 @@ async function testCreateAnnouncementPublishesUpdateEvent() {
   assert.equal(adminPublished[0].announcementId, "announcement_1");
 }
 
+async function testCreateAnnouncementPublishesClientEventWhenAdminPublishFails() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const warnings: string[] = [];
+  const published: Array<{ userIds: string[]; event: Record<string, any> }> = [];
+  const service = createAnnouncementPolicyService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    clientRuntimeEventsService: {
+      publishToUsers: (userIds: string[], event: Record<string, any>) => {
+        published.push({ userIds, event });
+      }
+    },
+    adminRuntimeEventsService: {
+      publish: () => {
+        throw new Error("admin sse failed");
+      }
+    },
+    prisma: {
+      announcement: {
+        create: async () => ({
+          id: "announcement_1",
+          title: "Title",
+          body: "Body",
+          level: "info",
+          publishedAt: now,
+          isActive: true,
+          displayMode: "passive",
+          countdownSeconds: 0,
+          createdAt: now,
+          updatedAt: now
+        })
+      },
+      user: {
+        findMany: async () => [{ id: "user_1" }]
+      }
+    }
+  });
+
+  await service.createAnnouncement({
+    title: "Title",
+    body: "Body",
+    level: "info"
+  });
+
+  await waitUntil(() => published.length > 0);
+  assert.deepEqual(published[0].userIds, ["user_1"]);
+  assert.equal(published[0].event.type, "announcement_updated");
+  assert.match(warnings.join("\n"), /admin sse failed/);
+}
+
 async function testUpdateAnnouncementPublishesUpdateEvent() {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const published: Array<{ userIds: string[]; event: Record<string, any> }> = [];
@@ -30664,6 +30765,7 @@ async function main() {
   await testCreateAnnouncementKeepsLocalSaveWhenPublishFails();
   await testCreateAnnouncementReturnsWhenPublishUserLookupStalls();
   await testCreateAnnouncementPublishesUpdateEvent();
+  await testCreateAnnouncementPublishesClientEventWhenAdminPublishFails();
   await testUpdateAnnouncementPublishesUpdateEvent();
   await testDeleteAnnouncementRemovesRecordAndPublishesUpdate();
   await testDeleteAnnouncementRejectsMissingRecordBeforeDbDelete();
@@ -30680,6 +30782,7 @@ async function main() {
   await testDeleteTeamMemberKeepsLocalDeleteWhenTicketCleanupFails();
   await testDeleteTeamMemberReturnsPendingWhenSubscriptionLookupStallsAfterLocalDelete();
   await testDeleteTeamMemberReturnsPendingWhenPanelDisableQueueStallsAndLeaseQueueContinues();
+  await testCloseSupportTicketsPublishesClientAndAdminEvents();
   await testDeleteTeamMemberKeepsPanelDisableDurableWhenLeaseRevocationFails();
   await testDeleteTeamMemberQueuesDisableClientWithoutDirectXuiCall();
   await testAdminReplySupportTicketWithAttachmentCreatesAttachment();
