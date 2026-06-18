@@ -459,7 +459,7 @@ export class ReleaseCenterService {
         where: { id: artifactId, releaseId }
       });
     } catch (error) {
-      throwLocalReadAsServiceUnavailable(error, "Release artifact detail is temporarily unavailable.");
+      throwLocalReadAsServiceUnavailable(error, "发布包信息读取失败，请稍后重试。");
     }
     if (!current) {
       throw new NotFoundException("Release artifact does not exist.");
@@ -625,9 +625,14 @@ export class ReleaseCenterService {
     if (!file) {
       throw new BadRequestException("Select an installer package file first.");
     }
-    const current = await this.prisma.releaseArtifact.findFirst({
-      where: { id: artifactId, releaseId }
-    });
+    let current: any;
+    try {
+      current = await this.prisma.releaseArtifact.findFirst({
+        where: { id: artifactId, releaseId }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Release artifact detail is temporarily unavailable.");
+    }
     if (!current) {
       throw new NotFoundException("Release artifact does not exist.");
     }

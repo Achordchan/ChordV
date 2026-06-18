@@ -240,7 +240,10 @@ export class AdminSubscriptionService {
 
   async createUser(input: CreateUserInputDto): Promise<AdminUserRecordDto> {
     const email = input.email.trim().toLowerCase();
-    const existing = await this.prisma.user.findUnique({ where: { email } });
+    const existing = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.user.findUnique({ where: { email } }),
+      "账号信息读取失败，请稍后重试。"
+    );
     if (existing) {
       throw new ConflictException("邮箱已存在");
     }
@@ -442,10 +445,13 @@ export class AdminSubscriptionService {
   }
 
   async listAdminPlans(): Promise<AdminPlanRecordDto[]> {
-    const [plans, subscriptions] = await Promise.all([
-      this.prisma.plan.findMany({ orderBy: { createdAt: "asc" } }),
-      this.prisma.subscription.findMany()
-    ]);
+    const [plans, subscriptions] = await runAdminSubscriptionLocalOperation(
+      () => Promise.all([
+        this.prisma.plan.findMany({ orderBy: { createdAt: "asc" } }),
+        this.prisma.subscription.findMany()
+      ]),
+      "套餐列表读取失败，请稍后重试。"
+    );
 
     return plans.map((plan) => ({
       id: plan.id,
@@ -496,7 +502,10 @@ export class AdminSubscriptionService {
 
   async updatePlan(planId: string, input: UpdatePlanInputDto): Promise<AdminPlanRecordDto> {
     const current = await this.ensurePlanExists(planId);
-    const subscriptionCount = await this.prisma.subscription.count({ where: { planId } });
+    const subscriptionCount = await runAdminSubscriptionLocalOperation(
+      () => this.prisma.subscription.count({ where: { planId } }),
+      "套餐订阅数量读取失败，请稍后重试。"
+    );
     if (input.scope !== undefined && input.scope !== current.scope && subscriptionCount > 0) {
       throw new BadRequestException("Plan scope cannot be changed while subscriptions are using this plan.");
     }
@@ -1684,17 +1693,22 @@ export class AdminSubscriptionService {
 
     let targetUserId: string | null;
     if (subscription.teamId) {
+      const memberTeamId = subscription.teamId;
       if (requestedUserId) {
-        const membership = await this.prisma.teamMember.findFirst({
-          where: {
-            teamId: subscription.teamId,
-            userId: requestedUserId
-          }
-        });
+        const memberUserId = requestedUserId;
+        const membership = await runAdminSubscriptionLocalOperation(
+          () => this.prisma.teamMember.findFirst({
+            where: {
+              teamId: memberTeamId,
+              userId: memberUserId
+            }
+          }),
+          "Team 成员信息读取失败，请稍后重试。"
+        );
         if (!membership) {
           throw new BadRequestException("指定成员不属于当前 Team 订阅");
         }
-        targetUserId = requestedUserId;
+        targetUserId = memberUserId;
       } else if (options.allowTeamWideReset) {
         targetUserId = null;
       } else {

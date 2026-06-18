@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, UnauthorizedException } from "@nestjs/c
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as jwt from "jsonwebtoken";
 import type { AuthSessionDto, UserProfileDto } from "@chordv/shared";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
 
 type AccessPayload = {
@@ -51,7 +52,12 @@ export class AuthSessionService {
   constructor(private readonly prisma: PrismaService) {}
 
   async issueSession(userId: string): Promise<AuthSessionDto> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    let user: SessionUser | null;
+    try {
+      user = await this.prisma.user.findUnique({ where: { id: userId } });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "登录用户读取失败，请稍后重试。");
+    }
     if (!user || user.status !== "active") {
       throw new UnauthorizedException("User is not active.");
     }
@@ -61,10 +67,23 @@ export class AuthSessionService {
 
   async rotateRefreshToken(refreshToken: string): Promise<AuthSessionDto> {
     const tokenHash = this.hashToken(refreshToken);
-    const current = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash },
-      include: { user: true }
-    });
+    let current:
+      | ({
+          id: string;
+          userId: string;
+          revokedAt: Date | null;
+          expiresAt: Date;
+          user: SessionUser;
+        })
+      | null;
+    try {
+      current = await this.prisma.refreshToken.findUnique({
+        where: { tokenHash },
+        include: { user: true }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "登录会话读取失败，请稍后重试。");
+    }
 
     if (!current || current.revokedAt || current.expiresAt.getTime() <= Date.now()) {
       throw new UnauthorizedException("Refresh token is invalid.");
@@ -73,40 +92,49 @@ export class AuthSessionService {
       throw new ForbiddenException("Current user is disabled.");
     }
 
-    return this.prisma.$transaction(
-      async (tx) => {
-        const user = await tx.user.findUnique({ where: { id: current.userId } });
-        if (!user || user.status !== "active") {
-          throw new ForbiddenException("Current user is disabled.");
-        }
-        if (user.authVersion !== current.user.authVersion) {
-          throw new UnauthorizedException("Refresh token is stale; please sign in again.");
-        }
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const user = await tx.user.findUnique({ where: { id: current.userId } });
+          if (!user || user.status !== "active") {
+            throw new ForbiddenException("Current user is disabled.");
+          }
+          if (user.authVersion !== current.user.authVersion) {
+            throw new UnauthorizedException("Refresh token is stale; please sign in again.");
+          }
 
-        const rotated = await tx.refreshToken.updateMany({
-          where: {
-            id: current.id,
-            revokedAt: null,
-            expiresAt: { gt: new Date() }
-          },
-          data: { revokedAt: new Date() }
-        });
-        if (rotated.count !== 1) {
-          throw new UnauthorizedException("Refresh token is no longer valid.");
-        }
+          const rotated = await tx.refreshToken.updateMany({
+            where: {
+              id: current.id,
+              revokedAt: null,
+              expiresAt: { gt: new Date() }
+            },
+            data: { revokedAt: new Date() }
+          });
+          if (rotated.count !== 1) {
+            throw new UnauthorizedException("Refresh token is no longer valid.");
+          }
 
-        return this.createSessionForUser(user, tx);
-      },
-      { timeout: AUTH_REFRESH_TRANSACTION_TIMEOUT_MS }
-    );
+          return this.createSessionForUser(user, tx);
+        },
+        { timeout: AUTH_REFRESH_TRANSACTION_TIMEOUT_MS }
+      );
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "登录会话刷新失败，请稍后重试。");
+    }
   }
 
   async authenticateAccessToken(authorization?: string): Promise<UserProfileDto> {
     const token = this.extractBearerToken(authorization);
     const payload = this.verifyAccessToken(token);
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub }
-    });
+    let user: SessionUser | null;
+    try {
+      user = await this.prisma.user.findUnique({
+        where: { id: payload.sub }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "登录状态读取失败，请稍后重试。");
+    }
 
     if (!user) {
       throw new UnauthorizedException("User does not exist.");
@@ -120,14 +148,19 @@ export class AuthSessionService {
     if (user.authVersion !== payload.ver) {
       throw new UnauthorizedException("Login session expired; please sign in again.");
     }
-    const session = await this.prisma.refreshToken.findUnique({
-      where: { id: payload.sid },
-      select: {
-        userId: true,
-        revokedAt: true,
-        expiresAt: true
-      }
-    });
+    let session: { userId: string; revokedAt: Date | null; expiresAt: Date } | null;
+    try {
+      session = await this.prisma.refreshToken.findUnique({
+        where: { id: payload.sid },
+        select: {
+          userId: true,
+          revokedAt: true,
+          expiresAt: true
+        }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "登录状态读取失败，请稍后重试。");
+    }
     if (!session || session.userId !== payload.sub || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
       throw new UnauthorizedException("Login session expired; please sign in again.");
     }
@@ -138,17 +171,21 @@ export class AuthSessionService {
   async revokeByAccessToken(authorization?: string) {
     const token = this.extractBearerToken(authorization);
     const payload = this.verifyAccessToken(token);
-    await this.prisma.refreshToken.updateMany({
-      where: {
-        id: payload.sid,
-        userId: payload.sub,
-        revokedAt: null,
-        expiresAt: { gt: new Date() }
-      },
-      data: {
-        revokedAt: new Date()
-      }
-    });
+    try {
+      await this.prisma.refreshToken.updateMany({
+        where: {
+          id: payload.sid,
+          userId: payload.sub,
+          revokedAt: null,
+          expiresAt: { gt: new Date() }
+        },
+        data: {
+          revokedAt: new Date()
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "登录会话撤销失败，请稍后重试。");
+    }
   }
 
   async revokeByAccessOrRefreshToken(authorization?: string, refreshToken?: string) {
@@ -166,48 +203,61 @@ export class AuthSessionService {
     if (!token) {
       return;
     }
-    const current = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash: this.hashToken(token) },
-      select: {
-        id: true,
-        revokedAt: true,
-        expiresAt: true
-      }
-    });
+    let current: { id: string; revokedAt: Date | null; expiresAt: Date } | null;
+    try {
+      current = await this.prisma.refreshToken.findUnique({
+        where: { tokenHash: this.hashToken(token) },
+        select: {
+          id: true,
+          revokedAt: true,
+          expiresAt: true
+        }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "登录会话读取失败，请稍后重试。");
+    }
     if (!current || current.revokedAt || current.expiresAt.getTime() <= Date.now()) {
       return;
     }
 
-    await this.prisma.refreshToken.updateMany({
-      where: {
-        id: current.id,
-        revokedAt: null,
-        expiresAt: { gt: new Date() }
-      },
-      data: {
-        revokedAt: new Date()
-      }
-    });
-  }
-
-  async revokeAllUserSessions(userId: string) {
-    await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: userId },
-        data: {
-          authVersion: { increment: 1 }
-        }
-      });
-      await tx.refreshToken.updateMany({
+    try {
+      await this.prisma.refreshToken.updateMany({
         where: {
-          userId,
-          revokedAt: null
+          id: current.id,
+          revokedAt: null,
+          expiresAt: { gt: new Date() }
         },
         data: {
           revokedAt: new Date()
         }
       });
-    });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "登录会话撤销失败，请稍后重试。");
+    }
+  }
+
+  async revokeAllUserSessions(userId: string) {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            authVersion: { increment: 1 }
+          }
+        });
+        await tx.refreshToken.updateMany({
+          where: {
+            userId,
+            revokedAt: null
+          },
+          data: {
+            revokedAt: new Date()
+          }
+        });
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "登录会话撤销失败，请稍后重试。");
+    }
   }
 
   private async createSessionForUser(user: SessionUser, client: RefreshTokenWriter): Promise<AuthSessionDto> {
@@ -232,14 +282,18 @@ export class AuthSessionService {
     );
 
     const refreshToken = this.generateRefreshToken();
-    await client.refreshToken.create({
-      data: {
-        id: refreshTokenId,
-        userId: user.id,
-        tokenHash: this.hashToken(refreshToken),
-        expiresAt: refreshTokenExpiresAt
-      }
-    });
+    try {
+      await client.refreshToken.create({
+        data: {
+          id: refreshTokenId,
+          userId: user.id,
+          tokenHash: this.hashToken(refreshToken),
+          expiresAt: refreshTokenExpiresAt
+        }
+      });
+    } catch (error) {
+      throwLocalSaveAsServiceUnavailable(error, "登录会话保存失败，请稍后重试。");
+    }
 
     return {
       accessToken,

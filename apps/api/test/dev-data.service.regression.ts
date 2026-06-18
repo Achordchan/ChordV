@@ -1709,6 +1709,33 @@ async function testListAdminUsersMapsLocalReadFailure() {
   );
 }
 
+async function testCreateUserMapsPreflightEmailReadFailure() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      user: {
+        findUnique: async () => {
+          throw new Error("create user email preflight read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.createUser({
+        email: "new@example.com",
+        password: "password123",
+        displayName: "New User",
+        role: "user"
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/create user email preflight read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "create-user preflight email read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testCreateSubscriptionMapsPreflightUserReadFailure() {
   const service = createAdminSubscriptionService({
     prisma: {
@@ -1776,6 +1803,8 @@ async function testRefreshTokenRotationUsesExtendedTransactionTimeout() {
   const service = createAuthSessionService({
     jwtSecret: "test-secret-for-auth-session-regression",
     jwtIssuer: "chordv-test",
+    accessTokenTtlSeconds: 900,
+    refreshTokenTtlSeconds: 86_400,
     prisma: {
       refreshToken: {
         findUnique: async () => ({
@@ -1796,11 +1825,93 @@ async function testRefreshTokenRotationUsesExtendedTransactionTimeout() {
 
   await assert.rejects(
     () => service.rotateRefreshToken("refresh-token"),
-    /transaction stopped after options capture/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/transaction stopped after options capture/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "refresh token rotation transaction failures must return a controlled 503 instead of HTTP 500"
   );
 
   assert.equal(transactionCalls.length, 1);
   assert.equal(transactionCalls[0]?.timeout, 15_000, "refresh rotation must not rely on Prisma's 5s default transaction timeout");
+}
+
+async function testIssueSessionMapsUserReadFailure() {
+  const service = createAuthSessionService({
+    prisma: {
+      user: {
+        findUnique: async () => {
+          throw new Error("issue session user read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.issueSession("user_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/issue session user read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "issueSession user read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testIssueSessionMapsRefreshTokenSaveFailure() {
+  const service = createAuthSessionService({
+    jwtSecret: "test-secret-for-auth-session-regression",
+    jwtIssuer: "chordv-test",
+    accessTokenTtlSeconds: 900,
+    refreshTokenTtlSeconds: 86_400,
+    prisma: {
+      user: {
+        findUnique: async () => ({
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User",
+          role: "user",
+          status: "active",
+          lastSeenAt: new Date(),
+          authVersion: 1
+        })
+      },
+      refreshToken: {
+        create: async () => {
+          throw new Error("refresh token create failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.issueSession("user_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/refresh token create failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "issueSession refresh token write failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testRefreshTokenRotationMapsReadFailure() {
+  const service = createAuthSessionService({
+    prisma: {
+      refreshToken: {
+        findUnique: async () => {
+          throw new Error("refresh token lookup failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.rotateRefreshToken("refresh-token"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/refresh token lookup failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "refresh token lookup failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testAccessTokenLogoutRevokesOnlyBoundSession() {
@@ -1838,6 +1949,42 @@ async function testAccessTokenLogoutRevokesOnlyBoundSession() {
   assert.equal(refreshUpdates[0].where.userId, "user_1");
   assert.equal(refreshUpdates[0].where.revokedAt, null);
   assert.ok(refreshUpdates[0].where.expiresAt.gt instanceof Date);
+}
+
+async function testAccessTokenLogoutMapsRefreshTokenSaveFailure() {
+  const secret = "test-secret-for-auth-session-regression";
+  const issuer = "chordv-test";
+  const accessToken = jwt.sign(
+    {
+      sub: "user_1",
+      email: "user@example.com",
+      role: "user",
+      ver: 3,
+      sid: "refresh_1"
+    },
+    secret,
+    { issuer, expiresIn: 60 }
+  );
+  const service = createAuthSessionService({
+    jwtSecret: secret,
+    jwtIssuer: issuer,
+    prisma: {
+      refreshToken: {
+        updateMany: async () => {
+          throw new Error("access token revoke failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.revokeByAccessToken(`Bearer ${accessToken}`),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/access token revoke failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "access-token session revoke failures must return a controlled 503 instead of HTTP 500"
+  );
 }
 
 async function testAccessTokenAuthenticationRequiresActiveBoundSession() {
@@ -1893,6 +2040,89 @@ async function testAccessTokenAuthenticationRequiresActiveBoundSession() {
     () => service.authenticateAccessToken(`Bearer ${accessToken}`),
     /Login session expired/,
     "revoked refresh session must invalidate its already-issued access token"
+  );
+}
+
+async function testAccessTokenAuthenticationMapsUserReadFailure() {
+  const secret = "test-secret-for-auth-session-regression";
+  const issuer = "chordv-test";
+  const accessToken = jwt.sign(
+    {
+      sub: "user_1",
+      email: "user@example.com",
+      role: "user",
+      ver: 3,
+      sid: "refresh_1"
+    },
+    secret,
+    { issuer, expiresIn: 60 }
+  );
+  const service = createAuthSessionService({
+    jwtSecret: secret,
+    jwtIssuer: issuer,
+    prisma: {
+      user: {
+        findUnique: async () => {
+          throw new Error("access token user read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.authenticateAccessToken(`Bearer ${accessToken}`),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/access token user read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "access-token user read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testAccessTokenAuthenticationMapsSessionReadFailure() {
+  const secret = "test-secret-for-auth-session-regression";
+  const issuer = "chordv-test";
+  const accessToken = jwt.sign(
+    {
+      sub: "user_1",
+      email: "user@example.com",
+      role: "user",
+      ver: 3,
+      sid: "refresh_1"
+    },
+    secret,
+    { issuer, expiresIn: 60 }
+  );
+  const service = createAuthSessionService({
+    jwtSecret: secret,
+    jwtIssuer: issuer,
+    prisma: {
+      user: {
+        findUnique: async () => ({
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User",
+          role: "user",
+          status: "active",
+          lastSeenAt: new Date(),
+          authVersion: 3
+        })
+      },
+      refreshToken: {
+        findUnique: async () => {
+          throw new Error("access token session read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.authenticateAccessToken(`Bearer ${accessToken}`),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/access token session read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "access-token bound session read failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -6451,6 +6681,46 @@ async function testResetSubscriptionTrafficRejectsNonStringUserId() {
     () => service.resetSubscriptionTraffic("subscription_1", { userId: 1 } as any),
     /userId must be a string/,
     "reset-traffic must reject non-string userId with 400 instead of throwing TypeError later"
+  );
+}
+
+async function testResetSubscriptionTrafficMapsTeamMemberReadFailure() {
+  const lockedSubscription = {
+    id: "sub_team",
+    userId: null,
+    teamId: "team_1",
+    planId: "plan_team",
+    totalTrafficGb: 100,
+    usedTrafficGb: 40,
+    remainingTrafficGb: 60,
+    expireAt: new Date(Date.now() + 86_400_000),
+    state: "active" as const,
+    renewable: true,
+    sourceAction: "created" as const,
+    lastSyncedAt: new Date(),
+    plan: { name: "Team Plan" },
+    user: null,
+    team: { name: "Team" },
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    requireSubscription: async () => lockedSubscription,
+    prisma: {
+      teamMember: {
+        findFirst: async () => {
+          throw new Error("team member reset preflight read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.resetSubscriptionTraffic("sub_team", { userId: "member_1" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/team member reset preflight read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "team-member traffic reset preflight read failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -19012,6 +19282,41 @@ async function testReplaceReleaseArtifactUploadMapsTransientPrismaFailure() {
   ]);
 }
 
+async function testReplaceReleaseArtifactUploadMapsLocalReadFailure() {
+  const service = createReleaseCenterService({
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => {
+          throw new Error("release artifact replacement preflight read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.replaceReleaseArtifactUpload(
+        "release_1",
+        "artifact_1",
+        {
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          isPrimary: true
+        },
+        {
+          path: "missing-upload-replacement-read-failure.zip",
+          originalname: "ChordV-full-new.zip",
+          size: 123
+        }
+      ),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/release artifact replacement preflight read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "release artifact replacement preflight read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
   const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-switch-"));
@@ -20789,6 +21094,30 @@ async function testCreatePlanMapsLocalSaveFailure() {
   );
 }
 
+async function testListAdminPlansMapsLocalReadFailure() {
+  const service = createAdminSubscriptionService({
+    prisma: {
+      plan: {
+        findMany: async () => {
+          throw new Error("plan list local read failed");
+        }
+      },
+      subscription: {
+        findMany: async () => []
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.listAdminPlans(),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/plan list local read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "plan list local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
 async function testUpdatePlanMapsLocalSaveFailure() {
   const service = createAdminSubscriptionService({
     ensurePlanExists: async () => ({
@@ -20821,6 +21150,38 @@ async function testUpdatePlanMapsLocalSaveFailure() {
       !/plan update local save failed/i.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "plan update local save failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testUpdatePlanMapsSubscriptionCountReadFailure() {
+  const service = createAdminSubscriptionService({
+    ensurePlanExists: async () => ({
+      id: "plan_1",
+      name: "Plan",
+      scope: "personal",
+      totalTrafficGb: 100,
+      renewable: true,
+      maxConcurrentSessions: 3,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    }),
+    prisma: {
+      subscription: {
+        count: async () => {
+          throw new Error("plan subscription count read failed");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updatePlan("plan_1", { name: "Renamed Plan" }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/plan subscription count read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "plan update preflight subscription count read failures must return a controlled 503 instead of HTTP 500"
   );
 }
 
@@ -26854,11 +27215,18 @@ async function main() {
   await testUpdateUserReturnsPendingWhenResponseRefreshFails();
   await testUpdateUserReturnsPendingWhenResponseRefreshStalls();
   await testListAdminUsersMapsLocalReadFailure();
+  await testCreateUserMapsPreflightEmailReadFailure();
   await testCreateSubscriptionMapsPreflightUserReadFailure();
   await testRefreshTokenLogoutRevokesOnlyCurrentRefreshToken();
   await testRefreshTokenRotationUsesExtendedTransactionTimeout();
+  await testIssueSessionMapsUserReadFailure();
+  await testIssueSessionMapsRefreshTokenSaveFailure();
+  await testRefreshTokenRotationMapsReadFailure();
   await testAccessTokenLogoutRevokesOnlyBoundSession();
+  await testAccessTokenLogoutMapsRefreshTokenSaveFailure();
   await testAccessTokenAuthenticationRequiresActiveBoundSession();
+  await testAccessTokenAuthenticationMapsUserReadFailure();
+  await testAccessTokenAuthenticationMapsSessionReadFailure();
   testRuntimeEventStreamReplaysAfterLastEventId();
   await testRuntimeEventStreamValidatesBeforeDispatch();
   await testRuntimeEventReplayValidatesBeforeDispatch();
@@ -26946,6 +27314,7 @@ async function main() {
   await testRenewSubscriptionReturnsWhenSubscriptionPublishStalls();
   await testChangeSubscriptionPlanReturnsWhenSubscriptionPublishStalls();
   await testResetSubscriptionTrafficRejectsNonStringUserId();
+  await testResetSubscriptionTrafficMapsTeamMemberReadFailure();
   await testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails();
   await testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAfterLocalReset();
   await testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall();
@@ -27150,6 +27519,7 @@ async function main() {
   await testUploadReleaseArtifactMapsTransientPrismaFailure();
   await testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup();
   await testReplaceReleaseArtifactUploadMapsTransientPrismaFailure();
+  await testReplaceReleaseArtifactUploadMapsLocalReadFailure();
   await testUpdateUploadedReleaseArtifactToExternalDeletesOldFile();
   await testReplaceReleaseArtifactUploadDeletesOldFileOnSuccess();
   await testDeleteReleaseArtifactKeepsDeleteWhenFileCleanupFails();
@@ -27195,7 +27565,9 @@ async function main() {
   await testDeleteTeamMemberMapsLocalSaveFailure();
   await testCreateTeamSubscriptionMapsLocalSaveFailure();
   await testCreatePlanMapsLocalSaveFailure();
+  await testListAdminPlansMapsLocalReadFailure();
   await testUpdatePlanMapsLocalSaveFailure();
+  await testUpdatePlanMapsSubscriptionCountReadFailure();
   await testUpdatePlanSecurityMapsLocalSaveFailure();
   await testGetNodeAccessMapsUnknownReadFailure();
   await testUpdatePlanRejectsScopeChangeWhenUsed();
