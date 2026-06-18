@@ -21,6 +21,7 @@ import type {
 } from "@chordv/shared";
 import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { AuthSessionService } from "./auth-session.service";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
@@ -118,6 +119,7 @@ export class RuntimeSessionService {
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly authSessionService: AuthSessionService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly xuiService: XuiService
   ) {}
 
@@ -973,7 +975,13 @@ export class RuntimeSessionService {
 
     let disabledCount = 0;
     for (const subscription of subscriptions) {
-      disabledCount += await this.markPanelBindingsDisabledForSubscription(subscription.id, { nodeIds: [nodeId] });
+      try {
+        disabledCount += await this.markPanelBindingsDisabledForSubscription(subscription.id, { nodeIds: [nodeId] });
+      } catch (error) {
+        this.logger.warn(
+          `Node ${nodeId} panel disable queueing failed for subscription ${subscription.id}; remaining subscriptions will continue: ${readRuntimeErrorMessage(error)}`
+        );
+      }
     }
     return disabledCount;
   }
@@ -995,10 +1003,17 @@ export class RuntimeSessionService {
     let requested = 0;
     let updated = 0;
     for (const subscription of subscriptions) {
-      const result = await this.disablePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] });
-      requested += result.requested;
-      updated += result.updated;
-      failed.push(...result.failed);
+      try {
+        const result = await this.disablePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] });
+        requested += result.requested;
+        updated += result.updated;
+        failed.push(...result.failed);
+      } catch (error) {
+        failed.push(buildNodePanelBindingFailure(nodeId, subscription.id, error));
+        this.logger.warn(
+          `Node ${nodeId} panel binding disable failed for subscription ${subscription.id}; remaining subscriptions will continue: ${readRuntimeErrorMessage(error)}`
+        );
+      }
     }
     return { requested, updated, failed };
   }
@@ -1028,10 +1043,17 @@ export class RuntimeSessionService {
     let requested = 0;
     let updated = 0;
     for (const subscription of subscriptions) {
-      const result = await this.removePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] }, panelConfig);
-      requested += result.requested;
-      updated += result.updated;
-      failed.push(...result.failed);
+      try {
+        const result = await this.removePanelBindingsForSubscription(subscription.id, { nodeIds: [nodeId] }, panelConfig);
+        requested += result.requested;
+        updated += result.updated;
+        failed.push(...result.failed);
+      } catch (error) {
+        failed.push(buildNodePanelBindingFailure(nodeId, subscription.id, error));
+        this.logger.warn(
+          `Node ${nodeId} panel binding deletion failed for subscription ${subscription.id}; remaining subscriptions will continue: ${readRuntimeErrorMessage(error)}`
+        );
+      }
     }
     return { requested, updated, failed };
   }
@@ -1327,6 +1349,19 @@ export class RuntimeSessionService {
     await Promise.all(workers);
   }
 
+  private publishSyncQueueUpdatedBestEffort(input: { nodeId?: string | null; subscriptionId?: string | null }) {
+    try {
+      this.adminRuntimeEventsService?.publish({
+        type: "sync_queue_updated",
+        occurredAt: new Date().toISOString(),
+        nodeId: input.nodeId ?? null,
+        subscriptionId: input.subscriptionId ?? null
+      });
+    } catch (error) {
+      this.logger.warn(`Admin sync queue event publish failed: ${readRuntimeErrorMessage(error)}`);
+    }
+  }
+
   private async runPanelSyncJob(job: {
     id: string;
     action: string;
@@ -1487,6 +1522,7 @@ export class RuntimeSessionService {
           }
         })
       ]);
+      this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
     } catch (error) {
       const nextAttempts = job.attempts + 1;
       const retrySeconds = Math.min(
@@ -1514,6 +1550,7 @@ export class RuntimeSessionService {
             }
           })
         ]);
+        this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
       } catch (persistError) {
         this.logger.warn(
           `Panel sync job failure state could not be saved (${job.id}/${job.nodeId}/${job.panelClientEmail}): ${
@@ -1762,6 +1799,7 @@ export class RuntimeSessionService {
           completedAt: new Date()
         }
       });
+      this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
     } catch (error) {
       const nextAttempts = job.attempts + 1;
       const retrySeconds = Math.min(
@@ -1780,6 +1818,7 @@ export class RuntimeSessionService {
             nextRunAt: new Date(Date.now() + retrySeconds * 1000)
           }
         });
+        this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
       } catch (persistError) {
         this.logger.warn(
           `Lease revocation job failure state could not be saved (${job.id}): ${
@@ -2850,6 +2889,16 @@ function createId(prefix: string) {
 
 function readRuntimeErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function buildNodePanelBindingFailure(nodeId: string, subscriptionId: string, error: unknown): PanelBindingFailure {
+  return {
+    bindingId: subscriptionId,
+    nodeId,
+    nodeName: nodeId,
+    panelClientEmail: subscriptionId,
+    error: readRuntimeErrorMessage(error)
+  };
 }
 
 function assertRuntimeAccessConnectable(access: ResolvedSubscriptionAccess) {

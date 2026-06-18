@@ -104,7 +104,8 @@ export type AdminRuntimeEventDto = {
     | "version_updated"
     | "announcement_updated"
     | "announcement_read_state_updated"
-    | "policy_updated";
+    | "policy_updated"
+    | "sync_queue_updated";
   occurredAt: string;
   ticketId?: string | null;
   ticketStatus?: SupportTicketStatus | null;
@@ -131,6 +132,7 @@ export type CreateAdminReleaseInputDto = {
 
 export type UpdateAdminReleaseInputDto = {
   title?: string;
+  version?: string;
   changelog?: string[];
   minimumVersion?: string;
   forceUpgrade?: boolean;
@@ -230,12 +232,12 @@ export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
 
 export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const version = input.version.trim();
-  const title = input.title?.trim();
+  const title = input.title?.trim() || version;
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
     channel: "stable",
     version,
-    ...(title ? { displayTitle: title } : {}),
+    displayTitle: title,
     changelog: input.changelog,
     minimumVersion: input.minimumVersion,
     forceUpgrade: input.forceUpgrade,
@@ -251,8 +253,10 @@ export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
 }
 
 export async function updateAdminRelease(releaseId: string, input: UpdateAdminReleaseInputDto) {
+  const title = input.title?.trim();
+  const version = input.version?.trim();
   const payload: UpdateReleaseInputDto = {
-    ...(input.title !== undefined ? { displayTitle: input.title } : {}),
+    ...(input.title !== undefined && (title || version) ? { displayTitle: title || version } : {}),
     ...(input.changelog !== undefined ? { changelog: input.changelog } : {}),
     ...(input.minimumVersion !== undefined ? { minimumVersion: input.minimumVersion } : {}),
     ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),

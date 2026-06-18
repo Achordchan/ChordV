@@ -468,6 +468,62 @@ function createRuntimeSessionService(overrides: Record<string, unknown> = {}) {
   return createInstance<RuntimeSessionService>(RuntimeSessionService.prototype, overrides);
 }
 
+async function testNodePanelDisableContinuesWhenOneSubscriptionQueueFails() {
+  const calls: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      subscription: {
+        findMany: async () => [{ id: "sub_fail" }, { id: "sub_ok" }]
+      }
+    },
+    markPanelBindingsDisabledForSubscription: async (subscriptionId: string) => {
+      calls.push(subscriptionId);
+      if (subscriptionId === "sub_fail") {
+        throw Object.assign(new Error("panel queue write failed"), { code: "P2010" });
+      }
+      return 2;
+    }
+  });
+
+  const disabledCount = await service.markPanelBindingsDisabledForNode("node_1");
+
+  assert.equal(disabledCount, 2);
+  assert.deepEqual(calls, ["sub_fail", "sub_ok"], "one subscription queue failure must not block remaining node disables");
+}
+
+async function testNodePanelDeleteContinuesWhenOneSubscriptionQueueFails() {
+  const calls: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      subscription: {
+        findMany: async () => [{ id: "sub_fail" }, { id: "sub_ok" }]
+      }
+    },
+    removePanelBindingsForSubscription: async (subscriptionId: string) => {
+      calls.push(subscriptionId);
+      if (subscriptionId === "sub_fail") {
+        throw Object.assign(new Error("panel delete queue write failed"), { code: "P2010" });
+      }
+      return { requested: 1, updated: 1, failed: [] };
+    }
+  });
+
+  const result = await service.removePanelBindingsForNode("node_1");
+
+  assert.equal(result.requested, 1);
+  assert.equal(result.updated, 1);
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].bindingId, "sub_fail");
+  assert.match(result.failed[0].error, /panel delete queue write failed/);
+  assert.deepEqual(calls, ["sub_fail", "sub_ok"], "one subscription queue failure must not block remaining node deletions");
+}
+
 async function waitUntil(predicate: () => boolean, timeoutMs = 500) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
@@ -4591,7 +4647,13 @@ async function testPanelDisableJobCallsXuiEvenWhenNodeInactive() {
   const xuiCalls: Array<{ panelClientId: string; enabled: boolean }> = [];
   const bindingUpdates: Array<Record<string, unknown>> = [];
   const jobUpdates: Array<Record<string, unknown>> = [];
+  const adminEvents: Array<Record<string, unknown>> = [];
   const service = createRuntimeSessionService({
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
     xuiService: {
       setClientEnabled: async (_node: unknown, panelClientId: string, _email: string, enabled: boolean) => {
         xuiCalls.push({ panelClientId, enabled });
@@ -4666,6 +4728,10 @@ async function testPanelDisableJobCallsXuiEvenWhenNodeInactive() {
   assert.deepEqual(xuiCalls, [{ panelClientId: "panel_client_1", enabled: false }]);
   assert.equal(bindingUpdates.length, 1, "binding status should change only after 3x-ui disable succeeds");
   assert.equal(jobUpdates.length, 1, "panel sync job should be completed after remote disable succeeds");
+  assert.equal(adminEvents.length, 1);
+  assert.equal(adminEvents[0].type, "sync_queue_updated");
+  assert.equal(adminEvents[0].nodeId, "node_1");
+  assert.equal(adminEvents[0].subscriptionId, "sub_1");
 }
 
 async function testPanelDisableJobRechecksEligibilityBeforeRemoteDisable() {
@@ -5311,9 +5377,15 @@ async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
 
 async function testLeaseRevocationJobRetriesFailedRevocation() {
   const updates: Array<Record<string, any>> = [];
+  const adminEvents: Array<Record<string, unknown>> = [];
   const service = createRuntimeSessionService({
     logger: {
       warn: () => undefined
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
     },
     revokeSubscriptionLeases: async () => {
       throw new Error("lease store unavailable");
@@ -5338,6 +5410,10 @@ async function testLeaseRevocationJobRetriesFailedRevocation() {
 
   assert.equal(updates[0].data.status, "failed");
   assert.match(updates[0].data.lastError, /lease store unavailable/);
+  assert.equal(adminEvents.length, 1);
+  assert.equal(adminEvents[0].type, "sync_queue_updated");
+  assert.equal(adminEvents[0].nodeId, "node_1");
+  assert.equal(adminEvents[0].subscriptionId, "sub_1");
 }
 
 async function testLeaseRevocationBatchContinuesAfterStalledJob() {
@@ -27846,6 +27922,8 @@ async function main() {
   await testPanelSyncBatchContinuesAfterStalledRemoteJob();
   await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
   await testPanelSyncBatchContinuesWhenFailurePersistFails();
+  await testNodePanelDisableContinuesWhenOneSubscriptionQueueFails();
+  await testNodePanelDeleteContinuesWhenOneSubscriptionQueueFails();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testLeaseRevocationBatchContinuesAfterStalledJob();

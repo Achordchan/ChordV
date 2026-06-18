@@ -212,7 +212,8 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
       { type: "node_access_updated", occurredAt },
       { type: "version_updated", occurredAt },
       { type: "announcement_updated", occurredAt },
-      { type: "policy_updated", occurredAt }
+      { type: "policy_updated", occurredAt },
+      { type: "sync_queue_updated", occurredAt }
     ];
   }
 

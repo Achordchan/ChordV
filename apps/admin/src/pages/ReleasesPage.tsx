@@ -306,6 +306,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
       const record = await updateAdminRelease(releaseEditorId, {
         title: releaseForm.title.trim(),
+        version,
         changelog: payload.changelog
       });
       setReleases((current) => upsertRelease(current, record));

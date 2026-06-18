@@ -64,6 +64,7 @@ export type ClientRuntimeEventType =
   | "ticket_read_state_updated"
   | "version_updated"
   | "account_updated"
+  | "sync_queue_updated"
   | "keepalive";
 export type XuiPanelStatus = "online" | "offline" | "degraded";
 

@@ -26,6 +26,9 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (!message.trim()) {
     return fallback;
   }
+  if (hasDefiniteLocalSaveFailureSignal(message) && !hasSavedAfterFailureSignal(message)) {
+    return "后台本地数据保存失败，本次操作未保存，请稍后重试。";
+  }
   if (/MulterError|payload too large|file too large|file exceeds|too large/i.test(message)) {
     return "文件过大，已超过后台允许的上传限制。";
   }
@@ -53,11 +56,10 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (/HTTP\s*400|Bad Request|Validation failed|should not be empty|must be|is required|invalid/i.test(message)) {
     return "提交内容不完整或格式不正确，请检查后重试。";
   }
-  if (
-    /HTTP\s*502|HTTP\s*503|HTTP\s*504|Bad Gateway|Gateway Timeout|Service Unavailable|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|network timeout|connect timeout/i.test(
-      message
-    )
-  ) {
+  if (isServiceUnavailableMessage(message)) {
+    if (!hasSavedAfterFailureSignal(message)) {
+      return "后台或外部服务暂不可用，本次操作未确认完成，请稍后重试。";
+    }
     return "外部服务或面板暂不可用，已保存的操作请在同步队列中查看处理状态。";
   }
   if (/HTTP\s*5\d\d|Internal server error/i.test(message)) {
@@ -93,13 +95,13 @@ const UNCERTAIN_REQUEST_PATTERN =
 export function isUncertainRequestFailure(message: string) {
   return (
     UNCERTAIN_REQUEST_PATTERN.test(message) ||
-    /http 502|http 503|http 504|bad gateway|gateway timeout|service unavailable/i.test(message) ||
+    isServiceUnavailableMessage(message) ||
     /still being processed|still running in background|running in background|background retry|queued for background|retry shortly|正在处理|稍后重试|并发/i.test(message)
   );
 }
 
 export function isDefiniteLocalSaveFailure(message: string) {
-  return /before local .* was saved|no .* was saved|import failed and no node was saved|本地.*未保存|没有保存/i.test(message);
+  return hasDefiniteLocalSaveFailureSignal(message) && !hasSavedAfterFailureSignal(message);
 }
 
 export function isPotentiallyCompletedMutationFailure(message: string) {
@@ -113,7 +115,7 @@ export function buildUncertainMutationMessage(actionLabel: string, detail?: stri
 }
 
 export function isLikelySavedAfterFailure(message: string) {
-  return /local .* saved|saved locally|already saved|已保存|后台处理|background processing|background retry|queued for background|still running in background|panel synchronization is pending|pending background/i.test(message);
+  return hasSavedAfterFailureSignal(message);
 }
 
 export function isSupportTicketAttachmentUploadFailure(message: string) {
@@ -124,6 +126,24 @@ export function filterByKeyword<T>(items: T[], keyword: string, projector: (item
   if (!keyword.trim()) return items;
   const normalized = keyword.trim().toLowerCase();
   return items.filter((item) => projector(item).join(" ").toLowerCase().includes(normalized));
+}
+
+function isServiceUnavailableMessage(message: string) {
+  return /HTTP\s*502|HTTP\s*503|HTTP\s*504|Bad Gateway|Gateway Timeout|Service Unavailable|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|socket hang up|fetch failed|network timeout|connect timeout/i.test(
+    message
+  );
+}
+
+function hasDefiniteLocalSaveFailureSignal(message: string) {
+  return /before local .* was saved|no .* was saved|import failed and no node was saved|本地.*未保存|没有保存|本次操作未保存|保存失败|创建失败|更新失败|删除失败/i.test(
+    message
+  );
+}
+
+function hasSavedAfterFailureSignal(message: string) {
+  return /local .* saved|saved locally|already saved|已保存|后台处理|background processing|background retry|queued for background|still running in background|panel synchronization is pending|pending background/i.test(
+    message
+  );
 }
 
 export function summarizeTeamUsage(entries: AdminTeamUsageRecordDto[]) {
