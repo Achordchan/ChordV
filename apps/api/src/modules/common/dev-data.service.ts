@@ -1548,10 +1548,20 @@ export class DevDataService implements OnModuleInit {
     if (!input || !Array.isArray(input.nodeIds)) {
       throw new BadRequestException("nodeIds must be an array.");
     }
+    const nodeIds = input.nodeIds.map((nodeId) => {
+      if (typeof nodeId !== "string") {
+        throw new BadRequestException("nodeIds must contain only node id strings.");
+      }
+      const trimmed = nodeId.trim();
+      if (!trimmed) {
+        throw new BadRequestException("nodeIds must not contain empty values.");
+      }
+      return trimmed;
+    });
     // Admin authorization changes are DB-first and must not wait behind slow usage/panel sync work.
     const localSaveFallbackRef: { current?: SubscriptionNodeAccessDto } = {};
     try {
-      return await this.updateSubscriptionNodeAccessLocked(subscriptionId, input, (fallback) => {
+      return await this.updateSubscriptionNodeAccessLocked(subscriptionId, { nodeIds }, (fallback) => {
         localSaveFallbackRef.current = fallback;
       });
     } catch (error) {

@@ -10870,11 +10870,19 @@ async function testUpdateNodeAccessAddOnlyReturnsPendingWhenPanelEnsureQueueStal
 async function testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest() {
   const service = createDevDataService();
 
-  await assert.rejects(
-    () => service.updateSubscriptionNodeAccess("sub_1", {} as any),
-    (error) => error instanceof BadRequestException && /nodeIds must be an array/.test(error.message),
-    "invalid node access payloads must return a controlled 400 instead of leaking a TypeError as HTTP 500"
-  );
+  const cases: Array<{ input: unknown; pattern: RegExp }> = [
+    { input: {}, pattern: /nodeIds must be an array/ },
+    { input: { nodeIds: [123] }, pattern: /node id strings/ },
+    { input: { nodeIds: [""] }, pattern: /empty values/ }
+  ];
+
+  for (const item of cases) {
+    await assert.rejects(
+      () => service.updateSubscriptionNodeAccess("sub_1", item.input as any),
+      (error) => error instanceof BadRequestException && item.pattern.test(error.message),
+      `invalid node access payload must return a controlled 400: ${JSON.stringify(item.input)}`
+    );
+  }
 }
 
 async function testGetNodeAccessMapsUnknownReadFailure() {
