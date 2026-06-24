@@ -1029,12 +1029,14 @@ export class ReleaseCenterService {
       : scopedArtifacts;
     for (const artifact of candidates) {
       try {
+        assertReleaseArtifactClientUsable(artifact, platform);
         await this.assertStoredReleaseArtifactReadable(artifact);
         const resolvedArtifact = resolveReleaseArtifactForClient(artifact, clientMirrorPrefix ?? null);
         return resolvedArtifact;
       } catch {
         if (clientMirrorPrefix?.trim()) {
           try {
+            assertReleaseArtifactClientUsable(artifact, platform);
             await this.assertStoredReleaseArtifactReadable(artifact);
             const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
             return resolvedArtifact;
