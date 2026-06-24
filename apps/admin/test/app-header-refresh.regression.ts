@@ -76,6 +76,7 @@ function extractBlockAfter(marker: string) {
 }
 
 const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
+const loadInitialAdminDataBody = extractFunctionBody("loadInitialAdminData");
 const loadFullSnapshotBody = extractFunctionBody("loadFullSnapshot");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
 const refreshPanelSyncJobsAfterPendingBody = extractFunctionBody("refreshPanelSyncJobsAfterPending");
@@ -112,6 +113,29 @@ function testOverviewKeepsFullSnapshotRefresh() {
     handleHeaderRefreshBody,
     /if \(currentSection === "overview"\) {\s*await loadFullSnapshot\(\);\s*return;\s*}/,
     "overview header refresh can keep the full snapshot path"
+  );
+}
+
+function testInitialLoadKeepsPolicyRequiredButDashboardOptional() {
+  assert.match(
+    loadInitialAdminDataBody,
+    /fetchAdminPolicy\(\)/,
+    "initial admin load must keep policy as required data"
+  );
+  assert.match(
+    loadInitialAdminDataBody,
+    /settleAdminLoad\(fetchAdminDashboard\(\)\)/,
+    "initial admin load should not let dashboard counts block the admin shell"
+  );
+  assert.match(
+    loadInitialAdminDataBody,
+    /dashboard: dashboardResult\.ok \? dashboardResult\.value : createEmptyDashboardSnapshot\(\)/,
+    "initial admin load should use empty dashboard counts when dashboard loading fails"
+  );
+  assert.doesNotMatch(
+    loadInitialAdminDataBody,
+    /Promise\.all\(\[fetchAdminDashboard\(\), fetchAdminPolicy\(\)\]\)/,
+    "initial admin load must not bind dashboard and policy failures together"
   );
 }
 
@@ -435,6 +459,7 @@ function testHighRiskMutationsReleaseBusyStateInFinally() {
 
 testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst();
 testOverviewKeepsFullSnapshotRefresh();
+testInitialLoadKeepsPolicyRequiredButDashboardOptional();
 testFullSnapshotAppliesPartialListResults();
 testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();

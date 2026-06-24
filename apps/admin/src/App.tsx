@@ -43,6 +43,7 @@ import type {
   CreateTeamMemberInputDto,
   CreateTeamSubscriptionInputDto,
   CreateUserInputDto,
+  DashboardSnapshotDto,
   PlanScope,
   RenewSubscriptionInputDto,
   UpdateAnnouncementInputDto,
@@ -229,6 +230,20 @@ type NodeAccessEditorState = {
 
 type SnapshotListKey = Exclude<keyof AdminSnapshotDto, "dashboard" | "policy">;
 type FullSnapshotListKey = Exclude<SnapshotListKey, "releases">;
+
+function createEmptyDashboardSnapshot(): DashboardSnapshotDto {
+  return {
+    users: 0,
+    teams: 0,
+    activePlans: 0,
+    activeSubscriptions: 0,
+    activeNodes: 0,
+    announcements: 0,
+    openTickets: 0,
+    waitingAdminTickets: 0,
+    closedTickets: 0
+  };
+}
 
 type AdminAuthFormState = {
   account: string;
@@ -792,17 +807,7 @@ export function App() {
   function mergeSnapshot(patch: Partial<AdminSnapshotDto>) {
     setSnapshot((current) => {
       const base: AdminSnapshotDto = current ?? {
-        dashboard: {
-          users: 0,
-          teams: 0,
-          activePlans: 0,
-          activeSubscriptions: 0,
-          activeNodes: 0,
-          announcements: 0,
-          openTickets: 0,
-          waitingAdminTickets: 0,
-          closedTickets: 0
-        },
+        dashboard: createEmptyDashboardSnapshot(),
         users: [],
         plans: [],
         subscriptions: [],
@@ -822,8 +827,21 @@ export function App() {
     try {
       setLoading(true);
       setError(null);
-      const [dashboard, policy] = await Promise.all([fetchAdminDashboard(), fetchAdminPolicy()]);
-      mergeSnapshot({ dashboard, policy });
+      const [policy, dashboardResult] = await Promise.all([
+        fetchAdminPolicy(),
+        settleAdminLoad(fetchAdminDashboard())
+      ]);
+      mergeSnapshot({
+        policy,
+        dashboard: dashboardResult.ok ? dashboardResult.value : createEmptyDashboardSnapshot()
+      });
+      if (!dashboardResult.ok) {
+        notifications.show({
+          color: "yellow",
+          title: "后台统计加载失败",
+          message: readError(dashboardResult.reason, "后台统计暂时不可用，已先进入后台。")
+        });
+      }
       setLoadedSections(new Set());
     } catch (reason) {
       const message = readError(reason, "加载失败");
