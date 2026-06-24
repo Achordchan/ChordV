@@ -28,7 +28,21 @@ function testImageBedFileManagementUsesScopedTimeoutMessage() {
   assert.doesNotMatch(apiClientSource, /const IMAGE_BED_MANAGE_TIMEOUT_MS = 8 \* 1000;/);
 }
 
+function testImageBedSaveAndDeleteAlwaysReleaseBusyState() {
+  assert.match(
+    source,
+    /async function handleSave\(\)[\s\S]*?finally\s*{[\s\S]*?savingRef\.current = false;[\s\S]*?setSaving\(false\);[\s\S]*?}/,
+    "image bed config save should always release saving state after success, failure, or uncertain refresh"
+  );
+  assert.match(
+    source,
+    /async function handleDelete\(file: AdminImageBedFileDto\)[\s\S]*?finally\s*{[\s\S]*?deletingPathRef\.current === file\.name[\s\S]*?deletingPathRef\.current = null;[\s\S]*?setDeletingPath\(null\);[\s\S]*?}/,
+    "image bed delete should always release deleting state even when the request times out or remains uncertain"
+  );
+}
+
 testInitialConfigLoadRefreshesFileListWhenTokenExists();
 testImageBedFileManagementUsesScopedTimeoutMessage();
+testImageBedSaveAndDeleteAlwaysReleaseBusyState();
 
 console.log("image bed page regression checks passed");

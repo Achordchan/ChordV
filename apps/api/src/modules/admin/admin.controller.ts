@@ -518,6 +518,9 @@ export class AdminController {
 
   @Post("releases")
   createRelease(@Body() body: CreateReleaseDto) {
+    if (!body.platform || !body.channel || !body.version) {
+      throw new BadRequestException("发布平台、通道和版本号不能为空。");
+    }
     return this.devDataService.createRelease(body);
   }
 

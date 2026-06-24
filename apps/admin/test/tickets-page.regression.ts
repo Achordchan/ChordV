@@ -33,8 +33,17 @@ function testTicketAttachmentPreviewHasScopedStyles() {
   assert.match(styles, /\.admin-ticket-attachment-preview-frame img/);
 }
 
+function testTicketReplyAlwaysReleasesBusyState() {
+  assert.match(
+    source,
+    /async function handleReply\(\)[\s\S]*?replySavingRef\.current = true;[\s\S]*?finally\s*{[\s\S]*?replySavingRef\.current = false;[\s\S]*?setReplySaving\(false\);[\s\S]*?}/,
+    "admin ticket reply should always release replySaving after text reply, attachment reply, or failed upload"
+  );
+}
+
 testTicketAttachmentsOpenInPreviewModal();
 testTicketAttachmentImagesExposeLoadingFailureAndRecoveryStates();
 testTicketAttachmentPreviewHasScopedStyles();
+testTicketReplyAlwaysReleasesBusyState();
 
 console.log("admin tickets page regression checks passed");

@@ -5,6 +5,8 @@ import type { AdminLeaseRevocationJobDto } from "@chordv/shared";
 import { filterLeaseRevocationJobs } from "../src/utils/admin-queue-filters";
 
 const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
+const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+const subscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
 
 function makeLeaseJob(input: Partial<AdminLeaseRevocationJobDto>): AdminLeaseRevocationJobDto {
   return {
@@ -76,8 +78,37 @@ function testPendingAndFailedBackgroundJobsAreRetryable() {
   );
 }
 
+function testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus() {
+  for (const [label, source] of [
+    ["users", usersPageSource],
+    ["subscriptions", subscriptionsPageSource]
+  ] as const) {
+    assert.match(
+      source,
+      /function PanelSyncInlineStatus/,
+      `${label} page should expose inline panel sync status`
+    );
+    assert.match(
+      source,
+      /panelSyncStatus !== "pending" && \(summary\?\.total \?\? 0\) === 0/,
+      `${label} page should only show inline status for pending or active queue summaries`
+    );
+    assert.match(
+      source,
+      /<Badge color="yellow" variant="light">/,
+      `${label} page pending panel sync status should be yellow, not a red failure`
+    );
+    assert.match(
+      source,
+      /<Button[\s\S]*?color="yellow"[\s\S]*?onOpenPanelSyncQueue/,
+      `${label} page should let admins open the sync queue from pending inline status`
+    );
+  }
+}
+
 testTeamOnlyQueueFilterDoesNotHideLeaseRevocationJobs();
 testSpecificQueueFiltersStillApplyToLeaseRevocationJobs();
 testPendingAndFailedBackgroundJobsAreRetryable();
+testUserAndSubscriptionPendingPanelSyncUseYellowInlineStatus();
 
 console.log("admin nodes page regression checks passed");

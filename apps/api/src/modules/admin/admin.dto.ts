@@ -726,12 +726,15 @@ export class ReplySupportTicketAttachmentDto {
 }
 
 export class CreateReleaseDto {
+  @IsDefined()
   @IsIn(["macos", "windows", "android", "ios"])
   platform!: PlatformTarget;
 
+  @IsDefined()
   @IsIn(["stable"])
   channel!: ReleaseChannel;
 
+  @IsDefined()
   @IsString()
   @IsNotEmpty()
   @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)

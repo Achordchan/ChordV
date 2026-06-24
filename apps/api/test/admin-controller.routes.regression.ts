@@ -602,13 +602,19 @@ async function main() {
     );
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/releases", {
-        body: { version: "1.1.7", displayTitle: "", channel: "stable" }
+        body: { platform: "windows", version: "1.1.7", displayTitle: "", channel: "stable" }
       }),
       {
         status: 201,
-        body: { id: "release_1", body: { version: "1.1.7", displayTitle: "", channel: "stable" } }
+        body: { id: "release_1", body: { platform: "windows", version: "1.1.7", displayTitle: "", channel: "stable" } }
       }
     );
+    const releaseCreateCalls = calls.filter((call) => call.route === "release-create").length;
+    const invalidReleaseResponse = await requestJson(baseUrl, "/api/admin/releases", {
+      body: { version: "1.1.7", displayTitle: "", channel: "stable" }
+    });
+    assert.equal(invalidReleaseResponse.status, 400);
+    assert.equal(calls.filter((call) => call.route === "release-create").length, releaseCreateCalls);
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/releases/release_1", {
         method: "PATCH",
@@ -974,7 +980,7 @@ async function main() {
       { route: "announcement-create", value: "new", body: { title: "公告", content: "内容", priority: "normal" } },
       { route: "announcement-update", value: "announcement_1", body: { title: "公告更新" } },
       { route: "announcement-delete", value: "announcement_1" },
-      { route: "release-create", value: "new", body: { version: "1.1.7", displayTitle: "", channel: "stable" } },
+      { route: "release-create", value: "new", body: { platform: "windows", version: "1.1.7", displayTitle: "", channel: "stable" } },
       { route: "release-update", value: "release_1", body: { displayTitle: "" } },
       { route: "release-publish", value: "release_1" },
       { route: "release-unpublish", value: "release_1" },
