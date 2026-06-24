@@ -1632,11 +1632,8 @@ export class DevDataService implements OnModuleInit {
         panelSyncStatus = "pending";
         panelSyncMessage = queuedRevocationMessage ?? "3x-ui client disable and lease revocation jobs queued; local node access is already invalid.";
         reasonCode = "node_access_revoked";
-        reasonMessage = "当前订阅的节点授权已全部取消，现有连接会立即失效。";
-        message =
-          revokedSessionCount > 0
-            ? `节点授权已清空，已断开 ${revokedSessionCount} 条现有连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`
-            : `节点授权已清空，当前没有活跃连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
+        reasonMessage = "当前订阅的节点授权已全部取消，本地权限已立即失效；连接撤销任务会后台处理。";
+        message = "节点授权已清空，本地权限已立即失效；连接撤销和面板同步任务已排队。";
       }
 
       this.publishNodeAccessUpdatedEventInBackground({
@@ -1738,11 +1735,8 @@ export class DevDataService implements OnModuleInit {
         .filter(Boolean)
         .join(" ");
       reasonCode = "node_access_revoked";
-      reasonMessage = "已取消部分节点授权，正在使用这些节点的连接会立即失效。";
-      message =
-        revokedSessionCount > 0
-          ? `节点授权已保存，已断开 ${revokedSessionCount} 条受影响连接。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`
-          : `节点授权已保存。${panelSyncMessage ? ` ${panelSyncMessage}` : ""}`;
+      reasonMessage = "已取消部分节点授权，本地权限已立即失效；连接撤销任务会后台处理。";
+      message = "节点授权已保存，已移除的节点本地权限已立即失效；连接撤销和面板同步任务已排队。";
       if (addedNodeIds.length === 0) {
         this.publishNodeAccessUpdatedEventInBackground({
           subscriptionId,

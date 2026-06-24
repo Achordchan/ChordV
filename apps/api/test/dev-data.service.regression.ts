@@ -12138,6 +12138,96 @@ async function testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls() {
   assert.match(result.panelSyncMessage ?? "", /queued|后台处理/);
 }
 
+async function testNodeAccessRemovalMessagesDescribeQueuedRevocation() {
+  const baseNode = {
+    id: "node_keep",
+    name: "keep",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+
+  let clearRows = [{ id: "access_old", nodeId: "node_old" }];
+  const clearService = createDevDataService({
+    requireSubscription: async () => ({ id: "sub_clear", userId: "user_1", teamId: null }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async () => clearRows,
+        deleteMany: async () => {
+          clearRows = [];
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              clearRows = [];
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 1
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const clearResult = await clearService.updateSubscriptionNodeAccess("sub_clear", { nodeIds: [] });
+  assert.equal(clearResult.reasonMessage, "当前订阅的节点授权已全部取消，本地权限已立即失效；连接撤销任务会后台处理。");
+  assert.equal(clearResult.message, "节点授权已清空，本地权限已立即失效；连接撤销和面板同步任务已排队。");
+
+  let replaceRows = [
+    { id: "access_old", nodeId: "node_old" },
+    { id: "access_keep", nodeId: "node_keep" }
+  ];
+  const replaceService = createDevDataService({
+    requireSubscription: async () => ({ id: "sub_replace", userId: "user_1", teamId: null }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return replaceRows;
+          }
+          return replaceRows
+            .filter((row) => row.nodeId === "node_keep")
+            .map((row) => ({ ...row, node: baseNode }));
+        },
+        deleteMany: async () => {
+          replaceRows = replaceRows.filter((row) => row.nodeId !== "node_old");
+        }
+      },
+      node: {
+        findMany: async () => [baseNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              replaceRows = replaceRows.filter((row) => row.nodeId !== "node_old");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => 1,
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 1
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  const replaceResult = await replaceService.updateSubscriptionNodeAccess("sub_replace", { nodeIds: ["node_keep"] });
+  assert.equal(replaceResult.reasonMessage, "已取消部分节点授权，本地权限已立即失效；连接撤销任务会后台处理。");
+  assert.equal(replaceResult.message, "节点授权已保存，已移除的节点本地权限已立即失效；连接撤销和面板同步任务已排队。");
+}
+
 async function testClearNodeAccessDoesNotWaitForHeldUsageLock() {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -31270,6 +31360,7 @@ async function main() {
   await testUpdateNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReportsPendingWhenPanelDisableQueueFails();
   await testClearNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
+  await testNodeAccessRemovalMessagesDescribeQueuedRevocation();
   await testClearNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessDoesNotWaitForHeldUsageLock();
   await testRemoveSingleNodeAccessReturnsPendingWhenRevocationFollowUpStalls();
