@@ -9,6 +9,7 @@ export const ADMIN_PROFILE_KEY = "chordv_admin_profile";
 export const ADMIN_SESSION_EXPIRED_EVENT = "chordv:admin-session-expired";
 export const ADMIN_SESSION_EXPIRED_MESSAGE = "登录态已失效，请重新登录";
 const DEFAULT_REQUEST_TIMEOUT_MS = 60 * 1000;
+const REQUEST_ID_HEADER = "X-Request-Id";
 
 type RequestOptions = RequestInit & {
   timeoutMs?: number;
@@ -27,10 +28,15 @@ type AuthSessionResponse = {
 let refreshPromise: Promise<string | null> | null = null;
 let adminAccessToken: string | null = null;
 
-function buildHttpErrorMessage(status: number, text: string) {
+function buildHttpErrorMessage(status: number, text: string, requestId?: string | null) {
   const trimmed = text.trim();
   if (trimmed.length === 0) {
-    return `HTTP ${status}`;
+    return JSON.stringify({
+      statusCode: status,
+      status,
+      message: `HTTP ${status}`,
+      ...(requestId ? { requestId } : {})
+    });
   }
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
@@ -38,13 +44,19 @@ function buildHttpErrorMessage(status: number, text: string) {
       return JSON.stringify({
         ...parsed,
         statusCode: typeof parsed.statusCode === "number" ? parsed.statusCode : status,
-        status: typeof parsed.status === "number" ? parsed.status : status
+        status: typeof parsed.status === "number" ? parsed.status : status,
+        requestId: typeof parsed.requestId === "string" && parsed.requestId.trim() ? parsed.requestId : requestId
       });
     }
   } catch {
     // Fall through to a plain-text error while preserving the HTTP status.
   }
-  return `HTTP ${status}: ${trimmed}`;
+  return JSON.stringify({
+    statusCode: status,
+    status,
+    message: trimmed,
+    ...(requestId ? { requestId } : {})
+  });
 }
 
 export function getStoredAdminAccessToken() {
@@ -119,6 +131,7 @@ async function requestOnce(path: string, init?: RequestOptions, useAuth = true, 
   const timer = window.setTimeout(() => controller.abort(new Error("请求超时")), timeoutMs);
   const adminAccessToken = useAuth ? accessTokenOverride ?? getStoredAdminAccessToken() : "";
   const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const requestId = buildAdminRequestId();
 
   const method = init?.method ?? "GET";
   const requestUrl = `${API_BASE}/api${path}`;
@@ -130,12 +143,13 @@ async function requestOnce(path: string, init?: RequestOptions, useAuth = true, 
       headers: {
         ...(adminAccessToken ? { Authorization: `Bearer ${adminAccessToken}` } : {}),
         ...(!isFormData ? { "Content-Type": "application/json" } : {}),
+        [REQUEST_ID_HEADER]: requestId,
         ...(init?.headers ?? {})
       }
     });
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : String(reason);
-    throw new Error(`${method} /api${path} failed before HTTP response: ${message}`);
+    throw new Error(`${method} /api${path} failed before HTTP response requestId=${requestId}: ${message}`);
   } finally {
     window.clearTimeout(timer);
   }
@@ -195,7 +209,7 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
         throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);
       }
     } else {
-      throw new Error(buildHttpErrorMessage(response.status, text));
+      throw new Error(buildHttpErrorMessage(response.status, text, response.headers.get(REQUEST_ID_HEADER)));
     }
   }
 
@@ -205,7 +219,7 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
       clearStoredAdminSession({ notify: true });
       throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);
     }
-    throw new Error(buildHttpErrorMessage(response.status, text));
+    throw new Error(buildHttpErrorMessage(response.status, text, response.headers.get(REQUEST_ID_HEADER)));
   }
 
   if (response.status === 204) {
@@ -217,4 +231,11 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
     return undefined as T;
   }
   return JSON.parse(text) as T;
+}
+
+function buildAdminRequestId() {
+  const randomId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `admin-${randomId}`;
 }

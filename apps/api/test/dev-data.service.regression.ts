@@ -19704,15 +19704,21 @@ function testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError() {
   const filter = new LoggingExceptionFilter();
   let statusCode: number | null = null;
   let responseBody: any = null;
+  let responseRequestId: string | null = null;
   const host = {
     switchToHttp: () => ({
       getRequest: () => ({
         method: "PATCH",
         originalUrl: "/api/admin/users/user_1",
         ip: "127.0.0.1",
-        headers: {}
+        headers: { "x-request-id": "admin-test-request-id" }
       }),
       getResponse: () => ({
+        setHeader: (name: string, value: string) => {
+          if (name.toLowerCase() === "x-request-id") {
+            responseRequestId = value;
+          }
+        },
         status: (code: number) => {
           statusCode = code;
           return {
@@ -19730,6 +19736,8 @@ function testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError() {
   assert.equal(statusCode, 500);
   assert.equal(responseBody.statusCode, 500);
   assert.equal(responseBody.message, "Internal server error");
+  assert.equal(responseBody.requestId, "admin-test-request-id");
+  assert.equal(responseRequestId, "admin-test-request-id");
 }
 
 async function testConnectRejectsPanelDisabledNode() {
