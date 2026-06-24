@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { buildExternalArtifactPayload } from "../src/features/releases/artifactPayloads";
 import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEditorForm } from "../src/features/releases/types";
 
 function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
@@ -73,9 +74,40 @@ function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
   assert.equal("version" in payload, false, "blank title edits must not silently reuse version as display title");
 }
 
+function testWindowsZipExternalArtifactCanStayExternalDownload() {
+  const payload = buildExternalArtifactPayload(
+    "windows",
+    " https://cdn.example.com/ChordV_1.1.6_x64-full.zip ",
+    true,
+    "external_download"
+  );
+
+  assert.equal(payload.source, "external");
+  assert.equal(payload.type, "external");
+  assert.equal(payload.deliveryMode, "external_download");
+  assert.equal(payload.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
+  assert.equal(payload.fileName, "ChordV_1.1.6_x64-full.zip");
+  assert.equal(payload.isPrimary, true);
+}
+
+function testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit() {
+  const payload = buildExternalArtifactPayload(
+    "windows",
+    "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
+    true,
+    "windows_full_replace_zip"
+  );
+
+  assert.equal(payload.source, "external");
+  assert.equal(payload.type, "zip");
+  assert.equal(payload.deliveryMode, "desktop_full_replace");
+}
+
 testCreateReleasePayloadKeepsReleaseFieldsSimple();
 testCreateReleasePayloadOmitsOptionalPublishingFlags();
 testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
 testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
+testWindowsZipExternalArtifactCanStayExternalDownload();
+testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
 
 console.log("release admin regression checks passed");

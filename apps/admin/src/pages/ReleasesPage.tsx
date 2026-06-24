@@ -24,6 +24,7 @@ import {
   uploadAdminReleaseArtifact
 } from "../api/client";
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
+import { buildExternalArtifactPayload } from "../features/releases/artifactPayloads";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
 import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
 import {
@@ -891,31 +892,6 @@ function buildUploadedArtifactPayload(
   };
 }
 
-function buildExternalArtifactPayload(
-  platform: AdminReleasePlatform,
-  downloadUrl: string,
-  isPrimary: boolean,
-  externalDeliveryMode: "external_download" | "windows_full_replace_zip" = "external_download"
-) {
-  const type =
-    platform === "windows" && externalDeliveryMode === "windows_full_replace_zip"
-      ? "zip"
-      : platform === "windows"
-        ? "external"
-      : inferExternalArtifactType(platform, downloadUrl);
-  return {
-    source: "external" as const,
-    type,
-    deliveryMode:
-      platform === "windows" && externalDeliveryMode === "external_download"
-        ? "external_download"
-        : deliveryModeForExternalArtifact(platform, type),
-    downloadUrl: downloadUrl.trim(),
-    fileName: inferFileNameFromUrl(downloadUrl),
-    isPrimary
-  };
-}
-
 function inferUploadedArtifactType(
   platform: AdminReleasePlatform,
   fileName: string,
@@ -926,23 +902,6 @@ function inferUploadedArtifactType(
     return "zip";
   }
   return fallbackType;
-}
-
-function inferExternalArtifactType(platform: AdminReleasePlatform, downloadUrl: string): AdminReleaseArtifactType {
-  const pathname = inferUrlPathname(downloadUrl);
-  if (platform === "windows") {
-    if (pathname.endsWith(".zip")) {
-      return "zip";
-    }
-    return "external";
-  }
-  if (platform === "macos") {
-    return pathname.endsWith(".dmg") ? "dmg" : "external";
-  }
-  if (platform === "android") {
-    return pathname.endsWith(".apk") ? "apk" : "external";
-  }
-  return pathname.endsWith(".ipa") ? "ipa" : "external";
 }
 
 function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
@@ -956,29 +915,6 @@ function deliveryModeForUploadedArtifact(platform: AdminReleasePlatform, type: A
     return "external_download" as const;
   }
   return "desktop_installer_download" as const;
-}
-
-function deliveryModeForExternalArtifact(platform: AdminReleasePlatform, type: AdminReleaseArtifactType) {
-  if (platform === "windows" && type === "zip") {
-    return "desktop_full_replace" as const;
-  }
-  if (platform === "macos" && type === "dmg") {
-    return "desktop_installer_download" as const;
-  }
-  if (platform === "android" && type === "apk") {
-    return "apk_download" as const;
-  }
-  return "external_download" as const;
-}
-
-function inferFileNameFromUrl(downloadUrl: string) {
-  try {
-    const pathname = new URL(downloadUrl.trim()).pathname;
-    const fileName = pathname.split("/").filter(Boolean).pop();
-    return fileName ? decodeURIComponent(fileName) : null;
-  } catch {
-    return null;
-  }
 }
 
 function inferUrlPathname(downloadUrl: string) {
