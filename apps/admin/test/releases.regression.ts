@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { buildExternalArtifactPayload } from "../src/features/releases/artifactPayloads";
 import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEditorForm } from "../src/features/releases/types";
+
+const releaseRecordCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/releases/ReleaseRecordCard.tsx"), "utf8");
 
 function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
   const form = {
@@ -118,6 +122,11 @@ function testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit() {
   assert.equal(payload.isPrimary, true);
 }
 
+function testReleaseArtifactLongDownloadUrlDoesNotForceWideCards() {
+  assert.match(releaseRecordCardSource, /lineClamp=\{2\}/);
+  assert.match(releaseRecordCardSource, /overflowWrap: "anywhere"/);
+}
+
 testCreateReleasePayloadKeepsReleaseFieldsSimple();
 testCreateReleasePayloadOmitsOptionalPublishingFlags();
 testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
@@ -125,5 +134,6 @@ testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
 testWindowsZipExternalArtifactCanStayExternalDownload();
 testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
 testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
+testReleaseArtifactLongDownloadUrlDoesNotForceWideCards();
 
 console.log("release admin regression checks passed");

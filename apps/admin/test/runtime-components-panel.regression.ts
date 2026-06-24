@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { applyRuntimeComponentValidationToDelivery, getRuntimeComponentDeliveryState } from "../src/features/runtime-components/delivery-state";
 import type { AdminRuntimeComponentRecordDto, AdminRuntimeComponentValidationDto } from "../src/api/client";
+
+const runtimeComponentsPanelSource = readFileSync(resolve(import.meta.dirname, "../src/features/runtime-components/RuntimeComponentsPanel.tsx"), "utf8");
 
 function makeRuntimeComponent(overrides: Partial<AdminRuntimeComponentRecordDto> = {}): AdminRuntimeComponentRecordDto {
   return {
@@ -142,6 +146,11 @@ function testFailedValidationBlocksDeliveryState() {
   assert.equal(getRuntimeComponentDeliveryState(next).label, "保存失败");
 }
 
+function testRuntimeComponentsTableKeepsReadableMinimumWidth() {
+  assert.match(runtimeComponentsPanelSource, /<ScrollArea>/);
+  assert.match(runtimeComponentsPanelSource, /<Box style={{ minWidth: 1200 }}>/);
+}
+
 testEnabledRemotePendingValidationIsNotShownAsDeliverable();
 testEnabledRemoteHashMismatchIsShownAsBlocked();
 testSaveFailedIsNotShownAsHashMismatch();
@@ -150,5 +159,6 @@ testDeliverableComponentIsShownAsDeliverable();
 testMissingDeliveryFieldsAreShownAsUnknown();
 testReadyValidationUpdatesDeliveryState();
 testFailedValidationBlocksDeliveryState();
+testRuntimeComponentsTableKeepsReadableMinimumWidth();
 
 console.log("runtime components panel regression checks passed");

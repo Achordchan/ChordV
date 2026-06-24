@@ -15,6 +15,7 @@ function testInitialConfigLoadRefreshesFileListWhenTokenExists() {
 
 function testImageBedFileManagementUsesScopedTimeoutMessage() {
   assert.match(apiClientSource, /const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 \* 1000;/);
+  assert.match(apiClientSource, /const IMAGE_BED_LIST_TIMEOUT_MESSAGE = "图床文件列表加载超时，请稍后重试或缩小搜索范围。";/);
   assert.match(apiClientSource, /const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请稍后刷新文件列表确认结果。";/);
   assert.match(apiClientSource, /async function requestAdminImageBedManage/);
   assert.match(apiClientSource, /function isBackendHttpErrorMessage/);
@@ -24,6 +25,11 @@ function testImageBedFileManagementUsesScopedTimeoutMessage() {
     "image bed manage wrapper should not replace backend JSON errors with the local timeout message"
   );
   assert.match(apiClientSource, /requestAdminImageBedManage<AdminImageBedFileListDto>/);
+  assert.match(
+    apiClientSource,
+    /requestAdminImageBedManage<AdminImageBedFileListDto>[\s\S]*?timeoutMessage: IMAGE_BED_LIST_TIMEOUT_MESSAGE/,
+    "image bed list loading should use read-specific timeout copy instead of mutation confirmation copy"
+  );
   assert.match(apiClientSource, /requestAdminImageBedManage<DeleteAdminImageBedFileResultDto>/);
   assert.doesNotMatch(apiClientSource, /const IMAGE_BED_MANAGE_TIMEOUT_MS = 8 \* 1000;/);
 }

@@ -252,8 +252,8 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
               return (
                 <Accordion.Item key={team.id} value={team.id}>
                   <Accordion.Control onClick={() => props.onLoadTeamUsage(team.id)}>
-                    <Group justify="space-between" wrap="nowrap">
-                      <Stack gap={2} miw={280}>
+                    <Group justify="space-between" wrap="wrap">
+                      <Stack gap={2} miw={280} style={{ minWidth: 0, overflowWrap: "anywhere" }}>
                         <Text fw={600}>{team.name}</Text>
                         <Text size="sm" c="dimmed">
                           {team.ownerDisplayName} · {team.memberCount} 人

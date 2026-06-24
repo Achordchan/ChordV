@@ -3,6 +3,7 @@ import {
   ActionIcon,
   Alert,
   Badge,
+  Box,
   Button,
   Card,
   Group,
@@ -519,6 +520,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
       </Stack>
 
       <ScrollArea>
+        <Box style={{ minWidth: 1200 }}>
         <Table striped highlightOnHover withTableBorder>
           <Table.Thead>
             <Table.Tr>
@@ -667,6 +669,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
             ) : null}
           </Table.Tbody>
         </Table>
+        </Box>
       </ScrollArea>
     </Stack>
   );

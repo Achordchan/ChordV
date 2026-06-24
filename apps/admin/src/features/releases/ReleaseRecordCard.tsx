@@ -192,7 +192,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                             {artifact.isPrimary ? <Badge color="blue" variant="light">更新入口</Badge> : null}
                           </Group>
                           <Text fw={600}>{artifact.fileName || "未命名安装包"}</Text>
-                          <Text size="sm" c="dimmed">
+                          <Text size="sm" c="dimmed" lineClamp={2} style={{ overflowWrap: "anywhere" }}>
                             下载地址：{downloadUrl}
                           </Text>
                         </Stack>

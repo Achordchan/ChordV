@@ -297,17 +297,17 @@ export class CreateSubscriptionDto {
 }
 
 export class RenewSubscriptionDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   @IsDateString()
   expireAt?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   resetTraffic?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -319,13 +319,13 @@ export class ChangeSubscriptionPlanDto {
   @IsNotEmpty()
   planId!: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   totalTrafficGb?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   @IsDateString()
@@ -333,25 +333,25 @@ export class ChangeSubscriptionPlanDto {
 }
 
 export class UpdateSubscriptionDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   totalTrafficGb?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   usedTrafficGb?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @IsNotEmpty()
   @IsDateString()
   expireAt?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "expired", "exhausted", "paused"])
   state?: SubscriptionState;
 }

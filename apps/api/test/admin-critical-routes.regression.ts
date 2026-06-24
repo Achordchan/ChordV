@@ -14,6 +14,7 @@ import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 import { ClientService } from "../src/modules/client/client.service";
 import {
+  ChangeSubscriptionPlanDto,
   CreateAnnouncementDto,
   CreatePlanDto,
   CreateReleaseArtifactDto,
@@ -21,7 +22,9 @@ import {
   CreateRuntimeComponentDto,
   CreateSubscriptionDto,
   CreateTeamDto,
-  CreateTeamSubscriptionDto
+  CreateTeamSubscriptionDto,
+  RenewSubscriptionDto,
+  UpdateSubscriptionDto
 } from "../src/modules/admin/admin.dto";
 
 type RouteCall = {
@@ -40,6 +43,9 @@ Reflect.defineMetadata(
 );
 Reflect.defineMetadata("design:paramtypes", [CreatePlanDto], AdminController.prototype, "createPlan");
 Reflect.defineMetadata("design:paramtypes", [CreateSubscriptionDto], AdminController.prototype, "createSubscription");
+Reflect.defineMetadata("design:paramtypes", [String, RenewSubscriptionDto], AdminController.prototype, "renewSubscription");
+Reflect.defineMetadata("design:paramtypes", [String, ChangeSubscriptionPlanDto], AdminController.prototype, "changeSubscriptionPlan");
+Reflect.defineMetadata("design:paramtypes", [String, UpdateSubscriptionDto], AdminController.prototype, "updateSubscription");
 Reflect.defineMetadata("design:paramtypes", [CreateTeamDto], AdminController.prototype, "createTeam");
 Reflect.defineMetadata("design:paramtypes", [String, CreateTeamSubscriptionDto], AdminController.prototype, "createTeamSubscription");
 Reflect.defineMetadata("design:paramtypes", [CreateAnnouncementDto], AdminController.prototype, "createAnnouncement");
@@ -189,9 +195,9 @@ async function requestJson(
   return { status: response.status, body };
 }
 
-async function assertJsonBadRequest(baseUrl: string, path: string, body: unknown) {
+async function assertJsonBadRequest(baseUrl: string, path: string, body: unknown, method = "POST") {
   const callCountBefore = calls.length;
-  const response = await requestJson(baseUrl, path, { body });
+  const response = await requestJson(baseUrl, path, { method, body });
   assert.equal(response.status, 400, `${path} should reject null-only optional fields before service execution`);
   assert.equal(calls.length, callCountBefore, `${path} should not call service after DTO validation failure`);
 }
@@ -260,6 +266,35 @@ async function main() {
       expireAt,
       state: null
     });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1/renew", {
+      expireAt: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1/renew", {
+      resetTraffic: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1/renew", {
+      totalTrafficGb: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1/change-plan", {
+      planId: "plan_2",
+      totalTrafficGb: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1/change-plan", {
+      planId: "plan_2",
+      expireAt: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1", {
+      totalTrafficGb: null
+    }, "PATCH");
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1", {
+      usedTrafficGb: null
+    }, "PATCH");
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1", {
+      expireAt: null
+    }, "PATCH");
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions/subscription_1", {
+      state: null
+    }, "PATCH");
     await assertJsonBadRequest(baseUrl, "/api/admin/teams", {
       name: "Null Team",
       ownerUserId: "user_1",

@@ -168,9 +168,9 @@ export function UsersPage(props: UsersPageProps) {
               {props.filteredTeams.map((item) => (
                 <Accordion.Item key={item.id} value={item.id}>
                   <Accordion.Control>
-                    <Group justify="space-between" wrap="nowrap">
-                      <Group gap="xl" wrap="nowrap">
-                        <Stack gap={0} miw={220}>
+                    <Group justify="space-between" wrap="wrap">
+                      <Group gap="xl" wrap="wrap" style={{ minWidth: 0 }}>
+                        <Stack gap={0} miw={220} style={{ minWidth: 0, overflowWrap: "anywhere" }}>
                           <Text fw={600}>{item.name}</Text>
                           <Text size="sm" c="dimmed">
                             {item.ownerDisplayName} · {item.ownerEmail}

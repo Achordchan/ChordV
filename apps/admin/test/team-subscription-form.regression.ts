@@ -122,6 +122,17 @@ function testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons() {
   assert.doesNotMatch(subscriptionsSource, /IconBolt/);
 }
 
+function testTeamHeadersAllowWrappingOnNarrowScreens() {
+  const usersSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+  const subscriptionsSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
+
+  assert.match(usersSource, /<Group justify="space-between" wrap="wrap">/);
+  assert.match(usersSource, /<Group gap="xl" wrap="wrap" style={{ minWidth: 0 }}>/);
+  assert.match(usersSource, /style={{ minWidth: 0, overflowWrap: "anywhere" }}/);
+  assert.match(subscriptionsSource, /<Group justify="space-between" wrap="wrap">/);
+  assert.match(subscriptionsSource, /style={{ minWidth: 0, overflowWrap: "anywhere" }}/);
+}
+
 testEmptyTeamSubscriptionFormDefaultsUsedTrafficToZero();
 testApplyTeamPlanKeepsUsedTraffic();
 testApplyMissingTeamPlanKeepsUsedTraffic();
@@ -131,5 +142,6 @@ testInlineTeamSubscriptionEditorExposesUsedTrafficInput();
 testTeamMemberDisconnectCopyIsTeamScoped();
 testUserDisconnectActionsUseDisconnectIcon();
 testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons();
+testTeamHeadersAllowWrappingOnNarrowScreens();
 
 console.log("team subscription form regression checks passed");
