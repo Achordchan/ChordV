@@ -4045,6 +4045,76 @@ async function testCreateReleaseWithInitialArtifactUsesSingleTransaction() {
   assert.equal(result.artifacts[0]?.fileHash, null);
 }
 
+async function testCreateReleaseWithInitialExternalFullReplaceAllowsNonZipUrl() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  let createdArtifactData: Record<string, any> | null = null;
+  const service = createReleaseCenterService({
+    prisma: {
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          release: {
+            create: async (payload: Record<string, any>) => ({
+              ...payload.data,
+              createdAt: now,
+              updatedAt: now,
+              artifacts: []
+            })
+          },
+          releaseArtifact: {
+            create: async (payload: Record<string, any>) => {
+              createdArtifactData = payload.data;
+              return makeReleaseCenterTestArtifact({
+                id: payload.data.id,
+                releaseId: payload.data.releaseId,
+                source: payload.data.source,
+                type: payload.data.type,
+                deliveryMode: payload.data.deliveryMode,
+                downloadUrl: payload.data.downloadUrl,
+                defaultMirrorPrefix: payload.data.defaultMirrorPrefix,
+                allowClientMirror: payload.data.allowClientMirror,
+                fileName: payload.data.fileName,
+                fileSizeBytes: payload.data.fileSizeBytes,
+                fileHash: payload.data.fileHash,
+                isPrimary: payload.data.isPrimary,
+                isFullPackage: payload.data.isFullPackage
+              });
+            }
+          }
+        }),
+      release: {
+        findUnique: async () => {
+          throw new Error("force fallback response to prove transaction result is usable");
+        }
+      }
+    },
+    logger: {
+      warn: () => undefined
+    }
+  });
+
+  const result = await service.createRelease({
+    platform: "windows",
+    channel: "stable",
+    version: "1.1.6",
+    changelog: ["Full replacement"],
+    status: "draft",
+    initialArtifact: {
+      source: "external",
+      type: "zip",
+      deliveryMode: "desktop_full_replace",
+      downloadUrl: "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full",
+      isPrimary: true
+    }
+  });
+
+  assert.equal(createdArtifactData?.type, "zip");
+  assert.equal(createdArtifactData?.deliveryMode, "desktop_full_replace");
+  assert.equal(createdArtifactData?.downloadUrl, "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full");
+  assert.equal(createdArtifactData?.fileSizeBytes, null);
+  assert.equal(createdArtifactData?.fileHash, null);
+  assert.equal(result.artifacts[0]?.id, createdArtifactData?.id);
+}
+
 async function testCreateReleaseRejectsDuplicateVersionAsConflict() {
   const service = createReleaseCenterService({
     prisma: {
@@ -13730,6 +13800,259 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
   }
 }
 
+async function testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFails() {
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows = [{ id: "access_offline", nodeId: "node_offline", node: offlineNode }];
+  const panelSyncUpserts: Array<Record<string, any>> = [];
+  const disabledBindingIds: string[][] = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const adminEvents: Array<Record<string, unknown>> = [];
+  const warnings: string[] = [];
+  let xuiDisableCalls = 0;
+
+  const runtimeSession = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
+    xuiService: {
+      setClientEnabled: async () => {
+        xuiDisableCalls += 1;
+        throw new Error("offline panel connection refused");
+      }
+    },
+    prisma: {
+      panelSyncJob: {
+        findUnique: async () => ({
+          id: "job_disable_offline",
+          userId: "user_1",
+          teamId: null,
+          binding: {
+            status: "disabled",
+            user: { status: "active" }
+          },
+          node: {
+            isActive: true,
+            panelEnabled: true
+          },
+          subscription: {
+            userId: "user_1",
+            teamId: null,
+            state: "active",
+            expireAt: new Date(Date.now() + 86_400_000),
+            remainingTrafficGb: 10,
+            user: { status: "active" },
+            team: null,
+            nodeAccesses: []
+          }
+        }),
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return {};
+        }
+      },
+      panelClientBinding: {
+        update: async () => {
+          throw new Error("offline panel failure must not mark the binding completed");
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  const createPanelQueueWriter = () => ({
+    subscriptionNodeAccess: {
+      deleteMany: async () => {
+        accessRows = [];
+      }
+    },
+    panelClientBinding: {
+      findMany: async () => [
+        {
+          id: "binding_offline",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_offline",
+          panelClientEmail: "offline@example.com",
+          panelClientId: "client_offline",
+          panelInboundId: 7,
+          status: "active",
+          node: {
+            panelBaseUrl: "https://offline-panel.example.com",
+            panelApiBasePath: "/panel",
+            panelUsername: "admin",
+            panelPassword: "secret"
+          }
+        }
+      ],
+      updateMany: async (payload: Record<string, any>) => {
+        disabledBindingIds.push(payload.where.id.in);
+        return { count: payload.where.id.in.length };
+      }
+    },
+    panelSyncJob: {
+      upsert: async (payload: Record<string, any>) => {
+        panelSyncUpserts.push(payload);
+        return {};
+      }
+    }
+  });
+
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) => task(createPanelQueueWriter())
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: runtimeSession.queuePanelDisableJobsForSubscriptionTx.bind(runtimeSession),
+      queueLeaseRevocationJobsForSubscriptionTx: async () => 1,
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw new Error("clear node access must use transaction-scoped queueing first");
+      },
+      queueLeaseRevocationJobsForSubscription: async () => 1,
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("clear node access must not call direct panel sync");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpOfflinePanelRetryRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpOfflinePanelRetryRegressionModule, { logger: false });
+  app.setGlobalPrefix("api");
+  app.useGlobalFilters(new LoggingExceptionFilter());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: [] })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200, `offline panel revocation must save locally before retrying in background: ${JSON.stringify(body)}`);
+    assert.deepEqual(accessRows, [], "local node access must be cleared before any offline panel retry runs");
+    assert.equal(panelSyncUpserts.length, 1, "clearing node access must queue a disable_client job");
+    assert.equal(panelSyncUpserts[0].create.action, "disable_client");
+    assert.equal(panelSyncUpserts[0].create.bindingId, "binding_offline");
+    assert.deepEqual(disabledBindingIds, [["binding_offline"]]);
+    assert.equal(body.panelSyncStatus, "pending");
+
+    await runtimeSession["runPanelSyncJob"]({
+      ...panelSyncUpserts[0].create,
+      id: "job_disable_offline",
+      attempts: 0,
+      bindingId: "binding_offline",
+      node: {
+        id: "node_offline",
+        name: "offline",
+        flow: "",
+        isActive: true,
+        panelEnabled: true,
+        panelBaseUrl: "https://current-panel.example.com",
+        panelApiBasePath: "/current",
+        panelUsername: "current-admin",
+        panelPassword: "current-secret",
+        panelInboundId: 7
+      },
+      binding: {
+        status: "disabled"
+      }
+    });
+
+    assert.equal(xuiDisableCalls, 1, "queued disable job should retry the offline panel in background");
+    assert.equal(nodeUpdates.length, 1, "offline panel retry should mark the node degraded");
+    assert.equal(nodeUpdates[0].data.panelStatus, "degraded");
+    assert.match(nodeUpdates[0].data.panelError, /offline panel connection refused/);
+    assert.equal(jobUpdates.length, 1, "offline panel retry should keep the job for background retry");
+    assert.equal(jobUpdates[0].data.status, "failed");
+    assert.equal(jobUpdates[0].data.attempts, 1);
+    assert.match(jobUpdates[0].data.lastError, /offline panel connection refused/);
+    assert.equal(adminEvents.some((event) => event.type === "sync_queue_updated"), true);
+    assert.match(warnings.join("\n"), /offline panel connection refused/);
+  } finally {
+    await app.close();
+  }
+}
+
 async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable() {
   const devDataService = createDevDataService({
     logger: {
@@ -22735,6 +23058,64 @@ async function testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl() {
   assert.equal(updates[0].data.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
   assert.equal(updates[0].data.type, "zip");
   assert.equal(updates[0].data.deliveryMode, "desktop_full_replace");
+  assert.equal(result.id, "release_1");
+}
+
+async function testUpdateWindowsFullReplaceExternalKeepsModeForNonZipUrl() {
+  const artifact = makeReleaseCenterTestArtifact({
+    id: "artifact_existing",
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    fileName: "ChordV-old.zip",
+    downloadUrl: "https://example.com/ChordV-old.zip"
+  });
+  const updates: Array<Record<string, any>> = [];
+  const service = createReleaseCenterService({
+    prisma: {
+      releaseArtifact: {
+        findFirst: async () => artifact,
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...artifact,
+            ...payload.data
+          };
+        }
+      },
+      release: {
+        findUnique: async () =>
+          makeReleaseCenterTestRelease({
+            platform: "windows",
+            artifacts: [artifact]
+          })
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            update: async (payload: Record<string, any>) => {
+              updates.push(payload);
+              return {
+                ...artifact,
+                ...payload.data
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await service.updateReleaseArtifact("release_1", "artifact_existing", {
+    downloadUrl: "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full"
+  });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.downloadUrl, "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full");
+  assert.equal(updates[0].data.type, "zip");
+  assert.equal(updates[0].data.deliveryMode, "desktop_full_replace");
+  assert.equal(updates[0].data.fileSizeBytes, null);
+  assert.equal(updates[0].data.fileHash, null);
   assert.equal(result.id, "release_1");
 }
 
@@ -32271,6 +32652,7 @@ async function main() {
   await testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow();
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
+  await testCreateReleaseWithInitialExternalFullReplaceAllowsNonZipUrl();
   await testCreateReleaseRejectsDuplicateVersionAsConflict();
   await testCreateReleaseMapsLocalSaveFailure();
   await testPublishReleaseKeepsLocalSaveWhenVersionEventFails();
@@ -32436,6 +32818,7 @@ async function main() {
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishThrowsSynchronously();
   await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
   await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
+  await testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFails();
   await testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable();
   await testNodeAccessHttpMapsNodeListFailureToServiceUnavailable();
   await testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave();
@@ -32573,6 +32956,7 @@ async function main() {
   await testUpdateReleaseArtifactMapsLocalSaveFailure();
   await testUpdateWindowsExternalReleaseInfersExternalForExeUrl();
   await testUpdateWindowsExternalReleaseInfersFullReplaceForZipUrl();
+  await testUpdateWindowsFullReplaceExternalKeepsModeForNonZipUrl();
   await testUploadReleaseArtifactSavesWithoutHashAfterZipValidation();
   await testUploadReleaseArtifactSavesReadableWindowsZipWithoutDeepInspection();
   await testReleaseArtifactPrepareMissingTempFileReturnsBadRequest();

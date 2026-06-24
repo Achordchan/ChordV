@@ -472,9 +472,20 @@ export class ReleaseCenterService {
     const nextSource = input.source ?? current.source;
     const currentType = fromPrismaReleaseArtifactType(current.type);
     const nextDownloadUrl = input.downloadUrl ?? current.downloadUrl;
+    const keepsExplicitWindowsFullReplace =
+      platform === "windows" &&
+      nextSource === "external" &&
+      input.downloadUrl !== undefined &&
+      input.type === undefined &&
+      input.deliveryMode === undefined &&
+      currentType === "zip" &&
+      current.deliveryMode === "desktop_full_replace" &&
+      !isClearlyNonZipWindowsDownloadUrl(nextDownloadUrl);
     const inferredExternalType =
       nextSource === "external" && input.downloadUrl !== undefined && input.type === undefined
-        ? inferExternalReleaseArtifactType(platform, nextDownloadUrl, currentType)
+        ? keepsExplicitWindowsFullReplace
+          ? currentType
+          : inferExternalReleaseArtifactType(platform, nextDownloadUrl, currentType)
         : undefined;
     const nextType = input.type ?? inferredExternalType ?? currentType;
     if (input.source === "uploaded" && current.source !== "uploaded") {
@@ -1409,6 +1420,11 @@ function inferExternalReleaseArtifactType(
     return pathname.endsWith(".apk") ? "apk" : fallbackType;
   }
   return pathname.endsWith(".ipa") ? "ipa" : fallbackType;
+}
+
+function isClearlyNonZipWindowsDownloadUrl(downloadUrl: string) {
+  const pathname = inferUrlPathname(downloadUrl);
+  return pathname.endsWith(".exe") || pathname.endsWith(".dmg") || pathname.endsWith(".apk") || pathname.endsWith(".ipa");
 }
 
 function assertUploadedReleaseArtifactFileAllowed(platform: PlatformTarget, fileName: string | null | undefined) {

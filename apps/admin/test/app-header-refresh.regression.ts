@@ -78,6 +78,7 @@ function extractBlockAfter(marker: string) {
 const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
 const submitDrawerBody = extractFunctionBody("submitDrawer");
+const saveNodeAccessEditorBody = extractFunctionBody("saveNodeAccessEditor");
 const handleSessionExpiredStateBody = extractBlockAfter("function handleSessionExpiredState()");
 const adminRuntimeEventsBody = extractBlockAfter("return subscribeAdminRuntimeEvents((event) =>");
 
@@ -226,6 +227,48 @@ function testSubscriptionCreateRequiresExpireAtBeforeRequest() {
   assert.match(teamBranch, /buildCreateTeamSubscriptionPayload\(teamSubscriptionForm, expireAt\)/);
 }
 
+function testNodeAccessPendingSaveUsesYellowCompletedNotification() {
+  assert.match(
+    saveNodeAccessEditorBody,
+    /const panelSyncPending = result\.panelSyncStatus === "pending";/,
+    "node access save should detect backend pending panel sync status"
+  );
+  assert.match(
+    saveNodeAccessEditorBody,
+    /color: panelSyncPending \? "yellow" : "green"/,
+    "node access save should show pending panel sync as yellow instead of red failure"
+  );
+  assert.match(
+    saveNodeAccessEditorBody,
+    /title: panelSyncPending \? "已保存，后台同步待处理" : "操作成功"/,
+    "node access pending save should be treated as completed with background sync pending"
+  );
+  assert.match(
+    saveNodeAccessEditorBody,
+    /if \(panelSyncPending\) {[\s\S]*?refreshPanelSyncJobsAfterPending\(\)/,
+    "node access pending save should refresh the sync queue"
+  );
+}
+
+function testNodeAccessOptionsAllowOfflineAndPendingNodes() {
+  const nodeOptionsBlock = extractBlockAfter("const nodeOptions = useMemo");
+  assert.doesNotMatch(
+    nodeOptionsBlock,
+    /disabled:/,
+    "node access options should not disable offline or pending-sync nodes"
+  );
+  assert.match(
+    source,
+    /function buildNodeAccessOptionLabel\(node: AdminNodeRecordDto\) {[\s\S]*?translateNodeAccessPanelStatus\(node\)[\s\S]*?node\.panelSyncPendingCount \? `待同步 \$\{node\.panelSyncPendingCount\}` : null[\s\S]*?node\.panelSyncFailedCount \? `失败 \$\{node\.panelSyncFailedCount\}` : null/,
+    "node access options should display offline and pending-sync information in labels"
+  );
+  assert.match(
+    source,
+    /if \(!node\.panelEnabled\) {[\s\S]*?return "面板停用";[\s\S]*?if \(node\.panelStatus === "offline"\) {[\s\S]*?return "离线";/,
+    "node access option labels should expose offline panel state without blocking save"
+  );
+}
+
 testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst();
 testOverviewKeepsFullSnapshotRefresh();
 testSignalBackedSectionsUseLocalRefreshSignals();
@@ -235,5 +278,7 @@ testGenericAdminRuntimeEventsRefreshCurrentSection();
 testSignalBackedSectionsRefreshSilentlyThroughSignals();
 testSessionExpiredClearsBusyRefs();
 testSubscriptionCreateRequiresExpireAtBeforeRequest();
+testNodeAccessPendingSaveUsesYellowCompletedNotification();
+testNodeAccessOptionsAllowOfflineAndPendingNodes();
 
 console.log("admin app header refresh regression checks passed");

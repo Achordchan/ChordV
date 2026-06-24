@@ -5,6 +5,7 @@ import { buildExternalArtifactPayload } from "../src/features/releases/artifactP
 import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEditorForm } from "../src/features/releases/types";
 
 const releaseRecordCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/releases/ReleaseRecordCard.tsx"), "utf8");
+const adminClientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
 
 function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
   const form = {
@@ -40,6 +41,19 @@ function testCreateReleasePayloadOmitsOptionalPublishingFlags() {
   assert.equal(payload.title, undefined);
   assert.equal("minimumVersion" in payload, false);
   assert.equal("forceUpgrade" in payload, false);
+}
+
+function testCreateAdminReleaseRequestDoesNotForceDisplayTitle() {
+  assert.doesNotMatch(
+    adminClientSource,
+    /const title = input\.title\?\.trim\(\) \|\| version/,
+    "admin API client must not force displayTitle to the version before sending create release"
+  );
+  assert.match(
+    adminClientSource,
+    /\.\.\.\(input\.title !== undefined \? \{ displayTitle: title \} : \{\}\)/,
+    "admin API client should only send displayTitle when the release form provided a title field"
+  );
 }
 
 function testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags() {
@@ -129,6 +143,7 @@ function testReleaseArtifactLongDownloadUrlDoesNotForceWideCards() {
 
 testCreateReleasePayloadKeepsReleaseFieldsSimple();
 testCreateReleasePayloadOmitsOptionalPublishingFlags();
+testCreateAdminReleaseRequestDoesNotForceDisplayTitle();
 testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
 testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
 testWindowsZipExternalArtifactCanStayExternalDownload();

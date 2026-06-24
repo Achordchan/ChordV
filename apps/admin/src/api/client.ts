@@ -234,13 +234,13 @@ export async function fetchAdminReleases(filters?: FetchAdminReleasesFilters) {
 
 export async function createAdminRelease(input: CreateAdminReleaseInputDto) {
   const version = input.version.trim();
-  const title = input.title?.trim() || version;
+  const title = input.title?.trim();
   const minimumVersion = input.minimumVersion?.trim();
   const payload: CreateReleaseInputDto = {
     platform: input.platform,
     channel: "stable",
     version,
-    displayTitle: title,
+    ...(input.title !== undefined ? { displayTitle: title } : {}),
     changelog: input.changelog,
     ...(minimumVersion ? { minimumVersion } : {}),
     ...(input.forceUpgrade !== undefined ? { forceUpgrade: input.forceUpgrade } : {}),
