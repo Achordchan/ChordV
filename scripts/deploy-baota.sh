@@ -241,6 +241,7 @@ if [ ! -f "start.sh" ]; then
   exit 1
 fi
 
+normalize_start_script() {
 python3 - <<'PY'
 from pathlib import Path
 import os
@@ -284,6 +285,9 @@ upsert_export(
 )
 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
+}
+
+normalize_start_script
 
 if [ ! -x "${NODE_BIN}" ]; then
   echo "宝塔 Node 不存在：${NODE_BIN}"
@@ -383,6 +387,8 @@ project.project_name = os.environ["DEPLOY_PROJECT"]
 model = main()
 print(json.dumps(model.start_project(project), ensure_ascii=False))
 PY
+
+normalize_start_script
 
 for _ in $(seq 1 30); do
   if curl -fsS -H "X-Forwarded-Proto: https" "http://127.0.0.1:${DEPLOY_PORT}${DEPLOY_HEALTH_PATH}" >/dev/null; then
