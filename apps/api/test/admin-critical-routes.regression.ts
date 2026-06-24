@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { Module, ValidationPipe } from "@nestjs/common";
+import { Module, RequestMethod, ValidationPipe } from "@nestjs/common";
+import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { NestFactory } from "@nestjs/core";
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { ClientController } from "../src/modules/client/client.controller";
@@ -34,7 +35,15 @@ type RouteCall = {
 };
 
 const calls: RouteCall[] = [];
+const requestedAdminRoutes: Array<{ method: string; path: string }> = [];
 const runtimeDownloadPath = "virtual-runtime.zip";
+const requestMethodNames = new Map<RequestMethod, string>([
+  [RequestMethod.GET, "GET"],
+  [RequestMethod.POST, "POST"],
+  [RequestMethod.PUT, "PUT"],
+  [RequestMethod.DELETE, "DELETE"],
+  [RequestMethod.PATCH, "PATCH"]
+]);
 
 Reflect.defineMetadata(
   "design:paramtypes",
@@ -65,6 +74,64 @@ function record(route: string, value: string, body?: unknown) {
   const call: RouteCall = body === undefined ? { route, value } : { route, value, body: toPlainJson(body) };
   calls.push(call);
   return call;
+}
+
+function normalizeRoutePath(path: string) {
+  return path.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function routePatternToRegExp(path: string) {
+  const escaped = normalizeRoutePath(path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped.replace(/:[^/]+/g, "[^/]+")}$`);
+}
+
+function listDeclaredAdminHttpRoutes() {
+  const routes: Array<{ method: string; path: string }> = [];
+  for (const propertyName of Object.getOwnPropertyNames(AdminController.prototype)) {
+    if (propertyName === "constructor") {
+      continue;
+    }
+    const handler = Reflect.get(AdminController.prototype, propertyName);
+    if (typeof handler !== "function") {
+      continue;
+    }
+    const method = Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod | undefined;
+    const path = Reflect.getMetadata(PATH_METADATA, handler) as string | string[] | undefined;
+    if (method === undefined || path === undefined) {
+      continue;
+    }
+    const methodName = requestMethodNames.get(method);
+    if (!methodName) {
+      continue;
+    }
+    for (const routePath of Array.isArray(path) ? path : [path]) {
+      const normalizedPath = normalizeRoutePath(routePath);
+      if (normalizedPath === "events/stream") {
+        continue;
+      }
+      routes.push({ method: methodName, path: normalizedPath });
+    }
+  }
+  return routes.sort((left, right) => `${left.method} ${left.path}`.localeCompare(`${right.method} ${right.path}`));
+}
+
+function recordAdminRouteRequest(path: string, method: string) {
+  const pathname = path.split("?")[0] ?? path;
+  const match = pathname.match(/^\/api\/admin\/?(.*)$/);
+  if (!match) {
+    return;
+  }
+  requestedAdminRoutes.push({ method: method.toUpperCase(), path: normalizeRoutePath(match[1] ?? "") });
+}
+
+function assertAllAdminHttpRoutesCovered() {
+  const uncovered = listDeclaredAdminHttpRoutes().filter(
+    (declared) =>
+      !requestedAdminRoutes.some(
+        (requested) => requested.method === declared.method && routePatternToRegExp(declared.path).test(requested.path)
+      )
+  );
+  assert.deepEqual(uncovered, [], "admin critical route regression must exercise every non-SSE AdminController HTTP route");
 }
 
 const devDataServiceStub = {
@@ -225,6 +292,7 @@ async function requestJson(
   path: string,
   init?: { method?: string; body?: unknown; authorization?: string }
 ) {
+  recordAdminRouteRequest(path, init?.method ?? "POST");
   const response = await fetch(`${baseUrl}${path}`, {
     method: init?.method ?? "POST",
     headers: {
@@ -751,6 +819,8 @@ async function main() {
       })).status,
       201
     );
+
+    assertAllAdminHttpRoutesCovered();
 
     const clientStartIndex = calls.findIndex((call) => call.route === "client-bootstrap");
     assert.ok(clientStartIndex > 0, "client route calls should be present after admin route calls");
