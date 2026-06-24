@@ -178,6 +178,31 @@ async function testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable(
   assert.match(result.clientDeliveryMessage, /Hash/);
 }
 
+async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload() {
+  let validationStarted = false;
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () =>
+          makeRemoteComponent({
+            expectedHash: "a".repeat(64)
+          })
+      }
+    },
+    startRemoteRuntimeComponentValidation: () => {
+      validationStarted = true;
+    }
+  });
+
+  const startedAt = Date.now();
+  const result = await service.validateAdminRuntimeComponent("component_1");
+
+  assert.equal(validationStarted, true, "remote validation must be delegated to background work");
+  assert.ok(Date.now() - startedAt < 100, "remote validation endpoint must return without waiting for remote download");
+  assert.equal(result.status, "pending_validation");
+  assert.equal(result.componentId, "component_1");
+}
+
 async function main() {
   await testUploadedRuntimeComponentRejectsMismatchedExpectedHashOnPatch();
   await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
@@ -185,6 +210,7 @@ async function main() {
   await testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable();
   await testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable();
   await testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable();
+  await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
   console.log("runtime component service regression checks passed");
 }
 

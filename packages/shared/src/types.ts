@@ -20,6 +20,7 @@ export type RuntimeComponentClientDeliveryStatus =
 export type RuntimeComponentValidationStatus =
   | "ready"
   | "disabled"
+  | "pending_validation"
   | "invalid_url"
   | "unreachable"
   | "missing_file"

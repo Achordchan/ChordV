@@ -16,6 +16,7 @@ import type {
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { PrismaService } from "./prisma.service";
@@ -376,12 +377,29 @@ export class RuntimeComponentsService {
 
     try {
       if (component.expectedHash) {
-        return await this.validateRemoteRuntimeComponentHash(
+        if (isPrivateOrReservedRuntimeComponentUrl(resolvedUrl)) {
+          return {
+            componentId,
+            status: "unreachable",
+            message: "远程运行组件链接指向内网或保留地址，不允许校验。",
+            finalUrlPreview: resolvedUrl
+          };
+        }
+        if (process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS === "true") {
+          return await this.validateRemoteRuntimeComponentHash(
+            componentId,
+            resolvedUrl,
+            component.expectedHash,
+            component.archiveEntryName
+          );
+        }
+        this.startRemoteRuntimeComponentValidation(componentId, resolvedUrl, component.expectedHash, component.archiveEntryName);
+        return {
           componentId,
-          resolvedUrl,
-          component.expectedHash,
-          component.archiveEntryName
-        );
+          status: "pending_validation",
+          message: "Remote runtime component validation has started in background. Refresh this list later for the latest result.",
+          finalUrlPreview: resolvedUrl
+        };
       }
       return {
         componentId,
@@ -614,6 +632,26 @@ export class RuntimeComponentsService {
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "Shared runtime ruleset lookup is temporarily unavailable.");
     }
+  }
+
+  private startRemoteRuntimeComponentValidation(
+    componentId: string,
+    resolvedUrl: string,
+    expectedHash: string,
+    archiveEntryName: string | null
+  ) {
+    const timer = setTimeout(() => {
+      void this.validateRemoteRuntimeComponentHash(componentId, resolvedUrl, expectedHash, archiveEntryName)
+        .then((result) => {
+          if (result.status !== "ready") {
+            this.logger.warn(`Runtime component ${componentId} background validation finished with ${result.status}: ${result.message}`);
+          }
+        })
+        .catch((error) => {
+          this.logger.warn(`Runtime component ${componentId} background validation failed: ${readErrorMessage(error)}`);
+        });
+    }, 0);
+    timer.unref?.();
   }
 
   private async validateRemoteRuntimeComponentHash(
@@ -1134,6 +1172,51 @@ function normalizeNullableText(value?: string | null) {
 
 function isHttpUrl(value: string) {
   return /^https?:\/\//i.test(value.trim());
+}
+
+function isPrivateOrReservedRuntimeComponentUrl(value: string) {
+  if (process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS === "true") {
+    return false;
+  }
+  let hostname: string;
+  try {
+    hostname = new URL(value).hostname;
+  } catch {
+    return false;
+  }
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4) {
+    const parts = hostname.split(".").map((part) => Number(part));
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+      return true;
+    }
+    const [a, b] = parts;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      a >= 224
+    );
+  }
+  if (ipVersion === 6) {
+    const normalized = hostname.toLowerCase();
+    return (
+      normalized === "::" ||
+      normalized === "::1" ||
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      normalized.startsWith("fe8") ||
+      normalized.startsWith("fe9") ||
+      normalized.startsWith("fea") ||
+      normalized.startsWith("feb") ||
+      normalized.startsWith("ff")
+    );
+  }
+  return false;
 }
 
 function normalizeRequiredText(value: string | null | undefined, fieldName: string) {

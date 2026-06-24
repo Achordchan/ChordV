@@ -709,12 +709,14 @@ function validationColor(status?: AdminRuntimeComponentValidationDto["status"]) 
   if (status === undefined) return "gray";
   if (status === "ready") return "green";
   if (status === "disabled") return "yellow";
+  if (status === "pending_validation") return "yellow";
   if (status === "invalid_url") return "orange";
   if (status === "missing_file" || status === "metadata_mismatch") return "red";
   return "red";
 }
 
 function translateValidationStatus(status: AdminRuntimeComponentValidationDto["status"]) {
+  if (status === "pending_validation") return "待校验";
   if (status === "ready") return "可用";
   if (status === "disabled") return "已停用";
   if (status === "invalid_url") return "链接有误";
