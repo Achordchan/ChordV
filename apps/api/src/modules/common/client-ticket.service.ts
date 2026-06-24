@@ -430,6 +430,7 @@ export class ClientTicketService {
     }
 
     let uploaded = null as Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null;
+    let attachmentUploadError: string | null = null;
     if (file) {
       this.imageBedService.assertSupportTicketAttachment?.(file);
       try {
@@ -437,12 +438,14 @@ export class ClientTicketService {
           timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
         });
       } catch (error) {
-        const attachmentUploadError = readErrorMessage(error);
+        attachmentUploadError = readErrorMessage(error);
         this.logger.warn(`Client ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
-        if (error instanceof HttpException) {
-          throw error;
+        if (!body) {
+          if (error instanceof HttpException) {
+            throw error;
+          }
+          throw new ServiceUnavailableException("附件上传失败，未保存工单回复，请稍后重试。");
         }
-        throw new ServiceUnavailableException("附件上传失败，未保存工单回复，请稍后重试。");
       }
     }
     const now = new Date();
@@ -451,7 +454,7 @@ export class ClientTicketService {
     const safeMessageBody = buildSupportTicketAttachmentReplyBody(
       body,
       uploaded ? `Uploaded attachment: ${uploaded.fileName}` : "",
-      null
+      attachmentUploadError
     );
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -539,8 +542,8 @@ export class ClientTicketService {
     );
     return {
       ...detail,
-      attachmentUploadStatus: file ? "uploaded" : "none",
-      attachmentUploadError: null
+      attachmentUploadStatus: file ? (uploaded ? "uploaded" : "failed") : "none",
+      attachmentUploadError
     };
   }
 

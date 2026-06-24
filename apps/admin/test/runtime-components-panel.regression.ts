@@ -151,6 +151,14 @@ function testRuntimeComponentsTableKeepsReadableMinimumWidth() {
   assert.match(runtimeComponentsPanelSource, /<Box style={{ minWidth: 1200 }}>/);
 }
 
+function testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash() {
+  const uploadedBranchStart = runtimeComponentsPanelSource.indexOf("const uploadPayload");
+  const remoteBranchStart = runtimeComponentsPanelSource.indexOf("} else {", uploadedBranchStart);
+  assert.ok(uploadedBranchStart >= 0 && remoteBranchStart > uploadedBranchStart);
+  const uploadedBranchSource = runtimeComponentsPanelSource.slice(uploadedBranchStart, remoteBranchStart);
+  assert.doesNotMatch(uploadedBranchSource, /expectedHash:/);
+}
+
 testEnabledRemotePendingValidationIsNotShownAsDeliverable();
 testEnabledRemoteHashMismatchIsShownAsBlocked();
 testSaveFailedIsNotShownAsHashMismatch();
@@ -160,5 +168,6 @@ testMissingDeliveryFieldsAreShownAsUnknown();
 testReadyValidationUpdatesDeliveryState();
 testFailedValidationBlocksDeliveryState();
 testRuntimeComponentsTableKeepsReadableMinimumWidth();
+testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash();
 
 console.log("runtime components panel regression checks passed");

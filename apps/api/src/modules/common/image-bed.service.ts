@@ -8,7 +8,7 @@ import type {
   UpdateAdminImageBedConfigInputDto
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
-import { throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
+import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "./upload-limits";
 
 const IMAGE_BED_SETTING_KEY = "image-bed";
@@ -16,6 +16,7 @@ const DEFAULT_IMAGE_BED_BASE_URL = "https://image.achord.cn";
 const DEFAULT_IMAGE_BED_UPLOAD_FOLDER = "support-tickets";
 const DEFAULT_IMAGE_BED_UPLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS = 5_000;
+const DEFAULT_IMAGE_BED_CONFIG_READ_TIMEOUT_MS = 2_000;
 const IMAGE_BED_CLEANUP_BUDGET_MS = readPositiveIntegerEnv("CHORDV_IMAGE_BED_CLEANUP_BUDGET_MS", 500);
 const IMAGE_BED_ERROR_DETAIL_MAX_LENGTH = 300;
 
@@ -388,11 +389,16 @@ export class ImageBedService {
   private async readStoredConfig(): Promise<{ value: StoredImageBedConfig; updatedAt: Date | null }> {
     let row: { value: unknown; updatedAt: Date | null } | null;
     try {
-      row = await this.prisma.systemSetting.findUnique({
-        where: { key: IMAGE_BED_SETTING_KEY }
-      });
+      const timeoutMs = readImageBedConfigReadTimeoutMs();
+      row = await withTimeout(
+        this.prisma.systemSetting.findUnique({
+          where: { key: IMAGE_BED_SETTING_KEY }
+        }),
+        timeoutMs,
+        `Image bed config read exceeded ${timeoutMs}ms.`
+      );
     } catch (error) {
-      throwLocalSaveAsServiceUnavailable(error, "图床配置读取失败，请稍后重试。");
+      throwLocalReadAsServiceUnavailable(error, "图床配置读取失败，请稍后重试。");
     }
     if (!row) {
       return { value: {}, updatedAt: null };
@@ -699,6 +705,23 @@ function readImageBedManageTimeoutMs() {
     "CHORDV_IMAGE_BED_MANAGE_TIMEOUT_MS",
     readPositiveIntegerEnv("CHORDV_IMAGE_BED_TIMEOUT_MS", DEFAULT_IMAGE_BED_MANAGE_TIMEOUT_MS)
   );
+}
+
+function readImageBedConfigReadTimeoutMs() {
+  return readPositiveIntegerEnv("CHORDV_IMAGE_BED_CONFIG_READ_TIMEOUT_MS", DEFAULT_IMAGE_BED_CONFIG_READ_TIMEOUT_MS);
+}
+
+function withTimeout<T>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    timeoutHandle.unref?.();
+  });
+  return Promise.race([task, timeoutTask]).finally(() => {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  });
 }
 
 function readRecord(value: unknown) {

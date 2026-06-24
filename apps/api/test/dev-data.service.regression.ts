@@ -1826,6 +1826,37 @@ async function testGetImageBedConfigMapsLocalReadFailure() {
   );
 }
 
+async function testGetImageBedConfigTimesOutSlowLocalRead() {
+  const previousTimeout = process.env.CHORDV_IMAGE_BED_CONFIG_READ_TIMEOUT_MS;
+  process.env.CHORDV_IMAGE_BED_CONFIG_READ_TIMEOUT_MS = "25";
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    prisma: {
+      systemSetting: {
+        findUnique: async () => new Promise(() => undefined)
+      }
+    }
+  });
+  const startedAt = Date.now();
+
+  try {
+    await assert.rejects(
+      () => service.getAdminConfig(),
+      (error) =>
+        error instanceof ServiceUnavailableException &&
+        /图床配置读取失败/.test(error.message) &&
+        !/HTTP 500/i.test(error.message),
+      "image bed config reads must fail fast with a controlled 503 when the database stalls"
+    );
+    assert.ok(Date.now() - startedAt < 500, "image bed config load must not wait for the full admin request timeout");
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_IMAGE_BED_CONFIG_READ_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_IMAGE_BED_CONFIG_READ_TIMEOUT_MS = previousTimeout;
+    }
+  }
+}
+
 async function testUpdateImageBedConfigMapsLocalSaveFailure() {
   const service = createInstance<ImageBedService>(ImageBedService.prototype, {
     prisma: {
@@ -9499,6 +9530,53 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   assert.equal(nodeDeleted, false, "node row must be kept for queued panel cleanup jobs");
 }
 
+async function testDeleteNodeMarksBindingsDeletedWhenPanelDeleteQueuePartiallyFails() {
+  const calls: string[] = [];
+  const service = createAdminNodeService({
+    clientEventsPublisher: {
+      resolveUserIdsForNodeAccess: async () => [],
+      publishNodeAccessUpdatedToUsers: () => undefined
+    },
+    runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
+      removePanelBindingsForNode: async () => {
+        calls.push("queue_panel_delete");
+        return {
+          requested: 1,
+          updated: 0,
+          failed: [
+            {
+              bindingId: "binding_1",
+              nodeId: "node_1",
+              nodeName: "node",
+              panelClientEmail: "user@example.com",
+              error: "panel queue write failed"
+            }
+          ]
+        };
+      },
+      markPanelBindingsDeletedForNode: async () => {
+        calls.push("mark_deleted");
+        return 1;
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => ({ id: "node_1" }),
+        update: async () => ({})
+      }
+    }
+  });
+
+  const result = await service.deleteNode("node_1");
+
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.deepEqual(calls, ["queue_lease_revocation", "queue_panel_delete", "mark_deleted"]);
+}
+
 async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave() {
   const calls: string[] = [];
   let publishedUserIds: string[] | null = null;
@@ -16780,6 +16858,85 @@ async function testImportNodeReturnsWhenInitialProbeStalls() {
   assert.equal(result.name, "Imported Node");
 }
 
+async function testImportNodePanelMigrationQueuesOldPanelDeleteWithOldConfig() {
+  const oldPanelConfig: Record<string, unknown>[] = [];
+  const calls: string[] = [];
+  const importedRuntime = {
+    name: "Imported Node",
+    serverHost: "old.example.com",
+    serverPort: 443,
+    uuid: "11111111-1111-4111-8111-111111111111",
+    flow: "xtls-rprx-vision",
+    realityPublicKey: "public-key",
+    shortId: "short",
+    serverName: "old.example.com",
+    fingerprint: "chrome",
+    spiderX: "/",
+    mldsa65Verify: ""
+  };
+  const currentNode = makeAdminNodeRow({
+    id: "node_old_example_com_443",
+    panelBaseUrl: "https://old-panel.example.com",
+    panelApiBasePath: "/old",
+    panelUsername: "old-admin",
+    panelPassword: "old-password",
+    panelEnabled: true
+  });
+  const service = createAdminNodeService({
+    resolveNodeRuntimeSource: async () => importedRuntime,
+    probeNode: async () => makeAdminNodeRow({
+      ...currentNode,
+      panelBaseUrl: "https://new-panel.example.com",
+      panelApiBasePath: "/new",
+      panelUsername: "new-admin",
+      panelPassword: "new-password"
+    }),
+    runtimeSessionService: {
+      queueLeaseRevocationJobForNode: async () => {
+        calls.push("queue_lease_revocation");
+      },
+      removePanelBindingsForNode: async (_nodeId: string, panelConfig: Record<string, unknown>) => {
+        calls.push("remove_old");
+        oldPanelConfig.push(panelConfig);
+        return { requested: 1, updated: 1, failed: [] };
+      },
+      syncPanelAccessForNode: async () => {
+        calls.push("sync_new");
+        return 1;
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        upsert: async (payload: Record<string, any>) => ({
+          ...currentNode,
+          ...payload.update,
+          updatedAt: new Date()
+        })
+      }
+    }
+  });
+
+  const result = await service.importNodeFromSubscription({
+    panelBaseUrl: "https://new-panel.example.com",
+    panelApiBasePath: "/new",
+    panelUsername: "new-admin",
+    panelPassword: "new-password"
+  });
+
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "sync_new"]);
+  assert.deepEqual(oldPanelConfig[0], {
+    panelBaseUrl: "https://old-panel.example.com",
+    panelApiBasePath: "/old",
+    panelUsername: "old-admin",
+    panelPassword: "old-password"
+  });
+}
+
 async function testImportNodeMapsLocalSaveFailure() {
   let probeStarted = false;
   const importedRuntime = {
@@ -20418,8 +20575,9 @@ async function testRemoteRuntimeValidationRejectsMissingExpectedHash() {
   assert.match(result.message, /expectedHash/);
 }
 
-async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
+async function testRuntimeComponentUploadUsesActualHashWhenExpectedHashMismatch() {
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  let createdData: Record<string, any> | null = null;
   const service = createRuntimeComponentsService({
     prepareUploadedRuntimeComponentFile: async () => ({
       absolutePath: "missing-prepared-runtime.bin",
@@ -20431,34 +20589,40 @@ async function testRuntimeComponentUploadRejectsExpectedHashMismatch() {
     }),
     prisma: {
       runtimeComponent: {
-        create: async () => {
-          throw new Error("create should not be called");
+        create: async (payload: Record<string, any>) => {
+          createdData = payload.data;
+          return {
+            ...payload.data,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          };
         }
       }
     },
+    startSharedRulesetDuplicatesCleanup: () => undefined,
     removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
       cleanupCalls.push({ absolutePath, label });
     }
   });
 
-  await assert.rejects(
-    () => service.uploadAdminRuntimeComponent(
-      {
-        platform: "windows",
-        architecture: "x64",
-        kind: "xray",
-        expectedHash: "b".repeat(64)
-      },
-      {
-        path: "missing-upload-runtime.bin",
-        originalname: "xray.zip",
-        size: 1
-      }
-    ),
-    /expectedHash/,
-    "runtime upload must reject files whose actual hash differs from expectedHash"
+  const result = await service.uploadAdminRuntimeComponent(
+    {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      expectedHash: "b".repeat(64)
+    },
+    {
+      path: "missing-upload-runtime.bin",
+      originalname: "xray.zip",
+      size: 1
+    }
   );
-  assert.deepEqual(cleanupCalls, [{ absolutePath: "missing-prepared-runtime.bin", label: "failed runtime component upload" }]);
+
+  assert.deepEqual(cleanupCalls, []);
+  assert.equal(createdData?.fileHash, "a".repeat(64));
+  assert.equal(createdData?.expectedHash, "a".repeat(64));
+  assert.equal(result.expectedHash, "a".repeat(64));
 }
 
 async function testRuntimeComponentUploadMapsUniqueIdentityConflict() {
@@ -20629,8 +20793,10 @@ async function testRuntimeComponentPrepareMissingTempFileReturnsBadRequest() {
   }
 }
 
-async function testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup() {
-  const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+async function testRuntimeComponentReplaceUploadUsesActualHashWhenExpectedHashMismatch() {
+  const failedCleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
+  const staleCleanupCalls: Array<{ storedFilePath: string | null; label: string }> = [];
+  let updatedData: Record<string, any> | null = null;
   const service = createRuntimeComponentsService({
     ensureRuntimeComponentExists: async () => ({
       id: "component_1",
@@ -20659,38 +20825,47 @@ async function testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithB
     }),
     prisma: {
       runtimeComponent: {
-        update: async () => {
-          throw new Error("update should not be called");
+        update: async (payload: Record<string, any>) => {
+          updatedData = payload.data;
+          return {
+            ...payload.data,
+            createdAt: new Date("2026-01-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          };
         }
       }
     },
+    startRuntimeComponentStoredFileCleanupBestEffort: (storedFilePath: string | null, label: string) => {
+      staleCleanupCalls.push({ storedFilePath, label });
+    },
+    startSharedRulesetDuplicatesCleanup: () => undefined,
     removeRuntimeComponentFileBestEffort: async (absolutePath: string | null, label: string) => {
-      cleanupCalls.push({ absolutePath, label });
+      failedCleanupCalls.push({ absolutePath, label });
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.replaceAdminRuntimeComponentUpload(
-        "component_1",
-        {
-          platform: "windows",
-          architecture: "x64",
-          kind: "xray",
-          expectedHash: "b".repeat(64)
-        },
-        {
-          path: "missing-replacement-upload-runtime.bin",
-          originalname: "xray-new.exe",
-          size: 1
-        }
-      ),
-    /expectedHash/,
-    "runtime replacement upload must reject files whose actual hash differs from expectedHash"
+  const result = await service.replaceAdminRuntimeComponentUpload(
+    "component_1",
+    {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      expectedHash: "b".repeat(64)
+    },
+    {
+      path: "missing-replacement-upload-runtime.bin",
+      originalname: "xray-new.exe",
+      size: 1
+    }
   );
-  assert.deepEqual(cleanupCalls, [
-    { absolutePath: "missing-replacement-runtime.bin", label: "failed runtime component replacement upload" }
+
+  assert.deepEqual(failedCleanupCalls, []);
+  assert.deepEqual(staleCleanupCalls, [
+    { storedFilePath: "component_1/xray.exe", label: "old runtime component upload" }
   ]);
+  assert.equal(updatedData?.fileHash, "a".repeat(64));
+  assert.equal(updatedData?.expectedHash, "a".repeat(64));
+  assert.equal(result.expectedHash, "a".repeat(64));
 }
 
 async function testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict() {
@@ -31040,7 +31215,7 @@ async function testAdminReplySupportTicketMapsLocalSaveFailure() {
   );
 }
 
-async function testAdminReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply() {
+async function testAdminReplySupportTicketAttachmentUploadFailureSavesTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   let cleanupCalls = 0;
@@ -31092,25 +31267,25 @@ async function testAdminReplySupportTicketAttachmentUploadFailureRejectsWithoutW
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.replyAdminSupportTicketWithAttachment(
-        "ticket_1",
-        { body: "please see attachment" },
-        {
-          path: path.join(tmpdir(), "upload-failure.png"),
-          originalname: "upload-failure.png",
-          mimetype: "image/png",
-          size: 1234
-        },
-        "admin_1"
-      ),
-    (error) => error instanceof BadRequestException && /图床 API Token 未配置/.test(error.message),
-    "admin attachment upload failures must reject instead of saving a text-only reply"
+  const result = await service.replyAdminSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "please see attachment" },
+    {
+      path: path.join(tmpdir(), "upload-failure.png"),
+      originalname: "upload-failure.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "admin_1"
   );
 
-  assert.deepEqual(writes, [], "failed admin attachment upload must not write a message, attachment, or ticket status change");
-  assert.equal(publishCalls, 0, "failed admin attachment upload must not publish ticket updates");
+  assert.equal(result.attachmentUploadStatus, "failed");
+  assert.match(result.attachmentUploadError ?? "", /图床 API Token 未配置/);
+  assert.equal(writes.filter((item) => item.kind === "message").length, 1);
+  assert.equal(writes.filter((item) => item.kind === "attachment").length, 0);
+  assert.equal(writes.filter((item) => item.kind === "ticket").length, 1);
+  assert.match(String(writes.find((item) => item.kind === "message")?.data.body ?? ""), /please see attachment/);
+  assert.equal(publishCalls, 1, "saved text reply must still publish ticket updates");
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
@@ -32403,7 +32578,7 @@ async function testClientReplySupportTicketAttachmentMapsTransientPrismaFailure(
   assert.deepEqual(deletedUploads, ["support-tickets/client-transient.png"]);
 }
 
-async function testClientReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply() {
+async function testClientReplySupportTicketAttachmentUploadFailureSavesTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   let cleanupCalls = 0;
@@ -32473,25 +32648,26 @@ async function testClientReplySupportTicketAttachmentUploadFailureRejectsWithout
     }
   });
 
-  await assert.rejects(
-    () =>
-      service.replyClientSupportTicketWithAttachment(
-        "ticket_1",
-        { body: "please see attachment" },
-        {
-          path: path.join(tmpdir(), "client-upload-failure.png"),
-          originalname: "client-upload-failure.png",
-          mimetype: "image/png",
-          size: 1234
-        },
-        "token"
-      ),
-    (error) => error instanceof BadRequestException && /图床 API Token 未配置/.test(error.message),
-    "client attachment upload failures must reject instead of saving a text-only reply"
+  const result = await service.replyClientSupportTicketWithAttachment(
+    "ticket_1",
+    { body: "please see attachment" },
+    {
+      path: path.join(tmpdir(), "client-upload-failure.png"),
+      originalname: "client-upload-failure.png",
+      mimetype: "image/png",
+      size: 1234
+    },
+    "token"
   );
 
-  assert.deepEqual(writes, [], "failed client attachment upload must not write a message, attachment, read state, or ticket status change");
-  assert.equal(publishCalls, 0, "failed client attachment upload must not publish ticket updates");
+  assert.equal(result.attachmentUploadStatus, "failed");
+  assert.match(result.attachmentUploadError ?? "", /图床 API Token 未配置/);
+  assert.equal(writes.filter((item) => item.kind === "message").length, 1);
+  assert.equal(writes.filter((item) => item.kind === "attachment").length, 0);
+  assert.equal(writes.filter((item) => item.kind === "ticket").length, 1);
+  assert.equal(writes.filter((item) => item.kind === "read").length, 1);
+  assert.match(String(writes.find((item) => item.kind === "message")?.data.body ?? ""), /please see attachment/);
+  assert.equal(publishCalls, 1, "saved text reply must still publish ticket updates");
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
@@ -32735,6 +32911,7 @@ async function main() {
   await testCompletedResetHighUsageSampleDoesNotReapplyOldTraffic();
   await testCompletedResetSmallUsageSampleBecomesBaselineWithoutBilling();
   await testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails();
+  await testDeleteNodeMarksBindingsDeletedWhenPanelDeleteQueuePartiallyFails();
   await testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSave();
   await testDeleteNodePublishesAdminEventWhenClientTargetResolutionStalls();
   await testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave();
@@ -32853,6 +33030,7 @@ async function main() {
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testReenableNodeClearsPendingDisableAndQueuesPanelEnsure();
   await testImportNodeReturnsWhenInitialProbeStalls();
+  await testImportNodePanelMigrationQueuesOldPanelDeleteWithOldConfig();
   await testImportNodeMapsLocalSaveFailure();
   await testImportNodeMapsLocalReadFailureBeforeSave();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
@@ -32912,12 +33090,12 @@ async function main() {
   await testRuntimeComponentFailureReportMapsLocalSaveFailure();
   await testRemoteRuntimeValidationRejectsPrivateNetworkUrl();
   await testRemoteRuntimeValidationRejectsMissingExpectedHash();
-  await testRuntimeComponentUploadRejectsExpectedHashMismatch();
+  await testRuntimeComponentUploadUsesActualHashWhenExpectedHashMismatch();
   await testRuntimeComponentUploadMapsUniqueIdentityConflict();
   await testRuntimeComponentUploadMapsTransientPrismaFailure();
   await testRuntimeComponentUploadMapsLocalSaveFailure();
   await testRuntimeComponentPrepareMissingTempFileReturnsBadRequest();
-  await testRuntimeComponentReplaceUploadRejectsExpectedHashMismatchWithBestEffortCleanup();
+  await testRuntimeComponentReplaceUploadUsesActualHashWhenExpectedHashMismatch();
   await testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict();
   await testRuntimeComponentReplaceUploadMapsTransientPrismaFailure();
   await testRuntimeComponentReplaceUploadMapsLocalSaveFailure();
@@ -33054,6 +33232,7 @@ async function main() {
   await testImageBedDeleteRejectsMalformedPercentUrlPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
   await testGetImageBedConfigMapsLocalReadFailure();
+  await testGetImageBedConfigTimesOutSlowLocalRead();
   await testUpdateImageBedConfigMapsLocalSaveFailure();
   await testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithoutFailedArray();
   await testImageBedAttachmentCleanupLogsDeleteFailure();
@@ -33150,7 +33329,7 @@ async function main() {
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testAdminReplySupportTicketMapsLocalSaveFailure();
-  await testAdminReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply();
+  await testAdminReplySupportTicketAttachmentUploadFailureSavesTextReply();
   await testAdminReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketPublishesClientAndAdminEvents();
@@ -33176,7 +33355,7 @@ async function main() {
   await testClientReplySupportTicketMapsLocalSaveFailure();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketAttachmentMapsTransientPrismaFailure();
-  await testClientReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply();
+  await testClientReplySupportTicketAttachmentUploadFailureSavesTextReply();
   await testClientReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();

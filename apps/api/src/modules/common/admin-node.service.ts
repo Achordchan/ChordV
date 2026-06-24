@@ -460,7 +460,12 @@ export class AdminNodeService {
         this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_panel_config_changed")
       );
       await this.tryRunAfterLocalNodeSave("queue old panel binding deletion for panel config change", async () => {
-        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId, {
+          panelBaseUrl: current.panelBaseUrl,
+          panelApiBasePath: current.panelApiBasePath,
+          panelUsername: current.panelUsername,
+          panelPassword: current.panelPassword
+        });
         if (result.failed.length > 0) {
           await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
         }
@@ -1302,9 +1307,12 @@ export class AdminNodeService {
     await this.tryRunAfterLocalNodeSave("queue lease revocation after node delete", () =>
       this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
     );
-    await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", () =>
-      this.runtimeSessionService.removePanelBindingsForNode(nodeId)
-    );
+    await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", async () => {
+      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+      if (result.failed.length > 0) {
+        await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
+      }
+    });
     const userIds = await this.runAfterLocalNodeSaveWithBudget(
       "resolve node access event targets after node delete",
       [] as string[],

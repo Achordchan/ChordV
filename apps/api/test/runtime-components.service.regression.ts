@@ -1,6 +1,8 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
-import { BadRequestException } from "@nestjs/common";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 
 function createRuntimeComponentsService(overrides: Record<string, unknown>) {
@@ -53,29 +55,34 @@ function makeRuntimeComponentListPrisma(rows: Array<Record<string, unknown>>, fa
   };
 }
 
-async function testUploadedRuntimeComponentRejectsMismatchedExpectedHashOnPatch() {
-  let updateCalled = false;
+async function testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHashDiffers() {
+  const updates: Array<Record<string, any>> = [];
+  const current = makeUploadedComponent();
   const service = createRuntimeComponentsService({
-    ensureRuntimeComponentExists: async () => makeUploadedComponent(),
+    ensureRuntimeComponentExists: async () => current,
     prisma: {
       runtimeComponent: {
-        update: async () => {
-          updateCalled = true;
-          throw new Error("update should not run when expectedHash mismatches current fileHash");
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...current,
+            ...payload.data,
+            updatedAt: new Date("2026-01-01T00:01:00.000Z")
+          };
         }
       }
-    }
+    },
+    startSharedRulesetDuplicatesCleanup: () => undefined,
+    startRuntimeComponentStoredFileCleanupBestEffort: () => undefined
   });
 
-  await assert.rejects(
-    () => service.updateAdminRuntimeComponent("component_1", { expectedHash: "b".repeat(64) }),
-    (error) =>
-      error instanceof BadRequestException &&
-      /expectedHash/.test(error.message) &&
-      /SHA256/.test(error.message),
-    "uploaded runtime component PATCH must reject expectedHash that differs from current fileHash"
-  );
-  assert.equal(updateCalled, false, "mismatched expectedHash must be rejected before saving");
+  const result = await service.updateAdminRuntimeComponent("component_1", { expectedHash: "b".repeat(64) });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.expectedHash, "a".repeat(64));
+  assert.equal(updates[0].data.fileHash, undefined, "metadata save must not clear uploaded file metadata");
+  assert.equal(result.expectedHash, "a".repeat(64));
+  assert.equal(result.fileHash, "a".repeat(64));
 }
 
 async function testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch() {
@@ -106,6 +113,90 @@ async function testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch() 
   assert.equal(updates[0].data.fileHash, undefined, "matching expectedHash must not clear uploaded file metadata");
   assert.equal(result.expectedHash, "a".repeat(64));
   assert.equal(result.fileHash, "a".repeat(64));
+}
+
+async function testUploadedRuntimeComponentUploadUsesActualHashWhenExpectedHashDiffers() {
+  const actualHash = "a".repeat(64);
+  let createdData: Record<string, any> | null = null;
+  let cleanupCalled = false;
+  const preparedFile = {
+    absolutePath: "C:/tmp/xray.zip",
+    storedFilePath: "component_1/xray.zip",
+    fileName: "xray.zip",
+    fileSizeBytes: 1024n,
+    fileHash: actualHash,
+    downloadUrl: "/api/downloads/runtime-components/component_1"
+  };
+  const service = createRuntimeComponentsService({
+    prepareUploadedRuntimeComponentFile: async () => preparedFile,
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task(),
+    prisma: {
+      runtimeComponent: {
+        create: async (payload: Record<string, any>) => {
+          createdData = payload.data;
+          return makeUploadedComponent(payload.data);
+        }
+      }
+    },
+    startSharedRulesetDuplicatesCleanup: () => undefined,
+    removeRuntimeComponentFileBestEffort: async () => {
+      cleanupCalled = true;
+    }
+  });
+
+  const result = await service.uploadAdminRuntimeComponent(
+    {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      fileName: "xray.zip",
+      expectedHash: "b".repeat(64),
+      enabled: true
+    },
+    {
+      path: "C:/tmp/upload.tmp",
+      originalname: "xray.zip",
+      size: 1024
+    }
+  );
+
+  assert.equal(cleanupCalled, false, "mismatched expectedHash must not fail upload and clean the uploaded file");
+  assert.equal(createdData?.expectedHash, actualHash);
+  assert.equal(createdData?.fileHash, actualHash);
+  assert.equal(result.expectedHash, actualHash);
+}
+
+async function testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMismatch() {
+  const previousRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const storageRoot = await fs.mkdtemp(path.join(tmpdir(), "chordv-runtime-components-"));
+  try {
+    process.env.CHORDV_RELEASE_STORAGE_ROOT = storageRoot;
+    const storedFilePath = path.join("component_1", "xray.zip");
+    const absolutePath = path.join(storageRoot, "runtime-components", storedFilePath);
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, Buffer.alloc(1024));
+
+    const service = createRuntimeComponentsService({
+      prisma: makeRuntimeComponentListPrisma([
+        makeUploadedComponent({
+          storedFilePath,
+          expectedHash: "b".repeat(64)
+        })
+      ])
+    });
+
+    const [result] = await service.listAdminRuntimeComponents();
+
+    assert.equal(result.clientDeliverable, true);
+    assert.equal(result.clientDeliveryStatus, "ready");
+  } finally {
+    if (previousRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousRoot;
+    }
+    await fs.rm(storageRoot, { recursive: true, force: true });
+  }
 }
 
 async function testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable() {
@@ -255,8 +346,10 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
 }
 
 async function main() {
-  await testUploadedRuntimeComponentRejectsMismatchedExpectedHashOnPatch();
+  await testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHashDiffers();
   await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
+  await testUploadedRuntimeComponentUploadUsesActualHashWhenExpectedHashDiffers();
+  await testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMismatch();
   await testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable();
   await testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable();
   await testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable();

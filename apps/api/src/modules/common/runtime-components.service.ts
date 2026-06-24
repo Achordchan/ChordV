@@ -167,8 +167,6 @@ export class RuntimeComponentsService {
     try {
       const preparedFile = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
       prepared = preparedFile;
-      const expectedHash = normalizeExpectedHash(input.expectedHash);
-      assertExpectedHashMatchesFile(expectedHash, preparedFile.fileHash);
       const created = await this.withRuntimeComponentIdentityConflictGuard(
         () =>
           this.prisma.runtimeComponent.create({
@@ -186,7 +184,7 @@ export class RuntimeComponentsService {
               fileSizeBytes: preparedFile.fileSizeBytes,
               fileHash: preparedFile.fileHash,
               archiveEntryName: null,
-              expectedHash: expectedHash ?? preparedFile.fileHash,
+              expectedHash: expectedHashForUploadedFile(preparedFile.fileHash),
               enabled: input.enabled ?? true
             }
           }),
@@ -227,10 +225,13 @@ export class RuntimeComponentsService {
       throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
     const normalizedExpectedHash =
-      input.expectedHash !== undefined ? normalizeExpectedHash(input.expectedHash) : current.expectedHash;
-    if (nextSource === "uploaded" && input.expectedHash !== undefined) {
-      assertExpectedHashMatchesCurrentFile(normalizedExpectedHash, current.fileHash);
-    }
+      nextSource === "uploaded"
+        ? input.expectedHash !== undefined
+          ? expectedHashForUploadedFile(current.fileHash)
+          : current.expectedHash
+        : input.expectedHash !== undefined
+          ? normalizeExpectedHash(input.expectedHash)
+          : current.expectedHash;
     const remoteValidationInvalidated =
       nextSource !== "uploaded" &&
       (current.source === "uploaded" ||
@@ -295,8 +296,6 @@ export class RuntimeComponentsService {
     try {
       const preparedFile = await this.prepareUploadedRuntimeComponentFile(componentId, file, input.fileName);
       prepared = preparedFile;
-      const expectedHash = normalizeExpectedHash(input.expectedHash);
-      assertExpectedHashMatchesFile(expectedHash, preparedFile.fileHash);
       const updated = await this.withRuntimeComponentIdentityConflictGuard(
         () =>
           this.prisma.runtimeComponent.update({
@@ -314,7 +313,7 @@ export class RuntimeComponentsService {
               fileSizeBytes: preparedFile.fileSizeBytes,
               fileHash: preparedFile.fileHash,
               archiveEntryName: null,
-              expectedHash: expectedHash ?? preparedFile.fileHash,
+              expectedHash: expectedHashForUploadedFile(preparedFile.fileHash),
               enabled: input.enabled ?? current.enabled
             }
           }),
@@ -1356,20 +1355,10 @@ function normalizeExpectedHash(value?: string | null) {
   return normalized.toLowerCase();
 }
 
-function assertExpectedHashMatchesFile(expectedHash: string | null, actualHash: string) {
-  if (expectedHash && expectedHash !== actualHash) {
-    throw new BadRequestException("上传文件的 SHA256 与 expectedHash 不一致。");
-  }
+function expectedHashForUploadedFile(fileHash: string | null | undefined) {
+  return isValidSha256(fileHash) ? fileHash.toLowerCase() : null;
 }
 
-function assertExpectedHashMatchesCurrentFile(expectedHash: string | null, currentFileHash: string | null | undefined) {
-  if (!expectedHash) {
-    return;
-  }
-  if (!isValidSha256(currentFileHash) || expectedHash !== currentFileHash.toLowerCase()) {
-    throw new BadRequestException("上传型运行组件的 expectedHash 与当前文件 SHA256 不一致。");
-  }
-}
 
 async function hashResponseBody(
   response: { body: any },
@@ -1471,9 +1460,6 @@ async function assertStoredRuntimeComponentReadable(component: {
   }
   if (!isValidSha256(component.fileHash)) {
     throw new BadRequestException("上传型运行组件缺少 SHA256 元数据。");
-  }
-  if (component.expectedHash && component.expectedHash !== component.fileHash) {
-    throw new BadRequestException("上传型运行组件的 expectedHash 与已保存文件不一致。");
   }
   return {
     absolutePath,

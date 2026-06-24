@@ -30,6 +30,7 @@ import type {
 import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
 
 const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 * 1000;
+const IMAGE_BED_CONFIG_TIMEOUT_MS = 8 * 1000;
 const IMAGE_BED_LIST_TIMEOUT_MESSAGE = "图床文件列表加载超时，请稍后重试或缩小搜索范围。";
 const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请稍后刷新文件列表确认结果。";
 const TICKET_ATTACHMENT_TIMEOUT_MS = 90 * 1000;
@@ -476,7 +477,7 @@ function isBackendHttpErrorMessage(message: string) {
 
 export async function fetchAdminImageBedConfig() {
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
-    timeoutMs: ADMIN_READ_TIMEOUT_MS
+    timeoutMs: IMAGE_BED_CONFIG_TIMEOUT_MS
   });
 }
 

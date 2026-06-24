@@ -203,7 +203,6 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           architecture: form.architecture,
           kind: form.kind,
           fileName: form.fileName.trim() || null,
-          expectedHash: form.expectedHash.trim() || null,
           enabled: form.enabled
         };
 
@@ -215,7 +214,6 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           const updatePayload: UpdateAdminRuntimeComponentInputDto = {
             source: "uploaded" as AdminRuntimeComponentSource,
             fileName: form.fileName.trim(),
-            expectedHash: form.expectedHash.trim() || null,
             enabled: form.enabled
           };
           record = await updateAdminRuntimeComponent(editingId, updatePayload);

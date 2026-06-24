@@ -731,6 +731,7 @@ export class DevDataService implements OnModuleInit {
     }
 
     let uploaded = null as Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null;
+    let attachmentUploadError: string | null = null;
     if (file) {
       this.imageBedService.assertSupportTicketAttachment?.(file);
       try {
@@ -738,12 +739,14 @@ export class DevDataService implements OnModuleInit {
           timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
         });
       } catch (error) {
-        const attachmentUploadError = readPanelSyncErrorMessage(error);
+        attachmentUploadError = readPanelSyncErrorMessage(error);
         this.logger.warn(`Admin ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
-        if (error instanceof HttpException) {
-          throw error;
+        if (!body) {
+          if (error instanceof HttpException) {
+            throw error;
+          }
+          throw new ServiceUnavailableException("附件上传失败，未保存工单回复，请稍后重试。");
         }
-        throw new ServiceUnavailableException("附件上传失败，未保存工单回复，请稍后重试。");
       }
     }
     const now = new Date();
@@ -752,7 +755,7 @@ export class DevDataService implements OnModuleInit {
     const messageBody = buildSupportTicketAttachmentReplyBody(
       body,
       uploaded ? `上传了附件：${uploaded.fileName}` : "",
-      null
+      attachmentUploadError
     );
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -824,8 +827,8 @@ export class DevDataService implements OnModuleInit {
     );
     return {
       ...detail,
-      attachmentUploadStatus: file ? "uploaded" : "none",
-      attachmentUploadError: null
+      attachmentUploadStatus: file ? (uploaded ? "uploaded" : "failed") : "none",
+      attachmentUploadError
     };
   }
 
