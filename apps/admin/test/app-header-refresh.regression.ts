@@ -52,8 +52,32 @@ function extractBranchBody(functionBody: string, marker: string) {
   assert.fail(`${marker} branch should be closed`);
 }
 
+function extractBlockAfter(marker: string) {
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(markerIndex, -1, `${marker} should exist`);
+
+  const bodyStart = source.indexOf("{", markerIndex);
+  assert.notEqual(bodyStart, -1, `${marker} should have a body`);
+
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(bodyStart + 1, index);
+      }
+    }
+  }
+
+  assert.fail(`${marker} body should be closed`);
+}
+
 const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
+const adminRuntimeEventsBody = extractBlockAfter("return subscribeAdminRuntimeEvents((event) =>");
 
 function testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst() {
   assert.doesNotMatch(
@@ -117,10 +141,39 @@ function testCriticalSnapshotSectionsStayLocalInSectionLoader() {
   assert.doesNotMatch(nodesBranch, /fetchAdminDashboard\(\)|loadFullSnapshot\(\)/);
 }
 
+function testGenericAdminRuntimeEventsRefreshCurrentSection() {
+  assert.match(
+    adminRuntimeEventsBody,
+    /if \(event\.type === "keepalive"\) {\s*return;\s*}/,
+    "admin SSE keepalive events must not trigger data reloads"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
+    /if \(event\.type === "sync_queue_updated"\) {[\s\S]*?return;\s*}/,
+    "sync queue events should use the dedicated queue refresh path"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
+    /if \(document\.visibilityState === "hidden"\) {\s*return;\s*}/,
+    "hidden admin pages should not refresh visible data immediately"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
+    /if \(sectionRef\.current === "tickets"\) {[\s\S]*?shouldRefreshTicketsForAdminEvent\(event\)[\s\S]*?return;\s*}/,
+    "ticket pages should keep the ticket-specific SSE refresh gate"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
+    /void refreshDashboard\(\{ silent: true \}\);[\s\S]*?void refreshCurrentSectionSilently\(\);/,
+    "announcement, policy, subscription, and other generic admin SSE events must refresh the current section"
+  );
+}
+
 testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst();
 testOverviewKeepsFullSnapshotRefresh();
 testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();
 testCriticalSnapshotSectionsStayLocalInSectionLoader();
+testGenericAdminRuntimeEventsRefreshCurrentSection();
 
 console.log("admin app header refresh regression checks passed");

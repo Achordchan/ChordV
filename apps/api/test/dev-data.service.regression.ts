@@ -5413,6 +5413,7 @@ async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
         if (email === "offline@example.com") {
           throw new Error("panel offline");
         }
+        return true;
       },
       getClientUsage: async (_node: unknown, email: string) => ({
         xrayUserEmail: email,
@@ -5454,13 +5455,9 @@ async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
   assert.equal(bindingUpdates.length, 1, "successful reset should update only the online binding");
   assert.equal(bindingUpdates[0].where.id, "binding_online");
   assert.equal(jobUpdates.length, 2, "both jobs should be finalized independently");
-  assert.deepEqual(
-    jobUpdates.map((item) => ({ id: item.where.id, status: item.data.status })),
-    [
-      { id: "online", status: "completed" },
-      { id: "offline", status: "failed" }
-    ]
-  );
+  const statusById = new Map(jobUpdates.map((item) => [item.where.id, item.data.status]));
+  assert.equal(statusById.get("online"), "completed");
+  assert.equal(statusById.get("offline"), "failed");
   assert.equal(nodeUpdates.length, 1, "offline panel failure should degrade only its node");
   assert.equal(nodeUpdates[0].where.id, "node_offline");
 }
@@ -5547,6 +5544,85 @@ async function testPanelTrafficResetRequiresRemoteCounterConfirmation() {
   assert.match(jobUpdates[0].data.lastError, /traffic reset is not confirmed/);
 }
 
+async function testPanelTrafficResetMissingRemoteClientFailsTheJob() {
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const jobUpdates: Array<Record<string, any>> = [];
+  const nodeUpdates: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      resetClientTraffic: async () => false,
+      getClientUsage: async () => {
+        throw new Error("missing remote client should fail before confirmation read");
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async (payload: Record<string, any>) => {
+          bindingUpdates.push(payload);
+          return {};
+        }
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push(payload);
+          return {};
+        }
+      },
+      panelSyncJob: {
+        update: async (payload: Record<string, any>) => {
+          jobUpdates.push(payload);
+          return {};
+        }
+      },
+      $transaction: async (operations: Array<Promise<unknown>>) => {
+        await Promise.all(operations);
+      }
+    }
+  });
+
+  await service["runPanelSyncJob"]({
+    id: "job_reset_missing_client",
+    action: "reset_client_traffic",
+    attempts: 0,
+    bindingId: "binding_1",
+    subscriptionId: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    nodeId: "node_1",
+    panelClientEmail: "missing@example.com",
+    panelClientId: "panel_client_1",
+    panelInboundId: 7,
+    panelBaseUrl: "https://panel.example.com",
+    panelApiBasePath: "/",
+    panelUsername: "admin",
+    panelPassword: "password",
+    node: {
+      id: "node_1",
+      name: "node 1",
+      flow: "",
+      isActive: true,
+      panelEnabled: true,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    },
+    binding: {
+      status: "active"
+    }
+  });
+
+  assert.equal(bindingUpdates.length, 0, "missing remote client must not complete local reset binding state");
+  assert.equal(nodeUpdates.length, 1, "missing remote client should mark the node degraded");
+  assert.equal(jobUpdates.length, 1);
+  assert.equal(jobUpdates[0].data.status, "failed");
+  assert.match(jobUpdates[0].data.lastError, /did not find the panel client/);
+}
+
 async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
   const previousTimeout = process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS;
   process.env.CHORDV_PANEL_SYNC_JOB_TIMEOUT_MS = "25";
@@ -5596,6 +5672,7 @@ async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
         if (email === "stalled@example.com") {
           return new Promise<void>(() => undefined);
         }
+        return true;
       },
       getClientUsage: async (_node: unknown, email: string) => ({
         xrayUserEmail: email,
@@ -5712,6 +5789,7 @@ async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
         if (email.startsWith("stalled")) {
           return new Promise<void>(() => undefined);
         }
+        return true;
       },
       getClientUsage: async (_node: unknown, email: string) => ({
         xrayUserEmail: email,
@@ -30726,6 +30804,7 @@ async function main() {
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
   await testPanelTrafficResetRequiresRemoteCounterConfirmation();
+  await testPanelTrafficResetMissingRemoteClientFailsTheJob();
   await testPanelSyncBatchContinuesAfterStalledRemoteJob();
   await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
   await testPanelSyncBatchContinuesWhenFailurePersistFails();

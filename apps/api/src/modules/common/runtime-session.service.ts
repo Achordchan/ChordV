@@ -1479,9 +1479,10 @@ export class RuntimeSessionService {
           job,
           this.xuiService.resetClientTraffic(withPanelAbortBudget(panelNodeConfig, panelSyncTimeoutMs), job.panelClientEmail)
         );
-        if (resetSubmitted) {
-          await this.confirmPanelTrafficReset(job, panelNodeConfig);
+        if (resetSubmitted !== true) {
+          throw new Error("3x-ui traffic reset did not find the panel client");
         }
+        await this.confirmPanelTrafficReset(job, panelNodeConfig);
       } else if (job.action === "delete_client") {
         const removalStatus = await this.runPanelSyncRemoteCallWithBudget(
           job,
