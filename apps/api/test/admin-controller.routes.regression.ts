@@ -630,11 +630,12 @@ async function main() {
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts", {
         body: {
-          platform: "windows",
-          architecture: "x64",
-          artifactType: "full_replace",
-          sourceType: "external",
-          downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+          source: "external",
+          type: "external",
+          deliveryMode: "external_download",
+          downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip",
+          fileName: "ChordV_1.1.7_x64-full.zip",
+          isPrimary: true
         }
       }),
       {
@@ -642,15 +643,28 @@ async function main() {
         body: {
           id: "release_1",
           artifact: {
-            platform: "windows",
-            architecture: "x64",
-            artifactType: "full_replace",
-            sourceType: "external",
-            downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+            source: "external",
+            type: "external",
+            deliveryMode: "external_download",
+            downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip",
+            fileName: "ChordV_1.1.7_x64-full.zip",
+            isPrimary: true
           }
         }
       }
     );
+    const releaseArtifactCreateCalls = calls.filter((call) => call.route === "release-artifact-create").length;
+    const legacyReleaseArtifactResponse = await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts", {
+      body: {
+        platform: "windows",
+        architecture: "x64",
+        artifactType: "full_replace",
+        sourceType: "external",
+        downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+      }
+    });
+    assert.equal(legacyReleaseArtifactResponse.status, 400);
+    assert.equal(calls.filter((call) => call.route === "release-artifact-create").length, releaseArtifactCreateCalls);
     assert.deepEqual(
       await requestMultipartJson(baseUrl, "/api/admin/releases/release_1/artifacts/upload", {
         source: "uploaded",
@@ -968,11 +982,12 @@ async function main() {
         route: "release-artifact-create",
         value: "release_1",
         body: {
-          platform: "windows",
-          architecture: "x64",
-          artifactType: "full_replace",
-          sourceType: "external",
-          downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip"
+          source: "external",
+          type: "external",
+          deliveryMode: "external_download",
+          downloadUrl: "https://download.example.com/ChordV_1.1.7_x64-full.zip",
+          fileName: "ChordV_1.1.7_x64-full.zip",
+          isPrimary: true
         }
       },
       {

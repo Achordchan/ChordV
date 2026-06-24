@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -542,6 +543,9 @@ export class AdminController {
 
   @Post("releases/:releaseId/artifacts")
   createReleaseArtifact(@Param("releaseId") releaseId: string, @Body() body: CreateReleaseArtifactDto) {
+    if (!body.type || !body.downloadUrl) {
+      throw new BadRequestException("安装包类型和下载地址不能为空。");
+    }
     return this.devDataService.createReleaseArtifact(releaseId, body);
   }
 

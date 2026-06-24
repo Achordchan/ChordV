@@ -1,5 +1,5 @@
 import { Transform, Type } from "class-transformer";
-import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested, registerDecorator } from "class-validator";
+import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, IsDefined, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested, registerDecorator } from "class-validator";
 import type {
   ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
@@ -815,6 +815,7 @@ export class CreateReleaseArtifactDto {
   @IsIn(["external"])
   source?: "external";
 
+  @IsDefined()
   @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
 
@@ -822,6 +823,7 @@ export class CreateReleaseArtifactDto {
   @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
+  @IsDefined()
   @IsUrl({
     require_tld: false
   })
