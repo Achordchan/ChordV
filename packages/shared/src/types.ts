@@ -13,6 +13,8 @@ export type RuntimeComponentClientDeliveryStatus =
   | "ready"
   | "disabled"
   | "pending_validation"
+  | "unreachable"
+  | "save_failed"
   | "missing_hash"
   | "metadata_mismatch"
   | "missing_file"
@@ -23,6 +25,7 @@ export type RuntimeComponentValidationStatus =
   | "pending_validation"
   | "invalid_url"
   | "unreachable"
+  | "save_failed"
   | "missing_file"
   | "metadata_mismatch";
 export type RuntimeDownloadFailureReason =

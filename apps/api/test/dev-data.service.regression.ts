@@ -5,7 +5,7 @@ import { validateSync } from "class-validator";
 import { createHash } from "node:crypto";
 import { existsSync, promises as fsForPatch } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
@@ -71,6 +71,12 @@ import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "../s
 import { createOrRefreshLeaseRevocationJob, createOrRefreshPanelSyncJob } from "../src/modules/common/panel-sync-job.utils";
 
 const GB_IN_BYTES = 1024 ** 3;
+const FETCH_FORBIDDEN_TEST_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102, 103, 104,
+  109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515,
+  526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049,
+  3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
 const ZIP_CRC32_TABLE = Array.from({ length: 256 }, (_unused, index) => {
   let crc = index;
   for (let bit = 0; bit < 8; bit += 1) {
@@ -81,6 +87,25 @@ const ZIP_CRC32_TABLE = Array.from({ length: 256 }, (_unused, index) => {
 
 function createInstance<T>(prototype: object, overrides: Record<string, unknown> = {}) {
   return Object.assign(Object.create(prototype), overrides) as T & Record<string, unknown>;
+}
+
+async function listenOnFetchSafeLocalhost(server: Server) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => reject(error);
+      server.once("error", onError);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", onError);
+        resolve();
+      });
+    });
+    const address = server.address();
+    if (address && typeof address === "object" && !FETCH_FORBIDDEN_TEST_PORTS.has(address.port)) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+  throw new Error("Unable to allocate a fetch-safe localhost test port.");
 }
 
 async function testSubscriptionUsageLockIsReentrantForNestedPanelSync() {
@@ -1445,7 +1470,7 @@ async function testImageBedUploadRejectsMalformedReturnedUrlAndCleansTempFile() 
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1532,7 +1557,7 @@ async function testImageBedDeleteReturnsStructuredBusinessFailure() {
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1572,7 +1597,7 @@ async function testImageBedDeleteAcceptsDeletedListWithoutSuccessTrue() {
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1608,7 +1633,7 @@ async function testImageBedDeleteUsesShortManageTimeout() {
   const server = createServer(() => {
     // Intentionally never respond; admin delete should use the same short management budget as listing.
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1655,7 +1680,7 @@ async function testImageBedDeleteAllowsPlainPercentFilePath() {
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -20919,7 +20944,7 @@ async function testRemoteRuntimeValidationRejectsLargeDefaultContentLength() {
     });
     response.end();
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -20996,7 +21021,7 @@ async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
 
     const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
 
-    assert.equal(result.status, "metadata_mismatch");
+    assert.equal(result.status, "save_failed");
     assert.match(result.message, /保存校验结果失败/);
     assert.doesNotMatch(result.message, /runtime metadata write failed/);
     assert.notEqual(result.status, "unreachable", "local DB write failures must not be reported as unreachable remote URLs");

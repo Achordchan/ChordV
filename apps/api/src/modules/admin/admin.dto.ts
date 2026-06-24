@@ -23,7 +23,7 @@ import type {
 } from "@chordv/shared";
 
 function transformOptionalBoolean(value: unknown) {
-  if (value === undefined || value === null || value === "") {
+  if (value === undefined || value === "") {
     return undefined;
   }
   if (typeof value === "boolean") {
@@ -134,13 +134,13 @@ export class CreatePlanDto {
   @IsBoolean()
   renewable!: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(1)
   maxConcurrentSessions?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   isActive?: boolean;
 }
@@ -274,13 +274,13 @@ export class CreateSubscriptionDto {
   @IsNotEmpty()
   planId!: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   totalTrafficGb?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -291,7 +291,7 @@ export class CreateSubscriptionDto {
   @IsDateString()
   expireAt!: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "expired", "exhausted", "paused"])
   state?: SubscriptionState;
 }
@@ -382,7 +382,7 @@ export class CreateTeamDto {
   @IsNotEmpty()
   ownerUserId!: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["active", "disabled"])
   status?: TeamStatus;
 }
@@ -435,13 +435,13 @@ export class CreateTeamSubscriptionDto {
   @IsDateString()
   expireAt!: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   totalTrafficGb?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -635,15 +635,15 @@ export class CreateAnnouncementDto {
   @IsDateString()
   publishedAt?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   isActive?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["passive", "modal_confirm", "modal_countdown"])
   displayMode?: AnnouncementDisplayMode;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Type(() => Number)
   @IsNumber()
   @IsInt()
@@ -740,25 +740,25 @@ export class CreateReleaseDto {
   @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   version!: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   displayTitle?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsArray()
   @IsString({ each: true })
   changelog?: string[];
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @Matches(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/)
   minimumVersion?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsBoolean()
   forceUpgrade?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["draft", "published"])
   status?: Extract<ReleaseStatus, "draft" | "published">;
 
@@ -814,7 +814,7 @@ export class ListReleasesDto {
 }
 
 export class CreateReleaseArtifactDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["external"])
   source?: "external";
 
@@ -822,7 +822,7 @@ export class CreateReleaseArtifactDto {
   @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
@@ -836,7 +836,7 @@ export class CreateReleaseArtifactDto {
   @IsString()
   defaultMirrorPrefix?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "allowClientMirror must be a boolean value"
@@ -847,7 +847,7 @@ export class CreateReleaseArtifactDto {
   @IsString()
   fileName?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "isPrimary must be a boolean value"
@@ -900,14 +900,14 @@ export class UpdateReleaseArtifactDto {
 }
 
 export class UploadReleaseArtifactDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["uploaded"])
   source?: "uploaded";
 
   @IsIn(["dmg", "app", "exe", "setup.exe", "zip", "apk", "ipa", "external"])
   type!: ReleaseArtifactType;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["desktop_installer_download", "desktop_full_replace", "apk_download", "external_download", "none"])
   deliveryMode?: UpdateDeliveryMode;
 
@@ -915,7 +915,7 @@ export class UploadReleaseArtifactDto {
   @IsString()
   defaultMirrorPrefix?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "allowClientMirror must be a boolean value"
@@ -926,7 +926,7 @@ export class UploadReleaseArtifactDto {
   @IsString()
   fileName?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "isPrimary must be a boolean value"
@@ -945,11 +945,11 @@ export class CreateRuntimeComponentDto {
   @IsIn(["xray", "geoip", "geosite"])
   kind!: RuntimeComponentKind;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsIn(["github_remote", "custom_remote"])
   source?: Exclude<RuntimeComponentSource, "uploaded">;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsUrl({
     require_tld: false
   })
@@ -959,7 +959,7 @@ export class CreateRuntimeComponentDto {
   @IsString()
   defaultMirrorPrefix?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "allowClientMirror must be a boolean value"
@@ -978,7 +978,7 @@ export class CreateRuntimeComponentDto {
   @IsString()
   expectedHash?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "enabled must be a boolean value"
@@ -991,7 +991,7 @@ export class UpdateRuntimeComponentDto {
   @IsIn(["uploaded", "github_remote", "custom_remote"])
   source?: RuntimeComponentSource;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsUrl({
     require_tld: false
   })
@@ -1001,7 +1001,7 @@ export class UpdateRuntimeComponentDto {
   @IsString()
   defaultMirrorPrefix?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "allowClientMirror must be a boolean value"
@@ -1021,7 +1021,7 @@ export class UpdateRuntimeComponentDto {
   @IsString()
   expectedHash?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "enabled must be a boolean value"
@@ -1047,7 +1047,7 @@ export class UploadRuntimeComponentDto {
   @IsString()
   expectedHash?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
   @IsIn([true, false, "true", "false"], {
     message: "enabled must be a boolean value"

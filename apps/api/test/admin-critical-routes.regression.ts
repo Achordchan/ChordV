@@ -13,6 +13,16 @@ import { DevDataService } from "../src/modules/common/dev-data.service";
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 import { ClientService } from "../src/modules/client/client.service";
+import {
+  CreateAnnouncementDto,
+  CreatePlanDto,
+  CreateReleaseArtifactDto,
+  CreateReleaseDto,
+  CreateRuntimeComponentDto,
+  CreateSubscriptionDto,
+  CreateTeamDto,
+  CreateTeamSubscriptionDto
+} from "../src/modules/admin/admin.dto";
 
 type RouteCall = {
   route: string;
@@ -28,6 +38,14 @@ Reflect.defineMetadata(
   [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
   AdminController
 );
+Reflect.defineMetadata("design:paramtypes", [CreatePlanDto], AdminController.prototype, "createPlan");
+Reflect.defineMetadata("design:paramtypes", [CreateSubscriptionDto], AdminController.prototype, "createSubscription");
+Reflect.defineMetadata("design:paramtypes", [CreateTeamDto], AdminController.prototype, "createTeam");
+Reflect.defineMetadata("design:paramtypes", [String, CreateTeamSubscriptionDto], AdminController.prototype, "createTeamSubscription");
+Reflect.defineMetadata("design:paramtypes", [CreateAnnouncementDto], AdminController.prototype, "createAnnouncement");
+Reflect.defineMetadata("design:paramtypes", [CreateRuntimeComponentDto], AdminController.prototype, "createRuntimeComponent");
+Reflect.defineMetadata("design:paramtypes", [CreateReleaseDto], AdminController.prototype, "createRelease");
+Reflect.defineMetadata("design:paramtypes", [String, CreateReleaseArtifactDto], AdminController.prototype, "createReleaseArtifact");
 Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsService], DownloadsController);
 Reflect.defineMetadata("design:paramtypes", [ClientService, RuntimeComponentsService], ClientController);
 Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
@@ -171,6 +189,13 @@ async function requestJson(
   return { status: response.status, body };
 }
 
+async function assertJsonBadRequest(baseUrl: string, path: string, body: unknown) {
+  const callCountBefore = calls.length;
+  const response = await requestJson(baseUrl, path, { body });
+  assert.equal(response.status, 400, `${path} should reject null-only optional fields before service execution`);
+  assert.equal(calls.length, callCountBefore, `${path} should not call service after DTO validation failure`);
+}
+
 async function requestDownload(baseUrl: string, routePath: string) {
   const response = await fetch(`${baseUrl}${routePath}`);
   return response.status;
@@ -208,6 +233,115 @@ async function main() {
   try {
     const baseUrl = await app.getUrl();
     const expireAt = "2030-01-01T00:00:00.000Z";
+
+    await assertJsonBadRequest(baseUrl, "/api/admin/plans", {
+      name: "Null Plan",
+      scope: "personal",
+      totalTrafficGb: 10,
+      renewable: true,
+      maxConcurrentSessions: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/plans", {
+      name: "Null Plan",
+      scope: "personal",
+      totalTrafficGb: 10,
+      renewable: true,
+      isActive: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions", {
+      userId: "user_1",
+      planId: "plan_1",
+      expireAt,
+      totalTrafficGb: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/subscriptions", {
+      userId: "user_1",
+      planId: "plan_1",
+      expireAt,
+      state: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/teams", {
+      name: "Null Team",
+      ownerUserId: "user_1",
+      status: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/teams/team_1/subscriptions", {
+      planId: "plan_1",
+      expireAt,
+      usedTrafficGb: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/announcements", {
+      title: "Null announcement",
+      body: "body",
+      level: "info",
+      displayMode: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/announcements", {
+      title: "Null announcement",
+      body: "body",
+      level: "info",
+      isActive: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/announcements", {
+      title: "Null announcement",
+      body: "body",
+      level: "info",
+      countdownSeconds: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/releases", {
+      platform: "windows",
+      channel: "stable",
+      version: "1.1.7",
+      displayTitle: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/runtime-components", {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: null,
+      originUrl: "https://cdn.example.com/xray.zip",
+      fileName: "xray.zip"
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/runtime-components", {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "custom_remote",
+      originUrl: null,
+      fileName: "xray.zip"
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/runtime-components", {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "custom_remote",
+      originUrl: "https://cdn.example.com/xray.zip",
+      fileName: "xray.zip",
+      allowClientMirror: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/runtime-components", {
+      platform: "windows",
+      architecture: "x64",
+      kind: "xray",
+      source: "custom_remote",
+      originUrl: "https://cdn.example.com/xray.zip",
+      fileName: "xray.zip",
+      enabled: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/releases/release_1/artifacts", {
+      source: "external",
+      type: "external",
+      deliveryMode: "external_download",
+      downloadUrl: "https://cdn.example.com/chordv.exe",
+      allowClientMirror: null
+    });
+    await assertJsonBadRequest(baseUrl, "/api/admin/releases/release_1/artifacts", {
+      source: "external",
+      type: "external",
+      deliveryMode: "external_download",
+      downloadUrl: "https://cdn.example.com/chordv.exe",
+      isPrimary: null
+    });
 
     assert.equal((await requestJson(baseUrl, "/api/admin/snapshot", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/dashboard", { method: "GET" })).status, 200);

@@ -49,6 +49,31 @@ function testEnabledRemoteHashMismatchIsShownAsBlocked() {
   assert.match(state.description, /不会下发/);
 }
 
+function testSaveFailedIsNotShownAsHashMismatch() {
+  const state = getRuntimeComponentDeliveryState(
+    makeRuntimeComponent({
+      clientDeliveryStatus: "save_failed",
+      clientDeliveryMessage: "远程组件可访问且 Hash 匹配，但保存校验结果失败。"
+    })
+  );
+
+  assert.equal(state.color, "red");
+  assert.equal(state.label, "保存失败");
+  assert.doesNotMatch(state.label, /Hash/);
+}
+
+function testUnreachableIsShownAsBlocked() {
+  const state = getRuntimeComponentDeliveryState(
+    makeRuntimeComponent({
+      clientDeliveryStatus: "unreachable",
+      clientDeliveryMessage: "远程组件当前不可访问。"
+    })
+  );
+
+  assert.equal(state.color, "red");
+  assert.equal(state.label, "无法访问");
+}
+
 function testDeliverableComponentIsShownAsDeliverable() {
   const state = getRuntimeComponentDeliveryState(
     makeRuntimeComponent({
@@ -106,19 +131,21 @@ function testFailedValidationBlocksDeliveryState() {
     }),
     {
       componentId: "component_1",
-      status: "metadata_mismatch",
-      message: "Hash 不一致",
+      status: "save_failed",
+      message: "保存校验结果失败",
       finalUrlPreview: "https://cdn.example.com/xray.exe"
     } satisfies AdminRuntimeComponentValidationDto
   );
 
   assert.equal(next.clientDeliverable, false);
-  assert.equal(next.clientDeliveryStatus, "metadata_mismatch");
-  assert.equal(getRuntimeComponentDeliveryState(next).label, "Hash 不一致");
+  assert.equal(next.clientDeliveryStatus, "save_failed");
+  assert.equal(getRuntimeComponentDeliveryState(next).label, "保存失败");
 }
 
 testEnabledRemotePendingValidationIsNotShownAsDeliverable();
 testEnabledRemoteHashMismatchIsShownAsBlocked();
+testSaveFailedIsNotShownAsHashMismatch();
+testUnreachableIsShownAsBlocked();
 testDeliverableComponentIsShownAsDeliverable();
 testMissingDeliveryFieldsAreShownAsUnknown();
 testReadyValidationUpdatesDeliveryState();

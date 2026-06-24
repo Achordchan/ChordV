@@ -29,14 +29,9 @@ export function getRuntimeComponentDeliveryState(record: AdminRuntimeComponentRe
       description
     };
   }
-  if (record.clientDeliveryStatus === "metadata_mismatch" || record.clientDeliveryStatus === "missing_file" || record.clientDeliveryStatus === "invalid_url") {
+  if (isRuntimeComponentDeliveryError(record.clientDeliveryStatus)) {
     return {
-      label:
-        record.clientDeliveryStatus === "metadata_mismatch"
-          ? "Hash 不一致"
-          : record.clientDeliveryStatus === "missing_file"
-            ? "文件缺失"
-            : "链接有误",
+      label: getRuntimeComponentDeliveryErrorLabel(record.clientDeliveryStatus),
       color: "red",
       description
     };
@@ -71,14 +66,39 @@ export function applyRuntimeComponentValidationToDelivery(
       clientDeliveryMessage: validation.message || "组件已停用，客户端不会获取。"
     };
   }
-  const status =
-    validation.status === "metadata_mismatch" || validation.status === "missing_file" || validation.status === "invalid_url"
-      ? validation.status
-      : "pending_validation";
+  const status = isRuntimeComponentDeliveryError(validation.status) ? validation.status : "pending_validation";
   return {
     ...record,
     clientDeliverable: false,
     clientDeliveryStatus: status,
     clientDeliveryMessage: validation.message || "组件校验未通过，不会下发给客户端。"
   };
+}
+
+function isRuntimeComponentDeliveryError(
+  status: AdminRuntimeComponentRecordDto["clientDeliveryStatus"] | AdminRuntimeComponentValidationDto["status"]
+) {
+  return (
+    status === "metadata_mismatch" ||
+    status === "missing_file" ||
+    status === "invalid_url" ||
+    status === "unreachable" ||
+    status === "save_failed"
+  );
+}
+
+function getRuntimeComponentDeliveryErrorLabel(status: NonNullable<AdminRuntimeComponentRecordDto["clientDeliveryStatus"]>) {
+  if (status === "metadata_mismatch") {
+    return "Hash 不一致";
+  }
+  if (status === "missing_file") {
+    return "文件缺失";
+  }
+  if (status === "invalid_url") {
+    return "链接有误";
+  }
+  if (status === "save_failed") {
+    return "保存失败";
+  }
+  return "无法访问";
 }

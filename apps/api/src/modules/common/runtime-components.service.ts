@@ -34,6 +34,7 @@ const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 15 * 1000;
 const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 5 * 1000;
 const DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS = 300;
 const DEFAULT_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS = 300;
+const ADMIN_RUNTIME_VALIDATION_REPORT_VERSION = "admin_validation";
 
 type UploadedRuntimeComponentFile = {
   path: string;
@@ -64,7 +65,11 @@ export class RuntimeComponentsService {
       const rows = await this.prisma.runtimeComponent.findMany({
         orderBy: [{ updatedAt: "desc" }, { platform: "asc" }, { architecture: "asc" }, { kind: "asc" }]
       });
-      return await Promise.all(dedupeSharedRulesets(rows).map(toAdminRuntimeComponentRecord));
+      const dedupedRows = dedupeSharedRulesets(rows);
+      const latestValidationFailures = await this.listLatestAdminValidationFailures(dedupedRows.map((row) => row.id));
+      return await Promise.all(
+        dedupedRows.map((row) => toAdminRuntimeComponentRecord(row, latestValidationFailures.get(row.id) ?? null))
+      );
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "Runtime component list is temporarily unavailable.");
     }
@@ -649,13 +654,87 @@ export class RuntimeComponentsService {
         .then((result) => {
           if (result.status !== "ready") {
             this.logger.warn(`Runtime component ${componentId} background validation finished with ${result.status}: ${result.message}`);
+            void this.persistAdminValidationFailure(componentId, resolvedUrl, result);
           }
         })
         .catch((error) => {
-          this.logger.warn(`Runtime component ${componentId} background validation failed: ${readErrorMessage(error)}`);
+          const message = readErrorMessage(error);
+          this.logger.warn(`Runtime component ${componentId} background validation failed: ${message}`);
+          void this.persistAdminValidationFailure(componentId, resolvedUrl, {
+            componentId,
+            status: "unreachable",
+            message,
+            finalUrlPreview: resolvedUrl
+          });
         });
     }, 0);
     timer.unref?.();
+  }
+
+  private async persistAdminValidationFailure(
+    componentId: string,
+    resolvedUrl: string,
+    result: AdminRuntimeComponentValidationDto
+  ) {
+    try {
+      const component = await this.prisma.runtimeComponent.findUnique({
+        where: { id: componentId },
+        select: {
+          id: true,
+          platform: true,
+          architecture: true,
+          kind: true
+        }
+      });
+      if (!component) {
+        return;
+      }
+      await this.prisma.runtimeComponentFailureReport.create({
+        data: {
+          id: createId("rtfail"),
+          componentId,
+          platform: component.platform,
+          architecture: component.architecture,
+          kind: component.kind,
+          reason: result.status,
+          message: result.message,
+          effectiveUrl: result.finalUrlPreview || resolvedUrl,
+          appVersion: ADMIN_RUNTIME_VALIDATION_REPORT_VERSION,
+          userId: null
+        }
+      });
+    } catch (error) {
+      this.logger.warn(`Runtime component ${componentId} validation failure report save failed: ${readErrorMessage(error)}`);
+    }
+  }
+
+  private async listLatestAdminValidationFailures(componentIds: string[]) {
+    const latestByComponent = new Map<
+      string,
+      {
+        componentId: string | null;
+        reason: string;
+        message: string | null;
+        effectiveUrl: string | null;
+        createdAt: Date;
+      }
+    >();
+    if (componentIds.length === 0) {
+      return latestByComponent;
+    }
+    const rows = await this.prisma.runtimeComponentFailureReport.findMany({
+      where: {
+        componentId: { in: componentIds },
+        appVersion: ADMIN_RUNTIME_VALIDATION_REPORT_VERSION
+      },
+      orderBy: [{ createdAt: "desc" }]
+    });
+    for (const row of rows) {
+      if (row.componentId && !latestByComponent.has(row.componentId)) {
+        latestByComponent.set(row.componentId, row);
+      }
+    }
+    return latestByComponent;
   }
 
   private async validateRemoteRuntimeComponentHash(
@@ -735,7 +814,7 @@ export class RuntimeComponentsService {
       } catch (error) {
         return {
           componentId,
-          status: "metadata_mismatch",
+          status: "save_failed",
           message: "远程组件可访问且 Hash 匹配，但保存校验结果失败，请稍后重试。",
           finalUrlPreview: resolvedUrl,
           httpStatus: response.status,
@@ -1014,8 +1093,13 @@ async function toAdminRuntimeComponentRecord(row: {
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
-}): Promise<AdminRuntimeComponentRecordDto> {
-  const clientDelivery = await resolveAdminRuntimeComponentClientDelivery(row);
+}, latestValidationFailure: {
+  reason: string;
+  message: string | null;
+  effectiveUrl: string | null;
+  createdAt: Date;
+} | null = null): Promise<AdminRuntimeComponentRecordDto> {
+  const clientDelivery = await resolveAdminRuntimeComponentClientDelivery(row, latestValidationFailure);
   return {
     id: row.id,
     platform: row.platform,
@@ -1048,7 +1132,13 @@ async function resolveAdminRuntimeComponentClientDelivery(row: {
   fileHash: string | null;
   expectedHash: string | null;
   enabled: boolean;
-}): Promise<{
+  updatedAt: Date;
+}, latestValidationFailure: {
+  reason: string;
+  message: string | null;
+  effectiveUrl: string | null;
+  createdAt: Date;
+} | null = null): Promise<{
   deliverable: boolean;
   status: NonNullable<AdminRuntimeComponentRecordDto["clientDeliveryStatus"]>;
   message: string;
@@ -1090,6 +1180,14 @@ async function resolveAdminRuntimeComponentClientDelivery(row: {
       message: "远程直链不是有效的 http/https 地址，不会下发给客户端。"
     };
   }
+  if (latestValidationFailure && latestValidationFailure.createdAt.getTime() >= row.updatedAt.getTime()) {
+    const status = toRuntimeComponentDeliveryStatus(latestValidationFailure.reason);
+    return {
+      deliverable: false,
+      status,
+      message: latestValidationFailure.message ?? "后台校验失败，客户端不会获取该组件。"
+    };
+  }
   if (!hasPositiveFileSize(row.fileSizeBytes)) {
     return {
       deliverable: false,
@@ -1125,6 +1223,19 @@ async function resolveAdminRuntimeComponentClientDelivery(row: {
     status: "ready",
     message: "远程直链已校验通过，可下发给客户端。"
   };
+}
+
+function toRuntimeComponentDeliveryStatus(reason: string): NonNullable<AdminRuntimeComponentRecordDto["clientDeliveryStatus"]> {
+  if (
+    reason === "metadata_mismatch" ||
+    reason === "missing_file" ||
+    reason === "invalid_url" ||
+    reason === "unreachable" ||
+    reason === "save_failed"
+  ) {
+    return reason;
+  }
+  return "unreachable";
 }
 
 function dedupeSharedRulesets<

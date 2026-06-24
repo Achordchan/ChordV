@@ -42,6 +42,17 @@ function makeRemoteComponent(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function makeRuntimeComponentListPrisma(rows: Array<Record<string, unknown>>, failureReports: Array<Record<string, unknown>> = []) {
+  return {
+    runtimeComponent: {
+      findMany: async () => rows
+    },
+    runtimeComponentFailureReport: {
+      findMany: async () => failureReports
+    }
+  };
+}
+
 async function testUploadedRuntimeComponentRejectsMismatchedExpectedHashOnPatch() {
   let updateCalled = false;
   const service = createRuntimeComponentsService({
@@ -99,11 +110,7 @@ async function testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch() 
 
 async function testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable() {
   const service = createRuntimeComponentsService({
-    prisma: {
-      runtimeComponent: {
-        findMany: async () => [makeRemoteComponent({ expectedHash: null })]
-      }
-    }
+    prisma: makeRuntimeComponentListPrisma([makeRemoteComponent({ expectedHash: null })])
   });
 
   const [result] = await service.listAdminRuntimeComponents();
@@ -115,15 +122,11 @@ async function testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable() 
 
 async function testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable() {
   const service = createRuntimeComponentsService({
-    prisma: {
-      runtimeComponent: {
-        findMany: async () => [
-          makeUploadedComponent({
-            storedFilePath: "component_1/definitely-missing.zip"
-          })
-        ]
-      }
-    }
+    prisma: makeRuntimeComponentListPrisma([
+      makeUploadedComponent({
+        storedFilePath: "component_1/definitely-missing.zip"
+      })
+    ])
   });
 
   const [result] = await service.listAdminRuntimeComponents();
@@ -136,17 +139,13 @@ async function testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable
 async function testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable() {
   const hash = "a".repeat(64);
   const service = createRuntimeComponentsService({
-    prisma: {
-      runtimeComponent: {
-        findMany: async () => [
-          makeRemoteComponent({
-            fileSizeBytes: 1024n,
-            fileHash: hash.toUpperCase(),
-            expectedHash: hash
-          })
-        ]
-      }
-    }
+    prisma: makeRuntimeComponentListPrisma([
+      makeRemoteComponent({
+        fileSizeBytes: 1024n,
+        fileHash: hash.toUpperCase(),
+        expectedHash: hash
+      })
+    ])
   });
 
   const [result] = await service.listAdminRuntimeComponents();
@@ -158,17 +157,13 @@ async function testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable() {
 
 async function testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable() {
   const service = createRuntimeComponentsService({
-    prisma: {
-      runtimeComponent: {
-        findMany: async () => [
-          makeRemoteComponent({
-            fileSizeBytes: 1024n,
-            fileHash: "b".repeat(64),
-            expectedHash: "a".repeat(64)
-          })
-        ]
-      }
-    }
+    prisma: makeRuntimeComponentListPrisma([
+      makeRemoteComponent({
+        fileSizeBytes: 1024n,
+        fileHash: "b".repeat(64),
+        expectedHash: "a".repeat(64)
+      })
+    ])
   });
 
   const [result] = await service.listAdminRuntimeComponents();
@@ -176,6 +171,62 @@ async function testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable(
   assert.equal(result.clientDeliverable, false);
   assert.equal(result.clientDeliveryStatus, "metadata_mismatch");
   assert.match(result.clientDeliveryMessage, /Hash/);
+}
+
+async function testAdminRuntimeComponentShowsFreshBackgroundValidationFailure() {
+  const service = createRuntimeComponentsService({
+    prisma: makeRuntimeComponentListPrisma(
+      [
+        makeRemoteComponent({
+          expectedHash: "a".repeat(64),
+          updatedAt: new Date("2026-01-01T00:00:00.000Z")
+        })
+      ],
+      [
+        {
+          componentId: "component_1",
+          reason: "unreachable",
+          message: "Remote validation timed out",
+          effectiveUrl: "https://cdn.example.com/xray.exe",
+          createdAt: new Date("2026-01-01T00:01:00.000Z")
+        }
+      ]
+    )
+  });
+
+  const [result] = await service.listAdminRuntimeComponents();
+
+  assert.equal(result.clientDeliverable, false);
+  assert.equal(result.clientDeliveryStatus, "unreachable");
+  assert.equal(result.clientDeliveryMessage, "Remote validation timed out");
+}
+
+async function testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure() {
+  const service = createRuntimeComponentsService({
+    prisma: makeRuntimeComponentListPrisma(
+      [
+        makeRemoteComponent({
+          expectedHash: "a".repeat(64),
+          updatedAt: new Date("2026-01-01T00:02:00.000Z")
+        })
+      ],
+      [
+        {
+          componentId: "component_1",
+          reason: "unreachable",
+          message: "Old validation timed out",
+          effectiveUrl: "https://cdn.example.com/xray.exe",
+          createdAt: new Date("2026-01-01T00:01:00.000Z")
+        }
+      ]
+    )
+  });
+
+  const [result] = await service.listAdminRuntimeComponents();
+
+  assert.equal(result.clientDeliverable, false);
+  assert.equal(result.clientDeliveryStatus, "pending_validation");
+  assert.notEqual(result.clientDeliveryMessage, "Old validation timed out");
 }
 
 async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload() {
@@ -210,6 +261,8 @@ async function main() {
   await testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable();
   await testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable();
   await testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable();
+  await testAdminRuntimeComponentShowsFreshBackgroundValidationFailure();
+  await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
   console.log("runtime component service regression checks passed");
 }
