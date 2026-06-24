@@ -228,15 +228,20 @@ export class AdminNodeService {
       "连接撤销队列读取失败，请刷新后重试。"
     );
     const nodeIds = Array.from(new Set(rows.map((row) => row.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId))));
-    const nodes = nodeIds.length > 0
-      ? await runAdminNodeLocalOperation(
+    let nodes: Array<{ id: string; name: string }> = [];
+    if (nodeIds.length > 0) {
+      try {
+        nodes = await runAdminNodeLocalOperation(
           () => this.prisma.node.findMany({
             where: { id: { in: nodeIds } },
             select: { id: true, name: true }
           }),
           "连接撤销队列节点信息读取失败，请刷新后重试。"
-        )
-      : [];
+        );
+      } catch (error) {
+        this.logger.warn(`Lease revocation queue loaded without node names: ${readAdminNodeErrorMessage(error)}`);
+      }
+    }
     const nodeNameById = new Map(nodes.map((node) => [node.id, node.name]));
 
     return rows.map((row) => ({

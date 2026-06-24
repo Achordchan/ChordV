@@ -83,6 +83,22 @@ const devDataServiceStub = {
     calls.push({ route: "node-delete", value: nodeId });
     return { ok: true, nodeId, panelSyncStatus: "pending" };
   },
+  importNodeFromSubscription: async (body: unknown) => {
+    calls.push({ route: "node-import", value: "new", body });
+    return { id: "node_imported", body, panelStatus: "degraded" };
+  },
+  listNodePanelInbounds: async (body: unknown) => {
+    calls.push({ route: "node-panel-inbounds", value: "panel", body });
+    return [{ id: 1, remark: "inbound" }];
+  },
+  refreshNode: async (nodeId: string) => {
+    calls.push({ route: "node-refresh", value: nodeId });
+    return { id: nodeId, panelStatus: "degraded" };
+  },
+  probeNode: async (nodeId: string) => {
+    calls.push({ route: "node-probe", value: nodeId });
+    return { id: nodeId, panelStatus: "degraded" };
+  },
   probeAllNodes: async () => {
     calls.push({ route: "node-probe-all", value: "all" });
     return [{ id: "node_1", panelStatus: "degraded" }];
@@ -479,6 +495,32 @@ async function main() {
         body: { ok: true, nodeId: "node_1", panelSyncStatus: "pending" }
       }
     );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/nodes/import", {
+        body: { subscriptionUrl: "vless://node" }
+      }),
+      {
+        status: 201,
+        body: { id: "node_imported", body: { subscriptionUrl: "vless://node" }, panelStatus: "degraded" }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/nodes/panel-inbounds", {
+        body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "secret" }
+      }),
+      {
+        status: 201,
+        body: [{ id: 1, remark: "inbound" }]
+      }
+    );
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node_1/refresh"), {
+      status: 201,
+      body: { id: "node_1", panelStatus: "degraded" }
+    });
+    assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/node_1/probe"), {
+      status: 201,
+      body: { id: "node_1", panelStatus: "degraded" }
+    });
     assert.deepEqual(await requestJson(baseUrl, "/api/admin/nodes/probe-all"), {
       status: 201,
       body: [{ id: "node_1", panelStatus: "degraded" }]
@@ -830,6 +872,14 @@ async function main() {
       { route: "team-update", value: "team_1", body: { status: "disabled" } },
       { route: "node-update", value: "node_1", body: { isActive: false } },
       { route: "node-delete", value: "node_1" },
+      { route: "node-import", value: "new", body: { subscriptionUrl: "vless://node" } },
+      {
+        route: "node-panel-inbounds",
+        value: "panel",
+        body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "secret" }
+      },
+      { route: "node-refresh", value: "node_1" },
+      { route: "node-probe", value: "node_1" },
       { route: "node-probe-all", value: "all" },
       { route: "announcement-create", value: "new", body: { title: "公告", content: "内容", priority: "normal" } },
       { route: "announcement-update", value: "announcement_1", body: { title: "公告更新" } },

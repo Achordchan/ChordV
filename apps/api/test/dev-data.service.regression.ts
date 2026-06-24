@@ -10109,6 +10109,40 @@ async function testProbeNodeReturnsFallbackWhenResultSaveFails() {
   assert.notEqual(result.probeStatus, "unknown");
 }
 
+async function testProbeNodeMapsLocalReadFailureBeforeHealthCheck() {
+  let healthCheckCalled = false;
+  let updateCalled = false;
+  const service = createAdminNodeService({
+    xuiService: {
+      checkNodeHealth: async () => {
+        healthCheckCalled = true;
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => {
+          throw new Error("node probe preflight read failed");
+        },
+        update: async () => {
+          updateCalled = true;
+          return makeAdminNodeRow();
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.probeNode("node_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/node probe preflight read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node probe preflight reads must return a controlled 503 instead of leaking HTTP 500"
+  );
+  assert.equal(healthCheckCalled, false, "node probe must not check panel health after local preflight read fails");
+  assert.equal(updateCalled, false, "node probe must not save probe results after local preflight read fails");
+}
+
 async function testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls() {
   const previousProbeBudget = process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
   const previousRequestBudget = process.env.CHORDV_BULK_NODE_PROBE_REQUEST_TIMEOUT_MS;
@@ -10623,6 +10657,91 @@ async function testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff() {
   assert.equal(updates[0]?.data.attempts, 0);
   assert.equal(updates[0]?.data.lastError, null);
   assert.deepEqual(result.map((job) => job.id), ["lease_job_1"]);
+}
+
+async function testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails() {
+  const warnings: string[] = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      leaseRevocationJob: {
+        findMany: async () => [
+          {
+            id: "lease_job_1",
+            reason: "node_access_revoked",
+            status: "failed",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            nodeId: "node_missing",
+            attempts: 2,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: "panel offline",
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      },
+      node: {
+        findMany: async () => {
+          throw new Error("node name lookup failed");
+        }
+      }
+    }
+  });
+
+  const result = await service.listLeaseRevocationJobs();
+
+  assert.deepEqual(result.map((job) => job.id), ["lease_job_1"]);
+  assert.equal(result[0]?.nodeId, "node_missing");
+  assert.equal(result[0]?.nodeName, null);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /without node names/);
+}
+
+async function testLeaseRevocationRetryPublishesSyncQueueEvent() {
+  const events: Array<Record<string, unknown>> = [];
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminNodeService({
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => events.push(event)
+    },
+    prisma: {
+      leaseRevocationJob: {
+        updateMany: async () => ({ count: 1 }),
+        findMany: async () => [
+          {
+            id: "lease_job_1",
+            reason: "node_access_revoked",
+            status: "pending",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            nodeId: "node_1",
+            attempts: 0,
+            nextRunAt: now,
+            lockedAt: null,
+            lastError: null,
+            completedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }
+        ]
+      },
+      node: {
+        findMany: async () => [{ id: "node_1", name: "Node 1" }]
+      }
+    }
+  });
+
+  await service.retryLeaseRevocationJob("lease_job_1");
+
+  assert.equal(events.length, 1, "manual lease retry must notify admin sync queue subscribers");
+  assert.equal(events[0]?.type, "sync_queue_updated");
+  assert.equal(events[0]?.nodeId, null);
 }
 
 async function testRetryLeaseRevocationJobKeepsSavedRetryWhenListRefreshFails() {
@@ -16032,6 +16151,50 @@ async function testImportNodeMapsLocalSaveFailure() {
   assert.equal(probeStarted, false, "initial probe must not start before local node import is saved");
 }
 
+async function testImportNodeMapsLocalReadFailureBeforeSave() {
+  let upsertCalled = false;
+  const service = createAdminNodeService({
+    resolveNodeRuntimeSource: async () => ({
+      name: "Imported Node",
+      serverHost: "node.example.com",
+      serverPort: 443,
+      uuid: "11111111-1111-4111-8111-111111111111",
+      flow: "xtls-rprx-vision",
+      realityPublicKey: "public-key",
+      shortId: "short",
+      serverName: "node.example.com",
+      fingerprint: "chrome",
+      spiderX: "/",
+      mldsa65Verify: ""
+    }),
+    prisma: {
+      node: {
+        findUnique: async () => {
+          throw new Error("node preflight read failed");
+        },
+        upsert: async () => {
+          upsertCalled = true;
+          return makeAdminNodeRow();
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      service.importNodeFromSubscription({
+        name: "Imported Node",
+        panelEnabled: false
+      }),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/node preflight read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node import preflight reads must return a controlled 503 instead of leaking HTTP 500"
+  );
+  assert.equal(upsertCalled, false, "node import must not save after the local preflight read fails");
+}
+
 async function testDisableNodeKeepsLocalSaveWhenEffectsFail() {
   const now = new Date();
   const currentNode = {
@@ -17451,6 +17614,41 @@ async function testRefreshNodeMapsLocalSaveFailure() {
       !/HTTP 500/i.test(error.message),
     "node refresh local save failures must return a controlled 503 instead of leaking HTTP 500"
   );
+}
+
+async function testRefreshNodeMapsLocalReadFailureBeforePanelRead() {
+  let panelReadCalled = false;
+  let updateCalled = false;
+  const service = createAdminNodeService({
+    xuiService: {
+      getInboundRuntime: async () => {
+        panelReadCalled = true;
+        return {};
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => {
+          throw new Error("node refresh preflight read failed");
+        },
+        update: async () => {
+          updateCalled = true;
+          return makeAdminNodeRow();
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.refreshNode("node_1"),
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      !/node refresh preflight read failed/i.test(error.message) &&
+      !/HTTP 500/i.test(error.message),
+    "node refresh preflight reads must return a controlled 503 instead of leaking HTTP 500"
+  );
+  assert.equal(panelReadCalled, false, "node refresh must not read the panel after local preflight read fails");
+  assert.equal(updateCalled, false, "node refresh must not save degraded state after local preflight read fails");
 }
 
 async function testUpdateNodeMapsLocalSaveFailure() {
@@ -31368,6 +31566,7 @@ async function main() {
   await testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong();
   await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
   await testProbeNodeReturnsFallbackWhenResultSaveFails();
+  await testProbeNodeMapsLocalReadFailureBeforeHealthCheck();
   await testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls();
   await testRetryPanelSyncJobRequeuesWithoutRunningRemoteSync();
   await testRetryPanelSyncJobKeepsSavedRetryWhenListRefreshFails();
@@ -31380,6 +31579,8 @@ async function main() {
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
+  await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();
+  await testLeaseRevocationRetryPublishesSyncQueueEvent();
   await testRetryLeaseRevocationJobKeepsSavedRetryWhenListRefreshFails();
   await testRetryLeaseRevocationJobsForNodeOnlyRequeuesRetryableJobsOnThatNode();
   await testRetryLeaseRevocationJobsForNodeRejectsWhenNoRetryableJobsExist();
@@ -31406,6 +31607,7 @@ async function main() {
   await testRefreshNodeOfflinePanelKeepsLocalRuntime();
   await testRefreshNodeSlowPanelReturnsDegradedWithinBudget();
   await testRefreshNodeMapsLocalSaveFailure();
+  await testRefreshNodeMapsLocalReadFailureBeforePanelRead();
   await testUpdateNodeMapsLocalSaveFailure();
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessAddOnlyReturnsPendingWhenPanelEnsureQueueStalls();
@@ -31465,6 +31667,7 @@ async function main() {
   await testReenableNodeClearsPendingDisableAndQueuesPanelEnsure();
   await testImportNodeReturnsWhenInitialProbeStalls();
   await testImportNodeMapsLocalSaveFailure();
+  await testImportNodeMapsLocalReadFailureBeforeSave();
   await testDisableNodeKeepsLocalSaveWhenEffectsFail();
   await testDisableNodeReturnsWhenAfterSaveFollowUpStalls();
   await testPanelDisableJobUpsertResetsStaleFailureState();
