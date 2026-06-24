@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AdminLeaseRevocationJobDto } from "@chordv/shared";
 import { filterLeaseRevocationJobs } from "../src/utils/admin-queue-filters";
+
+const nodesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/NodesPage.tsx"), "utf8");
 
 function makeLeaseJob(input: Partial<AdminLeaseRevocationJobDto>): AdminLeaseRevocationJobDto {
   return {
@@ -59,7 +63,21 @@ function testSpecificQueueFiltersStillApplyToLeaseRevocationJobs() {
   );
 }
 
+function testPendingAndFailedBackgroundJobsAreRetryable() {
+  assert.match(
+    nodesPageSource,
+    /return status === "pending" \|\| status === "failed";/,
+    "pending and failed queue jobs must both be retryable because the backend accepts both statuses"
+  );
+  assert.match(
+    nodesPageSource,
+    /return summary\.pending > 0 \|\| summary\.failed > 0;/,
+    "node-level retry buttons must be available for pending-only queues, not only failed queues"
+  );
+}
+
 testTeamOnlyQueueFilterDoesNotHideLeaseRevocationJobs();
 testSpecificQueueFiltersStillApplyToLeaseRevocationJobs();
+testPendingAndFailedBackgroundJobsAreRetryable();
 
 console.log("admin nodes page regression checks passed");

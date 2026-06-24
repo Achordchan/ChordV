@@ -5366,6 +5366,160 @@ async function testPanelDisableJobRechecksEligibilityBeforeRemoteDisable() {
   assert.equal((jobUpdates[0] as any)?.data?.status, "completed");
 }
 
+async function testPanelSyncRemoteFailuresBecomeVisibleFailedJobs() {
+  const cases = [
+    {
+      action: "ensure_client",
+      expectedError: /ensure failed/,
+      xuiService: {
+        ensureClient: async () => {
+          throw new Error("ensure failed");
+        }
+      }
+    },
+    {
+      action: "disable_client",
+      expectedError: /disable failed/,
+      xuiService: {
+        setClientEnabled: async () => {
+          throw new Error("disable failed");
+        }
+      },
+      freshJob: {
+        binding: {
+          status: "active",
+          user: { status: "active" }
+        },
+        node: {
+          isActive: false,
+          panelEnabled: false
+        },
+        subscription: {
+          userId: "user_1",
+          teamId: null,
+          state: "active",
+          expireAt: new Date(Date.now() + 86_400_000),
+          remainingTrafficGb: 10,
+          user: { status: "active" },
+          team: null,
+          nodeAccesses: []
+        }
+      }
+    },
+    {
+      action: "delete_client",
+      expectedError: /delete failed/,
+      xuiService: {
+        removeClient: async () => {
+          throw new Error("delete failed");
+        }
+      }
+    },
+    {
+      action: "delete_client",
+      expectedError: /could only be disabled/,
+      xuiService: {
+        removeClient: async () => "disabled"
+      }
+    }
+  ];
+
+  for (const item of cases) {
+    const jobUpdates: Array<Record<string, any>> = [];
+    const nodeUpdates: Array<Record<string, any>> = [];
+    const adminEvents: Array<Record<string, any>> = [];
+    const service = createRuntimeSessionService({
+      logger: {
+        warn: () => undefined
+      },
+      adminRuntimeEventsService: {
+        publish: (event: Record<string, unknown>) => {
+          adminEvents.push(event);
+        }
+      },
+      xuiService: item.xuiService,
+      prisma: {
+        subscription: {
+          findUnique: async () => ({ expireAt: new Date(Date.now() + 86_400_000) })
+        },
+        panelSyncJob: {
+          findUnique: async () => ({
+            id: "job_1",
+            userId: "user_1",
+            teamId: null,
+            ...(item.freshJob ?? {})
+          }),
+          update: async (payload: Record<string, any>) => {
+            jobUpdates.push(payload);
+            return {};
+          }
+        },
+        node: {
+          update: async (payload: Record<string, any>) => {
+            nodeUpdates.push(payload);
+            return {};
+          }
+        },
+        panelClientBinding: {
+          update: async () => {
+            throw new Error(`${item.action} failure must not complete the binding`);
+          }
+        },
+        $transaction: async (operations: Array<Promise<unknown>>) => {
+          await Promise.all(operations);
+        }
+      }
+    });
+
+    await service["runPanelSyncJob"]({
+      id: "job_1",
+      action: item.action,
+      attempts: 1,
+      bindingId: "binding_1",
+      subscriptionId: "sub_1",
+      userId: "user_1",
+      teamId: null,
+      nodeId: "node_1",
+      panelClientEmail: "user@example.com",
+      panelClientId: "panel_client_1",
+      panelInboundId: 7,
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      node: {
+        id: "node_1",
+        name: "node 1",
+        flow: "",
+        isActive: true,
+        panelEnabled: true,
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "password",
+        panelInboundId: 7
+      },
+      binding: {
+        status: "active"
+      }
+    });
+
+    assert.equal(nodeUpdates.length, 1, `${item.action} failure should mark the node degraded`);
+    assert.equal(nodeUpdates[0].data.panelStatus, "degraded");
+    assert.match(nodeUpdates[0].data.panelError, item.expectedError);
+    assert.equal(jobUpdates.length, 1, `${item.action} failure should update the panel sync job`);
+    assert.equal(jobUpdates[0].data.status, "failed");
+    assert.equal(jobUpdates[0].data.attempts, 2);
+    assert.equal(jobUpdates[0].data.lockedAt, null);
+    assert.match(jobUpdates[0].data.lastError, item.expectedError);
+    assert.ok(jobUpdates[0].data.nextRunAt instanceof Date, `${item.action} failure should schedule a retry`);
+    assert.equal(adminEvents.length, 1, `${item.action} failure should publish a queue refresh event`);
+    assert.equal(adminEvents[0].type, "sync_queue_updated");
+    assert.equal(adminEvents[0].nodeId, "node_1");
+    assert.equal(adminEvents[0].subscriptionId, "sub_1");
+  }
+}
+
 async function testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails() {
   const resetCalls: string[] = [];
   const bindingUpdates: Array<Record<string, any>> = [];
@@ -30802,6 +30956,7 @@ async function main() {
   await testLeaseRevocationContinuesWhenOneLocalRevokeFails();
   await testPanelDisableJobCallsXuiEvenWhenNodeInactive();
   await testPanelDisableJobRechecksEligibilityBeforeRemoteDisable();
+  await testPanelSyncRemoteFailuresBecomeVisibleFailedJobs();
   await testPanelSyncBatchCompletesOnlineJobWhenAnotherPanelFails();
   await testPanelTrafficResetRequiresRemoteCounterConfirmation();
   await testPanelTrafficResetMissingRemoteClientFailsTheJob();

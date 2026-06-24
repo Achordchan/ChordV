@@ -67,6 +67,14 @@ const devDataServiceStub = {
     calls.push({ route: "user-disconnect", value: userId });
     return { userId, panelSyncStatus: "pending" };
   },
+  updateUser: async (userId: string, body: unknown) => {
+    calls.push({ route: "user-update", value: userId, body });
+    return { id: userId, body, panelSyncStatus: "pending" };
+  },
+  updateTeam: async (teamId: string, body: unknown) => {
+    calls.push({ route: "team-update", value: teamId, body });
+    return { id: teamId, body, panelSyncStatus: "pending" };
+  },
   updateNode: async (nodeId: string, body: unknown) => {
     calls.push({ route: "node-update", value: nodeId, body });
     return { id: nodeId, body, panelSyncStatus: "pending" };
@@ -433,6 +441,26 @@ async function main() {
       body: { userId: "user_1", panelSyncStatus: "pending" }
     });
     assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/users/user_1", {
+        method: "PATCH",
+        body: { status: "disabled" }
+      }),
+      {
+        status: 200,
+        body: { id: "user_1", body: { status: "disabled" }, panelSyncStatus: "pending" }
+      }
+    );
+    assert.deepEqual(
+      await requestJson(baseUrl, "/api/admin/teams/team_1", {
+        method: "PATCH",
+        body: { status: "disabled" }
+      }),
+      {
+        status: 200,
+        body: { id: "team_1", body: { status: "disabled" }, panelSyncStatus: "pending" }
+      }
+    );
+    assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/nodes/node_1", {
         method: "PATCH",
         body: { isActive: false }
@@ -798,6 +826,8 @@ async function main() {
       { route: "subscription-nodes", value: "subscription_1", body: { nodeIds: ["node_1"] } },
       { route: "subscription-reset-traffic", value: "subscription_1", body: { userId: "user_1" } },
       { route: "user-disconnect", value: "user_1" },
+      { route: "user-update", value: "user_1", body: { status: "disabled" } },
+      { route: "team-update", value: "team_1", body: { status: "disabled" } },
       { route: "node-update", value: "node_1", body: { isActive: false } },
       { route: "node-delete", value: "node_1" },
       { route: "node-probe-all", value: "all" },

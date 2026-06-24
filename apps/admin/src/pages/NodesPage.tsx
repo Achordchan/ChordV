@@ -487,11 +487,11 @@ function summarizeLeaseRevocationJobsForNode(jobs: AdminLeaseRevocationJobDto[],
 }
 
 function isRetryableBackgroundSyncStatus(status: AdminPanelSyncJobDto["status"] | AdminLeaseRevocationJobDto["status"]) {
-  return status === "failed";
+  return status === "pending" || status === "failed";
 }
 
 function hasRetryableBackgroundSync(summary: { pending: number; failed: number }) {
-  return summary.failed > 0;
+  return summary.pending > 0 || summary.failed > 0;
 }
 
 function buildBackgroundSyncLabel(
