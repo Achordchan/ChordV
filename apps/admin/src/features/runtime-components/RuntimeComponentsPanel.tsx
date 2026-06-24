@@ -268,7 +268,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       onValidationChange(record.id, result);
       onComponentsChange((current) => upsertRuntimeComponent(current, applyRuntimeComponentValidationToDelivery(record, result)));
       notifications.show({
-        color: result.status === "ready" ? "green" : result.status === "disabled" ? "yellow" : "red",
+        color: result.status === "ready" ? "green" : result.status === "disabled" || result.status === "pending_validation" ? "yellow" : "red",
         title: "内核组件",
         message: summarizeAdminDiagnosticMessage(result.message, "内核组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "内核组件校验完成"
       });

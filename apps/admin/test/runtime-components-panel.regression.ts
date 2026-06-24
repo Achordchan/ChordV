@@ -212,6 +212,14 @@ function testRuntimeComponentUncertainMutationsRefreshSilently() {
   }
 }
 
+function testPendingValidationNotificationIsNotShownAsFailure() {
+  assert.match(
+    extractAsyncFunctionBody(runtimeComponentsPanelSource, "verifyComponent"),
+    /result\.status === "disabled" \|\| result\.status === "pending_validation" \? "yellow" : "red"/,
+    "runtime component pending validation should be shown as a yellow pending state, not a red failure"
+  );
+}
+
 testEnabledRemotePendingValidationIsNotShownAsDeliverable();
 testEnabledRemoteHashMismatchIsShownAsBlocked();
 testSaveFailedIsNotShownAsHashMismatch();
@@ -224,5 +232,6 @@ testRuntimeComponentsTableKeepsReadableMinimumWidth();
 testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash();
 testRuntimeComponentMutationsAlwaysReleaseBusyState();
 testRuntimeComponentUncertainMutationsRefreshSilently();
+testPendingValidationNotificationIsNotShownAsFailure();
 
 console.log("runtime components panel regression checks passed");
