@@ -309,7 +309,7 @@ export class AdminNodeService {
     } catch (error) {
       const message = `Panel sync retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`;
       this.logger.warn(message);
-      throw new ServiceUnavailableException(message);
+      return [];
     }
   }
 
@@ -319,7 +319,7 @@ export class AdminNodeService {
     } catch (error) {
       const message = `Lease revocation retry was saved, but queue refresh failed: ${readAdminNodeErrorMessage(error)}`;
       this.logger.warn(message);
-      throw new ServiceUnavailableException(message);
+      return [];
     }
   }
 
