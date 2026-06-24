@@ -1208,51 +1208,56 @@ export class AdminSubscriptionService {
   }
 
   private async listActivePanelSyncJobs(): Promise<PanelSyncSummaryJob[]> {
-    const [counts, recentFailedJobs] = await Promise.all([
-      this.prisma.panelSyncJob.groupBy({
-        by: ["subscriptionId", "userId", "teamId", "status"],
-        where: {
-          status: { in: ["pending", "running", "failed"] }
-        },
-        _count: { _all: true }
-      }),
-      this.prisma.panelSyncJob.findMany({
-        where: {
-          status: "failed",
-          lastError: { not: null }
-        },
-        select: {
-          subscriptionId: true,
-          userId: true,
-          teamId: true,
-          status: true,
-          lastError: true,
-          updatedAt: true
-        },
-        orderBy: [{ updatedAt: "desc" }],
-        take: PANEL_SYNC_RECENT_ERROR_LIMIT
-      })
-    ]);
-    return [
-      ...counts.map((row) => ({
-        subscriptionId: row.subscriptionId,
-        userId: row.userId,
-        teamId: row.teamId,
-        status: row.status,
-        lastError: null,
-        updatedAt: new Date(0),
-        count: row._count._all
-      })),
-      ...recentFailedJobs.map((row) => ({
-        subscriptionId: row.subscriptionId,
-        userId: row.userId,
-        teamId: row.teamId,
-        status: row.status,
-        lastError: row.lastError,
-        updatedAt: row.updatedAt,
-        count: 0
-      }))
-    ];
+    try {
+      const [counts, recentFailedJobs] = await Promise.all([
+        this.prisma.panelSyncJob.groupBy({
+          by: ["subscriptionId", "userId", "teamId", "status"],
+          where: {
+            status: { in: ["pending", "running", "failed"] }
+          },
+          _count: { _all: true }
+        }),
+        this.prisma.panelSyncJob.findMany({
+          where: {
+            status: "failed",
+            lastError: { not: null }
+          },
+          select: {
+            subscriptionId: true,
+            userId: true,
+            teamId: true,
+            status: true,
+            lastError: true,
+            updatedAt: true
+          },
+          orderBy: [{ updatedAt: "desc" }],
+          take: PANEL_SYNC_RECENT_ERROR_LIMIT
+        })
+      ]);
+      return [
+        ...counts.map((row) => ({
+          subscriptionId: row.subscriptionId,
+          userId: row.userId,
+          teamId: row.teamId,
+          status: row.status,
+          lastError: null,
+          updatedAt: new Date(0),
+          count: row._count._all
+        })),
+        ...recentFailedJobs.map((row) => ({
+          subscriptionId: row.subscriptionId,
+          userId: row.userId,
+          teamId: row.teamId,
+          status: row.status,
+          lastError: row.lastError,
+          updatedAt: row.updatedAt,
+          count: 0
+        }))
+      ];
+    } catch (error) {
+      this.logger.warn(`Panel sync summary unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
   }
 
   async createTeam(input: CreateTeamInputDto): Promise<AdminTeamRecordDto> {

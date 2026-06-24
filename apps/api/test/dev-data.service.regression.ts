@@ -16636,6 +16636,91 @@ async function testAdminListsAggregatePanelSyncPendingRunningAndFailedState() {
   }
 }
 
+async function testAdminListsIgnorePanelSyncSummaryReadFailure() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const warnings: string[] = [];
+  const subscription = {
+    id: "sub_1",
+    userId: "user_1",
+    teamId: null,
+    planId: "plan_1",
+    totalTrafficGb: 100,
+    usedTrafficGb: 1,
+    remainingTrafficGb: 99,
+    expireAt: new Date(Date.now() + 60_000),
+    state: "active",
+    renewable: true,
+    sourceAction: "created",
+    lastSyncedAt: now,
+    plan: { name: "Personal" },
+    user: { email: "user@example.com", displayName: "User" },
+    team: null,
+    nodeAccesses: []
+  };
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      user: {
+        findMany: async () => [
+          {
+            id: "user_1",
+            email: "user@example.com",
+            displayName: "User",
+            role: "user",
+            status: "active",
+            lastSeenAt: now,
+            maxConcurrentSessionsOverride: null,
+            subscriptions: [subscription],
+            teamMemberships: []
+          }
+        ]
+      },
+      subscription: {
+        findMany: async () => [subscription]
+      },
+      team: {
+        findMany: async () => [
+          {
+            id: "team_1",
+            name: "Team",
+            ownerUserId: "user_1",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+            owner: { displayName: "User", email: "user@example.com" },
+            members: [],
+            subscriptions: []
+          }
+        ]
+      },
+      panelSyncJob: {
+        groupBy: async () => {
+          throw new Error("panel sync summary db unavailable");
+        },
+        findMany: async () => {
+          throw new Error("panel sync recent errors unavailable");
+        }
+      }
+    }
+  });
+
+  const [users, subscriptions, teams] = await Promise.all([
+    service.listAdminUsers(),
+    service.listAdminSubscriptions(),
+    service.listAdminTeams()
+  ]);
+
+  assert.equal(users.length, 1);
+  assert.equal(subscriptions.length, 1);
+  assert.equal(teams.length, 1);
+  assert.equal(users[0].panelSyncStatus, undefined);
+  assert.equal(subscriptions[0].panelSyncStatus, undefined);
+  assert.equal(teams[0].panelSyncStatus, undefined);
+  assert.ok(warnings.some((message) => message.includes("Panel sync summary unavailable")));
+}
+
 async function testGetTeamUsageUsesAggregatedLedgerRows() {
   const groupByCalls: Array<Record<string, unknown>> = [];
   const service = createAdminSubscriptionService({
@@ -33189,6 +33274,7 @@ async function main() {
   await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testAdminListsAggregatePanelSyncPendingRunningAndFailedState();
+  await testAdminListsIgnorePanelSyncSummaryReadFailure();
   await testGetTeamUsageUsesAggregatedLedgerRows();
   await testListAdminTeamsDoesNotLoadTrafficLedgerUsage();
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
