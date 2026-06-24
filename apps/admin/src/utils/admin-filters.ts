@@ -156,7 +156,7 @@ export function isPotentiallyCompletedMutationFailure(message: string) {
 
 export function buildUncertainMutationMessage(actionLabel: string, detail?: string) {
   const trimmedDetail = detail?.trim();
-  const suffix = "请刷新列表或打开同步队列确认最新状态；不要重复提交同一操作。";
+  const suffix = "请刷新当前页面确认最新状态；不要重复提交同一操作。";
   return trimmedDetail ? `${trimmedDetail} ${suffix}` : `${actionLabel}状态不确定，${suffix}`;
 }
 

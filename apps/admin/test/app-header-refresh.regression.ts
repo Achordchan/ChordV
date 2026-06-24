@@ -180,16 +180,34 @@ function testCriticalSnapshotSectionsStayLocalInSectionLoader() {
 }
 
 function testQueueLoadsDoNotBlockMainSectionData() {
+  const overviewBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "overview"');
+  assert.match(overviewBranch, /settleAdminLoad\(fetchAdminSubscriptions\(\)\)/);
+  assert.match(overviewBranch, /settleAdminLoad\(fetchAdminNodes\(\)\)/);
+  assert.match(overviewBranch, /subscriptionsResult\.ok \? \{ subscriptions: subscriptionsResult\.value \} : \{\}/);
+  assert.match(overviewBranch, /nodesResult\.ok \? \{ nodes: nodesResult\.value \} : \{\}/);
+
   const usersBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "users"');
   assert.match(usersBranch, /fetchAdminUsers\(\)/);
   assert.match(usersBranch, /fetchAdminTeams\(\)/);
-  assert.match(usersBranch, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
-  assert.match(usersBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.leaseRevocationJobs \} : \{\}/);
+  assert.match(usersBranch, /settleAdminLoad\(fetchAdminUsers\(\)\)/);
+  assert.match(usersBranch, /settleAdminLoad\(fetchAdminTeams\(\)\)/);
+  assert.match(usersBranch, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
+  assert.match(usersBranch, /usersResult\.ok \? \{ users: usersResult\.value \} : \{\}/);
+  assert.match(usersBranch, /teamsResult\.ok \? \{ teams: teamsResult\.value \} : \{\}/);
+  assert.match(usersBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
 
   const subscriptionsBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "subscriptions"');
   assert.match(subscriptionsBranch, /fetchAdminSubscriptions\(\)/);
-  assert.match(subscriptionsBranch, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
-  assert.match(subscriptionsBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.leaseRevocationJobs \} : \{\}/);
+  assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminUsers\(\)\)/);
+  assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminPlans\(\)\)/);
+  assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminSubscriptions\(\)\)/);
+  assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminTeams\(\)\)/);
+  assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
+  assert.match(subscriptionsBranch, /usersResult\.ok \? \{ users: usersResult\.value \} : \{\}/);
+  assert.match(subscriptionsBranch, /plansResult\.ok \? \{ plans: plansResult\.value \} : \{\}/);
+  assert.match(subscriptionsBranch, /subscriptionsResult\.ok \? \{ subscriptions: subscriptionsResult\.value \} : \{\}/);
+  assert.match(subscriptionsBranch, /teamsResult\.ok \? \{ teams: teamsResult\.value \} : \{\}/);
+  assert.match(subscriptionsBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
 
   const nodesBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "nodes"');
   assert.match(nodesBranch, /fetchAdminNodes\(\)/);

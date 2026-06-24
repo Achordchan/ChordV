@@ -984,6 +984,17 @@ export function App() {
     );
   }
 
+  function settleAdminLoad<T>(task: Promise<T>) {
+    return task.then(
+      (value) => ({ ok: true as const, value }),
+      (reason) => ({ ok: false as const, reason })
+    );
+  }
+
+  function joinAdminLoadFailures(failures: Array<string | null>) {
+    return failures.filter(Boolean).join("; ");
+  }
+
   async function loadSectionData(targetSection: SectionKey, options?: { force?: boolean; silent?: boolean }) {
     if (!options?.force && loadedSections.has(targetSection)) {
       return;
@@ -998,29 +1009,54 @@ export function App() {
         setSectionLoading(true);
       }
       if (targetSection === "overview") {
-        const [subscriptions, nodes] = await Promise.all([fetchAdminSubscriptions(), fetchAdminNodes()]);
-        if (!canApplySectionResult()) return;
-        mergeSnapshot({ subscriptions, nodes });
-      } else if (targetSection === "users") {
-        const [users, teams, leaseRevocationJobsResult] = await Promise.all([
-          fetchAdminUsers(),
-          fetchAdminTeams(),
-          fetchAdminLeaseRevocationJobs().then(
-            (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
-            (reason) => ({ ok: false as const, reason })
-          )
+        const [subscriptionsResult, nodesResult] = await Promise.all([
+          settleAdminLoad(fetchAdminSubscriptions()),
+          settleAdminLoad(fetchAdminNodes())
         ]);
         if (!canApplySectionResult()) return;
         mergeSnapshot({
-          users,
-          teams,
-          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+          ...(subscriptionsResult.ok ? { subscriptions: subscriptionsResult.value } : {}),
+          ...(nodesResult.ok ? { nodes: nodesResult.value } : {})
         });
-        if (!leaseRevocationJobsResult.ok && !options?.silent) {
+        if (!subscriptionsResult.ok || !nodesResult.ok) {
+          const message = joinAdminLoadFailures([
+            subscriptionsResult.ok ? null : readError(subscriptionsResult.reason, "订阅列表加载失败"),
+            nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败")
+          ]);
+          if (!subscriptionsResult.ok && !nodesResult.ok) {
+            throw new Error(message);
+          }
+          if (!options?.silent) {
+            notifications.show({
+              color: "yellow",
+              title: "概览部分数据加载失败",
+              message
+            });
+          }
+        }
+      } else if (targetSection === "users") {
+        const [usersResult, teamsResult, leaseRevocationJobsResult] = await Promise.all([
+          settleAdminLoad(fetchAdminUsers()),
+          settleAdminLoad(fetchAdminTeams()),
+          settleAdminLoad(fetchAdminLeaseRevocationJobs())
+        ]);
+        if (!canApplySectionResult()) return;
+        mergeSnapshot({
+          ...(usersResult.ok ? { users: usersResult.value } : {}),
+          ...(teamsResult.ok ? { teams: teamsResult.value } : {}),
+          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
+        });
+        if (!usersResult.ok) {
+          throw usersResult.reason;
+        }
+        if ((!teamsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
           notifications.show({
             color: "yellow",
-            title: "连接撤销队列加载失败",
-            message: readError(leaseRevocationJobsResult.reason, "用户列表已加载，连接撤销队列稍后重试。")
+            title: "用户页部分数据加载失败",
+            message: joinAdminLoadFailures([
+              teamsResult.ok ? null : readError(teamsResult.reason, "团队列表加载失败"),
+              leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+            ])
           });
         }
       } else if (targetSection === "plans") {
@@ -1028,29 +1064,34 @@ export function App() {
         if (!canApplySectionResult()) return;
         applyListPatch("plans", plans);
       } else if (targetSection === "subscriptions") {
-        const [users, plans, subscriptions, teams, leaseRevocationJobsResult] = await Promise.all([
-          fetchAdminUsers(),
-          fetchAdminPlans(),
-          fetchAdminSubscriptions(),
-          fetchAdminTeams(),
-          fetchAdminLeaseRevocationJobs().then(
-            (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
-            (reason) => ({ ok: false as const, reason })
-          )
+        const [usersResult, plansResult, subscriptionsResult, teamsResult, leaseRevocationJobsResult] = await Promise.all([
+          settleAdminLoad(fetchAdminUsers()),
+          settleAdminLoad(fetchAdminPlans()),
+          settleAdminLoad(fetchAdminSubscriptions()),
+          settleAdminLoad(fetchAdminTeams()),
+          settleAdminLoad(fetchAdminLeaseRevocationJobs())
         ]);
         if (!canApplySectionResult()) return;
         mergeSnapshot({
-          users,
-          plans,
-          subscriptions,
-          teams,
-          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+          ...(usersResult.ok ? { users: usersResult.value } : {}),
+          ...(plansResult.ok ? { plans: plansResult.value } : {}),
+          ...(subscriptionsResult.ok ? { subscriptions: subscriptionsResult.value } : {}),
+          ...(teamsResult.ok ? { teams: teamsResult.value } : {}),
+          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
         });
-        if (!leaseRevocationJobsResult.ok && !options?.silent) {
+        if (!subscriptionsResult.ok) {
+          throw subscriptionsResult.reason;
+        }
+        if ((!usersResult.ok || !plansResult.ok || !teamsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
           notifications.show({
             color: "yellow",
-            title: "连接撤销队列加载失败",
-            message: readError(leaseRevocationJobsResult.reason, "订阅列表已加载，连接撤销队列稍后重试。")
+            title: "订阅页部分数据加载失败",
+            message: joinAdminLoadFailures([
+              usersResult.ok ? null : readError(usersResult.reason, "用户列表加载失败"),
+              plansResult.ok ? null : readError(plansResult.reason, "套餐列表加载失败"),
+              teamsResult.ok ? null : readError(teamsResult.reason, "团队列表加载失败"),
+              leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+            ])
           });
         }
       } else if (targetSection === "nodes") {

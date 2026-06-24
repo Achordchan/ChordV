@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isPotentiallyCompletedMutationFailure, readError } from "../src/utils/admin-filters";
+import { buildUncertainMutationMessage, isPotentiallyCompletedMutationFailure, readError } from "../src/utils/admin-filters";
 
 function backendError(statusCode: number, message: string) {
   return new Error(JSON.stringify({ statusCode, message }));
@@ -87,6 +87,13 @@ function testImageBedManageTimeoutIsUncertainMutationFailure() {
   );
 }
 
+function testGenericUncertainMutationMessageDoesNotMentionSyncQueue() {
+  const message = buildUncertainMutationMessage("发布中心操作");
+
+  assert.match(message, /刷新当前页面/);
+  assert.doesNotMatch(message, /同步队列/);
+}
+
 testReadErrorPreservesImageBedProviderHttpError();
 testReadErrorPreservesImageBedTimeout();
 testReadErrorKeepsGenericServiceUnavailableFallback();
@@ -96,5 +103,6 @@ testReadErrorKeepsRequestIdForNetworkFailure();
 testReadErrorKeepsRequestIdForTimeout();
 testReadErrorKeepsRequestIdForExpiredSession();
 testImageBedManageTimeoutIsUncertainMutationFailure();
+testGenericUncertainMutationMessageDoesNotMentionSyncQueue();
 
 console.log("admin filter regression checks passed");
