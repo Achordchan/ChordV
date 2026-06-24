@@ -1302,83 +1302,93 @@ export class RuntimeSessionService {
 
   @Cron("*/30 * * * * *")
   async retryPendingPanelSyncJobs() {
-    const now = new Date();
-    const staleLockBefore = new Date(now.getTime() - 10 * 60 * 1000);
-    const jobs = await this.prisma.panelSyncJob.findMany({
-      where: {
-        OR: [
-          {
-            status: { in: ["pending", "failed"] },
-            nextRunAt: { lte: now },
-            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
-          },
-          {
-            status: "running",
-            lockedAt: { lt: staleLockBefore }
+    try {
+      const now = new Date();
+      const staleLockBefore = new Date(now.getTime() - 10 * 60 * 1000);
+      const jobs = await this.prisma.panelSyncJob.findMany({
+        where: {
+          OR: [
+            {
+              status: { in: ["pending", "failed"] },
+              nextRunAt: { lte: now },
+              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+            },
+            {
+              status: "running",
+              lockedAt: { lt: staleLockBefore }
+            }
+          ]
+        },
+        include: {
+          node: true,
+          binding: {
+            select: {
+              status: true
+            }
           }
-        ]
-      },
-      include: {
-        node: true,
-        binding: {
-          select: {
-            status: true
-          }
-        }
-      },
-      orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
-      take: PANEL_SYNC_BATCH_SIZE
-    });
+        },
+        orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
+        take: PANEL_SYNC_BATCH_SIZE
+      });
 
-    let nextIndex = 0;
-    const workerCount = Math.min(jobs.length, readPanelSyncJobConcurrency());
-    const workers = Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const job = jobs[nextIndex];
-        nextIndex += 1;
-        if (!job) {
-          return;
-        }
-        const locked = await this.prisma.panelSyncJob.updateMany({
-          where: {
-            id: job.id,
-            OR: [
-              {
-                status: { in: ["pending", "failed"] },
-                nextRunAt: { lte: now },
-                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+      let nextIndex = 0;
+      const workerCount = Math.min(jobs.length, readPanelSyncJobConcurrency());
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const job = jobs[nextIndex];
+          nextIndex += 1;
+          if (!job) {
+            return;
+          }
+          let locked: { count: number };
+          try {
+            locked = await this.prisma.panelSyncJob.updateMany({
+              where: {
+                id: job.id,
+                OR: [
+                  {
+                    status: { in: ["pending", "failed"] },
+                    nextRunAt: { lte: now },
+                    OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+                  },
+                  {
+                    status: "running",
+                    lockedAt: { lt: staleLockBefore }
+                  }
+                ]
               },
-              {
+              data: {
                 status: "running",
-                lockedAt: { lt: staleLockBefore }
+                lockedAt: new Date()
               }
-            ]
-          },
-          data: {
-            status: "running",
-            lockedAt: new Date()
+            });
+          } catch (error) {
+            this.logger.warn(`Panel sync worker could not lock job ${job.id}: ${readRuntimeErrorMessage(error)}`);
+            continue;
           }
-        });
-        if (locked.count === 0) {
-          continue;
-        }
-        this.publishSyncQueueUpdatedBestEffort({
-          nodeId: job.nodeId,
-          subscriptionId: job.subscriptionId
-        });
+          if (locked.count === 0) {
+            continue;
+          }
+          this.publishSyncQueueUpdatedBestEffort({
+            nodeId: job.nodeId,
+            subscriptionId: job.subscriptionId
+          });
 
-        try {
-          await this.runPanelSyncJob(job);
-        } catch (error) {
-          this.logger.warn(
-            `Panel sync worker skipped a job after unexpected failure (${job.id}/${job.nodeId}/${job.panelClientEmail}): ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
+          try {
+            await this.runPanelSyncJob(job);
+          } catch (error) {
+            this.logger.warn(
+              `Panel sync worker skipped a job after unexpected failure (${job.id}/${job.nodeId}/${job.panelClientEmail}): ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          }
         }
-      }
-    });
-    await Promise.all(workers);
+      });
+      await Promise.all(workers);
+    } catch (error) {
+      this.logger.warn(`Panel sync worker batch failed: ${readRuntimeErrorMessage(error)}`);
+    }
   }
 
   private publishSyncQueueUpdatedBestEffort(input: { nodeId?: string | null; subscriptionId?: string | null }) {
@@ -1728,75 +1738,85 @@ export class RuntimeSessionService {
 
   @Cron("*/30 * * * * *")
   async retryPendingLeaseRevocationJobs() {
-    const now = new Date();
-    const staleLockBefore = new Date(now.getTime() - 10 * 60 * 1000);
-    const jobs = await this.prisma.leaseRevocationJob.findMany({
-      where: {
-        OR: [
-          {
-            status: { in: ["pending", "failed"] },
-            nextRunAt: { lte: now },
-            OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
-          },
-          {
-            status: "running",
-            lockedAt: { lt: staleLockBefore }
-          }
-        ]
-      },
-      orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
-      take: LEASE_REVOCATION_BATCH_SIZE
-    });
+    try {
+      const now = new Date();
+      const staleLockBefore = new Date(now.getTime() - 10 * 60 * 1000);
+      const jobs = await this.prisma.leaseRevocationJob.findMany({
+        where: {
+          OR: [
+            {
+              status: { in: ["pending", "failed"] },
+              nextRunAt: { lte: now },
+              OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+            },
+            {
+              status: "running",
+              lockedAt: { lt: staleLockBefore }
+            }
+          ]
+        },
+        orderBy: [{ nextRunAt: "asc" }, { createdAt: "asc" }],
+        take: LEASE_REVOCATION_BATCH_SIZE
+      });
 
-    let nextIndex = 0;
-    const workerCount = Math.min(jobs.length, readLeaseRevocationJobConcurrency());
-    const workers = Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const job = jobs[nextIndex];
-        nextIndex += 1;
-        if (!job) {
-          return;
-        }
-        const locked = await this.prisma.leaseRevocationJob.updateMany({
-          where: {
-            id: job.id,
-            OR: [
-              {
-                status: { in: ["pending", "failed"] },
-                nextRunAt: { lte: now },
-                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+      let nextIndex = 0;
+      const workerCount = Math.min(jobs.length, readLeaseRevocationJobConcurrency());
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const job = jobs[nextIndex];
+          nextIndex += 1;
+          if (!job) {
+            return;
+          }
+          let locked: { count: number };
+          try {
+            locked = await this.prisma.leaseRevocationJob.updateMany({
+              where: {
+                id: job.id,
+                OR: [
+                  {
+                    status: { in: ["pending", "failed"] },
+                    nextRunAt: { lte: now },
+                    OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }]
+                  },
+                  {
+                    status: "running",
+                    lockedAt: { lt: staleLockBefore }
+                  }
+                ]
               },
-              {
+              data: {
                 status: "running",
-                lockedAt: { lt: staleLockBefore }
+                lockedAt: new Date()
               }
-            ]
-          },
-          data: {
-            status: "running",
-            lockedAt: new Date()
+            });
+          } catch (error) {
+            this.logger.warn(`Lease revocation worker could not lock job ${job.id}: ${readRuntimeErrorMessage(error)}`);
+            continue;
           }
-        });
-        if (locked.count === 0) {
-          continue;
-        }
-        this.publishSyncQueueUpdatedBestEffort({
-          nodeId: job.nodeId,
-          subscriptionId: job.subscriptionId
-        });
+          if (locked.count === 0) {
+            continue;
+          }
+          this.publishSyncQueueUpdatedBestEffort({
+            nodeId: job.nodeId,
+            subscriptionId: job.subscriptionId
+          });
 
-        try {
-          await this.runLeaseRevocationJob(job);
-        } catch (error) {
-          this.logger.warn(
-            `Lease revocation worker skipped a job after unexpected failure (${job.id}): ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
+          try {
+            await this.runLeaseRevocationJob(job);
+          } catch (error) {
+            this.logger.warn(
+              `Lease revocation worker skipped a job after unexpected failure (${job.id}): ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          }
         }
-      }
-    });
-    await Promise.all(workers);
+      });
+      await Promise.all(workers);
+    } catch (error) {
+      this.logger.warn(`Lease revocation worker batch failed: ${readRuntimeErrorMessage(error)}`);
+    }
   }
 
   private async runLeaseRevocationJob(job: {

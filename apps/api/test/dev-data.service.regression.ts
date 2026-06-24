@@ -6453,6 +6453,136 @@ async function testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs() {
   }
 }
 
+async function testPanelSyncWorkerBatchReturnsWhenInitialReadFails() {
+  const warnings: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      panelSyncJob: {
+        findMany: async () => {
+          throw new Error("panel sync queue read unavailable");
+        }
+      }
+    }
+  });
+
+  await service.retryPendingPanelSyncJobs();
+
+  assert.ok(warnings.some((message) => /Panel sync worker batch failed/.test(message)));
+  assert.ok(warnings.some((message) => /panel sync queue read unavailable/.test(message)));
+}
+
+async function testPanelSyncWorkerBatchContinuesWhenLockFails() {
+  const warnings: string[] = [];
+  const completed: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    xuiService: {
+      resetClientTraffic: async (_node: unknown, email: string) => {
+        completed.push(email);
+        return true;
+      },
+      getClientUsage: async (_node: unknown, email: string) => ({
+        xrayUserEmail: email,
+        uplinkBytes: 0n,
+        downlinkBytes: 0n,
+        sampledAt: new Date().toISOString()
+      })
+    },
+    prisma: {
+      panelClientBinding: {
+        update: async () => ({})
+      },
+      node: {
+        update: async () => ({})
+      },
+      panelSyncJob: {
+        findMany: async () => [
+          {
+            id: "panel_job_locked_fail",
+            action: "reset_client_traffic",
+            attempts: 0,
+            bindingId: "binding_fail",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "fail@example.com",
+            panelClientId: "client_fail",
+            panelInboundId: 7,
+            panelBaseUrl: "https://panel.example.com",
+            panelApiBasePath: "/",
+            panelUsername: "admin",
+            panelPassword: "password",
+            node: {
+              id: "node_1",
+              name: "Node",
+              flow: "",
+              isActive: true,
+              panelEnabled: true,
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 7
+            },
+            binding: { status: "active" }
+          },
+          {
+            id: "panel_job_online",
+            action: "reset_client_traffic",
+            attempts: 0,
+            bindingId: "binding_online",
+            subscriptionId: "sub_1",
+            userId: "user_1",
+            teamId: null,
+            nodeId: "node_1",
+            panelClientEmail: "online@example.com",
+            panelClientId: "client_online",
+            panelInboundId: 7,
+            panelBaseUrl: "https://panel.example.com",
+            panelApiBasePath: "/",
+            panelUsername: "admin",
+            panelPassword: "password",
+            node: {
+              id: "node_1",
+              name: "Node",
+              flow: "",
+              isActive: true,
+              panelEnabled: true,
+              panelBaseUrl: "https://panel.example.com",
+              panelApiBasePath: "/",
+              panelUsername: "admin",
+              panelPassword: "password",
+              panelInboundId: 7
+            },
+            binding: { status: "active" }
+          }
+        ],
+        updateMany: async (payload: Record<string, any>) => {
+          if (payload.where.id === "panel_job_locked_fail") {
+            throw new Error("panel sync lock unavailable");
+          }
+          return { count: 1 };
+        },
+        update: async () => {
+          return {};
+        }
+      }
+    }
+  });
+
+  await service.retryPendingPanelSyncJobs();
+
+  assert.deepEqual(completed, ["online@example.com"]);
+  assert.ok(warnings.some((message) => /could not lock job panel_job_locked_fail/.test(message)));
+  assert.ok(warnings.some((message) => /panel sync lock unavailable/.test(message)));
+}
+
 async function testPanelSyncBatchContinuesWhenFailurePersistFails() {
   const previousConcurrency = process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY;
   process.env.CHORDV_PANEL_SYNC_JOB_CONCURRENCY = "1";
@@ -6809,6 +6939,85 @@ async function testLeaseRevocationBatchContinuesWhenFailurePersistFails() {
     updates.some((item) => item.where.id === "lease_job_online" && item.data.status === "completed"),
     "online lease job must complete even when the previous failure state cannot be persisted"
   );
+}
+
+async function testLeaseRevocationWorkerBatchReturnsWhenInitialReadFails() {
+  const warnings: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      leaseRevocationJob: {
+        findMany: async () => {
+          throw new Error("lease queue read unavailable");
+        }
+      }
+    }
+  });
+
+  await service.retryPendingLeaseRevocationJobs();
+
+  assert.ok(warnings.some((message) => /Lease revocation worker batch failed/.test(message)));
+  assert.ok(warnings.some((message) => /lease queue read unavailable/.test(message)));
+}
+
+async function testLeaseRevocationWorkerBatchContinuesWhenLockFails() {
+  const warnings: string[] = [];
+  const revokedSubscriptions: string[] = [];
+  const service = createRuntimeSessionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    revokeSubscriptionLeases: async (subscriptionId: string) => {
+      revokedSubscriptions.push(subscriptionId);
+    },
+    prisma: {
+      leaseRevocationJob: {
+        findMany: async () => [
+          {
+            id: "lease_job_locked_fail",
+            attempts: 0,
+            subscriptionId: "sub_fail",
+            userId: "user_1",
+            nodeId: "node_1",
+            reason: "node_access_revoked",
+            status: "pending",
+            nextRunAt: new Date(Date.now() - 1000),
+            lockedAt: null,
+            createdAt: new Date(Date.now() - 1000)
+          },
+          {
+            id: "lease_job_online",
+            attempts: 0,
+            subscriptionId: "sub_online",
+            userId: "user_2",
+            nodeId: "node_2",
+            reason: "node_access_revoked",
+            status: "pending",
+            nextRunAt: new Date(Date.now() - 1000),
+            lockedAt: null,
+            createdAt: new Date(Date.now() - 1000)
+          }
+        ],
+        updateMany: async (payload: Record<string, any>) => {
+          if (payload.where.id === "lease_job_locked_fail") {
+            throw new Error("lease queue lock unavailable");
+          }
+          return { count: 1 };
+        },
+        update: async () => {
+          return {};
+        }
+      }
+    }
+  });
+
+  await service.retryPendingLeaseRevocationJobs();
+
+  assert.deepEqual(revokedSubscriptions, ["sub_online"]);
+  assert.ok(warnings.some((message) => /could not lock job lease_job_locked_fail/.test(message)));
+  assert.ok(warnings.some((message) => /lease queue lock unavailable/.test(message)));
 }
 
 async function testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess() {
@@ -18526,7 +18735,10 @@ async function testImportNodeFromOfflinePanelFailsBeforeLocalSave() {
         panelPassword: "password",
         panelEnabled: true
       }),
-    /panel runtime unavailable/
+    (error) =>
+      error instanceof ServiceUnavailableException &&
+      /3x-ui panel runtime read failed before local node import was saved/.test(error.message) &&
+      /panel runtime unavailable/.test(error.message)
   );
   assert.equal(upsertCalled, false, "offline panel import must not write a node without runtime data");
 }
@@ -33122,6 +33334,8 @@ async function main() {
   await testPanelTrafficResetMissingRemoteClientFailsTheJob();
   await testPanelSyncBatchContinuesAfterStalledRemoteJob();
   await testPanelSyncBatchDoesNotAccumulateMultipleStalledRemoteJobs();
+  await testPanelSyncWorkerBatchReturnsWhenInitialReadFails();
+  await testPanelSyncWorkerBatchContinuesWhenLockFails();
   await testPanelSyncBatchContinuesWhenFailurePersistFails();
   await testNodePanelDisableContinuesWhenOneSubscriptionQueueFails();
   await testNodePanelDeleteContinuesWhenOneSubscriptionQueueFails();
@@ -33132,6 +33346,8 @@ async function main() {
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testLeaseRevocationBatchContinuesAfterStalledJob();
   await testLeaseRevocationBatchContinuesWhenFailurePersistFails();
+  await testLeaseRevocationWorkerBatchReturnsWhenInitialReadFails();
+  await testLeaseRevocationWorkerBatchContinuesWhenLockFails();
   await testClearPendingPanelDisableJobsOnlyClearsRestoredNodeAccess();
   await testExistingBindingMissingSnapshotUsesBindingCountersAsBaseline();
   await testUsageTriggeredInvalidationUsesUnifiedRevokePath();

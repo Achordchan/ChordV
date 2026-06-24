@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import {
+  BadRequestException,
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException
+} from "@nestjs/common";
 import type {
   AdminLeaseRevocationJobDto,
   AdminNodePanelInboundDto,
@@ -1501,7 +1508,12 @@ export class AdminNodeService {
       },
       (error) => {
         settled = true;
-        throw error;
+        if (error instanceof HttpException) {
+          throw error;
+        }
+        throw new ServiceUnavailableException(
+          `${label} failed before local node import was saved: ${readAdminNodeErrorMessage(error)}`
+        );
       }
     );
     void guardedTask.catch((error) => {
