@@ -596,7 +596,21 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
 
       if (eventType === "ticket_updated" || eventType === "ticket_read_state_updated") {
         const preferredTicketId = runtimeEvent.ticketId ?? options.selectedTicketIdRef.current;
-        if (eventType === "ticket_updated" && runtimeEvent.ticketId && runtimeEvent.ticketStatus === "waiting_user") {
+        const isVisibleSelectedTicket =
+          options.ticketCenterOpenedRef.current &&
+          !options.ticketCreateModeRef.current &&
+          Boolean(runtimeEvent.ticketId) &&
+          runtimeEvent.ticketId === options.selectedTicketIdRef.current;
+        const shouldMarkIncomingTicketRead =
+          eventType === "ticket_updated" &&
+          runtimeEvent.ticketStatus === "waiting_user" &&
+          isVisibleSelectedTicket;
+        if (
+          eventType === "ticket_updated" &&
+          runtimeEvent.ticketId &&
+          runtimeEvent.ticketStatus === "waiting_user" &&
+          !shouldMarkIncomingTicketRead
+        ) {
           options.markTicketUnread(runtimeEvent.ticketId);
         }
         const shouldRefreshDetail =
@@ -605,7 +619,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           markSupportTicketBackgroundDetailRefresh(preferredTicketId);
           try {
             await Promise.all([
-              options.loadTicketDetail(preferredTicketId, { markRead: false }),
+              options.loadTicketDetail(preferredTicketId, { markRead: shouldMarkIncomingTicketRead }),
               options.loadTicketList(preferredTicketId)
             ]);
           } finally {

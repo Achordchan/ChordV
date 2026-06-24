@@ -508,7 +508,7 @@ export class ClientTicketService {
       });
     } catch (error) {
       await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
-      throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试；已上传附件已清理。");
+      throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试；已尝试清理本次上传附件。");
     }
 
     this.publishTicketEventBestEffort(user.id, {

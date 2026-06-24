@@ -69,12 +69,22 @@ function testAttachmentFormRequestHasTimeout() {
   assert.match(source, /window\.clearTimeout\(timeout\);/);
 }
 
+function testVisibleTicketUpdateMarksDetailRead() {
+  const source = readFileSync(resolve(import.meta.dirname, "../src/hooks/useRuntimeActions.ts"), "utf8");
+
+  assert.match(source, /const isVisibleSelectedTicket =/);
+  assert.match(source, /const shouldMarkIncomingTicketRead =/);
+  assert.match(source, /!shouldMarkIncomingTicketRead[\s\S]*options\.markTicketUnread\(runtimeEvent\.ticketId\);/);
+  assert.match(source, /options\.loadTicketDetail\(preferredTicketId, \{ markRead: shouldMarkIncomingTicketRead \}\)/);
+}
+
 function main() {
   testUnreadPatchSurvivesUntilExplicitRead();
   testBackgroundDetailRefreshMarkerIsOneShot();
   testLocalUnreadPatchClearsWhenServerConfirmsRead();
   testLocalUnreadPatchKeepsServerUnreadVisible();
   testAttachmentFormRequestHasTimeout();
+  testVisibleTicketUpdateMarksDetailRead();
   console.log("desktop support tickets regression checks passed");
 }
 

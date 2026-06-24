@@ -30280,6 +30280,8 @@ async function testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionF
     (error) =>
       error instanceof ServiceUnavailableException &&
       /工单回复保存失败/.test(error.message) &&
+      /已尝试清理本次上传附件/.test(error.message) &&
+      !/已上传附件已清理/.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "admin ticket attachment local save failures must return a controlled 503 instead of HTTP 500"
   );
@@ -31664,6 +31666,8 @@ async function testClientReplySupportTicketAttachmentCleansUploadWhenTransaction
       ),
     (error) =>
       error instanceof ServiceUnavailableException &&
+      /已尝试清理本次上传附件/.test(error.message) &&
+      !/已上传附件已清理/.test(error.message) &&
       !/db write failed/i.test(error.message) &&
       !/HTTP 500/i.test(error.message)
   );
