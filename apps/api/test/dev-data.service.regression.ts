@@ -30744,6 +30744,119 @@ async function testAdminSnapshotCountsOnlyClientVisibleAnnouncements() {
   assert.equal(snapshot.dashboard.announcements, 1);
 }
 
+async function testAdminSnapshotUsesFallbackForOptionalListTimeouts() {
+  const policy = {
+    defaultMode: "rule" as const,
+    modes: ["rule"] as const,
+    features: {
+      blockAds: false,
+      chinaDirect: true,
+      aiServicesProxy: true
+    }
+  };
+  const previousTimeout = process.env.CHORDV_ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS;
+  process.env.CHORDV_ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS = "5";
+  const warnings: string[] = [];
+  const service = createDevDataService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    listAdminUsers: async () => [{ id: "user_1", email: "u@example.com" } as any],
+    listAdminPlans: async () => new Promise<never>(() => undefined),
+    listAdminSubscriptions: async () => [],
+    listAdminTeams: async () => [],
+    listAdminNodes: async () => [],
+    listAdminPanelSyncJobs: async () => new Promise<never>(() => undefined),
+    listAdminAnnouncements: async () => [],
+    getAdminPolicy: async () => policy,
+    listAdminReleases: async () => [],
+    getSupportTicketDashboardCounts: async () => new Promise<never>(() => undefined)
+  });
+
+  try {
+    const snapshot = await service.getAdminSnapshot();
+
+    assert.equal(snapshot.users.length, 1);
+    assert.deepEqual(snapshot.plans, []);
+    assert.deepEqual(snapshot.panelSyncJobs, []);
+    assert.equal(snapshot.dashboard.users, 1);
+    assert.equal(snapshot.dashboard.activePlans, 0);
+    assert.equal(snapshot.dashboard.openTickets, 0);
+    assert.equal(snapshot.policy, policy);
+    assert.equal(warnings.some((message) => /plans load timed out/.test(message)), true);
+    assert.equal(warnings.some((message) => /panel sync jobs load timed out/.test(message)), true);
+    assert.equal(warnings.some((message) => /support ticket counts load timed out/.test(message)), true);
+  } finally {
+    if (previousTimeout === undefined) {
+      delete process.env.CHORDV_ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS = previousTimeout;
+    }
+  }
+}
+
+async function testAdminSnapshotDoesNotHideOptionalListFailures() {
+  const service = createDevDataService({
+    listAdminUsers: async () => [],
+    listAdminPlans: async () => {
+      throw new Error("plans database unavailable");
+    },
+    listAdminSubscriptions: async () => [],
+    listAdminTeams: async () => [],
+    listAdminNodes: async () => [],
+    listAdminPanelSyncJobs: async () => [],
+    listAdminAnnouncements: async () => [],
+    getAdminPolicy: async () => ({
+      defaultMode: "rule",
+      modes: ["rule"],
+      features: {
+        blockAds: false,
+        chinaDirect: true,
+        aiServicesProxy: true
+      }
+    }),
+    listAdminReleases: async () => [],
+    getSupportTicketDashboardCounts: async () => ({
+      openTickets: 0,
+      waitingAdminTickets: 0,
+      closedTickets: 0
+    })
+  });
+
+  await assert.rejects(
+    () => service.getAdminSnapshot(),
+    (error: unknown) => error instanceof Error && /plans database unavailable/.test(error.message),
+    "admin snapshot must not turn local database failures into empty lists"
+  );
+}
+
+async function testAdminSnapshotKeepsPolicyAsRequiredData() {
+  const service = createDevDataService({
+    listAdminUsers: async () => [],
+    listAdminPlans: async () => [],
+    listAdminSubscriptions: async () => [],
+    listAdminTeams: async () => [],
+    listAdminNodes: async () => [],
+    listAdminPanelSyncJobs: async () => [],
+    listAdminAnnouncements: async () => [],
+    getAdminPolicy: async () => {
+      throw new Error("policy unavailable");
+    },
+    listAdminReleases: async () => [],
+    getSupportTicketDashboardCounts: async () => ({
+      openTickets: 0,
+      waitingAdminTickets: 0,
+      closedTickets: 0
+    })
+  });
+
+  await assert.rejects(
+    () => service.getAdminSnapshot(),
+    (error: unknown) => error instanceof Error && /policy unavailable/.test(error.message),
+    "admin snapshot must not silently replace the active policy with a fake fallback"
+  );
+}
+
 function testAdminUploadLimitsExposePositiveControllerLimits() {
   const controller = createInstance<AdminController>(AdminController.prototype);
   const limits = controller.getUploadLimits();
@@ -34234,6 +34347,9 @@ async function main() {
   await testUpdateAnnouncementDefaultsCountdownWhenSwitchingMode();
   await testUpdateAnnouncementMapsLocalReadFailure();
   await testAdminSnapshotCountsOnlyClientVisibleAnnouncements();
+  await testAdminSnapshotUsesFallbackForOptionalListTimeouts();
+  await testAdminSnapshotDoesNotHideOptionalListFailures();
+  await testAdminSnapshotKeepsPolicyAsRequiredData();
   testAdminUploadLimitsExposePositiveControllerLimits();
   await testAdminDashboardCountsOnlyPublishedActiveAnnouncements();
   await testAdminDashboardCountsWaitingUserTicketsAsOpen();

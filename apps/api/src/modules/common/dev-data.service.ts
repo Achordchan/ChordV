@@ -167,6 +167,7 @@ const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
 const ADMIN_SUPPORT_TICKET_LIST_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_LIST_LIMIT", 200);
 const ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT", 300);
 const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 12_000);
+const ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS = 1_200;
 
 type NodeAccessRevocationEffects = {
   revokedSessionCount: number;
@@ -493,20 +494,24 @@ export class DevDataService implements OnModuleInit {
   }
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
-    const [users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements, policy, releases, ticketCounts] =
+    const [policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements, releases, ticketCounts] =
       await Promise.all([
-      this.listAdminUsers(),
-      this.listAdminPlans(),
-      this.listAdminSubscriptions(),
-      this.listAdminTeams(),
-      this.listAdminNodes(),
-      this.listAdminPanelSyncJobs(),
-      this.listAdminLeaseRevocationJobs(),
-      this.listAdminAnnouncements(),
-      this.getAdminPolicy(),
-      this.listAdminReleases(),
-      this.getSupportTicketDashboardCounts()
-    ]);
+        this.getAdminPolicy(),
+        this.safeAdminSnapshotList("users", () => this.listAdminUsers()),
+        this.safeAdminSnapshotList("plans", () => this.listAdminPlans()),
+        this.safeAdminSnapshotList("subscriptions", () => this.listAdminSubscriptions()),
+        this.safeAdminSnapshotList("teams", () => this.listAdminTeams()),
+        this.safeAdminSnapshotList("nodes", () => this.listAdminNodes()),
+        this.safeAdminSnapshotList("panel sync jobs", () => this.listAdminPanelSyncJobs()),
+        this.safeAdminSnapshotList("lease revocation jobs", () => this.listAdminLeaseRevocationJobs()),
+        this.safeAdminSnapshotList("announcements", () => this.listAdminAnnouncements()),
+        this.safeAdminSnapshotList("releases", () => this.listAdminReleases()),
+        this.safeAdminSnapshotValue("support ticket counts", () => this.getSupportTicketDashboardCounts(), {
+          openTickets: 0,
+          waitingAdminTickets: 0,
+          closedTickets: 0
+        })
+      ]);
 
     return {
       dashboard: {
@@ -531,6 +536,38 @@ export class DevDataService implements OnModuleInit {
       policy,
       releases
     };
+  }
+
+  private async safeAdminSnapshotList<T>(label: string, task: () => Promise<T[]>): Promise<T[]> {
+    return this.safeAdminSnapshotValue(label, task, []);
+  }
+
+  private async safeAdminSnapshotValue<T>(label: string, task: () => Promise<T>, fallback: T): Promise<T> {
+    const timeoutMs = readPositiveIntegerEnv("CHORDV_ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS", ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS);
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const taskPromise = Promise.resolve()
+      .then(task)
+      .catch((error) => {
+        if (timedOut) {
+          this.logger?.warn(`Admin snapshot ${label} load failed after timeout: ${readPanelSyncErrorMessage(error)}`);
+          return fallback;
+        }
+        throw error;
+      });
+    const timeoutPromise = new Promise<T>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        this.logger?.warn(`Admin snapshot ${label} load timed out after ${timeoutMs}ms, using fallback`);
+        resolve(fallback);
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([taskPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   }
 
   async getAdminDashboard(): Promise<DashboardSnapshotDto> {
