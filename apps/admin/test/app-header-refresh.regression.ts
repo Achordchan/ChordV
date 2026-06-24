@@ -171,6 +171,25 @@ function testGenericAdminRuntimeEventsRefreshCurrentSection() {
   );
 }
 
+function testSignalBackedSectionsRefreshSilentlyThroughSignals() {
+  const refreshBody = extractBlockAfter("function refreshCurrentSectionSilently()");
+  assert.match(
+    refreshBody,
+    /if \(sectionRef\.current === "tickets"\) {[\s\S]*?setTicketRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
+    "tickets should refresh through its local signal"
+  );
+  assert.match(
+    refreshBody,
+    /if \(sectionRef\.current === "imageBed"\) {[\s\S]*?setImageBedRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
+    "image bed should refresh through its local signal"
+  );
+  assert.match(
+    refreshBody,
+    /if \(sectionRef\.current === "runtimeComponents"\) {[\s\S]*?setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
+    "runtime components should refresh through its local signal"
+  );
+}
+
 function testSessionExpiredClearsBusyRefs() {
   const refs = [
     "adminSecuritySavingRef",
@@ -213,6 +232,7 @@ testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();
 testCriticalSnapshotSectionsStayLocalInSectionLoader();
 testGenericAdminRuntimeEventsRefreshCurrentSection();
+testSignalBackedSectionsRefreshSilentlyThroughSignals();
 testSessionExpiredClearsBusyRefs();
 testSubscriptionCreateRequiresExpireAtBeforeRequest();
 

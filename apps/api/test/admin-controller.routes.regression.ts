@@ -2,6 +2,7 @@ import "reflect-metadata";
 import assert from "node:assert/strict";
 import { ForbiddenException, Module, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { Observable } from "rxjs";
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
 import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-events.service";
@@ -27,6 +28,8 @@ type RouteCall = {
 
 const calls: RouteCall[] = [];
 const releaseDownloadPath = "virtual-release.zip";
+let adminSseObservedLastEventId: string | null = null;
+let clientSseObservedInput: { authorization?: string; lastEventId?: string } | null = null;
 
 Reflect.defineMetadata(
   "design:paramtypes",
@@ -222,6 +225,17 @@ const imageBedServiceStub = {
 };
 
 const clientServiceStub = {
+  streamEvents: (authorization?: string, lastEventId?: string) => {
+    clientSseObservedInput = { authorization, lastEventId };
+    return new Observable((subscriber) => {
+      subscriber.next({
+        id: "client_event_1",
+        type: "ticket_updated",
+        data: JSON.stringify({ type: "ticket_updated", ticketId: "ticket_1", occurredAt: "2026-06-24T00:00:00.000Z" })
+      });
+      subscriber.complete();
+    });
+  },
   replySupportTicketWithAttachment: async (
     ticketId: string,
     body: unknown,
@@ -318,7 +332,22 @@ async function testAdminSseRouteMetadataAndAdminValidation() {
     { provide: ClientService, useValue: clientServiceStub },
     { provide: RuntimeComponentsService, useValue: runtimeComponentsServiceStub },
     { provide: ImageBedService, useValue: imageBedServiceStub },
-    { provide: AdminRuntimeEventsService, useValue: {} }
+    {
+      provide: AdminRuntimeEventsService,
+      useValue: {
+        stream: (input?: { lastEventId?: string }) => {
+          adminSseObservedLastEventId = input?.lastEventId ?? null;
+          return new Observable((subscriber) => {
+            subscriber.next({
+              id: "admin_event_1",
+              type: "sync_queue_updated",
+              data: JSON.stringify({ type: "sync_queue_updated", nodeId: "node_1", occurredAt: "2026-06-24T00:00:00.000Z" })
+            });
+            subscriber.complete();
+          });
+        }
+      }
+    }
   ]
 })
 class TestAdminRoutesModule {}
@@ -380,6 +409,24 @@ async function requestText(baseUrl: string, routePath: string) {
   const response = await fetch(`${baseUrl}${routePath}`);
   return {
     status: response.status
+  };
+}
+
+async function requestSse(baseUrl: string, routePath: string, authorization = "Bearer admin-test-token", lastEventId = "event_0") {
+  const response = await fetch(`${baseUrl}${routePath}`, {
+    headers: {
+      authorization,
+      accept: "text/event-stream",
+      "last-event-id": lastEventId
+    }
+  });
+  return {
+    status: response.status,
+    contentType: response.headers.get("content-type") ?? "",
+    cacheControl: response.headers.get("cache-control") ?? "",
+    pragma: response.headers.get("pragma") ?? "",
+    xAccelBuffering: response.headers.get("x-accel-buffering") ?? "",
+    body: await response.text()
   };
 }
 
@@ -682,6 +729,18 @@ async function main() {
       status: 204
     });
     assert.deepEqual(downloadCalls, [{ absolutePath: releaseDownloadPath, fileName: "ChordV_1.1.7_x64-full.zip" }]);
+    const adminSse = await requestSse(baseUrl, "/api/admin/events/stream", "Bearer admin-test-token", "admin_event_0");
+    assert.equal(adminSse.status, 200);
+    assert.match(adminSse.contentType, /text\/event-stream/);
+    assert.match(adminSse.cacheControl, /no-cache/);
+    assert.match(adminSse.cacheControl, /no-store/);
+    assert.match(adminSse.cacheControl, /no-transform/);
+    assert.equal(adminSse.pragma, "no-cache");
+    assert.equal(adminSse.xAccelBuffering, "no");
+    assert.match(adminSse.body, /id: admin_event_1/);
+    assert.match(adminSse.body, /event: sync_queue_updated/);
+    assert.match(adminSse.body, /data: .*"nodeId":"node_1"/);
+    assert.equal(adminSseObservedLastEventId, "admin_event_0");
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/image-bed/config", {
         method: "GET"
@@ -754,6 +813,23 @@ async function main() {
         }
       }
     );
+    const clientSse = await requestSse(baseUrl, "/api/client/events/stream", "Bearer user-test-token", "client_event_0");
+    assert.equal(clientSse.status, 200);
+    assert.match(clientSse.contentType, /text\/event-stream/);
+    assert.match(clientSse.cacheControl, /no-cache/);
+    assert.match(clientSse.cacheControl, /no-store/);
+    assert.match(clientSse.cacheControl, /no-transform/);
+    assert.equal(clientSse.pragma, "no-cache");
+    assert.equal(clientSse.xAccelBuffering, "no");
+    assert.match(clientSse.body, /id: client_event_1/);
+    assert.match(clientSse.body, /event: ticket_updated/);
+    assert.match(clientSse.body, /data: .*"ticketId":"ticket_1"/);
+    assert.deepEqual(clientSseObservedInput, { authorization: "Bearer user-test-token", lastEventId: "client_event_0" });
+    const clientSseAlias = await requestSse(baseUrl, "/api/client/events", "Bearer user-test-token", "client_event_alias_0");
+    assert.equal(clientSseAlias.status, 200);
+    assert.match(clientSseAlias.contentType, /text\/event-stream/);
+    assert.match(clientSseAlias.body, /event: ticket_updated/);
+    assert.deepEqual(clientSseObservedInput, { authorization: "Bearer user-test-token", lastEventId: "client_event_alias_0" });
     assert.deepEqual(
       await requestMultipartJson(
         baseUrl,
