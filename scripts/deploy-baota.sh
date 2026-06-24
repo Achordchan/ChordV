@@ -388,6 +388,7 @@ model = main()
 print(json.dumps(model.start_project(project), ensure_ascii=False))
 PY
 
+sleep 2
 normalize_start_script
 
 for _ in $(seq 1 30); do
@@ -399,6 +400,7 @@ done
 
 curl -fsS -H "X-Forwarded-Proto: https" "http://127.0.0.1:${DEPLOY_PORT}${DEPLOY_HEALTH_PATH}" >/dev/null
 curl -k -fsS --resolve "${DEPLOY_DOMAIN}:443:${DEPLOY_HOST}" "https://${DEPLOY_DOMAIN}${DEPLOY_HEALTH_PATH}" >/dev/null
+normalize_start_script
 rm -rf "${DEPLOY_STAGE_PATH}"
 REMOTE_SCRIPT
 
