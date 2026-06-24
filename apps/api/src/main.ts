@@ -4,6 +4,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { resolveCorsOrigin } from "./cors";
+import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
 
 async function bootstrap() {
@@ -20,24 +21,7 @@ async function bootstrap() {
   const forceHttps = (process.env.CHORDV_API_FORCE_HTTPS ?? "true").toLowerCase() === "true";
   if (process.env.NODE_ENV === "production" && forceHttps) {
     app.getHttpAdapter().getInstance().set("trust proxy", 1);
-    app.use(
-      (
-        req: { secure?: boolean; headers: Record<string, string | string[] | undefined> },
-        res: { status: (code: number) => { json: (body: unknown) => void } },
-        next: () => void
-      ) => {
-      const forwardedProto = Array.isArray(req.headers["x-forwarded-proto"])
-        ? req.headers["x-forwarded-proto"][0]
-        : req.headers["x-forwarded-proto"];
-      if (req.secure || forwardedProto === "https") {
-        next();
-        return;
-      }
-      res.status(426).json({
-        message: "生产环境仅允许 HTTPS 访问"
-      });
-      }
-    );
+    app.use(forceHttpsMiddleware);
   }
   app.useGlobalPipes(
     new ValidationPipe({

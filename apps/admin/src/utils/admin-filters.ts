@@ -10,10 +10,10 @@ export function readError(reason: unknown, fallback: string) {
     return appendRequestId(normalizeAdminErrorMessage(backendMessage, fallback), requestId);
   }
   if (reason.name === "AbortError" || reason.message === "signal is aborted without reason" || /请求超时/i.test(reason.message)) {
-    return "请求超时，后台未在限定时间内返回，请刷新或稍后重试。";
+    return appendRequestId("请求超时，后台未在限定时间内返回，请刷新或稍后重试。", requestId);
   }
   if (/Failed to fetch|NetworkError/i.test(reason.message)) {
-    return "网络请求失败，请检查后台服务、网络连接或跨域配置后重试。";
+    return appendRequestId("网络请求失败，请检查后台服务、网络连接或跨域配置后重试。", requestId);
   }
   return appendRequestId(normalizeAdminErrorMessage(reason.message || fallback, fallback), requestId);
 }

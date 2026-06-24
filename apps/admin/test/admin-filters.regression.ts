@@ -53,6 +53,33 @@ function testReadErrorKeepsGenericBadRequestFallback() {
   assert.equal(message, "提交内容不完整或格式不正确，请检查后重试。");
 }
 
+function testReadErrorKeepsRequestIdForNetworkFailure() {
+  const message = readError(
+    new Error("GET /api/admin/users failed before HTTP response requestId=admin-network-check: Failed to fetch"),
+    "fallback"
+  );
+
+  assert.match(message, /Request ID: admin-network-check/);
+}
+
+function testReadErrorKeepsRequestIdForTimeout() {
+  const message = readError(
+    new Error("GET /api/admin/users failed before HTTP response requestId=admin-timeout-check: 请求超时"),
+    "fallback"
+  );
+
+  assert.match(message, /Request ID: admin-timeout-check/);
+}
+
+function testReadErrorKeepsRequestIdForExpiredSession() {
+  const message = readError(
+    new Error(JSON.stringify({ statusCode: 401, message: "Unauthorized", requestId: "admin-session-check" })),
+    "fallback"
+  );
+
+  assert.match(message, /Request ID: admin-session-check/);
+}
+
 function testImageBedManageTimeoutIsUncertainMutationFailure() {
   assert.equal(
     isPotentiallyCompletedMutationFailure("图床管理请求仍在处理，请稍后刷新文件列表确认结果。"),
@@ -65,6 +92,9 @@ testReadErrorPreservesImageBedTimeout();
 testReadErrorKeepsGenericServiceUnavailableFallback();
 testReadErrorPreservesSpecificBadRequestDetail();
 testReadErrorKeepsGenericBadRequestFallback();
+testReadErrorKeepsRequestIdForNetworkFailure();
+testReadErrorKeepsRequestIdForTimeout();
+testReadErrorKeepsRequestIdForExpiredSession();
 testImageBedManageTimeoutIsUncertainMutationFailure();
 
 console.log("admin filter regression checks passed");

@@ -206,7 +206,9 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
         response = await requestOnce(path, init, useAuth, refreshedAccessToken);
       } else {
         clearStoredAdminSession({ notify: true });
-        throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);
+        throw new Error(
+          buildHttpErrorMessage(response.status, text || ADMIN_SESSION_EXPIRED_MESSAGE, response.headers.get(REQUEST_ID_HEADER))
+        );
       }
     } else {
       throw new Error(buildHttpErrorMessage(response.status, text, response.headers.get(REQUEST_ID_HEADER)));
@@ -217,7 +219,9 @@ export async function request<T>(path: string, init?: RequestOptions, useAuth = 
     const text = await response.text();
     if (useAuth && isAccessTokenError(response.status, text)) {
       clearStoredAdminSession({ notify: true });
-      throw new Error(ADMIN_SESSION_EXPIRED_MESSAGE);
+      throw new Error(
+        buildHttpErrorMessage(response.status, text || ADMIN_SESSION_EXPIRED_MESSAGE, response.headers.get(REQUEST_ID_HEADER))
+      );
     }
     throw new Error(buildHttpErrorMessage(response.status, text, response.headers.get(REQUEST_ID_HEADER)));
   }

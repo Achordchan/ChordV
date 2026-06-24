@@ -50,6 +50,7 @@ import { ClientTicketService } from "../src/modules/common/client-ticket.service
 import { AdminController } from "../src/modules/admin/admin.controller";
 import { DownloadsController } from "../src/modules/client/downloads.controller";
 import { LoggingExceptionFilter } from "../src/logging-exception.filter";
+import { forceHttpsMiddleware } from "../src/https-enforcement";
 import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-events.service";
 import {
   ImportNodeDto,
@@ -19740,6 +19741,43 @@ function testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError() {
   assert.equal(responseRequestId, "admin-test-request-id");
 }
 
+function testForceHttpsMiddlewareKeepsRequestIdOnUpgradeRequired() {
+  let statusCode: number | null = null;
+  let responseBody: any = null;
+  let responseRequestId: string | null = null;
+  let nextCalled = false;
+
+  forceHttpsMiddleware(
+    {
+      secure: false,
+      headers: { "x-request-id": "admin-http-upgrade-check", "x-forwarded-proto": "http" }
+    },
+    {
+      setHeader: (name: string, value: string) => {
+        if (name.toLowerCase() === "x-request-id") {
+          responseRequestId = value;
+        }
+      },
+      status: (code: number) => {
+        statusCode = code;
+        return {
+          json: (body: unknown) => {
+            responseBody = body;
+          }
+        };
+      }
+    },
+    () => {
+      nextCalled = true;
+    }
+  );
+
+  assert.equal(statusCode, 426);
+  assert.equal(responseBody.requestId, "admin-http-upgrade-check");
+  assert.equal(responseRequestId, "admin-http-upgrade-check");
+  assert.equal(nextCalled, false);
+}
+
 async function testConnectRejectsPanelDisabledNode() {
   const service = createRuntimeSessionService({
     prisma: {
@@ -33573,6 +33611,7 @@ async function main() {
   testLoggingFilterMapsPrismaCodedErrorsToServiceUnavailable();
   testLoggingFilterMapsDatabaseTransientErrorsToServiceUnavailable();
   testLoggingFilterKeepsOrdinaryErrorsAsInternalServerError();
+  testForceHttpsMiddlewareKeepsRequestIdOnUpgradeRequired();
   await testConnectRejectsPanelDisabledNode();
   await testRuntimeConnectMapsLocalReadFailure();
   await testRuntimeHeartbeatMapsLocalReadFailure();
