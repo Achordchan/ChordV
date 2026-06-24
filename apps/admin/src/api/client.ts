@@ -463,6 +463,15 @@ type AdminImageBedManageRequestOptions = RequestInit & {
   timeoutMs?: number;
 };
 
+function isBackendHttpErrorMessage(message: string) {
+  try {
+    const parsed = JSON.parse(message) as { statusCode?: unknown; status?: unknown; message?: unknown };
+    return typeof parsed.statusCode === "number" || typeof parsed.status === "number" || parsed.message !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchAdminImageBedConfig() {
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
     timeoutMs: ADMIN_READ_TIMEOUT_MS
@@ -485,7 +494,7 @@ async function requestAdminImageBedManage<T>(path: string, init?: AdminImageBedM
     });
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : String(reason);
-    if (/请求超时|AbortError|aborted|timeout|timed out/i.test(message)) {
+    if (!isBackendHttpErrorMessage(message) && /请求超时|AbortError|aborted|timeout|timed out/i.test(message)) {
       throw new Error(IMAGE_BED_MANAGE_TIMEOUT_MESSAGE);
     }
     throw reason;
