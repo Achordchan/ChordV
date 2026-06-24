@@ -18623,6 +18623,40 @@ async function testListAdminNodesUsesAggregatedPanelSyncCounts() {
   assert.equal(result[0].panelSyncLastError, "panel offline");
 }
 
+async function testListAdminNodesIgnoresPanelSyncSummaryReadFailure() {
+  const warnings: string[] = [];
+  const node = makeAdminNodeRow({ id: "node_1" });
+  const service = createAdminNodeService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    prisma: {
+      node: {
+        findMany: async () => [node]
+      },
+      panelSyncJob: {
+        groupBy: async () => {
+          throw new Error("panel sync summary unavailable");
+        },
+        findMany: async () => {
+          throw new Error("recent failed jobs unavailable");
+        }
+      }
+    }
+  });
+
+  const result = await service.listAdminNodes();
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, "node_1");
+  assert.equal(result[0].panelSyncTotalCount, 0);
+  assert.equal(result[0].panelSyncPendingCount, 0);
+  assert.equal(result[0].panelSyncRunningCount, 0);
+  assert.equal(result[0].panelSyncFailedCount, 0);
+  assert.equal(result[0].panelSyncLastError, null);
+  assert.ok(warnings.some((message) => /Node list loaded without panel sync summary/.test(message)));
+}
+
 async function testListNodePanelInboundsPropagatesOfflinePanelError() {
   const service = createAdminNodeService({
     xuiService: {
@@ -33423,6 +33457,7 @@ async function main() {
   await testXuiInboundRuntimeReadsPqvAlias();
   await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
   await testListAdminNodesUsesAggregatedPanelSyncCounts();
+  await testListAdminNodesIgnoresPanelSyncSummaryReadFailure();
   await testListNodePanelInboundsPropagatesOfflinePanelError();
   await testListNodePanelInboundsKeepsCredentialErrorsAsBadRequest();
   await testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout();
