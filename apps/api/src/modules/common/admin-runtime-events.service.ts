@@ -144,6 +144,13 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
     });
   }
 
+  publishRuntimeComponentUpdated() {
+    this.publish({
+      type: "runtime_component_updated",
+      occurredAt: new Date().toISOString()
+    });
+  }
+
   private dispatch(event: AdminRuntimeEventDto, eventId: string) {
     const message = this.toReplayableMessageEvent(event, eventId);
     this.recordReplayEvent(message);
@@ -211,6 +218,7 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
       { type: "subscription_updated", occurredAt },
       { type: "node_access_updated", occurredAt },
       { type: "version_updated", occurredAt },
+      { type: "runtime_component_updated", occurredAt },
       { type: "announcement_updated", occurredAt },
       { type: "policy_updated", occurredAt },
       { type: "sync_queue_updated", occurredAt }

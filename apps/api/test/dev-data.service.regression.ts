@@ -18381,6 +18381,95 @@ async function testUsageSyncDoesNotLetStalledNodesBlockHealthyNode() {
   assert.equal(nodeUpdates.filter((item) => item.data.panelStatus === "degraded").length, 2);
 }
 
+async function testUsageSyncIncidentWriteFailureDoesNotBlockHealthyNode() {
+  const appliedNodes: string[] = [];
+  const nodeUpdates: Array<{ nodeId: string; data: Record<string, any> }> = [];
+  const incidentOpenAttempts: string[] = [];
+  const warningMessages: string[] = [];
+  const makeBinding = (nodeId: string, subscriptionId: string, email: string) => ({
+    id: `binding_${nodeId}`,
+    subscriptionId,
+    userId: `user_${nodeId}`,
+    teamId: null,
+    nodeId,
+    panelClientEmail: email,
+    panelClientId: `client_${nodeId}`,
+    panelInboundId: 7,
+    node: {
+      id: nodeId,
+      panelBaseUrl: `https://${nodeId}.example.com`,
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password",
+      panelInboundId: 7
+    }
+  });
+  const service = createUsageSyncService({
+    warningTimestamps: new Map<string, number>(),
+    logger: {
+      warn: (message: string) => {
+        warningMessages.push(message);
+      }
+    },
+    meteringIncidentService: {
+      open: async (subscriptionId: string) => {
+        incidentOpenAttempts.push(subscriptionId);
+        throw new Error("incident store unavailable");
+      },
+      resolve: async () => undefined
+    },
+    xuiService: {
+      listNodeUsage: async (node: { id: string }) => {
+        if (node.id === "node_offline") {
+          throw new Error("panel offline");
+        }
+        return [
+          {
+            xrayUserEmail: "healthy@example.com",
+            xrayUserUuid: "",
+            uplinkBytes: 0n,
+            downlinkBytes: 0n,
+            sampledAt: new Date().toISOString()
+          }
+        ];
+      }
+    },
+    prisma: {
+      panelClientBinding: {
+        findMany: async () => [
+          makeBinding("node_offline", "sub_offline", "offline@example.com"),
+          makeBinding("node_healthy", "sub_healthy", "healthy@example.com")
+        ]
+      },
+      node: {
+        update: async (payload: Record<string, any>) => {
+          nodeUpdates.push({ nodeId: payload.where.id, data: payload.data });
+        }
+      }
+    },
+    loadNodeSyncContext: async () => ({
+      subscriptionIds: ["sub_healthy"],
+      mappings: new Map(),
+      leaseMappingsByUuid: new Map(),
+      invalidMappings: []
+    }),
+    applyNodeSamples: async (nodeId: string) => {
+      appliedNodes.push(nodeId);
+    }
+  });
+
+  await service["syncXuiUsage"]();
+
+  assert.deepEqual(incidentOpenAttempts, ["sub_offline"]);
+  assert.ok(
+    warningMessages.some((message) => message.includes("incident store unavailable")),
+    "incident write failures should be logged for diagnostics"
+  );
+  assert.deepEqual(appliedNodes, ["node_healthy"], "healthy node usage must still be applied when incident writes fail");
+  assert.equal(nodeUpdates.find((item) => item.nodeId === "node_offline")?.data.panelStatus, "degraded");
+  assert.equal(nodeUpdates.find((item) => item.nodeId === "node_healthy")?.data.panelStatus, "online");
+}
+
 async function testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh() {
   const capturedInboundIds: Array<number | null> = [];
   const now = new Date();
@@ -33601,6 +33690,7 @@ async function main() {
   await testUsageSyncUsesStoredInboundIdGroups();
   await testUsageSyncKeepsNodeDegradedWhenAnyInboundFails();
   await testUsageSyncDoesNotLetStalledNodesBlockHealthyNode();
+  await testUsageSyncIncidentWriteFailureDoesNotBlockHealthyNode();
   await testUpdateNodeUsesExplicitClearedInboundIdForPanelRefresh();
   await testUpdateNodeSubscriptionUrlFailureKeepsLocalSave();
   await testUpdateNodeClearsSubscriptionUrlWithNull();

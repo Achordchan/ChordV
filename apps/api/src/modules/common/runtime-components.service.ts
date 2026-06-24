@@ -25,6 +25,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { moveUploadedFile } from "./upload-file.utils";
 import { readZipEntryData } from "./release-center.utils";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 
 const RUNTIME_COMPONENT_DOWNLOAD_PREFIX = "/api/downloads/runtime-components";
 const SHARED_RULESET_PLATFORM: PlatformTarget = "macos";
@@ -57,7 +58,8 @@ export class RuntimeComponentsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly authSessionService: AuthSessionService
+    private readonly authSessionService: AuthSessionService,
+    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
   ) {}
 
   async listAdminRuntimeComponents(): Promise<AdminRuntimeComponentRecordDto[]> {
@@ -653,21 +655,33 @@ export class RuntimeComponentsService {
         .then((result) => {
           if (result.status !== "ready") {
             this.logger.warn(`Runtime component ${componentId} background validation finished with ${result.status}: ${result.message}`);
-            void this.persistAdminValidationFailure(componentId, resolvedUrl, result);
+            return this.persistAdminValidationFailure(componentId, resolvedUrl, result);
           }
+          return undefined;
         })
         .catch((error) => {
           const message = readErrorMessage(error);
           this.logger.warn(`Runtime component ${componentId} background validation failed: ${message}`);
-          void this.persistAdminValidationFailure(componentId, resolvedUrl, {
+          return this.persistAdminValidationFailure(componentId, resolvedUrl, {
             componentId,
             status: "unreachable",
             message,
             finalUrlPreview: resolvedUrl
           });
+        })
+        .finally(() => {
+          this.publishRuntimeComponentUpdatedBestEffort();
         });
     }, 0);
     timer.unref?.();
+  }
+
+  private publishRuntimeComponentUpdatedBestEffort() {
+    try {
+      this.adminRuntimeEventsService?.publishRuntimeComponentUpdated();
+    } catch (error) {
+      this.logger.warn(`Runtime component validation event publish failed: ${readErrorMessage(error)}`);
+    }
   }
 
   private async persistAdminValidationFailure(

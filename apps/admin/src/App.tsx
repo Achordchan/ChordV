@@ -558,6 +558,10 @@ export function App() {
       if (event.type === "version_updated") {
         setReleaseRefreshSignal((current) => current + 1);
       }
+      if (event.type === "runtime_component_updated" && sectionRef.current === "runtimeComponents") {
+        setRuntimeComponentRefreshSignal((current) => current + 1);
+        return;
+      }
       void refreshDashboard({ silent: true });
       if (sectionRef.current === "tickets") {
         if (shouldRefreshTicketsForAdminEvent(event)) {

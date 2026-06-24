@@ -749,13 +749,29 @@ export class UsageSyncService {
     detail: string
   ) {
     await Promise.all(
-      subscriptionIds.map((subscriptionId) => this.meteringIncidentService.open(subscriptionId, nodeId, reason, detail))
+      subscriptionIds.map(async (subscriptionId) => {
+        try {
+          await this.meteringIncidentService.open(subscriptionId, nodeId, reason, detail);
+        } catch (error) {
+          this.logger.warn(
+            `Usage sync could not open metering incident for ${subscriptionId} on ${nodeId}: ${readErrorMessage(error)}`
+          );
+        }
+      })
     );
   }
 
   private async resolveIncidentForSubscriptions(subscriptionIds: string[], nodeId: string, reason: string) {
     await Promise.all(
-      subscriptionIds.map((subscriptionId) => this.meteringIncidentService.resolve(subscriptionId, nodeId, reason))
+      subscriptionIds.map(async (subscriptionId) => {
+        try {
+          await this.meteringIncidentService.resolve(subscriptionId, nodeId, reason);
+        } catch (error) {
+          this.logger.warn(
+            `Usage sync could not resolve metering incident for ${subscriptionId} on ${nodeId}: ${readErrorMessage(error)}`
+          );
+        }
+      })
     );
   }
 

@@ -176,6 +176,11 @@ function testGenericAdminRuntimeEventsRefreshCurrentSection() {
   );
   assert.match(
     adminRuntimeEventsBody,
+    /if \(event\.type === "runtime_component_updated" && sectionRef\.current === "runtimeComponents"\) {[\s\S]*?setRuntimeComponentRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
+    "runtime component background validation events should refresh the runtime component page without waiting for focus"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
     /void refreshDashboard\(\{ silent: true \}\);[\s\S]*?void refreshCurrentSectionSilently\(\);/,
     "announcement, policy, subscription, and other generic admin SSE events must refresh the current section"
   );

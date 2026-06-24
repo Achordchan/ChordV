@@ -345,6 +345,43 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
   assert.equal(result.componentId, "component_1");
 }
 
+async function testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefreshEvent() {
+  let published = false;
+  const publishedPromise = new Promise<void>((resolve) => {
+    const service = createRuntimeComponentsService({
+      logger: {
+        warn: () => undefined
+      },
+      validateRemoteRuntimeComponentHash: async () => ({
+        componentId: "component_1",
+        status: "ready",
+        message: "ready",
+        finalUrlPreview: "https://cdn.example.com/xray.exe"
+      }),
+      adminRuntimeEventsService: {
+        publishRuntimeComponentUpdated: () => {
+          published = true;
+          resolve();
+        }
+      }
+    });
+
+    service["startRemoteRuntimeComponentValidation"](
+      "component_1",
+      "https://cdn.example.com/xray.exe",
+      "a".repeat(64),
+      null
+    );
+  });
+
+  await Promise.race([
+    publishedPromise,
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error("runtime component refresh event timed out")), 250))
+  ]);
+
+  assert.equal(published, true, "background validation completion should notify admin pages to refresh runtime components");
+}
+
 async function main() {
   await testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHashDiffers();
   await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
@@ -357,6 +394,7 @@ async function main() {
   await testAdminRuntimeComponentShowsFreshBackgroundValidationFailure();
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
+  await testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefreshEvent();
   console.log("runtime component service regression checks passed");
 }
 

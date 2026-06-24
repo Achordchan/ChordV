@@ -104,6 +104,7 @@ export type AdminRuntimeEventDto = {
     | "ticket_updated"
     | "subscription_updated"
     | "node_access_updated"
+    | "runtime_component_updated"
     | "version_updated"
     | "account_updated"
     | "announcement_updated"
@@ -475,6 +476,28 @@ function isBackendHttpErrorMessage(message: string) {
   }
 }
 
+function readRequestIdFromErrorMessage(message: string) {
+  try {
+    const parsed = JSON.parse(message) as { requestId?: unknown };
+    if (typeof parsed.requestId === "string" && parsed.requestId.trim()) {
+      return parsed.requestId.trim();
+    }
+  } catch {
+    const match = /\brequestId=([A-Za-z0-9._:-]+)/.exec(message);
+    return match?.[1] ?? null;
+  }
+  const match = /\brequestId=([A-Za-z0-9._:-]+)/.exec(message);
+  return match?.[1] ?? null;
+}
+
+function appendRequestIdToErrorMessage(message: string, requestId?: string | null) {
+  const trimmed = requestId?.trim();
+  if (!trimmed || message.includes(trimmed)) {
+    return message;
+  }
+  return `${message} requestId=${trimmed}`;
+}
+
 export async function fetchAdminImageBedConfig() {
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
     timeoutMs: IMAGE_BED_CONFIG_TIMEOUT_MS
@@ -499,7 +522,7 @@ async function requestAdminImageBedManage<T>(path: string, init?: AdminImageBedM
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : String(reason);
     if (!isBackendHttpErrorMessage(message) && /请求超时|AbortError|aborted|timeout|timed out/i.test(message)) {
-      throw new Error(init?.timeoutMessage ?? IMAGE_BED_MANAGE_TIMEOUT_MESSAGE);
+      throw new Error(appendRequestIdToErrorMessage(init?.timeoutMessage ?? IMAGE_BED_MANAGE_TIMEOUT_MESSAGE, readRequestIdFromErrorMessage(message)));
     }
     throw reason;
   }
