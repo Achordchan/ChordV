@@ -20162,6 +20162,8 @@ async function testRuntimeComponentUploadMapsLocalSaveFailure() {
       ),
     (error) =>
       error instanceof ServiceUnavailableException &&
+      /已尝试清理本次上传文件/.test(error.message) &&
+      !/已清理本次上传文件/.test(error.message) &&
       !/runtime component upload local save failed/i.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "runtime component upload local save failures must return a controlled 503 instead of HTTP 500"
@@ -20447,6 +20449,8 @@ async function testRuntimeComponentReplaceUploadMapsLocalSaveFailure() {
       ),
     (error) =>
       error instanceof ServiceUnavailableException &&
+      /已尝试清理本次上传文件/.test(error.message) &&
+      !/已清理本次上传文件/.test(error.message) &&
       !/runtime component replacement local save failed/i.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "runtime component replacement local save failures must return a controlled 503 instead of HTTP 500"
@@ -22914,6 +22918,8 @@ async function testUploadReleaseArtifactFailureUsesBestEffortCleanup() {
     (error) =>
       error instanceof ServiceUnavailableException &&
       /安装包保存失败/.test(error.message) &&
+      /已尝试清理本次上传文件/.test(error.message) &&
+      !/已清理本次上传文件/.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "release artifact local save failures must return a controlled 503 instead of HTTP 500"
   );
@@ -23023,6 +23029,8 @@ async function testReplaceReleaseArtifactUploadFailureUsesBestEffortCleanup() {
     (error) =>
       error instanceof ServiceUnavailableException &&
       /安装包替换失败/.test(error.message) &&
+      /已尝试清理本次上传文件/.test(error.message) &&
+      !/已清理本次上传文件/.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "release artifact replacement local save failures must return a controlled 503 instead of HTTP 500"
   );

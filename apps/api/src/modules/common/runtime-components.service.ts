@@ -164,26 +164,28 @@ export class RuntimeComponentsService {
       prepared = preparedFile;
       const expectedHash = normalizeExpectedHash(input.expectedHash);
       assertExpectedHashMatchesFile(expectedHash, preparedFile.fileHash);
-      const created = await this.withRuntimeComponentIdentityConflictGuard(() =>
-        this.prisma.runtimeComponent.create({
-          data: {
-            id: componentId,
-            platform: normalizedInput.platform,
-            architecture: normalizedInput.architecture,
-            kind: input.kind,
-            source: "uploaded",
-            originUrl: preparedFile.downloadUrl,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: preparedFile.fileName,
-            storedFilePath: preparedFile.storedFilePath,
-            fileSizeBytes: preparedFile.fileSizeBytes,
-            fileHash: preparedFile.fileHash,
-            archiveEntryName: null,
-            expectedHash: expectedHash ?? preparedFile.fileHash,
-            enabled: input.enabled ?? true
-          }
-        })
+      const created = await this.withRuntimeComponentIdentityConflictGuard(
+        () =>
+          this.prisma.runtimeComponent.create({
+            data: {
+              id: componentId,
+              platform: normalizedInput.platform,
+              architecture: normalizedInput.architecture,
+              kind: input.kind,
+              source: "uploaded",
+              originUrl: preparedFile.downloadUrl,
+              defaultMirrorPrefix: null,
+              allowClientMirror: false,
+              fileName: preparedFile.fileName,
+              storedFilePath: preparedFile.storedFilePath,
+              fileSizeBytes: preparedFile.fileSizeBytes,
+              fileHash: preparedFile.fileHash,
+              archiveEntryName: null,
+              expectedHash: expectedHash ?? preparedFile.fileHash,
+              enabled: input.enabled ?? true
+            }
+          }),
+        "内核组件保存失败，请刷新后重试；已尝试清理本次上传文件。"
       );
       this.startSharedRulesetDuplicatesCleanup(input.kind, created.id);
       return toAdminRuntimeComponentRecord(created);
@@ -192,7 +194,7 @@ export class RuntimeComponentsService {
         prepared ? prepared.absolutePath : file.path,
         "failed runtime component upload"
       );
-      throwLocalSaveAsServiceUnavailable(error, "内核组件保存失败，请刷新后重试；已清理本次上传文件。");
+      throwLocalSaveAsServiceUnavailable(error, "内核组件保存失败，请刷新后重试；已尝试清理本次上传文件。");
     }
   }
 
@@ -290,26 +292,28 @@ export class RuntimeComponentsService {
       prepared = preparedFile;
       const expectedHash = normalizeExpectedHash(input.expectedHash);
       assertExpectedHashMatchesFile(expectedHash, preparedFile.fileHash);
-      const updated = await this.withRuntimeComponentIdentityConflictGuard(() =>
-        this.prisma.runtimeComponent.update({
-          where: { id: componentId },
-          data: {
-            platform: normalizedInput.platform,
-            architecture: normalizedInput.architecture,
-            kind: input.kind,
-            source: "uploaded",
-            originUrl: preparedFile.downloadUrl,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: preparedFile.fileName,
-            storedFilePath: preparedFile.storedFilePath,
-            fileSizeBytes: preparedFile.fileSizeBytes,
-            fileHash: preparedFile.fileHash,
-            archiveEntryName: null,
-            expectedHash: expectedHash ?? preparedFile.fileHash,
-            enabled: input.enabled ?? current.enabled
-          }
-        })
+      const updated = await this.withRuntimeComponentIdentityConflictGuard(
+        () =>
+          this.prisma.runtimeComponent.update({
+            where: { id: componentId },
+            data: {
+              platform: normalizedInput.platform,
+              architecture: normalizedInput.architecture,
+              kind: input.kind,
+              source: "uploaded",
+              originUrl: preparedFile.downloadUrl,
+              defaultMirrorPrefix: null,
+              allowClientMirror: false,
+              fileName: preparedFile.fileName,
+              storedFilePath: preparedFile.storedFilePath,
+              fileSizeBytes: preparedFile.fileSizeBytes,
+              fileHash: preparedFile.fileHash,
+              archiveEntryName: null,
+              expectedHash: expectedHash ?? preparedFile.fileHash,
+              enabled: input.enabled ?? current.enabled
+            }
+          }),
+        "内核组件替换失败，请刷新后重试；已尝试清理本次上传文件。"
       );
       this.startRuntimeComponentStoredFileCleanupBestEffort(
         previousStoredFilePath && previousStoredFilePath !== preparedFile.storedFilePath ? previousStoredFilePath : null,
@@ -322,7 +326,7 @@ export class RuntimeComponentsService {
         prepared ? prepared.absolutePath : file.path,
         "failed runtime component replacement upload"
       );
-      throwLocalSaveAsServiceUnavailable(error, "内核组件替换失败，请刷新后重试；已清理本次上传文件。");
+      throwLocalSaveAsServiceUnavailable(error, "内核组件替换失败，请刷新后重试；已尝试清理本次上传文件。");
     }
   }
 
@@ -967,14 +971,17 @@ export class RuntimeComponentsService {
     }
   }
 
-  private async withRuntimeComponentIdentityConflictGuard<T>(task: () => Promise<T>): Promise<T> {
+  private async withRuntimeComponentIdentityConflictGuard<T>(
+    task: () => Promise<T>,
+    localSaveFailureMessage = "内核组件保存失败，请刷新后重试。"
+  ): Promise<T> {
     try {
       return await task();
     } catch (error) {
       if (isPrismaUniqueConstraintError(error)) {
         throw new ConflictException("相同平台、架构和类型的内核组件已存在。");
       }
-      throwLocalSaveAsServiceUnavailable(error, "内核组件保存失败，请刷新后重试。");
+      throwLocalSaveAsServiceUnavailable(error, localSaveFailureMessage);
     }
   }
 }

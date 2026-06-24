@@ -70,12 +70,17 @@ function testAttachmentFormRequestHasTimeout() {
 }
 
 function testVisibleTicketUpdateMarksDetailRead() {
-  const source = readFileSync(resolve(import.meta.dirname, "../src/hooks/useRuntimeActions.ts"), "utf8");
+  const runtimeActionsSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useRuntimeActions.ts"), "utf8");
+  const supportTicketsSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useSupportTickets.ts"), "utf8");
 
-  assert.match(source, /const isVisibleSelectedTicket =/);
-  assert.match(source, /const shouldMarkIncomingTicketRead =/);
-  assert.match(source, /!shouldMarkIncomingTicketRead[\s\S]*options\.markTicketUnread\(runtimeEvent\.ticketId\);/);
-  assert.match(source, /options\.loadTicketDetail\(preferredTicketId, \{ markRead: shouldMarkIncomingTicketRead \}\)/);
+  assert.match(runtimeActionsSource, /const isVisibleSelectedTicket =/);
+  assert.match(runtimeActionsSource, /const shouldMarkIncomingTicketRead =/);
+  assert.match(runtimeActionsSource, /!shouldMarkIncomingTicketRead[\s\S]*options\.markTicketUnread\(runtimeEvent\.ticketId\);/);
+  assert.match(
+    runtimeActionsSource,
+    /if \(shouldMarkIncomingTicketRead\) \{[\s\S]*await options\.loadTicketDetail\(preferredTicketId, \{ markRead: true \}\);[\s\S]*await options\.loadTicketList\(preferredTicketId\);[\s\S]*\} else \{[\s\S]*Promise\.all/
+  );
+  assert.match(supportTicketsSource, /await markTicketAsRead\(ticketId, options\.accessToken\);/);
 }
 
 function main() {

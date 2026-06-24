@@ -618,10 +618,15 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
         if (shouldRefreshDetail && preferredTicketId) {
           markSupportTicketBackgroundDetailRefresh(preferredTicketId);
           try {
-            await Promise.all([
-              options.loadTicketDetail(preferredTicketId, { markRead: shouldMarkIncomingTicketRead }),
-              options.loadTicketList(preferredTicketId)
-            ]);
+            if (shouldMarkIncomingTicketRead) {
+              await options.loadTicketDetail(preferredTicketId, { markRead: true });
+              await options.loadTicketList(preferredTicketId);
+            } else {
+              await Promise.all([
+                options.loadTicketDetail(preferredTicketId, { markRead: false }),
+                options.loadTicketList(preferredTicketId)
+              ]);
+            }
           } finally {
             clearSupportTicketBackgroundDetailRefresh(preferredTicketId);
           }

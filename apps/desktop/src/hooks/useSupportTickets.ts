@@ -153,7 +153,7 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
         const detail = await fetchSupportTicketDetail(options.accessToken, ticketId);
         setTicketDetail(detail);
         if (shouldMarkRead && isSupportTicketUnread(detail)) {
-          void markTicketAsRead(ticketId, options.accessToken);
+          await markTicketAsRead(ticketId, options.accessToken);
         }
         return detail;
       } catch (reason) {
