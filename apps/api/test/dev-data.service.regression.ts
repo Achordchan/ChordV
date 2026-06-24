@@ -1062,7 +1062,7 @@ async function testImageBedListRejectsSuccessFalsePayload() {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ success: false, message: "bad token" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1101,7 +1101,7 @@ async function testImageBedListUsesShortManageTimeout() {
   const server = createServer(() => {
     // Intentionally never respond; admin file management should fail on its own short budget.
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1182,7 +1182,7 @@ async function testImageBedListDefaultsToUploadFolder() {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ success: true, files: [] }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1231,7 +1231,7 @@ async function testImageBedListUsesProviderFileIdForNestedFiles() {
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1271,7 +1271,7 @@ async function testImageBedUploadRejectsSuccessFalsePayload() {
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1318,7 +1318,7 @@ async function testImageBedUploadUsesCallerTimeout() {
   const server = createServer(() => {
     // Intentionally never respond; ticket replies pass a short upload budget.
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1377,7 +1377,7 @@ async function testImageBedUploadSuccessParsesUrlAndCleansTempFile() {
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -1894,7 +1894,7 @@ async function testImageBedDeleteReturnsStructuredMessageWhenSuccessFalseWithout
       })
     );
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert(address && typeof address === "object");
 
@@ -3151,7 +3151,7 @@ async function testExternalReleaseMetadataRejectsStalledResponse() {
   const server = createServer((_request, _response) => {
     // Leave the response open to verify the application-level abort budget.
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert.equal(typeof address, "object");
   const port = address && typeof address === "object" ? address.port : 0;
@@ -3182,7 +3182,7 @@ async function testExternalReleaseMetadataMapsHttp500ToBadRequest() {
     response.writeHead(500, { "content-type": "text/plain" });
     response.end("upstream failed");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert.equal(typeof address, "object");
   const port = address && typeof address === "object" ? address.port : 0;
@@ -3214,7 +3214,7 @@ async function testExternalReleaseDownloadRejectsStalledBody() {
     });
     response.write(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert.equal(typeof address, "object");
   const port = address && typeof address === "object" ? address.port : 0;
@@ -3250,7 +3250,7 @@ async function testExternalReleaseDownloadMapsHttp500ToBadRequest() {
     response.writeHead(500, { "content-type": "text/plain" });
     response.end("upstream failed");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   assert.equal(typeof address, "object");
   const port = address && typeof address === "object" ? address.port : 0;
@@ -11362,7 +11362,7 @@ async function testXuiPanelRequestUsesCallerAbortBudget() {
     // Intentionally keep the socket open so only the caller budget can finish the request.
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   const address = server.address();
   if (!address || typeof address === "string") {
     server.close();
@@ -21497,7 +21497,7 @@ async function testRemoteRuntimeValidationChecksExpectedHashWithGet() {
     response.writeHead(200, { "content-type": "application/octet-stream" });
     response.end(body);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21539,7 +21539,7 @@ async function testRemoteRuntimeValidationReturnsUnreachableForHttp500() {
     response.writeHead(500, { "content-type": "text/plain" });
     response.end("upstream failed");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21585,7 +21585,7 @@ async function testRemoteRuntimeValidationPersistsDownloadMetadata() {
     response.writeHead(200, { "content-type": "application/octet-stream" });
     response.end(body);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21681,7 +21681,7 @@ async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
     response.writeHead(200, { "content-type": "application/octet-stream" });
     response.end(body);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21738,7 +21738,7 @@ async function testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash() {
     });
     response.end(zip);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21794,7 +21794,7 @@ async function testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup()
     });
     response.end(zip);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21850,7 +21850,7 @@ async function testRemoteRuntimeValidationRejectsOversizeExpectedHashResponse() 
     });
     response.end(body);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21910,7 +21910,7 @@ async function testRemoteRuntimeValidationRejectsIdleTimeoutExpectedHashResponse
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
@@ -21975,7 +21975,7 @@ async function testRemoteRuntimeValidationRejectsTotalTimeoutExpectedHashRespons
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafeLocalhost(server);
   try {
     const address = server.address();
     assert.ok(address && typeof address === "object");
