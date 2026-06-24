@@ -14731,6 +14731,80 @@ async function testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRe
   assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
 }
 
+async function testConvertPersonalSubscriptionToTeamDoesNotWaitForOldPanelCleanupFailure() {
+  let panelCleanupAttempted = false;
+  const warnings: string[] = [];
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: (message: string) => warnings.push(message)
+    },
+    requireSubscription: async () => ({
+      id: "sub_personal",
+      userId: "user_1",
+      teamId: null
+    }),
+    ensureUserExists: async () => ({
+      id: "user_1",
+      status: "active"
+    }),
+    requireTeam: async () => ({
+      id: "team_1",
+      status: "active"
+    }),
+    getUserMembership: async () => null,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active",
+      remainingTrafficGb: 10,
+      expireAt: new Date(Date.now() + 86_400_000)
+    }),
+    closePersonalSupportTicketsForUser: async () => undefined,
+    requireTeamRecord: async () => ({
+      id: "team_1",
+      name: "Team"
+    }),
+    publishSubscriptionUpdatedEvent: async () => undefined,
+    runtimeSessionService: {
+      syncSubscriptionPanelAccess: async () => 0,
+      revokeSubscriptionLeases: async () => 0,
+      removePanelBindingsForSubscription: async () => {
+        panelCleanupAttempted = true;
+        throw new Error("offline panel cleanup failed");
+      },
+      assertPanelBindingMutation: () => undefined
+    },
+    prisma: {
+      teamMember: {
+        create: async () => ({}),
+        deleteMany: async () => ({ count: 0 })
+      },
+      subscription: {
+        update: async () => ({})
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.convertPersonalSubscriptionToTeam("sub_personal", { targetTeamId: "team_1" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("team conversion waited for old panel cleanup")), 250);
+    })
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /personal panel cleanup/);
+  await waitUntil(() => panelCleanupAttempted, 750);
+  assert.equal(panelCleanupAttempted, true, "old personal panel cleanup must run as background follow-up");
+  await waitUntil(() => warnings.some((message) => /offline panel cleanup failed/.test(message)), 750);
+  assert.equal(
+    warnings.some((message) => /offline panel cleanup failed/.test(message)),
+    true,
+    "old panel cleanup failure must be logged instead of surfacing as conversion failure"
+  );
+}
+
 async function testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails() {
   const archivedSubscriptions: Array<Record<string, any>> = [];
   const service = createAdminSubscriptionService({
@@ -18389,6 +18463,88 @@ async function testRemovePanelBindingQueuesDeleteWithoutRemoteCall() {
   assert.equal(upserts[0].create.panelInboundId, 7);
   assert.equal(bindingUpdates[0].data.status, "deleted", "local binding must be deleted before remote panel cleanup completes");
   assert.equal(deletedSnapshots.length, 1, "local traffic baseline must be cleared with the local delete");
+}
+
+async function testExpiredSubscriptionPanelSyncQueuesDeleteWithoutRemoteCall() {
+  const upserts: Array<Record<string, any>> = [];
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const deletedSnapshots: Array<Record<string, any>> = [];
+  let xuiCalled = false;
+  const binding = {
+    id: "binding_1",
+    subscriptionId: "sub_expired",
+    userId: "user_1",
+    teamId: null,
+    nodeId: "node_1",
+    panelClientEmail: "user@example.com",
+    panelClientId: "panel_client_1",
+    panelInboundId: 7,
+    status: "active",
+    node: {
+      panelBaseUrl: "https://panel.example.com",
+      panelApiBasePath: "/",
+      panelUsername: "admin",
+      panelPassword: "password"
+    }
+  };
+  const service = createRuntimeSessionService({
+    xuiService: {
+      removeClient: async () => {
+        xuiCalled = true;
+        throw new Error("expired subscription sync must not delete remote panel client inline");
+      }
+    },
+    prisma: {
+      subscription: {
+        findUnique: async () => ({
+          id: "sub_expired",
+          state: "expired",
+          expireAt: new Date(Date.now() - 86_400_000),
+          remainingTrafficGb: 10,
+          user: {
+            status: "active"
+          },
+          team: null,
+          teamId: null,
+          nodeAccesses: []
+        })
+      },
+      panelClientBinding: {
+        findMany: async () => [binding]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          panelClientBinding: {
+            findMany: async () => [binding],
+            updateMany: async (payload: Record<string, any>) => {
+              bindingUpdates.push(payload);
+              return { count: 1 };
+            }
+          },
+          panelSyncJob: {
+            upsert: async (payload: Record<string, any>) => {
+              upserts.push(payload);
+              return {};
+            }
+          },
+          trafficSnapshot: {
+            deleteMany: async (payload: Record<string, any>) => {
+              deletedSnapshots.push(payload);
+              return { count: 1 };
+            }
+          }
+        })
+    }
+  });
+
+  const queuedCount = await service.queueSubscriptionPanelAccessSync("sub_expired");
+
+  assert.equal(queuedCount, 1);
+  assert.equal(xuiCalled, false, "expired subscription cleanup must be queued instead of calling the remote panel inline");
+  assert.equal(upserts[0].create.action, "delete_client");
+  assert.equal(upserts[0].create.panelBaseUrl, "https://panel.example.com");
+  assert.equal(bindingUpdates[0].data.status, "deleted");
+  assert.equal(deletedSnapshots.length, 1);
 }
 
 async function testPanelDeleteJobUsesStoredSnapshotAndCompletes() {
@@ -30707,6 +30863,7 @@ async function main() {
   await testConvertPersonalSubscriptionToTeamWaitsForRequiredTeamSubscriptionLookup();
   await testConvertPersonalSubscriptionToTeamConvertsMembershipUniqueConflict();
   await testConvertPersonalSubscriptionToTeamReportsPendingWhenOldLeaseRevocationFails();
+  await testConvertPersonalSubscriptionToTeamDoesNotWaitForOldPanelCleanupFailure();
   await testConvertPersonalSubscriptionToTeamReturnsPendingWhenTeamRefreshFails();
   await testAdminListsSurfacePersistentPanelSyncPendingState();
   await testAdminListsAggregatePanelSyncPendingRunningAndFailedState();
@@ -30758,6 +30915,7 @@ async function main() {
   await testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail();
   await testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFails();
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
+  await testExpiredSubscriptionPanelSyncQueuesDeleteWithoutRemoteCall();
   await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
   await testRuntimePlanRequiresCompleteComponentSet();
   await testRuntimeComponentCreateRejectsUploadedSource();
