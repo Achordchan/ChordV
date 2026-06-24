@@ -13878,6 +13878,170 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
   }
 }
 
+async function testNodeAccessHttpRemoveOnlyReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave() {
+  const offlineNode = {
+    id: "node_offline",
+    name: "offline",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: false,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  const keepNode = {
+    ...offlineNode,
+    id: "node_keep",
+    name: "keep",
+    recommended: true
+  };
+  let accessRows = [
+    { id: "access_offline", nodeId: "node_offline", node: offlineNode },
+    { id: "access_keep", nodeId: "node_keep", node: keepNode }
+  ];
+  const prismaQueueError = Object.assign(new Error("Foreign key constraint failed on the field: PanelSyncJob_bindingId_fkey"), {
+    code: "P2003"
+  });
+
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        },
+        deleteMany: async () => {
+          accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+        }
+      },
+      node: {
+        findMany: async () => [keepNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            deleteMany: async () => {
+              accessRows = accessRows.filter((row) => row.nodeId !== "node_offline");
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queuePanelDisableJobsForSubscriptionTx: async () => {
+        throw prismaQueueError;
+      },
+      queueLeaseRevocationJobsForSubscriptionTx: async () => {
+        throw prismaQueueError;
+      },
+      markPanelBindingsDisabledForSubscription: async () => {
+        throw prismaQueueError;
+      },
+      queueLeaseRevocationJobsForSubscription: async () => {
+        throw prismaQueueError;
+      },
+      revokeSubscriptionLeases: async () => {
+        throw new Error("remove-only node access must not revoke leases inline");
+      },
+      syncSubscriptionPanelAccess: async () => {
+        throw new Error("remove-only node access must not call direct panel sync");
+      }
+    },
+    publishNodeAccessUpdatedEvent: async () => undefined
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpRemoveOnlyRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpRemoveOnlyRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await Promise.race([
+      fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer admin-test-token",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ nodeIds: ["node_keep"] })
+      }),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("remove-only node access update waited for offline panel queue")), 750);
+      })
+    ]);
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      200,
+      `local remove-only node access must not surface queued offline panel failures as HTTP 500: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_keep"], "local removed node access must stay revoked");
+    assert.equal(body.subscriptionId, "sub_1");
+    assert.deepEqual(body.nodeIds, ["node_keep"]);
+    assert.equal(body.panelSyncStatus, "pending");
+    assert.match(body.panelSyncMessage ?? "", /Foreign key constraint failed/);
+    assert.notEqual(body.message, "Internal server error");
+  } finally {
+    await app.close();
+  }
+}
+
 async function testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFails() {
   const offlineNode = {
     id: "node_offline",
@@ -32995,6 +33159,7 @@ async function main() {
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishThrowsSynchronously();
   await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
   await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
+  await testNodeAccessHttpRemoveOnlyReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
   await testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFails();
   await testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable();
   await testNodeAccessHttpMapsNodeListFailureToServiceUnavailable();
