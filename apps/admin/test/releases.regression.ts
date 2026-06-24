@@ -103,11 +103,27 @@ function testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit() {
   assert.equal(payload.deliveryMode, "desktop_full_replace");
 }
 
+function testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit() {
+  const payload = buildExternalArtifactPayload(
+    "windows",
+    " https://cdn.example.com/download?id=ChordV_1.1.6_x64-full ",
+    true,
+    "windows_full_replace_zip"
+  );
+
+  assert.equal(payload.source, "external");
+  assert.equal(payload.type, "zip");
+  assert.equal(payload.deliveryMode, "desktop_full_replace");
+  assert.equal(payload.downloadUrl, "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full");
+  assert.equal(payload.isPrimary, true);
+}
+
 testCreateReleasePayloadKeepsReleaseFieldsSimple();
 testCreateReleasePayloadOmitsOptionalPublishingFlags();
 testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags();
 testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
 testWindowsZipExternalArtifactCanStayExternalDownload();
 testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
+testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
 
 console.log("release admin regression checks passed");

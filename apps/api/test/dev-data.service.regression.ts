@@ -21691,6 +21691,67 @@ async function testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls(
   assert.equal(result.artifacts[0]?.id, createdArtifactId);
 }
 
+async function testCreateWindowsFullReplaceExternalArtifactAllowsNonZipUrlWhenExplicit() {
+  const release = makeReleaseCenterTestRelease();
+  const createdArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_created",
+    isPrimary: true
+  });
+  let releaseFindCalls = 0;
+  let createdData: Record<string, any> | null = null;
+  let metadataProbeCalled = false;
+  const service = createReleaseCenterService({
+    resolveExternalReleaseArtifactMetadata: async () => {
+      metadataProbeCalled = true;
+      throw new Error("saving an explicit external full package must not probe remote metadata");
+    },
+    logger: {
+      warn: () => undefined
+    },
+    prisma: {
+      release: {
+        findUnique: async () => {
+          releaseFindCalls += 1;
+          if (releaseFindCalls > 1) {
+            throw new Error("release refresh failed after local artifact save");
+          }
+          return release;
+        }
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async (payload: Record<string, any>) => {
+              createdData = payload.data;
+              return {
+                ...createdArtifact,
+                ...payload.data
+              };
+            }
+          }
+        })
+    }
+  });
+
+  const result = await service.createReleaseArtifact("release_1", {
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full",
+    isPrimary: true
+  });
+
+  assert.equal(metadataProbeCalled, false);
+  assert.equal(createdData?.type, "zip");
+  assert.equal(createdData?.deliveryMode, "desktop_full_replace");
+  assert.equal(createdData?.downloadUrl, "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full");
+  assert.equal(createdData?.fileName ?? null, null);
+  assert.equal(createdData?.fileSizeBytes, null);
+  assert.equal(createdData?.fileHash, null);
+  assert.equal(result.artifacts[0]?.id, createdData?.id);
+}
+
 async function testCreateReleaseArtifactMapsLocalSaveFailure() {
   const release = makeReleaseCenterTestRelease();
   const service = createReleaseCenterService({
@@ -31499,6 +31560,7 @@ async function main() {
   await testRuntimeComponentDeleteMapsLocalSaveFailure();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
   await testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls();
+  await testCreateWindowsFullReplaceExternalArtifactAllowsNonZipUrlWhenExplicit();
   await testCreateReleaseArtifactMapsLocalSaveFailure();
   await testUpdateExternalReleaseArtifactDoesNotProbeRemoteMetadataBeforeSave();
   await testUpdateReleaseArtifactMapsLocalSaveFailure();
