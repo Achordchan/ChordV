@@ -76,6 +76,7 @@ function extractBlockAfter(marker: string) {
 }
 
 const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
+const loadFullSnapshotBody = extractFunctionBody("loadFullSnapshot");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
 const submitDrawerBody = extractFunctionBody("submitDrawer");
 const saveNodeAccessEditorBody = extractFunctionBody("saveNodeAccessEditor");
@@ -109,6 +110,29 @@ function testOverviewKeepsFullSnapshotRefresh() {
     handleHeaderRefreshBody,
     /if \(currentSection === "overview"\) {\s*await loadFullSnapshot\(\);\s*return;\s*}/,
     "overview header refresh can keep the full snapshot path"
+  );
+}
+
+function testFullSnapshotAppliesPartialListResults() {
+  assert.match(
+    loadFullSnapshotBody,
+    /const \[dashboard, policy\] = await Promise\.all\(\[fetchAdminDashboard\(\), fetchAdminPolicy\(\)\]\);/,
+    "full snapshot should keep dashboard and policy as required baseline data"
+  );
+  assert.match(
+    loadFullSnapshotBody,
+    /Promise\.allSettled\(listEntries\.map\(\(item\) => item\.task\)\)/,
+    "full snapshot should isolate list loading failures instead of failing the whole page"
+  );
+  assert.match(
+    loadFullSnapshotBody,
+    /mergeSnapshot\(patch\);/,
+    "full snapshot should merge successful list data even when another list fails"
+  );
+  assert.match(
+    loadFullSnapshotBody,
+    /failedSections\.has\(sectionKey\)/,
+    "sections backed by failed list loads should remain reloadable"
   );
 }
 
@@ -360,6 +384,7 @@ function testHighRiskMutationsReleaseBusyStateInFinally() {
 
 testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst();
 testOverviewKeepsFullSnapshotRefresh();
+testFullSnapshotAppliesPartialListResults();
 testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();
 testCriticalSnapshotSectionsStayLocalInSectionLoader();

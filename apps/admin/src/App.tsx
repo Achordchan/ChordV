@@ -228,6 +228,7 @@ type NodeAccessEditorState = {
 };
 
 type SnapshotListKey = Exclude<keyof AdminSnapshotDto, "dashboard" | "policy">;
+type FullSnapshotListKey = Exclude<SnapshotListKey, "releases">;
 
 type AdminAuthFormState = {
   account: string;
@@ -840,21 +841,47 @@ export function App() {
     try {
       setLoading(true);
       setError(null);
-      const [dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements] =
-        await Promise.all([
-        fetchAdminDashboard(),
-        fetchAdminPolicy(),
-        fetchAdminUsers(),
-        fetchAdminPlans(),
-        fetchAdminSubscriptions(),
-        fetchAdminTeams(),
-        fetchAdminNodes(),
-        fetchAdminPanelSyncJobs(),
-        fetchAdminLeaseRevocationJobs(),
-        fetchAdminAnnouncements()
-      ]);
-      mergeSnapshot({ dashboard, policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements });
-      setLoadedSections(new Set(Object.keys(sectionMeta) as SectionKey[]));
+      const [dashboard, policy] = await Promise.all([fetchAdminDashboard(), fetchAdminPolicy()]);
+      const listEntries: Array<{
+        key: FullSnapshotListKey;
+        sections: SectionKey[];
+        task: Promise<AdminSnapshotDto[FullSnapshotListKey]>;
+      }> = [
+        { key: "users", sections: ["users", "subscriptions"], task: fetchAdminUsers() },
+        { key: "plans", sections: ["plans", "subscriptions"], task: fetchAdminPlans() },
+        { key: "subscriptions", sections: ["overview", "subscriptions"], task: fetchAdminSubscriptions() },
+        { key: "teams", sections: ["users", "subscriptions"], task: fetchAdminTeams() },
+        { key: "nodes", sections: ["overview", "nodes"], task: fetchAdminNodes() },
+        { key: "panelSyncJobs", sections: ["nodes"], task: fetchAdminPanelSyncJobs() },
+        { key: "leaseRevocationJobs", sections: ["users", "subscriptions", "nodes"], task: fetchAdminLeaseRevocationJobs() },
+        { key: "announcements", sections: ["announcements"], task: fetchAdminAnnouncements() }
+      ];
+      const results = await Promise.allSettled(listEntries.map((item) => item.task));
+      const patch: Partial<AdminSnapshotDto> = { dashboard, policy };
+      const failedSections = new Set<SectionKey>();
+      const failedMessages: string[] = [];
+
+      results.forEach((result, index) => {
+        const entry = listEntries[index];
+        if (result.status === "fulfilled") {
+          (patch as Record<FullSnapshotListKey, AdminSnapshotDto[FullSnapshotListKey]>)[entry.key] = result.value;
+          return;
+        }
+        entry.sections.forEach((sectionKey) => failedSections.add(sectionKey));
+        failedMessages.push(`${sectionMeta[entry.sections[0]].label}: ${readError(result.reason, "加载失败")}`);
+      });
+
+      mergeSnapshot(patch);
+      setLoadedSections(
+        new Set((Object.keys(sectionMeta) as SectionKey[]).filter((sectionKey) => !failedSections.has(sectionKey)))
+      );
+      if (failedMessages.length > 0) {
+        notifications.show({
+          color: "yellow",
+          title: "部分后台数据加载失败",
+          message: failedMessages.join("；")
+        });
+      }
     } catch (reason) {
       const message = readError(reason, "加载失败");
       if (ensureAuthenticated(message)) {
