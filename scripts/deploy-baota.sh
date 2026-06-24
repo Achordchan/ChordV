@@ -251,10 +251,18 @@ lines = text.splitlines()
 
 def upsert_export(name, value, insert_after_prefix=None):
   target = f"export {name}={value}"
+  found = False
+  next_lines = []
   for index, line in enumerate(lines):
     if line.startswith(f"export {name}="):
-      lines[index] = target
-      return
+      if not found:
+        next_lines.append(target)
+        found = True
+      continue
+    next_lines.append(line)
+  if found:
+    lines[:] = next_lines
+    return
   insert_at = None
   if insert_after_prefix:
     for index, line in enumerate(lines):
@@ -267,6 +275,8 @@ def upsert_export(name, value, insert_after_prefix=None):
     lines.insert(insert_at, target)
 
 upsert_export("NODE_ENV", "production")
+upsert_export("CHORDV_API_PORT", os.environ["DEPLOY_PORT"])
+upsert_export("CHORDV_API_BASE_URL", f"http://localhost:{os.environ['DEPLOY_PORT']}")
 upsert_export(
   "CHORDV_XUI_TIMEOUT_MS",
   os.environ["DEPLOY_XUI_TIMEOUT_MS"],
