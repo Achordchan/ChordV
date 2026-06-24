@@ -53,7 +53,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const deletingPathRef = useRef<string | null>(null);
 
   useEffect(() => {
-    void loadConfig();
+    void loadConfig({ loadFilesAfter: true });
   }, []);
 
   useEffect(() => {

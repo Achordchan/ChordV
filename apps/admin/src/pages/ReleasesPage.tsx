@@ -795,10 +795,6 @@ function validateReleaseEditorInput(
   if (!form) {
     return null;
   }
-  const minimumVersion = form.minimumVersion.trim();
-  if (minimumVersion && !RELEASE_VERSION_PATTERN.test(minimumVersion)) {
-    return "最低版本格式不正确，请使用 1.2.3、v1.2.3 或 1.2.3-beta.1 这种 SemVer 格式。";
-  }
   if (!validateArtifact) {
     return null;
   }

@@ -27,6 +27,7 @@ import { loadDesktopRuntimeEnvironment } from "../lib/runtime";
 
 const API_BASE = readApiBaseUrl();
 const DEFAULT_RELEASE_CHANNEL = "stable";
+const FORM_REQUEST_TIMEOUT_MS = 60_000;
 
 export type ReleaseChannel = "stable";
 export type UpdateDeliveryMode = "desktop_installer_download" | "desktop_full_replace" | "apk_download" | "external_download" | "none";
@@ -166,17 +167,24 @@ function readApiBaseUrl() {
 
 async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestInit, "body">) {
   const startedAt = performance.now();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => {
+    controller.abort(new Error("请求超时"));
+  }, FORM_REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/api${path}`, {
       ...init,
       body,
+      signal: init?.signal ?? controller.signal,
       headers: {
         ...(init?.headers ?? {})
       }
     });
   } catch (error) {
     throw normalizeNetworkRequestError(error);
+  } finally {
+    window.clearTimeout(timeout);
   }
 
   if (!response.ok) {
@@ -194,6 +202,9 @@ async function requestForm<T>(path: string, body: FormData, init?: Omit<RequestI
 
 function normalizeNetworkRequestError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  if (/AbortError|请求超时|timeout|timed out/i.test(message)) {
+    return new ApiRequestError(null, "请求超时，请检查网络后重试。", message);
+  }
   if (/Failed to fetch|NetworkError|fetch failed|Load failed/i.test(message)) {
     return new ApiRequestError(null, "网络请求失败，请检查后台服务或网络连接后重试。", message);
   }

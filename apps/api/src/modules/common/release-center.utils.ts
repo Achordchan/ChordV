@@ -22,14 +22,6 @@ const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const STRICT_SEMVER_PATTERN =
   /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
-const WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES = new Set([
-  "bin/xray.exe",
-  "bin/geoip.dat",
-  "bin/geosite.dat"
-]);
-const WINDOWS_FULL_UPDATE_ROOT_EXES = new Set(["chordv.exe", "chordv-desktop.exe"]);
-const MIN_WINDOWS_FULL_UPDATE_PE_BYTES = 1024 * 1024;
-const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
 const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_VALIDATION_ENTRIES = 10_000;
 const DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS = 30_000;
@@ -340,48 +332,6 @@ export async function ensureFileReadable(filePath: string) {
   }
 }
 
-export async function assertWindowsFullUpdateZipFile(filePath: string, fileName?: string | null, expectedVersion?: string | null) {
-  const displayName = fileName ?? path.basename(filePath);
-  if (!displayName.toLowerCase().endsWith(".zip")) {
-    throw new BadRequestException("Windows 全量替换安装包必须是 .zip 文件。");
-  }
-
-  const entries = await readZipCentralDirectoryEntries(filePath);
-  const normalizedEntries = new Set<string>();
-  const expectedVersionCore = expectedVersion ? parseSemver(expectedVersion).core : null;
-  let hasRootExe = false;
-
-  for (const entry of entries) {
-    assertZipEntryPathSafe(entry.name);
-    const normalized = normalizeZipEntryName(entry.name);
-    if (!normalized || normalized.endsWith("/")) {
-      continue;
-    }
-    normalizedEntries.add(normalized);
-    const data = await verifyZipEntryData(filePath, entry);
-    const parts = normalized.split("/");
-    if (parts.length === 1 && WINDOWS_FULL_UPDATE_ROOT_EXES.has(parts[0].toLowerCase())) {
-      assertWindowsPeData(data, normalized, MIN_WINDOWS_FULL_UPDATE_PE_BYTES);
-      assertWindowsPeProductVersion(data, normalized, expectedVersionCore);
-      hasRootExe = true;
-    }
-    if (normalized === "bin/xray.exe") {
-      assertWindowsPeData(data, normalized, MIN_WINDOWS_FULL_UPDATE_PE_BYTES);
-    } else if (normalized === "bin/geoip.dat" || normalized === "bin/geosite.dat") {
-      assertMinimumEntrySize(data, normalized, MIN_WINDOWS_FULL_UPDATE_GEO_BYTES);
-    }
-  }
-
-  if (!hasRootExe) {
-    throw new BadRequestException("Windows 全量替换 ZIP 根目录必须包含 ChordV.exe 或 chordv-desktop.exe。");
-  }
-
-  const missingEntries = [...WINDOWS_FULL_UPDATE_REQUIRED_ENTRIES].filter((entry) => !normalizedEntries.has(entry));
-  if (missingEntries.length > 0) {
-    throw new BadRequestException(`Windows 全量替换 ZIP 缺少必要文件：${missingEntries.join(", ")}`);
-  }
-}
-
 export async function readZipEntryData(filePath: string, entryName: string) {
   assertZipEntryPathSafe(entryName);
   const normalizedTarget = normalizeZipEntryName(entryName);
@@ -552,57 +502,6 @@ async function verifyZipEntryData(filePath: string, entry: ZipCentralDirectoryEn
   } finally {
     await handle.close();
   }
-}
-
-function assertMinimumEntrySize(data: Buffer, label: string, minBytes: number) {
-  if (data.length < minBytes) {
-    throw new BadRequestException(`${label} 文件过小：至少需要 ${minBytes} 字节，实际 ${data.length} 字节。`);
-  }
-}
-
-function assertWindowsPeData(data: Buffer, label: string, minBytes: number) {
-  assertMinimumEntrySize(data, label, minBytes);
-  if (data.length < 0x40 || data[0] !== 0x4d || data[1] !== 0x5a) {
-    throw new BadRequestException(`${label} 不是有效的 Windows PE 可执行文件。`);
-  }
-  const peHeaderOffset = data.readUInt32LE(0x3c);
-  if (peHeaderOffset <= 0 || peHeaderOffset + 4 > data.length || data.readUInt32LE(peHeaderOffset) !== 0x00004550) {
-    throw new BadRequestException(`${label} 的 Windows PE 文件头无效。`);
-  }
-}
-
-function assertWindowsPeProductVersion(data: Buffer, label: string, expectedVersionCore: number[] | null) {
-  if (!expectedVersionCore) {
-    return;
-  }
-  const version = readWindowsPeProductVersion(data);
-  if (!version) {
-    throw new BadRequestException(`${label} 缺少可读取的 Windows 产品版本。`);
-  }
-  const actualCore = version.slice(0, 3);
-  const matches = expectedVersionCore.every((part, index) => actualCore[index] === part);
-  if (!matches) {
-    throw new BadRequestException(
-      `${label} 产品版本 ${version.join(".")} 与发布版本 ${expectedVersionCore.join(".")} 不一致。`
-    );
-  }
-}
-
-function readWindowsPeProductVersion(data: Buffer) {
-  for (let offset = 0; offset + 24 <= data.length; offset += 1) {
-    if (data.readUInt32LE(offset) !== 0xfeef04bd) {
-      continue;
-    }
-    const productVersionMs = data.readUInt32LE(offset + 16);
-    const productVersionLs = data.readUInt32LE(offset + 20);
-    return [
-      productVersionMs >>> 16,
-      productVersionMs & 0xffff,
-      productVersionLs >>> 16,
-      productVersionLs & 0xffff
-    ];
-  }
-  return null;
 }
 
 function crc32(buffer: Buffer) {

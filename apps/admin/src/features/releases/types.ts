@@ -13,8 +13,6 @@ export type ReleaseEditorFormState = {
   platform: AdminReleasePlatform;
   status: AdminReleaseStatus;
   version: string;
-  minimumVersion: string;
-  forceUpgrade: boolean;
   title: string;
   artifactSource: "uploaded" | "external";
   externalDeliveryMode: "auto" | "windows_full_replace_zip";
@@ -46,8 +44,6 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     platform,
     status: "draft",
     version: "",
-    minimumVersion: "",
-    forceUpgrade: false,
     title: "",
     artifactSource: "external",
     externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "auto",
@@ -63,8 +59,6 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
     platform: record.platform,
     status: record.status,
     version: record.version,
-    minimumVersion: record.minimumVersion,
-    forceUpgrade: record.forceUpgrade,
     title: record.title,
     artifactSource: record.artifacts.find((artifact) => artifact.isPrimary)?.source ?? "external",
     externalDeliveryMode:

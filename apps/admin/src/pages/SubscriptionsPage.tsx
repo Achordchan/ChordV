@@ -383,6 +383,12 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                               value={props.teamSubscriptionForm.totalTrafficGb}
                               onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, totalTrafficGb: Number(value) || 0 }))}
                             />
+                            <NumberInput
+                              label="已用流量 (GB)"
+                              min={0}
+                              value={props.teamSubscriptionForm.usedTrafficGb}
+                              onChange={(value) => props.setTeamSubscriptionForm((current) => ({ ...current, usedTrafficGb: Number(value) || 0 }))}
+                            />
                             <ExpireAtController
                               label="到期时间"
                               value={props.teamSubscriptionForm.expireAt}
@@ -476,8 +482,9 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                               variant="light"
                                               leftSection={<IconBolt size={14} />}
                                               onClick={() => props.onOpenKickMemberModal(team.id, member.id, member.displayName)}
+                                              title="Team 范围：断开该成员在当前 Team 订阅下的连接"
                                             >
-                                              断开连接
+                                              断开本 Team 连接
                                             </Button>
                                           </Group>
                                         </Group>

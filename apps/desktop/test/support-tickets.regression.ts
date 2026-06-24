@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ClientSupportTicketSummaryDto } from "@chordv/shared";
 import {
   consumeSupportTicketBackgroundDetailRefresh,
@@ -57,11 +59,22 @@ function testLocalUnreadPatchKeepsServerUnreadVisible() {
   assert.equal(locallyUnread.has("ticket_1"), true);
 }
 
+function testAttachmentFormRequestHasTimeout() {
+  const source = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+
+  assert.match(source, /const FORM_REQUEST_TIMEOUT_MS = 60_000;/);
+  assert.match(source, /const controller = new AbortController\(\);/);
+  assert.match(source, /controller\.abort\(new Error\("请求超时"\)\);/);
+  assert.match(source, /signal: init\?\.signal \?\? controller\.signal/);
+  assert.match(source, /window\.clearTimeout\(timeout\);/);
+}
+
 function main() {
   testUnreadPatchSurvivesUntilExplicitRead();
   testBackgroundDetailRefreshMarkerIsOneShot();
   testLocalUnreadPatchClearsWhenServerConfirmsRead();
   testLocalUnreadPatchKeepsServerUnreadVisible();
+  testAttachmentFormRequestHasTimeout();
   console.log("desktop support tickets regression checks passed");
 }
 

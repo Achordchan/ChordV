@@ -8067,6 +8067,8 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued/);
+  assert.match(result.message, /本地流量已重置/);
+  assert.doesNotMatch(result.message, /同步清空 3x-ui 面板计量/);
 }
 
 async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
@@ -13211,6 +13213,141 @@ async function testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueue
     assert.deepEqual(body.nodeIds, ["node_new"]);
     assert.equal(body.panelSyncStatus, "pending");
     assert.match(body.panelSyncMessage ?? "", /server closed the connection unexpectedly/);
+    assert.notEqual(body.message, "Internal server error");
+  } finally {
+    await app.close();
+  }
+}
+
+async function testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfterLocalSave() {
+  const newNode = {
+    id: "node_new",
+    name: "new",
+    countryCode: "US",
+    region: "Los Angeles",
+    provider: "provider",
+    tags: [],
+    isActive: true,
+    recommended: true,
+    latencyMs: 0,
+    probeLatencyMs: null,
+    protocol: "vless",
+    security: "reality"
+  };
+  let accessRows: Array<{ id: string; nodeId: string; node: typeof newNode }> = [];
+  let adminPublishCalled = false;
+
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async (payload: { select?: unknown }) => {
+          if (payload.select) {
+            return accessRows.map((row) => ({ id: row.id, nodeId: row.nodeId }));
+          }
+          return accessRows;
+        }
+      },
+      node: {
+        findMany: async () => [newNode]
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          subscriptionNodeAccess: {
+            createMany: async () => {
+              accessRows.push({ id: "access_new", nodeId: "node_new", node: newNode });
+            }
+          }
+        })
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSyncTx: async () => 0,
+      queueSubscriptionPanelAccessSync: async () => 0
+    },
+    adminRuntimeEventsService: {
+      publish: () => {
+        adminPublishCalled = true;
+        throw new Error("admin runtime event publish failed");
+      }
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdated: async () => undefined
+    }
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpAdminRuntimeEventRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpAdminRuntimeEventRegressionModule, { logger: false });
+  let caughtException: unknown = null;
+  app.setGlobalPrefix("api");
+  const loggingFilter = new LoggingExceptionFilter();
+  app.useGlobalFilters({
+    catch: (exception, host) => {
+      caughtException = exception;
+      loggingFilter.catch(exception, host);
+    }
+  });
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: ["node_new"] })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      200,
+      `admin runtime event publish failure must not surface as HTTP 500 after local save: ${JSON.stringify(body)} ${
+        caughtException instanceof Error ? caughtException.stack : String(caughtException)
+      }`
+    );
+    assert.equal(adminPublishCalled, true);
+    assert.deepEqual(accessRows.map((row) => row.nodeId), ["node_new"]);
+    assert.deepEqual(body.nodeIds, ["node_new"]);
     assert.notEqual(body.message, "Internal server error");
   } finally {
     await app.close();
@@ -30559,6 +30696,7 @@ async function main() {
   await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
   await testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave();
   await testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueueFailsAfterLocalSave();
+  await testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfterLocalSave();
   await testReplaceNodeAccessDoesNotWaitForHeldUsageLock();
   await testUpdateNodeAccessDoesNotFullSyncWhenOnlyRemovingNodes();
   await testUpdateNodeAccessReportsPendingWhenLeaseRevocationFailsAfterPanelQueue();

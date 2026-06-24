@@ -5,8 +5,6 @@ function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
   const form = {
     ...emptyReleaseEditorForm("windows"),
     version: " 1.2.0 ",
-    minimumVersion: " 1.0.0 ",
-    forceUpgrade: true,
     title: "  Windows 1.2.0  ",
     changelog: "Support release publishing\n\nFix admin release flow"
   };
@@ -28,8 +26,6 @@ function testCreateReleasePayloadOmitsOptionalPublishingFlags() {
   const form = {
     ...emptyReleaseEditorForm("macos"),
     version: " 2.0.1 ",
-    minimumVersion: "   ",
-    forceUpgrade: false,
     title: "",
     changelog: ""
   };
@@ -45,8 +41,6 @@ function testUpdateReleasePayloadDoesNotSendVersionOrPublishingFlags() {
   const form = {
     ...emptyReleaseEditorForm("windows"),
     version: "1.1.7",
-    minimumVersion: " 1.1.0 ",
-    forceUpgrade: true,
     title: "  Windows 1.1.7  ",
     changelog: "Fix admin release\n\nImprove download"
   };
@@ -66,8 +60,6 @@ function testBlankUpdateReleaseTitleDoesNotFallbackToVersion() {
   const form = {
     ...emptyReleaseEditorForm("windows"),
     version: "1.1.7",
-    minimumVersion: "",
-    forceUpgrade: false,
     title: "  ",
     changelog: ""
   };

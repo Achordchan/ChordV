@@ -441,8 +441,8 @@ export class AdminSubscriptionService {
       panelSyncMessage: panelSyncResult.panelSyncMessage,
       message:
         reset.clearedBindingCount > 0
-          ? buildPanelSyncMessage(panelSync, "已重置订阅流量，并同步清空 3x-ui 面板计量")
-          : "已重置订阅流量，当前没有可同步的 3x-ui 客户端",
+          ? buildPanelSyncMessage(panelSync, "本地流量已重置，3x-ui 面板计量已进入后台同步队列")
+          : "本地流量已重置，当前没有需要同步的 3x-ui 客户端",
       subscription: toAdminSubscriptionRecord(reset.subscription),
       user
     };

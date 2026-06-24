@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Anchor,
   Badge,
   Button,
   Card,
   FileButton,
   Group,
   Loader,
+  Modal,
   Paper,
   Select,
   Stack,
@@ -45,6 +45,10 @@ import { formatDateTime, formatDateTimeWithYear } from "../utils/admin-format";
 
 type TicketOwnerFilter = "all" | "personal" | "team";
 type TicketStatusFilter = "all" | SupportTicketStatus;
+type TicketAttachmentPreview = {
+  url: string;
+  fileName: string;
+};
 
 const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
 const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -85,6 +89,7 @@ export function TicketsPage(props: TicketsPageProps) {
   const [attachmentMaxBytes, setAttachmentMaxBytes] = useState(DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES);
   const [replySaving, setReplySaving] = useState(false);
   const [statusChanging, setStatusChanging] = useState<string | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
   const selectedTicketIdRef = useRef<string | null>(null);
   const ticketListRequestSeqRef = useRef(0);
   const detailRequestSeqRef = useRef(0);
@@ -620,12 +625,11 @@ export function TicketsPage(props: TicketsPageProps) {
                                   {(message.attachments ?? []).length > 0 ? (
                                     <Group mt="sm" gap="xs">
                                       {(message.attachments ?? []).map((attachment) => (
-                                        <Anchor
+                                        <button
                                           key={attachment.id}
-                                          href={attachment.url}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          style={{ textDecoration: "none" }}
+                                          type="button"
+                                          className="admin-ticket-attachment-preview-button"
+                                          onClick={() => setPreviewAttachment({ url: attachment.url, fileName: attachment.fileName })}
                                         >
                                           <Paper withBorder radius="md" p={6}>
                                             <Stack gap={4}>
@@ -639,7 +643,7 @@ export function TicketsPage(props: TicketsPageProps) {
                                               </Text>
                                             </Stack>
                                           </Paper>
-                                        </Anchor>
+                                        </button>
                                       ))}
                                     </Group>
                                   ) : null}
@@ -717,6 +721,32 @@ export function TicketsPage(props: TicketsPageProps) {
           )}
         </Stack>
       </SectionCard>
+      <Modal
+        opened={previewAttachment !== null}
+        onClose={() => setPreviewAttachment(null)}
+        title={previewAttachment?.fileName ?? "附件预览"}
+        centered
+        size="xl"
+      >
+        {previewAttachment ? (
+          <Stack gap="sm">
+            <div className="admin-ticket-attachment-preview-frame">
+              <img src={previewAttachment.url} alt={previewAttachment.fileName} />
+            </div>
+            <Group justify="flex-end">
+              <Button
+                component="a"
+                href={previewAttachment.url}
+                target="_blank"
+                rel="noreferrer"
+                variant="default"
+              >
+                打开原图
+              </Button>
+            </Group>
+          </Stack>
+        ) : null}
+      </Modal>
     </Stack>
   );
 }

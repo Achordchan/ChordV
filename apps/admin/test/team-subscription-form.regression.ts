@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   applyPlanToTeamSubscriptionForm,
   buildCreateTeamSubscriptionPayload,
@@ -81,10 +83,28 @@ function testCreateTeamSubscriptionPayloadDefaultsUsedTrafficToZero() {
   assert.equal(payload.expireAt, "2026-07-01T00:00:00.000Z");
 }
 
+function testInlineTeamSubscriptionEditorExposesUsedTrafficInput() {
+  const source = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
+
+  assert.match(source, /label="已用流量 \(GB\)"/);
+  assert.match(source, /value=\{props\.teamSubscriptionForm\.usedTrafficGb\}/);
+  assert.match(source, /usedTrafficGb: Number\(value\) \|\| 0/);
+}
+
+function testTeamMemberDisconnectCopyIsTeamScoped() {
+  const subscriptionsSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
+  const modalSource = readFileSync(resolve(import.meta.dirname, "../src/features/modals/AdminModals.tsx"), "utf8");
+
+  assert.match(subscriptionsSource, /断开本 Team 连接/);
+  assert.match(modalSource, /只断开该成员在当前 Team 订阅下的连接/);
+}
+
 testEmptyTeamSubscriptionFormDefaultsUsedTrafficToZero();
 testApplyTeamPlanKeepsUsedTraffic();
 testApplyMissingTeamPlanKeepsUsedTraffic();
 testCreateTeamSubscriptionPayloadIncludesUsedTraffic();
 testCreateTeamSubscriptionPayloadDefaultsUsedTrafficToZero();
+testInlineTeamSubscriptionEditorExposesUsedTrafficInput();
+testTeamMemberDisconnectCopyIsTeamScoped();
 
 console.log("team subscription form regression checks passed");
