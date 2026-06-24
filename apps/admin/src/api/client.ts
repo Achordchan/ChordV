@@ -105,6 +105,8 @@ export type AdminRuntimeEventDto = {
     | "subscription_updated"
     | "node_access_updated"
     | "runtime_component_updated"
+    | "release_center_updated"
+    | "image_bed_updated"
     | "version_updated"
     | "account_updated"
     | "announcement_updated"

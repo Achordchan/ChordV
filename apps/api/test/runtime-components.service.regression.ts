@@ -382,6 +382,49 @@ async function testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefre
   assert.equal(published, true, "background validation completion should notify admin pages to refresh runtime components");
 }
 
+async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
+  let publishedCount = 0;
+  const created = makeRemoteComponent({ id: "component_created", expectedHash: "a".repeat(64) });
+  const updated = makeRemoteComponent({ id: "component_1", fileName: "xray-new.exe", expectedHash: "b".repeat(64) });
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        create: async (payload: Record<string, any>) => makeRemoteComponent(payload.data),
+        update: async (payload: Record<string, any>) => ({ ...updated, ...payload.data }),
+        delete: async () => ({ id: "component_1" })
+      }
+    },
+    adminRuntimeEventsService: {
+      publishRuntimeComponentUpdated: () => {
+        publishedCount += 1;
+      }
+    },
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task(),
+    ensureRuntimeComponentExists: async () => makeRemoteComponent({ id: "component_1", expectedHash: "a".repeat(64) }),
+    findSharedRulesetRecord: async () => null,
+    startSharedRulesetDuplicatesCleanup: () => undefined,
+    startRuntimeComponentStoredFileCleanupBestEffort: () => undefined
+  });
+
+  await service.createAdminRuntimeComponent({
+    platform: "windows",
+    architecture: "x64",
+    kind: "xray",
+    source: "custom_remote",
+    originUrl: created.originUrl,
+    fileName: created.fileName,
+    expectedHash: created.expectedHash
+  });
+  await service.updateAdminRuntimeComponent("component_1", {
+    originUrl: "https://cdn.example.com/xray-new.exe",
+    fileName: "xray-new.exe",
+    expectedHash: "b".repeat(64)
+  });
+  await service.deleteAdminRuntimeComponent("component_1");
+
+  assert.equal(publishedCount, 3, "runtime component create, update, and delete should notify admin pages");
+}
+
 async function main() {
   await testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHashDiffers();
   await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
@@ -395,6 +438,7 @@ async function main() {
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
   await testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefreshEvent();
+  await testRuntimeComponentMutationsPublishAdminRefreshEvent();
   console.log("runtime component service regression checks passed");
 }
 

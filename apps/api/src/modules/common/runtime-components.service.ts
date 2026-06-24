@@ -117,6 +117,7 @@ export class RuntimeComponentsService {
         );
         this.startSharedRulesetDuplicatesCleanup(input.kind, updated.id);
         this.startRuntimeComponentStoredFileCleanupBestEffort(staleUploadedFilePath, "stale shared ruleset upload");
+        this.publishRuntimeComponentUpdatedBestEffort();
         return toAdminRuntimeComponentRecord(updated);
       }
     }
@@ -142,6 +143,7 @@ export class RuntimeComponentsService {
         }
       })
     );
+    this.publishRuntimeComponentUpdatedBestEffort();
     return toAdminRuntimeComponentRecord(created);
   }
 
@@ -193,6 +195,7 @@ export class RuntimeComponentsService {
         "内核组件保存失败，请刷新后重试；已尝试清理本次上传文件。"
       );
       this.startSharedRulesetDuplicatesCleanup(input.kind, created.id);
+      this.publishRuntimeComponentUpdatedBestEffort();
       return toAdminRuntimeComponentRecord(created);
     } catch (error) {
       await this.removeRuntimeComponentFileBestEffort(
@@ -279,6 +282,7 @@ export class RuntimeComponentsService {
     );
     this.startSharedRulesetDuplicatesCleanup(updated.kind as RuntimeComponentKind, updated.id);
     this.startRuntimeComponentStoredFileCleanupBestEffort(staleUploadedFilePath, "stale runtime component upload");
+    this.publishRuntimeComponentUpdatedBestEffort();
     return toAdminRuntimeComponentRecord(updated);
   }
 
@@ -326,6 +330,7 @@ export class RuntimeComponentsService {
         "old runtime component upload"
       );
       this.startSharedRulesetDuplicatesCleanup(input.kind, updated.id);
+      this.publishRuntimeComponentUpdatedBestEffort();
       return toAdminRuntimeComponentRecord(updated);
     } catch (error) {
       await this.removeRuntimeComponentFileBestEffort(
@@ -346,6 +351,7 @@ export class RuntimeComponentsService {
       throwLocalSaveAsServiceUnavailable(error, "内核组件删除失败，请刷新后重试。");
     }
     this.startRuntimeComponentStoredFileCleanupBestEffort(existing.storedFilePath, "deleted runtime component upload");
+    this.publishRuntimeComponentUpdatedBestEffort();
     return { id: componentId, deleted: true as const };
   }
 
@@ -373,7 +379,9 @@ export class RuntimeComponentsService {
     }
 
     if (component.source === "uploaded") {
-      return this.validateUploadedRuntimeComponent(componentId, component, resolvedUrl);
+      const result = await this.validateUploadedRuntimeComponent(componentId, component, resolvedUrl);
+      this.publishRuntimeComponentUpdatedBestEffort();
+      return result;
     }
 
     if (!isHttpUrl(resolvedUrl)) {
@@ -396,12 +404,14 @@ export class RuntimeComponentsService {
           };
         }
         if (process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS === "true") {
-          return await this.validateRemoteRuntimeComponentHash(
+          const result = await this.validateRemoteRuntimeComponentHash(
             componentId,
             resolvedUrl,
             component.expectedHash,
             component.archiveEntryName
           );
+          this.publishRuntimeComponentUpdatedBestEffort();
+          return result;
         }
         this.startRemoteRuntimeComponentValidation(componentId, resolvedUrl, component.expectedHash, component.archiveEntryName);
         return {

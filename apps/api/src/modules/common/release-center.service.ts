@@ -147,7 +147,7 @@ export class ReleaseCenterService {
           artifacts: [created.artifact]
         }),
         "create release response refresh"
-      );
+      ).finally(() => this.publishReleaseCenterUpdatedBestEffort());
     }
 
     const created = await this.createReleaseWithUniqueVersionGuard(() =>
@@ -158,6 +158,7 @@ export class ReleaseCenterService {
         }
       })
     );
+    this.publishReleaseCenterUpdatedBestEffort();
     return toAdminReleaseRecord(created);
   }
 
@@ -201,6 +202,7 @@ export class ReleaseCenterService {
         updated.platform as PlatformTarget,
         updated.channel as ReleaseChannel
       );
+      this.publishReleaseCenterUpdatedBestEffort();
       return toAdminReleaseRecord(updated);
     }
 
@@ -229,6 +231,7 @@ export class ReleaseCenterService {
           updated.channel as ReleaseChannel
         );
       }
+      this.publishReleaseCenterUpdatedBestEffort();
       return toAdminReleaseRecord(updated);
     }
 
@@ -253,6 +256,7 @@ export class ReleaseCenterService {
           updated.channel as ReleaseChannel
         );
       }
+      this.publishReleaseCenterUpdatedBestEffort();
       return toAdminReleaseRecord(updated);
     }
 
@@ -282,6 +286,7 @@ export class ReleaseCenterService {
       updated.platform as PlatformTarget,
       updated.channel as ReleaseChannel
     );
+    this.publishReleaseCenterUpdatedBestEffort();
     return toAdminReleaseRecord(updated);
   }
 
@@ -309,6 +314,7 @@ export class ReleaseCenterService {
       updated.platform as PlatformTarget,
       updated.channel as ReleaseChannel
     );
+    this.publishReleaseCenterUpdatedBestEffort();
     return toAdminReleaseRecord(updated);
   }
 
@@ -357,11 +363,22 @@ export class ReleaseCenterService {
         release.channel as ReleaseChannel
       );
     }
+    this.publishReleaseCenterUpdatedBestEffort();
 
     return {
       ok: true,
       releaseId
     };
+  }
+
+  private publishReleaseCenterUpdatedBestEffort() {
+    try {
+      this.adminRuntimeEventsService.publishReleaseCenterUpdated();
+    } catch (error) {
+      this.logger.warn(
+        `Local release change saved, but admin release_center_updated publish failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   private publishVersionUpdatedBestEffort(
@@ -444,7 +461,7 @@ export class ReleaseCenterService {
       releaseId,
       this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(createdArtifact)]),
       "create release artifact response refresh"
-    );
+    ).finally(() => this.publishReleaseCenterUpdatedBestEffort());
   }
 
   async updateReleaseArtifact(
@@ -570,7 +587,7 @@ export class ReleaseCenterService {
       releaseId,
       this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(updatedArtifact)]),
       "update release artifact response refresh"
-    );
+    ).finally(() => this.publishReleaseCenterUpdatedBestEffort());
   }
 
   async uploadReleaseArtifact(
@@ -637,7 +654,8 @@ export class ReleaseCenterService {
         });
       });
       const fallback = this.buildArtifactMutationFallback(release, [this.fallbackArtifactFromCreate(createdArtifact)]);
-      return this.getAdminReleaseBestEffort(releaseId, fallback, "upload release artifact response refresh");
+      return this.getAdminReleaseBestEffort(releaseId, fallback, "upload release artifact response refresh")
+        .finally(() => this.publishReleaseCenterUpdatedBestEffort());
     } catch (error) {
       await this.cleanupFailedReleaseArtifactUpload(prepared ? prepared.absolutePath : file.path, "failed release artifact upload");
       throwLocalSaveAsServiceUnavailable(error, "安装包保存失败，请刷新发布中心后重试；已尝试清理本次上传文件。");
@@ -722,7 +740,8 @@ export class ReleaseCenterService {
       if (prepared && previousStoredFilePath && previousStoredFilePath !== prepared.storedFilePath) {
         this.startRemoveReleaseArtifactFileBestEffort(previousStoredFilePath, "old uploaded release artifact after replacement");
       }
-      return this.getAdminReleaseBestEffort(releaseId, fallback, "replace release artifact response refresh");
+      return this.getAdminReleaseBestEffort(releaseId, fallback, "replace release artifact response refresh")
+        .finally(() => this.publishReleaseCenterUpdatedBestEffort());
     } catch (error) {
       await this.cleanupFailedReleaseArtifactUpload(
         prepared ? prepared.absolutePath : file.path,
@@ -785,7 +804,7 @@ export class ReleaseCenterService {
       releaseId,
       this.buildArtifactMutationFallback(release, fallbackArtifacts, { replaceArtifacts: true }),
       "delete release artifact response refresh"
-    );
+    ).finally(() => this.publishReleaseCenterUpdatedBestEffort());
   }
 
   async getReleaseArtifactDownloadDescriptor(artifactId: string) {

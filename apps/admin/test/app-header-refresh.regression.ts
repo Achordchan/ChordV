@@ -181,6 +181,16 @@ function testGenericAdminRuntimeEventsRefreshCurrentSection() {
   );
   assert.match(
     adminRuntimeEventsBody,
+    /if \(event\.type === "release_center_updated" && sectionRef\.current === "releases"\) {[\s\S]*?setReleaseRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
+    "release center admin events should refresh the release page without waiting for focus"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
+    /if \(event\.type === "image_bed_updated" && sectionRef\.current === "imageBed"\) {[\s\S]*?setImageBedRefreshSignal\(\(current\) => current \+ 1\);[\s\S]*?return;\s*}/,
+    "image bed admin events should refresh the image bed page without waiting for focus"
+  );
+  assert.match(
+    adminRuntimeEventsBody,
     /void refreshDashboard\(\{ silent: true \}\);[\s\S]*?void refreshCurrentSectionSilently\(\);/,
     "announcement, policy, subscription, and other generic admin SSE events must refresh the current section"
   );

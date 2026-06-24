@@ -76,6 +76,8 @@ export type ClientRuntimeEventType =
   | "ticket_read_state_updated"
   | "version_updated"
   | "runtime_component_updated"
+  | "release_center_updated"
+  | "image_bed_updated"
   | "account_updated"
   | "sync_queue_updated"
   | "keepalive";

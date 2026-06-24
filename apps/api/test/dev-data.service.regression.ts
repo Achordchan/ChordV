@@ -748,6 +748,10 @@ function createUsageSyncService(overrides: Record<string, unknown> = {}) {
 }
 
 function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
+  const adminRuntimeEventsOverride =
+    typeof overrides.adminRuntimeEventsService === "object" && overrides.adminRuntimeEventsService !== null
+      ? (overrides.adminRuntimeEventsService as Record<string, unknown>)
+      : {};
   return createInstance<ReleaseCenterService>(ReleaseCenterService.prototype, {
     logger: {
       warn: () => undefined
@@ -755,10 +759,12 @@ function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
     clientEventsPublisher: {
       publishVersionUpdated: async () => undefined
     },
+    ...overrides,
     adminRuntimeEventsService: {
-      publishVersionUpdated: () => undefined
-    },
-    ...overrides
+      publishVersionUpdated: () => undefined,
+      publishReleaseCenterUpdated: () => undefined,
+      ...adminRuntimeEventsOverride
+    }
   });
 }
 
@@ -1788,6 +1794,54 @@ async function testUpdateImageBedConfigDoesNotValidateExternalImageBed() {
   } finally {
     globalThis.fetch = originalFetch;
   }
+}
+
+async function testImageBedMutationsPublishAdminRefreshEvent() {
+  const adminEvents: string[] = [];
+  const service = createInstance<ImageBedService>(ImageBedService.prototype, {
+    adminRuntimeEventsService: {
+      publishImageBedUpdated: () => {
+        adminEvents.push("image_bed_updated");
+      }
+    },
+    prisma: {
+      systemSetting: {
+        findUnique: async () => ({
+          value: {
+            baseUrl: "https://image.example.com",
+            apiToken: "old-token"
+          },
+          updatedAt: new Date("2026-01-01T00:00:00.000Z")
+        }),
+        upsert: async (payload: Record<string, any>) => ({
+          value: payload.update.value,
+          updatedAt: new Date("2026-01-01T00:01:00.000Z")
+        })
+      }
+    },
+    loadEffectiveConfig: async () => ({
+      baseUrl: "https://image.example.com",
+      apiToken: "token",
+      uploadFolder: "support-tickets",
+      uploadChannel: null,
+      channelName: null,
+      tokenSource: "database",
+      updatedAt: new Date("2026-01-01T00:01:00.000Z")
+    }),
+    requestImageBedJson: async () => ({
+      success: true,
+      fileId: "support-tickets/removed.png",
+      deleted: ["support-tickets/removed.png"]
+    })
+  });
+
+  await service.updateAdminConfig({
+    baseUrl: "https://image.example.com",
+    apiToken: "new-token"
+  });
+  await service.deleteAdminFile({ path: "support-tickets/removed.png" });
+
+  assert.deepEqual(adminEvents, ["image_bed_updated", "image_bed_updated"]);
 }
 
 async function testUpdateImageBedConfigRejectsBaseUrlWithPath() {
@@ -3927,6 +3981,69 @@ async function testCreateReleaseDefaultsMissingMinimumVersionToVersion() {
   assert.equal(createdPayloads.length, 1);
   assert.equal(createdPayloads[0].data.minimumVersion, "1.1.6");
   assert.equal(result.minimumVersion, "1.1.6");
+}
+
+async function testReleaseDraftMutationsPublishAdminRefreshEvent() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const adminEvents: string[] = [];
+  const service = createReleaseCenterService({
+    adminRuntimeEventsService: {
+      publishReleaseCenterUpdated: () => {
+        adminEvents.push("release_center_updated");
+      }
+    },
+    prisma: {
+      release: {
+        create: async (payload: Record<string, any>) => ({
+          ...payload.data,
+          createdAt: now,
+          updatedAt: now,
+          artifacts: []
+        }),
+        findUnique: async () => ({
+          id: "release_1",
+          platform: "windows",
+          channel: "stable",
+          version: "1.1.6",
+          displayTitle: "ChordV 1.1.6",
+          changelog: [],
+          minimumVersion: "1.1.0",
+          forceUpgrade: false,
+          status: "draft",
+          publishedAt: null,
+          createdAt: now,
+          updatedAt: now,
+          artifacts: []
+        }),
+        update: async (payload: Record<string, any>) => ({
+          id: "release_1",
+          platform: "windows",
+          channel: "stable",
+          version: "1.1.6",
+          displayTitle: payload.data.displayTitle ?? "ChordV 1.1.6",
+          changelog: payload.data.changelog ?? [],
+          minimumVersion: payload.data.minimumVersion ?? "1.1.0",
+          forceUpgrade: payload.data.forceUpgrade ?? false,
+          status: "draft",
+          publishedAt: null,
+          createdAt: now,
+          updatedAt: now,
+          artifacts: []
+        })
+      }
+    }
+  });
+
+  await service.createRelease({
+    platform: "windows",
+    channel: "stable",
+    version: "1.1.7"
+  });
+  await service.updateRelease("release_1", {
+    displayTitle: "ChordV 1.1.6 revised"
+  });
+
+  assert.deepEqual(adminEvents, ["release_center_updated", "release_center_updated"]);
 }
 
 async function testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank() {
@@ -23519,6 +23636,48 @@ async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
   assert.equal(result.artifacts[0]?.id, createdData?.id);
 }
 
+async function testCreateReleaseArtifactPublishesAdminRefreshEvent() {
+  const release = makeReleaseCenterTestRelease();
+  const createdArtifact = makeReleaseCenterTestArtifact({
+    id: "artifact_created",
+    isPrimary: true
+  });
+  const adminEvents: string[] = [];
+  const service = createReleaseCenterService({
+    adminRuntimeEventsService: {
+      publishReleaseCenterUpdated: () => {
+        adminEvents.push("release_center_updated");
+      }
+    },
+    prisma: {
+      release: {
+        findUnique: async () => release
+      },
+      $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+        task({
+          releaseArtifact: {
+            updateMany: async () => ({ count: 0 }),
+            create: async (payload: Record<string, any>) => ({
+              ...createdArtifact,
+              ...payload.data
+            })
+          }
+        })
+    }
+  });
+
+  const result = await service.createReleaseArtifact("release_1", {
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: createdArtifact.downloadUrl,
+    fileName: createdArtifact.fileName,
+    isPrimary: true
+  });
+
+  assert.equal(result.id, "release_1");
+  assert.deepEqual(adminEvents, ["release_center_updated"]);
+}
+
 async function testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls() {
   const release = makeReleaseCenterTestRelease();
   const createdArtifact = makeReleaseCenterTestArtifact({
@@ -28624,6 +28783,80 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
   assert.equal(panelSyncStarted, true, "team subscription create must persist panel sync before returning");
 }
 
+async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncStalls() {
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const publishedTargets: Array<Record<string, unknown>> = [];
+  let panelSyncStarted = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({
+      id: "team_1",
+      name: "Team",
+      status: "active"
+    }),
+    findCurrentTeamSubscription: async () => null,
+    ensurePlanExists: async () => ({
+      id: "plan_team",
+      name: "Team Plan",
+      scope: "team",
+      totalTrafficGb: 500,
+      renewable: true,
+      isActive: true
+    }),
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      }
+    },
+    publishSubscriptionUpdatedEvent: async (target: Record<string, unknown>) => {
+      publishedTargets.push(target);
+    },
+    prisma: {
+      subscription: {
+        create: async () => ({
+          id: "sub_team",
+          userId: null,
+          teamId: "team_1",
+          planId: "plan_team",
+          totalTrafficGb: 500,
+          usedTrafficGb: 0,
+          remainingTrafficGb: 500,
+          expireAt: new Date(Date.now() + 60_000),
+          state: "active",
+          renewable: true,
+          sourceAction: "created",
+          lastSyncedAt: now,
+          plan: { name: "Team Plan" },
+          user: null,
+          team: { name: "Team" },
+          nodeAccesses: []
+        })
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.createTeamSubscription("team_1", {
+      planId: "plan_team",
+      expireAt: new Date(Date.now() + 60_000).toISOString()
+    }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("createTeamSubscription waited for stalled panel sync")), 750);
+    })
+  ]);
+
+  assert.equal(result.id, "sub_team");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /3x-ui panel sync is still running in background/);
+  assert.deepEqual(publishedTargets, [
+    { subscriptionId: "sub_team", userId: null, teamId: "team_1", state: "active" }
+  ]);
+  assert.equal(panelSyncStarted, true, "team subscription create must not wait indefinitely for panel sync");
+}
+
 async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
   const updates: Array<Record<string, any>> = [];
   let durablePanelQueued = false;
@@ -29635,6 +29868,56 @@ async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
   assert.equal(panelSyncStarted, true, "team member create must persist panel sync before returning");
+}
+
+async function testCreateTeamMemberReturnsPendingWhenPanelSyncStalls() {
+  let panelSyncStarted = false;
+  let subscriptionEventPublished = false;
+  const service = createAdminSubscriptionService({
+    logger: {
+      warn: () => undefined
+    },
+    requireTeam: async () => ({ id: "team_1" }),
+    assertUserCanJoinTeam: async () => undefined,
+    findCurrentTeamSubscription: async () => ({
+      id: "sub_team",
+      teamId: "team_1",
+      state: "active"
+    }),
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncStarted = true;
+        return new Promise<number>(() => undefined);
+      }
+    },
+    publishSubscriptionUpdatedEvent: async () => {
+      subscriptionEventPublished = true;
+    },
+    requireTeamRecord: async (teamId: string) => ({ id: teamId }),
+    prisma: {
+      teamMember: {
+        create: async () => ({
+          id: "member_1",
+          teamId: "team_1",
+          userId: "user_1",
+          role: "member"
+        })
+      }
+    }
+  });
+
+  const result = await Promise.race([
+    service.createTeamMember("team_1", { userId: "user_1", role: "member" }),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("createTeamMember waited for stalled panel sync")), 750);
+    })
+  ]);
+
+  assert.equal((result as { id: string }).id, "team_1");
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.match(result.panelSyncMessage ?? "", /3x-ui panel sync is still running in background/);
+  assert.equal(panelSyncStarted, true, "team member create must not wait indefinitely for panel sync");
+  assert.equal(subscriptionEventPublished, true, "subscription state event should still publish after stalled panel sync is downgraded");
 }
 
 async function testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails() {
@@ -33463,6 +33746,7 @@ async function main() {
   await testAdminReleaseListAppliesFilters();
   await testCreateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testCreateReleaseDefaultsMissingMinimumVersionToVersion();
+  await testReleaseDraftMutationsPublishAdminRefreshEvent();
   await testUpdateReleaseFallsBackToVersionWhenDisplayTitleIsBlank();
   await testCreateReleaseRejectsPublishedStatusWithoutArtifactFlow();
   await testCreateReleaseWithInitialArtifactUsesSingleTransaction();
@@ -33774,6 +34058,7 @@ async function main() {
   await testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChanges();
   await testRuntimeComponentDeleteMapsLocalSaveFailure();
   await testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails();
+  await testCreateReleaseArtifactPublishesAdminRefreshEvent();
   await testCreateReleaseArtifactReturnsFallbackWhenReleaseRefreshStalls();
   await testCreateWindowsFullReplaceExternalArtifactAllowsNonZipUrlWhenExplicit();
   await testCreateReleaseArtifactMapsLocalSaveFailure();
@@ -33878,6 +34163,7 @@ async function main() {
   await testImageBedDeleteAllowsPlainPercentFilePath();
   await testImageBedDeleteRejectsMalformedPercentUrlPath();
   await testUpdateImageBedConfigDoesNotValidateExternalImageBed();
+  await testImageBedMutationsPublishAdminRefreshEvent();
   await testGetImageBedConfigMapsLocalReadFailure();
   await testGetImageBedConfigTimesOutSlowLocalRead();
   await testUpdateImageBedConfigMapsLocalSaveFailure();
@@ -33913,6 +34199,7 @@ async function main() {
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails();
   await testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls();
   await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails();
+  await testCreateTeamSubscriptionReturnsPendingWhenPanelSyncStalls();
   await testDisableUserReturnsPendingWhenPanelDisconnectFails();
   await testDisableUserReturnsBeforeStalledBackgroundPanelQueue();
   await testEnableUserReturnsPendingWhenPanelSyncStalls();
@@ -33928,6 +34215,7 @@ async function main() {
   await testCreateTeamReturnsPendingWhenRecordRefreshStalls();
   await testCreateTeamMemberKeepsMemberWhenTicketCleanupFails();
   await testCreateTeamMemberReturnsPendingWhenPanelSyncFails();
+  await testCreateTeamMemberReturnsPendingWhenPanelSyncStalls();
   await testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails();
   await testCreateTeamMemberReturnsPendingWhenSubscriptionLookupStalls();
   await testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails();

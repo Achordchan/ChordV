@@ -10,6 +10,7 @@ import type {
 import { PrismaService } from "./prisma.service";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { SUPPORT_TICKET_ATTACHMENT_MAX_BYTES } from "./upload-limits";
+import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 
 const IMAGE_BED_SETTING_KEY = "image-bed";
 const DEFAULT_IMAGE_BED_BASE_URL = "https://image.achord.cn";
@@ -57,7 +58,10 @@ export type UploadedImageBedFile = {
 export class ImageBedService {
   private readonly logger = new Logger(ImageBedService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
+  ) {}
 
   async getAdminConfig(): Promise<AdminImageBedConfigDto> {
     const config = await this.loadEffectiveConfig();
@@ -104,6 +108,7 @@ export class ImageBedService {
       throwLocalSaveAsServiceUnavailable(error, "图床配置保存失败，请稍后重试。");
     }
 
+    this.publishImageBedUpdatedBestEffort();
     return buildAdminImageBedConfigDto(parseStoredConfig(saved.value), saved.updatedAt ?? null);
   }
 
@@ -162,6 +167,7 @@ export class ImageBedService {
     const deleted = readStringArray(payload.deleted);
     const failed = readSanitizedImageBedErrorArray(payload.failed);
     const success = (payload.success === true || deleted.length > 0) && failed.length === 0;
+    this.publishImageBedUpdatedBestEffort();
     return {
       success,
       fileId: readString(payload.fileId) ?? normalizedPath,
@@ -173,6 +179,14 @@ export class ImageBedService {
             ? [sanitizeImageBedErrorDetail(readString(payload.message) ?? readString(payload.error)) ?? normalizedPath]
             : []
     };
+  }
+
+  private publishImageBedUpdatedBestEffort() {
+    try {
+      this.adminRuntimeEventsService?.publishImageBedUpdated();
+    } catch (error) {
+      this.logger.warn(`Image bed update saved, but admin image_bed_updated publish failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async uploadSupportTicketAttachment(

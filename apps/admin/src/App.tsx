@@ -558,8 +558,16 @@ export function App() {
       if (event.type === "version_updated") {
         setReleaseRefreshSignal((current) => current + 1);
       }
+      if (event.type === "release_center_updated" && sectionRef.current === "releases") {
+        setReleaseRefreshSignal((current) => current + 1);
+        return;
+      }
       if (event.type === "runtime_component_updated" && sectionRef.current === "runtimeComponents") {
         setRuntimeComponentRefreshSignal((current) => current + 1);
+        return;
+      }
+      if (event.type === "image_bed_updated" && sectionRef.current === "imageBed") {
+        setImageBedRefreshSignal((current) => current + 1);
         return;
       }
       void refreshDashboard({ silent: true });
