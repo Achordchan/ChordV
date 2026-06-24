@@ -328,10 +328,52 @@ body {
   border-radius: 10px;
 }
 
+.admin-ticket-attachment-card {
+  width: 142px;
+}
+
+.admin-ticket-attachment-thumb-frame {
+  position: relative;
+  width: 128px;
+  height: 84px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.admin-ticket-attachment-thumb-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.admin-ticket-attachment-image-state,
+.admin-ticket-attachment-preview-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  text-align: center;
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.admin-ticket-attachment-image-state--failed,
+.admin-ticket-attachment-preview-state--failed {
+  background: rgba(255, 247, 237, 0.94);
+  color: #9a3412;
+}
+
 .admin-ticket-attachment-preview-frame {
+  position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
+  min-height: 260px;
   max-height: min(72vh, 760px);
   overflow: auto;
   border: 1px solid rgba(148, 163, 184, 0.2);

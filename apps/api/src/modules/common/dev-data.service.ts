@@ -1720,7 +1720,7 @@ export class DevDataService implements OnModuleInit {
       const fallback: SubscriptionNodeAccessDto = {
         subscriptionId,
         nodeIds: fallbackNodes.map((node) => node.id),
-        nodes: fallbackNodes.map((node) => toNodeSummary(node)),
+        nodes: this.buildNodeAccessSummaries(subscriptionId, fallbackNodes, "fallback").nodes,
         revokedSessionCount,
         reasonCode: "node_access_revoked",
         reasonMessage: "Node access was updated locally; revoked nodes are invalid locally immediately.",
@@ -1755,7 +1755,7 @@ export class DevDataService implements OnModuleInit {
         return {
           subscriptionId,
           nodeIds: fallbackNodes.map((node) => node.id),
-          nodes: fallbackNodes.map((node) => toNodeSummary(node)),
+          nodes: this.buildNodeAccessSummaries(subscriptionId, fallbackNodes, "remove-only response").nodes,
           revokedSessionCount,
           reasonCode,
           reasonMessage,
@@ -1794,7 +1794,7 @@ export class DevDataService implements OnModuleInit {
       const fallback: SubscriptionNodeAccessDto = {
         subscriptionId,
         nodeIds: fallbackNodes.map((node) => node.id),
-        nodes: fallbackNodes.map((node) => toNodeSummary(node)),
+        nodes: this.buildNodeAccessSummaries(subscriptionId, fallbackNodes, "fallback").nodes,
         revokedSessionCount,
         reasonCode,
         reasonMessage,
@@ -1843,10 +1843,20 @@ export class DevDataService implements OnModuleInit {
       deduped = fallbackDeduped;
     }
 
+    const responseSummary = this.buildNodeAccessSummaries(
+      subscriptionId,
+      deduped.map((item) => item.node),
+      "response"
+    );
+    if (responseSummary.errorMessage) {
+      panelSyncStatus = "pending";
+      panelSyncMessage = [panelSyncMessage, responseSummary.errorMessage].filter(Boolean).join(" ");
+    }
+
     return {
       subscriptionId,
       nodeIds: deduped.map((item) => item.nodeId),
-      nodes: deduped.map((item) => toNodeSummary(item.node)),
+      nodes: responseSummary.nodes,
       revokedSessionCount,
       reasonCode,
       reasonMessage,
@@ -2440,6 +2450,28 @@ export class DevDataService implements OnModuleInit {
       throw new NotFoundException("订阅不存在");
     }
     return row;
+  }
+
+  private buildNodeAccessSummaries(
+    subscriptionId: string,
+    nodes: Array<Parameters<typeof toNodeSummary>[0]>,
+    context: string
+  ): { nodes: NodeSummaryDto[]; errorMessage: string | null } {
+    const summaries: NodeSummaryDto[] = [];
+    const errors: string[] = [];
+    for (const node of nodes) {
+      try {
+        summaries.push(toNodeSummary(node));
+      } catch (error) {
+        const message = readPanelSyncErrorMessage(error);
+        errors.push(message);
+        this.logger?.warn(`Node access saved, but ${context} node summary failed for ${subscriptionId}: ${message}`);
+      }
+    }
+    return {
+      nodes: summaries,
+      errorMessage: errors.length > 0 ? `node summary failed: ${errors.join("; ")}` : null
+    };
   }
 }
 

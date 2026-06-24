@@ -29,7 +29,8 @@ import type {
 } from "@chordv/shared";
 import { API_BASE, clearStoredAdminSession, getStoredAdminAccessToken, refreshAdminAccessToken, request } from "./base";
 
-const IMAGE_BED_MANAGE_TIMEOUT_MS = 8 * 1000;
+const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 * 1000;
+const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请稍后刷新文件列表确认结果。";
 const TICKET_ATTACHMENT_TIMEOUT_MS = 90 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
 const ADMIN_ACTION_TIMEOUT_MS = 60 * 1000;
@@ -457,6 +458,9 @@ export type FetchAdminImageBedFilesInput = {
   dir?: string;
   recursive?: boolean;
 };
+type AdminImageBedManageRequestOptions = RequestInit & {
+  timeoutMs?: number;
+};
 
 export async function fetchAdminImageBedConfig() {
   return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
@@ -472,6 +476,21 @@ export async function updateAdminImageBedConfig(input: UpdateAdminImageBedConfig
   });
 }
 
+async function requestAdminImageBedManage<T>(path: string, init?: AdminImageBedManageRequestOptions) {
+  try {
+    return await request<T>(path, {
+      ...init,
+      timeoutMs: IMAGE_BED_MANAGE_TIMEOUT_MS
+    });
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    if (/请求超时|AbortError|aborted|timeout|timed out/i.test(message)) {
+      throw new Error(IMAGE_BED_MANAGE_TIMEOUT_MESSAGE);
+    }
+    throw reason;
+  }
+}
+
 export async function fetchAdminImageBedFiles(input?: FetchAdminImageBedFilesInput) {
   const params = new URLSearchParams();
   if (input?.start !== undefined) params.set("start", String(input.start));
@@ -480,17 +499,14 @@ export async function fetchAdminImageBedFiles(input?: FetchAdminImageBedFilesInp
   if (input?.dir?.trim()) params.set("dir", input.dir.trim());
   if (input?.recursive !== undefined) params.set("recursive", String(input.recursive));
   const query = params.toString();
-  return request<AdminImageBedFileListDto>(`/admin/image-bed/files${query ? `?${query}` : ""}`, {
-    timeoutMs: IMAGE_BED_MANAGE_TIMEOUT_MS
-  });
+  return requestAdminImageBedManage<AdminImageBedFileListDto>(`/admin/image-bed/files${query ? `?${query}` : ""}`);
 }
 
 export async function deleteAdminImageBedFile(path: string, folder?: boolean) {
   const params = new URLSearchParams({ path });
   if (folder) params.set("folder", "true");
-  return request<DeleteAdminImageBedFileResultDto>(`/admin/image-bed/files?${params.toString()}`, {
-    method: "DELETE",
-    timeoutMs: IMAGE_BED_MANAGE_TIMEOUT_MS
+  return requestAdminImageBedManage<DeleteAdminImageBedFileResultDto>(`/admin/image-bed/files?${params.toString()}`, {
+    method: "DELETE"
   });
 }
 

@@ -8,7 +8,16 @@ import type {
   AdminTeamUsageRecordDto,
   AdminUserRecordDto
 } from "@chordv/shared";
-import { IconBolt, IconListDetails, IconMapPin, IconPencil, IconPlus, IconRefresh, IconUsers } from "@tabler/icons-react";
+import {
+  IconGaugeOff,
+  IconListDetails,
+  IconMapPin,
+  IconPencil,
+  IconPlugConnectedX,
+  IconPlus,
+  IconRefresh,
+  IconUsers
+} from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { ExpireAtController } from "../features/shared/ExpireAtController";
 import { MiniMetric } from "../features/shared/MiniMetric";
@@ -215,7 +224,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         loading={props.resetTrafficBusyKey === `${item.id}:all`}
                         disabled={props.resetTrafficBusyKey !== null}
                       >
-                        <IconBolt size={16} />
+                        <IconGaugeOff size={16} />
                       </ActionIcon>
                     </RowActions>
                   </Table.Td>
@@ -468,7 +477,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                                 size="xs"
                                                 color="orange"
                                                 variant="default"
-                                                leftSection={<IconRefresh size={14} />}
+                                                leftSection={<IconGaugeOff size={14} />}
                                                 onClick={() => props.onResetSubscriptionTraffic(currentSubscription.id, `${member.displayName} · ${team.name}`, member.userId)}
                                                 loading={props.resetTrafficBusyKey === `${currentSubscription.id}:${member.userId}`}
                                                 disabled={props.resetTrafficBusyKey !== null}
@@ -480,7 +489,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                                               size="xs"
                                               color="orange"
                                               variant="light"
-                                              leftSection={<IconBolt size={14} />}
+                                              leftSection={<IconPlugConnectedX size={14} />}
                                               onClick={() => props.onOpenKickMemberModal(team.id, member.id, member.displayName)}
                                               title="Team 范围：断开该成员在当前 Team 订阅下的连接"
                                             >

@@ -1045,16 +1045,28 @@ export function App() {
   }
 
   async function handleHeaderRefresh() {
-    await loadFullSnapshot();
-    if (sectionRef.current === "releases") {
-      setReleaseRefreshSignal((current) => current + 1);
-    } else if (sectionRef.current === "tickets") {
-      setTicketRefreshSignal((current) => current + 1);
-    } else if (sectionRef.current === "runtimeComponents") {
-      setRuntimeComponentRefreshSignal((current) => current + 1);
-    } else if (sectionRef.current === "imageBed") {
-      setImageBedRefreshSignal((current) => current + 1);
+    const currentSection = sectionRef.current;
+    if (currentSection === "overview") {
+      await loadFullSnapshot();
+      return;
     }
+    if (currentSection === "releases") {
+      setReleaseRefreshSignal((current) => current + 1);
+      return;
+    }
+    if (currentSection === "tickets") {
+      setTicketRefreshSignal((current) => current + 1);
+      return;
+    }
+    if (currentSection === "runtimeComponents") {
+      setRuntimeComponentRefreshSignal((current) => current + 1);
+      return;
+    }
+    if (currentSection === "imageBed") {
+      setImageBedRefreshSignal((current) => current + 1);
+      return;
+    }
+    await loadSectionData(currentSection, { force: true });
   }
 
   async function handleRetryPanelSyncJob(jobId: string) {

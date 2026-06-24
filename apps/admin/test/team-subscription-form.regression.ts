@@ -99,6 +99,28 @@ function testTeamMemberDisconnectCopyIsTeamScoped() {
   assert.match(modalSource, /只断开该成员在当前 Team 订阅下的连接/);
 }
 
+function testUserDisconnectActionsUseDisconnectIcon() {
+  const usersSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
+
+  assert.match(usersSource, /IconPlugConnectedX/);
+  assert.match(usersSource, /title="账号级：断开当前连接"[\s\S]{0,500}<IconPlugConnectedX size=\{16\} \/>/);
+  assert.match(usersSource, /title="账号级：断开当前连接，不移出团队"[\s\S]{0,500}<IconPlugConnectedX size=\{16\} \/>/);
+  assert.doesNotMatch(usersSource, /title="账号级：断开当前连接"[\s\S]{0,500}<IconRefresh size=\{16\} \/>/);
+  assert.doesNotMatch(usersSource, /title="账号级：断开当前连接，不移出团队"[\s\S]{0,500}<IconRefresh size=\{16\} \/>/);
+}
+
+function testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons() {
+  const subscriptionsSource = readFileSync(resolve(import.meta.dirname, "../src/pages/SubscriptionsPage.tsx"), "utf8");
+
+  assert.match(subscriptionsSource, /IconGaugeOff/);
+  assert.match(subscriptionsSource, /IconPlugConnectedX/);
+  assert.match(subscriptionsSource, /title="重置流量"[\s\S]{0,500}<IconGaugeOff size=\{16\} \/>/);
+  assert.match(subscriptionsSource, />\s*重置流量\s*<\/Button>[\s\S]{0,800}title="Team 范围：断开该成员在当前 Team 订阅下的连接"/);
+  assert.match(subscriptionsSource, /leftSection=\{<IconGaugeOff size=\{14\} \/>\}[\s\S]{0,600}>\s*重置流量\s*<\/Button>/);
+  assert.match(subscriptionsSource, /leftSection=\{<IconPlugConnectedX size=\{14\} \/>\}[\s\S]{0,600}>\s*断开本 Team 连接\s*<\/Button>/);
+  assert.doesNotMatch(subscriptionsSource, /IconBolt/);
+}
+
 testEmptyTeamSubscriptionFormDefaultsUsedTrafficToZero();
 testApplyTeamPlanKeepsUsedTraffic();
 testApplyMissingTeamPlanKeepsUsedTraffic();
@@ -106,5 +128,7 @@ testCreateTeamSubscriptionPayloadIncludesUsedTraffic();
 testCreateTeamSubscriptionPayloadDefaultsUsedTrafficToZero();
 testInlineTeamSubscriptionEditorExposesUsedTrafficInput();
 testTeamMemberDisconnectCopyIsTeamScoped();
+testUserDisconnectActionsUseDisconnectIcon();
+testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons();
 
 console.log("team subscription form regression checks passed");

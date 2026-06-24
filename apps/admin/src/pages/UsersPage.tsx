@@ -1,7 +1,17 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
 import type { AdminLeaseRevocationJobDto, AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
-import { IconListDetails, IconLock, IconLockOpen2, IconPencil, IconPlus, IconRefresh, IconTrash, IconUsers } from "@tabler/icons-react";
+import {
+  IconListDetails,
+  IconLock,
+  IconLockOpen2,
+  IconPencil,
+  IconPlugConnectedX,
+  IconPlus,
+  IconRefresh,
+  IconTrash,
+  IconUsers
+} from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
@@ -128,7 +138,7 @@ export function UsersPage(props: UsersPageProps) {
                           loading={props.actionBusyKey === `user-disconnect:${item.id}`}
                           disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${item.id}`}
                         >
-                          <IconRefresh size={16} />
+                          <IconPlugConnectedX size={16} />
                         </ActionIcon>
                         <ActionIcon
                           variant="subtle"
@@ -381,7 +391,7 @@ export function UsersPage(props: UsersPageProps) {
                                       onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
                                       title="账号级：断开当前连接，不移出团队"
                                     >
-                                      <IconRefresh size={16} />
+                                      <IconPlugConnectedX size={16} />
                                     </ActionIcon>
                                     <ActionIcon
                                       variant="subtle"

@@ -49,6 +49,7 @@ type TicketAttachmentPreview = {
   url: string;
   fileName: string;
 };
+type TicketAttachmentImageState = "loading" | "loaded" | "failed";
 
 const ADMIN_TICKET_REPLY_MAX_BODY_LENGTH = 4000;
 const DEFAULT_ADMIN_TICKET_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -631,18 +632,7 @@ export function TicketsPage(props: TicketsPageProps) {
                                           className="admin-ticket-attachment-preview-button"
                                           onClick={() => setPreviewAttachment({ url: attachment.url, fileName: attachment.fileName })}
                                         >
-                                          <Paper withBorder radius="md" p={6}>
-                                            <Stack gap={4}>
-                                              <img
-                                                src={attachment.url}
-                                                alt={attachment.fileName}
-                                                style={{ width: 128, height: 84, objectFit: "cover", borderRadius: 8 }}
-                                              />
-                                              <Text size="xs" lineClamp={1}>
-                                                {attachment.fileName}
-                                              </Text>
-                                            </Stack>
-                                          </Paper>
+                                          <TicketAttachmentThumbnail url={attachment.url} fileName={attachment.fileName} />
                                         </button>
                                       ))}
                                     </Group>
@@ -728,27 +718,124 @@ export function TicketsPage(props: TicketsPageProps) {
         centered
         size="xl"
       >
-        {previewAttachment ? (
-          <Stack gap="sm">
-            <div className="admin-ticket-attachment-preview-frame">
-              <img src={previewAttachment.url} alt={previewAttachment.fileName} />
-            </div>
-            <Group justify="flex-end">
-              <Button
-                component="a"
-                href={previewAttachment.url}
-                target="_blank"
-                rel="noreferrer"
-                variant="default"
-              >
-                打开原图
-              </Button>
-            </Group>
-          </Stack>
-        ) : null}
+        {previewAttachment ? <TicketAttachmentPreviewContent attachment={previewAttachment} /> : null}
       </Modal>
     </Stack>
   );
+}
+
+function TicketAttachmentThumbnail(props: { url: string; fileName: string }) {
+  const [imageState, setImageState] = useState<TicketAttachmentImageState>("loading");
+
+  useEffect(() => {
+    setImageState("loading");
+  }, [props.url]);
+
+  return (
+    <Paper withBorder radius="md" p={6} className="admin-ticket-attachment-card">
+      <Stack gap={4}>
+        <div className="admin-ticket-attachment-thumb-frame" aria-busy={imageState === "loading"}>
+          {imageState !== "failed" ? (
+            <img
+              src={props.url}
+              alt={props.fileName}
+              onLoad={() => setImageState("loaded")}
+              onError={() => setImageState("failed")}
+            />
+          ) : null}
+          {imageState === "loading" ? (
+            <div className="admin-ticket-attachment-image-state">
+              <Loader size="xs" />
+              <Text size="xs" c="dimmed">
+                加载中
+              </Text>
+            </div>
+          ) : null}
+          {imageState === "failed" ? (
+            <div className="admin-ticket-attachment-image-state admin-ticket-attachment-image-state--failed">
+              <Text size="xs" fw={600}>
+                缩略图加载失败
+              </Text>
+              <Text size="xs" c="dimmed">
+                点击查看原图
+              </Text>
+            </div>
+          ) : null}
+        </div>
+        <Text size="xs" lineClamp={1}>
+          {props.fileName}
+        </Text>
+      </Stack>
+    </Paper>
+  );
+}
+
+function TicketAttachmentPreviewContent(props: { attachment: TicketAttachmentPreview }) {
+  const [imageState, setImageState] = useState<TicketAttachmentImageState>("loading");
+  const [retryToken, setRetryToken] = useState(0);
+
+  useEffect(() => {
+    setImageState("loading");
+    setRetryToken(0);
+  }, [props.attachment.url]);
+
+  const previewUrl = retryToken === 0 ? props.attachment.url : appendImageRetryToken(props.attachment.url, retryToken);
+
+  return (
+    <Stack gap="sm">
+      <div className="admin-ticket-attachment-preview-frame" aria-busy={imageState === "loading"}>
+        {imageState !== "failed" ? (
+          <img
+            key={previewUrl}
+            src={previewUrl}
+            alt={props.attachment.fileName}
+            onLoad={() => setImageState("loaded")}
+            onError={() => setImageState("failed")}
+          />
+        ) : null}
+        {imageState === "loading" ? (
+          <div className="admin-ticket-attachment-preview-state">
+            <Loader size="sm" />
+            <Text size="sm" c="dimmed">
+              正在加载预览
+            </Text>
+          </div>
+        ) : null}
+        {imageState === "failed" ? (
+          <div className="admin-ticket-attachment-preview-state admin-ticket-attachment-preview-state--failed">
+            <Text fw={600}>预览加载失败</Text>
+            <Text size="sm" c="dimmed">
+              可以重试，或在新窗口打开原图。
+            </Text>
+          </div>
+        ) : null}
+      </div>
+      <Group justify="flex-end">
+        {imageState === "failed" ? (
+          <Button
+            variant="light"
+            onClick={() => {
+              setImageState("loading");
+              setRetryToken((current) => current + 1);
+            }}
+          >
+            重试
+          </Button>
+        ) : null}
+        <Button component="a" href={props.attachment.url} target="_blank" rel="noreferrer" variant="default">
+          打开原图
+        </Button>
+      </Group>
+    </Stack>
+  );
+}
+
+function appendImageRetryToken(url: string, retryToken: number) {
+  const hashIndex = url.indexOf("#");
+  const baseUrl = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+  const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
+  const separator = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${separator}previewRetry=${retryToken}${hash}`;
 }
 
 function translateTicketStatus(status: SupportTicketStatus) {
