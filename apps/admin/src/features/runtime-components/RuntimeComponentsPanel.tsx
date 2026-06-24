@@ -82,6 +82,7 @@ type RuntimeComponentsPanelProps = {
   onValidationChange: (componentId: string, next: AdminRuntimeComponentValidationDto | null) => void;
   onSavingChange: (next: boolean) => void;
   onMutationStart?: () => void;
+  onMutationCommit?: () => void;
   uploadMaxBytes?: number;
 };
 
@@ -99,6 +100,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     onValidationChange,
     onSavingChange,
     onMutationStart,
+    onMutationCommit,
     uploadMaxBytes = DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES
   } = props;
 
@@ -237,6 +239,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           : await createAdminRuntimeComponent(payload);
       }
 
+      onMutationCommit?.();
       onValidationChange(record.id, null);
       onComponentsChange((current) => upsertRuntimeComponent(current, record));
       forceCloseEditor();
@@ -265,6 +268,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     try {
       setVerifyingId(record.id);
       const result = await verifyAdminRuntimeComponent(record.id);
+      onMutationCommit?.();
       onValidationChange(record.id, result);
       onComponentsChange((current) => upsertRuntimeComponent(current, applyRuntimeComponentValidationToDelivery(record, result)));
       notifications.show({
@@ -306,6 +310,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     try {
       onSavingChange(true);
       await deleteAdminRuntimeComponent(record.id);
+      onMutationCommit?.();
       onValidationChange(record.id, null);
       onComponentsChange((current) => current.filter((item) => item.id !== record.id));
       notifications.show({

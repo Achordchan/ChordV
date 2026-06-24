@@ -80,6 +80,9 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
   if (isSupportTicketAttachmentUploadFailure(message)) {
     return message.replace(/^HTTP\s*\d+:\s*/i, "");
   }
+  if (/当前密码错误/i.test(message)) {
+    return message.replace(/^HTTP\s*\d+:\s*/i, "");
+  }
   if (/HTTP\s*401|Unauthorized/i.test(message)) {
     return "登录状态已失效，请重新登录。";
   }

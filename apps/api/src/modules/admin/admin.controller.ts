@@ -12,6 +12,7 @@ import {
   Put,
   Query,
   Req,
+  Res,
   Sse,
   UploadedFile,
   UseGuards,
@@ -29,6 +30,7 @@ import { DevDataService } from "../common/dev-data.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "../common/image-bed.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
+import { setRefreshCookie } from "../auth/auth-cookie";
 import {
   getAdminUploadLimits,
   RELEASE_ARTIFACT_MAX_UPLOAD_BYTES,
@@ -78,6 +80,7 @@ import {
   UpdateUserSecurityDto,
   UpdateUserDto
 } from "./admin.dto";
+import type { Response } from "express";
 
 type UploadedReleaseFile = {
   path: string;
@@ -147,8 +150,16 @@ export class AdminController {
   }
 
   @Put("me/security")
-  updateCurrentAdminSecurity(@Headers("authorization") authorization: string | undefined, @Body() body: UpdateCurrentAdminSecurityDto) {
-    return this.devDataService.updateCurrentAdminSecurity(authorization, body);
+  async updateCurrentAdminSecurity(
+    @Headers("authorization") authorization: string | undefined,
+    @Body() body: UpdateCurrentAdminSecurityDto,
+    @Res({ passthrough: true }) response?: Response
+  ) {
+    const session = await this.devDataService.updateCurrentAdminSecurity(authorization, body);
+    if ("refreshToken" in session) {
+      setRefreshCookie(response, session.refreshToken, session.refreshTokenExpiresAt);
+    }
+    return session;
   }
 
   @Get("users")

@@ -293,6 +293,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
               });
               void loadReleases();
             } else {
+              releaseMutationSeqRef.current += 1;
               setReleases((current) => upsertRelease(current, record));
               notifications.show({
                 color: "yellow",
@@ -304,6 +305,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
             return;
           }
         }
+        releaseMutationSeqRef.current += 1;
         setReleases((current) => upsertRelease(current, record));
         forceCloseReleaseEditor();
         notifications.show({
@@ -315,6 +317,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       }
 
       const record = await updateAdminRelease(releaseEditorId, buildUpdateReleasePayload(releaseForm));
+      releaseMutationSeqRef.current += 1;
       setReleases((current) => upsertRelease(current, record));
       forceCloseReleaseEditor();
       notifications.show({
@@ -366,6 +369,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     try {
       releaseMutationSeqRef.current += 1;
       const nextRecord = nextStatus === "published" ? await publishAdminRelease(record.id) : await unpublishAdminRelease(record.id);
+      releaseMutationSeqRef.current += 1;
       setReleases((current) => upsertRelease(current, nextRecord));
       notifications.show({
         color: "green",
@@ -398,6 +402,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     try {
       releaseMutationSeqRef.current += 1;
       await deleteAdminRelease(record.id);
+      releaseMutationSeqRef.current += 1;
       setReleases((current) => current.filter((item) => item.id !== record.id));
       notifications.show({
         color: "green",
@@ -583,6 +588,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
     try {
       releaseMutationSeqRef.current += 1;
       const record = await deleteAdminReleaseArtifact(releaseId, artifactId);
+      releaseMutationSeqRef.current += 1;
       setReleases((current) => upsertRelease(current, record));
       notifications.show({
         color: "green",

@@ -46,6 +46,8 @@ export function ImageBedPage(props: ImageBedPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [fileListError, setFileListError] = useState<string | null>(null);
   const [fileListErrorColor, setFileListErrorColor] = useState<"red" | "yellow">("red");
+  const configRequestSeqRef = useRef(0);
+  const configMutationSeqRef = useRef(0);
   const fileListRequestSeqRef = useRef(0);
   const fileListLoadingSeqRef = useRef<number | null>(null);
   const formDirtyRef = useRef(false);
@@ -73,12 +75,17 @@ export function ImageBedPage(props: ImageBedPageProps) {
   }
 
   async function loadConfig(options?: { silent?: boolean; preserveForm?: boolean; loadFilesAfter?: boolean }) {
+    const requestSeq = ++configRequestSeqRef.current;
+    const mutationSeqAtStart = configMutationSeqRef.current;
     try {
       if (!options?.silent) {
         setLoadingConfig(true);
         setError(null);
       }
       const nextConfig = await fetchAdminImageBedConfig();
+      if (requestSeq !== configRequestSeqRef.current || mutationSeqAtStart !== configMutationSeqRef.current) {
+        return null;
+      }
       const preserveForm =
         options?.preserveForm ?? Boolean(options?.silent && (formDirtyRef.current || savingRef.current || saving));
       const endpointChanged =
@@ -108,6 +115,9 @@ export function ImageBedPage(props: ImageBedPageProps) {
       }
       return nextConfig;
     } catch (reason) {
+      if (requestSeq !== configRequestSeqRef.current || mutationSeqAtStart !== configMutationSeqRef.current) {
+        return null;
+      }
       if (!options?.silent) {
         setError(readError(reason, "图床配置加载失败"));
       }
@@ -163,6 +173,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
       return;
     }
     savingRef.current = true;
+    configMutationSeqRef.current += 1;
     try {
       setSaving(true);
       const nextConfig = await updateAdminImageBedConfig({
@@ -172,6 +183,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
         uploadChannel: form.uploadChannel.trim() || null,
         channelName: form.channelName.trim() || null
       });
+      configMutationSeqRef.current += 1;
       setConfig(nextConfig);
       formDirtyRef.current = false;
       setForm({
@@ -219,9 +231,11 @@ export function ImageBedPage(props: ImageBedPageProps) {
       return;
     }
     savingRef.current = true;
+    configMutationSeqRef.current += 1;
     try {
       setSaving(true);
       const nextConfig = await updateAdminImageBedConfig({ apiToken: null });
+      configMutationSeqRef.current += 1;
       setConfig(nextConfig);
       formDirtyRef.current = false;
       setForm({

@@ -118,11 +118,20 @@ export function isAdminSessionExpiredMessage(message: string) {
   );
 }
 
-function isAccessTokenError(status: number, message: string) {
+function hasExplicitAdminSessionExpiredSignal(message: string) {
   return (
-    status === 401 ||
-    isAdminSessionExpiredMessage(message)
+    isAdminSessionExpiredMessage(message) ||
+    message.includes("缺少登录凭证") ||
+    message.includes("登录凭证无效") ||
+    message.includes("登录已失效") ||
+    message.includes("登录状态已过期") ||
+    message.includes("登录状态已失效") ||
+    message.includes("账号不存在，请重新登录")
   );
+}
+
+function isAccessTokenError(status: number, message: string) {
+  return status === 401 && hasExplicitAdminSessionExpiredSignal(message);
 }
 
 async function requestOnce(path: string, init?: RequestOptions, useAuth = true, accessTokenOverride?: string) {

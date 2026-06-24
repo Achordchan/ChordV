@@ -114,6 +114,9 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
       onMutationStart={() => {
         runtimeMutationSeqRef.current += 1;
       }}
+      onMutationCommit={() => {
+        runtimeMutationSeqRef.current += 1;
+      }}
     />
   );
 }
