@@ -117,7 +117,7 @@ export function isUncertainRequestFailure(message: string) {
   return (
     UNCERTAIN_REQUEST_PATTERN.test(message) ||
     isServiceUnavailableMessage(message) ||
-    /still being processed|still running in background|running in background|background retry|queued for background|retry shortly|partial|partially|暂不可用|未确认完成|状态不确定|正在处理|并发|部分成功|部分完成/i.test(message)
+    /still being processed|still running in background|running in background|background retry|queued for background|retry shortly|partial|partially|暂不可用|未确认完成|状态不确定|正在处理|仍在处理|并发|部分成功|部分完成/i.test(message)
   );
 }
 

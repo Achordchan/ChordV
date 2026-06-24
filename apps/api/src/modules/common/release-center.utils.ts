@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import { BadRequestException, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
@@ -327,8 +327,12 @@ export function assertReleaseArtifactTypeAllowed(platform: PlatformTarget, type:
 export async function ensureFileReadable(filePath: string) {
   try {
     await fs.access(filePath);
-  } catch {
-    throw new NotFoundException("安装包文件不存在或已丢失");
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new NotFoundException("安装包文件不存在或已丢失");
+    }
+    throw new ServiceUnavailableException("安装包文件暂不可读，请检查服务器磁盘、目录权限或文件存储状态。");
   }
 }
 

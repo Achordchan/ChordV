@@ -681,11 +681,11 @@ async function main() {
     assert.deepEqual(
       await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1", {
         method: "PATCH",
-        body: { sha256: "" }
+        body: { fileName: "ChordV_1.1.7_x64-full.zip" }
       }),
       {
         status: 200,
-        body: { id: "release_1", artifactId: "artifact_1", artifact: { sha256: "" } }
+        body: { id: "release_1", artifactId: "artifact_1", artifact: { fileName: "ChordV_1.1.7_x64-full.zip" } }
       }
     );
     assert.deepEqual(
@@ -991,7 +991,7 @@ async function main() {
           size: 16
         }
       },
-      { route: "release-artifact-update", value: "release_1:artifact_1", body: { sha256: "" } },
+      { route: "release-artifact-update", value: "release_1:artifact_1", body: { fileName: "ChordV_1.1.7_x64-full.zip" } },
       { route: "release-artifact-delete", value: "release_1:artifact_1" },
       {
         route: "release-artifact-replace-upload",

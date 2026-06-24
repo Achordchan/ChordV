@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readError } from "../src/utils/admin-filters";
+import { isPotentiallyCompletedMutationFailure, readError } from "../src/utils/admin-filters";
 
 function backendError(statusCode: number, message: string) {
   return new Error(JSON.stringify({ statusCode, message }));
@@ -53,10 +53,18 @@ function testReadErrorKeepsGenericBadRequestFallback() {
   assert.equal(message, "提交内容不完整或格式不正确，请检查后重试。");
 }
 
+function testImageBedManageTimeoutIsUncertainMutationFailure() {
+  assert.equal(
+    isPotentiallyCompletedMutationFailure("图床管理请求仍在处理，请稍后刷新文件列表确认结果。"),
+    true
+  );
+}
+
 testReadErrorPreservesImageBedProviderHttpError();
 testReadErrorPreservesImageBedTimeout();
 testReadErrorKeepsGenericServiceUnavailableFallback();
 testReadErrorPreservesSpecificBadRequestDetail();
 testReadErrorKeepsGenericBadRequestFallback();
+testImageBedManageTimeoutIsUncertainMutationFailure();
 
 console.log("admin filter regression checks passed");

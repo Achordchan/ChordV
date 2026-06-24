@@ -544,7 +544,7 @@ export class AdminNodeService {
           return;
         }
         reject(
-          new BadRequestException(
+          new ServiceUnavailableException(
             `3x-ui inbound list read timed out after ${readListNodePanelInboundsBudgetMs()}ms; panel may be offline or too slow`
           )
         );

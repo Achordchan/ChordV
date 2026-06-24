@@ -3327,6 +3327,58 @@ async function testReleaseDownloadMissingUploadedFileReturnsNotFound() {
   }
 }
 
+async function testReleaseDownloadUnreadableUploadedFileReturnsServiceUnavailable() {
+  const originalAccess = fsForPatch.access;
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-unreadable-download-"));
+  const storedFilePath = path.join("release_1", "artifact_1", "unreadable.zip");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  (fsForPatch as any).access = async () => {
+    throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+  };
+  try {
+    const service = createReleaseCenterService({
+      prisma: {
+        releaseArtifact: {
+          findUnique: async () => ({
+            id: "artifact_1",
+            releaseId: "release_1",
+            source: "uploaded",
+            type: "zip",
+            deliveryMode: "desktop_full_replace",
+            downloadUrl: "/api/downloads/releases/artifact_1",
+            defaultMirrorPrefix: null,
+            allowClientMirror: false,
+            fileName: "ChordV.zip",
+            storedFilePath,
+            fileSizeBytes: 1n,
+            fileHash: "a".repeat(64),
+            isPrimary: true,
+            isFullPackage: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            release: { status: "published" }
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.getReleaseArtifactDownloadDescriptor("artifact_1"),
+      ServiceUnavailableException,
+      "unreadable uploaded release artifacts must return a controlled 503 instead of pretending the file is missing"
+    );
+  } finally {
+    (fsForPatch as any).access = originalAccess;
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function testRuntimeDownloadRejectsDisabledComponents() {
   const service = createRuntimeComponentsService({
     prisma: {
@@ -3415,6 +3467,48 @@ async function testRuntimeDownloadMissingUploadedFileReturnsNotFound() {
       "missing uploaded runtime components must return a controlled 404 instead of leaking filesystem errors"
     );
   } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testRuntimeDownloadUnreadableUploadedFileReturnsServiceUnavailable() {
+  const originalAccess = fsForPatch.access;
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-runtime-unreadable-download-"));
+  const storedFilePath = path.join("component_1", "unreadable-xray.exe");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  (fsForPatch as any).access = async () => {
+    throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+  };
+  try {
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            source: "uploaded",
+            storedFilePath,
+            enabled: true,
+            fileName: "xray.exe",
+            fileSizeBytes: 1n,
+            fileHash: "a".repeat(64),
+            expectedHash: "a".repeat(64)
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.getRuntimeComponentDownloadDescriptor("component_1"),
+      ServiceUnavailableException,
+      "unreadable uploaded runtime components must return a controlled 503 instead of pretending the file is missing"
+    );
+  } finally {
+    (fsForPatch as any).access = originalAccess;
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
     } else {
@@ -17557,7 +17651,8 @@ async function testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout() {
           panelUsername: "admin",
           panelPassword: "password"
         }),
-      /inbound list read timed out/
+      (error) => error instanceof ServiceUnavailableException && /inbound list read timed out/.test(error.message),
+      "slow panel inbound reads must return controlled 503 instead of a validation-style 400"
     );
     assert.equal(listStarted, true, "3x-ui inbound list read should still be attempted");
     assert.equal(Date.now() - startedAt < 1000, true, "inbound list should fail on the admin budget instead of the xui default timeout");
@@ -31856,10 +31951,12 @@ async function main() {
   await testReleaseDownloadRejectsDraftArtifacts();
   await testReleaseDownloadAllowsUploadedArtifactWithStaleMetadata();
   await testReleaseDownloadMissingUploadedFileReturnsNotFound();
+  await testReleaseDownloadUnreadableUploadedFileReturnsServiceUnavailable();
   await testReleaseDownloadMapsSendFileMissingToNotFound();
   await testRuntimeDownloadRejectsDisabledComponents();
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
   await testRuntimeDownloadMissingUploadedFileReturnsNotFound();
+  await testRuntimeDownloadUnreadableUploadedFileReturnsServiceUnavailable();
   await testRuntimeDownloadMapsSendFileFailureToServiceUnavailable();
   await testRuntimeDownloadIgnoresSendFileFailureAfterHeadersSent();
   await testUpdateReleaseDelegatesToReleaseCenter();
