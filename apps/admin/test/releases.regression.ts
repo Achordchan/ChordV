@@ -188,6 +188,19 @@ function testReleaseUncertainMutationsRefreshInsteadOfHardFailing() {
   }
 }
 
+function testSaveArtifactCommitsMutationSeqBeforeLocalState() {
+  const body = extractAsyncFunctionBody(releasesPageSource, "saveArtifact");
+  const firstMutationIndex = body.indexOf("releaseMutationSeqRef.current += 1;");
+  const recordGuardIndex = body.indexOf("if (!record)");
+  const localStateIndex = body.indexOf("setReleases((current) => upsertRelease(current, record));");
+  const commitIndex = body.lastIndexOf("releaseMutationSeqRef.current += 1;", localStateIndex);
+
+  assert.ok(firstMutationIndex >= 0, "saveArtifact should mark mutation start before artifact API calls");
+  assert.ok(recordGuardIndex > firstMutationIndex, "saveArtifact should validate API result after mutation start");
+  assert.ok(commitIndex > recordGuardIndex, "saveArtifact should mark mutation commit after artifact API success");
+  assert.ok(localStateIndex > commitIndex, "saveArtifact should commit mutation seq before updating local release state");
+}
+
 function testCreateReleaseIsBlockedWhileAnotherMutationIsSaving() {
   assert.match(
     releasesPageSource,
@@ -212,6 +225,7 @@ testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
 testReleaseArtifactLongDownloadUrlDoesNotForceWideCards();
 testReleaseMutationsAlwaysReleaseSavingState();
 testReleaseUncertainMutationsRefreshInsteadOfHardFailing();
+testSaveArtifactCommitsMutationSeqBeforeLocalState();
 testCreateReleaseIsBlockedWhileAnotherMutationIsSaving();
 
 console.log("release admin regression checks passed");

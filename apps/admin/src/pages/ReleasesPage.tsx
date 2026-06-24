@@ -558,6 +558,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
       if (!record) {
         throw new Error("安装包没有保存成功，请重新选择文件后再试。");
       }
+      releaseMutationSeqRef.current += 1;
       setReleases((current) => upsertRelease(current, record));
       forceCloseArtifactEditor();
       notifications.show({
