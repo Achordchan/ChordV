@@ -84,7 +84,7 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
                 onChange={(event) =>
                   props.onChange({
                     ...props.form,
-                    externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "auto"
+                    externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "external_download"
                   })
                 }
                 disabled={props.saving}

@@ -29484,7 +29484,7 @@ async function testAdminReplySupportTicketMapsLocalSaveFailure() {
   );
 }
 
-async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
+async function testAdminReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   let cleanupCalls = 0;
@@ -29536,28 +29536,25 @@ async function testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply(
     }
   });
 
-  const result = await service.replyAdminSupportTicketWithAttachment(
-    "ticket_1",
-    { body: "please see attachment" },
-    {
-      path: path.join(tmpdir(), "upload-failure.png"),
-      originalname: "upload-failure.png",
-      mimetype: "image/png",
-      size: 1234
-    },
-    "admin_1"
+  await assert.rejects(
+    () =>
+      service.replyAdminSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "please see attachment" },
+        {
+          path: path.join(tmpdir(), "upload-failure.png"),
+          originalname: "upload-failure.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "admin_1"
+      ),
+    (error) => error instanceof BadRequestException && /图床 API Token 未配置/.test(error.message),
+    "admin attachment upload failures must reject instead of saving a text-only reply"
   );
 
-  assert.equal((result as { id: string }).id, "ticket_1");
-  assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /图床 API Token 未配置/);
-  const message = writes.find((item) => item.kind === "message")?.data;
-  assert.match(String(message?.body), /please see attachment/);
-  assert.match(String(message?.body), /附件上传失败/);
-  assert.doesNotMatch(String(message?.body), /图床 API Token|Image bed API token|fetch failed/i);
-  assert.equal(writes.some((item) => item.kind === "attachment"), false);
-  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_user");
-  assert.equal(publishCalls, 1, "admin ticket reply should still publish after text reply is saved");
+  assert.deepEqual(writes, [], "failed admin attachment upload must not write a message, attachment, or ticket status change");
+  assert.equal(publishCalls, 0, "failed admin attachment upload must not publish ticket updates");
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
@@ -30848,7 +30845,7 @@ async function testClientReplySupportTicketAttachmentMapsTransientPrismaFailure(
   assert.deepEqual(deletedUploads, ["support-tickets/client-transient.png"]);
 }
 
-async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply() {
+async function testClientReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply() {
   const writes: Array<{ kind: string; data: Record<string, unknown> }> = [];
   let publishCalls = 0;
   let cleanupCalls = 0;
@@ -30918,29 +30915,25 @@ async function testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply
     }
   });
 
-  const result = await service.replyClientSupportTicketWithAttachment(
-    "ticket_1",
-    { body: "please see attachment" },
-    {
-      path: path.join(tmpdir(), "client-upload-failure.png"),
-      originalname: "client-upload-failure.png",
-      mimetype: "image/png",
-      size: 1234
-    },
-    "token"
+  await assert.rejects(
+    () =>
+      service.replyClientSupportTicketWithAttachment(
+        "ticket_1",
+        { body: "please see attachment" },
+        {
+          path: path.join(tmpdir(), "client-upload-failure.png"),
+          originalname: "client-upload-failure.png",
+          mimetype: "image/png",
+          size: 1234
+        },
+        "token"
+      ),
+    (error) => error instanceof BadRequestException && /图床 API Token 未配置/.test(error.message),
+    "client attachment upload failures must reject instead of saving a text-only reply"
   );
 
-  assert.equal((result as { id: string }).id, "ticket_1");
-  assert.equal(result.attachmentUploadStatus, "failed");
-  assert.match(result.attachmentUploadError ?? "", /图床 API Token 未配置/);
-  const message = writes.find((item) => item.kind === "message")?.data;
-  assert.match(String(message?.body), /please see attachment/);
-  assert.match(String(message?.body), /附件上传失败/);
-  assert.doesNotMatch(String(message?.body), /图床 API Token|Image bed API token|fetch failed/i);
-  assert.equal(writes.some((item) => item.kind === "attachment"), false);
-  assert.equal(writes.find((item) => item.kind === "ticket")?.data.status, "waiting_admin");
-  assert.equal(writes.some((item) => item.kind === "read"), true);
-  assert.equal(publishCalls, 1, "client ticket reply should still publish after text reply is saved");
+  assert.deepEqual(writes, [], "failed client attachment upload must not write a message, attachment, read state, or ticket status change");
+  assert.equal(publishCalls, 0, "failed client attachment upload must not publish ticket updates");
   assert.equal(cleanupCalls, 0, "there is no uploaded provider file to clean when upload itself fails");
 }
 
@@ -31575,7 +31568,7 @@ async function main() {
   await testAdminReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testAdminReplySupportTicketAttachmentMapsTransientPrismaFailure();
   await testAdminReplySupportTicketMapsLocalSaveFailure();
-  await testAdminReplySupportTicketAttachmentUploadFailureKeepsTextReply();
+  await testAdminReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply();
   await testAdminReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply();
   await testAdminReplySupportTicketKeepsSaveWhenPublishFails();
   await testAdminReplySupportTicketPublishesClientAndAdminEvents();
@@ -31601,7 +31594,7 @@ async function main() {
   await testClientReplySupportTicketMapsLocalSaveFailure();
   await testClientReplySupportTicketAttachmentCleansUploadWhenTransactionFails();
   await testClientReplySupportTicketAttachmentMapsTransientPrismaFailure();
-  await testClientReplySupportTicketAttachmentUploadFailureKeepsTextReply();
+  await testClientReplySupportTicketAttachmentUploadFailureRejectsWithoutWritingTextReply();
   await testClientReplySupportTicketAttachmentOnlyUploadFailureRejectsWithoutWritingReply();
   await testClientReplySupportTicketKeepsSaveWhenPublishFails();
   await testUploadedTempFileCleanupInterceptorDeletesTempFileOnError();

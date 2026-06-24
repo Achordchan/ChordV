@@ -12,7 +12,7 @@ function createInstance<T>(prototype: object, overrides: Record<string, unknown>
   return Object.assign(Object.create(prototype), overrides) as T & Record<string, unknown>;
 }
 
-function createImageBedService(baseUrl: string) {
+function createImageBedService(baseUrl: string, overrides: Record<string, unknown> = {}) {
   return createInstance<ImageBedService>(ImageBedService.prototype, {
     prisma: {
       systemSetting: {
@@ -24,7 +24,8 @@ function createImageBedService(baseUrl: string) {
           updatedAt: new Date("2026-01-01T00:00:00.000Z")
         })
       }
-    }
+    },
+    ...overrides
   });
 }
 
@@ -63,31 +64,40 @@ async function testListPreservesHttpStatusAndRedactsProviderError() {
 }
 
 async function testListPreservesBusinessFailureMessage() {
+  const warnings: string[] = [];
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ success: false, message: "bad token" }));
+    response.end(JSON.stringify({ success: false, message: "bad token image-bed-secret-token-123456" }));
   });
   const baseUrl = await listen(server);
 
   try {
-    const service = createImageBedService(baseUrl);
+    const service = createImageBedService(baseUrl, {
+      logger: {
+        warn: (message: string) => warnings.push(message)
+      }
+    });
 
     await assert.rejects(
       () => service.listAdminFiles(),
       (error) =>
         error instanceof BadGatewayException &&
-        /图床列表读取失败（HTTP 200）：bad token/i.test(error.message),
+        /图床列表读取失败（HTTP 200）：bad token \*\*\*/i.test(error.message) &&
+        !/image-bed-secret-token-123456/i.test(error.message),
       "image bed list business failures must preserve provider messages"
     );
+    assert.doesNotMatch(warnings.join(" "), /image-bed-secret-token-123456/i);
+    assert.match(warnings.join(" "), /bad token \*\*\*/i);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
 async function testUploadPreservesBusinessFailureMessage() {
+  const warnings: string[] = [];
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ success: false, message: "upload rejected" }));
+    response.end(JSON.stringify({ success: false, message: "upload rejected Authorization: Bearer upload-secret-token-123456" }));
   });
   const baseUrl = await listen(server);
   const tempDir = await mkdtemp(path.join(tmpdir(), "image-bed-fidelity-"));
@@ -95,7 +105,11 @@ async function testUploadPreservesBusinessFailureMessage() {
   await writeFile(filePath, "image");
 
   try {
-    const service = createImageBedService(baseUrl);
+    const service = createImageBedService(baseUrl, {
+      logger: {
+        warn: (message: string) => warnings.push(message)
+      }
+    });
 
     await assert.rejects(
       () =>
@@ -107,9 +121,12 @@ async function testUploadPreservesBusinessFailureMessage() {
         }),
       (error) =>
         error instanceof BadGatewayException &&
-        /图床上传失败（HTTP 200）：upload rejected/i.test(error.message),
+        /图床上传失败（HTTP 200）：upload rejected Authorization: Bearer \*\*\*/i.test(error.message) &&
+        !/upload-secret-token-123456/i.test(error.message),
       "image bed upload business failures must preserve provider messages"
     );
+    assert.doesNotMatch(warnings.join(" "), /upload-secret-token-123456/i);
+    assert.match(warnings.join(" "), /upload rejected Authorization: Bearer \*\*\*/i);
     assert.equal(existsSync(filePath), false, "failed image bed uploads must remove the temporary file");
   } finally {
     await rm(tempDir, { recursive: true, force: true });

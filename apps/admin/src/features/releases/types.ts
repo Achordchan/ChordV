@@ -15,7 +15,7 @@ export type ReleaseEditorFormState = {
   version: string;
   title: string;
   artifactSource: "uploaded" | "external";
-  externalDeliveryMode: "auto" | "windows_full_replace_zip";
+  externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
   fileName: string;
   selectedFile: File | null;
@@ -25,7 +25,7 @@ export type ReleaseEditorFormState = {
 export type ArtifactEditorFormState = {
   source: "uploaded" | "external";
   type: AdminReleaseArtifactType;
-  externalDeliveryMode: "auto" | "windows_full_replace_zip";
+  externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
   fileName: string;
   isPrimary: boolean;
@@ -46,7 +46,7 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     version: "",
     title: "",
     artifactSource: "external",
-    externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "auto",
+    externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
     fileName: "",
     selectedFile: null,
@@ -66,7 +66,7 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
       record.artifacts.find((artifact) => artifact.isPrimary)?.type === "zip" &&
       record.artifacts.find((artifact) => artifact.isPrimary)?.deliveryMode === "desktop_full_replace"
         ? "windows_full_replace_zip"
-        : "auto",
+        : "external_download",
     downloadUrl: record.artifacts.find((artifact) => artifact.isPrimary)?.originDownloadUrl ?? "",
     fileName: record.artifacts.find((artifact) => artifact.isPrimary)?.fileName ?? "",
     selectedFile: null,
@@ -110,7 +110,7 @@ export function emptyArtifactEditorForm(
   return {
     source,
     type,
-    externalDeliveryMode: type === "zip" ? "windows_full_replace_zip" : "auto",
+    externalDeliveryMode: type === "zip" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
     fileName: "",
     isPrimary: true,
@@ -125,7 +125,7 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
     externalDeliveryMode:
       record.source === "external" && record.type === "zip" && record.deliveryMode === "desktop_full_replace"
         ? "windows_full_replace_zip"
-        : "auto",
+        : "external_download",
     downloadUrl: record.source === "external" ? record.originDownloadUrl ?? record.downloadUrl : "",
     fileName: record.fileName ?? "",
     isPrimary: record.isPrimary,

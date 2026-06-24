@@ -61,7 +61,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
               platform: value as ReleaseEditorFormState["platform"],
               selectedFile: null,
               fileName: "",
-              externalDeliveryMode: value === "windows" ? "windows_full_replace_zip" : "auto"
+              externalDeliveryMode: value === "windows" ? "windows_full_replace_zip" : "external_download"
             })
           }
           disabled={props.editing || props.saving}
@@ -117,7 +117,7 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
                     onChange={(event) =>
                       props.onChange({
                         ...props.form,
-                        externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "auto"
+                        externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "external_download"
                       })
                     }
                     disabled={props.saving}

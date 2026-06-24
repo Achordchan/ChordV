@@ -895,16 +895,21 @@ function buildExternalArtifactPayload(
   platform: AdminReleasePlatform,
   downloadUrl: string,
   isPrimary: boolean,
-  externalDeliveryMode: "auto" | "windows_full_replace_zip" = "auto"
+  externalDeliveryMode: "external_download" | "windows_full_replace_zip" = "external_download"
 ) {
   const type =
     platform === "windows" && externalDeliveryMode === "windows_full_replace_zip"
       ? "zip"
+      : platform === "windows"
+        ? "external"
       : inferExternalArtifactType(platform, downloadUrl);
   return {
     source: "external" as const,
     type,
-    deliveryMode: deliveryModeForExternalArtifact(platform, type),
+    deliveryMode:
+      platform === "windows" && externalDeliveryMode === "external_download"
+        ? "external_download"
+        : deliveryModeForExternalArtifact(platform, type),
     downloadUrl: downloadUrl.trim(),
     fileName: inferFileNameFromUrl(downloadUrl),
     isPrimary

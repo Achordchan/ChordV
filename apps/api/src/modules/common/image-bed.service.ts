@@ -222,7 +222,7 @@ export class ImageBedService {
       const payload = parseJson(rawBody);
       if (payload && typeof payload === "object" && (payload as Record<string, unknown>).success === false) {
         const record = payload as Record<string, unknown>;
-        this.logger?.warn(`Image bed upload business failure: ${readString(record.message) ?? readString(record.error) ?? "unknown error"}`);
+        this.logger?.warn(`Image bed upload business failure: ${readImageBedBusinessFailureDetail(record)}`);
         throw new BadGatewayException(buildImageBedBusinessFailureMessage("上传", response.status, record));
       }
       const publicUrl = extractUploadedUrl(config.baseUrl, payload);
@@ -311,7 +311,7 @@ export class ImageBedService {
     }
     const record = payload as Record<string, unknown>;
     if (record.success === false && !options.allowBusinessFailure) {
-      this.logger?.warn(`Image bed business failure: ${readString(record.message) ?? readString(record.error) ?? "unknown error"}`);
+      this.logger?.warn(`Image bed business failure: ${readImageBedBusinessFailureDetail(record)}`);
       throw new BadGatewayException(buildImageBedBusinessFailureMessage(options.operationLabel ?? "请求", response.status, record));
     }
     return payload as T;
@@ -580,10 +580,14 @@ function buildImageBedHttpFailureMessage(operationLabel: string, status: number,
 }
 
 function buildImageBedBusinessFailureMessage(operationLabel: string, status: number, payload: Record<string, unknown>) {
-  const detail = sanitizeImageBedErrorDetail(readProviderErrorField(payload));
+  const detail = readImageBedBusinessFailureDetail(payload);
   return detail
     ? `图床${operationLabel}失败（HTTP ${status}）：${detail}`
     : `图床${operationLabel}失败（HTTP ${status}），图床返回 success=false 但未提供错误详情。`;
+}
+
+function readImageBedBusinessFailureDetail(payload: Record<string, unknown>) {
+  return sanitizeImageBedErrorDetail(readProviderErrorField(payload)) ?? "unknown error";
 }
 
 function readProviderErrorField(record: Record<string, unknown>): string | null {
