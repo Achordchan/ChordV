@@ -6310,6 +6310,39 @@ async function testLeaseRevocationJobQueuePersistsRevocationTarget() {
   assert.equal(upserts[0].create.reason, "node_access_revoked");
 }
 
+async function testNodeLeaseRevocationJobQueuePublishesSyncQueueEvent() {
+  const createdJobs: Array<Record<string, any>> = [];
+  const adminEvents: Array<Record<string, unknown>> = [];
+  const service = createRuntimeSessionService({
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
+    prisma: {
+      leaseRevocationJob: {
+        updateMany: async () => ({ count: 0 }),
+        findFirst: async () => null,
+        createMany: async (payload: Record<string, any>) => {
+          createdJobs.push(payload);
+          return { count: 1 };
+        }
+      }
+    }
+  });
+
+  await service.queueLeaseRevocationJobForNode("node_1", "node_disabled");
+
+  assert.equal(createdJobs.length, 1);
+  assert.equal(createdJobs[0]?.data?.nodeId, "node_1");
+  assert.equal(createdJobs[0]?.data?.subscriptionId, null);
+  assert.equal(createdJobs[0]?.data?.reason, "node_disabled");
+  assert.equal(adminEvents.length, 1, "node-level lease revocation jobs must refresh admin sync queue subscribers");
+  assert.equal(adminEvents[0]?.type, "sync_queue_updated");
+  assert.equal(adminEvents[0]?.nodeId, "node_1");
+  assert.equal(adminEvents[0]?.subscriptionId, null);
+}
+
 async function testLeaseRevocationJobRetriesFailedRevocation() {
   const updates: Array<Record<string, any>> = [];
   const adminEvents: Array<Record<string, unknown>> = [];
@@ -31139,6 +31172,7 @@ async function main() {
   await testNodePanelDisableContinuesWhenOneSubscriptionQueueStalls();
   await testNodePanelDeleteContinuesWhenOneSubscriptionQueueStalls();
   await testLeaseRevocationJobQueuePersistsRevocationTarget();
+  await testNodeLeaseRevocationJobQueuePublishesSyncQueueEvent();
   await testLeaseRevocationJobRetriesFailedRevocation();
   await testLeaseRevocationBatchContinuesAfterStalledJob();
   await testLeaseRevocationBatchContinuesWhenFailurePersistFails();

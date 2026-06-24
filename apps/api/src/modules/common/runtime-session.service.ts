@@ -2007,6 +2007,7 @@ export class RuntimeSessionService {
         lastError: null
       }
     });
+    this.publishSyncQueueUpdatedBestEffort({ nodeId, subscriptionId: null });
   }
 
   private async connectWithXui(
