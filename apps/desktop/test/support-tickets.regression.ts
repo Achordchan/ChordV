@@ -69,6 +69,15 @@ function testAttachmentFormRequestHasTimeout() {
   assert.match(source, /window\.clearTimeout\(timeout\);/);
 }
 
+function testJsonRequestsHaveTimeoutAndNetworkErrorNormalization() {
+  const source = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+  const normalizedErrorThrows = source.match(/throw normalizeNetworkRequestError\(error\);/g) ?? [];
+
+  assert.match(source, /const JSON_REQUEST_TIMEOUT_MS = 60_000;/);
+  assert.match(source, /}, JSON_REQUEST_TIMEOUT_MS\);/);
+  assert.equal(normalizedErrorThrows.length >= 2, true, "JSON and form requests must both normalize network failures");
+}
+
 function testVisibleTicketUpdateMarksDetailRead() {
   const runtimeActionsSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useRuntimeActions.ts"), "utf8");
   const supportTicketsSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useSupportTickets.ts"), "utf8");
@@ -89,6 +98,7 @@ function main() {
   testLocalUnreadPatchClearsWhenServerConfirmsRead();
   testLocalUnreadPatchKeepsServerUnreadVisible();
   testAttachmentFormRequestHasTimeout();
+  testJsonRequestsHaveTimeoutAndNetworkErrorNormalization();
   testVisibleTicketUpdateMarksDetailRead();
   console.log("desktop support tickets regression checks passed");
 }

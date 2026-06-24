@@ -15189,6 +15189,37 @@ async function testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupS
   assert.match(result.panelSyncMessage ?? "", /team subscription lookup before member kick is still running in background/);
 }
 
+async function testKickTeamMemberDoesNotQueueDisconnectBeforeDisableAccountSave() {
+  let teamSubscriptionLookupStarted = false;
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_1",
+      teamId: "team_1",
+      userId: "user_1",
+      role: "member"
+    }),
+    updateUser: async () => {
+      throw new Error("account disable local save failed");
+    },
+    findCurrentTeamSubscription: async () => {
+      teamSubscriptionLookupStarted = true;
+      return {
+        id: "sub_team",
+        teamId: "team_1",
+        state: "active",
+        remainingTrafficGb: 10,
+        expireAt: new Date(Date.now() + 86_400_000)
+      };
+    }
+  });
+
+  await assert.rejects(
+    () => service.kickTeamMember("team_1", "member_1", { disableAccount: true }),
+    /account disable local save failed/
+  );
+  assert.equal(teamSubscriptionLookupStarted, false, "disconnect queueing must not start before disable account local save succeeds");
+}
+
 async function testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails() {
   const service = createAdminSubscriptionService({
     logger: {
@@ -32421,6 +32452,7 @@ async function main() {
   await testKickTeamMemberQueuesDisableClientWithoutDirectXuiCall();
   await testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls();
   await testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupStalls();
+  await testKickTeamMemberDoesNotQueueDisconnectBeforeDisableAccountSave();
   await testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails();
   await testDisconnectUserQueuesCurrentSubscriptionDisconnectJobs();
   await testDisconnectUserReturnsPendingWhenUserRefreshFails();

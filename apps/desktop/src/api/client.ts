@@ -27,6 +27,7 @@ import { loadDesktopRuntimeEnvironment } from "../lib/runtime";
 
 const API_BASE = readApiBaseUrl();
 const DEFAULT_RELEASE_CHANNEL = "stable";
+const JSON_REQUEST_TIMEOUT_MS = 60_000;
 const FORM_REQUEST_TIMEOUT_MS = 60_000;
 
 export type ReleaseChannel = "stable";
@@ -135,13 +136,25 @@ async function requestWithMeta<T>(path: string, init?: RequestInit): Promise<Req
   }
 
   const startedAt = performance.now();
-  const response = await fetch(`${API_BASE}/api${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => {
+    controller.abort(new Error("璇锋眰瓒呮椂"));
+  }, JSON_REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api${path}`, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch (error) {
+    throw normalizeNetworkRequestError(error);
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const text = await response.text();

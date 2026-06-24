@@ -1650,18 +1650,18 @@ export class AdminSubscriptionService {
 
     let user: AdminUserRecordDto | null = null;
     let accountDisabled = false;
+    if (input.disableAccount) {
+      user = await this.updateUser(member.userId, { status: "disabled" });
+      accountDisabled = true;
+    }
     const disconnectPanelSync = await this.queueTeamMemberDisconnectAfterLocalSaveBestEffort({
       teamId,
       userId: member.userId
     });
     let panelSyncStatus: KickTeamMemberResultDto["panelSyncStatus"] = "pending";
     let panelSyncMessage: string | null = buildPanelSyncResult(disconnectPanelSync).panelSyncMessage;
-    if (input.disableAccount) {
-      user = await this.updateUser(member.userId, { status: "disabled" });
-      accountDisabled = true;
-      if (user.panelSyncStatus === "pending") {
-        panelSyncMessage = [panelSyncMessage, user.panelSyncMessage].filter(Boolean).join(" ");
-      }
+    if (user?.panelSyncStatus === "pending") {
+      panelSyncMessage = [panelSyncMessage, user.panelSyncMessage].filter(Boolean).join(" ");
     }
     let message = accountDisabled ? "账号已禁用，连接断开已进入后台处理。" : "成员连接断开已进入后台处理。";
     const team = await this.withTeamRecordRefreshBestEffort(
