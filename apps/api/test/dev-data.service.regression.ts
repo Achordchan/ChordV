@@ -2004,6 +2004,52 @@ async function testUpdateUserRoleRevokesExistingSessions() {
   assert.deepEqual(revokeCalls, ["user_1"], "role changes must not upgrade existing tokens in-place");
 }
 
+async function testUpdateUserCredentialChangePublishesAccountEvents() {
+  const adminEvents: Array<Record<string, unknown>> = [];
+  const clientEvents: Array<{ userId: string; event: Record<string, unknown> }> = [];
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      role: "user",
+      status: "active"
+    }),
+    prisma: {
+      user: {
+        update: async () => ({
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User",
+          role: "user",
+          status: "active",
+          lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+          maxConcurrentSessionsOverride: null
+        })
+      }
+    },
+    authSessionService: {
+      revokeAllUserSessions: async () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: (userId: string, event: Record<string, unknown>) => {
+        clientEvents.push({ userId, event });
+      }
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
+    requireAdminUserRecord: async (userId: string) => ({ id: userId })
+  });
+
+  await service.updateUser("user_1", { password: "new-password" });
+
+  assert.equal(adminEvents[0]?.type, "account_updated");
+  assert.deepEqual(clientEvents.map((entry) => ({ userId: entry.userId, type: entry.event.type, reasonCode: entry.event.reasonCode })), [
+    { userId: "user_1", type: "account_updated", reasonCode: "auth_invalid" }
+  ]);
+}
+
 async function testUpdateUserKeepsLocalSaveWhenSessionRevocationFails() {
   const updates: Array<Record<string, unknown>> = [];
   const service = createAdminSubscriptionService({
@@ -2034,6 +2080,51 @@ async function testUpdateUserKeepsLocalSaveWhenSessionRevocationFails() {
 
   assert.equal(updates.length, 1, "local user update must be saved before best-effort session revocation");
   assert.equal(result.id, "user_1");
+}
+
+async function testUpdateUserReconcilesActiveLeasesWhenOverrideChanges() {
+  const enforced: Array<{ userId: string; limit: number }> = [];
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({
+      id: "user_1",
+      role: "user",
+      status: "active",
+      maxConcurrentSessionsOverride: null
+    }),
+    requireAdminUserRecord: async (userId: string) => ({
+      id: userId,
+      email: "user@example.com",
+      displayName: "User",
+      role: "user",
+      status: "active",
+      lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+      maxConcurrentSessionsOverride: 1
+    }),
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async (userId: string, limit: number) => {
+        enforced.push({ userId, limit });
+      }
+    },
+    prisma: {
+      user: {
+        update: async () => ({
+          id: "user_1",
+          email: "user@example.com",
+          displayName: "User",
+          role: "user",
+          status: "active",
+          lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+          maxConcurrentSessionsOverride: 1
+        })
+      }
+    }
+  });
+
+  const result = await service.updateUser("user_1", { maxConcurrentSessionsOverride: 1 });
+
+  await waitUntil(() => enforced.length > 0);
+  assert.deepEqual(enforced, [{ userId: "user_1", limit: 1 }]);
+  assert.equal(result.panelSyncStatus, "pending");
 }
 
 async function testUpdateUserSecurityReturnsPendingWhenLeaseEnforcementStalls() {
@@ -24656,6 +24747,43 @@ async function testUpdateUserSecurityReconcilesActiveLeases() {
   assert.deepEqual(enforced, [{ userId: "user_1", limit: 1 }]);
 }
 
+async function testUpdateUserSecurityPublishesAccountEvents() {
+  const adminEvents: Array<Record<string, unknown>> = [];
+  const clientEvents: Array<{ userId: string; event: Record<string, unknown> }> = [];
+  const service = createAdminSubscriptionService({
+    ensureUserExists: async () => ({ id: "user_1" }),
+    requireAdminUserRecord: async (userId: string) => ({ id: userId }),
+    runtimeSessionService: {
+      enforceUserConcurrentLeaseLimit: async () => undefined
+    },
+    clientRuntimeEventsService: {
+      publishToUser: (userId: string, event: Record<string, unknown>) => {
+        clientEvents.push({ userId, event });
+      }
+    },
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        adminEvents.push(event);
+      }
+    },
+    prisma: {
+      user: {
+        update: async () => ({
+          id: "user_1",
+          maxConcurrentSessionsOverride: 1
+        })
+      }
+    }
+  });
+
+  await service.updateUserSecurity("user_1", { maxConcurrentSessionsOverride: 1 });
+
+  assert.equal(adminEvents[0]?.type, "account_updated");
+  assert.deepEqual(clientEvents.map((entry) => ({ userId: entry.userId, type: entry.event.type, reasonCode: entry.event.reasonCode })), [
+    { userId: "user_1", type: "account_updated", reasonCode: undefined }
+  ]);
+}
+
 async function testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails() {
   const updates: Array<Record<string, any>> = [];
   const service = createAdminSubscriptionService({
@@ -31357,7 +31485,10 @@ async function main() {
   await testImageBedAttachmentCleanupLogsBusinessDeleteFailure();
   await testImageBedAttachmentCleanupReturnsWhenDeleteStalls();
   await testUpdateImageBedConfigRejectsBaseUrlWithPath();
+  await testUpdateUserCredentialChangePublishesAccountEvents();
+  await testUpdateUserReconcilesActiveLeasesWhenOverrideChanges();
   await testUpdateUserSecurityReconcilesActiveLeases();
+  await testUpdateUserSecurityPublishesAccountEvents();
   await testUpdateUserSecurityKeepsLocalSaveWhenLeaseEnforcementFails();
   await testUpdateUserSecurityReturnsPendingWhenLeaseAndRefreshFail();
   await testUpdateUserSecurityReturnsPendingWhenEffectiveLimitLookupFailsAfterSave();

@@ -305,19 +305,35 @@ export class AdminSubscriptionService {
     } catch (error) {
       throw toAdminLocalSaveHttpError(error, "账号保存失败，请刷新用户列表后重试。");
     }
+    this.publishAdminAccountUpdatedBestEffort(userId);
     if (statusChanged && input.status === "disabled") {
       panelSync = mergePanelSyncResults(
         panelSync,
         await this.queueUserDisconnectAfterLocalSaveBestEffort(userId, "user_disabled", "user disable")
       );
+      this.publishClientAccountUpdatedBestEffort(userId, {
+        reasonCode: "account_disabled",
+        reasonMessage: "当前账号已被禁用，请重新登录。"
+      });
     }
 
     if (statusChanged && input.status === "active") {
       panelSync = mergePanelSyncResults(panelSync, await this.queueUserPanelAccessSyncAfterLocalSaveBestEffort(userId));
+      this.publishClientAccountUpdatedBestEffort(userId);
     }
 
     if ((roleChanged || passwordChanged) && !(statusChanged && input.status === "disabled")) {
       await this.revokeAllUserSessionsBestEffort(userId, "user credentials changed");
+      this.publishClientAccountUpdatedBestEffort(userId, {
+        reasonCode: "auth_invalid",
+        reasonMessage: "账号凭证已更新，请重新登录。"
+      });
+    } else if (!statusChanged && (input.displayName !== undefined || input.maxConcurrentSessionsOverride !== undefined)) {
+      this.publishClientAccountUpdatedBestEffort(userId);
+    }
+
+    if (input.maxConcurrentSessionsOverride !== undefined && !(statusChanged && input.status === "disabled")) {
+      panelSync = mergePanelSyncResults(panelSync, this.startUserConcurrentLeaseEnforcementInBackground(userId, updatedUser));
     }
 
     if (statusChanged && input.status) {
@@ -369,13 +385,22 @@ export class AdminSubscriptionService {
     } catch (error) {
       throw toAdminLocalSaveHttpError(error, "账号安全策略保存失败，请刷新用户列表后重试。");
     }
-    const panelSync = this.startSubscriptionFollowUpInBackground(`user concurrent lease enforcement for ${userId}`, async () => {
-      const effectiveLimit = row.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
+    this.publishAdminAccountUpdatedBestEffort(userId);
+    this.publishClientAccountUpdatedBestEffort(userId);
+    const panelSync = this.startUserConcurrentLeaseEnforcementInBackground(userId, row);
+    return this.withAdminUserRefreshBestEffort(userId, row, panelSync, "账号安全策略已更新。");
+  }
+
+  private startUserConcurrentLeaseEnforcementInBackground(
+    userId: string,
+    user: { maxConcurrentSessionsOverride: number | null }
+  ): PanelSyncBestEffortResult {
+    return this.startSubscriptionFollowUpInBackground(`user concurrent lease enforcement for ${userId}`, async () => {
+      const effectiveLimit = user.maxConcurrentSessionsOverride ?? (await this.resolveEffectiveConcurrentLeaseLimitForUser(userId));
       if (effectiveLimit !== null) {
         await this.runtimeSessionService.enforceUserConcurrentLeaseLimit(userId, effectiveLimit);
       }
     });
-    return this.withAdminUserRefreshBestEffort(userId, row, panelSync, "账号安全策略已更新。");
   }
 
   async resetSubscriptionTraffic(
@@ -2104,6 +2129,32 @@ export class AdminSubscriptionService {
     }
   }
 
+  private publishAdminAccountUpdatedBestEffort(userId: string) {
+    try {
+      this.adminRuntimeEventsService.publish({
+        type: "account_updated",
+        occurredAt: new Date().toISOString()
+      });
+    } catch (error) {
+      this.logger?.warn(`Local account change saved, but admin account_updated publish failed for ${userId}: ${readErrorMessage(error, "unknown error")}`);
+    }
+  }
+
+  private publishClientAccountUpdatedBestEffort(
+    userId: string,
+    input?: {
+      reasonCode?: "account_disabled" | "auth_invalid" | "session_invalid";
+      reasonMessage?: string;
+    }
+  ) {
+    this.tryPublishUserEvent(userId, {
+      type: "account_updated",
+      occurredAt: new Date().toISOString(),
+      ...(input?.reasonCode ? { reasonCode: input.reasonCode } : {}),
+      ...(input?.reasonMessage ? { reasonMessage: input.reasonMessage } : {})
+    });
+  }
+
   private startUserStatusFollowUpInBackground(userId: string, status: "active" | "disabled"): PanelSyncBestEffortResult {
     const timer = setTimeout(() => {
       void this.runUserStatusFollowUpInBackground(userId, status);
@@ -2216,12 +2267,6 @@ export class AdminSubscriptionService {
       }
       if (status === "disabled") {
         await this.revokeAllUserSessionsBestEffort(userId, "user disabled");
-        this.tryPublishUserEvent(userId, {
-          type: "account_updated",
-          occurredAt: new Date().toISOString(),
-          reasonCode: "account_disabled",
-          reasonMessage: "当前账号已禁用，请重新登录。"
-        });
       }
     } catch (error) {
       this.logger?.warn(`User status follow-up failed for ${userId}: ${readErrorMessage(error, "unknown error")}`);

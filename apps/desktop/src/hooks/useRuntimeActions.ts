@@ -509,7 +509,9 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       const shouldSyncForegroundState =
         eventType === "subscription_updated" ||
         eventType === "node_access_updated" ||
+        eventType === "account_updated" ||
         eventType === "announcement_updated";
+      const isAuthInvalidEvent = event.reasonCode === "auth_invalid" || event.reasonCode === "session_invalid";
 
       if (eventType === "keepalive") {
         options.setServerProbe((current) => ({
@@ -518,6 +520,22 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           checkedAt: Date.now(),
           errorMessage: null
         }));
+      }
+
+      if (isAuthInvalidEvent) {
+        const recoveredSession = await options.recoverSessionAfterUnauthorized();
+        const recoveredAccessToken = recoveredSession?.accessToken ?? options.getCurrentAccessToken();
+        if (recoveredAccessToken) {
+          await syncForegroundState(recoveredAccessToken);
+          return;
+        }
+        await options.clearSession(true);
+        options.notify({
+          color: "yellow",
+          title: "登录已失效",
+          message: event.reasonMessage ?? "账号信息已更新，请重新登录。"
+        });
+        return;
       }
 
       if (

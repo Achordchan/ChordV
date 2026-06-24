@@ -89,6 +89,7 @@ export function createClientRuntimeFallbackRefreshEventTypes(includeVersion: boo
   return [
     "subscription_updated",
     "node_access_updated",
+    "account_updated",
     "announcement_updated",
     "policy_updated",
     "ticket_updated",

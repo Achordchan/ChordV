@@ -47,6 +47,7 @@ function testFallbackRefreshIncludesPolicyUpdates() {
   assert.deepEqual(createClientRuntimeFallbackRefreshEventTypes(false), [
     "subscription_updated",
     "node_access_updated",
+    "account_updated",
     "announcement_updated",
     "policy_updated",
     "ticket_updated"
@@ -54,6 +55,7 @@ function testFallbackRefreshIncludesPolicyUpdates() {
   assert.deepEqual(createClientRuntimeFallbackRefreshEventTypes(true), [
     "subscription_updated",
     "node_access_updated",
+    "account_updated",
     "announcement_updated",
     "policy_updated",
     "ticket_updated",
