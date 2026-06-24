@@ -1518,15 +1518,21 @@ export function App() {
   async function openNodeAccessEditor(subscriptionId: string, ownerLabel: string) {
     const requestSeq = nodeAccessRequestSeqRef.current + 1;
     nodeAccessRequestSeqRef.current = requestSeq;
+    setNodeAccessEditor({ subscriptionId, ownerLabel });
+    setNodeAccessSelection([]);
+    setNodeAccessLoading(true);
     try {
-      setNodeAccessLoading(true);
       const result = await getSubscriptionNodeAccess(subscriptionId);
       if (nodeAccessRequestSeqRef.current !== requestSeq) {
         return;
       }
       setNodeAccessSelection(result.nodeIds);
-      setNodeAccessEditor({ subscriptionId, ownerLabel });
     } catch (reason) {
+      if (nodeAccessRequestSeqRef.current !== requestSeq) {
+        return;
+      }
+      setNodeAccessEditor(null);
+      setNodeAccessSelection([]);
       const message = readError(reason, "加载节点授权失败");
       if (ensureAuthenticated(message)) {
         return;

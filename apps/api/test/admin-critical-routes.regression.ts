@@ -88,6 +88,8 @@ const devDataServiceStub = {
   convertPersonalSubscriptionToTeam: async (subscriptionId: string, body: unknown) =>
     record("subscription-convert-team", subscriptionId, body),
   getSubscriptionNodeAccess: async (subscriptionId: string) => record("subscription-nodes-get", subscriptionId),
+  updateSubscriptionNodeAccess: async (subscriptionId: string, body: unknown) =>
+    record("subscription-nodes-update", subscriptionId, body),
   listAdminTeams: async () => [record("teams-list", "all")],
   createTeam: async (body: unknown) => record("team-create", "new", body),
   updateTeam: async (teamId: string, body: unknown) => record("team-update", teamId, body),
@@ -443,6 +445,13 @@ async function main() {
       201
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/subscriptions/subscription_1/nodes", { method: "GET" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/subscriptions/subscription_1/nodes", {
+        method: "PUT",
+        body: { nodeIds: ["node_1"] }
+      })).status,
+      200
+    );
     assert.equal((await requestJson(baseUrl, "/api/admin/teams", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/teams", { body: { name: "UAT Team", ownerUserId: "user_1" } })).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/teams/team_1", { method: "PATCH", body: { status: "disabled" } })).status, 200);
@@ -613,8 +622,8 @@ async function main() {
       201
     );
 
-    const adminCalls = calls.slice(0, 48);
-    const clientCalls = calls.slice(48);
+    const adminCalls = calls.slice(0, 49);
+    const clientCalls = calls.slice(49);
 
     assert.deepEqual(
       adminCalls,
@@ -654,6 +663,7 @@ async function main() {
         { route: "subscription-update", value: "subscription_1", body: { state: "paused" } },
         { route: "subscription-convert-team", value: "subscription_1", body: { targetTeamId: "team_1" } },
         { route: "subscription-nodes-get", value: "subscription_1" },
+        { route: "subscription-nodes-update", value: "subscription_1", body: { nodeIds: ["node_1"] } },
         { route: "teams-list", value: "all" },
         { route: "team-create", value: "new", body: { name: "UAT Team", ownerUserId: "user_1" } },
         { route: "team-update", value: "team_1", body: { status: "disabled" } },
