@@ -77,6 +77,8 @@ function extractBlockAfter(marker: string) {
 
 const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
+const submitDrawerBody = extractFunctionBody("submitDrawer");
+const handleSessionExpiredStateBody = extractBlockAfter("function handleSessionExpiredState()");
 const adminRuntimeEventsBody = extractBlockAfter("return subscribeAdminRuntimeEvents((event) =>");
 
 function testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst() {
@@ -169,11 +171,49 @@ function testGenericAdminRuntimeEventsRefreshCurrentSection() {
   );
 }
 
+function testSessionExpiredClearsBusyRefs() {
+  const refs = [
+    "adminSecuritySavingRef",
+    "drawerBusyRef",
+    "deleteNodeSubmittingRef",
+    "kickSubmittingRef",
+    "resetTrafficBusyRef",
+    "convertSubmittingRef",
+    "entityActionBusyRef",
+    "probingBusyRef",
+    "refreshingNodeRef",
+    "panelSyncRetryBusyRef",
+    "leaseRevocationRetryBusyRef",
+    "policySavingRef",
+    "nodeAccessSavingRef",
+    "teamProfileBusyRef",
+    "teamMemberBusyRef",
+    "teamSubscriptionBusyRef"
+  ];
+
+  for (const ref of refs) {
+    assert.match(handleSessionExpiredStateBody, new RegExp(`${ref}\\.current\\s*=`), `${ref} should be reset on session expiry`);
+  }
+}
+
+function testSubscriptionCreateRequiresExpireAtBeforeRequest() {
+  const personalBranch = extractBranchBody(submitDrawerBody, 'drawer.type === "subscription-create"');
+  assert.match(personalBranch, /const expireAt = readRequiredExpireAt\(subscriptionCreateForm\.expireAt\);/);
+  assert.match(personalBranch, /if \(!expireAt\) {\s*return;\s*}/);
+  assert.doesNotMatch(personalBranch, /new Date\(\)\.toISOString\(\)/);
+
+  const teamBranch = extractBranchBody(submitDrawerBody, 'drawer.type === "team-subscription" && drawer.parentId');
+  assert.match(teamBranch, /const expireAt = readRequiredExpireAt\(teamSubscriptionForm\.expireAt\);/);
+  assert.match(teamBranch, /buildCreateTeamSubscriptionPayload\(teamSubscriptionForm, expireAt\)/);
+}
+
 testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst();
 testOverviewKeepsFullSnapshotRefresh();
 testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();
 testCriticalSnapshotSectionsStayLocalInSectionLoader();
 testGenericAdminRuntimeEventsRefreshCurrentSection();
+testSessionExpiredClearsBusyRefs();
+testSubscriptionCreateRequiresExpireAtBeforeRequest();
 
 console.log("admin app header refresh regression checks passed");

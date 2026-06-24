@@ -714,6 +714,22 @@ export function App() {
 
   function handleSessionExpiredState() {
     clearAdminSession();
+    adminSecuritySavingRef.current = false;
+    drawerBusyRef.current = false;
+    deleteNodeSubmittingRef.current = false;
+    kickSubmittingRef.current = false;
+    resetTrafficBusyRef.current = false;
+    convertSubmittingRef.current = false;
+    entityActionBusyRef.current = null;
+    probingBusyRef.current = false;
+    refreshingNodeRef.current = null;
+    panelSyncRetryBusyRef.current = false;
+    leaseRevocationRetryBusyRef.current = false;
+    policySavingRef.current = false;
+    nodeAccessSavingRef.current = false;
+    teamProfileBusyRef.current = null;
+    teamMemberBusyRef.current = null;
+    teamSubscriptionBusyRef.current = null;
     setSnapshot(null);
     setAuthenticated(false);
     setLoading(false);
@@ -730,7 +746,6 @@ export function App() {
     setResetTrafficBusyKey(null);
     setConvertSubscriptionTarget(null);
     setConvertTargetTeamId(null);
-    convertSubmittingRef.current = false;
     setConvertSubmitting(false);
     setTeamUsageDetailTarget(null);
     setTeamUsageByTeamId({});
@@ -745,16 +760,12 @@ export function App() {
     setPanelSyncQueue({ opened: false, filter: null });
     setDrawerBusy(false);
     setTeamProfileBusyKey(null);
-    teamProfileBusyRef.current = null;
     setTeamMemberBusyKey(null);
-    teamMemberBusyRef.current = null;
     setTeamSubscriptionBusyKey(null);
-    teamSubscriptionBusyRef.current = null;
     setPolicySaving(false);
     setProbingNodeId(null);
     setProbingAll(false);
     setRefreshingNodeId(null);
-    refreshingNodeRef.current = null;
   }
 
   function ensureAuthenticated(message: string) {
@@ -1874,6 +1885,10 @@ export function App() {
       }
 
       if (drawer.type === "subscription-create") {
+        const expireAt = readRequiredExpireAt(subscriptionCreateForm.expireAt);
+        if (!expireAt) {
+          return;
+        }
         const success = await runAction(
           () =>
             createSubscription({
@@ -1881,7 +1896,7 @@ export function App() {
               planId: subscriptionCreateForm.planId,
               totalTrafficGb: subscriptionCreateForm.totalTrafficGb,
               usedTrafficGb: subscriptionCreateForm.usedTrafficGb,
-              expireAt: fromDateTimeLocal(subscriptionCreateForm.expireAt) ?? new Date().toISOString(),
+              expireAt,
               state: subscriptionCreateForm.state
             } satisfies CreateSubscriptionInputDto),
           "订阅已创建",
@@ -1966,9 +1981,16 @@ export function App() {
       }
 
       if (drawer.type === "team-subscription" && drawer.parentId) {
+        const expireAt = readRequiredExpireAt(teamSubscriptionForm.expireAt);
+        if (!expireAt) {
+          return;
+        }
         const success = await runAction(
           () =>
-            createTeamSubscription(drawer.parentId!, buildCreateTeamSubscriptionPayload(teamSubscriptionForm) satisfies CreateTeamSubscriptionInputDto),
+            createTeamSubscription(
+              drawer.parentId!,
+              buildCreateTeamSubscriptionPayload(teamSubscriptionForm, expireAt) satisfies CreateTeamSubscriptionInputDto
+            ),
           "团队套餐已分配",
           dbFirstMutationOptions
         );
@@ -2590,12 +2612,20 @@ export function App() {
       return;
     }
 
+    const expireAt = readRequiredExpireAt(teamSubscriptionForm.expireAt);
+    if (!expireAt) {
+      return;
+    }
+
     try {
       teamSubscriptionBusyRef.current = teamId;
       setTeamSubscriptionBusyKey(teamId);
       const success = await runAction(
         () =>
-          createTeamSubscription(teamId, buildCreateTeamSubscriptionPayload(teamSubscriptionForm) satisfies CreateTeamSubscriptionInputDto),
+          createTeamSubscription(
+            teamId,
+            buildCreateTeamSubscriptionPayload(teamSubscriptionForm, expireAt) satisfies CreateTeamSubscriptionInputDto
+          ),
         "团队套餐已分配",
         dbFirstMutationOptions
       );
@@ -2644,6 +2674,23 @@ export function App() {
       teamMemberBusyRef.current = null;
       setTeamMemberBusyKey(null);
     }
+  }
+
+  function readRequiredExpireAt(value: string) {
+    try {
+      const expireAt = fromDateTimeLocal(value);
+      if (expireAt) {
+        return expireAt;
+      }
+    } catch {
+      // Invalid manual input should use the same actionable message as an empty value.
+    }
+    notifications.show({
+      color: "red",
+      title: "表单未完成",
+      message: "请选择到期时间"
+    });
+    return null;
   }
 
   async function handleSavePolicy() {

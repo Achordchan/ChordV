@@ -12,7 +12,7 @@ import type {
   UserRole,
   UserStatus
 } from "@chordv/shared";
-import { addDays, fromDateTimeLocal, toDateTimeLocal } from "./admin-format";
+import { addDays, toDateTimeLocal } from "./admin-format";
 
 export type UserFormState = {
   email: string;
@@ -321,12 +321,12 @@ export function applyPlanToTeamSubscriptionForm(
 
 export function buildCreateTeamSubscriptionPayload(
   form: TeamSubscriptionFormState,
-  fallbackExpireAt = new Date().toISOString()
+  expireAt: string
 ): CreateTeamSubscriptionInputDto {
   return {
     planId: form.planId,
     totalTrafficGb: form.totalTrafficGb,
     usedTrafficGb: form.usedTrafficGb,
-    expireAt: fromDateTimeLocal(form.expireAt) ?? fallbackExpireAt
+    expireAt
   };
 }

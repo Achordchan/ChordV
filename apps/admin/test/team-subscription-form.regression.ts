@@ -60,17 +60,18 @@ function testCreateTeamSubscriptionPayloadIncludesUsedTraffic() {
     expireAt: "2026-07-18T10:30"
   };
 
-  const payload = buildCreateTeamSubscriptionPayload(form, "2026-07-01T00:00:00.000Z");
+  const expireAt = new Date(form.expireAt).toISOString();
+  const payload = buildCreateTeamSubscriptionPayload(form, expireAt);
 
   assert.deepEqual(payload, {
     planId: teamPlan.id,
     totalTrafficGb: 2048,
     usedTrafficGb: 88.25,
-    expireAt: new Date(form.expireAt).toISOString()
+    expireAt
   });
 }
 
-function testCreateTeamSubscriptionPayloadDefaultsUsedTrafficToZero() {
+function testCreateTeamSubscriptionPayloadRequiresValidatedExpireAt() {
   const form = {
     ...emptyTeamSubscriptionForm(),
     planId: teamPlan.id,
@@ -125,7 +126,7 @@ testEmptyTeamSubscriptionFormDefaultsUsedTrafficToZero();
 testApplyTeamPlanKeepsUsedTraffic();
 testApplyMissingTeamPlanKeepsUsedTraffic();
 testCreateTeamSubscriptionPayloadIncludesUsedTraffic();
-testCreateTeamSubscriptionPayloadDefaultsUsedTrafficToZero();
+testCreateTeamSubscriptionPayloadRequiresValidatedExpireAt();
 testInlineTeamSubscriptionEditorExposesUsedTrafficInput();
 testTeamMemberDisconnectCopyIsTeamScoped();
 testUserDisconnectActionsUseDisconnectIcon();
