@@ -1002,35 +1002,87 @@ export function App() {
         if (!canApplySectionResult()) return;
         mergeSnapshot({ subscriptions, nodes });
       } else if (targetSection === "users") {
-        const [users, teams, leaseRevocationJobs] = await Promise.all([
+        const [users, teams, leaseRevocationJobsResult] = await Promise.all([
           fetchAdminUsers(),
           fetchAdminTeams(),
-          fetchAdminLeaseRevocationJobs()
+          fetchAdminLeaseRevocationJobs().then(
+            (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
+            (reason) => ({ ok: false as const, reason })
+          )
         ]);
         if (!canApplySectionResult()) return;
-        mergeSnapshot({ users, teams, leaseRevocationJobs });
+        mergeSnapshot({
+          users,
+          teams,
+          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+        });
+        if (!leaseRevocationJobsResult.ok && !options?.silent) {
+          notifications.show({
+            color: "yellow",
+            title: "连接撤销队列加载失败",
+            message: readError(leaseRevocationJobsResult.reason, "用户列表已加载，连接撤销队列稍后重试。")
+          });
+        }
       } else if (targetSection === "plans") {
         const plans = await fetchAdminPlans();
         if (!canApplySectionResult()) return;
         applyListPatch("plans", plans);
       } else if (targetSection === "subscriptions") {
-        const [users, plans, subscriptions, teams, leaseRevocationJobs] = await Promise.all([
+        const [users, plans, subscriptions, teams, leaseRevocationJobsResult] = await Promise.all([
           fetchAdminUsers(),
           fetchAdminPlans(),
           fetchAdminSubscriptions(),
           fetchAdminTeams(),
-          fetchAdminLeaseRevocationJobs()
+          fetchAdminLeaseRevocationJobs().then(
+            (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
+            (reason) => ({ ok: false as const, reason })
+          )
         ]);
         if (!canApplySectionResult()) return;
-        mergeSnapshot({ users, plans, subscriptions, teams, leaseRevocationJobs });
+        mergeSnapshot({
+          users,
+          plans,
+          subscriptions,
+          teams,
+          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+        });
+        if (!leaseRevocationJobsResult.ok && !options?.silent) {
+          notifications.show({
+            color: "yellow",
+            title: "连接撤销队列加载失败",
+            message: readError(leaseRevocationJobsResult.reason, "订阅列表已加载，连接撤销队列稍后重试。")
+          });
+        }
       } else if (targetSection === "nodes") {
-        const [nodes, panelSyncJobs, leaseRevocationJobs] = await Promise.all([
+        const [nodes, panelSyncJobsResult, leaseRevocationJobsResult] = await Promise.all([
           fetchAdminNodes(),
-          fetchAdminPanelSyncJobs(),
-          fetchAdminLeaseRevocationJobs()
+          fetchAdminPanelSyncJobs().then(
+            (panelSyncJobs) => ({ ok: true as const, panelSyncJobs }),
+            (reason) => ({ ok: false as const, reason })
+          ),
+          fetchAdminLeaseRevocationJobs().then(
+            (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
+            (reason) => ({ ok: false as const, reason })
+          )
         ]);
         if (!canApplySectionResult()) return;
-        mergeSnapshot({ nodes, panelSyncJobs, leaseRevocationJobs });
+        mergeSnapshot({
+          nodes,
+          ...(panelSyncJobsResult.ok ? { panelSyncJobs: panelSyncJobsResult.panelSyncJobs } : {}),
+          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+        });
+        if ((!panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
+          notifications.show({
+            color: "yellow",
+            title: "同步队列加载失败",
+            message: [
+              panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步队列加载失败"),
+              leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+            ]
+              .filter(Boolean)
+              .join("；")
+          });
+        }
       } else if (targetSection === "announcements") {
         const announcements = await fetchAdminAnnouncements();
         if (!canApplySectionResult()) return;
@@ -1071,17 +1123,63 @@ export function App() {
   }
 
   async function refreshPanelSyncJobsAfterPending() {
-    const [panelSyncJobs, leaseRevocationJobs, nodes] = await Promise.all([
-      fetchAdminPanelSyncJobs(),
-      fetchAdminLeaseRevocationJobs(),
-      fetchAdminNodes()
+    const [nodesResult, panelSyncJobsResult, leaseRevocationJobsResult] = await Promise.all([
+      fetchAdminNodes().then(
+        (nodes) => ({ ok: true as const, nodes }),
+        (reason) => ({ ok: false as const, reason })
+      ),
+      fetchAdminPanelSyncJobs().then(
+        (panelSyncJobs) => ({ ok: true as const, panelSyncJobs }),
+        (reason) => ({ ok: false as const, reason })
+      ),
+      fetchAdminLeaseRevocationJobs().then(
+        (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
+        (reason) => ({ ok: false as const, reason })
+      )
     ]);
-    mergeSnapshot({ panelSyncJobs, leaseRevocationJobs, nodes });
+    mergeSnapshot({
+      ...(nodesResult.ok ? { nodes: nodesResult.nodes } : {}),
+      ...(panelSyncJobsResult.ok ? { panelSyncJobs: panelSyncJobsResult.panelSyncJobs } : {}),
+      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+    });
+    if (!nodesResult.ok || !panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) {
+      throw new Error(
+        [
+          nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
+          panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步队列加载失败"),
+          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+        ]
+          .filter(Boolean)
+          .join("；")
+      );
+    }
   }
 
   async function refreshLeaseRevocationJobsAfterPending() {
-    const [leaseRevocationJobs, nodes] = await Promise.all([fetchAdminLeaseRevocationJobs(), fetchAdminNodes()]);
-    mergeSnapshot({ leaseRevocationJobs, nodes });
+    const [nodesResult, leaseRevocationJobsResult] = await Promise.all([
+      fetchAdminNodes().then(
+        (nodes) => ({ ok: true as const, nodes }),
+        (reason) => ({ ok: false as const, reason })
+      ),
+      fetchAdminLeaseRevocationJobs().then(
+        (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
+        (reason) => ({ ok: false as const, reason })
+      )
+    ]);
+    mergeSnapshot({
+      ...(nodesResult.ok ? { nodes: nodesResult.nodes } : {}),
+      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
+    });
+    if (!nodesResult.ok || !leaseRevocationJobsResult.ok) {
+      throw new Error(
+        [
+          nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
+          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+        ]
+          .filter(Boolean)
+          .join("；")
+      );
+    }
   }
 
   function refreshAdminNodesAfterPanelSyncRetry() {

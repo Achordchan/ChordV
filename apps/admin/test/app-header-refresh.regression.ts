@@ -78,6 +78,8 @@ function extractBlockAfter(marker: string) {
 const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
 const loadFullSnapshotBody = extractFunctionBody("loadFullSnapshot");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
+const refreshPanelSyncJobsAfterPendingBody = extractFunctionBody("refreshPanelSyncJobsAfterPending");
+const refreshLeaseRevocationJobsAfterPendingBody = extractFunctionBody("refreshLeaseRevocationJobsAfterPending");
 const submitDrawerBody = extractFunctionBody("submitDrawer");
 const saveNodeAccessEditorBody = extractFunctionBody("saveNodeAccessEditor");
 const handleDeleteTeamMemberBody = extractFunctionBody("handleDeleteTeamMember");
@@ -175,6 +177,37 @@ function testCriticalSnapshotSectionsStayLocalInSectionLoader() {
   const nodesBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "nodes"');
   assert.match(nodesBranch, /fetchAdminNodes\(\)/);
   assert.doesNotMatch(nodesBranch, /fetchAdminDashboard\(\)|loadFullSnapshot\(\)/);
+}
+
+function testQueueLoadsDoNotBlockMainSectionData() {
+  const usersBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "users"');
+  assert.match(usersBranch, /fetchAdminUsers\(\)/);
+  assert.match(usersBranch, /fetchAdminTeams\(\)/);
+  assert.match(usersBranch, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
+  assert.match(usersBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.leaseRevocationJobs \} : \{\}/);
+
+  const subscriptionsBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "subscriptions"');
+  assert.match(subscriptionsBranch, /fetchAdminSubscriptions\(\)/);
+  assert.match(subscriptionsBranch, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
+  assert.match(subscriptionsBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.leaseRevocationJobs \} : \{\}/);
+
+  const nodesBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "nodes"');
+  assert.match(nodesBranch, /fetchAdminNodes\(\)/);
+  assert.match(nodesBranch, /fetchAdminPanelSyncJobs\(\)\.then\(/);
+  assert.match(nodesBranch, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
+  assert.match(nodesBranch, /panelSyncJobsResult\.ok \? \{ panelSyncJobs: panelSyncJobsResult\.panelSyncJobs \} : \{\}/);
+  assert.match(nodesBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.leaseRevocationJobs \} : \{\}/);
+}
+
+function testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure() {
+  assert.match(refreshPanelSyncJobsAfterPendingBody, /fetchAdminNodes\(\)\.then\(/);
+  assert.match(refreshPanelSyncJobsAfterPendingBody, /fetchAdminPanelSyncJobs\(\)\.then\(/);
+  assert.match(refreshPanelSyncJobsAfterPendingBody, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
+  assert.match(refreshPanelSyncJobsAfterPendingBody, /mergeSnapshot\(\{[\s\S]*?nodesResult\.ok[\s\S]*?panelSyncJobsResult\.ok[\s\S]*?leaseRevocationJobsResult\.ok[\s\S]*?\}\);/);
+
+  assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminNodes\(\)\.then\(/);
+  assert.match(refreshLeaseRevocationJobsAfterPendingBody, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
+  assert.match(refreshLeaseRevocationJobsAfterPendingBody, /mergeSnapshot\(\{[\s\S]*?nodesResult\.ok[\s\S]*?leaseRevocationJobsResult\.ok[\s\S]*?\}\);/);
 }
 
 function testGenericAdminRuntimeEventsRefreshCurrentSection() {
@@ -388,6 +421,8 @@ testFullSnapshotAppliesPartialListResults();
 testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();
 testCriticalSnapshotSectionsStayLocalInSectionLoader();
+testQueueLoadsDoNotBlockMainSectionData();
+testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure();
 testGenericAdminRuntimeEventsRefreshCurrentSection();
 testSignalBackedSectionsRefreshSilentlyThroughSignals();
 testSessionExpiredClearsBusyRefs();
