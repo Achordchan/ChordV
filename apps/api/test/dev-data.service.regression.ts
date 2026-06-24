@@ -13563,6 +13563,160 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
   }
 }
 
+async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable() {
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => {
+      throw new Error("subscription lookup failed before local node access save");
+    }
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpSubscriptionLookupRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpSubscriptionLookupRegressionModule, { logger: false });
+  app.setGlobalPrefix("api");
+  app.useGlobalFilters(new LoggingExceptionFilter());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: ["node_1"] })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      503,
+      `subscription lookup failures must return controlled 503 instead of HTTP 500: ${JSON.stringify(body)}`
+    );
+    assert.equal(body.statusCode, 503);
+    assert.notEqual(body.message, "Internal server error");
+  } finally {
+    await app.close();
+  }
+}
+
+async function testNodeAccessHttpMapsNodeListFailureToServiceUnavailable() {
+  const devDataService = createDevDataService({
+    logger: {
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined
+    },
+    requireSubscription: async () => ({
+      id: "sub_1",
+      userId: "user_1",
+      teamId: null
+    }),
+    prisma: {
+      subscriptionNodeAccess: {
+        findMany: async () => []
+      },
+      node: {
+        findMany: async () => {
+          throw new Error("node list failed before local node access save");
+        }
+      }
+    }
+  });
+
+  Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
+  Reflect.defineMetadata(
+    "design:paramtypes",
+    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    AdminController
+  );
+
+  @Module({
+    controllers: [AdminController],
+    providers: [
+      AdminAuthGuard,
+      {
+        provide: AuthSessionService,
+        useValue: {
+          authenticateAccessToken: async () => ({ id: "admin_1", role: "admin" })
+        }
+      },
+      { provide: DevDataService, useValue: devDataService },
+      { provide: RuntimeComponentsService, useValue: {} },
+      { provide: ImageBedService, useValue: {} },
+      { provide: AdminRuntimeEventsService, useValue: {} }
+    ]
+  })
+  class NodeAccessHttpNodeListRegressionModule {}
+
+  const app = await NestFactory.create(NodeAccessHttpNodeListRegressionModule, { logger: false });
+  app.setGlobalPrefix("api");
+  app.useGlobalFilters(new LoggingExceptionFilter());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true
+    })
+  );
+  await app.listen(0, "127.0.0.1");
+
+  try {
+    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer admin-test-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ nodeIds: ["node_1"] })
+    });
+    const body = await response.json();
+
+    assert.equal(
+      response.status,
+      503,
+      `node list failures must return controlled 503 instead of HTTP 500: ${JSON.stringify(body)}`
+    );
+    assert.equal(body.statusCode, 503);
+    assert.notEqual(body.message, "Internal server error");
+  } finally {
+    await app.close();
+  }
+}
+
 async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave() {
   const oldNode = {
     id: "node_old",
@@ -21766,6 +21920,198 @@ function makeReleaseCenterTestArtifact(overrides: Record<string, any> = {}) {
     updatedAt: now,
     ...overrides
   };
+}
+
+function createInMemoryReleaseCenterHarness() {
+  const releases: any[] = [];
+  const artifacts: any[] = [];
+  const hydrateRelease = (release: any) => ({
+    ...release,
+    artifacts: artifacts.filter((artifact) => artifact.releaseId === release.id)
+  });
+  const releaseDelegate = {
+    create: async (payload: Record<string, any>) => {
+      const now = new Date();
+      const release = {
+        ...payload.data,
+        createdAt: now,
+        updatedAt: now
+      };
+      releases.push(release);
+      return payload.include?.artifacts ? hydrateRelease(release) : release;
+    },
+    findUnique: async (payload: Record<string, any>) => {
+      const release = releases.find((item) => item.id === payload.where.id) ?? null;
+      return release && payload.include?.artifacts ? hydrateRelease(release) : release;
+    },
+    findMany: async (payload: Record<string, any>) => {
+      const rows = releases.filter((release) => {
+        if (payload.where?.channel && release.channel !== payload.where.channel) return false;
+        if (payload.where?.status && release.status !== payload.where.status) return false;
+        if (payload.where?.platform && release.platform !== payload.where.platform) return false;
+        return true;
+      });
+      return payload.include?.artifacts ? rows.map(hydrateRelease) : rows;
+    },
+    update: async (payload: Record<string, any>) => {
+      const release = releases.find((item) => item.id === payload.where.id);
+      if (!release) {
+        throw new Error("release not found in in-memory test harness");
+      }
+      Object.assign(release, payload.data, { updatedAt: new Date() });
+      return payload.include?.artifacts ? hydrateRelease(release) : release;
+    }
+  };
+  const artifactDelegate = {
+    create: async (payload: Record<string, any>) => {
+      const now = new Date();
+      const artifact = {
+        ...payload.data,
+        createdAt: now,
+        updatedAt: now
+      };
+      artifacts.push(artifact);
+      return artifact;
+    },
+    updateMany: async (payload: Record<string, any>) => {
+      let count = 0;
+      for (const artifact of artifacts) {
+        if (!payload.where?.releaseId || artifact.releaseId === payload.where.releaseId) {
+          Object.assign(artifact, payload.data, { updatedAt: new Date() });
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    findUnique: async (payload: Record<string, any>) => {
+      const artifact = artifacts.find((item) => item.id === payload.where.id) ?? null;
+      if (!artifact || !payload.include?.release) {
+        return artifact;
+      }
+      const release = releases.find((item) => item.id === artifact.releaseId) ?? null;
+      return { ...artifact, release };
+    }
+  };
+  const prisma = {
+    release: releaseDelegate,
+    releaseArtifact: artifactDelegate,
+    $transaction: async (task: (tx: Record<string, any>) => Promise<unknown>) =>
+      task({
+        release: releaseDelegate,
+        releaseArtifact: artifactDelegate
+      })
+  };
+  return {
+    service: createReleaseCenterService({ prisma }),
+    releases,
+    artifacts
+  };
+}
+
+async function testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck() {
+  const { service } = createInMemoryReleaseCenterHarness();
+  const release = await service.createRelease({
+    platform: "windows",
+    channel: "stable",
+    version: "1.1.7",
+    displayTitle: "",
+    changelog: ["External full replacement"],
+    minimumVersion: "1.1.0",
+    forceUpgrade: false,
+    status: "draft"
+  });
+
+  await service.createReleaseArtifact(release.id, {
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.zip",
+    fileName: "ChordV_1.1.7_x64-full.zip",
+    isPrimary: true
+  });
+  await service.publishRelease(release.id);
+
+  const result = await service.checkClientUpdate({
+    currentVersion: "1.1.6",
+    platform: "windows",
+    channel: "stable",
+    artifactType: "zip"
+  });
+
+  assert.equal(result.hasUpdate, true);
+  assert.equal(result.latestVersion, "1.1.7");
+  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.7_x64-full.zip");
+  assert.equal(result.fileHash, null);
+  assert.equal(result.fileSizeBytes, null);
+  assert.equal(result.recommendedArtifact?.source, "external");
+  assert.equal(result.recommendedArtifact?.defaultMirrorPrefix, null);
+  assert.equal(result.recommendedArtifact?.allowClientMirror, false);
+}
+
+async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor() {
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-release-flow-upload-"));
+  const uploadPath = path.join(tempDir, "upload.tmp");
+  const uploadBody = "uploaded full package";
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  await writeFile(uploadPath, uploadBody);
+
+  try {
+    const { service } = createInMemoryReleaseCenterHarness();
+    const release = await service.createRelease({
+      platform: "windows",
+      channel: "stable",
+      version: "1.1.8",
+      displayTitle: "ChordV 1.1.8",
+      changelog: ["Uploaded full replacement"],
+      minimumVersion: "1.1.0",
+      forceUpgrade: false,
+      status: "draft"
+    });
+
+    await service.uploadReleaseArtifact(
+      release.id,
+      {
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        fileName: "ChordV_1.1.8_x64-full.zip",
+        isPrimary: true
+      },
+      {
+        path: uploadPath,
+        originalname: "ChordV_1.1.8_x64-full.zip",
+        size: Buffer.byteLength(uploadBody)
+      }
+    );
+    await service.publishRelease(release.id);
+
+    const result = await service.checkClientUpdate({
+      currentVersion: "1.1.7",
+      platform: "windows",
+      channel: "stable",
+      artifactType: "zip"
+    });
+
+    assert.equal(result.hasUpdate, true);
+    assert.equal(result.latestVersion, "1.1.8");
+    assert.match(result.downloadUrl ?? "", /^\/api\/downloads\/releases\/artifact_/);
+    assert.equal(result.fileHash, null);
+    assert.equal(result.fileSizeBytes, String(Buffer.byteLength(uploadBody)));
+    assert.equal(result.recommendedArtifact?.source, "uploaded");
+    assert.equal(result.recommendedArtifact?.defaultMirrorPrefix, null);
+    assert.equal(result.recommendedArtifact?.allowClientMirror, false);
+
+    const descriptor = await service.getReleaseArtifactDownloadDescriptor(result.recommendedArtifact?.id ?? "");
+    assert.equal(descriptor.fileName, "ChordV_1.1.8_x64-full.zip");
+    assert.equal(existsSync(descriptor.absolutePath), true);
+  } finally {
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function testCreateReleaseArtifactKeepsSaveWhenReleaseRefreshFails() {
@@ -31489,6 +31835,8 @@ async function main() {
   await testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissing();
   await testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata();
   await testCreateReleaseArtifactDelegatesToReleaseCenter();
+  await testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck();
+  await testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor();
   await testConvertToTeamDelegatesToAdminSubscriptionService();
   await testHeartbeatWithinTtlSucceeds();
   await testHeartbeatWithinGraceStillSucceeds();
@@ -31612,6 +31960,7 @@ async function main() {
   await testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails();
   await testUpdateNodeAccessAddOnlyReturnsPendingWhenPanelEnsureQueueStalls();
   await testUpdateNodeAccessRejectsInvalidNodeIdsAsBadRequest();
+  await testGetNodeAccessMapsUnknownReadFailure();
   await testUpdateNodeAccessMapsLocalSaveConstraintErrors();
   await testUpdateNodeAccessMapsUnknownLocalSaveFailure();
   await testUpdateNodeAccessMapsTransactionCommitFailure();
@@ -31635,6 +31984,8 @@ async function main() {
   await testRemoveSingleNodeAccessReturnsWhenNodeAccessPublishThrowsSynchronously();
   await testRemoveSingleNodeAccessReturnsPendingWithoutWaitingForFinalizeFailure();
   await testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLocalSave();
+  await testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailable();
+  await testNodeAccessHttpMapsNodeListFailureToServiceUnavailable();
   await testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFailAfterLocalSave();
   await testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueueFailsAfterLocalSave();
   await testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfterLocalSave();
