@@ -186,6 +186,9 @@ export function ReleasesPage(props: ReleasesPageProps) {
   }
 
   function openCreateRelease() {
+    if (savingRef.current) {
+      return;
+    }
     setReleaseEditorId(null);
     setReleaseSaveStep(null);
     setReleaseForm(emptyReleaseEditorForm(platformFilter === "all" ? "windows" : platformFilter));
@@ -632,7 +635,7 @@ export function ReleasesPage(props: ReleasesPageProps) {
               </Text>
             </Stack>
             <Group gap="xs">
-              <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease}>
+              <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease} disabled={saving !== null}>
                 新建发布
               </Button>
               <Button

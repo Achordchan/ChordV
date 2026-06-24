@@ -79,6 +79,15 @@ const handleHeaderRefreshBody = extractFunctionBody("handleHeaderRefresh");
 const loadSectionDataBody = extractFunctionBody("loadSectionData");
 const submitDrawerBody = extractFunctionBody("submitDrawer");
 const saveNodeAccessEditorBody = extractFunctionBody("saveNodeAccessEditor");
+const handleDeleteTeamMemberBody = extractFunctionBody("handleDeleteTeamMember");
+const handleToggleUserStatusBody = extractFunctionBody("handleToggleUserStatus");
+const handleDisconnectUserBody = extractFunctionBody("handleDisconnectUser");
+const handleKickMemberBody = extractFunctionBody("handleKickMember");
+const handleResetSubscriptionTrafficBody = extractFunctionBody("handleResetSubscriptionTraffic");
+const handleConvertToTeamBody = extractFunctionBody("handleConvertToTeam");
+const saveTeamInlineEditorBody = extractFunctionBody("saveTeamInlineEditor");
+const saveTeamSubscriptionInlineEditorBody = extractFunctionBody("saveTeamSubscriptionInlineEditor");
+const saveTeamMemberInlineEditorBody = extractFunctionBody("saveTeamMemberInlineEditor");
 const handleSessionExpiredStateBody = extractBlockAfter("function handleSessionExpiredState()");
 const adminRuntimeEventsBody = extractBlockAfter("return subscribeAdminRuntimeEvents((event) =>");
 
@@ -269,6 +278,71 @@ function testNodeAccessOptionsAllowOfflineAndPendingNodes() {
   );
 }
 
+function testUserSubscriptionAndTeamMutationsUseDbFirstActionHandling() {
+  const branchMarkers = [
+    'drawer.type === "user"',
+    'drawer.type === "subscription-create"',
+    'drawer.type === "subscription-adjust" && drawer.recordId',
+    'drawer.type === "subscription-renew" && drawer.recordId',
+    'drawer.type === "subscription-change-plan" && drawer.recordId',
+    'drawer.type === "team"',
+    'drawer.type === "team-member" && drawer.parentId',
+    'drawer.type === "team-subscription" && drawer.parentId'
+  ];
+
+  for (const marker of branchMarkers) {
+    const branch = extractBranchBody(submitDrawerBody, marker);
+    assert.match(
+      branch,
+      /runAction\([\s\S]*?dbFirstMutationOptions/,
+      `${marker} must use DB-first action handling so saved-but-pending panel sync is shown as yellow completed state`
+    );
+    assert.match(
+      branch,
+      /if \(success\) forceCloseDrawer\(\);/,
+      `${marker} must only close the drawer after runAction reports completion`
+    );
+  }
+}
+
+function testInlineAndDestructiveMutationsUseDbFirstActionHandling() {
+  for (const [name, body] of [
+    ["delete team member", handleDeleteTeamMemberBody],
+    ["toggle user status", handleToggleUserStatusBody],
+    ["disconnect user", handleDisconnectUserBody],
+    ["kick team member", handleKickMemberBody],
+    ["reset subscription traffic", handleResetSubscriptionTrafficBody],
+    ["convert subscription to team", handleConvertToTeamBody],
+    ["save team inline editor", saveTeamInlineEditorBody],
+    ["save team subscription inline editor", saveTeamSubscriptionInlineEditorBody],
+    ["save team member inline editor", saveTeamMemberInlineEditorBody]
+  ] as const) {
+    assert.match(
+      body,
+      /runAction\([\s\S]*?dbFirstMutationOptions/,
+      `${name} must use DB-first action handling so offline panels do not become red hard failures`
+    );
+  }
+}
+
+function testHighRiskMutationsReleaseBusyStateInFinally() {
+  const expectations = [
+    [handleDeleteTeamMemberBody, /finally\s*{[\s\S]*?entityActionBusyRef\.current = null;[\s\S]*?setEntityActionBusyKey\(null\);[\s\S]*?}/],
+    [handleToggleUserStatusBody, /finally\s*{[\s\S]*?entityActionBusyRef\.current = null;[\s\S]*?setEntityActionBusyKey\(null\);[\s\S]*?}/],
+    [handleDisconnectUserBody, /finally\s*{[\s\S]*?entityActionBusyRef\.current = null;[\s\S]*?setEntityActionBusyKey\(null\);[\s\S]*?}/],
+    [handleKickMemberBody, /finally\s*{[\s\S]*?setKickSubmitting\(false\);[\s\S]*?kickSubmittingRef\.current = false;[\s\S]*?}/],
+    [handleResetSubscriptionTrafficBody, /finally\s*{[\s\S]*?setResetTrafficBusyKey\(null\);[\s\S]*?resetTrafficBusyRef\.current = false;[\s\S]*?}/],
+    [handleConvertToTeamBody, /finally\s*{[\s\S]*?convertSubmittingRef\.current = false;[\s\S]*?setConvertSubmitting\(false\);[\s\S]*?}/],
+    [saveTeamInlineEditorBody, /finally\s*{[\s\S]*?teamProfileBusyRef\.current = null;[\s\S]*?setTeamProfileBusyKey\(null\);[\s\S]*?}/],
+    [saveTeamSubscriptionInlineEditorBody, /finally\s*{[\s\S]*?teamSubscriptionBusyRef\.current = null;[\s\S]*?setTeamSubscriptionBusyKey\(null\);[\s\S]*?}/],
+    [saveTeamMemberInlineEditorBody, /finally\s*{[\s\S]*?teamMemberBusyRef\.current = null;[\s\S]*?setTeamMemberBusyKey\(null\);[\s\S]*?}/]
+  ] as const;
+
+  for (const [body, pattern] of expectations) {
+    assert.match(body, pattern, "high-risk admin mutations must release busy state in finally blocks");
+  }
+}
+
 testHeaderRefreshDoesNotAlwaysLoadFullSnapshotFirst();
 testOverviewKeepsFullSnapshotRefresh();
 testSignalBackedSectionsUseLocalRefreshSignals();
@@ -280,5 +354,8 @@ testSessionExpiredClearsBusyRefs();
 testSubscriptionCreateRequiresExpireAtBeforeRequest();
 testNodeAccessPendingSaveUsesYellowCompletedNotification();
 testNodeAccessOptionsAllowOfflineAndPendingNodes();
+testUserSubscriptionAndTeamMutationsUseDbFirstActionHandling();
+testInlineAndDestructiveMutationsUseDbFirstActionHandling();
+testHighRiskMutationsReleaseBusyStateInFinally();
 
 console.log("admin app header refresh regression checks passed");

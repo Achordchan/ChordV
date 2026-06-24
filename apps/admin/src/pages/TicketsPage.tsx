@@ -277,7 +277,7 @@ export function TicketsPage(props: TicketsPageProps) {
   }
 
   async function handleReply() {
-    if (replySavingRef.current) {
+    if (replySavingRef.current || statusChangingRef.current) {
       return;
     }
     const body = replyDraft.trim();
@@ -349,7 +349,7 @@ export function TicketsPage(props: TicketsPageProps) {
   }
 
   async function handleStatusAction(ticket: AdminSupportTicketSummaryDto | AdminSupportTicketDetailDto, next: "close" | "reopen") {
-    if (statusChangingRef.current) {
+    if (statusChangingRef.current || replySavingRef.current) {
       return;
     }
     try {
@@ -526,6 +526,7 @@ export function TicketsPage(props: TicketsPageProps) {
                             variant="default"
                             size="xs"
                             loading={statusChanging === selectedTicket.id}
+                            disabled={replySaving || (statusChanging !== null && statusChanging !== selectedTicket.id)}
                             onClick={() => void handleStatusAction(selectedTicket, "reopen")}
                           >
                             重开工单
@@ -536,6 +537,7 @@ export function TicketsPage(props: TicketsPageProps) {
                             color="red"
                             size="xs"
                             loading={statusChanging === selectedTicket.id}
+                            disabled={replySaving || (statusChanging !== null && statusChanging !== selectedTicket.id)}
                             onClick={() => void handleStatusAction(selectedTicket, "close")}
                           >
                             关闭工单
@@ -697,7 +699,7 @@ export function TicketsPage(props: TicketsPageProps) {
                             leftSection={<IconSend size={15} />}
                             onClick={() => void handleReply()}
                             loading={replySaving}
-                            disabled={!canSendReply || replySaving}
+                            disabled={!canSendReply || replySaving || statusChanging !== null}
                           >
                             发送回复
                           </Button>

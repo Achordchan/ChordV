@@ -6,6 +6,30 @@ import type { AdminRuntimeComponentRecordDto, AdminRuntimeComponentValidationDto
 
 const runtimeComponentsPanelSource = readFileSync(resolve(import.meta.dirname, "../src/features/runtime-components/RuntimeComponentsPanel.tsx"), "utf8");
 
+function extractAsyncFunctionBody(source: string, functionName: string) {
+  const signature = `async function ${functionName}`;
+  const signatureIndex = source.indexOf(signature);
+  assert.notEqual(signatureIndex, -1, `${functionName} should exist`);
+
+  const bodyStart = source.indexOf("{", signatureIndex);
+  assert.notEqual(bodyStart, -1, `${functionName} should have a body`);
+
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(bodyStart + 1, index);
+      }
+    }
+  }
+
+  assert.fail(`${functionName} body should be closed`);
+}
+
 function makeRuntimeComponent(overrides: Partial<AdminRuntimeComponentRecordDto> = {}): AdminRuntimeComponentRecordDto {
   return {
     id: "component_1",
@@ -159,6 +183,35 @@ function testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash() {
   assert.doesNotMatch(uploadedBranchSource, /expectedHash:/);
 }
 
+function testRuntimeComponentMutationsAlwaysReleaseBusyState() {
+  assert.match(
+    extractAsyncFunctionBody(runtimeComponentsPanelSource, "saveComponent"),
+    /finally\s*{[\s\S]*?savingRef\.current = false;[\s\S]*?onSavingChange\(false\);[\s\S]*?}/,
+    "runtime component save must release busy state after success, validation failure, or request failure"
+  );
+  assert.match(
+    extractAsyncFunctionBody(runtimeComponentsPanelSource, "verifyComponent"),
+    /finally\s*{[\s\S]*?if \(verifyingRef\.current === record\.id\) {[\s\S]*?verifyingRef\.current = null;[\s\S]*?setVerifyingId\(null\);[\s\S]*?}/,
+    "runtime component verify must release only the matching verifying state"
+  );
+  assert.match(
+    extractAsyncFunctionBody(runtimeComponentsPanelSource, "removeComponent"),
+    /finally\s*{[\s\S]*?deletingRef\.current\.delete\(record\.id\);[\s\S]*?savingRef\.current = false;[\s\S]*?onSavingChange\(false\);[\s\S]*?}/,
+    "runtime component delete must release row and page busy state"
+  );
+}
+
+function testRuntimeComponentUncertainMutationsRefreshSilently() {
+  for (const functionName of ["saveComponent", "verifyComponent", "removeComponent"]) {
+    const body = extractAsyncFunctionBody(runtimeComponentsPanelSource, functionName);
+    assert.match(
+      body,
+      /if \(result\.uncertain\) {[\s\S]*?void onRefresh\(\{ silent: true \}\);[\s\S]*?}/,
+      `${functionName} should refresh silently when the backend result is uncertain`
+    );
+  }
+}
+
 testEnabledRemotePendingValidationIsNotShownAsDeliverable();
 testEnabledRemoteHashMismatchIsShownAsBlocked();
 testSaveFailedIsNotShownAsHashMismatch();
@@ -169,5 +222,7 @@ testReadyValidationUpdatesDeliveryState();
 testFailedValidationBlocksDeliveryState();
 testRuntimeComponentsTableKeepsReadableMinimumWidth();
 testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash();
+testRuntimeComponentMutationsAlwaysReleaseBusyState();
+testRuntimeComponentUncertainMutationsRefreshSilently();
 
 console.log("runtime components panel regression checks passed");

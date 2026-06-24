@@ -109,6 +109,14 @@ async function listenOnFetchSafeLocalhost(server: Server) {
   throw new Error("Unable to allocate a fetch-safe localhost test port.");
 }
 
+async function listenOnFetchSafeNestApp(app: { init: () => Promise<unknown>; getHttpServer: () => Server }) {
+  await app.init();
+  await listenOnFetchSafeLocalhost(app.getHttpServer());
+  const address = app.getHttpServer().address();
+  assert.ok(address && typeof address === "object", "Nest HTTP regression server should be listening");
+  return `http://127.0.0.1:${address.port}`;
+}
+
 async function testSubscriptionUsageLockIsReentrantForNestedPanelSync() {
   const originalDatabaseUrl = process.env.DATABASE_URL;
   delete process.env.DATABASE_URL;
@@ -8103,10 +8111,10 @@ async function testRenewSubscriptionHttpReturnsPendingWhenResetTrafficPanelQueue
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/renew`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/renew`, {
       method: "POST",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -8733,10 +8741,10 @@ async function testResetSubscriptionTrafficHttpReturnsPendingWhenPanelQueueFails
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/reset-traffic`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/reset-traffic`, {
       method: "POST",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -10228,10 +10236,10 @@ async function testProbeAllNodesHttpContinuesWhenSingleNodeProbeFails() {
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/nodes/probe-all`, {
+    const response = await fetch(`${baseUrl}/api/admin/nodes/probe-all`, {
       method: "POST",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -14058,10 +14066,10 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -14216,11 +14224,11 @@ async function testNodeAccessHttpRemoveOnlyReturnsPendingWhenOfflinePanelQueueFa
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
     const response = await Promise.race([
-      fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+      fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
         method: "PUT",
         headers: {
           authorization: "Bearer admin-test-token",
@@ -14447,10 +14455,10 @@ async function testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFai
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -14551,10 +14559,10 @@ async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailab
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -14634,10 +14642,10 @@ async function testNodeAccessHttpMapsNodeListFailureToServiceUnavailable() {
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -14782,10 +14790,10 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -14918,10 +14926,10 @@ async function testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueue
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",
@@ -15055,10 +15063,10 @@ async function testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfte
       transform: true
     })
   );
-  await app.listen(0, "127.0.0.1");
+  const baseUrl = await listenOnFetchSafeNestApp(app);
 
   try {
-    const response = await fetch(`${await app.getUrl()}/api/admin/subscriptions/sub_1/nodes`, {
+    const response = await fetch(`${baseUrl}/api/admin/subscriptions/sub_1/nodes`, {
       method: "PUT",
       headers: {
         authorization: "Bearer admin-test-token",

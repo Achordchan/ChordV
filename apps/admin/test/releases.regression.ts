@@ -6,6 +6,31 @@ import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEdito
 
 const releaseRecordCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/releases/ReleaseRecordCard.tsx"), "utf8");
 const adminClientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+const releasesPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/ReleasesPage.tsx"), "utf8");
+
+function extractAsyncFunctionBody(source: string, functionName: string) {
+  const signature = `async function ${functionName}`;
+  const signatureIndex = source.indexOf(signature);
+  assert.notEqual(signatureIndex, -1, `${functionName} should exist`);
+
+  const bodyStart = source.indexOf("{", signatureIndex);
+  assert.notEqual(bodyStart, -1, `${functionName} should have a body`);
+
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(bodyStart + 1, index);
+      }
+    }
+  }
+
+  assert.fail(`${functionName} body should be closed`);
+}
 
 function testCreateReleasePayloadKeepsReleaseFieldsSimple() {
   const form = {
@@ -141,6 +166,41 @@ function testReleaseArtifactLongDownloadUrlDoesNotForceWideCards() {
   assert.match(releaseRecordCardSource, /overflowWrap: "anywhere"/);
 }
 
+function testReleaseMutationsAlwaysReleaseSavingState() {
+  for (const functionName of ["saveRelease", "updateReleaseStatus", "deleteRelease", "saveArtifact", "removeArtifact"]) {
+    const body = extractAsyncFunctionBody(releasesPageSource, functionName);
+    assert.match(
+      body,
+      /finally\s*{[\s\S]*?endSaving\(actionKey\);[\s\S]*?}/,
+      `${functionName} must release page saving state after success, failure, or uncertain request state`
+    );
+  }
+}
+
+function testReleaseUncertainMutationsRefreshInsteadOfHardFailing() {
+  for (const functionName of ["updateReleaseStatus", "deleteRelease", "saveArtifact", "removeArtifact"]) {
+    const body = extractAsyncFunctionBody(releasesPageSource, functionName);
+    assert.match(
+      body,
+      /showReleaseRequestFailure\([\s\S]*?if \(result\.uncertain\) {[\s\S]*?void loadReleases\(\);[\s\S]*?}/,
+      `${functionName} should refresh release data when the backend result is uncertain`
+    );
+  }
+}
+
+function testCreateReleaseIsBlockedWhileAnotherMutationIsSaving() {
+  assert.match(
+    releasesPageSource,
+    /function openCreateRelease\(\) {[\s\S]*?if \(savingRef\.current\) {[\s\S]*?return;[\s\S]*?}/,
+    "release create modal must not open while another release mutation is saving"
+  );
+  assert.match(
+    releasesPageSource,
+    /<Button leftSection=\{<IconPlus size=\{16\} \/>\} onClick=\{openCreateRelease\} disabled=\{saving !== null\}>/,
+    "new release button should be disabled during publish, delete, upload, and artifact mutations"
+  );
+}
+
 testCreateReleasePayloadKeepsReleaseFieldsSimple();
 testCreateReleasePayloadOmitsOptionalPublishingFlags();
 testCreateAdminReleaseRequestDoesNotForceDisplayTitle();
@@ -150,5 +210,8 @@ testWindowsZipExternalArtifactCanStayExternalDownload();
 testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
 testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
 testReleaseArtifactLongDownloadUrlDoesNotForceWideCards();
+testReleaseMutationsAlwaysReleaseSavingState();
+testReleaseUncertainMutationsRefreshInsteadOfHardFailing();
+testCreateReleaseIsBlockedWhileAnotherMutationIsSaving();
 
 console.log("release admin regression checks passed");
