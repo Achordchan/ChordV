@@ -691,9 +691,7 @@ export class AdminSubscriptionService {
           "当前账号已切换为个人订阅，原 Team 工单已失效。如需继续咨询，请在当前个人订阅下重新创建工单。"
         )
       ),
-      this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after create for ${row.id}`, () =>
-        this.syncSubscriptionPanelAccessBestEffort(row.id)
-      )
+      await this.syncSubscriptionPanelAccessBestEffort(row.id)
     );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
@@ -1466,9 +1464,7 @@ export class AdminSubscriptionService {
     if (subscription) {
       panelSync = mergePanelSyncResults(
         panelSync,
-        this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team member create for ${subscription.id}`, () =>
-          this.syncSubscriptionPanelAccessBestEffort(subscription.id)
-        )
+        await this.syncSubscriptionPanelAccessBestEffort(subscription.id)
       );
       await this.publishSubscriptionUpdatedEvent({
         subscriptionId: subscription.id,
@@ -1596,7 +1592,7 @@ export class AdminSubscriptionService {
 
     let user: AdminUserRecordDto | null = null;
     let accountDisabled = false;
-    const disconnectPanelSync = this.startTeamMemberDisconnectFollowUpInBackground({
+    const disconnectPanelSync = await this.queueTeamMemberDisconnectAfterLocalSaveBestEffort({
       teamId,
       userId: member.userId
     });
@@ -1695,9 +1691,7 @@ export class AdminSubscriptionService {
       throw toAdminLocalSaveHttpError(error, "Team 订阅保存失败，请刷新订阅列表后重试。");
     }
 
-    const panelSync = this.startPanelSyncResultFollowUpInBackground(`subscription panel access sync after team subscription create for ${row.id}`, () =>
-      this.syncSubscriptionPanelAccessBestEffort(row.id)
-    );
+    const panelSync = await this.syncSubscriptionPanelAccessBestEffort(row.id);
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: row.id,
       userId: row.userId,
@@ -2007,6 +2001,10 @@ export class AdminSubscriptionService {
         }
       });
     }
+    this.publishSyncQueueUpdatedBestEffort({
+      nodeId: bindings.length === 1 ? bindings[0]?.nodeId : null,
+      subscriptionId: bindings[0]?.subscriptionId ?? null
+    });
   }
 
   private async queuePanelTrafficResetJobsBestEffort(bindings: any[], panelResetQueuedAt: Date): Promise<PanelSyncBestEffortResult> {
@@ -2040,6 +2038,19 @@ export class AdminSubscriptionService {
       return Array.from(new Set(rows.map((row) => row.userId)));
     }
     return target.userId ? [target.userId] : [];
+  }
+
+  private publishSyncQueueUpdatedBestEffort(input: { nodeId?: string | null; subscriptionId?: string | null }) {
+    try {
+      this.adminRuntimeEventsService.publish({
+        type: "sync_queue_updated",
+        occurredAt: new Date().toISOString(),
+        nodeId: input.nodeId ?? null,
+        subscriptionId: input.subscriptionId ?? null
+      });
+    } catch (error) {
+      this.logger?.warn(`Local subscription change saved, but sync queue event publish failed: ${readErrorMessage(error, "unknown error")}`);
+    }
   }
 
   private async publishSubscriptionUpdatedEvent(target: {
@@ -2347,6 +2358,27 @@ export class AdminSubscriptionService {
       ok: false,
       errorMessage: "team member disconnect follow-up sync queued for background processing"
     };
+  }
+
+  private async queueTeamMemberDisconnectAfterLocalSaveBestEffort(member: {
+    teamId: string;
+    userId: string;
+  }): Promise<PanelSyncBestEffortResult> {
+    const lookup = await this.findTeamSubscriptionAfterLocalSaveBestEffort(
+      member.teamId,
+      "team subscription lookup before member kick"
+    );
+    if (!lookup.subscription) {
+      return lookup.panelSync.ok
+        ? { ok: true }
+        : lookup.panelSync;
+    }
+    return mergePanelSyncResults(
+      lookup.panelSync,
+      await this.queueSubscriptionDisconnectBestEffort(lookup.subscription.id, "team_member_disconnected", {
+        userId: member.userId
+      })
+    );
   }
 
   private async runTeamMemberDisconnectFollowUpInBackground(member: { teamId: string; userId: string }) {

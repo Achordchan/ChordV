@@ -818,6 +818,10 @@ export class RuntimeSessionService {
     }
 
     await markPanelBindingsDisabledLocally(writer, bindings.map((binding: { id: string }) => binding.id));
+    this.publishSyncQueueUpdatedBestEffort({
+      nodeId: filter?.nodeIds?.[0] ?? bindings[0]?.nodeId ?? null,
+      subscriptionId
+    });
 
     return queuedCount;
   }
@@ -917,6 +921,10 @@ export class RuntimeSessionService {
         status: "deleted"
       }
     });
+    this.publishSyncQueueUpdatedBestEffort({
+      nodeId: filter?.nodeIds?.[0] ?? bindings[0]?.nodeId ?? null,
+      subscriptionId
+    });
 
     return queuedCount;
   }
@@ -964,6 +972,10 @@ export class RuntimeSessionService {
         }
       });
     }
+    this.publishSyncQueueUpdatedBestEffort({
+      nodeId: nodeIds.length === 1 ? nodeIds[0] : null,
+      subscriptionId
+    });
     return nodeIds.length;
   }
 
@@ -1350,6 +1362,10 @@ export class RuntimeSessionService {
         if (locked.count === 0) {
           continue;
         }
+        this.publishSyncQueueUpdatedBestEffort({
+          nodeId: job.nodeId,
+          subscriptionId: job.subscriptionId
+        });
 
         try {
           await this.runPanelSyncJob(job);
@@ -1764,6 +1780,10 @@ export class RuntimeSessionService {
         if (locked.count === 0) {
           continue;
         }
+        this.publishSyncQueueUpdatedBestEffort({
+          nodeId: job.nodeId,
+          subscriptionId: job.subscriptionId
+        });
 
         try {
           await this.runLeaseRevocationJob(job);
@@ -2450,6 +2470,10 @@ export class RuntimeSessionService {
         panelUsername: input.node.panelUsername,
         panelPassword: input.node.panelPassword
       }
+    });
+    this.publishSyncQueueUpdatedBestEffort({
+      nodeId: binding.nodeId,
+      subscriptionId: binding.subscriptionId
     });
   }
 

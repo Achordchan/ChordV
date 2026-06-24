@@ -468,6 +468,83 @@ function createRuntimeSessionService(overrides: Record<string, unknown> = {}) {
   return createInstance<RuntimeSessionService>(RuntimeSessionService.prototype, overrides);
 }
 
+async function testPanelDisableQueuePublishesSyncQueueEvent() {
+  const events: Array<Record<string, unknown>> = [];
+  const createdJobs: Array<Record<string, unknown>> = [];
+  const service = createRuntimeSessionService({
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        events.push(event);
+      }
+    }
+  });
+  const writer = {
+    panelClientBinding: {
+      findMany: async () => [
+        {
+          id: "binding_1",
+          subscriptionId: "sub_1",
+          userId: "user_1",
+          teamId: null,
+          nodeId: "node_1",
+          panelClientEmail: "user@example.com",
+          panelClientId: "client_1",
+          panelInboundId: 1,
+          status: "active",
+          node: {
+            panelBaseUrl: "https://panel.example.com",
+            panelApiBasePath: "/",
+            panelUsername: "admin",
+            panelPassword: "secret"
+          }
+        }
+      ],
+      updateMany: async () => ({ count: 1 })
+    },
+    panelSyncJob: {
+      updateMany: async () => ({ count: 0 }),
+      findFirst: async () => null,
+      createMany: async (payload: Record<string, unknown>) => {
+        createdJobs.push(payload);
+        return { count: 1 };
+      }
+    }
+  };
+
+  const queued = await service.queuePanelDisableJobsForSubscriptionTx(writer, "sub_1", { nodeIds: ["node_1"] });
+
+  assert.equal(queued, 1);
+  assert.equal(createdJobs.length, 1);
+  assert.equal((createdJobs[0]?.data as Record<string, unknown>)?.action, "disable_client");
+  assert.equal(events.length, 1, "panel disable queue writes must notify admin sync queue subscribers");
+  assert.equal(events[0]?.type, "sync_queue_updated");
+  assert.equal(events[0]?.nodeId, "node_1");
+  assert.equal(events[0]?.subscriptionId, "sub_1");
+}
+
+async function testAdminPanelSyncRetryPublishesSyncQueueEvent() {
+  const events: Array<Record<string, unknown>> = [];
+  const service = createAdminNodeService({
+    adminRuntimeEventsService: {
+      publish: (event: Record<string, unknown>) => {
+        events.push(event);
+      }
+    },
+    prisma: {
+      panelSyncJob: {
+        updateMany: async () => ({ count: 1 }),
+        findMany: async () => []
+      }
+    }
+  });
+
+  await service.retryPanelSyncJobsForNode("node_1");
+
+  assert.equal(events.length, 1, "manual sync retry must notify other admin screens");
+  assert.equal(events[0]?.type, "sync_queue_updated");
+  assert.equal(events[0]?.nodeId, "node_1");
+}
+
 async function testNodePanelDisableContinuesWhenOneSubscriptionQueueFails() {
   const calls: string[] = [];
   const service = createRuntimeSessionService({
@@ -14209,12 +14286,11 @@ async function testKickTeamMemberReportsPendingWhenPanelOrLeaseSyncFails() {
   const result = await service.kickTeamMember("team_1", "member_1", { disableAccount: false });
 
   assert.equal(result.ok, true);
-  assert.equal(panelQueueStarted, false, "kick member must not run panel queueing before the local response");
-  await waitUntil(() => panelQueueStarted && leaseJobQueueStarted);
-  assert.equal(panelQueueStarted, true, "kick member panel queueing should still run in background");
-  assert.equal(leaseJobQueueStarted, true, "kick member lease revocation job queueing should still run in background");
+  assert.equal(panelQueueStarted, true, "kick member must persist panel queueing before returning");
+  assert.equal(leaseJobQueueStarted, true, "kick member must persist lease revocation queueing before returning");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /panel queue failed/);
+  assert.match(result.panelSyncMessage ?? "", /lease revoke job failed/);
 }
 
 async function testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls() {
@@ -14268,12 +14344,10 @@ async function testKickTeamMemberReturnsPendingWhenPanelDisableQueueStalls() {
     })
   ]);
 
-  assert.equal(leaseJobQueued, false, "kick member lease revocation job queueing must be deferred until after the local response");
-  await waitUntil(() => leaseJobQueued);
-  assert.equal(leaseJobQueued, true, "lease revocation job queueing should continue in background after panel disable queue stalls");
+  assert.equal(leaseJobQueued, true, "kick member lease revocation job queueing must start before returning");
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /3x-ui panel disable queueing is still running in background/);
 }
 
 async function testKickTeamMemberQueuesDisableClientWithoutDirectXuiCall() {
@@ -14338,8 +14412,7 @@ async function testKickTeamMemberQueuesDisableClientWithoutDirectXuiCall() {
 
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.equal(createdJobs.length, 0, "kick member must not create panel jobs before the local response");
-  await waitUntil(() => createdJobs.length > 0);
+  assert.equal(createdJobs.length, 1, "kick member must persist panel jobs before returning");
   assert.equal(createdJobs[0]?.action, "disable_client");
   assert.equal(createdJobs[0]?.userId, "user_1");
   assert.deepEqual(disabledBindingIds, ["binding_1"]);
@@ -14400,7 +14473,7 @@ async function testKickTeamMemberReturnsPendingWhenTeamSubscriptionLookupStalls(
   assert.equal(leaseRevoked, false, "lease revocation must not run without a confirmed team subscription");
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup before member kick is still running in background/);
   await waitUntil(() => lookupStarted);
   assert.equal(lookupStarted, true, "team subscription lookup should still run in background");
 }
@@ -14459,7 +14532,7 @@ async function testKickTeamMemberStillDisablesAccountWhenTeamSubscriptionLookupS
   assert.equal(accountDisabled, true, "account disabling must continue even if team subscription lookup stalls");
   assert.equal(result.accountDisabled, true);
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /team subscription lookup before member kick is still running in background/);
 }
 
 async function testKickTeamMemberReturnsPendingWhenTeamRecordRefreshFails() {
@@ -15573,9 +15646,7 @@ async function testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave() {
   assert.equal(result.isActive, false);
   assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, false, "local node state must be saved even when panel disable is pending");
-  assert.equal(queuedNodeId, null, "panel disable queueing must be deferred until after the local response");
-  await waitUntil(() => queuedNodeId === "node_1");
-  assert.equal(queuedNodeId, "node_1", "failed remote disable must leave a retry job instead of blocking the save");
+  assert.equal(queuedNodeId, "node_1", "node disable must persist panel disable queueing before returning");
   assert.equal(remoteDisableCalled, false, "node disable must queue panel sync instead of waiting for remote panel calls");
 }
 
@@ -15630,11 +15701,8 @@ async function testReenableNodeClearsPendingDisableAndQueuesPanelEnsure() {
   assert.equal(result.isActive, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, true, "local node re-enable must save before panel follow-up");
-  assert.equal(clearedNodeId, null, "pending disable cleanup must not block the local node re-enable response");
-  assert.equal(syncedNodeId, null, "panel ensure queueing must not block the local node re-enable response");
-  await waitUntil(() => clearedNodeId === "node_1" && syncedNodeId === "node_1");
-  assert.equal(clearedNodeId, "node_1");
-  assert.equal(syncedNodeId, "node_1");
+  assert.equal(clearedNodeId, "node_1", "re-enable must clear pending disable jobs before returning");
+  assert.equal(syncedNodeId, "node_1", "re-enable must persist panel ensure queueing before returning");
   assert.equal(disableQueued, false, "re-enable must not queue panel disable work");
   assert.equal(remoteEnsureCalled, false, "re-enable must queue panel ensure work instead of calling 3x-ui inline");
 }
@@ -15877,12 +15945,8 @@ async function testDisableNodeReturnsWhenAfterSaveFollowUpStalls() {
   assert.equal(result.isActive, false);
   assert.equal(result.panelSyncStatus, "pending");
   assert.equal(updatedData?.isActive, false, "local node disable must save before stalled follow-up finishes");
-  assert.equal(leaseJobQueueStarted, false, "lease job queueing must not block the local node disable response");
-  assert.equal(panelDisableQueued, false, "panel disable queueing must not block the local node disable response");
-  await waitUntil(() => leaseJobQueueStarted);
-  assert.equal(leaseJobQueueStarted, true, "lease job queueing should still run after the response");
-  await waitUntil(() => panelDisableQueued, 1000);
-  assert.equal(panelDisableQueued, true, "subsequent panel disable queueing should still run after the stalled lease step times out");
+  assert.equal(leaseJobQueueStarted, true, "lease job queueing must start before the local node disable response");
+  assert.equal(panelDisableQueued, true, "panel disable queueing must still run after the stalled lease step times out");
 }
 
 async function testPanelDisableJobUpsertResetsStaleFailureState() {
@@ -17296,8 +17360,6 @@ async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails(
 
   assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
   assert.equal(record.panelApiBasePath, "/new");
-  assert.deepEqual(calls, [], "panel migration cleanup and resync must be deferred until after the local response");
-  await waitUntil(() => calls.length >= 4);
   assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "mark_deleted", "sync_new"]);
   assert.equal(updates[0].panelBaseUrl, "https://new-panel.example.com");
   assert.equal(cleanupPanelConfig?.panelBaseUrl, "https://old-panel.example.com");
@@ -17360,8 +17422,6 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
   assert.equal(record.panelApiBasePath, "/new");
   assert.equal(record.panelStatus, "degraded");
   assert.equal(updates[0].panelError, "new panel offline");
-  assert.deepEqual(calls, [], "panel migration cleanup and resync must be deferred until after the local response");
-  await waitUntil(() => calls.length >= 3);
   assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "sync_new"]);
 }
 
@@ -17440,11 +17500,8 @@ async function testUpdateNodePanelMigrationReturnsWhenOldPanelCleanupStalls() {
   assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
   assert.equal(record.panelApiBasePath, "/new");
   assert.equal(record.panelSyncStatus, "pending");
-  assert.deepEqual(calls, [], "old panel cleanup must start after the local response has returned");
   assert.equal(updates.length, 1, "panel migration must save the new local config before old panel cleanup finishes");
-  await waitUntil(() => calls.includes("remove_old"));
   await waitUntil(() => warnings.some((message) => /queue old panel binding deletion/.test(message) && /exceeded 300ms/.test(message)));
-  await waitUntil(() => calls.includes("sync_new"));
   assert.deepEqual(calls, ["queue_lease_revocation", "remove_old", "sync_new"]);
   assert.equal(calls.includes("mark_deleted"), false, "stalled old panel cleanup must not mark bindings deleted without a failed result");
 }
@@ -25746,8 +25803,7 @@ async function testCreateSubscriptionReturnsPendingWhenPanelSyncFails() {
   });
 
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /subscription panel access sync after create/);
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /panel add failed/);
   assert.deepEqual(publishedTargets, [
     { subscriptionId: "sub_1", userId: "user_1", teamId: null, state: "active" }
   ]);
@@ -25839,11 +25895,9 @@ async function testCreateSubscriptionPanelSyncDoesNotWaitForHeldUsageLock() {
       })
     ]);
 
-    assert.equal(queuedPanelSync, 0, "createSubscription must return before queued panel sync starts");
+    assert.equal(queuedPanelSync, 1, "createSubscription must persist queued panel sync before returning");
     assert.equal(usageLockingSyncCalls, 0, "createSubscription must not use usage-locking panel sync after local save");
     assert.equal(result.panelSyncStatus, "pending");
-    await waitUntil(() => queuedPanelSync === 1);
-    assert.equal(queuedPanelSync, 1);
   } finally {
     if (releaseOuterLock) {
       releaseOuterLock();
@@ -25925,10 +25979,8 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupFails() {
   });
 
   assert.equal(createdSubscription, true);
-  assert.equal(syncCalled, false, "panel sync should be deferred until after the local response");
+  assert.equal(syncCalled, true, "panel sync should be persisted before the local response");
   assert.equal(result.id, "sub_1");
-  await waitUntil(() => syncCalled);
-  assert.equal(syncCalled, true, "panel sync should still be queued after best-effort ticket cleanup fails");
 }
 
 async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
@@ -26002,7 +26054,7 @@ async function testCreateSubscriptionKeepsLocalSaveWhenTicketCleanupStalls() {
   ]);
 
   assert.equal(createdSubscription, true);
-  assert.equal(syncCalled, false, "panel sync should be deferred until after the local response");
+  assert.equal(syncCalled, true, "panel sync should be persisted before the local response");
   assert.equal(result.id, "sub_1");
   await waitUntil(() => syncCalled);
   assert.equal(syncCalled, true, "panel sync should still be queued after stalled best-effort ticket cleanup");
@@ -26070,13 +26122,11 @@ async function testCreateTeamSubscriptionReturnsPendingWhenPanelSyncFails() {
 
   assert.equal(result.id, "sub_team");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /queued for background processing/);
+  assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
   assert.deepEqual(publishedTargets, [
     { subscriptionId: "sub_team", userId: null, teamId: "team_1", state: "active" }
   ]);
-  assert.equal(panelSyncStarted, false, "team subscription create must not wait for panel sync before returning");
-  await waitUntil(() => panelSyncStarted);
-  assert.equal(panelSyncStarted, true, "team subscription create should still start panel sync in background");
+  assert.equal(panelSyncStarted, true, "team subscription create must persist panel sync before returning");
 }
 
 async function testDisableUserReturnsPendingWhenPanelDisconnectFails() {
@@ -27088,10 +27138,8 @@ async function testCreateTeamMemberReturnsPendingWhenPanelSyncFails() {
 
   assert.equal((result as { id: string }).id, "team_1");
   assert.equal(result.panelSyncStatus, "pending");
-  assert.match(result.panelSyncMessage ?? "", /background|queued|pending/i);
-  assert.equal(panelSyncStarted, false, "team member create must not wait for panel sync before returning");
-  await waitUntil(() => panelSyncStarted);
-  assert.equal(panelSyncStarted, true, "team member create should still start panel sync in background");
+  assert.match(result.panelSyncMessage ?? "", /panel sync failed/);
+  assert.equal(panelSyncStarted, true, "team member create must persist panel sync before returning");
 }
 
 async function testCreateTeamMemberKeepsMemberWhenSubscriptionLookupFails() {
@@ -30862,6 +30910,8 @@ async function main() {
   await testPanelSyncJobRemoteCallDoesNotWaitForSubscriptionUsageLock();
   await testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscriptionStalls();
   await testUpdateNodeAccessQueuesPanelSyncAfterLocalTransaction();
+  await testPanelDisableQueuePublishesSyncQueueEvent();
+  await testAdminPanelSyncRetryPublishesSyncQueueEvent();
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();
   testCorsAllowsProductionAndConfiguredOrigins();

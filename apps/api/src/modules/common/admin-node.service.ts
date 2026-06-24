@@ -187,6 +187,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("面板同步任务不存在或已完成");
     }
+    this.publishSyncQueueUpdatedBestEffort({});
     return this.listPanelSyncJobsAfterRetry();
   }
 
@@ -211,6 +212,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("该节点暂无可重试的面板同步任务");
     }
+    this.publishSyncQueueUpdatedBestEffort({ nodeId });
     return this.listPanelSyncJobsAfterRetry();
   }
 
@@ -276,6 +278,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("连接撤销任务不存在或已完成");
     }
+    this.publishSyncQueueUpdatedBestEffort({});
     return this.listLeaseRevocationJobsAfterRetry();
   }
 
@@ -300,6 +303,7 @@ export class AdminNodeService {
     if (updated.count === 0) {
       throw new NotFoundException("该节点暂无可重试的连接撤销任务");
     }
+    this.publishSyncQueueUpdatedBestEffort({ nodeId });
     return this.listLeaseRevocationJobsAfterRetry();
   }
 
@@ -1339,6 +1343,25 @@ export class AdminNodeService {
     }
   }
 
+  private publishSyncQueueUpdatedBestEffort(input: { nodeId?: string | null }) {
+    if (!this.adminRuntimeEventsService) {
+      return;
+    }
+    try {
+      this.adminRuntimeEventsService.publish({
+        type: "sync_queue_updated",
+        occurredAt: new Date().toISOString(),
+        nodeId: input.nodeId ?? null
+      });
+    } catch (error) {
+      this.logger?.warn(
+        `Local sync queue change saved, but admin sync_queue_updated publish failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
   private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {
     let settled = false;
     const guardedTask = new Promise<void>((resolve) => {
@@ -1386,42 +1409,46 @@ export class AdminNodeService {
   }
 
   private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
-    const timer = setTimeout(() => {
-      let settled = false;
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      const guardedTask = Promise.resolve()
-        .then(task)
-        .then(
-          () => {
-            settled = true;
-          },
-          (error) => {
-            settled = true;
-            throw error;
-          }
-        );
-      void guardedTask.catch((error) => {
-        this.logger?.warn(
-          `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-      });
+    let settled = false;
+    const guardedTask = Promise.resolve()
+      .then(task)
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
+    void guardedTask.catch((error) => {
+      this.logger?.warn(
+        `Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
       timeoutHandle = setTimeout(() => {
         if (!settled) {
           this.logger?.warn(
             `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
           );
         }
+        resolve();
       }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
       timeoutHandle.unref?.();
-      void guardedTask
-        .finally(() => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-          }
-        })
-        .catch(() => undefined);
-    }, NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS);
-    timer.unref?.();
+    });
+
+    try {
+      await Promise.race([guardedTask, timeoutTask]);
+    } catch {
+      // The guarded task logs the failure; local node changes must remain committed.
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private async resolveNodeRuntimeSource(input: ImportNodeInputDto, panelEnabled: boolean) {
