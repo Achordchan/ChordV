@@ -75,6 +75,7 @@ const devDataServiceStub = {
   listAdminUsers: async () => [record("users-list", "all")],
   createUser: async (body: unknown) => record("user-create", "new", body),
   updateUser: async (userId: string, body: unknown) => record("user-update", userId, body),
+  disconnectUser: async (userId: string) => record("user-disconnect", userId),
   updateUserSecurity: async (userId: string, body: unknown) => record("user-security", userId, body),
   listAdminPlans: async () => [record("plans-list", "all")],
   createPlan: async (body: unknown) => record("plan-create", "new", body),
@@ -90,6 +91,7 @@ const devDataServiceStub = {
   getSubscriptionNodeAccess: async (subscriptionId: string) => record("subscription-nodes-get", subscriptionId),
   updateSubscriptionNodeAccess: async (subscriptionId: string, body: unknown) =>
     record("subscription-nodes-update", subscriptionId, body),
+  resetSubscriptionTraffic: async (subscriptionId: string, body: unknown) => record("subscription-reset-traffic", subscriptionId, body),
   listAdminTeams: async () => [record("teams-list", "all")],
   createTeam: async (body: unknown) => record("team-create", "new", body),
   updateTeam: async (teamId: string, body: unknown) => record("team-update", teamId, body),
@@ -102,28 +104,59 @@ const devDataServiceStub = {
   getTeamUsage: async (teamId: string) => record("team-usage", teamId),
   listAdminNodes: async () => [record("nodes-list", "all")],
   listAdminPanelSyncJobs: async () => [record("panel-jobs-list", "all")],
+  retryAdminPanelSyncJob: async (jobId: string) => [record("panel-job-retry", jobId)],
+  retryAdminPanelSyncJobsForNode: async (nodeId: string) => [record("panel-jobs-node-retry", nodeId)],
   listAdminLeaseRevocationJobs: async () => [record("lease-jobs-list", "all")],
+  retryAdminLeaseRevocationJob: async (jobId: string) => [record("lease-job-retry", jobId)],
+  retryAdminLeaseRevocationJobsForNode: async (nodeId: string) => [record("lease-jobs-node-retry", nodeId)],
   importNodeFromSubscription: async (body: unknown) => record("node-import", "new", body),
   listNodePanelInbounds: async (body: unknown) => record("node-panel-inbounds", "panel", body),
+  updateNode: async (nodeId: string, body: unknown) => record("node-update", nodeId, body),
   refreshNode: async (nodeId: string) => record("node-refresh", nodeId),
   probeNode: async (nodeId: string) => record("node-probe", nodeId),
+  probeAllNodes: async () => [record("nodes-probe-all", "all")],
+  deleteNode: async (nodeId: string) => record("node-delete", nodeId),
   listAdminSupportTickets: async () => [record("tickets-list", "all")],
   getAdminSupportTicketDetail: async (ticketId: string) => record("ticket-detail", ticketId),
   replyAdminSupportTicket: async (ticketId: string, body: unknown, adminId?: string | null) =>
     record("ticket-reply", ticketId, { ...toPlainJson(body) as Record<string, unknown>, adminId }),
   closeAdminSupportTicket: async (ticketId: string) => record("ticket-close", ticketId),
   reopenAdminSupportTicket: async (ticketId: string) => record("ticket-reopen", ticketId),
+  replyAdminSupportTicketWithAttachment: async (ticketId: string, body: unknown, file: unknown, adminId?: string | null) =>
+    record("ticket-reply-attachment", ticketId, { ...toPlainJson(body) as Record<string, unknown>, hasFile: Boolean(file), adminId }),
   listAdminAnnouncements: async () => [record("announcements-list", "all")],
+  createAnnouncement: async (body: unknown) => record("announcement-create", "new", body),
+  updateAnnouncement: async (announcementId: string, body: unknown) => record("announcement-update", announcementId, body),
+  deleteAnnouncement: async (announcementId: string) => record("announcement-delete", announcementId),
   getAdminPolicy: async () => record("policy-get", "policy"),
   updatePolicy: async (body: unknown) => record("policy-update", "policy", body),
   listAdminReleases: async (query: unknown) => [record("releases-list", "all", query)],
-  deleteRelease: async (releaseId: string) => record("release-delete", releaseId)
+  createRelease: async (body: unknown) => record("release-create", "new", body),
+  updateRelease: async (releaseId: string, body: unknown) => record("release-update", releaseId, body),
+  publishRelease: async (releaseId: string) => record("release-publish", releaseId),
+  unpublishRelease: async (releaseId: string) => record("release-unpublish", releaseId),
+  deleteRelease: async (releaseId: string) => record("release-delete", releaseId),
+  createReleaseArtifact: async (releaseId: string, body: unknown) => record("release-artifact-create", releaseId, body),
+  uploadReleaseArtifact: async (releaseId: string, body: unknown, file: unknown) =>
+    record("release-artifact-upload", releaseId, { ...toPlainJson(body) as Record<string, unknown>, hasFile: Boolean(file) }),
+  updateReleaseArtifact: async (releaseId: string, artifactId: string, body: unknown) =>
+    record("release-artifact-update", `${releaseId}:${artifactId}`, body),
+  deleteReleaseArtifact: async (releaseId: string, artifactId: string) => record("release-artifact-delete", `${releaseId}:${artifactId}`),
+  replaceReleaseArtifactUpload: async (releaseId: string, artifactId: string, body: unknown, file: unknown) =>
+    record("release-artifact-replace-upload", `${releaseId}:${artifactId}`, { ...toPlainJson(body) as Record<string, unknown>, hasFile: Boolean(file) })
 };
 
 const runtimeComponentsServiceStub = {
   listAdminRuntimeComponents: async () => [record("runtime-list", "all")],
+  listRuntimeComponentFailureReports: async (limit: unknown) => [record("runtime-failures-list", "all", { limit })],
   createAdminRuntimeComponent: async (body: unknown) => record("runtime-create", "new", body),
+  uploadAdminRuntimeComponent: async (body: unknown, file: unknown) =>
+    record("runtime-upload", "new", { ...toPlainJson(body) as Record<string, unknown>, hasFile: Boolean(file) }),
   updateAdminRuntimeComponent: async (componentId: string, body: unknown) => record("runtime-update", componentId, body),
+  replaceAdminRuntimeComponentUpload: async (componentId: string, body: unknown, file: unknown) =>
+    record("runtime-replace-upload", componentId, { ...toPlainJson(body) as Record<string, unknown>, hasFile: Boolean(file) }),
+  deleteAdminRuntimeComponent: async (componentId: string) => record("runtime-delete", componentId),
+  validateAdminRuntimeComponent: async (componentId: string) => record("runtime-verify", componentId),
   getRuntimeComponentDownloadDescriptor: async (componentId: string) => {
     record("runtime-download", componentId);
     return { absolutePath: runtimeDownloadPath, fileName: "xray.zip" };
@@ -159,6 +192,13 @@ const clientServiceStub = {
   disconnect: async (sessionId: string, authorization?: string) => record("client-session-disconnect", sessionId, { authorization })
 };
 
+const imageBedServiceStub = {
+  getAdminConfig: async () => record("image-bed-config-get", "config"),
+  updateAdminConfig: async (body: unknown) => record("image-bed-config-update", "config", body),
+  listAdminFiles: async (query: unknown) => [record("image-bed-files-list", "all", query)],
+  deleteAdminFile: async (query: unknown) => record("image-bed-file-delete", "file", query)
+};
+
 @Module({
   controllers: [AdminController, ClientController, DownloadsController],
   providers: [
@@ -174,7 +214,7 @@ const clientServiceStub = {
     { provide: DevDataService, useValue: devDataServiceStub },
     { provide: ClientService, useValue: clientServiceStub },
     { provide: RuntimeComponentsService, useValue: runtimeComponentsServiceStub },
-    { provide: ImageBedService, useValue: {} },
+    { provide: ImageBedService, useValue: imageBedServiceStub },
     { provide: AdminRuntimeEventsService, useValue: {} }
   ]
 })
@@ -383,6 +423,13 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/snapshot", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/dashboard", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/upload-limits", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/image-bed/config", { method: "GET" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/image-bed/config", { method: "PATCH", body: { apiToken: "imgbed_test_token" } })).status,
+      200
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/image-bed/files?prefix=tickets", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/image-bed/files?key=tickets/a.png", { method: "DELETE" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/me/security", {
         method: "PUT",
@@ -398,6 +445,7 @@ async function main() {
       201
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/users/user_1", { method: "PATCH", body: { status: "disabled" } })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/users/user_1/disconnect")).status, 201);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/users/user_1/security", {
         method: "PUT",
@@ -452,6 +500,10 @@ async function main() {
       })).status,
       200
     );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/subscriptions/subscription_1/reset-traffic", { body: { userId: "user_1" } })).status,
+      201
+    );
     assert.equal((await requestJson(baseUrl, "/api/admin/teams", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/teams", { body: { name: "UAT Team", ownerUserId: "user_1" } })).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/teams/team_1", { method: "PATCH", body: { status: "disabled" } })).status, 200);
@@ -474,7 +526,11 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/teams/team_1/usage", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/panel-sync-jobs", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/panel-sync-jobs/job_1/retry")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/panel-sync-jobs/retry")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/lease-revocation-jobs/lease_job_1/retry")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/lease-revocation-jobs/retry")).status, 201);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/nodes/import", {
         body: { subscriptionUrl: "https://node.example.com/sub", name: "UAT Node", countryCode: "US" }
@@ -487,14 +543,32 @@ async function main() {
       })).status,
       201
     );
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "PATCH", body: { isActive: false } })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/refresh")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1/probe")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/probe-all")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/nodes/node_1", { method: "DELETE" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1", { method: "GET" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/replies", { body: { body: "admin reply" } })).status, 201);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/tickets/ticket_1/attachments", { body: { body: "admin attachment reply" } })).status,
+      201
+    );
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/close")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/tickets/ticket_1/reopen")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/announcements", { method: "GET" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/announcements", {
+        body: { title: "UAT announcement", body: "body", level: "info" }
+      })).status,
+      201
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/announcements/announcement_1", { method: "PATCH", body: { isActive: false } })).status,
+      200
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/announcements/announcement_1", { method: "DELETE" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/policies", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/policies", {
@@ -504,11 +578,30 @@ async function main() {
       200
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/releases?platform=windows&status=draft", { method: "GET" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/releases", {
+        body: { platform: "windows", channel: "stable", version: "1.1.7", displayTitle: "1.1.7" }
+      })).status,
+      201
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/releases/release_1", { method: "PATCH", body: { displayTitle: "1.1.7 hotfix" } })).status,
+      200
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1/publish")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1/unpublish")).status, 201);
     assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1", { method: "DELETE" })).status, 200);
     assert.equal((await requestJson(baseUrl, "/api/admin/runtime-components", { method: "GET" })).status, 200);
+    assert.equal((await requestJson(baseUrl, "/api/admin/runtime-components/failures?limit=5", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/runtime-components", {
         body: { platform: "windows", architecture: "x64", kind: "xray", source: "custom_remote", originUrl: "https://cdn.example.com/xray.zip", fileName: "xray.zip" }
+      })).status,
+      201
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/runtime-components/upload", {
+        body: { platform: "windows", architecture: "x64", kind: "xray", fileName: "xray.zip" }
       })).status,
       201
     );
@@ -519,6 +612,43 @@ async function main() {
       })).status,
       200
     );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/runtime-components/component_1/upload", { body: { fileName: "xray.zip" } })).status,
+      201
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/runtime-components/component_1/verify")).status, 201);
+    assert.equal((await requestJson(baseUrl, "/api/admin/runtime-components/component_1", { method: "DELETE" })).status, 200);
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts", {
+        body: {
+          source: "external",
+          type: "external",
+          deliveryMode: "external_download",
+          downloadUrl: "https://cdn.example.com/chordv.exe"
+        }
+      })).status,
+      201
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/upload", {
+        body: { type: "exe", deliveryMode: "desktop_installer_download" }
+      })).status,
+      201
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1", {
+        method: "PATCH",
+        body: { isPrimary: true }
+      })).status,
+      200
+    );
+    assert.equal(
+      (await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1/upload", {
+        body: { type: "exe", deliveryMode: "desktop_installer_download" }
+      })).status,
+      201
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/releases/release_1/artifacts/artifact_1", { method: "DELETE" })).status, 200);
     assert.equal(await requestDownload(baseUrl, "/api/downloads/runtime-components/component_1"), 204);
     assert.deepEqual(downloadCalls, [{ absolutePath: runtimeDownloadPath, fileName: "xray.zip" }]);
 
@@ -622,14 +752,20 @@ async function main() {
       201
     );
 
-    const adminCalls = calls.slice(0, 49);
-    const clientCalls = calls.slice(49);
+    const clientStartIndex = calls.findIndex((call) => call.route === "client-bootstrap");
+    assert.ok(clientStartIndex > 0, "client route calls should be present after admin route calls");
+    const adminCalls = calls.slice(0, clientStartIndex);
+    const clientCalls = calls.slice(clientStartIndex);
 
     assert.deepEqual(
       adminCalls,
       [
         { route: "snapshot-get", value: "snapshot" },
         { route: "dashboard-get", value: "dashboard" },
+        { route: "image-bed-config-get", value: "config" },
+        { route: "image-bed-config-update", value: "config", body: { apiToken: "imgbed_test_token" } },
+        { route: "image-bed-files-list", value: "all", body: { prefix: "tickets" } },
+        { route: "image-bed-file-delete", value: "file", body: { key: "tickets/a.png" } },
         {
           route: "admin-security",
           value: "me",
@@ -647,6 +783,7 @@ async function main() {
           body: { email: "uat@example.com", password: "password1", displayName: "UAT User", role: "user" }
         },
         { route: "user-update", value: "user_1", body: { status: "disabled" } },
+        { route: "user-disconnect", value: "user_1" },
         { route: "user-security", value: "user_1", body: { maxConcurrentSessionsOverride: 2 } },
         { route: "plans-list", value: "all" },
         {
@@ -664,6 +801,7 @@ async function main() {
         { route: "subscription-convert-team", value: "subscription_1", body: { targetTeamId: "team_1" } },
         { route: "subscription-nodes-get", value: "subscription_1" },
         { route: "subscription-nodes-update", value: "subscription_1", body: { nodeIds: ["node_1"] } },
+        { route: "subscription-reset-traffic", value: "subscription_1", body: { userId: "user_1" } },
         { route: "teams-list", value: "all" },
         { route: "team-create", value: "new", body: { name: "UAT Team", ownerUserId: "user_1" } },
         { route: "team-update", value: "team_1", body: { status: "disabled" } },
@@ -675,7 +813,11 @@ async function main() {
         { route: "team-usage", value: "team_1" },
         { route: "nodes-list", value: "all" },
         { route: "panel-jobs-list", value: "all" },
+        { route: "panel-job-retry", value: "job_1" },
+        { route: "panel-jobs-node-retry", value: "node_1" },
         { route: "lease-jobs-list", value: "all" },
+        { route: "lease-job-retry", value: "lease_job_1" },
+        { route: "lease-jobs-node-retry", value: "node_1" },
         {
           route: "node-import",
           value: "new",
@@ -686,19 +828,39 @@ async function main() {
           value: "panel",
           body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "password" }
         },
+        { route: "node-update", value: "node_1", body: { isActive: false } },
         { route: "node-refresh", value: "node_1" },
         { route: "node-probe", value: "node_1" },
+        { route: "nodes-probe-all", value: "all" },
+        { route: "node-delete", value: "node_1" },
         { route: "tickets-list", value: "all" },
         { route: "ticket-detail", value: "ticket_1" },
         { route: "ticket-reply", value: "ticket_1", body: { body: "admin reply", adminId: "admin_1" } },
+        {
+          route: "ticket-reply-attachment",
+          value: "ticket_1",
+          body: { body: "admin attachment reply", hasFile: false, adminId: "admin_1" }
+        },
         { route: "ticket-close", value: "ticket_1" },
         { route: "ticket-reopen", value: "ticket_1" },
         { route: "announcements-list", value: "all" },
+        { route: "announcement-create", value: "new", body: { title: "UAT announcement", body: "body", level: "info" } },
+        { route: "announcement-update", value: "announcement_1", body: { isActive: false } },
+        { route: "announcement-delete", value: "announcement_1" },
         { route: "policy-get", value: "policy" },
         { route: "policy-update", value: "policy", body: { modes: ["global", "rule"], defaultMode: "rule", blockAds: true } },
         { route: "releases-list", value: "all", body: { platform: "windows", status: "draft" } },
+        {
+          route: "release-create",
+          value: "new",
+          body: { platform: "windows", channel: "stable", version: "1.1.7", displayTitle: "1.1.7" }
+        },
+        { route: "release-update", value: "release_1", body: { displayTitle: "1.1.7 hotfix" } },
+        { route: "release-publish", value: "release_1" },
+        { route: "release-unpublish", value: "release_1" },
         { route: "release-delete", value: "release_1" },
         { route: "runtime-list", value: "all" },
+        { route: "runtime-failures-list", value: "all", body: { limit: "5" } },
         {
           route: "runtime-create",
           value: "new",
@@ -712,6 +874,11 @@ async function main() {
           }
         },
         {
+          route: "runtime-upload",
+          value: "new",
+          body: { platform: "windows", architecture: "x64", kind: "xray", fileName: "xray.zip", hasFile: false }
+        },
+        {
           route: "runtime-update",
           value: "component_1",
           body: {
@@ -721,6 +888,31 @@ async function main() {
             enabled: true
           }
         },
+        { route: "runtime-replace-upload", value: "component_1", body: { fileName: "xray.zip", hasFile: false } },
+        { route: "runtime-verify", value: "component_1" },
+        { route: "runtime-delete", value: "component_1" },
+        {
+          route: "release-artifact-create",
+          value: "release_1",
+          body: {
+            source: "external",
+            type: "external",
+            deliveryMode: "external_download",
+            downloadUrl: "https://cdn.example.com/chordv.exe"
+          }
+        },
+        {
+          route: "release-artifact-upload",
+          value: "release_1",
+          body: { type: "exe", deliveryMode: "desktop_installer_download", hasFile: false }
+        },
+        { route: "release-artifact-update", value: "release_1:artifact_1", body: { isPrimary: true } },
+        {
+          route: "release-artifact-replace-upload",
+          value: "release_1:artifact_1",
+          body: { type: "exe", deliveryMode: "desktop_installer_download", hasFile: false }
+        },
+        { route: "release-artifact-delete", value: "release_1:artifact_1" },
         { route: "runtime-download", value: "component_1" }
       ]
     );
