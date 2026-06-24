@@ -159,13 +159,18 @@ export class ImageBedService {
     );
 
     const deleted = readStringArray(payload.deleted);
-    const failed = readStringArray(payload.failed);
+    const failed = readSanitizedImageBedErrorArray(payload.failed);
     const success = (payload.success === true || deleted.length > 0) && failed.length === 0;
     return {
       success,
       fileId: readString(payload.fileId) ?? normalizedPath,
       deleted,
-      failed: failed.length > 0 ? failed : payload.success === false ? [readString(payload.message) ?? readString(payload.error) ?? normalizedPath] : []
+      failed:
+        failed.length > 0
+          ? failed
+          : payload.success === false
+            ? [sanitizeImageBedErrorDetail(readString(payload.message) ?? readString(payload.error)) ?? normalizedPath]
+            : []
     };
   }
 
@@ -702,6 +707,12 @@ function readString(value: unknown) {
 
 function readStringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readSanitizedImageBedErrorArray(value: unknown) {
+  return readStringArray(value)
+    .map((item) => sanitizeImageBedErrorDetail(item))
+    .filter((item): item is string => Boolean(item));
 }
 
 function readNumber(value: unknown) {

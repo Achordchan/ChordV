@@ -143,11 +143,63 @@ async function testListPreservesTimeoutReason() {
   }
 }
 
+async function testDeleteRedactsFailedArrayProviderErrors() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: false,
+        failed: [
+          "Authorization: Bearer image-bed-secret-token-123456",
+          "delete failed with token=another-secret-token-123456"
+        ]
+      })
+    );
+  });
+  const baseUrl = await listen(server);
+
+  try {
+    const service = createImageBedService(baseUrl);
+    const result = await service.deleteAdminFile({ path: "support-tickets/rejected.png" });
+
+    assert.equal(result.success, false);
+    assert.deepEqual(result.failed, ["Authorization: Bearer ***", "delete failed with token=***"]);
+    assert.doesNotMatch(result.failed.join(" "), /image-bed-secret-token-123456|another-secret-token-123456/i);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function testDeleteRedactsBusinessFailureMessageFallback() {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        success: false,
+        message: "Delete rejected; Authorization: Bearer image-bed-secret-token-123456"
+      })
+    );
+  });
+  const baseUrl = await listen(server);
+
+  try {
+    const service = createImageBedService(baseUrl);
+    const result = await service.deleteAdminFile({ path: "support-tickets/rejected.png" });
+
+    assert.deepEqual(result.failed, ["Delete rejected; Authorization: Bearer ***"]);
+    assert.doesNotMatch(result.failed.join(" "), /image-bed-secret-token-123456/i);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 async function main() {
   await testListPreservesHttpStatusAndRedactsProviderError();
   await testListPreservesBusinessFailureMessage();
   await testUploadPreservesBusinessFailureMessage();
   await testListPreservesTimeoutReason();
+  await testDeleteRedactsFailedArrayProviderErrors();
+  await testDeleteRedactsBusinessFailureMessageFallback();
   console.log("image bed error fidelity regression checks passed");
 }
 
