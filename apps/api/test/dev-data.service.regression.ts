@@ -3518,6 +3518,54 @@ async function testRuntimeDownloadUnreadableUploadedFileReturnsServiceUnavailabl
   }
 }
 
+async function testRuntimeDownloadStatFailureReturnsServiceUnavailable() {
+  const originalStat = fsForPatch.stat;
+  const previousReleaseStorageRoot = process.env.CHORDV_RELEASE_STORAGE_ROOT;
+  const tempDir = await mkdtemp(path.join(tmpdir(), "chordv-runtime-stat-download-"));
+  const storedFilePath = path.join("component_1", "stat-failure-xray.exe");
+  process.env.CHORDV_RELEASE_STORAGE_ROOT = tempDir;
+  const absolutePath = path.resolve(tempDir, "runtime-components", storedFilePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, "runtime");
+  (fsForPatch as any).stat = async () => {
+    throw Object.assign(new Error("stat permission denied"), { code: "EACCES" });
+  };
+  try {
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findUnique: async () => ({
+            source: "uploaded",
+            storedFilePath,
+            enabled: true,
+            fileName: "xray.exe",
+            fileSizeBytes: 7n,
+            fileHash: "a".repeat(64),
+            expectedHash: "a".repeat(64)
+          })
+        }
+      }
+    });
+
+    await assert.rejects(
+      () => service.getRuntimeComponentDownloadDescriptor("component_1"),
+      (error) =>
+        error instanceof ServiceUnavailableException &&
+        !/stat permission denied/i.test(error.message) &&
+        !/HTTP 500/i.test(error.message),
+      "runtime download stat failures must return a controlled 503 instead of leaking filesystem errors"
+    );
+  } finally {
+    (fsForPatch as any).stat = originalStat;
+    if (previousReleaseStorageRoot === undefined) {
+      delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
+    } else {
+      process.env.CHORDV_RELEASE_STORAGE_ROOT = previousReleaseStorageRoot;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function testReleaseDownloadMapsSendFileMissingToNotFound() {
   const controller = new DownloadsController(
     {
@@ -24993,6 +25041,69 @@ async function testUpdateTeamOwnerTransferUsesOwnerLock() {
   }
 }
 
+async function testUpdateTeamOwnerTransferUsesTeamLock() {
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalLockTimeout = process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+  const originalLockRetry = process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+  delete process.env.DATABASE_URL;
+  process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = "25";
+  process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = "5";
+  let releaseOuterLock!: () => void;
+  let businessLogicEntered = false;
+
+  const heldLock = runWithSubscriptionOwnerLock(
+    "team:team_1",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const service = createAdminSubscriptionService({
+      requireTeam: async () => {
+        businessLogicEntered = true;
+        return {
+          id: "team_1",
+          ownerUserId: "owner_1",
+          status: "active"
+        };
+      }
+    });
+
+    await assert.rejects(
+      () => service.updateTeam("team_1", { ownerUserId: "new_owner" }),
+      (error) => error instanceof ConflictException && /retry shortly/.test(error.message),
+      "team owner transfer must use a team-level lock before entering mutation logic"
+    );
+    assert.equal(businessLogicEntered, false, "owner transfer must not enter team mutation logic while the team lock is held");
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock.catch(() => undefined);
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl;
+    }
+    if (originalLockTimeout === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = originalLockTimeout;
+    }
+    if (originalLockRetry === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = originalLockRetry;
+    }
+  }
+}
+
 async function testUpdateTeamMemberMapsLocalSaveFailure() {
   const service = createAdminSubscriptionService({
     requireTeamMember: async () => ({
@@ -25018,6 +25129,70 @@ async function testUpdateTeamMemberMapsLocalSaveFailure() {
       !/HTTP 500/i.test(error.message),
     "team member update local save failures must return a controlled 503 instead of HTTP 500"
   );
+}
+
+async function testUpdateTeamMemberOwnerTransferUsesTeamLock() {
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalLockTimeout = process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+  const originalLockRetry = process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+  delete process.env.DATABASE_URL;
+  process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = "25";
+  process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = "5";
+  let releaseOuterLock!: () => void;
+  let businessLogicEntered = false;
+
+  const heldLock = runWithSubscriptionOwnerLock(
+    "team:team_1",
+    async () =>
+      new Promise<void>((resolve) => {
+        releaseOuterLock = resolve;
+      })
+  );
+
+  try {
+    for (let attempt = 0; !releaseOuterLock && attempt < 10; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const service = createAdminSubscriptionService({
+      requireTeamMember: async () => {
+        businessLogicEntered = true;
+        return {
+          id: "member_1",
+          teamId: "team_1",
+          userId: "user_1",
+          role: "member"
+        };
+      }
+    });
+
+    await assert.rejects(
+      () => service.updateTeamMember("team_1", "member_1", { role: "owner" }),
+      (error) => error instanceof ConflictException && /retry shortly/.test(error.message),
+      "team member owner transfer must use a team-level lock before entering mutation logic"
+    );
+    assert.equal(businessLogicEntered, false, "member owner transfer must not enter mutation logic while the team lock is held");
+  } finally {
+    if (releaseOuterLock) {
+      releaseOuterLock();
+    }
+    await heldLock.catch(() => undefined);
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl;
+    }
+    if (originalLockTimeout === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = originalLockTimeout;
+    }
+    if (originalLockRetry === undefined) {
+      delete process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS;
+    } else {
+      process.env.CHORDV_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = originalLockRetry;
+    }
+  }
 }
 
 async function testDeleteTeamMemberMapsLocalSaveFailure() {
@@ -25130,6 +25305,66 @@ async function testListAdminPlansMapsLocalReadFailure() {
       !/plan list local read failed/i.test(error.message) &&
       !/HTTP 500/i.test(error.message),
     "plan list local read failures must return a controlled 503 instead of HTTP 500"
+  );
+}
+
+async function testListAdminPlansUsesSubscriptionCountAggregation() {
+  let fullSubscriptionReadCalled = false;
+  const createdAt = new Date("2026-01-01T00:00:00.000Z");
+  const updatedAt = new Date("2026-01-02T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    prisma: {
+      plan: {
+        findMany: async () => [
+          {
+            id: "plan_a",
+            name: "A",
+            scope: "personal",
+            totalTrafficGb: 100,
+            renewable: true,
+            maxConcurrentSessions: 2,
+            isActive: true,
+            createdAt,
+            updatedAt
+          },
+          {
+            id: "plan_b",
+            name: "B",
+            scope: "team",
+            totalTrafficGb: 300,
+            renewable: false,
+            maxConcurrentSessions: 5,
+            isActive: true,
+            createdAt,
+            updatedAt
+          }
+        ]
+      },
+      subscription: {
+        groupBy: async (payload: Record<string, unknown>) => {
+          assert.deepEqual(payload, { by: ["planId"], _count: { _all: true } });
+          return [
+            { planId: "plan_a", _count: { _all: 3 } },
+            { planId: "plan_b", _count: { _all: 1 } }
+          ];
+        },
+        findMany: async () => {
+          fullSubscriptionReadCalled = true;
+          throw new Error("full subscription read must not be used for plan counts");
+        }
+      }
+    }
+  });
+
+  const plans = await service.listAdminPlans();
+
+  assert.equal(fullSubscriptionReadCalled, false, "plan list must not read full subscription rows for counts");
+  assert.deepEqual(
+    plans.map((plan) => ({ id: plan.id, subscriptionCount: plan.subscriptionCount })),
+    [
+      { id: "plan_a", subscriptionCount: 3 },
+      { id: "plan_b", subscriptionCount: 1 }
+    ]
   );
 }
 
@@ -31969,6 +32204,7 @@ async function main() {
   await testRuntimeDownloadRejectsUploadedComponentWithStaleMetadata();
   await testRuntimeDownloadMissingUploadedFileReturnsNotFound();
   await testRuntimeDownloadUnreadableUploadedFileReturnsServiceUnavailable();
+  await testRuntimeDownloadStatFailureReturnsServiceUnavailable();
   await testRuntimeDownloadMapsSendFileFailureToServiceUnavailable();
   await testRuntimeDownloadIgnoresSendFileFailureAfterHeadersSent();
   await testUpdateReleaseDelegatesToReleaseCenter();
@@ -32334,11 +32570,14 @@ async function main() {
   await testUpdateTeamMapsLocalSaveFailure();
   await testUpdateTeamOwnerTransferRejectsConcurrentForeignMembership();
   await testUpdateTeamOwnerTransferUsesOwnerLock();
+  await testUpdateTeamOwnerTransferUsesTeamLock();
+  await testUpdateTeamMemberOwnerTransferUsesTeamLock();
   await testUpdateTeamMemberMapsLocalSaveFailure();
   await testDeleteTeamMemberMapsLocalSaveFailure();
   await testCreateTeamSubscriptionMapsLocalSaveFailure();
   await testCreatePlanMapsLocalSaveFailure();
   await testListAdminPlansMapsLocalReadFailure();
+  await testListAdminPlansUsesSubscriptionCountAggregation();
   await testUpdatePlanMapsLocalSaveFailure();
   await testUpdatePlanMapsSubscriptionCountReadFailure();
   await testUpdatePlanSecurityMapsLocalSaveFailure();

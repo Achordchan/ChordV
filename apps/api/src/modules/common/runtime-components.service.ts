@@ -1353,7 +1353,7 @@ async function assertStoredRuntimeComponentReadable(component: {
   }
   const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
   await ensureFileReadable(absolutePath);
-  const stat = await fs.stat(absolutePath);
+  const stat = await statReadableFile(absolutePath);
   const actualSize = BigInt(stat.size);
   if (!hasPositiveFileSize(component.fileSizeBytes) || toBigInt(component.fileSizeBytes) !== actualSize) {
     throw new BadRequestException("上传型运行组件的文件大小元数据与已保存文件不一致。");
@@ -1547,6 +1547,18 @@ function sanitizeStoredFileName(fileName: string) {
 async function ensureFileReadable(filePath: string) {
   try {
     await fs.access(filePath);
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new NotFoundException("文件不存在或已丢失");
+    }
+    throw new ServiceUnavailableException("文件暂不可读，请检查服务器磁盘、目录权限或文件存储状态。");
+  }
+}
+
+async function statReadableFile(filePath: string) {
+  try {
+    return await fs.stat(filePath);
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
     if (code === "ENOENT" || code === "ENOTDIR") {

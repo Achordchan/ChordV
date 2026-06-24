@@ -474,10 +474,10 @@ export class AdminSubscriptionService {
   }
 
   async listAdminPlans(): Promise<AdminPlanRecordDto[]> {
-    const [plans, subscriptions] = await runAdminSubscriptionLocalOperation(
+    const [plans, subscriptionCounts] = await runAdminSubscriptionLocalOperation(
       () => Promise.all([
         this.prisma.plan.findMany({ orderBy: { createdAt: "asc" } }),
-        this.prisma.subscription.findMany()
+        this.countSubscriptionsByPlan()
       ]),
       "套餐列表读取失败，请稍后重试。"
     );
@@ -490,10 +490,34 @@ export class AdminSubscriptionService {
       renewable: plan.renewable,
       maxConcurrentSessions: plan.maxConcurrentSessions,
       isActive: plan.isActive,
-      subscriptionCount: subscriptions.filter((item) => item.planId === plan.id).length,
+      subscriptionCount: subscriptionCounts.get(plan.id) ?? 0,
       createdAt: plan.createdAt.toISOString(),
       updatedAt: plan.updatedAt.toISOString()
     }));
+  }
+
+  private async countSubscriptionsByPlan() {
+    const subscriptionModel = this.prisma.subscription as unknown as {
+      groupBy?: (args: unknown) => Promise<Array<{ planId: string; _count?: { _all?: number; planId?: number } }>>;
+      findMany: (args?: unknown) => Promise<Array<{ planId: string }>>;
+    };
+    const counts = new Map<string, number>();
+    if (typeof subscriptionModel.groupBy === "function") {
+      const rows = await subscriptionModel.groupBy({
+        by: ["planId"],
+        _count: { _all: true }
+      });
+      for (const row of rows) {
+        counts.set(row.planId, row._count?._all ?? row._count?.planId ?? 0);
+      }
+      return counts;
+    }
+
+    const rows = await subscriptionModel.findMany({ select: { planId: true } });
+    for (const row of rows) {
+      counts.set(row.planId, (counts.get(row.planId) ?? 0) + 1);
+    }
+    return counts;
   }
 
   async createPlan(input: CreatePlanInputDto): Promise<AdminPlanRecordDto> {
@@ -1280,7 +1304,9 @@ export class AdminSubscriptionService {
 
   async updateTeam(teamId: string, input: UpdateTeamInputDto): Promise<AdminTeamRecordDto> {
     if (input.ownerUserId) {
-      return runWithSubscriptionOwnerLock(`personal:${input.ownerUserId}`, () => this.updateTeamLocked(teamId, input));
+      return runWithSubscriptionOwnerLock(`team:${teamId}`, () =>
+        runWithSubscriptionOwnerLock(`personal:${input.ownerUserId}`, () => this.updateTeamLocked(teamId, input))
+      );
     }
     return this.updateTeamLocked(teamId, input);
   }
@@ -1502,6 +1528,13 @@ export class AdminSubscriptionService {
   }
 
   async updateTeamMember(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
+    if (input.role === "owner") {
+      return runWithSubscriptionOwnerLock(`team:${teamId}`, () => this.updateTeamMemberLocked(teamId, memberId, input));
+    }
+    return this.updateTeamMemberLocked(teamId, memberId, input);
+  }
+
+  private async updateTeamMemberLocked(teamId: string, memberId: string, input: UpdateTeamMemberInputDto): Promise<AdminTeamRecordDto> {
     const member = await this.requireTeamMember(memberId);
     if (member.teamId !== teamId) {
       throw new BadRequestException("团队成员不属于当前团队。");
