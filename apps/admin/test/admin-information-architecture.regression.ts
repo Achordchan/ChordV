@@ -121,6 +121,12 @@ function testUsersPageKeepsAccountAndTeamEntrypoints() {
   assert.match(usersPageSource, /searchPlaceholder="搜索邮箱、名称或团队"/);
   assert.match(usersPageSource, /当前订阅/);
   assert.match(usersPageSource, /流量 \/ 节点/);
+  assert.match(usersPageSource, /使用情况/);
+  assert.match(usersPageSource, /<MemberUsageCell/);
+  assert.match(usersPageSource, /props\.onLoadTeamUsage\(item\.id\)/);
+  assert.match(usersPageSource, /props\.onOpenTeamUsageDetail/);
+  assert.match(appSource, /teamUsageByTeamId=\{teamUsageByTeamId\}/);
+  assert.match(appSource, /onOpenTeamUsageDetail=\{setTeamUsageDetailTarget\}/);
   assert.match(usersPageSource, /props\.onOpenRenewDrawer\(subscriptionId\)/);
   assert.match(usersPageSource, /props\.onOpenChangePlanDrawer\(subscriptionId\)/);
   assert.match(usersPageSource, /props\.onOpenNodeAccessEditor\(subscriptionId, ownerLabel\)/);

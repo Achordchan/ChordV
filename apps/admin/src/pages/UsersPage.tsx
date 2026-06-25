@@ -4,6 +4,7 @@ import type {
   AdminLeaseRevocationJobDto,
   AdminSubscriptionRecordDto,
   AdminTeamRecordDto,
+  AdminTeamUsageRecordDto,
   AdminUserRecordDto,
   TeamMemberRole,
   TeamStatus
@@ -27,7 +28,7 @@ import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamFormState, TeamMemberFormState } from "../utils/admin-forms";
-import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
+import { summarizeAdminDiagnosticMessage, summarizeTeamUsage } from "../utils/admin-filters";
 import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
 import { getRenewActionText, subscriptionStateColor, translateRole, translateSubscriptionState, translateUserStatus } from "../utils/admin-translate";
 
@@ -43,6 +44,9 @@ type UsersPageProps = {
   allUsers: AdminUserRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   leaseRevocationRetryBusyKey: string | null;
+  teamUsageByTeamId: Record<string, AdminTeamUsageRecordDto[]>;
+  teamUsageLoadingByTeamId: Record<string, boolean>;
+  teamUsageErrorByTeamId: Record<string, string | null>;
   actionBusyKey: string | null;
   teamInlineEditorId: string | null;
   teamMemberInlineEditor: { teamId: string; memberId: string | null } | null;
@@ -62,6 +66,13 @@ type UsersPageProps = {
   onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
   onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
   resetTrafficBusyKey: string | null;
+  onLoadTeamUsage: (teamId: string, options?: { force?: boolean }) => void;
+  onOpenTeamUsageDetail: (payload: {
+    teamName: string;
+    userDisplayName: string;
+    userEmail: string;
+    entry: AdminTeamUsageRecordDto;
+  }) => void;
   onOpenTeamInlineEditor: (teamId: string) => void;
   onCloseTeamInlineEditor: () => void;
   onSaveTeamInlineEditor: (teamId: string) => void;
@@ -284,9 +295,16 @@ export function UsersPage(props: UsersPageProps) {
           </Tabs.Panel>
           <Tabs.Panel value="team" pt="md">
             <Accordion variant="separated" radius="xl">
-              {props.filteredTeams.map((item) => (
+              {props.filteredTeams.map((item) => {
+                const usageLoaded = Object.prototype.hasOwnProperty.call(props.teamUsageByTeamId, item.id);
+                const usageLoading = Boolean(props.teamUsageLoadingByTeamId[item.id]);
+                const usageError = props.teamUsageErrorByTeamId[item.id] ?? null;
+                const usageSummary = summarizeTeamUsage(props.teamUsageByTeamId[item.id] ?? []);
+                const usageByUserId = new Map(usageSummary.map((entry) => [entry.userId, entry]));
+
+                return (
                 <Accordion.Item key={item.id} value={item.id}>
-                  <Accordion.Control>
+                  <Accordion.Control onClick={() => props.onLoadTeamUsage(item.id)}>
                     <Group justify="space-between" wrap="wrap">
                       <Group gap="xl" wrap="wrap" style={{ minWidth: 0 }}>
                         <Stack gap={0} miw={220} style={{ minWidth: 0, overflowWrap: "anywhere" }}>
@@ -353,6 +371,16 @@ export function UsersPage(props: UsersPageProps) {
                           </ActionIcon>
                         </RowActions>
                       </Group>
+                      {usageError ? (
+                        <Paper withBorder radius="lg" p="md">
+                          <Group justify="space-between" gap="sm">
+                            <Text size="sm" c="orange.7">{usageError}</Text>
+                            <Button size="xs" variant="default" onClick={() => props.onLoadTeamUsage(item.id, { force: true })}>
+                              重试
+                            </Button>
+                          </Group>
+                        </Paper>
+                      ) : null}
 
                       {props.teamInlineEditorId === item.id ? (
                         <Paper withBorder radius="lg" p="md">
@@ -442,6 +470,7 @@ export function UsersPage(props: UsersPageProps) {
                           <Table.Tr>
                             <Table.Th>账号</Table.Th>
                             <Table.Th>角色</Table.Th>
+                            <Table.Th>使用情况</Table.Th>
                             <Table.Th>状态</Table.Th>
                             <Table.Th>操作</Table.Th>
                           </Table.Tr>
@@ -449,6 +478,7 @@ export function UsersPage(props: UsersPageProps) {
                         <Table.Tbody>
                           {item.members.map((member) => {
                             const userRecord = props.allUsers.find((user) => user.id === member.userId);
+                            const usageEntry = usageByUserId.get(member.userId);
                             return (
                               <Table.Tr key={member.id}>
                                 <Table.Td>
@@ -461,6 +491,13 @@ export function UsersPage(props: UsersPageProps) {
                                 </Table.Td>
                                 <Table.Td>
                                   <Badge variant="light">{member.role === "owner" ? "负责人" : "成员"}</Badge>
+                                </Table.Td>
+                                <Table.Td>
+                                  <MemberUsageCell
+                                    entry={usageEntry}
+                                    loading={usageLoading}
+                                    loaded={usageLoaded}
+                                  />
                                 </Table.Td>
                                 <Table.Td>
                                   <Stack gap={4}>
@@ -534,6 +571,23 @@ export function UsersPage(props: UsersPageProps) {
                                     >
                                       <IconUsers size={16} />
                                     </ActionIcon>
+                                    {usageEntry ? (
+                                      <ActionIcon
+                                        variant="subtle"
+                                        onClick={() =>
+                                          props.onOpenTeamUsageDetail({
+                                            teamName: item.name,
+                                            userDisplayName: usageEntry.userDisplayName,
+                                            userEmail: usageEntry.userEmail,
+                                            entry: usageEntry
+                                          })
+                                        }
+                                        title="查看用量详情"
+                                        aria-label="查看用量详情"
+                                      >
+                                        <IconListDetails size={16} />
+                                      </ActionIcon>
+                                    ) : null}
                                     {member.role !== "owner" ? (
                                       <ActionIcon
                                         color="red"
@@ -557,11 +611,39 @@ export function UsersPage(props: UsersPageProps) {
                     </Stack>
                   </Accordion.Panel>
                 </Accordion.Item>
-              ))}
+              );
+              })}
             </Accordion>
           </Tabs.Panel>
         </Tabs>
       </SectionCard>
+    </Stack>
+  );
+}
+
+function MemberUsageCell(props: {
+  entry?: ReturnType<typeof summarizeTeamUsage>[number];
+  loading: boolean;
+  loaded: boolean;
+}) {
+  if (props.loading) {
+    return <Text size="sm" c="dimmed">加载中</Text>;
+  }
+
+  if (!props.loaded) {
+    return <Text size="sm" c="dimmed">未加载</Text>;
+  }
+
+  if (!props.entry) {
+    return <Text size="sm" c="dimmed">暂无用量</Text>;
+  }
+
+  return (
+    <Stack gap={2}>
+      <Text fw={600}>{formatTrafficGb(props.entry.totalUsedTrafficGb)} GB</Text>
+      <Text size="sm" c="dimmed">
+        {props.entry.nodeBreakdown?.length ?? 0} 个节点 · {formatDateTime(props.entry.lastRecordedAt)}
+      </Text>
     </Stack>
   );
 }

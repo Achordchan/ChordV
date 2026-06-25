@@ -3214,6 +3214,9 @@ export function App() {
                     allUsers={snapshot.users}
                     leaseRevocationJobs={snapshot.leaseRevocationJobs}
                     leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
+                    teamUsageByTeamId={teamUsageByTeamId}
+                    teamUsageLoadingByTeamId={teamUsageLoadingByTeamId}
+                    teamUsageErrorByTeamId={teamUsageErrorByTeamId}
                     actionBusyKey={entityActionBusyKey}
                     teamInlineEditorId={teamInlineEditorId}
                     teamMemberInlineEditor={teamMemberInlineEditor}
@@ -3235,6 +3238,8 @@ export function App() {
                       void handleResetSubscriptionTraffic(subscriptionId, ownerLabel, userId)
                     }
                     resetTrafficBusyKey={resetTrafficBusyKey}
+                    onLoadTeamUsage={(teamId, options) => void loadTeamUsage(teamId, options)}
+                    onOpenTeamUsageDetail={setTeamUsageDetailTarget}
                     onOpenTeamInlineEditor={openTeamInlineEditor}
                     onCloseTeamInlineEditor={closeTeamInlineEditor}
                     onSaveTeamInlineEditor={(teamId) => void saveTeamInlineEditor(teamId)}
