@@ -122,27 +122,33 @@ function testUsersPageKeepsAccountAndTeamEntrypoints() {
   assert.match(usersPageSource, /当前订阅/);
   assert.match(usersPageSource, /流量 \/ 节点/);
   assert.match(usersPageSource, /使用情况/);
+  assert.match(usersPageSource, /<Table\.Th>详情<\/Table\.Th>/);
+  assert.match(usersPageSource, /<CustomerDetailDrawer/);
+  assert.match(usersPageSource, /<Drawer opened=\{props\.target !== null\}/);
+  assert.match(usersPageSource, /<DrawerSection title="订阅与节点">/);
+  assert.match(usersPageSource, /<DrawerSection title="账号操作">/);
+  assert.match(usersPageSource, /<DrawerSection title="团队关系">/);
   assert.match(usersPageSource, /<MemberUsageCell/);
   assert.match(usersPageSource, /props\.onLoadTeamUsage\(item\.id\)/);
   assert.match(usersPageSource, /props\.onOpenTeamUsageDetail/);
   assert.match(appSource, /teamUsageByTeamId=\{teamUsageByTeamId\}/);
   assert.match(appSource, /onOpenTeamUsageDetail=\{setTeamUsageDetailTarget\}/);
-  assert.match(usersPageSource, /props\.onOpenRenewDrawer\(subscriptionId\)/);
-  assert.match(usersPageSource, /props\.onOpenChangePlanDrawer\(subscriptionId\)/);
-  assert.match(usersPageSource, /props\.onOpenNodeAccessEditor\(subscriptionId, ownerLabel\)/);
-  assert.match(usersPageSource, /props\.onResetSubscriptionTraffic\(subscriptionId, item\.displayName \|\| item\.email\)/);
+  assert.match(usersPageSource, /props\.onOpenRenewDrawer\(props\.subscriptionId!\)/);
+  assert.match(usersPageSource, /props\.onOpenChangePlanDrawer\(props\.subscriptionId!\)/);
+  assert.match(usersPageSource, /props\.onOpenNodeAccessEditor\(props\.subscriptionId!, props\.ownerLabel\)/);
+  assert.match(usersPageSource, /props\.onResetSubscriptionTraffic\(subscriptionId, user\.displayName \|\| user\.email\)/);
   assert.match(usersPageSource, /<TeamSubscriptionSummary/);
   assert.match(usersPageSource, /<TeamSubscriptionActions/);
   assert.match(usersPageSource, /个人用户 · \{personalUsers\.length\}/);
   assert.match(usersPageSource, /团队管理 · \{props\.filteredTeams\.length\}/);
-  assert.match(usersPageSource, /onOpenUserDrawer\(item\.id\)/);
-  assert.match(usersPageSource, /onCreateSubscriptionForUser\(item\)/);
-  assert.match(usersPageSource, /onDisconnectUser\(item\.id, item\.displayName, "personal"\)/);
+  assert.match(usersPageSource, /onOpenUserDrawer\(user\.id\)/);
+  assert.match(usersPageSource, /onCreateSubscriptionForUser\(user\)/);
+  assert.match(usersPageSource, /onDisconnectUser\(user\.id, user\.displayName, "personal"\)/);
   assert.match(usersPageSource, /onToggleUserStatus/);
   assert.match(usersPageSource, /props\.onOpenTeamSubscriptions\(props\.team\)/);
-  assert.match(usersPageSource, /onOpenTeamInlineEditor\(item\.id\)/);
-  assert.match(usersPageSource, /onOpenTeamMemberInlineEditor\(item\.id\)/);
-  assert.match(usersPageSource, /onDeleteTeamMember\(item\.id, member\.id\)/);
+  assert.match(usersPageSource, /onOpenTeamInlineEditor\(team\.id\)/);
+  assert.match(usersPageSource, /onOpenTeamMemberInlineEditor\(team\.id\)/);
+  assert.match(usersPageSource, /onDeleteTeamMember\(team\.id, member\.id\)/);
 }
 
 function testSubscriptionsPageKeepsSubscriptionActions() {

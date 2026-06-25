@@ -1,5 +1,6 @@
-import type { Dispatch, SetStateAction } from "react";
-import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
+import { useState } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
+import { Accordion, ActionIcon, Badge, Button, Divider, Drawer, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
 import type {
   AdminLeaseRevocationJobDto,
   AdminSubscriptionRecordDto,
@@ -23,7 +24,6 @@ import {
   IconUsers
 } from "@tabler/icons-react";
 import { DataTable } from "../features/shared/DataTable";
-import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
@@ -87,13 +87,21 @@ type UsersPageProps = {
   onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
 };
 
+type DetailTarget =
+  | { type: "personal"; userId: string }
+  | { type: "team"; teamId: string }
+  | { type: "team-member"; teamId: string; memberId: string };
+
+type TeamMemberRoleOption = { value: TeamMemberRole; label: string; disabled?: boolean };
+
 export function UsersPage(props: UsersPageProps) {
+  const [detailTarget, setDetailTarget] = useState<DetailTarget | null>(null);
   const personalUsers = props.users.filter((item) => item.accountType === "personal");
   const subscriptionById = new Map(props.allSubscriptions.map((item) => [item.id, item]));
   const personalSubscriptionByUserId = new Map(
     props.subscriptions.filter((item) => item.ownerType === "user" && item.userId).map((item) => [item.userId!, item])
   );
-  const teamMemberRoleOptions =
+  const teamMemberRoleOptions: TeamMemberRoleOption[] =
     props.teamMemberForm.role === "owner"
       ? [
           { value: "owner", label: "负责人", disabled: true },
@@ -123,7 +131,7 @@ export function UsersPage(props: UsersPageProps) {
                   <Table.Th>流量 / 节点</Table.Th>
                   <Table.Th>到期</Table.Th>
                   <Table.Th>状态</Table.Th>
-                  <Table.Th>操作</Table.Th>
+                  <Table.Th>详情</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -131,7 +139,6 @@ export function UsersPage(props: UsersPageProps) {
                   const fullSubscription = findUserSubscription(item, subscriptionById, personalSubscriptionByUserId);
                   const subscriptionSummary = fullSubscription ?? item.currentSubscription;
                   const subscriptionId = subscriptionSummary?.id ?? null;
-                  const ownerLabel = `${item.displayName || item.email} · ${subscriptionSummary?.planName ?? "未分配订阅"}`;
 
                   return (
                   <Table.Tr key={item.id}>
@@ -195,97 +202,9 @@ export function UsersPage(props: UsersPageProps) {
                       </Stack>
                     </Table.Td>
                     <Table.Td>
-                      <RowActions>
-                        <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号" aria-label="编辑账号">
-                          <IconPencil size={16} />
-                        </ActionIcon>
-                        {subscriptionId ? (
-                          <>
-                            <ActionIcon
-                              variant="subtle"
-                              onClick={() => props.onOpenRenewDrawer(subscriptionId)}
-                              disabled={fullSubscription ? !fullSubscription.renewable : false}
-                              title={fullSubscription ? getRenewActionText(fullSubscription.renewable) : "续期"}
-                              aria-label={fullSubscription ? getRenewActionText(fullSubscription.renewable) : "续期"}
-                            >
-                              <IconRefresh size={16} />
-                            </ActionIcon>
-                            <ActionIcon
-                              variant="subtle"
-                              onClick={() => props.onOpenChangePlanDrawer(subscriptionId)}
-                              title="变更套餐"
-                              aria-label="变更套餐"
-                            >
-                              <IconListDetails size={16} />
-                            </ActionIcon>
-                            <ActionIcon
-                              variant="subtle"
-                              onClick={() => props.onOpenAdjustDrawer(subscriptionId)}
-                              title="调整订阅"
-                              aria-label="调整订阅"
-                            >
-                              <IconPencil size={16} />
-                            </ActionIcon>
-                            <ActionIcon
-                              variant="subtle"
-                              onClick={() => props.onOpenNodeAccessEditor(subscriptionId, ownerLabel)}
-                              title="节点授权"
-                              aria-label="节点授权"
-                            >
-                              <IconMapPin size={16} />
-                            </ActionIcon>
-                            <ActionIcon
-                              color="orange"
-                              variant="subtle"
-                              title="重置流量"
-                              aria-label="重置流量"
-                              onClick={() => props.onResetSubscriptionTraffic(subscriptionId, item.displayName || item.email)}
-                              loading={props.resetTrafficBusyKey === `${subscriptionId}:all`}
-                              disabled={props.resetTrafficBusyKey !== null}
-                            >
-                              <IconGaugeOff size={16} />
-                            </ActionIcon>
-                          </>
-                        ) : (
-                          <ActionIcon
-                            variant="subtle"
-                            color="blue"
-                            onClick={() => props.onCreateSubscriptionForUser(item)}
-                            title="为此用户创建订阅"
-                            aria-label="为此用户创建订阅"
-                          >
-                            <IconPlus size={16} />
-                          </ActionIcon>
-                        )}
-                        <ActionIcon
-                          variant="subtle"
-                          color="orange"
-                          onClick={() => props.onDisconnectUser(item.id, item.displayName, "personal")}
-                          title="账号级：断开当前连接"
-                          aria-label="账号级：断开当前连接"
-                          loading={props.actionBusyKey === `user-disconnect:${item.id}`}
-                          disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${item.id}`}
-                        >
-                          <IconPlugConnectedX size={16} />
-                        </ActionIcon>
-                        <ActionIcon
-                          variant="subtle"
-                          color={item.status === "active" ? "red" : "green"}
-                          onClick={() =>
-                            props.onToggleUserStatus(
-                              item.id,
-                              item.status === "active" ? "disabled" : "active",
-                              item.displayName
-                            )
-                          }
-                          title={item.status === "active" ? "禁用账号" : "启用账号"}
-                          aria-label={item.status === "active" ? "禁用账号" : "启用账号"}
-                          loading={props.actionBusyKey === `user-status:${item.id}`}
-                          disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${item.id}`}
-                        >
-                          {item.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
-                        </ActionIcon>
-                      </RowActions>
+                      <Button size="xs" variant="light" onClick={() => setDetailTarget({ type: "personal", userId: item.id })}>
+                        详情
+                      </Button>
                     </Table.Td>
                   </Table.Tr>
                 );
@@ -345,31 +264,23 @@ export function UsersPage(props: UsersPageProps) {
                   </Accordion.Control>
                   <Accordion.Panel>
                     <Stack gap="md">
-                      <Group justify="space-between">
-                        <TeamSubscriptionActions
-                          team={item}
-                          allSubscriptions={props.allSubscriptions}
-                          resetTrafficBusyKey={props.resetTrafficBusyKey}
-                          onOpenTeamSubscriptions={props.onOpenTeamSubscriptions}
-                          onOpenRenewDrawer={props.onOpenRenewDrawer}
-                          onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
-                          onOpenAdjustDrawer={props.onOpenAdjustDrawer}
-                          onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
-                          onResetSubscriptionTraffic={props.onResetSubscriptionTraffic}
-                        />
-                        <RowActions>
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)} title="编辑团队资料" aria-label="编辑团队资料">
-                            <IconPencil size={16} />
-                          </ActionIcon>
-                          <ActionIcon
-                            variant="subtle"
-                            onClick={() => props.onOpenTeamMemberInlineEditor(item.id)}
-                            title="添加团队成员关系"
-                            aria-label="添加团队成员关系"
-                          >
-                            <IconUsers size={16} />
-                          </ActionIcon>
-                        </RowActions>
+                      <Group justify="space-between" align="flex-start">
+                        <Stack gap={2}>
+                          <Text fw={600}>成员</Text>
+                          <Text size="sm" c="dimmed">
+                            共 {item.memberCount} 人
+                          </Text>
+                        </Stack>
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={() => {
+                            props.onLoadTeamUsage(item.id);
+                            setDetailTarget({ type: "team", teamId: item.id });
+                          }}
+                        >
+                          团队详情
+                        </Button>
                       </Group>
                       {usageError ? (
                         <Paper withBorder radius="lg" p="md">
@@ -382,89 +293,6 @@ export function UsersPage(props: UsersPageProps) {
                         </Paper>
                       ) : null}
 
-                      {props.teamInlineEditorId === item.id ? (
-                        <Paper withBorder radius="lg" p="md">
-                          <Stack gap="sm">
-                            <Text fw={600}>编辑团队</Text>
-                            <TextInput
-                              label="团队名称"
-                              value={props.teamForm.name}
-                              onChange={(event) => props.setTeamForm((current) => ({ ...current, name: event.currentTarget.value }))}
-                            />
-                            <Select
-                              label="负责人"
-                              data={props.allUsers
-                                .filter(
-                                  (user) =>
-                                    user.role === "user" &&
-                                    (user.teamId === null || user.id === props.teamForm.ownerUserId || user.id === item.ownerUserId)
-                                )
-                                .map((user) => ({ value: user.id, label: `${user.displayName} · ${user.email}` }))}
-                              value={props.teamForm.ownerUserId}
-                              onChange={(value) => props.setTeamForm((current) => ({ ...current, ownerUserId: value || "" }))}
-                            />
-                            <Select
-                              label="状态"
-                              data={[
-                                { value: "active", label: "启用" },
-                                { value: "disabled", label: "停用" }
-                              ]}
-                              value={props.teamForm.status}
-                              onChange={(value) =>
-                                props.setTeamForm((current) => ({ ...current, status: (value || "active") as TeamStatus }))
-                              }
-                            />
-                            <Group justify="flex-end">
-                              <Button variant="default" onClick={props.onCloseTeamInlineEditor}>
-                                取消
-                              </Button>
-                              <Button onClick={() => props.onSaveTeamInlineEditor(item.id)} loading={props.teamProfileBusyKey === item.id}>
-                                保存
-                              </Button>
-                            </Group>
-                          </Stack>
-                        </Paper>
-                      ) : null}
-
-                      {props.teamMemberInlineEditor?.teamId === item.id ? (
-                        <Paper withBorder radius="lg" p="md">
-                          <Stack gap="sm">
-                            <Text fw={600}>{props.teamMemberInlineEditor.memberId ? "编辑成员" : "添加成员"}</Text>
-                            <Select
-                              label="成员账号"
-                              disabled={props.teamMemberInlineEditor.memberId !== null}
-                              data={props.buildTeamMemberOptions(props.teamMemberForm.userId)}
-                              value={props.teamMemberForm.userId}
-                              onChange={(value) => props.setTeamMemberForm((current) => ({ ...current, userId: value || "" }))}
-                            />
-                            <Select
-                              label="角色"
-                              description="负责人只能通过团队编辑里的负责人字段转移"
-                              data={teamMemberRoleOptions}
-                              disabled={props.teamMemberForm.role === "owner"}
-                              value={props.teamMemberForm.role}
-                              onChange={(value) =>
-                                props.setTeamMemberForm((current) => ({ ...current, role: (value || "member") as TeamMemberRole }))
-                              }
-                            />
-                            <Group justify="flex-end">
-                              <Button variant="default" onClick={props.onCloseTeamMemberInlineEditor}>
-                                取消
-                              </Button>
-                              <Button
-                                onClick={props.onSaveTeamMemberInlineEditor}
-                                loading={
-                                  props.teamMemberBusyKey ===
-                                  `${props.teamMemberInlineEditor.teamId}:${props.teamMemberInlineEditor.memberId ?? "new"}`
-                                }
-                              >
-                                保存
-                              </Button>
-                            </Group>
-                          </Stack>
-                        </Paper>
-                      ) : null}
-
                       <DataTable>
                         <Table.Thead>
                           <Table.Tr>
@@ -472,7 +300,7 @@ export function UsersPage(props: UsersPageProps) {
                             <Table.Th>角色</Table.Th>
                             <Table.Th>使用情况</Table.Th>
                             <Table.Th>状态</Table.Th>
-                            <Table.Th>操作</Table.Th>
+                            <Table.Th>详情</Table.Th>
                           </Table.Tr>
                         </Table.Thead>
                         <Table.Tbody>
@@ -526,82 +354,16 @@ export function UsersPage(props: UsersPageProps) {
                                   </Stack>
                                 </Table.Td>
                                 <Table.Td>
-                                  <RowActions>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      onClick={() => props.onOpenUserDrawer(member.userId)}
-                                      title="账号级：编辑账号资料"
-                                      aria-label="账号级：编辑账号资料"
-                                    >
-                                      <IconPencil size={16} />
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      color={userRecord?.status === "active" ? "red" : "green"}
-                                      loading={props.actionBusyKey === `user-status:${member.userId}`}
-                                      disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${member.userId}`}
-                                      onClick={() =>
-                                        props.onToggleTeamUserStatus(
-                                          member.userId,
-                                          userRecord?.status === "active" ? "disabled" : "active",
-                                          member.displayName
-                                        )
-                                      }
-                                      title={userRecord?.status === "active" ? "账号级：禁用账号" : "账号级：启用账号"}
-                                      aria-label={userRecord?.status === "active" ? "账号级：禁用账号" : "账号级：启用账号"}
-                                    >
-                                      {userRecord?.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      color="orange"
-                                      loading={props.actionBusyKey === `user-disconnect:${member.userId}`}
-                                      disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${member.userId}`}
-                                      onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
-                                      title="账号级：断开当前连接，不移出团队"
-                                      aria-label="账号级：断开当前连接，不移出团队"
-                                    >
-                                      <IconPlugConnectedX size={16} />
-                                    </ActionIcon>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      onClick={() => props.onOpenTeamMemberInlineEditor(item.id, member.id)}
-                                      title="团队关系：编辑成员角色"
-                                      aria-label="团队关系：编辑成员角色"
-                                    >
-                                      <IconUsers size={16} />
-                                    </ActionIcon>
-                                    {usageEntry ? (
-                                      <ActionIcon
-                                        variant="subtle"
-                                        onClick={() =>
-                                          props.onOpenTeamUsageDetail({
-                                            teamName: item.name,
-                                            userDisplayName: usageEntry.userDisplayName,
-                                            userEmail: usageEntry.userEmail,
-                                            entry: usageEntry
-                                          })
-                                        }
-                                        title="查看用量详情"
-                                        aria-label="查看用量详情"
-                                      >
-                                        <IconListDetails size={16} />
-                                      </ActionIcon>
-                                    ) : null}
-                                    {member.role !== "owner" ? (
-                                      <ActionIcon
-                                        color="red"
-                                        variant="subtle"
-                                        loading={props.actionBusyKey === `team-member-delete:${member.id}`}
-                                        disabled={props.actionBusyKey !== null && props.actionBusyKey !== `team-member-delete:${member.id}`}
-                                        onClick={() => props.onDeleteTeamMember(item.id, member.id)}
-                                        title="团队关系：移出团队"
-                                        aria-label="团队关系：移出团队"
-                                      >
-                                        <IconTrash size={16} />
-                                      </ActionIcon>
-                                    ) : null}
-                                  </RowActions>
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    onClick={() => {
+                                      props.onLoadTeamUsage(item.id);
+                                      setDetailTarget({ type: "team-member", teamId: item.id, memberId: member.id });
+                                    }}
+                                  >
+                                    详情
+                                  </Button>
                                 </Table.Td>
                               </Table.Tr>
                             );
@@ -617,6 +379,56 @@ export function UsersPage(props: UsersPageProps) {
           </Tabs.Panel>
         </Tabs>
       </SectionCard>
+      <CustomerDetailDrawer
+        target={detailTarget}
+        onClose={() => setDetailTarget(null)}
+        onSelectTarget={setDetailTarget}
+        personalUsers={personalUsers}
+        teams={props.filteredTeams}
+        allUsers={props.allUsers}
+        allSubscriptions={props.allSubscriptions}
+        subscriptionById={subscriptionById}
+        personalSubscriptionByUserId={personalSubscriptionByUserId}
+        leaseRevocationJobs={props.leaseRevocationJobs}
+        leaseRevocationRetryBusyKey={props.leaseRevocationRetryBusyKey}
+        teamUsageByTeamId={props.teamUsageByTeamId}
+        teamUsageLoadingByTeamId={props.teamUsageLoadingByTeamId}
+        teamUsageErrorByTeamId={props.teamUsageErrorByTeamId}
+        actionBusyKey={props.actionBusyKey}
+        teamInlineEditorId={props.teamInlineEditorId}
+        teamMemberInlineEditor={props.teamMemberInlineEditor}
+        teamProfileBusyKey={props.teamProfileBusyKey}
+        teamMemberBusyKey={props.teamMemberBusyKey}
+        teamForm={props.teamForm}
+        setTeamForm={props.setTeamForm}
+        teamMemberForm={props.teamMemberForm}
+        setTeamMemberForm={props.setTeamMemberForm}
+        teamMemberRoleOptions={teamMemberRoleOptions}
+        buildTeamMemberOptions={props.buildTeamMemberOptions}
+        resetTrafficBusyKey={props.resetTrafficBusyKey}
+        onOpenUserDrawer={props.onOpenUserDrawer}
+        onCreateSubscriptionForUser={props.onCreateSubscriptionForUser}
+        onOpenTeamSubscriptions={props.onOpenTeamSubscriptions}
+        onOpenRenewDrawer={props.onOpenRenewDrawer}
+        onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
+        onOpenAdjustDrawer={props.onOpenAdjustDrawer}
+        onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
+        onResetSubscriptionTraffic={props.onResetSubscriptionTraffic}
+        onLoadTeamUsage={props.onLoadTeamUsage}
+        onOpenTeamUsageDetail={props.onOpenTeamUsageDetail}
+        onOpenTeamInlineEditor={props.onOpenTeamInlineEditor}
+        onCloseTeamInlineEditor={props.onCloseTeamInlineEditor}
+        onSaveTeamInlineEditor={props.onSaveTeamInlineEditor}
+        onOpenTeamMemberInlineEditor={props.onOpenTeamMemberInlineEditor}
+        onCloseTeamMemberInlineEditor={props.onCloseTeamMemberInlineEditor}
+        onSaveTeamMemberInlineEditor={props.onSaveTeamMemberInlineEditor}
+        onDeleteTeamMember={props.onDeleteTeamMember}
+        onToggleUserStatus={props.onToggleUserStatus}
+        onToggleTeamUserStatus={props.onToggleTeamUserStatus}
+        onDisconnectUser={props.onDisconnectUser}
+        onRetryLeaseRevocationJob={props.onRetryLeaseRevocationJob}
+        onOpenPanelSyncQueue={props.onOpenPanelSyncQueue}
+      />
     </Stack>
   );
 }
@@ -646,6 +458,563 @@ function MemberUsageCell(props: {
       </Text>
     </Stack>
   );
+}
+
+type CustomerDetailDrawerProps = {
+  target: DetailTarget | null;
+  onClose: () => void;
+  onSelectTarget: (target: DetailTarget) => void;
+  personalUsers: AdminUserRecordDto[];
+  teams: AdminTeamRecordDto[];
+  allUsers: AdminUserRecordDto[];
+  allSubscriptions: AdminSubscriptionRecordDto[];
+  subscriptionById: Map<string, AdminSubscriptionRecordDto>;
+  personalSubscriptionByUserId: Map<string, AdminSubscriptionRecordDto>;
+  leaseRevocationJobs: AdminLeaseRevocationJobDto[];
+  leaseRevocationRetryBusyKey: string | null;
+  teamUsageByTeamId: Record<string, AdminTeamUsageRecordDto[]>;
+  teamUsageLoadingByTeamId: Record<string, boolean>;
+  teamUsageErrorByTeamId: Record<string, string | null>;
+  actionBusyKey: string | null;
+  teamInlineEditorId: string | null;
+  teamMemberInlineEditor: { teamId: string; memberId: string | null } | null;
+  teamProfileBusyKey: string | null;
+  teamMemberBusyKey: string | null;
+  teamForm: TeamFormState;
+  setTeamForm: Dispatch<SetStateAction<TeamFormState>>;
+  teamMemberForm: TeamMemberFormState;
+  setTeamMemberForm: Dispatch<SetStateAction<TeamMemberFormState>>;
+  teamMemberRoleOptions: TeamMemberRoleOption[];
+  buildTeamMemberOptions: (currentUserId?: string) => Array<{ value: string; label: string }>;
+  resetTrafficBusyKey: string | null;
+  onOpenUserDrawer: (userId: string) => void;
+  onCreateSubscriptionForUser: (user: AdminUserRecordDto) => void;
+  onOpenTeamSubscriptions: (team: AdminTeamRecordDto) => void;
+  onOpenRenewDrawer: (subscriptionId: string) => void;
+  onOpenChangePlanDrawer: (subscriptionId: string) => void;
+  onOpenAdjustDrawer: (subscriptionId: string) => void;
+  onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
+  onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
+  onLoadTeamUsage: (teamId: string, options?: { force?: boolean }) => void;
+  onOpenTeamUsageDetail: (payload: {
+    teamName: string;
+    userDisplayName: string;
+    userEmail: string;
+    entry: AdminTeamUsageRecordDto;
+  }) => void;
+  onOpenTeamInlineEditor: (teamId: string) => void;
+  onCloseTeamInlineEditor: () => void;
+  onSaveTeamInlineEditor: (teamId: string) => void;
+  onOpenTeamMemberInlineEditor: (teamId: string, memberId?: string | null) => void;
+  onCloseTeamMemberInlineEditor: () => void;
+  onSaveTeamMemberInlineEditor: () => void;
+  onDeleteTeamMember: (teamId: string, memberId: string) => void;
+  onToggleUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
+  onToggleTeamUserStatus: (userId: string, nextStatus: "active" | "disabled", displayName: string) => void;
+  onDisconnectUser: (userId: string, displayName: string, source?: "personal" | "team-member") => void;
+  onRetryLeaseRevocationJob: (jobId: string) => void;
+  onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
+};
+
+function CustomerDetailDrawer(props: CustomerDetailDrawerProps) {
+  const title = readDetailTitle(props);
+
+  return (
+    <Drawer opened={props.target !== null} onClose={props.onClose} position="right" size="lg" padding="lg" title={title}>
+      {props.target ? <CustomerDetailContent {...props} target={props.target} /> : null}
+    </Drawer>
+  );
+}
+
+type CustomerDetailContentProps = Omit<CustomerDetailDrawerProps, "target"> & { target: DetailTarget };
+
+function CustomerDetailContent(props: CustomerDetailContentProps) {
+  const target = props.target;
+
+  if (target.type === "personal") {
+    const user = props.personalUsers.find((item) => item.id === target.userId);
+    if (!user) return <Text c="dimmed">客户不存在</Text>;
+
+    const fullSubscription = findUserSubscription(user, props.subscriptionById, props.personalSubscriptionByUserId);
+    const subscriptionSummary = fullSubscription ?? user.currentSubscription;
+    const subscriptionId = subscriptionSummary?.id ?? null;
+    const ownerLabel = `${user.displayName || user.email} · ${subscriptionSummary?.planName ?? "未分配订阅"}`;
+
+    return (
+      <Stack gap="lg">
+        <DrawerSection title="客户摘要">
+          <Stack gap={4}>
+            <Text fw={700}>{user.displayName}</Text>
+            <Text size="sm" c="dimmed">{user.email}</Text>
+            <Group gap={6}>
+              <Badge variant="light">{translateRole(user.role)}</Badge>
+              <StatusBadge color={user.status === "active" ? "green" : "gray"} label={`账号${translateUserStatus(user.status)}`} />
+            </Group>
+          </Stack>
+        </DrawerSection>
+
+        <DrawerSection title="订阅与节点">
+          {subscriptionSummary ? (
+            <Stack gap="sm">
+              <DetailRow label="套餐" value={subscriptionSummary.planName} />
+              <DetailRow label="订阅状态" value={translateSubscriptionState(subscriptionSummary.state)} />
+              <DetailRow label="流量" value={readTrafficText(fullSubscription, user.currentSubscription)} />
+              <DetailRow label="节点" value={readNodeAccessText(fullSubscription)} />
+              <DetailRow label="到期" value={formatDateTime(subscriptionSummary.expireAt)} />
+              <SubscriptionOperationButtons
+                subscriptionId={subscriptionId}
+                ownerLabel={ownerLabel}
+                resetTrafficBusyKey={props.resetTrafficBusyKey}
+                renewable={fullSubscription?.renewable}
+                onOpenRenewDrawer={props.onOpenRenewDrawer}
+                onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
+                onOpenAdjustDrawer={props.onOpenAdjustDrawer}
+                onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
+                onResetTraffic={() => subscriptionId ? props.onResetSubscriptionTraffic(subscriptionId, user.displayName || user.email) : undefined}
+              />
+            </Stack>
+          ) : (
+            <Button leftSection={<IconPlus size={16} />} onClick={() => props.onCreateSubscriptionForUser(user)}>
+              创建订阅
+            </Button>
+          )}
+        </DrawerSection>
+
+        <DrawerSection title="状态与同步">
+          <Stack gap="sm">
+            <PanelSyncInlineStatus
+              item={fullSubscription ?? user}
+              onOpenPanelSyncQueue={() =>
+                props.onOpenPanelSyncQueue({
+                  subscriptionId: subscriptionId ?? undefined,
+                  userId: user.id,
+                  title: user.displayName
+                })
+              }
+            />
+            <LeaseRevocationInlineStatus
+              jobs={props.leaseRevocationJobs.filter((job) => job.userId === user.id)}
+              retryBusyKey={props.leaseRevocationRetryBusyKey}
+              onRetryJob={props.onRetryLeaseRevocationJob}
+            />
+            {!fullSubscription?.panelSyncSummary?.total && user.panelSyncStatus !== "pending" ? <Text size="sm" c="dimmed">暂无待处理任务</Text> : null}
+          </Stack>
+        </DrawerSection>
+
+        <DrawerSection title="账号操作">
+          <Group gap="xs" wrap="wrap">
+            <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => props.onOpenUserDrawer(user.id)}>
+              编辑账号
+            </Button>
+            <Button
+              variant="default"
+              color="orange"
+              leftSection={<IconPlugConnectedX size={16} />}
+              onClick={() => props.onDisconnectUser(user.id, user.displayName, "personal")}
+              loading={props.actionBusyKey === `user-disconnect:${user.id}`}
+              disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${user.id}`}
+            >
+              断开连接
+            </Button>
+            <Button
+              variant="default"
+              color={user.status === "active" ? "red" : "green"}
+              leftSection={user.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
+              onClick={() => props.onToggleUserStatus(user.id, user.status === "active" ? "disabled" : "active", user.displayName)}
+              loading={props.actionBusyKey === `user-status:${user.id}`}
+              disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${user.id}`}
+            >
+              {user.status === "active" ? "禁用账号" : "启用账号"}
+            </Button>
+          </Group>
+        </DrawerSection>
+      </Stack>
+    );
+  }
+
+  const team = props.teams.find((item) => item.id === target.teamId);
+  if (!team) return <Text c="dimmed">团队不存在</Text>;
+
+  if (target.type === "team") {
+    const usageError = props.teamUsageErrorByTeamId[team.id] ?? null;
+
+    return (
+      <Stack gap="lg">
+        <DrawerSection title="团队摘要">
+          <Stack gap={4}>
+            <Text fw={700}>{team.name}</Text>
+            <Text size="sm" c="dimmed">{team.ownerDisplayName} · {team.ownerEmail}</Text>
+            <Group gap={6}>
+              <StatusBadge color={team.status === "active" ? "green" : "gray"} label={team.status === "active" ? "启用" : "停用"} />
+              <Badge variant="light">{team.memberCount} 人</Badge>
+            </Group>
+          </Stack>
+        </DrawerSection>
+
+        <DrawerSection title="订阅与节点">
+          <Stack gap="sm">
+            <Group gap="xl" wrap="wrap">
+              <TeamSubscriptionSummary team={team} allSubscriptions={props.allSubscriptions} />
+            </Group>
+            <TeamSubscriptionActions
+              team={team}
+              allSubscriptions={props.allSubscriptions}
+              resetTrafficBusyKey={props.resetTrafficBusyKey}
+              onOpenTeamSubscriptions={props.onOpenTeamSubscriptions}
+              onOpenRenewDrawer={props.onOpenRenewDrawer}
+              onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
+              onOpenAdjustDrawer={props.onOpenAdjustDrawer}
+              onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
+              onResetSubscriptionTraffic={props.onResetSubscriptionTraffic}
+            />
+          </Stack>
+        </DrawerSection>
+
+        <DrawerSection title="团队操作">
+          <Group gap="xs" wrap="wrap">
+            <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => props.onOpenTeamInlineEditor(team.id)}>
+              编辑团队
+            </Button>
+            <Button variant="default" leftSection={<IconUsers size={16} />} onClick={() => props.onOpenTeamMemberInlineEditor(team.id)}>
+              添加成员
+            </Button>
+          </Group>
+          {props.teamInlineEditorId === team.id ? <TeamProfileEditorPanel {...props} team={team} /> : null}
+          {props.teamMemberInlineEditor?.teamId === team.id ? <TeamMemberEditorPanel {...props} /> : null}
+        </DrawerSection>
+
+        <DrawerSection title="状态与同步">
+          <Stack gap="sm">
+            <PanelSyncInlineStatus
+              item={team}
+              onOpenPanelSyncQueue={() =>
+                props.onOpenPanelSyncQueue({
+                  subscriptionId: team.currentSubscription?.id,
+                  teamId: team.id,
+                  title: team.name
+                })
+              }
+            />
+            <LeaseRevocationInlineStatus
+              jobs={props.leaseRevocationJobs.filter((job) =>
+                team.currentSubscription?.id ? job.subscriptionId === team.currentSubscription.id && job.userId === null : false
+              )}
+              retryBusyKey={props.leaseRevocationRetryBusyKey}
+              onRetryJob={props.onRetryLeaseRevocationJob}
+            />
+            {usageError ? (
+              <Group justify="space-between" gap="sm">
+                <Text size="sm" c="orange.7">{usageError}</Text>
+                <Button size="xs" variant="default" onClick={() => props.onLoadTeamUsage(team.id, { force: true })}>
+                  重试
+                </Button>
+              </Group>
+            ) : null}
+          </Stack>
+        </DrawerSection>
+
+        <DrawerSection title="成员">
+          <Stack gap="sm">
+            {team.members.map((member) => (
+              <Group key={member.id} justify="space-between" align="center" gap="sm">
+                <Stack gap={0} style={{ minWidth: 0 }}>
+                  <Text fw={600}>{member.displayName}</Text>
+                  <Text size="sm" c="dimmed" lineClamp={1}>{member.email}</Text>
+                </Stack>
+                <Button
+                  size="xs"
+                  variant="light"
+                  onClick={() => {
+                    props.onLoadTeamUsage(team.id);
+                    props.onSelectTarget({ type: "team-member", teamId: team.id, memberId: member.id });
+                  }}
+                >
+                  详情
+                </Button>
+              </Group>
+            ))}
+          </Stack>
+        </DrawerSection>
+      </Stack>
+    );
+  }
+
+  const member = team.members.find((item) => item.id === target.memberId);
+  if (!member) return <Text c="dimmed">成员不存在</Text>;
+
+  const userRecord = props.allUsers.find((user) => user.id === member.userId);
+  const usageSummary = summarizeTeamUsage(props.teamUsageByTeamId[team.id] ?? []);
+  const usageEntry = usageSummary.find((entry) => entry.userId === member.userId);
+  const usageLoaded = Object.prototype.hasOwnProperty.call(props.teamUsageByTeamId, team.id);
+  const usageLoading = Boolean(props.teamUsageLoadingByTeamId[team.id]);
+
+  return (
+    <Stack gap="lg">
+      <DrawerSection title="成员摘要">
+        <Stack gap={4}>
+          <Text fw={700}>{member.displayName}</Text>
+          <Text size="sm" c="dimmed">{member.email}</Text>
+          <Group gap={6}>
+            <Badge variant="light">{member.role === "owner" ? "负责人" : "成员"}</Badge>
+            <StatusBadge color={userRecord?.status === "active" ? "green" : "gray"} label={translateUserStatus(userRecord?.status ?? "disabled")} />
+          </Group>
+        </Stack>
+      </DrawerSection>
+
+      <DrawerSection title="使用情况">
+        <Stack gap="sm">
+          <MemberUsageCell entry={usageEntry} loading={usageLoading} loaded={usageLoaded} />
+          {usageEntry ? (
+            <Button
+              variant="default"
+              leftSection={<IconListDetails size={16} />}
+              onClick={() =>
+                props.onOpenTeamUsageDetail({
+                  teamName: team.name,
+                  userDisplayName: usageEntry.userDisplayName,
+                  userEmail: usageEntry.userEmail,
+                  entry: usageEntry
+                })
+              }
+            >
+              用量详情
+            </Button>
+          ) : null}
+        </Stack>
+      </DrawerSection>
+
+      <DrawerSection title="账号操作">
+        <Group gap="xs" wrap="wrap">
+          <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => props.onOpenUserDrawer(member.userId)}>
+            编辑账号
+          </Button>
+          <Button
+            variant="default"
+            color={userRecord?.status === "active" ? "red" : "green"}
+            leftSection={userRecord?.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
+            loading={props.actionBusyKey === `user-status:${member.userId}`}
+            disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${member.userId}`}
+            onClick={() =>
+              props.onToggleTeamUserStatus(member.userId, userRecord?.status === "active" ? "disabled" : "active", member.displayName)
+            }
+          >
+            {userRecord?.status === "active" ? "禁用账号" : "启用账号"}
+          </Button>
+          <Button
+            variant="default"
+            color="orange"
+            leftSection={<IconPlugConnectedX size={16} />}
+            loading={props.actionBusyKey === `user-disconnect:${member.userId}`}
+            disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${member.userId}`}
+            onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
+          >
+            断开连接
+          </Button>
+        </Group>
+      </DrawerSection>
+
+      <DrawerSection title="团队关系">
+        <Group gap="xs" wrap="wrap">
+          <Button variant="default" leftSection={<IconUsers size={16} />} onClick={() => props.onOpenTeamMemberInlineEditor(team.id, member.id)}>
+            编辑角色
+          </Button>
+          {member.role !== "owner" ? (
+            <Button
+              variant="default"
+              color="red"
+              leftSection={<IconTrash size={16} />}
+              loading={props.actionBusyKey === `team-member-delete:${member.id}`}
+              disabled={props.actionBusyKey !== null && props.actionBusyKey !== `team-member-delete:${member.id}`}
+              onClick={() => props.onDeleteTeamMember(team.id, member.id)}
+            >
+              移出团队
+            </Button>
+          ) : null}
+        </Group>
+        {props.teamMemberInlineEditor?.teamId === team.id ? <TeamMemberEditorPanel {...props} /> : null}
+      </DrawerSection>
+
+      <DrawerSection title="状态与同步">
+        <PanelSyncInlineStatus
+          item={userRecord}
+          onOpenPanelSyncQueue={() =>
+            props.onOpenPanelSyncQueue({
+              subscriptionId: team.currentSubscription?.id,
+              userId: member.userId,
+              teamId: team.id,
+              title: `${member.displayName} · ${team.name}`
+            })
+          }
+        />
+        <LeaseRevocationInlineStatus
+          jobs={props.leaseRevocationJobs.filter((job) => isTeamMemberLeaseRevocationJob(job, member.userId, team.currentSubscription?.id))}
+          retryBusyKey={props.leaseRevocationRetryBusyKey}
+          onRetryJob={props.onRetryLeaseRevocationJob}
+        />
+      </DrawerSection>
+    </Stack>
+  );
+}
+
+function DrawerSection(props: { title: string; children: ReactNode }) {
+  return (
+    <Stack gap="sm">
+      <Text fw={700}>{props.title}</Text>
+      {props.children}
+      <Divider />
+    </Stack>
+  );
+}
+
+function DetailRow(props: { label: string; value: string }) {
+  return (
+    <Group justify="space-between" align="flex-start" gap="md">
+      <Text size="sm" c="dimmed">{props.label}</Text>
+      <Text size="sm" fw={600} ta="right">{props.value}</Text>
+    </Group>
+  );
+}
+
+function SubscriptionOperationButtons(props: {
+  subscriptionId: string | null;
+  ownerLabel: string;
+  resetTrafficBusyKey: string | null;
+  renewable?: boolean;
+  onOpenRenewDrawer: (subscriptionId: string) => void;
+  onOpenChangePlanDrawer: (subscriptionId: string) => void;
+  onOpenAdjustDrawer: (subscriptionId: string) => void;
+  onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
+  onResetTraffic: () => void;
+}) {
+  if (!props.subscriptionId) return null;
+
+  return (
+    <Group gap="xs" wrap="wrap">
+      <Button
+        variant="default"
+        leftSection={<IconRefresh size={16} />}
+        disabled={props.renewable === false}
+        onClick={() => props.onOpenRenewDrawer(props.subscriptionId!)}
+      >
+        {props.renewable === undefined ? "续期" : getRenewActionText(props.renewable)}
+      </Button>
+      <Button variant="default" leftSection={<IconListDetails size={16} />} onClick={() => props.onOpenChangePlanDrawer(props.subscriptionId!)}>
+        变更套餐
+      </Button>
+      <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => props.onOpenAdjustDrawer(props.subscriptionId!)}>
+        调整订阅
+      </Button>
+      <Button variant="default" leftSection={<IconMapPin size={16} />} onClick={() => props.onOpenNodeAccessEditor(props.subscriptionId!, props.ownerLabel)}>
+        节点授权
+      </Button>
+      <Button
+        variant="default"
+        color="orange"
+        leftSection={<IconGaugeOff size={16} />}
+        onClick={props.onResetTraffic}
+        loading={props.resetTrafficBusyKey === `${props.subscriptionId}:all`}
+        disabled={props.resetTrafficBusyKey !== null}
+      >
+        重置流量
+      </Button>
+    </Group>
+  );
+}
+
+function TeamProfileEditorPanel(props: CustomerDetailDrawerProps & { team: AdminTeamRecordDto }) {
+  return (
+    <Paper withBorder radius="lg" p="md">
+      <Stack gap="sm">
+        <Text fw={600}>编辑团队</Text>
+        <TextInput
+          label="团队名称"
+          value={props.teamForm.name}
+          onChange={(event) => props.setTeamForm((current) => ({ ...current, name: event.currentTarget.value }))}
+        />
+        <Select
+          label="负责人"
+          data={props.allUsers
+            .filter(
+              (user) =>
+                user.role === "user" &&
+                (user.teamId === null || user.id === props.teamForm.ownerUserId || user.id === props.team.ownerUserId)
+            )
+            .map((user) => ({ value: user.id, label: `${user.displayName} · ${user.email}` }))}
+          value={props.teamForm.ownerUserId}
+          onChange={(value) => props.setTeamForm((current) => ({ ...current, ownerUserId: value || "" }))}
+        />
+        <Select
+          label="状态"
+          data={[
+            { value: "active", label: "启用" },
+            { value: "disabled", label: "停用" }
+          ]}
+          value={props.teamForm.status}
+          onChange={(value) => props.setTeamForm((current) => ({ ...current, status: (value || "active") as TeamStatus }))}
+        />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={props.onCloseTeamInlineEditor}>
+            取消
+          </Button>
+          <Button onClick={() => props.onSaveTeamInlineEditor(props.team.id)} loading={props.teamProfileBusyKey === props.team.id}>
+            保存
+          </Button>
+        </Group>
+      </Stack>
+    </Paper>
+  );
+}
+
+function TeamMemberEditorPanel(props: CustomerDetailDrawerProps) {
+  if (!props.teamMemberInlineEditor) return null;
+
+  return (
+    <Paper withBorder radius="lg" p="md">
+      <Stack gap="sm">
+        <Text fw={600}>{props.teamMemberInlineEditor.memberId ? "编辑成员" : "添加成员"}</Text>
+        <Select
+          label="成员账号"
+          disabled={props.teamMemberInlineEditor.memberId !== null}
+          data={props.buildTeamMemberOptions(props.teamMemberForm.userId)}
+          value={props.teamMemberForm.userId}
+          onChange={(value) => props.setTeamMemberForm((current) => ({ ...current, userId: value || "" }))}
+        />
+        <Select
+          label="角色"
+          description="负责人只能通过团队编辑里的负责人字段转移"
+          data={props.teamMemberRoleOptions}
+          disabled={props.teamMemberForm.role === "owner"}
+          value={props.teamMemberForm.role}
+          onChange={(value) => props.setTeamMemberForm((current) => ({ ...current, role: (value || "member") as TeamMemberRole }))}
+        />
+        <Group justify="flex-end">
+          <Button variant="default" onClick={props.onCloseTeamMemberInlineEditor}>
+            取消
+          </Button>
+          <Button
+            onClick={props.onSaveTeamMemberInlineEditor}
+            loading={props.teamMemberBusyKey === `${props.teamMemberInlineEditor.teamId}:${props.teamMemberInlineEditor.memberId ?? "new"}`}
+          >
+            保存
+          </Button>
+        </Group>
+      </Stack>
+    </Paper>
+  );
+}
+
+function readDetailTitle(props: CustomerDetailDrawerProps) {
+  const target = props.target;
+  if (!target) return "详情";
+  if (target.type === "personal") {
+    return props.personalUsers.find((item) => item.id === target.userId)?.displayName ?? "客户详情";
+  }
+  const team = props.teams.find((item) => item.id === target.teamId);
+  if (target.type === "team") {
+    return team?.name ?? "团队详情";
+  }
+  const member = team?.members.find((item) => item.id === target.memberId);
+  return member ? `${member.displayName} · ${team?.name ?? ""}` : "成员详情";
 }
 
 function PanelSyncInlineStatus(props: {
