@@ -18,6 +18,7 @@ function testImageBedFileManagementUsesScopedTimeoutMessage() {
   assert.match(apiClientSource, /const IMAGE_BED_LIST_TIMEOUT_MS = 10 \* 1000;/);
   assert.match(apiClientSource, /const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 \* 1000;/);
   assert.match(apiClientSource, /const IMAGE_BED_LIST_TIMEOUT_MESSAGE = "图床文件列表加载超时，请稍后重试或缩小搜索范围。";/);
+  assert.match(apiClientSource, /const IMAGE_BED_CONFIG_SAVE_TIMEOUT_MESSAGE = "图床配置保存请求仍在处理，请稍后刷新图床配置确认结果。";/);
   assert.match(apiClientSource, /const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请稍后刷新文件列表确认结果。";/);
   assert.match(apiClientSource, /async function requestAdminImageBedManage/);
   assert.match(apiClientSource, /function isBackendHttpErrorMessage/);
@@ -41,6 +42,11 @@ function testImageBedFileManagementUsesScopedTimeoutMessage() {
   );
   assert.match(
     apiClientSource,
+    /updateAdminImageBedConfig\(input: UpdateAdminImageBedConfigInputDto\)[\s\S]*?requestAdminImageBedManage<AdminImageBedConfigDto>[\s\S]*?timeoutMessage: IMAGE_BED_CONFIG_SAVE_TIMEOUT_MESSAGE/,
+    "image bed config save should use the image-bed wrapper so local timeouts keep the save-specific uncertain message"
+  );
+  assert.match(
+    apiClientSource,
     /requestAdminImageBedManage<AdminImageBedFileListDto>[\s\S]*?timeoutMs: IMAGE_BED_LIST_TIMEOUT_MS,[\s\S]*?timeoutMessage: IMAGE_BED_LIST_TIMEOUT_MESSAGE/,
     "image bed list loading should use a short read timeout and read-specific timeout copy instead of mutation confirmation copy"
   );
@@ -61,8 +67,17 @@ function testImageBedSaveAndDeleteAlwaysReleaseBusyState() {
   );
 }
 
+function testImageBedSaveUncertainNotificationKeepsOriginalError() {
+  assert.match(
+    source,
+    /message: uncertain \? buildUncertainMutationMessage\("图床配置", message\) : message/,
+    "image bed config save uncertain notification should keep timeout, network, and requestId details"
+  );
+}
+
 testInitialConfigLoadRefreshesFileListWhenTokenExists();
 testImageBedFileManagementUsesScopedTimeoutMessage();
 testImageBedSaveAndDeleteAlwaysReleaseBusyState();
+testImageBedSaveUncertainNotificationKeepsOriginalError();
 
 console.log("image bed page regression checks passed");

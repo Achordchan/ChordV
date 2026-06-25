@@ -33,6 +33,7 @@ const IMAGE_BED_MANAGE_TIMEOUT_MS = 60 * 1000;
 const IMAGE_BED_CONFIG_TIMEOUT_MS = 8 * 1000;
 const IMAGE_BED_LIST_TIMEOUT_MS = 10 * 1000;
 const IMAGE_BED_LIST_TIMEOUT_MESSAGE = "图床文件列表加载超时，请稍后重试或缩小搜索范围。";
+const IMAGE_BED_CONFIG_SAVE_TIMEOUT_MESSAGE = "图床配置保存请求仍在处理，请稍后刷新图床配置确认结果。";
 const IMAGE_BED_MANAGE_TIMEOUT_MESSAGE = "图床管理请求仍在处理，请稍后刷新文件列表确认结果。";
 const TICKET_ATTACHMENT_TIMEOUT_MS = 90 * 1000;
 const ADMIN_READ_TIMEOUT_MS = 60 * 1000;
@@ -508,10 +509,11 @@ export async function fetchAdminImageBedConfig() {
 }
 
 export async function updateAdminImageBedConfig(input: UpdateAdminImageBedConfigInputDto) {
-  return request<AdminImageBedConfigDto>("/admin/image-bed/config", {
+  return requestAdminImageBedManage<AdminImageBedConfigDto>("/admin/image-bed/config", {
     method: "PATCH",
     body: JSON.stringify(input),
-    timeoutMs: ADMIN_ACTION_TIMEOUT_MS
+    timeoutMs: ADMIN_ACTION_TIMEOUT_MS,
+    timeoutMessage: IMAGE_BED_CONFIG_SAVE_TIMEOUT_MESSAGE
   });
 }
 

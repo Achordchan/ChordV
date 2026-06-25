@@ -17377,6 +17377,63 @@ async function testReenableNodeClearsPendingDisableAndQueuesPanelEnsure() {
   assert.equal(remoteEnsureCalled, false, "re-enable must queue panel ensure work instead of calling 3x-ui inline");
 }
 
+async function testReenableNodeContinuesPanelEnsureWhenPendingDisableCleanupFails() {
+  const currentNode = makeAdminNodeRow({
+    isActive: false,
+    panelEnabled: true,
+    panelStatus: "offline"
+  });
+  let updatedData: Record<string, any> | null = null;
+  let clearCalled = false;
+  let syncedNodeId: string | null = null;
+  const warnings: string[] = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: (message: string) => {
+        warnings.push(message);
+      }
+    },
+    runtimeSessionService: {
+      clearPendingPanelDisableJobsForNode: async () => {
+        clearCalled = true;
+        throw new Error("pending disable cleanup failed");
+      },
+      syncPanelAccessForNode: async (nodeId: string) => {
+        syncedNodeId = nodeId;
+        return 1;
+      },
+      markPanelBindingsDisabledForNode: async () => {
+        throw new Error("re-enable must not queue panel disable work");
+      },
+      queueLeaseRevocationJobForNode: async () => 0
+    },
+    clientEventsPublisher: {
+      publishNodeAccessUpdatedForNode: async () => undefined
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: Record<string, any>) => {
+          updatedData = payload.data;
+          return { ...currentNode, ...payload.data, updatedAt: new Date() };
+        }
+      }
+    }
+  });
+
+  const result = await service.updateNode("node_1", { isActive: true });
+
+  assert.equal(result.isActive, true);
+  assert.equal(result.panelSyncStatus, "pending");
+  assert.equal(updatedData?.isActive, true, "local node re-enable must remain saved when cleanup fails");
+  assert.equal(clearCalled, true, "re-enable must attempt to clear stale pending disable jobs");
+  assert.equal(syncedNodeId, "node_1", "cleanup failure must not block queued panel ensure");
+  assert.ok(
+    warnings.some((message) => message.includes("pending disable cleanup failed")),
+    "cleanup failure should be logged for later diagnosis"
+  );
+}
+
 async function testImportNodeReturnsWhenInitialProbeStalls() {
   const upserts: Array<Record<string, any>> = [];
   let probeStarted = false;
@@ -30178,6 +30235,68 @@ async function testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync() {
   assert.deepEqual(queuedSubscriptions, ["sub_team"]);
 }
 
+async function testUpdateTeamMemberOwnerTransferMapsLocalSaveFailure() {
+  let transactionCalled = false;
+  let subscriptionLookupCalled = false;
+  let panelSyncQueued = false;
+  let eventPublished = false;
+  const now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createAdminSubscriptionService({
+    requireTeamMember: async () => ({
+      id: "member_new_owner",
+      teamId: "team_1",
+      userId: "user_new_owner",
+      role: "member"
+    }),
+    ensureUserExists: async () => ({
+      id: "user_new_owner",
+      email: "new-owner@example.com",
+      displayName: "New Owner",
+      role: "user",
+      status: "active",
+      lastSeenAt: now,
+      maxConcurrentSessionsOverride: null
+    }),
+    findCurrentTeamSubscription: async () => {
+      subscriptionLookupCalled = true;
+      return null;
+    },
+    publishSubscriptionUpdatedEvent: async () => {
+      eventPublished = true;
+    },
+    runtimeSessionService: {
+      queueSubscriptionPanelAccessSync: async () => {
+        panelSyncQueued = true;
+        return 1;
+      }
+    },
+    prisma: {
+      $transaction: async () => {
+        transactionCalled = true;
+        throw new Error("owner transfer local save failed");
+      },
+      teamMember: {
+        update: async () => ({}),
+        updateMany: async () => ({})
+      },
+      team: {
+        update: async () => ({})
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateTeamMember("team_1", "member_new_owner", { role: "owner" }),
+    (error: unknown) =>
+      error instanceof ServiceUnavailableException &&
+      String((error as ServiceUnavailableException).message).includes("Team 成员保存失败")
+  );
+  assert.equal(transactionCalled, true, "owner transfer should try the local transaction");
+  assert.equal(subscriptionLookupCalled, false, "local save failure must not start subscription lookup");
+  assert.equal(panelSyncQueued, false, "local save failure must not queue remote panel sync");
+  assert.equal(eventPublished, false, "local save failure must not publish subscription events");
+}
+
 async function testUpdateTeamMemberOwnerTransferReturnsPendingWhenSubscriptionLookupStalls() {
   const memberUpdates: Array<Record<string, any>> = [];
   const memberDemotions: Array<Record<string, any>> = [];
@@ -34071,6 +34190,7 @@ async function main() {
   await testConvertPersonalSubscriptionToTeamKeepsLocalFailureWhenRollbackPanelSyncFails();
   await testDisableNodeQueuesPanelSyncWithoutBlockingLocalSave();
   await testReenableNodeClearsPendingDisableAndQueuesPanelEnsure();
+  await testReenableNodeContinuesPanelEnsureWhenPendingDisableCleanupFails();
   await testImportNodeReturnsWhenInitialProbeStalls();
   await testImportNodePanelMigrationQueuesOldPanelDeleteWithOldConfig();
   await testImportNodeMapsLocalSaveFailure();
@@ -34333,6 +34453,7 @@ async function main() {
   await testCreateTeamMemberReturnsPendingWhenSubscriptionLookupStalls();
   await testUpdateTeamMemberReturnsPendingWhenRecordRefreshFails();
   await testUpdateTeamMemberOwnerTransferQueuesPanelAccessSync();
+  await testUpdateTeamMemberOwnerTransferMapsLocalSaveFailure();
   await testUpdateTeamMemberOwnerTransferReturnsPendingWhenSubscriptionLookupStalls();
   await testTeamMemberMutationRejectsMismatchedTeamRoute();
   await testTeamMemberMutationRejectsOwnerDemotion();

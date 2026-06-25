@@ -212,7 +212,7 @@ export function ImageBedPage(props: ImageBedPageProps) {
       notifications.show({
         color: uncertain ? "yellow" : "red",
         title: "图床",
-        message: uncertain ? buildUncertainMutationMessage("图床配置") : message
+        message: uncertain ? buildUncertainMutationMessage("图床配置", message) : message
       });
       if (uncertain) {
         void loadConfig({ silent: true, preserveForm: false }).then(() => loadFiles({ silent: true }));
