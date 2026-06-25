@@ -348,7 +348,6 @@ export function ImageBedPage(props: ImageBedPageProps) {
     return (
       <SectionCard
         title="附件图床配置"
-        description="配置工单附件图床 Token，并管理已上传图片。"
         searchValue={search}
         onSearchChange={setSearch}
         onSearchSubmit={() => void loadFiles()}
@@ -374,7 +373,6 @@ export function ImageBedPage(props: ImageBedPageProps) {
   return (
     <SectionCard
       title="附件图床配置"
-      description="配置工单附件图床 Token，并管理已上传图片。"
       searchValue={search}
       onSearchChange={setSearch}
       onSearchSubmit={() => void loadFiles()}

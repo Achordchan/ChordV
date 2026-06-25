@@ -22,7 +22,6 @@ export function PlansPage(props: PlansPageProps) {
   return (
     <SectionCard
       title="套餐规则"
-      description="管理个人和 Team 套餐模板，控制流量、并发和续费能力。"
       searchValue={props.searchValue}
       onSearchChange={props.onSearchChange}
       searchPlaceholder="搜索套餐名称"

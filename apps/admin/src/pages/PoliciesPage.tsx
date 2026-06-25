@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Checkbox, Group, Select, Stack, Switch, Text, Title } from "@mantine/core";
+import { Button, Card, Checkbox, Group, Select, Stack, Switch, Title } from "@mantine/core";
 import type { ConnectionMode } from "@chordv/shared";
 import type { Dispatch, SetStateAction } from "react";
 import type { PolicyFormState } from "../utils/admin-forms";
@@ -17,13 +17,7 @@ export function PoliciesPage(props: PoliciesPageProps) {
       <Stack gap="lg">
         <Stack gap={4}>
           <Title order={4}>连接策略</Title>
-          <Text size="sm" c="dimmed">
-            配置客户端默认连接模式、可选模式和基础分流规则。
-          </Text>
         </Stack>
-        <Alert color="blue" variant="light">
-          当前使用 3x-ui 直连接入，中心负责开通、删号与汇总计量。版本发布请到“发布中心”单独管理。
-        </Alert>
         <Select
           label="默认模式"
           data={modeOptions}

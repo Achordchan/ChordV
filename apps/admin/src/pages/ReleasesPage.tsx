@@ -634,7 +634,6 @@ export function ReleasesPage(props: ReleasesPageProps) {
     <>
       <SectionCard
         title="发布中心"
-        description="管理客户端版本、安装包、外链下载和发布状态。"
         searchValue={searchValue}
         onSearchChange={setSearchValue}
         searchPlaceholder="搜索版本、标题或更新内容"

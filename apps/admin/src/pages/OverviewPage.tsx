@@ -44,15 +44,11 @@ export function OverviewPage(props: OverviewPageProps) {
           <Group justify="space-between">
             <div>
               <Title order={4}>待处理事项</Title>
-              <Text size="sm" c="dimmed">
-                优先处理工单、后台同步和异常节点。
-              </Text>
             </div>
           </Group>
           <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
             <ActionCard
               title="待回复工单"
-              description="用户正在等待管理员回复。"
               count={props.snapshot.dashboard.waitingAdminTickets ?? 0}
               actionLabel="进入工单中心"
               tone="red"
@@ -60,7 +56,6 @@ export function OverviewPage(props: OverviewPageProps) {
             />
             <ActionCard
               title="后台同步任务"
-              description="包含面板同步和连接撤销任务。"
               count={backgroundSyncQueueCount}
               actionLabel="查看同步任务"
               tone="yellow"
@@ -68,7 +63,6 @@ export function OverviewPage(props: OverviewPageProps) {
             />
             <ActionCard
               title="异常节点"
-              description="面板失联、同步待处理或探测异常。"
               count={abnormalNodeCount}
               actionLabel="查看节点"
               tone="blue"
@@ -120,7 +114,6 @@ export function OverviewPage(props: OverviewPageProps) {
 
 function ActionCard(props: {
   title: string;
-  description: string;
   count: number;
   actionLabel: string;
   tone: "red" | "yellow" | "blue";
@@ -133,9 +126,6 @@ function ActionCard(props: {
         <Group justify="space-between" align="start">
           <div>
             <Text fw={700}>{props.title}</Text>
-            <Text size="sm" c="dimmed">
-              {props.description}
-            </Text>
           </div>
           <ThemeIcon color={hasWork ? props.tone : "gray"} variant="light" radius="lg">
             <Text fw={700} size="sm">

@@ -93,7 +93,6 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
   return (
     <SectionCard
       title="订阅与授权"
-      description="订阅续期、变更套餐、节点授权和流量处理集中在这里。"
       searchValue={props.searchValue}
       onSearchChange={props.onSearchChange}
       searchPlaceholder="搜索用户、套餐或团队"

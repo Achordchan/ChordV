@@ -63,6 +63,9 @@ function testSidebarKeepsGroupedInformationArchitecture() {
 
   assert.match(appSource, /label: "客户与订阅"/);
   assert.match(appSource, /label: "订阅与授权"/);
+  assert.doesNotMatch(appSource, /description: "查看运营总览、异常任务和关键状态"/);
+  assert.doesNotMatch(appSource, /description=\{item\.description\}/);
+  assert.doesNotMatch(appSource, /\{sectionMeta\[section\]\.description\}/);
   assert.match(appSource, /\{ title: "用户与订阅", sections: \["users", "plans"\] \}/);
   assert.doesNotMatch(appSource, /\{ title: "用户与订阅", sections: \["users", "subscriptions", "plans"\] \}/);
   assert.match(appSource, /label: "节点与同步"/);
@@ -77,15 +80,17 @@ function testSidebarKeepsGroupedInformationArchitecture() {
 
 function testCustomerSubscriptionsPageCombinesRelatedWorkWithoutMergingBusinessLogic() {
   assert.match(appSource, /<CustomerSubscriptionsPage/);
-  assert.match(appSource, /activeTab=\{customerSubscriptionsTab\}/);
   assert.match(appSource, /customers=\{/);
   assert.match(appSource, /<UsersPage/);
-  assert.match(appSource, /subscriptions=\{/);
-  assert.match(appSource, /<SubscriptionsPage/);
-  assert.match(customerSubscriptionsPageSource, /value="customers"/);
-  assert.match(customerSubscriptionsPageSource, /客户与团队/);
-  assert.match(customerSubscriptionsPageSource, /value="subscriptions"/);
-  assert.match(customerSubscriptionsPageSource, /订阅与授权/);
+  assert.match(appSource, /subscriptions=\{subscriptions\}/);
+  assert.match(appSource, /allSubscriptions=\{allSubscriptions\}/);
+  assert.match(appSource, /onOpenRenewDrawer=\{\(subscriptionId\) => openDrawer\("subscription-renew", subscriptionId\)\}/);
+  assert.doesNotMatch(appSource, /activeTab=\{customerSubscriptionsTab\}/);
+  assert.doesNotMatch(appSource, /customerSubscriptionsTab/);
+  assert.doesNotMatch(customerSubscriptionsPageSource, /<Tabs/);
+  assert.doesNotMatch(customerSubscriptionsPageSource, /value="customers"/);
+  assert.doesNotMatch(customerSubscriptionsPageSource, /value="subscriptions"/);
+  assert.doesNotMatch(customerSubscriptionsPageSource, /先按客户定位账号和团队/);
 }
 
 function testSectionCardSupportsPageIntentAndActions() {
@@ -106,19 +111,29 @@ function testOverviewPrioritizesActionableWork() {
   );
   assert.match(overviewPageSource, /title="后台同步任务"/);
   assert.match(overviewPageSource, /actionLabel="查看同步任务"/);
+  assert.doesNotMatch(overviewPageSource, /优先处理工单、后台同步和异常节点。/);
+  assert.doesNotMatch(overviewPageSource, /用户正在等待管理员回复。/);
 }
 
 function testUsersPageKeepsAccountAndTeamEntrypoints() {
   assert.match(usersPageSource, /title="客户与团队"/);
+  assert.doesNotMatch(usersPageSource, /个人账号、团队关系和账号级连接动作集中在这里处理。/);
   assert.match(usersPageSource, /searchPlaceholder="搜索邮箱、名称或团队"/);
+  assert.match(usersPageSource, /当前订阅/);
+  assert.match(usersPageSource, /流量 \/ 节点/);
+  assert.match(usersPageSource, /props\.onOpenRenewDrawer\(subscriptionId\)/);
+  assert.match(usersPageSource, /props\.onOpenChangePlanDrawer\(subscriptionId\)/);
+  assert.match(usersPageSource, /props\.onOpenNodeAccessEditor\(subscriptionId, ownerLabel\)/);
+  assert.match(usersPageSource, /props\.onResetSubscriptionTraffic\(subscriptionId, item\.displayName \|\| item\.email\)/);
+  assert.match(usersPageSource, /<TeamSubscriptionSummary/);
+  assert.match(usersPageSource, /<TeamSubscriptionActions/);
   assert.match(usersPageSource, /个人用户 · \{personalUsers\.length\}/);
   assert.match(usersPageSource, /团队管理 · \{props\.filteredTeams\.length\}/);
   assert.match(usersPageSource, /onOpenUserDrawer\(item\.id\)/);
-  assert.match(usersPageSource, /onOpenUserSubscriptions\(item\)/);
   assert.match(usersPageSource, /onCreateSubscriptionForUser\(item\)/);
   assert.match(usersPageSource, /onDisconnectUser\(item\.id, item\.displayName, "personal"\)/);
   assert.match(usersPageSource, /onToggleUserStatus/);
-  assert.match(usersPageSource, /onOpenTeamSubscriptions\(item\)/);
+  assert.match(usersPageSource, /props\.onOpenTeamSubscriptions\(props\.team\)/);
   assert.match(usersPageSource, /onOpenTeamInlineEditor\(item\.id\)/);
   assert.match(usersPageSource, /onOpenTeamMemberInlineEditor\(item\.id\)/);
   assert.match(usersPageSource, /onDeleteTeamMember\(item\.id, member\.id\)/);
@@ -126,6 +141,7 @@ function testUsersPageKeepsAccountAndTeamEntrypoints() {
 
 function testSubscriptionsPageKeepsSubscriptionActions() {
   assert.match(subscriptionsPageSource, /title="订阅与授权"/);
+  assert.doesNotMatch(subscriptionsPageSource, /订阅续期、变更套餐、节点授权和流量处理集中在这里。/);
   assert.match(subscriptionsPageSource, /searchPlaceholder="搜索用户、套餐或团队"/);
   assert.match(subscriptionsPageSource, /个人订阅 · \{personalSubscriptions\.length\}/);
   assert.match(subscriptionsPageSource, /Team 订阅 · \{props\.filteredTeamSubscriptions\.length\}/);
@@ -159,11 +175,13 @@ function testPlansAndAnnouncementsExposePageIntent() {
 
 function testReleaseAndImageBedPagesExposePageIntent() {
   assert.match(releasesPageSource, /title="发布中心"/);
+  assert.doesNotMatch(releasesPageSource, /管理客户端版本、安装包、外链下载和发布状态。/);
   assert.match(releasesPageSource, /searchPlaceholder="搜索版本、标题或更新内容"/);
   assert.match(releasesPageSource, /openCreateRelease/);
   assert.match(releasesPageSource, /loadReleases\(\)/);
 
   assert.match(imageBedPageSource, /title="附件图床配置"/);
+  assert.doesNotMatch(imageBedPageSource, /配置工单附件图床 Token，并管理已上传图片。/);
   assert.match(imageBedPageSource, /searchPlaceholder="搜索图床文件"/);
   assert.match(imageBedPageSource, /onSearchSubmit=\{\(\) => void loadFiles\(\)\}/);
   assert.match(imageBedPageSource, /handleSave/);
@@ -172,7 +190,8 @@ function testReleaseAndImageBedPagesExposePageIntent() {
 
 function testPoliciesAndRuntimeComponentsUseCurrentNavigationNames() {
   assert.match(policiesPageSource, /<Title order=\{4\}>连接策略<\/Title>/);
-  assert.match(policiesPageSource, /配置客户端默认连接模式、可选模式和基础分流规则。/);
+  assert.doesNotMatch(policiesPageSource, /配置客户端默认连接模式、可选模式和基础分流规则。/);
+  assert.doesNotMatch(policiesPageSource, /当前使用 3x-ui 直连接入/);
   assert.doesNotMatch(policiesPageSource, /接入与连接策略/);
 
   assert.match(runtimeComponentsPageSource, /加载客户端组件失败/);

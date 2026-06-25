@@ -47,7 +47,6 @@ export function NodesPage(props: NodesPageProps) {
     <>
       <SectionCard
         title="节点与同步"
-        description="节点状态、面板探测和后台同步任务集中在这里。"
         searchValue={props.searchValue}
         onSearchChange={props.onSearchChange}
         searchPlaceholder="搜索节点、地区或地址"

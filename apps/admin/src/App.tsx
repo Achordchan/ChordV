@@ -267,60 +267,49 @@ type PanelSyncQueueState = {
   filter: PanelSyncQueueFilter | null;
 };
 
-const sectionMeta: Record<SectionKey, { label: string; description: string; icon: ReactNode }> = {
+const sectionMeta: Record<SectionKey, { label: string; icon: ReactNode }> = {
   overview: {
     label: "概览",
-    description: "查看运营总览、异常任务和关键状态",
     icon: <IconLayoutDashboard size={18} />
   },
   users: {
     label: "客户与订阅",
-    description: "统一处理客户、团队、订阅、节点授权和连接动作",
     icon: <IconUsers size={18} />
   },
   plans: {
     label: "套餐规则",
-    description: "配置个人和 Team 套餐模板、流量和续费规则",
     icon: <IconListDetails size={18} />
   },
   subscriptions: {
     label: "订阅与授权",
-    description: "处理订阅开通、续期、变更套餐、节点授权和流量重置",
     icon: <IconUser size={18} />
   },
   tickets: {
     label: "工单中心",
-    description: "处理用户工单、回复、附件和状态流转",
     icon: <IconMessageCircle size={18} />
   },
   nodes: {
     label: "节点与同步",
-    description: "管理 3x-ui 面板、节点探测、运行参数和同步任务",
     icon: <IconMapPin size={18} />
   },
   announcements: {
     label: "公告管理",
-    description: "发布普通公告、维护提醒和强提示弹窗",
     icon: <IconSpeakerphone size={18} />
   },
   policies: {
     label: "连接策略",
-    description: "配置默认连接模式和客户端分流策略",
     icon: <IconRoute size={18} />
   },
   releases: {
     label: "发布中心",
-    description: "管理客户端版本、安装包、外链和发布状态",
     icon: <IconCloudDownload size={18} />
   },
   runtimeComponents: {
     label: "客户端组件",
-    description: "管理 Xray、geoip、geosite 等客户端运行组件",
     icon: <IconCpu size={18} />
   },
   imageBed: {
     label: "附件图床配置",
-    description: "配置工单附件图床 Token，并管理已上传图片",
     icon: <IconPhoto size={18} />
   }
 };
@@ -397,7 +386,6 @@ export function App() {
   const [userTab, setUserTab] = useState<"personal" | "team">("personal");
   const [planScopeTab, setPlanScopeTab] = useState<PlanScope>("personal");
   const [subscriptionTab, setSubscriptionTab] = useState<"personal" | "team">("personal");
-  const [customerSubscriptionsTab, setCustomerSubscriptionsTab] = useState<"customers" | "subscriptions">("customers");
   const [authBootstrapped, setAuthBootstrapped] = useState(() => hasAdminSession());
   const [search, setSearch] = useState<Record<Exclude<SectionKey, "overview" | "tickets" | "policies" | "releases" | "runtimeComponents">, string>>({
     users: "",
@@ -449,7 +437,6 @@ export function App() {
   const sectionRequestSeqRef = useRef(0);
   const sectionMutationSeqRef = useRef(0);
   const pendingSyncQueueRefreshRef = useRef(false);
-  const customerSubscriptionsTabRef = useRef(customerSubscriptionsTab);
 
   const [userForm, setUserForm] = useState<UserFormState>(emptyUserForm());
   const [planForm, setPlanForm] = useState<PlanFormState>(emptyPlanForm());
@@ -545,17 +532,13 @@ export function App() {
     if (!authenticated || !snapshot) {
       return;
     }
-    const dataSection = section === "users" && customerSubscriptionsTab === "subscriptions" ? "subscriptions" : section;
+    const dataSection = section === "users" ? "subscriptions" : section;
     void loadSectionData(dataSection);
-  }, [authenticated, customerSubscriptionsTab, section, snapshot]);
+  }, [authenticated, section, snapshot]);
 
   useEffect(() => {
     sectionRef.current = section;
   }, [section]);
-
-  useEffect(() => {
-    customerSubscriptionsTabRef.current = customerSubscriptionsTab;
-  }, [customerSubscriptionsTab]);
 
   useEffect(() => {
     if (!snapshot) {
@@ -984,8 +967,7 @@ export function App() {
       setRuntimeComponentRefreshSignal((current) => current + 1);
       return;
     }
-    const dataSection =
-      sectionRef.current === "users" && customerSubscriptionsTabRef.current === "subscriptions" ? "subscriptions" : sectionRef.current;
+    const dataSection = sectionRef.current === "users" ? "subscriptions" : sectionRef.current;
     void loadSectionData(dataSection, { force: true, silent: true }).catch(() => {
       // Silent background refreshes are opportunistic; explicit actions report refresh failures separately.
     });
@@ -1216,7 +1198,7 @@ export function App() {
   }
 
   async function refreshCurrentDataAfterAction() {
-    const dataSection = section === "users" && customerSubscriptionsTab === "subscriptions" ? "subscriptions" : section;
+    const dataSection = section === "users" ? "subscriptions" : section;
     await Promise.all([
       refreshDashboard(),
       loadSectionData(dataSection, { force: true, silent: true })
@@ -2532,19 +2514,8 @@ export function App() {
     }
   }
 
-  function openUserSubscriptions(user: AdminUserRecordDto) {
-    setCustomerSubscriptionsTab("subscriptions");
-    setSubscriptionTab("personal");
-    setSearch((current) => ({
-      ...current,
-      subscriptions: user.email || user.displayName || user.id
-    }));
-    selectSection("users");
-  }
-
   function openCreateSubscriptionForUser(user: AdminUserRecordDto) {
     if (!snapshot) return;
-    setCustomerSubscriptionsTab("subscriptions");
     setSubscriptionTab("personal");
     setSearch((current) => ({
       ...current,
@@ -2559,7 +2530,6 @@ export function App() {
   }
 
   function openTeamSubscriptions(team: AdminTeamRecordDto) {
-    setCustomerSubscriptionsTab("subscriptions");
     setSubscriptionTab("team");
     setSearch((current) => ({
       ...current,
@@ -3074,13 +3044,9 @@ export function App() {
                         key={key}
                         active={section === key}
                         label={item.label}
-                        description={item.description}
                         leftSection={item.icon}
                         rightSection={readSectionNavBadge(key, waitingAdminTicketCount, backgroundSyncQueueCount)}
                         onClick={() => {
-                          if (key === "users") {
-                            setCustomerSubscriptionsTab("customers");
-                          }
                           selectSection(key);
                         }}
                         variant="filled"
@@ -3119,9 +3085,6 @@ export function App() {
               />
               <div>
                 <Title order={2}>{sectionMeta[section].label}</Title>
-                <Text size="sm" c="dimmed">
-                  {sectionMeta[section].description}
-                </Text>
               </div>
             </Group>
 
@@ -3159,13 +3122,21 @@ export function App() {
                   </Menu.Item>
                 </Menu.Dropdown>
               </Menu>
-              {section === "users" && customerSubscriptionsTab === "customers" ? (
+              {section === "users" ? (
                 <Group gap="xs">
                   <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("user")}>
                     新建用户
                   </Button>
                   <Button variant="default" leftSection={<IconPlus size={16} />} onClick={() => openDrawer("team")}>
                     新建团队
+                  </Button>
+                  <Button
+                    variant="default"
+                    leftSection={<IconPlus size={16} />}
+                    onClick={() => openDrawer("subscription-create")}
+                    disabled={eligiblePersonalUsers.length === 0}
+                  >
+                    新建订阅
                   </Button>
                 </Group>
               ) : null}
@@ -3174,7 +3145,7 @@ export function App() {
                   新建套餐
                 </Button>
               ) : null}
-              {(section === "subscriptions" || (section === "users" && customerSubscriptionsTab === "subscriptions")) ? (
+              {section === "subscriptions" ? (
                 <Button
                   leftSection={<IconPlus size={16} />}
                   onClick={() => openDrawer("subscription-create")}
@@ -3220,7 +3191,6 @@ export function App() {
               <OverviewPage
                 snapshot={snapshot}
                 onOpenSubscriptions={() => {
-                  setCustomerSubscriptionsTab("subscriptions");
                   selectSection("users");
                 }}
                 onOpenNodes={() => selectSection("nodes")}
@@ -3231,12 +3201,6 @@ export function App() {
 
             {section === "users" ? (
               <CustomerSubscriptionsPage
-                activeTab={customerSubscriptionsTab}
-                onTabChange={setCustomerSubscriptionsTab}
-                customerCount={users.length}
-                teamCount={filteredTeams.length}
-                personalSubscriptionCount={subscriptions.length}
-                teamSubscriptionCount={filteredTeamSubscriptions.length}
                 customers={
                   <UsersPage
                     searchValue={search.users}
@@ -3245,6 +3209,8 @@ export function App() {
                     onUserTabChange={setUserTab}
                     users={users}
                     filteredTeams={filteredTeams}
+                    subscriptions={subscriptions}
+                    allSubscriptions={allSubscriptions}
                     allUsers={snapshot.users}
                     leaseRevocationJobs={snapshot.leaseRevocationJobs}
                     leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
@@ -3259,9 +3225,16 @@ export function App() {
                     setTeamMemberForm={setTeamMemberForm}
                     buildTeamMemberOptions={buildTeamMemberOptions}
                     onOpenUserDrawer={(userId) => openDrawer("user", userId)}
-                    onOpenUserSubscriptions={openUserSubscriptions}
                     onCreateSubscriptionForUser={openCreateSubscriptionForUser}
                     onOpenTeamSubscriptions={openTeamSubscriptions}
+                    onOpenRenewDrawer={(subscriptionId) => openDrawer("subscription-renew", subscriptionId)}
+                    onOpenChangePlanDrawer={(subscriptionId) => openDrawer("subscription-change-plan", subscriptionId)}
+                    onOpenAdjustDrawer={(subscriptionId) => openDrawer("subscription-adjust", subscriptionId)}
+                    onOpenNodeAccessEditor={(subscriptionId, ownerLabel) => void openNodeAccessEditor(subscriptionId, ownerLabel)}
+                    onResetSubscriptionTraffic={(subscriptionId, ownerLabel, userId) =>
+                      void handleResetSubscriptionTraffic(subscriptionId, ownerLabel, userId)
+                    }
+                    resetTrafficBusyKey={resetTrafficBusyKey}
                     onOpenTeamInlineEditor={openTeamInlineEditor}
                     onCloseTeamInlineEditor={closeTeamInlineEditor}
                     onSaveTeamInlineEditor={(teamId) => void saveTeamInlineEditor(teamId)}
@@ -3277,46 +3250,6 @@ export function App() {
                     }
                     onDisconnectUser={(userId, displayName, source) => void handleDisconnectUser(userId, displayName, source)}
                     onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
-                    onOpenPanelSyncQueue={openPanelSyncQueue}
-                  />
-                }
-                subscriptions={
-                  <SubscriptionsPage
-                    searchValue={search.subscriptions}
-                    onSearchChange={(value) => setSearch((current) => ({ ...current, subscriptions: value }))}
-                    subscriptionTab={subscriptionTab}
-                    onSubscriptionTabChange={setSubscriptionTab}
-                    subscriptions={subscriptions}
-                    filteredTeamSubscriptions={filteredTeamSubscriptions}
-                    allSubscriptions={allSubscriptions}
-                    plans={snapshot.plans}
-                    teamSubscriptionInlineEditorId={teamSubscriptionInlineEditorId}
-                    teamSubscriptionForm={teamSubscriptionForm}
-                    setTeamSubscriptionForm={setTeamSubscriptionForm}
-                    teamSubscriptionBusyKey={teamSubscriptionBusyKey}
-                    onOpenRenewDrawer={(subscriptionId) => openDrawer("subscription-renew", subscriptionId)}
-                    onOpenChangePlanDrawer={(subscriptionId) => openDrawer("subscription-change-plan", subscriptionId)}
-                    onOpenAdjustDrawer={(subscriptionId) => openDrawer("subscription-adjust", subscriptionId)}
-                    onOpenNodeAccessEditor={(subscriptionId, ownerLabel) => void openNodeAccessEditor(subscriptionId, ownerLabel)}
-                    onOpenConvertToTeamModal={openConvertToTeamModal}
-                    hasAvailableTeamTransferTarget={teamsWithCurrentSubscription.length > 0}
-                    onOpenTeamSubscriptionInlineEditor={openTeamSubscriptionInlineEditor}
-                    onCloseTeamSubscriptionInlineEditor={closeTeamSubscriptionInlineEditor}
-                    onSaveTeamSubscriptionInlineEditor={(teamId) => void saveTeamSubscriptionInlineEditor(teamId)}
-                    onResetSubscriptionTraffic={(subscriptionId, ownerLabel, userId) =>
-                      void handleResetSubscriptionTraffic(subscriptionId, ownerLabel, userId)
-                    }
-                    resetTrafficBusyKey={resetTrafficBusyKey}
-                    allUsers={snapshot.users}
-                    leaseRevocationJobs={snapshot.leaseRevocationJobs}
-                    leaseRevocationRetryBusyKey={leaseRevocationRetryBusyKey}
-                    onOpenKickMemberModal={openKickMemberModal}
-                    onRetryLeaseRevocationJob={(jobId) => void handleRetryLeaseRevocationJob(jobId)}
-                    onOpenTeamUsageDetail={setTeamUsageDetailTarget}
-                    teamUsageByTeamId={teamUsageByTeamId}
-                    teamUsageLoadingByTeamId={teamUsageLoadingByTeamId}
-                    teamUsageErrorByTeamId={teamUsageErrorByTeamId}
-                    onLoadTeamUsage={(teamId, options) => void loadTeamUsage(teamId, options)}
                     onOpenPanelSyncQueue={openPanelSyncQueue}
                   />
                 }

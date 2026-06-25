@@ -1,10 +1,19 @@
 import type { Dispatch, SetStateAction } from "react";
 import { Accordion, ActionIcon, Badge, Button, Group, Paper, Select, Stack, Table, Tabs, Text, TextInput } from "@mantine/core";
-import type { AdminLeaseRevocationJobDto, AdminTeamRecordDto, AdminUserRecordDto, TeamMemberRole, TeamStatus } from "@chordv/shared";
+import type {
+  AdminLeaseRevocationJobDto,
+  AdminSubscriptionRecordDto,
+  AdminTeamRecordDto,
+  AdminUserRecordDto,
+  TeamMemberRole,
+  TeamStatus
+} from "@chordv/shared";
 import {
+  IconGaugeOff,
   IconListDetails,
   IconLock,
   IconLockOpen2,
+  IconMapPin,
   IconPencil,
   IconPlugConnectedX,
   IconPlus,
@@ -19,7 +28,8 @@ import { StatusBadge } from "../features/shared/StatusBadge";
 import type { PanelSyncQueueFilter } from "../utils/admin-queue-filters";
 import type { TeamFormState, TeamMemberFormState } from "../utils/admin-forms";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
-import { translateRole, translateUserStatus } from "../utils/admin-translate";
+import { formatDateTime, formatTrafficGb } from "../utils/admin-format";
+import { getRenewActionText, subscriptionStateColor, translateRole, translateSubscriptionState, translateUserStatus } from "../utils/admin-translate";
 
 type UsersPageProps = {
   searchValue: string;
@@ -28,6 +38,8 @@ type UsersPageProps = {
   onUserTabChange: (value: "personal" | "team") => void;
   users: AdminUserRecordDto[];
   filteredTeams: AdminTeamRecordDto[];
+  subscriptions: AdminSubscriptionRecordDto[];
+  allSubscriptions: AdminSubscriptionRecordDto[];
   allUsers: AdminUserRecordDto[];
   leaseRevocationJobs: AdminLeaseRevocationJobDto[];
   leaseRevocationRetryBusyKey: string | null;
@@ -42,9 +54,14 @@ type UsersPageProps = {
   setTeamMemberForm: Dispatch<SetStateAction<TeamMemberFormState>>;
   buildTeamMemberOptions: (currentUserId?: string) => Array<{ value: string; label: string }>;
   onOpenUserDrawer: (userId: string) => void;
-  onOpenUserSubscriptions: (user: AdminUserRecordDto) => void;
   onCreateSubscriptionForUser: (user: AdminUserRecordDto) => void;
   onOpenTeamSubscriptions: (team: AdminTeamRecordDto) => void;
+  onOpenRenewDrawer: (subscriptionId: string) => void;
+  onOpenChangePlanDrawer: (subscriptionId: string) => void;
+  onOpenAdjustDrawer: (subscriptionId: string) => void;
+  onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
+  onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
+  resetTrafficBusyKey: string | null;
   onOpenTeamInlineEditor: (teamId: string) => void;
   onCloseTeamInlineEditor: () => void;
   onSaveTeamInlineEditor: (teamId: string) => void;
@@ -61,6 +78,10 @@ type UsersPageProps = {
 
 export function UsersPage(props: UsersPageProps) {
   const personalUsers = props.users.filter((item) => item.accountType === "personal");
+  const subscriptionById = new Map(props.allSubscriptions.map((item) => [item.id, item]));
+  const personalSubscriptionByUserId = new Map(
+    props.subscriptions.filter((item) => item.ownerType === "user" && item.userId).map((item) => [item.userId!, item])
+  );
   const teamMemberRoleOptions =
     props.teamMemberForm.role === "owner"
       ? [
@@ -73,7 +94,6 @@ export function UsersPage(props: UsersPageProps) {
     <Stack gap="lg">
       <SectionCard
         title="客户与团队"
-        description="个人账号、团队关系和账号级连接动作集中在这里处理。"
         searchValue={props.searchValue}
         onSearchChange={props.onSearchChange}
         searchPlaceholder="搜索邮箱、名称或团队"
@@ -87,29 +107,70 @@ export function UsersPage(props: UsersPageProps) {
             <DataTable>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>邮箱</Table.Th>
-                  <Table.Th>名称</Table.Th>
-                  <Table.Th>角色</Table.Th>
+                  <Table.Th>客户</Table.Th>
+                  <Table.Th>当前订阅</Table.Th>
+                  <Table.Th>流量 / 节点</Table.Th>
+                  <Table.Th>到期</Table.Th>
                   <Table.Th>状态</Table.Th>
                   <Table.Th>操作</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {personalUsers.map((item) => (
+                {personalUsers.map((item) => {
+                  const fullSubscription = findUserSubscription(item, subscriptionById, personalSubscriptionByUserId);
+                  const subscriptionSummary = fullSubscription ?? item.currentSubscription;
+                  const subscriptionId = subscriptionSummary?.id ?? null;
+                  const ownerLabel = `${item.displayName || item.email} · ${subscriptionSummary?.planName ?? "未分配订阅"}`;
+
+                  return (
                   <Table.Tr key={item.id}>
-                    <Table.Td>{item.email}</Table.Td>
-                    <Table.Td>{item.displayName}</Table.Td>
                     <Table.Td>
-                      <Badge variant="light">{translateRole(item.role)}</Badge>
+                      <Stack gap={2}>
+                        <Text fw={600}>{item.displayName}</Text>
+                        <Text size="sm" c="dimmed">{item.email}</Text>
+                        <Group gap={6}>
+                          <Badge variant="light">{translateRole(item.role)}</Badge>
+                          <Badge variant="light" color={item.accountType === "personal" ? "blue" : "gray"}>
+                            个人
+                          </Badge>
+                        </Group>
+                      </Stack>
+                    </Table.Td>
+                    <Table.Td>
+                      {subscriptionSummary ? (
+                        <Stack gap={2}>
+                          <Text fw={600}>{subscriptionSummary.planName}</Text>
+                          <StatusBadge
+                            color={subscriptionStateColor(subscriptionSummary.state)}
+                            label={translateSubscriptionState(subscriptionSummary.state)}
+                          />
+                          {fullSubscription?.stateReasonMessage ? (
+                            <Text size="xs" c="dimmed" lineClamp={1}>
+                              {fullSubscription.stateReasonMessage}
+                            </Text>
+                          ) : null}
+                        </Stack>
+                      ) : (
+                        <Text c="orange.7">未分配订阅</Text>
+                      )}
                     </Table.Td>
                     <Table.Td>
                       <Stack gap={4}>
-                        <StatusBadge color={item.status === "active" ? "green" : "gray"} label={translateUserStatus(item.status)} />
+                        <Text>{readTrafficText(fullSubscription, item.currentSubscription)}</Text>
+                        <Text c={fullSubscription?.hasNodeAccess ? undefined : "orange.7"} size="sm">
+                          {readNodeAccessText(fullSubscription)}
+                        </Text>
+                      </Stack>
+                    </Table.Td>
+                    <Table.Td>{subscriptionSummary ? formatDateTime(subscriptionSummary.expireAt) : "-"}</Table.Td>
+                    <Table.Td>
+                      <Stack gap={4}>
+                        <StatusBadge color={item.status === "active" ? "green" : "gray"} label={`账号${translateUserStatus(item.status)}`} />
                         <PanelSyncInlineStatus
-                          item={item}
+                          item={fullSubscription ?? item}
                           onOpenPanelSyncQueue={() =>
                             props.onOpenPanelSyncQueue({
-                              subscriptionId: item.currentSubscription?.id,
+                              subscriptionId: subscriptionId ?? undefined,
                               userId: item.id,
                               title: item.displayName
                             })
@@ -127,12 +188,54 @@ export function UsersPage(props: UsersPageProps) {
                         <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号" aria-label="编辑账号">
                           <IconPencil size={16} />
                         </ActionIcon>
-                        {item.subscriptionCount > 0 || item.currentSubscription ? (
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅与授权" aria-label="打开订阅与授权">
-                            <IconListDetails size={16} />
-                          </ActionIcon>
-                        ) : null}
-                        {!item.currentSubscription ? (
+                        {subscriptionId ? (
+                          <>
+                            <ActionIcon
+                              variant="subtle"
+                              onClick={() => props.onOpenRenewDrawer(subscriptionId)}
+                              disabled={fullSubscription ? !fullSubscription.renewable : false}
+                              title={fullSubscription ? getRenewActionText(fullSubscription.renewable) : "续期"}
+                              aria-label={fullSubscription ? getRenewActionText(fullSubscription.renewable) : "续期"}
+                            >
+                              <IconRefresh size={16} />
+                            </ActionIcon>
+                            <ActionIcon
+                              variant="subtle"
+                              onClick={() => props.onOpenChangePlanDrawer(subscriptionId)}
+                              title="变更套餐"
+                              aria-label="变更套餐"
+                            >
+                              <IconListDetails size={16} />
+                            </ActionIcon>
+                            <ActionIcon
+                              variant="subtle"
+                              onClick={() => props.onOpenAdjustDrawer(subscriptionId)}
+                              title="调整订阅"
+                              aria-label="调整订阅"
+                            >
+                              <IconPencil size={16} />
+                            </ActionIcon>
+                            <ActionIcon
+                              variant="subtle"
+                              onClick={() => props.onOpenNodeAccessEditor(subscriptionId, ownerLabel)}
+                              title="节点授权"
+                              aria-label="节点授权"
+                            >
+                              <IconMapPin size={16} />
+                            </ActionIcon>
+                            <ActionIcon
+                              color="orange"
+                              variant="subtle"
+                              title="重置流量"
+                              aria-label="重置流量"
+                              onClick={() => props.onResetSubscriptionTraffic(subscriptionId, item.displayName || item.email)}
+                              loading={props.resetTrafficBusyKey === `${subscriptionId}:all`}
+                              disabled={props.resetTrafficBusyKey !== null}
+                            >
+                              <IconGaugeOff size={16} />
+                            </ActionIcon>
+                          </>
+                        ) : (
                           <ActionIcon
                             variant="subtle"
                             color="blue"
@@ -142,7 +245,7 @@ export function UsersPage(props: UsersPageProps) {
                           >
                             <IconPlus size={16} />
                           </ActionIcon>
-                        ) : null}
+                        )}
                         <ActionIcon
                           variant="subtle"
                           color="orange"
@@ -174,7 +277,8 @@ export function UsersPage(props: UsersPageProps) {
                       </RowActions>
                     </Table.Td>
                   </Table.Tr>
-                ))}
+                );
+                })}
               </Table.Tbody>
             </DataTable>
           </Tabs.Panel>
@@ -197,6 +301,7 @@ export function UsersPage(props: UsersPageProps) {
                           </Text>
                           <Text fw={600}>{item.memberCount}</Text>
                         </Stack>
+                        <TeamSubscriptionSummary team={item} allSubscriptions={props.allSubscriptions} />
                       </Group>
                       <Stack gap={4} align="flex-end">
                         <StatusBadge color={item.status === "active" ? "green" : "gray"} label={item.status === "active" ? "启用" : "停用"} />
@@ -223,18 +328,18 @@ export function UsersPage(props: UsersPageProps) {
                   <Accordion.Panel>
                     <Stack gap="md">
                       <Group justify="space-between">
-                        <Text size="sm" c="dimmed">
-                          这里只处理团队组织、负责人和成员关系，不展示共享订阅、节点和流量账单。
-                        </Text>
+                        <TeamSubscriptionActions
+                          team={item}
+                          allSubscriptions={props.allSubscriptions}
+                          resetTrafficBusyKey={props.resetTrafficBusyKey}
+                          onOpenTeamSubscriptions={props.onOpenTeamSubscriptions}
+                          onOpenRenewDrawer={props.onOpenRenewDrawer}
+                          onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
+                          onOpenAdjustDrawer={props.onOpenAdjustDrawer}
+                          onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
+                          onResetSubscriptionTraffic={props.onResetSubscriptionTraffic}
+                        />
                         <RowActions>
-                          <ActionIcon
-                            variant="subtle"
-                            onClick={() => props.onOpenTeamSubscriptions(item)}
-                            title="Team 订阅：打开共享订阅与授权"
-                            aria-label="Team 订阅：打开共享订阅与授权"
-                          >
-                            <IconListDetails size={16} />
-                          </ActionIcon>
                           <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)} title="编辑团队资料" aria-label="编辑团队资料">
                             <IconPencil size={16} />
                           </ActionIcon>
@@ -506,6 +611,130 @@ function PanelSyncInlineStatus(props: {
         </Text>
       ) : null}
     </Stack>
+  );
+}
+
+function findUserSubscription(
+  user: AdminUserRecordDto,
+  subscriptionById: Map<string, AdminSubscriptionRecordDto>,
+  personalSubscriptionByUserId: Map<string, AdminSubscriptionRecordDto>
+) {
+  if (user.currentSubscription?.id) {
+    const byId = subscriptionById.get(user.currentSubscription.id);
+    if (byId) return byId;
+  }
+  return personalSubscriptionByUserId.get(user.id) ?? null;
+}
+
+function findTeamSubscription(team: AdminTeamRecordDto, allSubscriptions: AdminSubscriptionRecordDto[]) {
+  if (!team.currentSubscription) return null;
+  return allSubscriptions.find((item) => item.id === team.currentSubscription?.id) ?? null;
+}
+
+function readTrafficText(fullSubscription?: AdminSubscriptionRecordDto | null, summary?: { remainingTrafficGb: number } | null) {
+  if (fullSubscription) {
+    return `剩余 ${formatTrafficGb(fullSubscription.remainingTrafficGb)} / 总量 ${formatTrafficGb(fullSubscription.totalTrafficGb)} GB`;
+  }
+  if (summary) {
+    return `剩余 ${formatTrafficGb(summary.remainingTrafficGb)} GB`;
+  }
+  return "-";
+}
+
+function readNodeAccessText(subscription?: AdminSubscriptionRecordDto | null) {
+  if (!subscription) return "未分配节点";
+  return subscription.hasNodeAccess ? `${subscription.nodeCount} 个节点` : "未分配节点";
+}
+
+function TeamSubscriptionSummary(props: { team: AdminTeamRecordDto; allSubscriptions: AdminSubscriptionRecordDto[] }) {
+  const fullSubscription = findTeamSubscription(props.team, props.allSubscriptions);
+  const subscription = fullSubscription ?? props.team.currentSubscription;
+
+  if (!subscription) {
+    return (
+      <Stack gap={0} miw={180}>
+        <Text size="sm" c="dimmed">共享订阅</Text>
+        <Text c="orange.7" fw={600}>未分配</Text>
+      </Stack>
+    );
+  }
+
+  return (
+    <>
+      <Stack gap={0} miw={180}>
+        <Text size="sm" c="dimmed">共享订阅</Text>
+        <Text fw={600}>{subscription.planName}</Text>
+      </Stack>
+      <Stack gap={0} miw={180}>
+        <Text size="sm" c="dimmed">流量 / 节点</Text>
+        <Text fw={600}>{readTrafficText(fullSubscription, props.team.currentSubscription)}</Text>
+        <Text size="sm" c={fullSubscription?.hasNodeAccess ? "dimmed" : "orange.7"}>
+          {readNodeAccessText(fullSubscription)}
+        </Text>
+      </Stack>
+      <Stack gap={0} miw={150}>
+        <Text size="sm" c="dimmed">到期</Text>
+        <Text fw={600}>{formatDateTime(subscription.expireAt)}</Text>
+      </Stack>
+    </>
+  );
+}
+
+function TeamSubscriptionActions(props: {
+  team: AdminTeamRecordDto;
+  allSubscriptions: AdminSubscriptionRecordDto[];
+  resetTrafficBusyKey: string | null;
+  onOpenTeamSubscriptions: (team: AdminTeamRecordDto) => void;
+  onOpenRenewDrawer: (subscriptionId: string) => void;
+  onOpenChangePlanDrawer: (subscriptionId: string) => void;
+  onOpenAdjustDrawer: (subscriptionId: string) => void;
+  onOpenNodeAccessEditor: (subscriptionId: string, ownerLabel: string) => void;
+  onResetSubscriptionTraffic: (subscriptionId: string, ownerLabel: string, userId?: string) => void;
+}) {
+  const fullSubscription = findTeamSubscription(props.team, props.allSubscriptions);
+  const subscriptionId = fullSubscription?.id ?? props.team.currentSubscription?.id ?? null;
+  const ownerLabel = `${props.team.name} · ${fullSubscription?.planName ?? props.team.currentSubscription?.planName ?? "Team 订阅"}`;
+
+  if (!subscriptionId) {
+    return (
+      <Button size="xs" variant="default" leftSection={<IconPlus size={14} />} onClick={() => props.onOpenTeamSubscriptions(props.team)}>
+        分配订阅
+      </Button>
+    );
+  }
+
+  return (
+    <Group gap="xs" wrap="wrap">
+      <Button
+        size="xs"
+        variant="default"
+        leftSection={<IconRefresh size={14} />}
+        disabled={fullSubscription ? !fullSubscription.renewable : false}
+        onClick={() => props.onOpenRenewDrawer(subscriptionId)}
+      >
+        {fullSubscription ? getRenewActionText(fullSubscription.renewable) : "续期"}
+      </Button>
+      <Button size="xs" variant="default" leftSection={<IconListDetails size={14} />} onClick={() => props.onOpenChangePlanDrawer(subscriptionId)}>
+        变更套餐
+      </Button>
+      <Button size="xs" variant="default" leftSection={<IconPencil size={14} />} onClick={() => props.onOpenAdjustDrawer(subscriptionId)}>
+        调整订阅
+      </Button>
+      <Button size="xs" variant="default" leftSection={<IconMapPin size={14} />} onClick={() => props.onOpenNodeAccessEditor(subscriptionId, ownerLabel)}>
+        节点授权
+      </Button>
+      <Button
+        size="xs"
+        color="orange"
+        variant="default"
+        leftSection={<IconGaugeOff size={14} />}
+        onClick={() => props.onResetSubscriptionTraffic(subscriptionId, props.team.name)}
+        loading={props.resetTrafficBusyKey === `${subscriptionId}:all`}
+        disabled={props.resetTrafficBusyKey !== null}
+      >
+        重置流量
+      </Button>
+    </Group>
   );
 }
 

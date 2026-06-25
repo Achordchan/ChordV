@@ -20,7 +20,6 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
   return (
     <SectionCard
       title="公告管理"
-      description="管理普通公告、维护提醒和需要用户确认的强提示。"
       searchValue={props.searchValue}
       onSearchChange={props.onSearchChange}
       searchPlaceholder="搜索公告标题或内容"
