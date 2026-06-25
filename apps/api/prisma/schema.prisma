@@ -192,10 +192,27 @@ model User {
   securityEvents       SecurityEvent[]
   panelClientBindings  PanelClientBinding[]
   panelSyncJobs        PanelSyncJob[]
+  routingRules         ClientRoutingRule[]
   supportTickets       SupportTicket[]
   supportTicketMessages SupportTicketMessage[] @relation("SupportTicketMessageAuthor")
   announcementReadStates AnnouncementReadState[]
   supportTicketReadStates SupportTicketReadState[]
+}
+
+model ClientRoutingRule {
+  id        String   @id
+  userId    String
+  name      String?
+  value     String
+  matchType String
+  action    String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, matchType, value])
+  @@index([userId, enabled, updatedAt])
 }
 
 model Plan {

@@ -929,6 +929,9 @@ function createClientAccessService(overrides: Record<string, unknown> = {}) {
         publishedAt: null
       })
     },
+    clientRoutingRuleService: {
+      listRulesForUserId: async () => []
+    },
     ...overrides
   });
 }

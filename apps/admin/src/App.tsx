@@ -9,6 +9,7 @@ import {
   Card,
   Group,
   Loader,
+  Menu,
   Modal,
   NavLink,
   Paper,
@@ -60,8 +61,10 @@ import {
   IconBolt,
   IconCloudDownload,
   IconCpu,
+  IconDotsVertical,
   IconLayoutDashboard,
   IconListDetails,
+  IconLogout,
   IconMapPin,
   IconMessageCircle,
   IconPencil,
@@ -69,6 +72,7 @@ import {
   IconRefresh,
   IconRoute,
   IconSearch,
+  IconShieldLock,
   IconSpeakerphone,
   IconTrash,
   IconUser,
@@ -265,60 +269,87 @@ type PanelSyncQueueState = {
 const sectionMeta: Record<SectionKey, { label: string; description: string; icon: ReactNode }> = {
   overview: {
     label: "概览",
-    description: "查看运营总览和关键变化",
+    description: "查看运营总览、异常任务和关键状态",
     icon: <IconLayoutDashboard size={18} />
   },
   users: {
-    label: "用户",
-    description: "账号、角色和启停状态",
+    label: "客户与团队",
+    description: "管理个人账号、团队关系、启用状态和连接动作",
     icon: <IconUsers size={18} />
   },
   plans: {
-    label: "套餐",
-    description: "流量模板与续费规则",
+    label: "套餐规则",
+    description: "配置个人和 Team 套餐模板、流量和续费规则",
     icon: <IconListDetails size={18} />
   },
   subscriptions: {
-    label: "订阅",
-    description: "新建、续期、变更套餐、校正",
+    label: "订阅管理",
+    description: "处理订阅开通、续期、变更套餐、节点授权和流量重置",
     icon: <IconUser size={18} />
   },
   tickets: {
-    label: "工单",
-    description: "查看、回复、关闭与重开工单",
+    label: "工单中心",
+    description: "处理用户工单、回复、附件和状态流转",
     icon: <IconMessageCircle size={18} />
   },
   nodes: {
-    label: "节点",
-    description: "添加面板、刷新、探测、删除",
+    label: "节点与同步",
+    description: "管理 3x-ui 面板、节点探测、运行参数和同步任务",
     icon: <IconMapPin size={18} />
   },
   announcements: {
-    label: "公告",
-    description: "普通公告与强提示弹窗",
+    label: "公告管理",
+    description: "发布普通公告、维护提醒和强提示弹窗",
     icon: <IconSpeakerphone size={18} />
   },
   policies: {
-    label: "策略",
-    description: "接入与连接策略",
+    label: "连接策略",
+    description: "配置默认连接模式和客户端分流策略",
     icon: <IconRoute size={18} />
   },
   releases: {
     label: "发布中心",
-    description: "版本发布与安装包",
+    description: "管理客户端版本、安装包、外链和发布状态",
     icon: <IconCloudDownload size={18} />
   },
   runtimeComponents: {
-    label: "内核组件",
-    description: "管理 Xray 与规则集",
+    label: "客户端组件",
+    description: "管理 Xray、geoip、geosite 等客户端运行组件",
     icon: <IconCpu size={18} />
   },
   imageBed: {
-    label: "图床",
-    description: "配置工单附件图床，并管理已上传图片",
+    label: "附件图床配置",
+    description: "配置工单附件图床 Token，并管理已上传图片",
     icon: <IconPhoto size={18} />
   }
 };
+
+const sectionGroups: Array<{ title: string; sections: SectionKey[] }> = [
+  { title: "总览", sections: ["overview"] },
+  { title: "用户与订阅", sections: ["users", "subscriptions", "plans"] },
+  { title: "节点与任务", sections: ["nodes"] },
+  { title: "客服与公告", sections: ["tickets", "announcements"] },
+  { title: "应用发布", sections: ["releases", "runtimeComponents"] },
+  { title: "系统设置", sections: ["policies", "imageBed"] }
+];
+
+function readSectionNavBadge(sectionKey: SectionKey, waitingAdminTicketCount: number, backgroundSyncQueueCount: number) {
+  if (sectionKey === "tickets" && waitingAdminTicketCount > 0) {
+    return (
+      <Badge size="sm" color="red" variant="filled" radius="xl">
+        {waitingAdminTicketCount > 99 ? "99+" : waitingAdminTicketCount}
+      </Badge>
+    );
+  }
+  if (sectionKey === "nodes" && backgroundSyncQueueCount > 0) {
+    return (
+      <Badge size="sm" color="yellow" variant="light" radius="xl">
+        {backgroundSyncQueueCount > 99 ? "99+" : backgroundSyncQueueCount}
+      </Badge>
+    );
+  }
+  return undefined;
+}
 
 export function App() {
   const [snapshot, setSnapshot] = useState<AdminSnapshotDto | null>(null);
@@ -1133,9 +1164,9 @@ export function App() {
         if ((!panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
           notifications.show({
             color: "yellow",
-            title: "同步队列加载失败",
+            title: "同步任务加载失败",
             message: [
-              panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步队列加载失败"),
+              panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步任务加载失败"),
               leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
             ]
               .filter(Boolean)
@@ -1205,7 +1236,7 @@ export function App() {
       throw new Error(
         [
           nodesResult.ok ? null : readError(nodesResult.reason, "节点列表加载失败"),
-          panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步队列加载失败"),
+          panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步任务加载失败"),
           leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
         ]
           .filter(Boolean)
@@ -1294,7 +1325,7 @@ export function App() {
       notifications.show({
         color: "green",
         title: "已重新排队",
-        message: "面板同步任务已加入最近重试队列"
+        message: "面板同步任务已加入重试任务"
       });
     } catch (reason) {
       const retryMessage = readError(reason, "同步任务重新排队失败");
@@ -1305,7 +1336,7 @@ export function App() {
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
-        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步任务确认。` : retryMessage
       });
     } finally {
       setPanelSyncRetryBusyKey(null);
@@ -1327,7 +1358,7 @@ export function App() {
       notifications.show({
         color: "green",
         title: "已重新排队",
-        message: "该节点的面板同步任务已加入最近重试队列"
+        message: "该节点的面板同步任务已加入重试任务"
       });
     } catch (reason) {
       const retryMessage = readError(reason, "节点同步任务重新排队失败");
@@ -1338,7 +1369,7 @@ export function App() {
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
-        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步任务确认。` : retryMessage
       });
     } finally {
       setPanelSyncRetryBusyKey(null);
@@ -1370,7 +1401,7 @@ export function App() {
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
-        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步任务确认。` : retryMessage
       });
     } finally {
       setLeaseRevocationRetryBusyKey(null);
@@ -1402,7 +1433,7 @@ export function App() {
       notifications.show({
         color: retryUncertain ? "yellow" : "red",
         title: retryUncertain ? "重试状态不确定" : "重试失败",
-        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步队列确认。` : retryMessage
+        message: retryUncertain ? `${retryMessage} 请求可能已提交，请刷新同步任务确认。` : retryMessage
       });
     } finally {
       setLeaseRevocationRetryBusyKey(null);
@@ -1664,8 +1695,8 @@ export function App() {
         void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: "面板同步队列刷新失败",
-            message: readError(refreshReason, "同步队列刷新失败")
+            title: "面板同步任务刷新失败",
+            message: readError(refreshReason, "同步任务刷新失败")
           });
         });
       }
@@ -1690,8 +1721,8 @@ export function App() {
         void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: "同步队列刷新失败",
-            message: readError(refreshReason, "同步队列刷新失败")
+            title: "同步任务刷新失败",
+            message: readError(refreshReason, "同步任务刷新失败")
           });
         });
       }
@@ -1791,15 +1822,15 @@ export function App() {
         notifications.show({
           color: "yellow",
           title: "节点授权已保存，但列表刷新失败",
-          message: `${readError(refreshReason, "刷新最新数据失败")} 本次保存请求已经成功返回，可手动刷新订阅列表和同步队列确认最新状态。`
+          message: `${readError(refreshReason, "刷新最新数据失败")} 本次保存请求已经成功返回，可手动刷新订阅列表和同步任务确认最新状态。`
         });
       });
       if (panelSyncPending) {
         void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: "面板同步队列刷新失败",
-            message: readError(refreshReason, "同步队列刷新失败")
+            title: "面板同步任务刷新失败",
+            message: readError(refreshReason, "同步任务刷新失败")
           });
         });
       }
@@ -1826,8 +1857,8 @@ export function App() {
         void refreshPanelSyncJobsAfterPending().catch((refreshReason) => {
           notifications.show({
             color: "yellow",
-            title: "同步队列刷新失败",
-            message: readError(refreshReason, "同步队列刷新失败")
+            title: "同步任务刷新失败",
+            message: readError(refreshReason, "同步任务刷新失败")
           });
         });
       }
@@ -2585,7 +2616,7 @@ export function App() {
     }
     const targetKey = `${subscriptionId}:${userId ?? "all"}`;
     const confirmed = window.confirm(
-      `确认重置 ${ownerLabel} 的流量吗？后台会先立即重置本地流量，3x-ui 面板计量会进入后台同步队列。`
+      `确认重置 ${ownerLabel} 的流量吗？后台会先立即重置本地流量，3x-ui 面板计量会进入后台同步任务。`
     );
     if (!confirmed) {
       return;
@@ -3017,23 +3048,27 @@ export function App() {
                 </Text>
                 <Title order={3}>运营后台</Title>
               </div>
-              {Object.entries(sectionMeta).map(([key, item]) => (
-                <NavLink
-                  key={key}
-                  active={section === key}
-                  label={item.label}
-                  description={item.description}
-                  leftSection={item.icon}
-                  rightSection={
-                    key === "tickets" && waitingAdminTicketCount > 0 ? (
-                      <Badge size="sm" color="red" variant="filled" radius="xl">
-                        {waitingAdminTicketCount > 99 ? "99+" : waitingAdminTicketCount}
-                      </Badge>
-                    ) : undefined
-                  }
-                  onClick={() => selectSection(key as SectionKey)}
-                  variant="filled"
-                />
+              {sectionGroups.map((group) => (
+                <Stack key={group.title} gap={4} className="admin-nav-group">
+                  <Text size="xs" fw={700} c="dimmed" tt="uppercase" className="admin-nav-group-title">
+                    {group.title}
+                  </Text>
+                  {group.sections.map((key) => {
+                    const item = sectionMeta[key];
+                    return (
+                      <NavLink
+                        key={key}
+                        active={section === key}
+                        label={item.label}
+                        description={item.description}
+                        leftSection={item.icon}
+                        rightSection={readSectionNavBadge(key, waitingAdminTicketCount, backgroundSyncQueueCount)}
+                        onClick={() => selectSection(key)}
+                        variant="filled"
+                      />
+                    );
+                  })}
+                </Stack>
               ))}
             </Stack>
 
@@ -3075,15 +3110,36 @@ export function App() {
               <Button variant="default" leftSection={<IconRefresh size={16} />} onClick={() => void handleHeaderRefresh()} loading={loading || sectionLoading || refreshingDashboard}>
                 刷新
               </Button>
-              <Button variant="default" leftSection={<IconListDetails size={16} />} onClick={() => openPanelSyncQueue()}>
-                同步队列{backgroundSyncQueueCount > 0 ? ` · ${backgroundSyncQueueCount}` : ""}
-              </Button>
-              <Button variant="default" onClick={openAdminSecurityModal}>
-                账号安全
-              </Button>
-              <Button variant="default" onClick={() => void handleAdminLogout()}>
-                退出登录
-              </Button>
+              <Menu shadow="md" width={220} position="bottom-end" withinPortal>
+                <Menu.Target>
+                  <Button variant="default" rightSection={<IconDotsVertical size={16} />}>
+                    后台工具
+                  </Button>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Label>后台工具</Menu.Label>
+                  <Menu.Item
+                    leftSection={<IconListDetails size={16} />}
+                    rightSection={
+                      backgroundSyncQueueCount > 0 ? (
+                        <Badge size="xs" color="yellow" variant="light" radius="xl">
+                          {backgroundSyncQueueCount > 99 ? "99+" : backgroundSyncQueueCount}
+                        </Badge>
+                      ) : undefined
+                    }
+                    onClick={() => openPanelSyncQueue()}
+                  >
+                    同步任务
+                  </Menu.Item>
+                  <Menu.Item leftSection={<IconShieldLock size={16} />} onClick={openAdminSecurityModal}>
+                    账号安全
+                  </Menu.Item>
+                  <Menu.Divider />
+                  <Menu.Item color="red" leftSection={<IconLogout size={16} />} onClick={() => void handleAdminLogout()}>
+                    退出登录
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
               {section === "users" ? (
                 <Group gap="xs">
                   <Button leftSection={<IconPlus size={16} />} onClick={() => openDrawer("user")}>
@@ -3146,6 +3202,8 @@ export function App() {
                 snapshot={snapshot}
                 onOpenSubscriptions={() => selectSection("subscriptions")}
                 onOpenNodes={() => selectSection("nodes")}
+                onOpenTickets={() => selectSection("tickets")}
+                onOpenSyncQueue={() => openPanelSyncQueue()}
               />
             ) : null}
 

@@ -23,6 +23,7 @@ import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
+import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
@@ -120,6 +121,7 @@ export class RuntimeSessionService {
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly authSessionService: AuthSessionService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
+    private readonly clientRoutingRuleService: ClientRoutingRuleService,
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly xuiService: XuiService
   ) {}
@@ -257,6 +259,8 @@ export class RuntimeSessionService {
         throw new ForbiddenException("当前节点已被取消授权");
       }
 
+      const customRoutingRules = await this.readEnabledCustomRoutingRulesBestEffort(user.id);
+
       const userSecurity = await this.prisma.user.findUnique({
         where: { id: user.id },
         select: { maxConcurrentSessionsOverride: true }
@@ -269,7 +273,7 @@ export class RuntimeSessionService {
       );
       await this.evictExceededUserLeases(user.id, concurrentLimit, 1);
 
-      return this.connectWithXui(node, user, access, request, policy);
+      return this.connectWithXui(node, user, access, request, policy, customRoutingRules);
       });
     });
     } catch (error) {
@@ -428,8 +432,9 @@ export class RuntimeSessionService {
     const policy = await this.prisma.policyProfile.findUnique({
       where: { id: "default" }
     });
+    const customRoutingRules = await this.readEnabledCustomRoutingRulesBestEffort(user.id);
 
-    return buildXuiRuntimeFromLease(lease, policy);
+    return buildXuiRuntimeFromLease(lease, policy, customRoutingRules);
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "运行配置暂时不可用，请稍后重试。");
     }
@@ -437,6 +442,16 @@ export class RuntimeSessionService {
 
   getActiveRuntimeUsageContext() {
     return this.activeRuntimeUsageContext ?? null;
+  }
+
+  private async readEnabledCustomRoutingRulesBestEffort(userId: string): Promise<GeneratedRuntimeConfigDto["customRoutingRules"]> {
+    try {
+      const service = this.clientRoutingRuleService as ClientRoutingRuleService | undefined;
+      return service ? await service.listEnabledRulesForUserId(userId) : [];
+    } catch (error) {
+      this.logger.warn(`Custom routing rules unavailable; continue with built-in routing. ${readRuntimeErrorMessage(error)}`);
+      return [];
+    }
   }
 
   private refreshActiveRuntimeLease(sessionId: string, leaseExpiresAt: Date) {
@@ -2065,7 +2080,8 @@ export class RuntimeSessionService {
       blockAds: boolean;
       chinaDirect: boolean;
       aiServicesProxy: boolean;
-    } | null
+    } | null,
+    customRoutingRules: GeneratedRuntimeConfigDto["customRoutingRules"] = []
   ): Promise<GeneratedRuntimeConfigDto> {
     const now = new Date();
     const sessionId = `session_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
@@ -2135,6 +2151,7 @@ export class RuntimeSessionService {
         chinaDirect: policy?.chinaDirect ?? true,
         aiServicesProxy: policy?.aiServicesProxy ?? true
       },
+      customRoutingRules,
       outbound: {
         protocol: "vless",
         server: effectiveNode.serverHost,
@@ -2938,7 +2955,8 @@ function buildXuiRuntimeFromLease(
     blockAds: boolean;
     chinaDirect: boolean;
     aiServicesProxy: boolean;
-  } | null
+  } | null,
+  customRoutingRules: GeneratedRuntimeConfigDto["customRoutingRules"] = []
 ): GeneratedRuntimeConfigDto {
   return {
     sessionId: lease.sessionId,
@@ -2957,6 +2975,7 @@ function buildXuiRuntimeFromLease(
       chinaDirect: policy?.chinaDirect ?? true,
       aiServicesProxy: policy?.aiServicesProxy ?? true
     },
+    customRoutingRules,
     outbound: {
       protocol: "vless",
       server: lease.node.serverHost,

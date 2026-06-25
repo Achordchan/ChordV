@@ -19,7 +19,7 @@ export function DeleteNodeModal(props: {
   return (
     <Modal opened={props.target !== null} onClose={close} title="停用节点" centered>
       <Stack>
-        <Text>该操作会先停用节点并隐藏入口，面板客户端清理会进入后台同步队列。</Text>
+        <Text>该操作会先停用节点并隐藏入口，面板客户端清理会进入后台同步任务。</Text>
         <Text fw={600}>{props.target?.name}</Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={close} disabled={props.submitting}>

@@ -57,7 +57,7 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
     return fallback;
   }
   if (hasSavedAfterFailureSignal(message) && hasSavedAfterFailureWarningSignal(message)) {
-    return "操作已保存，后台同步待处理，请在同步队列中查看处理状态。";
+    return "操作已保存，后台同步待处理，请在同步任务中查看处理状态。";
   }
   if (hasDefiniteLocalSaveFailureSignal(message) && !hasSavedAfterFailureSignal(message)) {
     return "后台本地数据保存失败，本次操作未保存，请稍后重试。";
@@ -106,7 +106,7 @@ export function normalizeAdminErrorMessage(message: string, fallback: string) {
     if (!hasSavedAfterFailureSignal(message)) {
       return "后台或外部服务暂不可用，请稍后重试。";
     }
-    return "外部服务或面板暂不可用，已保存的操作请在同步队列中查看处理状态。";
+    return "外部服务或面板暂不可用，已保存的操作请在同步任务中查看处理状态。";
   }
   if (/HTTP\s*5\d\d|Internal server error/i.test(message)) {
     return "后台服务异常，请稍后重试；如果连续出现，请查看服务器日志。";

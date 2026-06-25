@@ -7,6 +7,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientAccessService } from "./client-access.service";
 import { ClientAuthGuard } from "./client-auth.guard";
 import { ClientEventsPublisher } from "./client-events.publisher";
+import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
@@ -31,6 +32,7 @@ import { XuiModule } from "../xui/xui.module";
     RuntimeComponentsService,
     ClientAccessService,
     ClientEventsPublisher,
+    ClientRoutingRuleService,
     MeteringIncidentService,
     AuthSessionService,
     ClientRuntimeEventsService,
@@ -51,6 +53,7 @@ import { XuiModule } from "../xui/xui.module";
     RuntimeComponentsService,
     ClientAccessService,
     ClientEventsPublisher,
+    ClientRoutingRuleService,
     MeteringIncidentService,
     AuthSessionService,
     ClientRuntimeEventsService,

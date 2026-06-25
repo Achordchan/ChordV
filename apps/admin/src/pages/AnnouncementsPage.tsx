@@ -18,7 +18,13 @@ type AnnouncementsPageProps = {
 
 export function AnnouncementsPage(props: AnnouncementsPageProps) {
   return (
-    <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
+    <SectionCard
+      title="公告管理"
+      description="管理普通公告、维护提醒和需要用户确认的强提示。"
+      searchValue={props.searchValue}
+      onSearchChange={props.onSearchChange}
+      searchPlaceholder="搜索公告标题或内容"
+    >
       <DataTable>
         <Table.Thead>
           <Table.Tr>
@@ -53,7 +59,13 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
               </Table.Td>
               <Table.Td>
                 <Stack gap={6}>
-                  <ActionIcon variant="subtle" onClick={() => props.onOpenAnnouncementDrawer(item.id)} disabled={props.actionBusyKey !== null}>
+                  <ActionIcon
+                    variant="subtle"
+                    onClick={() => props.onOpenAnnouncementDrawer(item.id)}
+                    disabled={props.actionBusyKey !== null}
+                    title="编辑公告"
+                    aria-label="编辑公告"
+                  >
                     <IconPencil size={16} />
                   </ActionIcon>
                   <ActionIcon
@@ -62,6 +74,8 @@ export function AnnouncementsPage(props: AnnouncementsPageProps) {
                     onClick={() => props.onDeleteAnnouncement(item.id)}
                     loading={props.actionBusyKey === `announcement-delete:${item.id}`}
                     disabled={props.actionBusyKey !== null && props.actionBusyKey !== `announcement-delete:${item.id}`}
+                    title="删除公告"
+                    aria-label="删除公告"
                   >
                     <IconTrash size={16} />
                   </ActionIcon>

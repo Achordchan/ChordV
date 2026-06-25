@@ -88,7 +88,8 @@ export class AnnouncementPolicyService {
         blockAds: profile.blockAds,
         chinaDirect: profile.chinaDirect,
         aiServicesProxy: profile.aiServicesProxy
-      }
+      },
+      customRoutingRules: []
     };
   }
 
@@ -579,6 +580,7 @@ function toAdminPolicyRecord(row: {
       blockAds: row.blockAds,
       chinaDirect: row.chinaDirect,
       aiServicesProxy: row.aiServicesProxy
-    }
+    },
+    customRoutingRules: []
   };
 }

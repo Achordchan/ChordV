@@ -72,11 +72,11 @@ export function RuntimeComponentsPage(props: RuntimeComponentsPageProps) {
         return;
       }
       if (!options?.silent) {
-        const message = readError(reason, "加载内核组件失败");
+        const message = readError(reason, "加载客户端组件失败");
         setRuntimeError(message);
         notifications.show({
           color: "red",
-          title: "内核组件",
+          title: "客户端组件",
           message
         });
       }

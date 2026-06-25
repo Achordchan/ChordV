@@ -264,6 +264,20 @@ struct RuntimeOutboundDto {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+struct ClientRoutingRuleDto {
+    id: String,
+    user_id: String,
+    name: Option<String>,
+    value: String,
+    match_type: String,
+    action: String,
+    enabled: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct GeneratedRuntimeConfigDto {
     session_id: String,
     lease_id: String,
@@ -277,6 +291,7 @@ struct GeneratedRuntimeConfigDto {
     routing_profile: String,
     generated_at: String,
     features: RuntimePolicyFeaturesDto,
+    custom_routing_rules: Vec<ClientRoutingRuleDto>,
     outbound: RuntimeOutboundDto,
 }
 
@@ -4356,7 +4371,7 @@ pub(crate) fn build_xray_config(
       "routing": {
         "domainMatcher": "hybrid",
         "domainStrategy": if android_runtime { "IPIfNonMatch" } else { "AsIs" },
-        "rules": routing_rules(config.mode.as_str(), &config.features)
+        "rules": routing_rules(config.mode.as_str(), &config.features, &config.custom_routing_rules)
       }
     })
 }
@@ -4504,7 +4519,11 @@ fn build_outbounds(config: &GeneratedRuntimeConfigDto) -> Value {
     ])
 }
 
-fn routing_rules(mode: &str, features: &RuntimePolicyFeaturesDto) -> Value {
+fn routing_rules(
+    mode: &str,
+    features: &RuntimePolicyFeaturesDto,
+    custom_rules: &[ClientRoutingRuleDto],
+) -> Value {
     match mode {
         "global" => json!([
           {
@@ -4521,11 +4540,34 @@ fn routing_rules(mode: &str, features: &RuntimePolicyFeaturesDto) -> Value {
           }
         ]),
         _ => {
-            let mut rules = vec![json!({
+            let mut rules: Vec<Value> = custom_rules
+                .iter()
+                .filter(|rule| rule.enabled && (rule.action == "proxy" || rule.action == "direct"))
+                .filter_map(|rule| {
+                    let value = rule.value.trim();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    let matcher = if rule.match_type == "domain" {
+                        format!("domain:{value}")
+                    } else if rule.match_type == "keyword" {
+                        format!("keyword:{value}")
+                    } else {
+                        return None;
+                    };
+                    Some(json!({
+                        "type": "field",
+                        "domain": [matcher],
+                        "outboundTag": rule.action
+                    }))
+                })
+                .collect();
+
+            rules.push(json!({
                 "type": "field",
                 "ip": ["geoip:private"],
                 "outboundTag": "direct"
-            })];
+            }));
 
             if features.block_ads {
                 rules.push(json!({

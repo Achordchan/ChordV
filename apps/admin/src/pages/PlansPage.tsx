@@ -15,12 +15,22 @@ type PlansPageProps = {
 };
 
 export function PlansPage(props: PlansPageProps) {
+  const personalPlans = props.plans.filter((item) => item.scope === "personal");
+  const teamPlans = props.plans.filter((item) => item.scope === "team");
+  const currentPlans = props.planScopeTab === "personal" ? personalPlans : teamPlans;
+
   return (
-    <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
+    <SectionCard
+      title="套餐规则"
+      description="管理个人和 Team 套餐模板，控制流量、并发和续费能力。"
+      searchValue={props.searchValue}
+      onSearchChange={props.onSearchChange}
+      searchPlaceholder="搜索套餐名称"
+    >
       <Tabs value={props.planScopeTab} onChange={(value) => props.onPlanScopeTabChange((value as PlanScope) || "personal")}>
         <Tabs.List>
-          <Tabs.Tab value="personal">个人套餐</Tabs.Tab>
-          <Tabs.Tab value="team">Team 套餐</Tabs.Tab>
+          <Tabs.Tab value="personal">个人套餐 · {personalPlans.length}</Tabs.Tab>
+          <Tabs.Tab value="team">Team 套餐 · {teamPlans.length}</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value={props.planScopeTab} pt="md">
           <DataTable>
@@ -36,7 +46,7 @@ export function PlansPage(props: PlansPageProps) {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {props.plans.filter((item) => item.scope === props.planScopeTab).map((item) => (
+              {currentPlans.map((item) => (
                 <Table.Tr key={item.id}>
                   <Table.Td>{item.name}</Table.Td>
                   <Table.Td>{item.totalTrafficGb} GB</Table.Td>
@@ -47,7 +57,7 @@ export function PlansPage(props: PlansPageProps) {
                   </Table.Td>
                   <Table.Td>{item.subscriptionCount}</Table.Td>
                   <Table.Td>
-                    <ActionIcon variant="subtle" onClick={() => props.onOpenPlanDrawer(item.id)}>
+                    <ActionIcon variant="subtle" onClick={() => props.onOpenPlanDrawer(item.id)} title="编辑套餐" aria-label="编辑套餐">
                       <IconPencil size={16} />
                     </ActionIcon>
                   </Table.Td>

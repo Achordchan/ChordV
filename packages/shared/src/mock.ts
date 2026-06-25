@@ -104,7 +104,8 @@ export const mockPolicies: PolicyBundleDto = {
     blockAds: true,
     chinaDirect: true,
     aiServicesProxy: true
-  }
+  },
+  customRoutingRules: []
 };
 
 export const mockAnnouncements: AnnouncementDto[] = [
@@ -174,6 +175,7 @@ export const mockRuntimeConfig = (nodeId: string): GeneratedRuntimeConfigDto => 
       chinaDirect: true,
       aiServicesProxy: true
     },
+    customRoutingRules: [],
     outbound: {
       protocol: "vless",
       server: `${(node.countryCode ?? resolveCountryCode({ region: node.region }) ?? node.region).toLowerCase()}.edge.chordv.app`,

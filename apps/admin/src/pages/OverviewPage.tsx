@@ -18,11 +18,66 @@ type OverviewPageProps = {
   snapshot: AdminSnapshotDto;
   onOpenSubscriptions: () => void;
   onOpenNodes: () => void;
+  onOpenTickets: () => void;
+  onOpenSyncQueue: () => void;
 };
 
 export function OverviewPage(props: OverviewPageProps) {
+  const backgroundSyncQueueCount = props.snapshot.panelSyncJobs.length + props.snapshot.leaseRevocationJobs.length;
+  const abnormalNodeCount = props.snapshot.nodes.filter((item) => {
+    if (item.isActive === false) {
+      return false;
+    }
+    return (
+      item.panelStatus === "degraded" ||
+      (item.panelEnabled && item.panelStatus === "offline") ||
+      (item.panelSyncPendingCount ?? 0) > 0 ||
+      (item.panelSyncRunningCount ?? 0) > 0 ||
+      (item.panelSyncFailedCount ?? 0) > 0
+    );
+  }).length;
+
   return (
     <>
+      <Card withBorder radius="xl" p="lg">
+        <Stack gap="md">
+          <Group justify="space-between">
+            <div>
+              <Title order={4}>待处理事项</Title>
+              <Text size="sm" c="dimmed">
+                优先处理工单、后台同步和异常节点。
+              </Text>
+            </div>
+          </Group>
+          <SimpleGrid cols={{ base: 1, md: 3 }} spacing="sm">
+            <ActionCard
+              title="待回复工单"
+              description="用户正在等待管理员回复。"
+              count={props.snapshot.dashboard.waitingAdminTickets ?? 0}
+              actionLabel="进入工单中心"
+              tone="red"
+              onClick={props.onOpenTickets}
+            />
+            <ActionCard
+              title="后台同步任务"
+              description="包含面板同步和连接撤销任务。"
+              count={backgroundSyncQueueCount}
+              actionLabel="查看同步任务"
+              tone="yellow"
+              onClick={props.onOpenSyncQueue}
+            />
+            <ActionCard
+              title="异常节点"
+              description="面板失联、同步待处理或探测异常。"
+              count={abnormalNodeCount}
+              actionLabel="查看节点"
+              tone="blue"
+              onClick={props.onOpenNodes}
+            />
+          </SimpleGrid>
+        </Stack>
+      </Card>
+
       <SimpleGrid cols={{ base: 1, sm: 2, xl: 3 }} spacing="md">
         <MetricCard label="用户数" value={props.snapshot.dashboard.users} icon={<IconUsers size={18} />} />
         <MetricCard label="团队数" value={props.snapshot.dashboard.teams} icon={<IconUsers size={18} />} />
@@ -60,6 +115,39 @@ export function OverviewPage(props: OverviewPageProps) {
         </Card>
       </SimpleGrid>
     </>
+  );
+}
+
+function ActionCard(props: {
+  title: string;
+  description: string;
+  count: number;
+  actionLabel: string;
+  tone: "red" | "yellow" | "blue";
+  onClick: () => void;
+}) {
+  const hasWork = props.count > 0;
+  return (
+    <Paper withBorder radius="lg" p="md">
+      <Stack gap="sm">
+        <Group justify="space-between" align="start">
+          <div>
+            <Text fw={700}>{props.title}</Text>
+            <Text size="sm" c="dimmed">
+              {props.description}
+            </Text>
+          </div>
+          <ThemeIcon color={hasWork ? props.tone : "gray"} variant="light" radius="lg">
+            <Text fw={700} size="sm">
+              {props.count}
+            </Text>
+          </ThemeIcon>
+        </Group>
+        <Button size="xs" variant={hasWork ? "light" : "default"} color={props.tone} onClick={props.onClick}>
+          {props.actionLabel}
+        </Button>
+      </Stack>
+    </Paper>
   );
 }
 

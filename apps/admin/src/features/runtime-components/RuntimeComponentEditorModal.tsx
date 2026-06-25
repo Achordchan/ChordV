@@ -34,7 +34,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
     <Modal
       opened={opened}
       onClose={handleClose}
-      title={editing ? "编辑内核组件" : "新增内核组件"}
+      title={editing ? "编辑客户端组件" : "新增客户端组件"}
       centered
       size="lg"
       closeOnClickOutside={!saving}
@@ -128,7 +128,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
               clearable
             />
             <Alert color="blue" variant="light">
-              推荐把内核组件直接上传到你自己的服务器。上传后系统会自动生成下载地址、文件大小和 Hash，客户端也会优先从你的服务器下载。
+              推荐把客户端组件直接上传到你自己的服务器。上传后系统会自动生成下载地址、文件大小和 Hash，客户端也会优先从你的服务器下载。
             </Alert>
             {!value.selectedFile && editing ? (
               <Text size="sm" c="dimmed">

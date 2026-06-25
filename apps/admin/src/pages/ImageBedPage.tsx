@@ -346,7 +346,14 @@ export function ImageBedPage(props: ImageBedPageProps) {
 
   if (!config && error) {
     return (
-      <SectionCard searchValue={search} onSearchChange={setSearch} onSearchSubmit={() => void loadFiles()}>
+      <SectionCard
+        title="附件图床配置"
+        description="配置工单附件图床 Token，并管理已上传图片。"
+        searchValue={search}
+        onSearchChange={setSearch}
+        onSearchSubmit={() => void loadFiles()}
+        searchPlaceholder="搜索图床文件"
+      >
         <Alert color="red" variant="light">
           <Stack gap="sm">
             <Text>{error}</Text>
@@ -365,7 +372,14 @@ export function ImageBedPage(props: ImageBedPageProps) {
   }
 
   return (
-    <SectionCard searchValue={search} onSearchChange={setSearch} onSearchSubmit={() => void loadFiles()}>
+    <SectionCard
+      title="附件图床配置"
+      description="配置工单附件图床 Token，并管理已上传图片。"
+      searchValue={search}
+      onSearchChange={setSearch}
+      onSearchSubmit={() => void loadFiles()}
+      searchPlaceholder="搜索图床文件"
+    >
       <Stack gap="lg">
         {error ? (
           <Alert color="red" variant="light">

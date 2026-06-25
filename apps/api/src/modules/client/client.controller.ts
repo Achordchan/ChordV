@@ -1,12 +1,13 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ArrayMaxSize, IsArray, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
 import { diskStorage } from "multer";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import type {
   ConnectionMode,
+  ClientRoutingRuleAction,
   PlatformTarget,
   ReleaseArtifactType,
   ReleaseChannel,
@@ -85,6 +86,54 @@ class UpdateCheckDto {
   @IsString()
   @MaxLength(512)
   clientMirrorPrefix?: string | null;
+}
+
+class TestRoutingRuleDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  value!: string;
+}
+
+class CreateRoutingRuleDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  name?: string | null;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  value!: string;
+
+  @IsString()
+  @IsIn(["proxy", "direct"])
+  action!: ClientRoutingRuleAction;
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+}
+
+class UpdateRoutingRuleDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  name?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  value?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(["proxy", "direct"])
+  action?: ClientRoutingRuleAction;
+
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
 }
 
 class VersionQueryDto {
@@ -248,6 +297,40 @@ export class ClientController {
   @Post("update/check")
   checkUpdate(@Body() body: UpdateCheckDto) {
     return this.clientService.checkUpdate(body);
+  }
+
+  @Get("routing-rules")
+  @UseGuards(ClientAuthGuard)
+  getRoutingRules(@Headers("authorization") authorization?: string) {
+    return this.clientService.listRoutingRules(authorization);
+  }
+
+  @Post("routing-rules/test")
+  @UseGuards(ClientAuthGuard)
+  testRoutingRule(@Body() body: TestRoutingRuleDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.testRoutingRule(body.value, authorization);
+  }
+
+  @Post("routing-rules")
+  @UseGuards(ClientAuthGuard)
+  createRoutingRule(@Body() body: CreateRoutingRuleDto, @Headers("authorization") authorization?: string) {
+    return this.clientService.createRoutingRule(body, authorization);
+  }
+
+  @Patch("routing-rules/:ruleId")
+  @UseGuards(ClientAuthGuard)
+  updateRoutingRule(
+    @Param("ruleId") ruleId: string,
+    @Body() body: UpdateRoutingRuleDto,
+    @Headers("authorization") authorization?: string
+  ) {
+    return this.clientService.updateRoutingRule(ruleId, body, authorization);
+  }
+
+  @Delete("routing-rules/:ruleId")
+  @UseGuards(ClientAuthGuard)
+  deleteRoutingRule(@Param("ruleId") ruleId: string, @Headers("authorization") authorization?: string) {
+    return this.clientService.deleteRoutingRule(ruleId, authorization);
   }
 
   @Get("runtime-components/plan")

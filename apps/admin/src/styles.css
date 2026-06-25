@@ -58,6 +58,29 @@ body {
   padding: 8px 8px 16px;
 }
 
+.admin-nav-group {
+  padding-top: 8px;
+}
+
+.admin-nav-group + .admin-nav-group {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(19, 34, 56, 0.07);
+}
+
+.admin-nav-group-title {
+  padding: 0 8px 2px;
+  letter-spacing: 0.08em;
+}
+
+.admin-section-card-tools {
+  min-width: 260px;
+}
+
+.admin-section-card-search {
+  flex: 1 1 220px;
+}
+
 .admin-side-card,
 .metric-card {
   background: rgba(255, 255, 255, 0.82);
@@ -503,6 +526,16 @@ body {
     flex: 0 0 auto;
     min-width: 0;
     padding-inline: 10px;
+  }
+
+  .admin-section-card-tools {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .admin-section-card-search {
+    max-width: none;
+    width: 100%;
   }
 
   .admin-ticket-reply__toolbar {

@@ -45,18 +45,24 @@ export function NodesPage(props: NodesPageProps) {
 
   return (
     <>
-      <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
+      <SectionCard
+        title="节点与同步"
+        description="节点状态、面板探测和后台同步任务集中在这里。"
+        searchValue={props.searchValue}
+        onSearchChange={props.onSearchChange}
+        searchPlaceholder="搜索节点、地区或地址"
+        actions={
+          <Button
+            variant="default"
+            leftSection={<IconListDetails size={16} />}
+            onClick={() => props.onOpenPanelSyncQueue()}
+          >
+            同步任务
+            {queueCount > 0 ? ` · ${queueCount}` : ""}
+          </Button>
+        }
+      >
         <Stack gap="md">
-          <Group justify="flex-end">
-            <Button
-              variant="default"
-              leftSection={<IconListDetails size={16} />}
-              onClick={() => props.onOpenPanelSyncQueue()}
-            >
-              同步队列
-              {queueCount > 0 ? ` · ${queueCount}` : ""}
-            </Button>
-          </Group>
           <DataTable>
             <Table.Thead>
               <Table.Tr>
@@ -64,7 +70,7 @@ export function NodesPage(props: NodesPageProps) {
                 <Table.Th>状态</Table.Th>
                 <Table.Th>地址</Table.Th>
                 <Table.Th>3x-ui</Table.Th>
-                <Table.Th>同步队列</Table.Th>
+                <Table.Th>同步任务</Table.Th>
                 <Table.Th>探测状态</Table.Th>
                 <Table.Th>延迟</Table.Th>
                 <Table.Th>最后检测</Table.Th>
@@ -119,7 +125,7 @@ export function NodesPage(props: NodesPageProps) {
                     <Text size="sm" c="dimmed" lineClamp={2}>
                       {summarizeAdminDiagnosticMessage(
                         item.panelError || item.probeError,
-                        item.panelError ? "面板连接失败，请检查面板配置或同步队列。" : "节点探测失败，请稍后重试。"
+                        item.panelError ? "面板连接失败，请检查面板配置或同步任务。" : "节点探测失败，请稍后重试。"
                       ) ?? "-"}
                     </Text>
                   </Table.Td>
@@ -128,6 +134,7 @@ export function NodesPage(props: NodesPageProps) {
                       <ActionIcon
                         variant="subtle"
                         title="探测节点连通性"
+                        aria-label="探测节点连通性"
                         onClick={() => props.onProbeNode(item.id)}
                         loading={props.probingNodeId === item.id}
                         disabled={props.probingAll || (props.probingNodeId !== null && props.probingNodeId !== item.id)}
@@ -137,16 +144,17 @@ export function NodesPage(props: NodesPageProps) {
                       <ActionIcon
                         variant="subtle"
                         title="从 3x-ui/订阅源重新读取运行参数；面板离线会失败，但不影响本地配置"
+                        aria-label="从 3x-ui/订阅源重新读取运行参数"
                         onClick={() => props.onRefreshNode(item.id)}
                         loading={props.refreshingNodeId === item.id}
                         disabled={props.refreshingNodeId !== null && props.refreshingNodeId !== item.id}
                       >
                         <IconRefresh size={16} />
                       </ActionIcon>
-                      <ActionIcon variant="subtle" title="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
+                      <ActionIcon variant="subtle" title="编辑本地节点配置" aria-label="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
                         <IconPencil size={16} />
                       </ActionIcon>
-                      <ActionIcon color="red" variant="subtle" title="停用节点并清理" onClick={() => props.onDeleteNode(item)}>
+                      <ActionIcon color="red" variant="subtle" title="停用节点并清理" aria-label="停用节点并清理" onClick={() => props.onDeleteNode(item)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </RowActions>
@@ -226,7 +234,7 @@ function NodeSyncQueueCell(props: {
           variant="subtle"
           onClick={() => props.onOpenPanelSyncQueue({ nodeId: props.node.id, title: props.node.name })}
         >
-          查看队列
+          查看任务
         </Button>
         {panelRetryable ? (
           <Button
@@ -284,7 +292,7 @@ export function PanelSyncQueueDrawer(props: {
   const filteredJobs = filterPanelSyncJobs(props.jobs, props.filter);
   const filteredLeaseRevocationJobs = filterLeaseRevocationJobs(props.leaseRevocationJobs, props.filter);
   const hasFilter = hasPanelSyncQueueFilter(props.filter);
-  const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待同步任务" : "后台同步队列";
+  const drawerTitle = hasFilter ? props.filter?.title ?? "当前对象待同步任务" : "后台同步任务";
 
   return (
     <Drawer opened={props.opened} onClose={props.onClose} title={drawerTitle} position="right" size="xl">

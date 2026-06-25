@@ -27,6 +27,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { MeteringFloatingBanner } from "./components/MeteringFloatingBanner";
 import { NodeListPanel } from "./components/NodeListPanel";
 import { RuntimeAssetsBanner } from "./components/RuntimeAssetsBanner";
+import { RoutingRulesModal } from "./components/RoutingRulesModal";
 import { SubscriptionPanel } from "./components/SubscriptionPanel";
 import { TicketCenterModal } from "./components/TicketCenterModal";
 import {
@@ -108,6 +109,7 @@ export function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [logDrawerOpened, setLogDrawerOpened] = useState(false);
+  const [routingRulesOpened, setRoutingRulesOpened] = useState(false);
   const [announcementDrawerOpened, setAnnouncementDrawerOpened] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1624,6 +1626,7 @@ export function App() {
                   runtimeAssetsPhase={runtimeAssets.phase}
                   onModeChange={setMode}
                   onPrimaryAction={() => void handlePrimaryAction()}
+                  onOpenRoutingRules={() => setRoutingRulesOpened(true)}
                   onOpenLogs={() => setLogDrawerOpened(true)}
                 />
               </div>
@@ -1793,6 +1796,7 @@ export function App() {
               runtimeAssetsPhase={runtimeAssets.phase}
               onModeChange={setMode}
               onPrimaryAction={() => void handlePrimaryAction()}
+              onOpenRoutingRules={() => setRoutingRulesOpened(true)}
               onOpenLogs={() => setLogDrawerOpened(true)}
             />
           </div>
@@ -1804,6 +1808,14 @@ export function App() {
         announcements={bootstrap?.announcements ?? []}
         onClose={() => setAnnouncementDrawerOpened(false)}
       />
+      {session ? (
+        <RoutingRulesModal
+          opened={routingRulesOpened}
+          accessToken={session.accessToken}
+          connected={desktopStatus.status === "connected"}
+          onClose={() => setRoutingRulesOpened(false)}
+        />
+      ) : null}
       <LogDrawer opened={logDrawerOpened} log={runtimeLog} onClose={() => setLogDrawerOpened(false)} />
       <TicketCenterModal
         opened={ticketCenterOpened}

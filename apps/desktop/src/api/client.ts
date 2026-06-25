@@ -9,7 +9,10 @@ import type {
   ClientRuntimeComponentFailureReportInputDto,
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
+  ClientRoutingRuleDto,
+  ClientRoutingRuleTestResultDto,
   ConnectionMode,
+  CreateClientRoutingRuleInputDto,
   CreateClientSupportTicketInputDto,
   GeneratedRuntimeConfigDto,
   NodeSummaryDto,
@@ -17,6 +20,7 @@ import type {
   ReplyClientSupportTicketInputDto,
   SessionLeaseStatusDto,
   SubscriptionStatusDto,
+  UpdateClientRoutingRuleInputDto,
   UploadedSupportTicketAttachmentInputDto
 } from "@chordv/shared";
 import type {
@@ -585,6 +589,57 @@ export function connectSession(input: {
       mode: input.mode,
       strategyGroupId: input.strategyGroupId
     })
+  });
+}
+
+export function fetchRoutingRules(accessToken: string) {
+  return request<ClientRoutingRuleDto[]>("/client/routing-rules", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+}
+
+export function testRoutingRule(accessToken: string, value: string) {
+  return request<ClientRoutingRuleTestResultDto>("/client/routing-rules/test", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify({ value })
+  });
+}
+
+export function createRoutingRule(accessToken: string, input: CreateClientRoutingRuleInputDto) {
+  return request<ClientRoutingRuleDto>("/client/routing-rules", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateRoutingRule(
+  accessToken: string,
+  ruleId: string,
+  input: UpdateClientRoutingRuleInputDto
+) {
+  return request<ClientRoutingRuleDto>(`/client/routing-rules/${encodeURIComponent(ruleId)}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteRoutingRule(accessToken: string, ruleId: string) {
+  return request<{ ok: true; deletedId: string }>(`/client/routing-rules/${encodeURIComponent(ruleId)}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
   });
 }
 

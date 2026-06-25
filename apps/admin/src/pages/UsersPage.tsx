@@ -60,6 +60,7 @@ type UsersPageProps = {
 };
 
 export function UsersPage(props: UsersPageProps) {
+  const personalUsers = props.users.filter((item) => item.accountType === "personal");
   const teamMemberRoleOptions =
     props.teamMemberForm.role === "owner"
       ? [
@@ -70,11 +71,17 @@ export function UsersPage(props: UsersPageProps) {
 
   return (
     <Stack gap="lg">
-      <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
+      <SectionCard
+        title="客户与团队"
+        description="个人账号、团队关系和账号级连接动作集中在这里处理。"
+        searchValue={props.searchValue}
+        onSearchChange={props.onSearchChange}
+        searchPlaceholder="搜索邮箱、名称或团队"
+      >
         <Tabs value={props.userTab} onChange={(value) => props.onUserTabChange((value as "personal" | "team") || "personal")}>
           <Tabs.List>
-            <Tabs.Tab value="personal">个人用户</Tabs.Tab>
-            <Tabs.Tab value="team">Team 用户</Tabs.Tab>
+            <Tabs.Tab value="personal">个人用户 · {personalUsers.length}</Tabs.Tab>
+            <Tabs.Tab value="team">团队管理 · {props.filteredTeams.length}</Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="personal" pt="md">
             <DataTable>
@@ -88,7 +95,7 @@ export function UsersPage(props: UsersPageProps) {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {props.users.filter((item) => item.accountType === "personal").map((item) => (
+                {personalUsers.map((item) => (
                   <Table.Tr key={item.id}>
                     <Table.Td>{item.email}</Table.Td>
                     <Table.Td>{item.displayName}</Table.Td>
@@ -117,16 +124,22 @@ export function UsersPage(props: UsersPageProps) {
                     </Table.Td>
                     <Table.Td>
                       <RowActions>
-                        <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号">
+                        <ActionIcon variant="subtle" onClick={() => props.onOpenUserDrawer(item.id)} title="编辑账号" aria-label="编辑账号">
                           <IconPencil size={16} />
                         </ActionIcon>
                         {item.subscriptionCount > 0 || item.currentSubscription ? (
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理">
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理" aria-label="打开订阅管理">
                             <IconListDetails size={16} />
                           </ActionIcon>
                         ) : null}
                         {!item.currentSubscription ? (
-                          <ActionIcon variant="subtle" color="blue" onClick={() => props.onCreateSubscriptionForUser(item)} title="为此用户创建订阅">
+                          <ActionIcon
+                            variant="subtle"
+                            color="blue"
+                            onClick={() => props.onCreateSubscriptionForUser(item)}
+                            title="为此用户创建订阅"
+                            aria-label="为此用户创建订阅"
+                          >
                             <IconPlus size={16} />
                           </ActionIcon>
                         ) : null}
@@ -135,6 +148,7 @@ export function UsersPage(props: UsersPageProps) {
                           color="orange"
                           onClick={() => props.onDisconnectUser(item.id, item.displayName, "personal")}
                           title="账号级：断开当前连接"
+                          aria-label="账号级：断开当前连接"
                           loading={props.actionBusyKey === `user-disconnect:${item.id}`}
                           disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${item.id}`}
                         >
@@ -151,6 +165,7 @@ export function UsersPage(props: UsersPageProps) {
                             )
                           }
                           title={item.status === "active" ? "禁用账号" : "启用账号"}
+                          aria-label={item.status === "active" ? "禁用账号" : "启用账号"}
                           loading={props.actionBusyKey === `user-status:${item.id}`}
                           disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-status:${item.id}`}
                         >
@@ -212,13 +227,23 @@ export function UsersPage(props: UsersPageProps) {
                           这里只处理团队组织、负责人和成员关系，不展示共享订阅、节点和流量账单。
                         </Text>
                         <RowActions>
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamSubscriptions(item)} title="Team 订阅：打开共享订阅管理">
+                          <ActionIcon
+                            variant="subtle"
+                            onClick={() => props.onOpenTeamSubscriptions(item)}
+                            title="Team 订阅：打开共享订阅管理"
+                            aria-label="Team 订阅：打开共享订阅管理"
+                          >
                             <IconListDetails size={16} />
                           </ActionIcon>
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)} title="编辑团队资料">
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamInlineEditor(item.id)} title="编辑团队资料" aria-label="编辑团队资料">
                             <IconPencil size={16} />
                           </ActionIcon>
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenTeamMemberInlineEditor(item.id)} title="添加团队成员关系">
+                          <ActionIcon
+                            variant="subtle"
+                            onClick={() => props.onOpenTeamMemberInlineEditor(item.id)}
+                            title="添加团队成员关系"
+                            aria-label="添加团队成员关系"
+                          >
                             <IconUsers size={16} />
                           </ActionIcon>
                         </RowActions>
@@ -364,6 +389,7 @@ export function UsersPage(props: UsersPageProps) {
                                       variant="subtle"
                                       onClick={() => props.onOpenUserDrawer(member.userId)}
                                       title="账号级：编辑账号资料"
+                                      aria-label="账号级：编辑账号资料"
                                     >
                                       <IconPencil size={16} />
                                     </ActionIcon>
@@ -380,6 +406,7 @@ export function UsersPage(props: UsersPageProps) {
                                         )
                                       }
                                       title={userRecord?.status === "active" ? "账号级：禁用账号" : "账号级：启用账号"}
+                                      aria-label={userRecord?.status === "active" ? "账号级：禁用账号" : "账号级：启用账号"}
                                     >
                                       {userRecord?.status === "active" ? <IconLock size={16} /> : <IconLockOpen2 size={16} />}
                                     </ActionIcon>
@@ -390,6 +417,7 @@ export function UsersPage(props: UsersPageProps) {
                                       disabled={props.actionBusyKey !== null && props.actionBusyKey !== `user-disconnect:${member.userId}`}
                                       onClick={() => props.onDisconnectUser(member.userId, member.displayName, "team-member")}
                                       title="账号级：断开当前连接，不移出团队"
+                                      aria-label="账号级：断开当前连接，不移出团队"
                                     >
                                       <IconPlugConnectedX size={16} />
                                     </ActionIcon>
@@ -397,6 +425,7 @@ export function UsersPage(props: UsersPageProps) {
                                       variant="subtle"
                                       onClick={() => props.onOpenTeamMemberInlineEditor(item.id, member.id)}
                                       title="团队关系：编辑成员角色"
+                                      aria-label="团队关系：编辑成员角色"
                                     >
                                       <IconUsers size={16} />
                                     </ActionIcon>
@@ -408,6 +437,7 @@ export function UsersPage(props: UsersPageProps) {
                                         disabled={props.actionBusyKey !== null && props.actionBusyKey !== `team-member-delete:${member.id}`}
                                         onClick={() => props.onDeleteTeamMember(item.id, member.id)}
                                         title="团队关系：移出团队"
+                                        aria-label="团队关系：移出团队"
                                       >
                                         <IconTrash size={16} />
                                       </ActionIcon>
@@ -446,7 +476,7 @@ function PanelSyncInlineStatus(props: {
   const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
   const detail = [
     summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
-    summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
+    summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步任务查看。")
   ]
     .filter(Boolean)
     .join(" · ");
@@ -465,9 +495,9 @@ function PanelSyncInlineStatus(props: {
             event.stopPropagation();
             props.onOpenPanelSyncQueue();
           }}
-          title="查看后台同步队列"
+          title="查看后台同步任务"
         >
-          查看队列
+          查看任务
         </Button>
       </Group>
       {detail ? (
@@ -527,6 +557,7 @@ function LeaseRevocationInlineStatus(props: {
               props.onRetryJob(retryable.id);
             }}
             title="重试连接撤销"
+            aria-label="重试连接撤销"
           >
             <IconRefresh size={12} />
           </ActionIcon>

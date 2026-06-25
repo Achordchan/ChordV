@@ -3,9 +3,11 @@ import type {
   ClientPingDto,
   PlatformTarget,
   ClientUpdateCheckDto,
+  CreateClientRoutingRuleInputDto,
   CreateClientSupportTicketInputDto,
   MarkClientAnnouncementsReadInputDto,
-  ReplyClientSupportTicketInputDto
+  ReplyClientSupportTicketInputDto,
+  UpdateClientRoutingRuleInputDto
 } from "@chordv/shared";
 import { DevDataService } from "../common/dev-data.service";
 import type { UploadedTicketAttachmentFile } from "../common/image-bed.service";
@@ -52,6 +54,26 @@ export class ClientService {
 
   checkUpdate(input: ClientUpdateCheckDto) {
     return this.devDataService.checkClientUpdate(input);
+  }
+
+  listRoutingRules(token?: string) {
+    return this.devDataService.listClientRoutingRules(token);
+  }
+
+  createRoutingRule(input: CreateClientRoutingRuleInputDto, token?: string) {
+    return this.devDataService.createClientRoutingRule(input, token);
+  }
+
+  updateRoutingRule(ruleId: string, input: UpdateClientRoutingRuleInputDto, token?: string) {
+    return this.devDataService.updateClientRoutingRule(ruleId, input, token);
+  }
+
+  deleteRoutingRule(ruleId: string, token?: string) {
+    return this.devDataService.deleteClientRoutingRule(ruleId, token);
+  }
+
+  testRoutingRule(value: string, token?: string) {
+    return this.devDataService.testClientRoutingRule(value, token);
   }
 
   connect(nodeId: string, mode: "global" | "rule" | "direct", strategyGroupId?: string, token?: string) {

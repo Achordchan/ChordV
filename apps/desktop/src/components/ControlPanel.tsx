@@ -1,7 +1,7 @@
 import { Badge, Button, Divider, Group, Paper, SegmentedControl, SimpleGrid, Stack, Text, ThemeIcon, Title } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import type { ConnectionMode, GeneratedRuntimeConfigDto } from "@chordv/shared";
-import { IconChartBar, IconPlugConnected, IconShieldCheckered } from "@tabler/icons-react";
+import { IconChartBar, IconPlugConnected, IconRoute, IconShieldCheckered } from "@tabler/icons-react";
 import type { RuntimeStatus } from "../lib/runtime";
 
 type ControlPanelProps = {
@@ -17,6 +17,7 @@ type ControlPanelProps = {
   runtimeAssetsPhase: "idle" | "checking" | "downloading" | "completed" | "ready" | "failed";
   onModeChange: (mode: ConnectionMode) => void;
   onPrimaryAction: () => void;
+  onOpenRoutingRules: () => void;
   onOpenLogs: () => void;
 };
 
@@ -67,23 +68,36 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          <Button
-            size="xl"
-            radius="xl"
-            className="primary-action control-primary-action"
-            leftSection={<IconPlugConnected size={20} />}
-            onClick={props.onPrimaryAction}
-            loading={props.primaryBusy}
-            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-            disabled={
-              !props.canConnect &&
-              props.runtimeAssetsPhase !== "failed" &&
-              props.desktopStatus.status !== "connected" &&
-              props.desktopStatus.status !== "error"
-            }
-          >
-            {props.primaryLabel}
-          </Button>
+          <Group wrap="nowrap" align="stretch">
+            <Button
+              size="xl"
+              radius="xl"
+              className="primary-action control-primary-action"
+              leftSection={<IconPlugConnected size={20} />}
+              onClick={props.onPrimaryAction}
+              loading={props.primaryBusy}
+              color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+              style={{ flex: 1 }}
+              disabled={
+                !props.canConnect &&
+                props.runtimeAssetsPhase !== "failed" &&
+                props.desktopStatus.status !== "connected" &&
+                props.desktopStatus.status !== "error"
+              }
+            >
+              {props.primaryLabel}
+            </Button>
+            <Button
+              size="xl"
+              radius="xl"
+              variant="light"
+              color="cyan"
+              leftSection={<IconRoute size={18} />}
+              onClick={props.onOpenRoutingRules}
+            >
+              分流
+            </Button>
+          </Group>
 
           <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="control-panel__ports">
             <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} compact />
@@ -140,23 +154,36 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          <Button
-            size="lg"
-            radius="md"
-            className="primary-action control-primary-action"
-            leftSection={<IconPlugConnected size={20} />}
-            onClick={props.onPrimaryAction}
-            loading={props.primaryBusy}
-            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-            disabled={
-              !props.canConnect &&
-              props.runtimeAssetsPhase !== "failed" &&
-              props.desktopStatus.status !== "connected" &&
-              props.desktopStatus.status !== "error"
-            }
-          >
-            {props.primaryLabel}
-          </Button>
+          <Group wrap="nowrap" align="stretch">
+            <Button
+              size="lg"
+              radius="md"
+              className="primary-action control-primary-action"
+              leftSection={<IconPlugConnected size={20} />}
+              onClick={props.onPrimaryAction}
+              loading={props.primaryBusy}
+              color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+              style={{ flex: 1 }}
+              disabled={
+                !props.canConnect &&
+                props.runtimeAssetsPhase !== "failed" &&
+                props.desktopStatus.status !== "connected" &&
+                props.desktopStatus.status !== "error"
+              }
+            >
+              {props.primaryLabel}
+            </Button>
+            <Button
+              size="lg"
+              radius="md"
+              variant="light"
+              color="cyan"
+              leftSection={<IconRoute size={18} />}
+              onClick={props.onOpenRoutingRules}
+            >
+              分流
+            </Button>
+          </Group>
 
           <Group grow wrap="nowrap" className="control-metrics">
             <MetricBlock label="HTTP" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />

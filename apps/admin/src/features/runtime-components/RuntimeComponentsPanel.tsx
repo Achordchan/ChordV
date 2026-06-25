@@ -55,8 +55,8 @@ function showRuntimeComponentFailure(reason: unknown, fallback: string, options?
   const uncertain = isPotentiallyCompletedMutationFailure(message);
   notifications.show({
     color: uncertain ? "yellow" : "red",
-    title: uncertain ? "内核组件请求状态不确定" : "内核组件",
-    message: uncertain ? options?.uncertainMessage?.(message) ?? buildUncertainMutationMessage("内核组件操作") : message
+    title: uncertain ? "客户端组件请求状态不确定" : "客户端组件",
+    message: uncertain ? options?.uncertainMessage?.(message) ?? buildUncertainMutationMessage("客户端组件操作") : message
   });
   return { message, uncertain };
 }
@@ -64,7 +64,7 @@ function showRuntimeComponentFailure(reason: unknown, fallback: string, options?
 function showRuntimeComponentValidation(message: string) {
   notifications.show({
     color: "yellow",
-    title: "内核组件",
+    title: "客户端组件",
     message
   });
 }
@@ -170,7 +170,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         return;
       }
       if (selectedFile && selectedFile.size > uploadMaxBytes) {
-        showRuntimeComponentValidation(`内核组件文件不能超过 ${formatBytes(String(uploadMaxBytes))}。`);
+        showRuntimeComponentValidation(`组件文件不能超过 ${formatBytes(String(uploadMaxBytes))}。`);
         return;
       }
       if (editingId && !selectedFile && (!currentRecord || currentRecord.source !== "uploaded")) {
@@ -245,11 +245,11 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       forceCloseEditor();
       notifications.show({
         color: "green",
-        title: "内核组件",
-        message: editingId ? "内核组件已更新" : "内核组件已创建"
+        title: "客户端组件",
+        message: editingId ? "客户端组件已更新" : "客户端组件已创建"
       });
     } catch (reason) {
-      const result = showRuntimeComponentFailure(reason, "保存内核组件失败");
+      const result = showRuntimeComponentFailure(reason, "保存客户端组件失败");
       if (result.uncertain) {
         void onRefresh({ silent: true });
       }
@@ -273,8 +273,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       onComponentsChange((current) => upsertRuntimeComponent(current, applyRuntimeComponentValidationToDelivery(record, result)));
       notifications.show({
         color: result.status === "ready" ? "green" : result.status === "disabled" || result.status === "pending_validation" ? "yellow" : "red",
-        title: "内核组件",
-        message: summarizeAdminDiagnosticMessage(result.message, "内核组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "内核组件校验完成"
+        title: "客户端组件",
+        message: summarizeAdminDiagnosticMessage(result.message, "客户端组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "客户端组件校验完成"
       });
       void onRefresh({ silent: true });
     } catch (reason) {
@@ -298,8 +298,8 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     }
 
     const confirmMessage = record.enabled
-      ? `确认删除已启用的内核组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？除非紧急处理，建议先停用再删除。`
-      : `确认删除内核组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？`;
+      ? `确认删除已启用的客户端组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？除非紧急处理，建议先停用再删除。`
+      : `确认删除客户端组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？`;
     if (!window.confirm(confirmMessage)) {
       return;
     }
@@ -315,11 +315,11 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       onComponentsChange((current) => current.filter((item) => item.id !== record.id));
       notifications.show({
         color: "green",
-        title: "内核组件",
-        message: "内核组件已删除"
+        title: "客户端组件",
+        message: "客户端组件已删除"
       });
     } catch (reason) {
-      const result = showRuntimeComponentFailure(reason, "删除内核组件失败");
+      const result = showRuntimeComponentFailure(reason, "删除客户端组件失败");
       if (result.uncertain) {
         void onRefresh({ silent: true });
       }
@@ -343,7 +343,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     } catch (reason) {
       notifications.show({
         color: "red",
-        title: "内核组件",
+        title: "客户端组件",
         message: readError(reason, "刷新失败上报失败")
       });
     } finally {
@@ -370,7 +370,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         <Stack gap="md">
           <Group justify="space-between" align="flex-start" wrap="wrap">
             <Stack gap={4}>
-              <Title order={4}>内核组件</Title>
+              <Title order={4}>客户端组件</Title>
               <Text size="sm" c="dimmed">
                 这里管理桌面端运行时依赖，不和应用安装包混在一起。
               </Text>
@@ -409,7 +409,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
           {loading ? (
             <Alert color="blue" variant="light">
-              正在加载内核组件，请稍候。
+              正在加载客户端组件，请稍候。
             </Alert>
           ) : null}
 
@@ -461,7 +461,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           <Stack gap="sm">
             {failures.length === 0 ? (
               <Card withBorder>
-                <Text c="dimmed">目前还没有内核组件失败上报。</Text>
+                <Text c="dimmed">目前还没有客户端组件失败上报。</Text>
               </Card>
             ) : (
               failures.map((item) => (
@@ -594,7 +594,7 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         {validation ? translateValidationStatus(validation.status) : "未校验"}
                       </Badge>
                       <Text size="xs" c="dimmed" lineClamp={2}>
-                        {summarizeAdminDiagnosticMessage(validation?.message, "内核组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "点击校验后会检查最终下载地址是否可用"}
+                        {summarizeAdminDiagnosticMessage(validation?.message, "客户端组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "点击校验后会检查最终下载地址是否可用"}
                       </Text>
                     </Stack>
                   </Table.Td>
@@ -604,7 +604,8 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         variant="light"
                         color="blue"
                         onClick={() => onEdit(record)}
-                        aria-label="编辑"
+                        title="编辑客户端组件"
+                        aria-label="编辑客户端组件"
                         disabled={saving || rowIsVerifying}
                       >
                         <IconEdit size={16} />
@@ -613,7 +614,8 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         variant="light"
                         color="green"
                         onClick={() => onVerify(record)}
-                        aria-label="校验"
+                        title="校验客户端组件"
+                        aria-label="校验客户端组件"
                         loading={rowIsVerifying}
                         disabled={saving || (verifyingId !== null && verifyingId !== record.id)}
                       >
@@ -626,13 +628,14 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                           void navigator.clipboard
                             .writeText(record.finalUrlPreview)
                             .then(() => {
-                              notifications.show({ color: "green", title: "内核组件", message: "最终下载地址已复制" });
+                              notifications.show({ color: "green", title: "客户端组件", message: "最终下载地址已复制" });
                             })
                             .catch(() => {
-                              notifications.show({ color: "yellow", title: "内核组件", message: "复制失败，请手动复制下载地址" });
+                              notifications.show({ color: "yellow", title: "客户端组件", message: "复制失败，请手动复制下载地址" });
                             })
                         }
-                        aria-label="复制"
+                        title="复制最终下载地址"
+                        aria-label="复制最终下载地址"
                       >
                         <IconCopy size={16} />
                       </ActionIcon>
@@ -643,7 +646,8 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         href={record.finalUrlPreview}
                         target="_blank"
                         rel="noreferrer"
-                        aria-label="打开"
+                        title="打开最终下载地址"
+                        aria-label="打开最终下载地址"
                       >
                         <IconExternalLink size={16} />
                       </ActionIcon>
@@ -651,7 +655,8 @@ function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
                         variant="light"
                         color="red"
                         onClick={() => onRemove(record)}
-                        aria-label="删除"
+                        title="删除客户端组件"
+                        aria-label="删除客户端组件"
                         disabled={saving || rowIsVerifying}
                       >
                         <IconTrash size={16} />

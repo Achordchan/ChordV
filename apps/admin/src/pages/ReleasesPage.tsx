@@ -632,30 +632,29 @@ export function ReleasesPage(props: ReleasesPageProps) {
 
   return (
     <>
-      <SectionCard searchValue={searchValue} onSearchChange={setSearchValue}>
+      <SectionCard
+        title="发布中心"
+        description="管理客户端版本、安装包、外链下载和发布状态。"
+        searchValue={searchValue}
+        onSearchChange={setSearchValue}
+        searchPlaceholder="搜索版本、标题或更新内容"
+        actions={
+          <>
+            <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease} disabled={saving !== null}>
+              新建发布
+            </Button>
+            <Button
+              variant="light"
+              leftSection={<IconRefresh size={16} />}
+              onClick={() => void loadReleases()}
+              loading={loading}
+            >
+              刷新
+            </Button>
+          </>
+        }
+      >
         <Stack gap="lg">
-          <Group justify="space-between" align="flex-start" wrap="wrap">
-            <Stack gap={4}>
-              <Title order={4}>发布中心</Title>
-              <Text size="sm" c="dimmed">
-                这里只做应用安装包发布：新建版本、填写外链或上传安装包、发布或撤回。
-              </Text>
-            </Stack>
-            <Group gap="xs">
-              <Button leftSection={<IconPlus size={16} />} onClick={openCreateRelease} disabled={saving !== null}>
-                新建发布
-              </Button>
-              <Button
-                variant="light"
-                leftSection={<IconRefresh size={16} />}
-                onClick={() => void loadReleases()}
-                loading={loading}
-              >
-                刷新
-              </Button>
-            </Group>
-          </Group>
-
           <Group justify="space-between" wrap="wrap">
             <SegmentedControl
               value={platformFilter}

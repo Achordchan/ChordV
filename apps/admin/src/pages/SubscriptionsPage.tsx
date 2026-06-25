@@ -88,13 +88,20 @@ type SubscriptionsPageProps = {
 
 export function SubscriptionsPage(props: SubscriptionsPageProps) {
   const userStatusById = new Map(props.allUsers.map((item) => [item.id, item.status] as const));
+  const personalSubscriptions = props.subscriptions.filter((item) => item.ownerType === "user");
 
   return (
-    <SectionCard searchValue={props.searchValue} onSearchChange={props.onSearchChange}>
+    <SectionCard
+      title="订阅管理"
+      description="订阅续期、变更套餐、节点授权和流量处理集中在这里。"
+      searchValue={props.searchValue}
+      onSearchChange={props.onSearchChange}
+      searchPlaceholder="搜索用户、套餐或团队"
+    >
       <Tabs value={props.subscriptionTab} onChange={(value) => props.onSubscriptionTabChange((value as "personal" | "team") || "personal")}>
         <Tabs.List>
-          <Tabs.Tab value="personal">个人订阅</Tabs.Tab>
-          <Tabs.Tab value="team">Team 订阅</Tabs.Tab>
+          <Tabs.Tab value="personal">个人订阅 · {personalSubscriptions.length}</Tabs.Tab>
+          <Tabs.Tab value="team">Team 订阅 · {props.filteredTeamSubscriptions.length}</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="personal" pt="md">
           <DataTable>
@@ -112,7 +119,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {props.subscriptions.filter((item) => item.ownerType === "user").map((item) => {
+              {personalSubscriptions.map((item) => {
                 const ownerIdReady = Boolean(item.userId);
                 const ownerStatus = ownerIdReady ? userStatusById.get(item.userId!) : undefined;
                 const ownerReady = ownerIdReady && ownerStatus !== undefined;
@@ -220,6 +227,7 @@ export function SubscriptionsPage(props: SubscriptionsPageProps) {
                         color="orange"
                         variant="subtle"
                         title="重置流量"
+                        aria-label="重置流量"
                         onClick={() => props.onResetSubscriptionTraffic(item.id, item.userDisplayName ?? item.userEmail ?? "当前个人订阅")}
                         loading={props.resetTrafficBusyKey === `${item.id}:all`}
                         disabled={props.resetTrafficBusyKey !== null}
@@ -614,7 +622,7 @@ function PanelSyncInlineStatus(props: {
   const label = summary ? buildPanelSyncPendingLabel(summary) : "后台同步待处理";
   const detail = [
     summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
-    summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
+    summarizeAdminDiagnosticMessage(props.item?.panelSyncMessage, "后台同步状态待确认，请打开同步任务查看。")
   ]
     .filter(Boolean)
     .join(" · ");
@@ -633,9 +641,9 @@ function PanelSyncInlineStatus(props: {
             event.stopPropagation();
             props.onOpenPanelSyncQueue();
           }}
-          title="查看后台同步队列"
+          title="查看后台同步任务"
         >
-          查看队列
+          查看任务
         </Button>
       </Group>
       {detail ? (
@@ -695,6 +703,7 @@ function LeaseRevocationInlineStatus(props: {
               props.onRetryJob(retryable.id);
             }}
             title="重试连接撤销"
+            aria-label="重试连接撤销"
           >
             <IconRefresh size={12} />
           </ActionIcon>
@@ -726,7 +735,7 @@ function buildPanelSyncInlineMessage(item: {
   const label = summary ? buildPanelSyncPendingLabel(summary) : "面板同步待处理";
   const detail = [
     summarizeAdminDiagnosticMessage(summary?.lastError, "面板同步任务失败，请稍后重试或查看服务器日志。"),
-    summarizeAdminDiagnosticMessage(item.panelSyncMessage, "后台同步状态待确认，请打开同步队列查看。")
+    summarizeAdminDiagnosticMessage(item.panelSyncMessage, "后台同步状态待确认，请打开同步任务查看。")
   ]
     .filter(Boolean)
     .join(" · ");

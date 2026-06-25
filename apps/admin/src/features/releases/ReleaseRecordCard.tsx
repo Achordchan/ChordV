@@ -199,7 +199,12 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
 
                         <Stack gap={8} align="flex-end">
                           <Group gap={4} wrap="nowrap">
-                            <ActionIcon variant="subtle" onClick={() => props.onCopyDownloadUrl(downloadUrl)} title="复制下载地址">
+                            <ActionIcon
+                              variant="subtle"
+                              onClick={() => props.onCopyDownloadUrl(downloadUrl)}
+                              title="复制下载地址"
+                              aria-label="复制下载地址"
+                            >
                               <IconCopy size={16} />
                             </ActionIcon>
                             <ActionIcon
@@ -209,6 +214,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                               rel="noreferrer"
                               variant="subtle"
                               title="打开下载地址"
+                              aria-label="打开下载地址"
                             >
                               <IconExternalLink size={16} />
                             </ActionIcon>
@@ -216,6 +222,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                               variant="subtle"
                               onClick={() => props.onEditArtifact(record.id, artifact)}
                               title={artifactEditingDisabled ? "请先撤回发布，再编辑安装包" : "编辑安装包"}
+                              aria-label={artifactEditingDisabled ? "请先撤回发布，再编辑安装包" : "编辑安装包"}
                               disabled={artifactEditingDisabled}
                             >
                               <IconEdit size={16} />
@@ -225,6 +232,7 @@ export function ReleaseRecordCard(props: ReleaseRecordCardProps) {
                               variant="subtle"
                               onClick={() => props.onRemoveArtifact(record.id, artifact.id)}
                               title={artifactEditingDisabled ? "请先撤回发布，再删除安装包" : "删除安装包"}
+                              aria-label={artifactEditingDisabled ? "请先撤回发布，再删除安装包" : "删除安装包"}
                               disabled={artifactEditingDisabled}
                             >
                               <IconTrash size={16} />

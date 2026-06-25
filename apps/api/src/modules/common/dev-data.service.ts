@@ -34,6 +34,8 @@ import type {
   ClientBootstrapDto,
   ClientNodeProbeResultDto,
   ClientPingDto,
+  ClientRoutingRuleDto,
+  ClientRoutingRuleTestResultDto,
   ClientRuntimeEventDto,
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
@@ -46,6 +48,7 @@ import type {
   ConvertSubscriptionToTeamResultDto,
   CreateAnnouncementInputDto,
   CreateClientSupportTicketInputDto,
+  CreateClientRoutingRuleInputDto,
   CreatePlanInputDto,
   CreateReleaseArtifactInputDto,
   CreateReleaseInputDto,
@@ -81,6 +84,7 @@ import type {
   TeamStatus,
   UploadReleaseArtifactInputDto,
   UpdateAnnouncementInputDto,
+  UpdateClientRoutingRuleInputDto,
   UpdateNodeInputDto,
   UpdatePlanInputDto,
   UpdatePlanSecurityInputDto,
@@ -109,6 +113,7 @@ import { AuthSessionService } from "./auth-session.service";
 import { ClientAccessService } from "./client-access.service";
 import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
+import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
@@ -192,6 +197,7 @@ export class DevDataService implements OnModuleInit {
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly clientEventsPublisher: ClientEventsPublisher,
     private readonly clientAccessService: ClientAccessService,
+    private readonly clientRoutingRuleService: ClientRoutingRuleService,
     private readonly clientTicketService: ClientTicketService,
     private readonly announcementPolicyService: AnnouncementPolicyService,
     private readonly devDataBootstrapService: DevDataBootstrapService,
@@ -471,6 +477,33 @@ export class DevDataService implements OnModuleInit {
 
   async checkClientUpdate(input: ClientUpdateCheckDto): Promise<ClientUpdateCheckResultDto> {
     return this.releaseCenterService.checkClientUpdate(input);
+  }
+
+  async listClientRoutingRules(token?: string): Promise<ClientRoutingRuleDto[]> {
+    return this.clientRoutingRuleService.listRules(token);
+  }
+
+  async createClientRoutingRule(
+    input: CreateClientRoutingRuleInputDto,
+    token?: string
+  ): Promise<ClientRoutingRuleDto> {
+    return this.clientRoutingRuleService.createRule(input, token);
+  }
+
+  async updateClientRoutingRule(
+    ruleId: string,
+    input: UpdateClientRoutingRuleInputDto,
+    token?: string
+  ): Promise<ClientRoutingRuleDto> {
+    return this.clientRoutingRuleService.updateRule(ruleId, input, token);
+  }
+
+  async deleteClientRoutingRule(ruleId: string, token?: string) {
+    return this.clientRoutingRuleService.deleteRule(ruleId, token);
+  }
+
+  async testClientRoutingRule(value: string, token?: string): Promise<ClientRoutingRuleTestResultDto> {
+    return this.clientRoutingRuleService.testRule(value, token);
   }
 
   async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {

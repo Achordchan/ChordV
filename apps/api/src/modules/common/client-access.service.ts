@@ -30,6 +30,7 @@ import type {
 import { AnnouncementPolicyService } from "./announcement-policy.service";
 import { AuthSessionService } from "./auth-session.service";
 import { ClientRuntimeEventsService } from "./client-runtime-events.service";
+import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { ClientTicketService } from "./client-ticket.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { isPrismaTransientError, throwLocalReadAsServiceUnavailable } from "./prisma-error.utils";
@@ -84,6 +85,7 @@ export class ClientAccessService {
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly meteringIncidentService: MeteringIncidentService,
     private readonly announcementPolicyService: AnnouncementPolicyService,
+    private readonly clientRoutingRuleService: ClientRoutingRuleService,
     private readonly clientTicketService: ClientTicketService,
     private readonly releaseCenterService: ReleaseCenterService
   ) {}
@@ -144,6 +146,10 @@ export class ClientAccessService {
 
     const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
     const policies = await this.announcementPolicyService.getPolicies();
+    const customRoutingRules = await this.loadOptionalBootstrapPart(
+      () => this.clientRoutingRuleService.listRulesForUserId(user.id),
+      []
+    );
     const version = await this.getClientVersion(platform);
     const announcements = await this.loadOptionalBootstrapPart(() => this.announcementPolicyService.getAnnouncements(token), []);
     const supportTickets = await this.loadOptionalBootstrapPart(() => this.clientTicketService.getClientSupportTicketInbox(user.id), {
@@ -154,7 +160,10 @@ export class ClientAccessService {
     return {
       user,
       subscription: toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb, metering),
-      policies,
+      policies: {
+        ...policies,
+        customRoutingRules
+      },
       announcements,
       supportTickets,
       version,

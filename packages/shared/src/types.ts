@@ -82,6 +82,44 @@ export type ClientRuntimeEventType =
   | "sync_queue_updated"
   | "keepalive";
 export type XuiPanelStatus = "online" | "offline" | "degraded";
+export type ClientRoutingRuleAction = "proxy" | "direct";
+export type ClientRoutingRuleMatchType = "domain" | "keyword";
+
+export interface ClientRoutingRuleDto {
+  id: string;
+  userId: string;
+  name: string | null;
+  value: string;
+  matchType: ClientRoutingRuleMatchType;
+  action: ClientRoutingRuleAction;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateClientRoutingRuleInputDto {
+  name?: string | null;
+  value: string;
+  action: ClientRoutingRuleAction;
+  enabled?: boolean;
+}
+
+export interface UpdateClientRoutingRuleInputDto {
+  name?: string | null;
+  value?: string;
+  action?: ClientRoutingRuleAction;
+  enabled?: boolean;
+}
+
+export interface ClientRoutingRuleTestResultDto {
+  input: string;
+  normalizedValue: string;
+  matchType: ClientRoutingRuleMatchType;
+  action: ClientRoutingRuleAction;
+  matchedRule: ClientRoutingRuleDto | null;
+  message: string;
+  reconnectRequired: boolean;
+}
 
 export interface UserProfileDto {
   id: string;
@@ -156,6 +194,7 @@ export interface PolicyBundleDto {
     chinaDirect: boolean;
     aiServicesProxy: boolean;
   };
+  customRoutingRules: ClientRoutingRuleDto[];
 }
 
 export interface AnnouncementDto {
@@ -369,6 +408,7 @@ export interface GeneratedRuntimeConfigDto {
     chinaDirect: boolean;
     aiServicesProxy: boolean;
   };
+  customRoutingRules: ClientRoutingRuleDto[];
   outbound: RuntimeOutboundDto;
 }
 
