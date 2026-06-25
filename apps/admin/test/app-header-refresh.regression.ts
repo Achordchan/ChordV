@@ -392,6 +392,24 @@ function testNodeAccessOptionsAllowOfflineAndPendingNodes() {
   );
 }
 
+function testNodeAccessClearSavesEmptyNodeIdsPayload() {
+  assert.match(
+    saveNodeAccessEditorBody,
+    /const nodeIds = Array\.from\(\s*new Set\(nodeAccessSelection\.map\(\(nodeId\) => nodeId\.trim\(\)\)\.filter\(\(nodeId\) => nodeId\.length > 0\)\)\s*\);/,
+    "node access save should trim, dedupe, and preserve an empty selection as an empty nodeIds payload"
+  );
+  assert.match(
+    saveNodeAccessEditorBody,
+    /updateSubscriptionNodeAccess\(nodeAccessEditor\.subscriptionId,\s*{\s*nodeIds\s*}\)/,
+    "node access save should send the sanitized nodeIds array directly to the backend"
+  );
+  assert.match(
+    source,
+    /onClear=\{\(\) => \{[\s\S]*?if \(!nodeAccessLoading && !nodeAccessSaving\) \{[\s\S]*?setNodeAccessSelection\(\[\]\);[\s\S]*?\}[\s\S]*?\}\}/,
+    "node access clear should set the selection to [] so saving sends { nodeIds: [] }"
+  );
+}
+
 function testUserSubscriptionAndTeamMutationsUseDbFirstActionHandling() {
   const branchMarkers = [
     'drawer.type === "user"',
@@ -472,6 +490,7 @@ testSessionExpiredClearsBusyRefs();
 testSubscriptionCreateRequiresExpireAtBeforeRequest();
 testNodeAccessPendingSaveUsesYellowCompletedNotification();
 testNodeAccessOptionsAllowOfflineAndPendingNodes();
+testNodeAccessClearSavesEmptyNodeIdsPayload();
 testUserSubscriptionAndTeamMutationsUseDbFirstActionHandling();
 testInlineAndDestructiveMutationsUseDbFirstActionHandling();
 testHighRiskMutationsReleaseBusyStateInFinally();
