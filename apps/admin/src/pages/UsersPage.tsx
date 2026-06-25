@@ -530,6 +530,10 @@ type CustomerDetailContentProps = Omit<CustomerDetailDrawerProps, "target"> & { 
 
 function CustomerDetailContent(props: CustomerDetailContentProps) {
   const target = props.target;
+  const openOutsideDetail = (action: () => void) => {
+    props.onClose();
+    action();
+  };
 
   if (target.type === "personal") {
     const user = props.personalUsers.find((item) => item.id === target.userId);
@@ -566,15 +570,15 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
                 ownerLabel={ownerLabel}
                 resetTrafficBusyKey={props.resetTrafficBusyKey}
                 renewable={fullSubscription?.renewable}
-                onOpenRenewDrawer={props.onOpenRenewDrawer}
-                onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
-                onOpenAdjustDrawer={props.onOpenAdjustDrawer}
-                onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
+                onOpenRenewDrawer={(id) => openOutsideDetail(() => props.onOpenRenewDrawer(id))}
+                onOpenChangePlanDrawer={(id) => openOutsideDetail(() => props.onOpenChangePlanDrawer(id))}
+                onOpenAdjustDrawer={(id) => openOutsideDetail(() => props.onOpenAdjustDrawer(id))}
+                onOpenNodeAccessEditor={(id, label) => openOutsideDetail(() => props.onOpenNodeAccessEditor(id, label))}
                 onResetTraffic={() => subscriptionId ? props.onResetSubscriptionTraffic(subscriptionId, user.displayName || user.email) : undefined}
               />
             </Stack>
           ) : (
-            <Button leftSection={<IconPlus size={16} />} onClick={() => props.onCreateSubscriptionForUser(user)}>
+            <Button leftSection={<IconPlus size={16} />} onClick={() => openOutsideDetail(() => props.onCreateSubscriptionForUser(user))}>
               创建订阅
             </Button>
           )}
@@ -585,11 +589,13 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
             <PanelSyncInlineStatus
               item={fullSubscription ?? user}
               onOpenPanelSyncQueue={() =>
-                props.onOpenPanelSyncQueue({
-                  subscriptionId: subscriptionId ?? undefined,
-                  userId: user.id,
-                  title: user.displayName
-                })
+                openOutsideDetail(() =>
+                  props.onOpenPanelSyncQueue({
+                    subscriptionId: subscriptionId ?? undefined,
+                    userId: user.id,
+                    title: user.displayName
+                  })
+                )
               }
             />
             <LeaseRevocationInlineStatus
@@ -603,7 +609,7 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
 
         <DrawerSection title="账号操作">
           <Group gap="xs" wrap="wrap">
-            <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => props.onOpenUserDrawer(user.id)}>
+            <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => openOutsideDetail(() => props.onOpenUserDrawer(user.id))}>
               编辑账号
             </Button>
             <Button
@@ -660,11 +666,11 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
               team={team}
               allSubscriptions={props.allSubscriptions}
               resetTrafficBusyKey={props.resetTrafficBusyKey}
-              onOpenTeamSubscriptions={props.onOpenTeamSubscriptions}
-              onOpenRenewDrawer={props.onOpenRenewDrawer}
-              onOpenChangePlanDrawer={props.onOpenChangePlanDrawer}
-              onOpenAdjustDrawer={props.onOpenAdjustDrawer}
-              onOpenNodeAccessEditor={props.onOpenNodeAccessEditor}
+              onOpenTeamSubscriptions={(targetTeam) => openOutsideDetail(() => props.onOpenTeamSubscriptions(targetTeam))}
+              onOpenRenewDrawer={(id) => openOutsideDetail(() => props.onOpenRenewDrawer(id))}
+              onOpenChangePlanDrawer={(id) => openOutsideDetail(() => props.onOpenChangePlanDrawer(id))}
+              onOpenAdjustDrawer={(id) => openOutsideDetail(() => props.onOpenAdjustDrawer(id))}
+              onOpenNodeAccessEditor={(id, label) => openOutsideDetail(() => props.onOpenNodeAccessEditor(id, label))}
               onResetSubscriptionTraffic={props.onResetSubscriptionTraffic}
             />
           </Stack>
@@ -688,11 +694,13 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
             <PanelSyncInlineStatus
               item={team}
               onOpenPanelSyncQueue={() =>
-                props.onOpenPanelSyncQueue({
-                  subscriptionId: team.currentSubscription?.id,
-                  teamId: team.id,
-                  title: team.name
-                })
+                openOutsideDetail(() =>
+                  props.onOpenPanelSyncQueue({
+                    subscriptionId: team.currentSubscription?.id,
+                    teamId: team.id,
+                    title: team.name
+                  })
+                )
               }
             />
             <LeaseRevocationInlineStatus
@@ -769,12 +777,14 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
               variant="default"
               leftSection={<IconListDetails size={16} />}
               onClick={() =>
-                props.onOpenTeamUsageDetail({
-                  teamName: team.name,
-                  userDisplayName: usageEntry.userDisplayName,
-                  userEmail: usageEntry.userEmail,
-                  entry: usageEntry
-                })
+                openOutsideDetail(() =>
+                  props.onOpenTeamUsageDetail({
+                    teamName: team.name,
+                    userDisplayName: usageEntry.userDisplayName,
+                    userEmail: usageEntry.userEmail,
+                    entry: usageEntry
+                  })
+                )
               }
             >
               用量详情
@@ -785,7 +795,7 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
 
       <DrawerSection title="账号操作">
         <Group gap="xs" wrap="wrap">
-          <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => props.onOpenUserDrawer(member.userId)}>
+          <Button variant="default" leftSection={<IconPencil size={16} />} onClick={() => openOutsideDetail(() => props.onOpenUserDrawer(member.userId))}>
             编辑账号
           </Button>
           <Button
@@ -838,12 +848,14 @@ function CustomerDetailContent(props: CustomerDetailContentProps) {
         <PanelSyncInlineStatus
           item={userRecord}
           onOpenPanelSyncQueue={() =>
-            props.onOpenPanelSyncQueue({
-              subscriptionId: team.currentSubscription?.id,
-              userId: member.userId,
-              teamId: team.id,
-              title: `${member.displayName} · ${team.name}`
-            })
+            openOutsideDetail(() =>
+              props.onOpenPanelSyncQueue({
+                subscriptionId: team.currentSubscription?.id,
+                userId: member.userId,
+                teamId: team.id,
+                title: `${member.displayName} · ${team.name}`
+              })
+            )
           }
         />
         <LeaseRevocationInlineStatus

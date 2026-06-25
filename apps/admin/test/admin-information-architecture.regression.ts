@@ -128,6 +128,11 @@ function testUsersPageKeepsAccountAndTeamEntrypoints() {
   assert.match(usersPageSource, /<DrawerSection title="订阅与节点">/);
   assert.match(usersPageSource, /<DrawerSection title="账号操作">/);
   assert.match(usersPageSource, /<DrawerSection title="团队关系">/);
+  assert.match(usersPageSource, /const openOutsideDetail = \(action: \(\) => void\) => \{/);
+  assert.match(usersPageSource, /props\.onClose\(\);\s*action\(\);/);
+  assert.match(usersPageSource, /onOpenRenewDrawer=\{\(id\) => openOutsideDetail\(\(\) => props\.onOpenRenewDrawer\(id\)\)\}/);
+  assert.match(usersPageSource, /onClick=\{\(\) => openOutsideDetail\(\(\) => props\.onOpenUserDrawer\(user\.id\)\)\}/);
+  assert.match(usersPageSource, /openOutsideDetail\(\(\) =>\s*props\.onOpenTeamUsageDetail/);
   assert.match(usersPageSource, /<MemberUsageCell/);
   assert.match(usersPageSource, /props\.onLoadTeamUsage\(item\.id\)/);
   assert.match(usersPageSource, /props\.onOpenTeamUsageDetail/);
