@@ -31,6 +31,7 @@ body {
   background: rgba(255, 255, 255, 0.86);
   backdrop-filter: blur(18px);
   border-right: 1px solid rgba(19, 34, 56, 0.08);
+  overflow: hidden;
 }
 
 .admin-header {
@@ -56,6 +57,28 @@ body {
 
 .admin-brand {
   padding: 8px 8px 16px;
+}
+
+.admin-nav-shell {
+  height: 100%;
+  min-height: 0;
+}
+
+.admin-nav-menu {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.admin-nav-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.admin-nav-menu::-webkit-scrollbar-thumb {
+  background: rgba(19, 34, 56, 0.16);
+  border-radius: 999px;
 }
 
 .admin-nav-group {

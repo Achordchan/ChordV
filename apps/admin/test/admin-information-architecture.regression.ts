@@ -5,6 +5,7 @@ import ts from "typescript";
 
 const adminSrcRoot = resolve(import.meta.dirname, "../src");
 const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+const customerSubscriptionsPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/CustomerSubscriptionsPage.tsx"), "utf8");
 const sectionCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/shared/SectionCard.tsx"), "utf8");
 const overviewPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/OverviewPage.tsx"), "utf8");
 const usersPageSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
@@ -60,11 +61,31 @@ function testSidebarKeepsGroupedInformationArchitecture() {
     assert.match(appSource, new RegExp(`title: "${title}"`), `sidebar group ${title} should exist`);
   }
 
-  assert.match(appSource, /label: "客户与团队"/);
-  assert.match(appSource, /label: "订阅管理"/);
+  assert.match(appSource, /label: "客户与订阅"/);
+  assert.match(appSource, /label: "订阅与授权"/);
+  assert.match(appSource, /\{ title: "用户与订阅", sections: \["users", "plans"\] \}/);
+  assert.doesNotMatch(appSource, /\{ title: "用户与订阅", sections: \["users", "subscriptions", "plans"\] \}/);
   assert.match(appSource, /label: "节点与同步"/);
   assert.match(appSource, />\s*后台工具\s*</);
   assert.match(appSource, />\s*同步任务\s*</);
+  assert.match(appSource, /className="admin-nav-shell"/);
+  assert.match(appSource, /className="admin-nav-menu"/);
+  assert.match(stylesSource, /\.admin-nav\s*\{[\s\S]*overflow: hidden;/);
+  assert.match(stylesSource, /\.admin-nav-shell\s*\{[\s\S]*min-height: 0;/);
+  assert.match(stylesSource, /\.admin-nav-menu\s*\{[\s\S]*overflow-y: auto;/);
+}
+
+function testCustomerSubscriptionsPageCombinesRelatedWorkWithoutMergingBusinessLogic() {
+  assert.match(appSource, /<CustomerSubscriptionsPage/);
+  assert.match(appSource, /activeTab=\{customerSubscriptionsTab\}/);
+  assert.match(appSource, /customers=\{/);
+  assert.match(appSource, /<UsersPage/);
+  assert.match(appSource, /subscriptions=\{/);
+  assert.match(appSource, /<SubscriptionsPage/);
+  assert.match(customerSubscriptionsPageSource, /value="customers"/);
+  assert.match(customerSubscriptionsPageSource, /客户与团队/);
+  assert.match(customerSubscriptionsPageSource, /value="subscriptions"/);
+  assert.match(customerSubscriptionsPageSource, /订阅与授权/);
 }
 
 function testSectionCardSupportsPageIntentAndActions() {
@@ -104,7 +125,7 @@ function testUsersPageKeepsAccountAndTeamEntrypoints() {
 }
 
 function testSubscriptionsPageKeepsSubscriptionActions() {
-  assert.match(subscriptionsPageSource, /title="订阅管理"/);
+  assert.match(subscriptionsPageSource, /title="订阅与授权"/);
   assert.match(subscriptionsPageSource, /searchPlaceholder="搜索用户、套餐或团队"/);
   assert.match(subscriptionsPageSource, /个人订阅 · \{personalSubscriptions\.length\}/);
   assert.match(subscriptionsPageSource, /Team 订阅 · \{props\.filteredTeamSubscriptions\.length\}/);
@@ -193,6 +214,7 @@ function testIconOnlyActionsHaveAccessibleNames() {
 }
 
 testSidebarKeepsGroupedInformationArchitecture();
+testCustomerSubscriptionsPageCombinesRelatedWorkWithoutMergingBusinessLogic();
 testSectionCardSupportsPageIntentAndActions();
 testOverviewPrioritizesActionableWork();
 testUsersPageKeepsAccountAndTeamEntrypoints();

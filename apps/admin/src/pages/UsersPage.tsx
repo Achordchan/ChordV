@@ -128,7 +128,7 @@ export function UsersPage(props: UsersPageProps) {
                           <IconPencil size={16} />
                         </ActionIcon>
                         {item.subscriptionCount > 0 || item.currentSubscription ? (
-                          <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅管理" aria-label="打开订阅管理">
+                          <ActionIcon variant="subtle" onClick={() => props.onOpenUserSubscriptions(item)} title="打开订阅与授权" aria-label="打开订阅与授权">
                             <IconListDetails size={16} />
                           </ActionIcon>
                         ) : null}
@@ -230,8 +230,8 @@ export function UsersPage(props: UsersPageProps) {
                           <ActionIcon
                             variant="subtle"
                             onClick={() => props.onOpenTeamSubscriptions(item)}
-                            title="Team 订阅：打开共享订阅管理"
-                            aria-label="Team 订阅：打开共享订阅管理"
+                            title="Team 订阅：打开共享订阅与授权"
+                            aria-label="Team 订阅：打开共享订阅与授权"
                           >
                             <IconListDetails size={16} />
                           </ActionIcon>
