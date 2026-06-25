@@ -104,10 +104,10 @@ function testUserDisconnectActionsUseDisconnectIcon() {
   const usersSource = readFileSync(resolve(import.meta.dirname, "../src/pages/UsersPage.tsx"), "utf8");
 
   assert.match(usersSource, /IconPlugConnectedX/);
-  assert.match(usersSource, /title="账号级：断开当前连接"[\s\S]{0,500}<IconPlugConnectedX size=\{16\} \/>/);
-  assert.match(usersSource, /title="账号级：断开当前连接，不移出团队"[\s\S]{0,500}<IconPlugConnectedX size=\{16\} \/>/);
-  assert.doesNotMatch(usersSource, /title="账号级：断开当前连接"[\s\S]{0,500}<IconRefresh size=\{16\} \/>/);
-  assert.doesNotMatch(usersSource, /title="账号级：断开当前连接，不移出团队"[\s\S]{0,500}<IconRefresh size=\{16\} \/>/);
+  assert.match(usersSource, /leftSection=\{<IconPlugConnectedX size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(user\.id, user\.displayName, "personal"\)/);
+  assert.match(usersSource, /leftSection=\{<IconPlugConnectedX size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(member\.userId, member\.displayName, "team-member"\)/);
+  assert.doesNotMatch(usersSource, /leftSection=\{<IconRefresh size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(user\.id, user\.displayName, "personal"\)/);
+  assert.doesNotMatch(usersSource, /leftSection=\{<IconRefresh size=\{16\} \/>\}[\s\S]{0,500}onDisconnectUser\(member\.userId, member\.displayName, "team-member"\)/);
 }
 
 function testSubscriptionTrafficAndTeamDisconnectActionsUseDifferentIcons() {
