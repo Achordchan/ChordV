@@ -204,6 +204,7 @@ export function App() {
     ticketReplyDraft,
     setTicketReplyDraft,
     ticketReplyAttachment,
+    ticketReplyAttachmentUpload,
     setTicketReplyAttachment,
     ticketCenterError,
     setTicketCenterError,
@@ -749,7 +750,7 @@ export function App() {
 
   useEffect(() => {
     const preventContextMenu = (event: MouseEvent) => {
-      if (isEditableContextTarget(event.target)) {
+      if (isEditableContextTarget(event.target) || hasSelectedText()) {
         return;
       }
       event.preventDefault();
@@ -1834,6 +1835,7 @@ export function App() {
         createBody={ticketDraft.body}
         replyBody={ticketReplyDraft}
         replyAttachment={ticketReplyAttachment}
+        replyAttachmentUpload={ticketReplyAttachmentUpload}
         onClose={() => setTicketCenterOpened(false)}
         onRefresh={() => void loadTicketList(selectedTicketId)}
         onOpenCreate={openTicketComposer}
@@ -2090,4 +2092,9 @@ function isEditableContextTarget(target: EventTarget | null) {
     return false;
   }
   return Boolean(element.closest("input, textarea, [contenteditable]"));
+}
+
+function hasSelectedText() {
+  const selection = window.getSelection();
+  return Boolean(selection && selection.toString().trim().length > 0);
 }

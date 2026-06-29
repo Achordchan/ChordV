@@ -101,7 +101,8 @@ import type {
   UserSubscriptionSummaryDto,
   SupportTicketAuthorRole,
   SupportTicketSource,
-  SupportTicketStatus
+  SupportTicketStatus,
+  UploadedSupportTicketAttachmentReferenceInputDto
 } from "@chordv/shared";
 import { METERING_REASON_NODE_UNAVAILABLE } from "./metering.constants";
 import { AdminNodeService } from "./admin-node.service";
@@ -170,7 +171,7 @@ const EVENT_PUBLISH_BUDGET_MS = 300;
 const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
 const ADMIN_SUPPORT_TICKET_LIST_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_LIST_LIMIT", 200);
 const ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT = readPositiveIntegerEnv("CHORDV_ADMIN_SUPPORT_TICKET_DETAIL_MESSAGE_LIMIT", 300);
-const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 12_000);
+const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 60_000);
 const ADMIN_SNAPSHOT_OPTIONAL_TIMEOUT_MS = 1_200;
 
 type NodeAccessRevocationEffects = {
@@ -465,6 +466,14 @@ export class DevDataService implements OnModuleInit {
     return this.clientTicketService.replyClientSupportTicket(ticketId, input, token);
   }
 
+  async uploadClientSupportTicketAttachment(
+    ticketId: string,
+    file: UploadedTicketAttachmentFile | undefined,
+    token?: string
+  ): Promise<UploadedSupportTicketAttachmentReferenceInputDto> {
+    return this.clientTicketService.uploadClientSupportTicketAttachment(ticketId, file, token);
+  }
+
   async replyClientSupportTicketWithAttachment(
     ticketId: string,
     input: { body?: string | null },
@@ -664,7 +673,7 @@ export class DevDataService implements OnModuleInit {
     input: ReplyClientSupportTicketInputDto,
     adminUserId?: string | null
   ): Promise<AdminSupportTicketDetailDto> {
-    const body = input.body.trim();
+    const body = input.body?.trim() ?? "";
     if (!body) {
       throw new BadRequestException("回复内容不能为空");
     }

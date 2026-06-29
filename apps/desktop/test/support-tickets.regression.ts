@@ -69,6 +69,19 @@ function testAttachmentFormRequestHasTimeout() {
   assert.match(source, /window\.clearTimeout\(timeout\);/);
 }
 
+function testReplyAttachmentUsesUploadProgressBeforeSubmit() {
+  const apiSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+  const hookSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useSupportTickets.ts"), "utf8");
+
+  assert.match(apiSource, /export function uploadSupportTicketAttachment/);
+  assert.match(apiSource, /\/client\/tickets\/\$\{encodeURIComponent\(ticketId\)\}\/attachments\/upload/);
+  assert.match(apiSource, /new XMLHttpRequest\(\)/);
+  assert.match(apiSource, /xhr\.upload\.onprogress/);
+  assert.match(hookSource, /ticketReplyAttachmentUpload\.phase !== "uploaded"/);
+  assert.match(hookSource, /attachment: ticketReplyAttachment \? ticketReplyAttachmentUpload\.attachment : null/);
+  assert.doesNotMatch(hookSource, /replySupportTicketWithAttachment/);
+}
+
 function testJsonRequestsHaveTimeoutAndNetworkErrorNormalization() {
   const source = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
   const normalizedErrorThrows = source.match(/throw normalizeNetworkRequestError\(error\);/g) ?? [];
@@ -98,6 +111,7 @@ function main() {
   testLocalUnreadPatchClearsWhenServerConfirmsRead();
   testLocalUnreadPatchKeepsServerUnreadVisible();
   testAttachmentFormRequestHasTimeout();
+  testReplyAttachmentUsesUploadProgressBeforeSubmit();
   testJsonRequestsHaveTimeoutAndNetworkErrorNormalization();
   testVisibleTicketUpdateMarksDetailRead();
   console.log("desktop support tickets regression checks passed");

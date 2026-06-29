@@ -3,7 +3,8 @@ import type {
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
   CreateClientSupportTicketInputDto,
-  ReplyClientSupportTicketInputDto
+  ReplyClientSupportTicketInputDto,
+  UploadedSupportTicketAttachmentReferenceInputDto
 } from "@chordv/shared";
 import {
   createSupportTicket,
@@ -12,7 +13,7 @@ import {
   isUnauthorizedApiError,
   markSupportTicketRead,
   replySupportTicket,
-  replySupportTicketWithAttachment
+  uploadSupportTicketAttachment
 } from "../api/client";
 import {
   consumeSupportTicketBackgroundDetailRefresh,
@@ -45,9 +46,19 @@ function defaultReadError(message: string) {
   return message;
 }
 
-function isSupportTicketAttachmentUploadFailure(message: string) {
-  return /image bed|图床|attachment|附件|upload|上传|file exceeds|file too large|payload too large|multererror|too large|文件过大|Only image attachments|Attachment file/i.test(message);
-}
+export type TicketAttachmentUploadState = {
+  phase: "idle" | "uploading" | "uploaded" | "failed";
+  progress: number;
+  attachment: UploadedSupportTicketAttachmentReferenceInputDto | null;
+  error: string | null;
+};
+
+const idleAttachmentUploadState: TicketAttachmentUploadState = {
+  phase: "idle",
+  progress: 0,
+  attachment: null,
+  error: null
+};
 
 function pickTicketId(
   tickets: ClientSupportTicketSummaryDto[],
@@ -68,11 +79,14 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
   const [ticketDraft, setTicketDraft] = useState<TicketDraft>({ title: "", body: "" });
   const [ticketReplyDraft, setTicketReplyDraft] = useState("");
   const [ticketReplyAttachment, setTicketReplyAttachment] = useState<File | null>(null);
+  const [ticketReplyAttachmentUpload, setTicketReplyAttachmentUpload] =
+    useState<TicketAttachmentUploadState>(idleAttachmentUploadState);
   const [ticketCenterError, setTicketCenterError] = useState<string | null>(null);
   const [ticketListBusy, setTicketListBusy] = useState(false);
   const [ticketDetailBusy, setTicketDetailBusy] = useState(false);
   const [ticketSubmitting, setTicketSubmitting] = useState(false);
   const locallyUnreadTicketIdsRef = useRef(new Set<string>());
+  const attachmentUploadRunRef = useRef(0);
 
   const hasUnreadTickets = useMemo(
     () => ticketList.some((ticket) => isSupportTicketUnread(ticket)),
@@ -170,6 +184,81 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     [markTicketAsRead, options.accessToken, options.onUnauthorized, options.readError]
   );
 
+  const resetReplyAttachment = useCallback(() => {
+    attachmentUploadRunRef.current += 1;
+    setTicketReplyAttachment(null);
+    setTicketReplyAttachmentUpload(idleAttachmentUploadState);
+  }, []);
+
+  const handleReplyAttachmentChange = useCallback(
+    (file: File | null) => {
+      attachmentUploadRunRef.current += 1;
+      const runId = attachmentUploadRunRef.current;
+      setTicketReplyAttachment(file);
+      if (!file) {
+        setTicketReplyAttachmentUpload(idleAttachmentUploadState);
+        return;
+      }
+      if (!options.accessToken || !selectedTicketId) {
+        setTicketReplyAttachmentUpload({
+          phase: "failed",
+          progress: 0,
+          attachment: null,
+          error: "请先打开要回复的工单，再上传附件。"
+        });
+        return;
+      }
+
+      setTicketCenterError(null);
+      setTicketReplyAttachmentUpload({
+        phase: "uploading",
+        progress: 1,
+        attachment: null,
+        error: null
+      });
+
+      void uploadSupportTicketAttachment(options.accessToken, selectedTicketId, file, (progress) => {
+        if (attachmentUploadRunRef.current !== runId) {
+          return;
+        }
+        setTicketReplyAttachmentUpload((current) => ({
+          ...current,
+          phase: "uploading",
+          progress: Math.max(current.progress, progress),
+          error: null
+        }));
+      })
+        .then((attachment) => {
+          if (attachmentUploadRunRef.current !== runId) {
+            return;
+          }
+          setTicketReplyAttachmentUpload({
+            phase: "uploaded",
+            progress: 100,
+            attachment,
+            error: null
+          });
+        })
+        .catch(async (reason) => {
+          if (isUnauthorizedApiError(reason)) {
+            await options.onUnauthorized?.();
+          }
+          if (attachmentUploadRunRef.current !== runId) {
+            return;
+          }
+          const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "附件上传失败";
+          setTicketReplyAttachmentUpload({
+            phase: "failed",
+            progress: 0,
+            attachment: null,
+            error: message
+          });
+          setTicketCenterError(message);
+        });
+    },
+    [options.accessToken, options.onUnauthorized, options.readError, selectedTicketId]
+  );
+
   const openTicketCenter = useCallback(async () => {
     setTicketCenterOpened(true);
     setTicketCreateMode(false);
@@ -181,8 +270,8 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     setTicketCreateMode(true);
     setTicketCenterError(null);
     setTicketReplyDraft("");
-    setTicketReplyAttachment(null);
-  }, []);
+    resetReplyAttachment();
+  }, [resetReplyAttachment]);
 
   const closeTicketComposer = useCallback(() => {
     setTicketCreateMode(false);
@@ -232,40 +321,37 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     if (!ticketReplyDraft.trim() && !ticketReplyAttachment) {
       return null;
     }
+    if (ticketReplyAttachment && ticketReplyAttachmentUpload.phase !== "uploaded") {
+      const message =
+        ticketReplyAttachmentUpload.phase === "uploading"
+          ? "附件上传完成后才能发送回复。"
+          : ticketReplyAttachmentUpload.error ?? "附件未上传成功，请重新选择图片。";
+      setTicketCenterError(message);
+      options.notify?.({
+        color: ticketReplyAttachmentUpload.phase === "uploading" ? "blue" : "red",
+        title: ticketReplyAttachmentUpload.phase === "uploading" ? "附件上传中" : "附件上传失败",
+        message
+      });
+      return null;
+    }
 
     try {
       setTicketSubmitting(true);
       setTicketCenterError(null);
       const trimmedBody = ticketReplyDraft.trim();
-      const detail = ticketReplyAttachment
-        ? await replySupportTicketWithAttachment(
-            options.accessToken,
-            selectedTicketId,
-            { body: trimmedBody || null },
-            ticketReplyAttachment
-          )
-        : await replySupportTicket(options.accessToken, selectedTicketId, {
-            body: trimmedBody
-          } satisfies ReplyClientSupportTicketInputDto);
+      const detail = await replySupportTicket(options.accessToken, selectedTicketId, {
+        body: trimmedBody,
+        attachment: ticketReplyAttachment ? ticketReplyAttachmentUpload.attachment : null
+      } satisfies ReplyClientSupportTicketInputDto);
       setTicketDetail(detail);
       setTicketReplyDraft("");
-      setTicketReplyAttachment(null);
+      resetReplyAttachment();
       await loadTicketList(detail.id);
-      if (detail.attachmentUploadStatus === "failed") {
-        const message = `文字回复已保存，附件上传失败：${detail.attachmentUploadError ?? "请稍后重试"}`;
-        setTicketCenterError(message);
-        options.notify?.({
-          color: "yellow",
-          title: "附件上传失败",
-          message
-        });
-      } else {
-        options.notify?.({
-          color: "green",
-          title: "回复已发送",
-          message: "客服看到后会继续在这条工单里回复你。"
-        });
-      }
+      options.notify?.({
+        color: "green",
+        title: "回复已发送",
+        message: "客服看到后会继续在这条工单里回复你。"
+      });
       return detail;
     } catch (reason) {
       if (isUnauthorizedApiError(reason)) {
@@ -273,16 +359,21 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
         return null;
       }
       const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "发送回复失败";
-      setTicketCenterError(
-        ticketReplyAttachment && isSupportTicketAttachmentUploadFailure(message)
-          ? `${message} 附件上传失败，工单回复未保存，请稍后重试或先发送纯文字回复。`
-          : message
-      );
+      setTicketCenterError(message);
       return null;
     } finally {
       setTicketSubmitting(false);
     }
-  }, [loadTicketList, options, selectedTicketId, ticketReplyAttachment, ticketReplyDraft, ticketSubmitting]);
+  }, [
+    loadTicketList,
+    options,
+    resetReplyAttachment,
+    selectedTicketId,
+    ticketReplyAttachment,
+    ticketReplyAttachmentUpload,
+    ticketReplyDraft,
+    ticketSubmitting
+  ]);
 
   return {
     ticketCenterOpened,
@@ -300,7 +391,9 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
     ticketReplyDraft,
     setTicketReplyDraft,
     ticketReplyAttachment,
-    setTicketReplyAttachment,
+    ticketReplyAttachmentUpload,
+    setTicketReplyAttachment: handleReplyAttachmentChange,
+    resetReplyAttachment,
     ticketCenterError,
     setTicketCenterError,
     ticketListBusy,

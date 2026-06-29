@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(target_os = "macos")]
-use tauri::menu::SubmenuBuilder;
+use tauri::menu::{PredefinedMenuItem, SubmenuBuilder};
 #[cfg(not(target_os = "android"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 #[cfg(target_os = "macos")]
@@ -6389,6 +6389,10 @@ fn disable_context_menu(window: &tauri::WebviewWindow) -> Result<(), String> {
               if (element && element.closest("input, textarea, [contenteditable]")) {
                 return;
               }
+              const selection = window.getSelection && window.getSelection();
+              if (selection && selection.toString().trim().length > 0) {
+                return;
+              }
               event.preventDefault();
             }, { capture: true });
             "#,
@@ -6645,6 +6649,18 @@ fn build_shell_menu(
         let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
             .build(app)
             .map_err(|error| error.to_string())?;
+        let undo = PredefinedMenuItem::undo(app, Some("撤销"))
+            .map_err(|error| error.to_string())?;
+        let redo = PredefinedMenuItem::redo(app, Some("重做"))
+            .map_err(|error| error.to_string())?;
+        let cut = PredefinedMenuItem::cut(app, Some("剪切"))
+            .map_err(|error| error.to_string())?;
+        let copy = PredefinedMenuItem::copy(app, Some("复制"))
+            .map_err(|error| error.to_string())?;
+        let paste = PredefinedMenuItem::paste(app, Some("粘贴"))
+            .map_err(|error| error.to_string())?;
+        let select_all = PredefinedMenuItem::select_all(app, Some("全选"))
+            .map_err(|error| error.to_string())?;
 
         let app_menu = SubmenuBuilder::new(app, "ChordV")
             .item(&about)
@@ -6653,6 +6669,18 @@ fn build_shell_menu(
             .item(&hide_app)
             .separator()
             .item(&quit)
+            .build()
+            .map_err(|error| error.to_string())?;
+
+        let edit_menu = SubmenuBuilder::new(app, "编辑")
+            .item(&undo)
+            .item(&redo)
+            .separator()
+            .item(&cut)
+            .item(&copy)
+            .item(&paste)
+            .separator()
+            .item(&select_all)
             .build()
             .map_err(|error| error.to_string())?;
 
@@ -6678,6 +6706,7 @@ fn build_shell_menu(
 
         MenuBuilder::new(app)
             .item(&app_menu)
+            .item(&edit_menu)
             .item(&connection_menu)
             .item(&window_menu)
             .item(&help_menu)

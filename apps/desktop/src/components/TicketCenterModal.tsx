@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Badge, Button, FileButton, Group, Loader, Modal, Paper, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { Alert, Badge, Button, FileButton, Group, Loader, Modal, Paper, Progress, SegmentedControl, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import type { ClientSupportTicketDetailDto, ClientSupportTicketSummaryDto } from "@chordv/shared";
 import { IconMessageCirclePlus, IconPaperclip, IconRefresh, IconSearch, IconSend, IconX } from "@tabler/icons-react";
+import type { TicketAttachmentUploadState } from "../hooks/useSupportTickets";
 import { openExternalUrl } from "../lib/runtime";
 import { isSupportTicketUnread } from "../lib/supportTickets";
 
@@ -20,6 +21,7 @@ type TicketCenterModalProps = {
   createBody: string;
   replyBody: string;
   replyAttachment: File | null;
+  replyAttachmentUpload: TicketAttachmentUploadState;
   onClose: () => void;
   onRefresh: () => void;
   onOpenCreate: () => void;
@@ -43,7 +45,12 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
   const [previewOpenError, setPreviewOpenError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const replyingDisabled =
-    props.submitting || !props.ticketDetail || props.ticketDetail.status === "closed" || (!props.replyBody.trim() && !props.replyAttachment);
+    props.submitting ||
+    props.replyAttachmentUpload.phase === "uploading" ||
+    (Boolean(props.replyAttachment) && props.replyAttachmentUpload.phase !== "uploaded") ||
+    !props.ticketDetail ||
+    props.ticketDetail.status === "closed" ||
+    (!props.replyBody.trim() && !props.replyAttachment);
   const creatingDisabled = props.submitting || props.createTitle.trim().length < 2 || props.createBody.trim().length < 5;
   const filteredTickets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -378,6 +385,29 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                     value={props.replyBody}
                     onChange={(event) => props.onReplyBodyChange(event.currentTarget.value)}
                   />
+                  {props.replyAttachment ? (
+                    <div className="ticket-center__attachment-upload">
+                      <div className="ticket-center__attachment-upload-head">
+                        <Text size="xs" fw={600} lineClamp={1}>
+                          {props.replyAttachment.name}
+                        </Text>
+                        <Text size="xs" c={attachmentUploadColor(props.replyAttachmentUpload.phase)}>
+                          {attachmentUploadLabel(props.replyAttachmentUpload.phase)}
+                        </Text>
+                      </div>
+                      <Progress
+                        value={props.replyAttachmentUpload.progress}
+                        size="sm"
+                        radius="xl"
+                        color={attachmentUploadColor(props.replyAttachmentUpload.phase)}
+                      />
+                      {props.replyAttachmentUpload.error ? (
+                        <Text size="xs" c="red">
+                          {props.replyAttachmentUpload.error}
+                        </Text>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <Group justify="space-between" align="center" gap="xs" className="ticket-center__reply-actions">
                     <Text size="xs" c="dimmed">
                       {props.replyBody.length} 字
@@ -402,7 +432,11 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                             variant="default"
                             leftSection={<IconPaperclip size={15} />}
                             className="ticket-center__action-button"
-                            disabled={props.submitting || props.ticketDetail?.status === "closed"}
+                            disabled={
+                              props.submitting ||
+                              props.replyAttachmentUpload.phase === "uploading" ||
+                              props.ticketDetail?.status === "closed"
+                            }
                           >
                             添加附件
                           </Button>
@@ -507,6 +541,32 @@ function authorLabel(role: ClientSupportTicketDetailDto["messages"][number]["aut
       return "系统";
     default:
       return "我";
+  }
+}
+
+function attachmentUploadLabel(phase: TicketAttachmentUploadState["phase"]) {
+  switch (phase) {
+    case "uploading":
+      return "上传中";
+    case "uploaded":
+      return "已上传";
+    case "failed":
+      return "上传失败";
+    default:
+      return "待上传";
+  }
+}
+
+function attachmentUploadColor(phase: TicketAttachmentUploadState["phase"]) {
+  switch (phase) {
+    case "uploaded":
+      return "green";
+    case "failed":
+      return "red";
+    case "uploading":
+      return "blue";
+    default:
+      return "gray";
   }
 }
 

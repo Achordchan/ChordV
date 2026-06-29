@@ -21,7 +21,8 @@ import type {
   SessionLeaseStatusDto,
   SubscriptionStatusDto,
   UpdateClientRoutingRuleInputDto,
-  UploadedSupportTicketAttachmentInputDto
+  UploadedSupportTicketAttachmentInputDto,
+  UploadedSupportTicketAttachmentReferenceInputDto
 } from "@chordv/shared";
 import type {
   ClientRuntimeComponentsPlan,
@@ -565,6 +566,71 @@ export async function replySupportTicketWithAttachment(
     }
   });
   return result.data;
+}
+
+export function uploadSupportTicketAttachment(
+  accessToken: string,
+  ticketId: string,
+  file: File,
+  onProgress?: (progress: number) => void
+) {
+  return new Promise<UploadedSupportTicketAttachmentReferenceInputDto>((resolve, reject) => {
+    const path = `/client/tickets/${encodeURIComponent(ticketId)}/attachments/upload`;
+    const xhr = new XMLHttpRequest();
+    const form = new FormData();
+    let settled = false;
+    form.set("file", file);
+
+    const settle = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback();
+    };
+
+    xhr.open("POST", `${API_BASE}/api${path}`);
+    xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+    xhr.timeout = FORM_REQUEST_TIMEOUT_MS;
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) {
+        onProgress?.(15);
+        return;
+      }
+      const percent = Math.max(1, Math.min(95, Math.round((event.loaded / event.total) * 95)));
+      onProgress?.(percent);
+    };
+    xhr.onload = () => {
+      settle(() => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(createApiRequestError(path, xhr.status, xhr.responseText));
+          return;
+        }
+        try {
+          const body = xhr.responseText ? (JSON.parse(xhr.responseText) as UploadedSupportTicketAttachmentReferenceInputDto) : null;
+          if (!body?.url || !body.fileName || !body.mimeType) {
+            reject(new ApiRequestError(xhr.status, "附件上传响应异常，请重新上传。"));
+            return;
+          }
+          onProgress?.(100);
+          resolve(body);
+        } catch (error) {
+          reject(error instanceof Error ? error : new ApiRequestError(xhr.status, "附件上传响应解析失败。"));
+        }
+      });
+    };
+    xhr.onerror = () => {
+      settle(() => reject(new ApiRequestError(null, "网络请求失败，请检查后台服务或网络连接后重试。")));
+    };
+    xhr.ontimeout = () => {
+      settle(() => reject(new ApiRequestError(null, "附件上传超时，请检查网络后重试。")));
+    };
+    xhr.onabort = () => {
+      settle(() => reject(new ApiRequestError(null, "附件上传已取消。")));
+    };
+    onProgress?.(1);
+    xhr.send(form);
+  });
 }
 
 export function fetchClientRuntime(accessToken: string, sessionId?: string | null) {

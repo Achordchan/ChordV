@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Sse, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Type } from "class-transformer";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateNested } from "class-validator";
 import { diskStorage } from "multer";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -201,11 +202,38 @@ class CreateSupportTicketDto {
   body!: string;
 }
 
-class ReplySupportTicketDto {
+class UploadedSupportTicketAttachmentReferenceDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(2048)
+  url!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  fileName!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  mimeType!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  fileSizeBytes?: string | null;
+}
+
+class ReplySupportTicketDto {
+  @IsOptional()
+  @IsString()
   @MaxLength(4000)
-  body!: string;
+  body?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => UploadedSupportTicketAttachmentReferenceDto)
+  attachment?: UploadedSupportTicketAttachmentReferenceDto | null;
 }
 
 class ReplySupportTicketAttachmentDto {
@@ -372,7 +400,45 @@ export class ClientController {
     @Body() body: ReplySupportTicketDto,
     @Headers("authorization") authorization?: string
   ) {
-    return this.clientService.replySupportTicket(ticketId, body, authorization);
+    return this.clientService.replySupportTicket(
+      ticketId,
+      {
+        body: body.body,
+        attachment: body.attachment
+          ? {
+              url: body.attachment.url,
+              fileName: body.attachment.fileName,
+              mimeType: body.attachment.mimeType,
+              fileSizeBytes: body.attachment.fileSizeBytes ?? null
+            }
+          : null
+      },
+      authorization
+    );
+  }
+
+  @Post("tickets/:ticketId/attachments/upload")
+  @UseGuards(ClientAuthGuard)
+  @UseInterceptors(
+    UploadedTempFileCleanupInterceptor,
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: tmpdir(),
+        filename: (_req: unknown, file: { originalname: string }, callback: MulterCallback) => {
+          callback(null, `${randomUUID()}${path.extname(file.originalname || "")}`);
+        }
+      }),
+      limits: {
+        fileSize: SUPPORT_TICKET_ATTACHMENT_MAX_BYTES
+      }
+    })
+  )
+  uploadTicketAttachment(
+    @Param("ticketId") ticketId: string,
+    @UploadedFile() file: UploadedTicketAttachmentFile | undefined,
+    @Headers("authorization") authorization?: string
+  ) {
+    return this.clientService.uploadSupportTicketAttachment(ticketId, file, authorization);
   }
 
   @Post("tickets/:ticketId/attachments")

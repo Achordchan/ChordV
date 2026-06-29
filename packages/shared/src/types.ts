@@ -744,6 +744,13 @@ export interface UploadedSupportTicketAttachmentInputDto {
   body?: string | null;
 }
 
+export interface UploadedSupportTicketAttachmentReferenceInputDto {
+  url: string;
+  fileName: string;
+  mimeType: string;
+  fileSizeBytes: string | null;
+}
+
 export interface AdminImageBedFileDto {
   name: string;
   url: string;
@@ -923,7 +930,8 @@ export interface CreateClientSupportTicketInputDto {
 }
 
 export interface ReplyClientSupportTicketInputDto {
-  body: string;
+  body?: string;
+  attachment?: UploadedSupportTicketAttachmentReferenceInputDto | null;
 }
 
 export interface MarkClientAnnouncementsReadInputDto {

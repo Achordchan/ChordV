@@ -4,7 +4,8 @@ import type {
   ClientSupportTicketSummaryDto,
   CreateClientSupportTicketInputDto,
   ReplyClientSupportTicketInputDto,
-  TeamMemberRole
+  TeamMemberRole,
+  UploadedSupportTicketAttachmentReferenceInputDto
 } from "@chordv/shared";
 import { AuthSessionService } from "./auth-session.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
@@ -36,7 +37,7 @@ type ClientSubscriptionAccess = {
 };
 
 const TICKET_DETAIL_REFRESH_BUDGET_MS = 300;
-const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 12_000);
+const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET_ATTACHMENT_UPLOAD_TIMEOUT_MS", 60_000);
 
 @Injectable()
 export class ClientTicketService {
@@ -268,9 +269,13 @@ export class ClientTicketService {
     token?: string
   ): Promise<ClientSupportTicketDetailDto> {
     const user = await this.authSessionService.authenticateAccessToken(token);
-    const body = input.body.trim();
-    if (!body) {
-      throw new BadRequestException("回复内容不能为空");
+    const body = input.body?.trim() ?? "";
+    const attachment = normalizeUploadedSupportTicketAttachmentReference(input.attachment);
+    if (!body && !attachment) {
+      throw new BadRequestException("回复内容或附件不能为空");
+    }
+    if (body.length > 4000) {
+      throw new BadRequestException("Reply body must not exceed 4000 characters.");
     }
 
     let current: any;
@@ -315,17 +320,33 @@ export class ClientTicketService {
 
     const now = new Date();
     const messageId = createId("ticket_msg");
+    const attachmentId = attachment ? createId("ticket_att") : null;
+    const messageBody = body || (attachment ? `Uploaded attachment: ${attachment.fileName}` : "");
     try {
       await this.prisma.$transaction(async (tx) => {
-        await tx.supportTicketMessage.create({
+        const message = await tx.supportTicketMessage.create({
           data: {
             id: messageId,
             ticketId,
             authorRole: "user",
             authorUserId: user.id,
-            body
+            body: messageBody
           }
         });
+        if (attachment) {
+          await tx.supportTicketAttachment.create({
+            data: {
+              id: attachmentId!,
+              ticketId,
+              messageId: message.id,
+              provider: "image-bed",
+              url: attachment.url,
+              fileName: attachment.fileName,
+              mimeType: attachment.mimeType,
+              fileSizeBytes: attachment.fileSizeBytes
+            }
+          });
+        }
         await tx.supportTicket.update({
           where: { id: ticketId },
           data: {
@@ -355,6 +376,17 @@ export class ClientTicketService {
         });
       });
     } catch (error) {
+      await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(
+        attachment
+          ? {
+              url: attachment.url,
+              providerFileId: null,
+              fileName: attachment.fileName,
+              mimeType: attachment.mimeType,
+              fileSizeBytes: attachment.fileSizeBytes ?? BigInt(0)
+            }
+          : null
+      );
       throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试。");
     }
 
@@ -368,10 +400,57 @@ export class ClientTicketService {
     return this.getClientSupportTicketDetailAfterWrite(ticketId, token, () =>
       this.buildClientSupportTicketWriteFallback(current, now, {
         messageId,
-        body,
-        attachments: []
+        body: messageBody,
+        attachments:
+          attachment && attachmentId
+            ? [
+                {
+                  id: attachmentId,
+                  url: attachment.url,
+                  fileName: attachment.fileName,
+                  mimeType: attachment.mimeType,
+                  fileSizeBytes: attachment.fileSizeBytes?.toString() ?? null,
+                  createdAt: now.toISOString()
+                }
+              ]
+            : []
       })
     );
+  }
+
+  async uploadClientSupportTicketAttachment(
+    ticketId: string,
+    file: UploadedTicketAttachmentFile | undefined,
+    token?: string
+  ): Promise<UploadedSupportTicketAttachmentReferenceInputDto> {
+    const user = await this.authSessionService.authenticateAccessToken(token);
+    let current: { id: string; status: "open" | "waiting_admin" | "waiting_user" | "closed" } | null;
+    try {
+      current = await this.prisma.supportTicket.findFirst({
+        where: { id: ticketId, userId: user.id },
+        select: { id: true, status: true }
+      });
+    } catch (error) {
+      throwLocalReadAsServiceUnavailable(error, "Support ticket detail is temporarily unavailable.");
+    }
+    if (!current) {
+      throw new NotFoundException("工单不存在");
+    }
+    if (current.status === "closed") {
+      throw new BadRequestException("当前工单已关闭，请等待管理员重新打开。");
+    }
+
+    if (!file) {
+      throw new BadRequestException("请先选择要上传的附件。");
+    }
+    this.imageBedService.assertSupportTicketAttachment(file);
+    const uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
+    return {
+      url: uploaded.url,
+      fileName: uploaded.fileName,
+      mimeType: uploaded.mimeType,
+      fileSizeBytes: uploaded.fileSizeBytes.toString()
+    };
   }
 
   async replyClientSupportTicketWithAttachment(
@@ -834,6 +913,48 @@ function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackB
   }
   const notice = "附件上传失败，文字回复已保存。请检查图床配置或稍后重试。";
   return body ? `${baseBody}\n\n${notice}` : notice;
+}
+
+function normalizeUploadedSupportTicketAttachmentReference(
+  input: UploadedSupportTicketAttachmentReferenceInputDto | null | undefined
+) {
+  if (!input) {
+    return null;
+  }
+  const url = input.url?.trim();
+  const fileName = input.fileName?.trim();
+  const mimeType = input.mimeType?.trim();
+  if (!url || !fileName || !mimeType) {
+    throw new BadRequestException("附件信息不完整，请重新上传。");
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      throw new Error("invalid protocol");
+    }
+  } catch {
+    throw new BadRequestException("附件地址无效，请重新上传。");
+  }
+  if (!mimeType.startsWith("image/")) {
+    throw new BadRequestException("仅支持图片附件。");
+  }
+  const fileSizeBytes = parseNullableBigInt(input.fileSizeBytes);
+  return {
+    url,
+    fileName: fileName.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 255) || "attachment",
+    mimeType: mimeType.slice(0, 120),
+    fileSizeBytes
+  };
+}
+
+function parseNullableBigInt(value: string | null | undefined) {
+  if (value === null || value === undefined || value.trim() === "") {
+    return null;
+  }
+  if (!/^\d+$/.test(value.trim())) {
+    throw new BadRequestException("附件大小无效，请重新上传。");
+  }
+  return BigInt(value.trim());
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

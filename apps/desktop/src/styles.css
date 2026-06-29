@@ -18,6 +18,13 @@ body {
   font-family: "Inter", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
 }
 
+.desktop-app,
+.mantine-Modal-content,
+.mantine-Drawer-content {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .desktop-app {
   height: 100%;
   padding: 14px;
@@ -904,6 +911,24 @@ textarea,
 
 .ticket-center__reply-panel .ticket-center__field :is(.mantine-Textarea-input) {
   min-height: 62px;
+}
+
+.ticket-center__attachment-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.ticket-center__attachment-upload-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
 .ticket-center__reply-actions {

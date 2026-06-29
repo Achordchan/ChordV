@@ -7,6 +7,7 @@ import type {
   CreateClientSupportTicketInputDto,
   MarkClientAnnouncementsReadInputDto,
   ReplyClientSupportTicketInputDto,
+  UploadedSupportTicketAttachmentReferenceInputDto,
   UpdateClientRoutingRuleInputDto
 } from "@chordv/shared";
 import { DevDataService } from "../common/dev-data.service";
@@ -110,6 +111,14 @@ export class ClientService {
 
   replySupportTicket(ticketId: string, input: ReplyClientSupportTicketInputDto, token?: string) {
     return this.devDataService.replyClientSupportTicket(ticketId, input, token);
+  }
+
+  uploadSupportTicketAttachment(
+    ticketId: string,
+    file: UploadedTicketAttachmentFile | undefined,
+    token?: string
+  ): Promise<UploadedSupportTicketAttachmentReferenceInputDto> {
+    return this.devDataService.uploadClientSupportTicketAttachment(ticketId, file, token);
   }
 
   replySupportTicketWithAttachment(
