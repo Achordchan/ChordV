@@ -94,9 +94,9 @@ async function testRoutingRuleCrudAndOwnership() {
   assert.equal(domain.value, "example.com");
   assert.equal(domain.matchType, "domain");
 
-  const matched = await harness.service.testRule("www.example.com", "token");
-  assert.equal(matched.action, "direct");
-  assert.equal(matched.matchedRule?.id, domain.id);
+  const enabledRules = await harness.service.listEnabledRulesForUserId("user_1");
+  assert.equal(enabledRules.length, 2);
+  assert.ok(enabledRules.some((rule) => rule.id === domain.id && rule.action === "direct"));
 
   await assert.rejects(
     () => harness.service.createRule({ value: "youtube", action: "proxy" }, "token"),

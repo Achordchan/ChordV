@@ -1,20 +1,45 @@
 name: Release Desktop
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本，不带 v，例如 1.1.6"
+        required: true
+        default: "1.1.6"
+        type: string
 
 concurrency:
-  group: chordv-desktop-release-${{ github.ref_name }}
+  group: chordv-desktop-release-${{ github.event.inputs.version }}
   cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Normalize version
+        id: version
+        env:
+          RAW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          version="${RAW_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: ${RAW_VERSION}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -39,10 +64,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify version matches tag
-        run: |
-          tag_name="${GITHUB_REF_NAME#v}"
-          node apps/desktop/scripts/check-version-consistency.mjs "${tag_name}"
+      - name: Verify version matches input
+        run: node apps/desktop/scripts/check-version-consistency.mjs "${{ needs.prepare.outputs.version }}"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -85,6 +108,10 @@ jobs:
         if: matrix.platform == 'windows'
         run: pnpm --filter @chordv/desktop check:windows-bundle
 
+      - name: Verify macOS bundle
+        if: matrix.platform == 'macos'
+        run: pnpm --filter @chordv/desktop check:macos-bundle
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,7 +121,9 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs:
+      - prepare
+      - build
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
@@ -106,8 +135,9 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ChordV ${{ github.ref_name }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ChordV ${{ needs.prepare.outputs.tag }}
           generate_release_notes: true
           files: |
             release-assets/**/*.dmg

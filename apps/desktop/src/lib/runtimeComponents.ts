@@ -119,7 +119,7 @@ export function formatRuntimeAssetsTitle(state: RuntimeAssetsUiState) {
     return "正在检查必要内核组件";
   }
   if (state.phase === "downloading") {
-    return "正在下载必要内核组件";
+    return "正在准备必要内核组件";
   }
   if (state.phase === "failed") {
     return "必要内核组件暂未就绪";

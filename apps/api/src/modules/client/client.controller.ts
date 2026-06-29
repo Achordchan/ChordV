@@ -88,13 +88,6 @@ class UpdateCheckDto {
   clientMirrorPrefix?: string | null;
 }
 
-class TestRoutingRuleDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(128)
-  value!: string;
-}
-
 class CreateRoutingRuleDto {
   @IsOptional()
   @IsString()
@@ -303,12 +296,6 @@ export class ClientController {
   @UseGuards(ClientAuthGuard)
   getRoutingRules(@Headers("authorization") authorization?: string) {
     return this.clientService.listRoutingRules(authorization);
-  }
-
-  @Post("routing-rules/test")
-  @UseGuards(ClientAuthGuard)
-  testRoutingRule(@Body() body: TestRoutingRuleDto, @Headers("authorization") authorization?: string) {
-    return this.clientService.testRoutingRule(body.value, authorization);
   }
 
   @Post("routing-rules")

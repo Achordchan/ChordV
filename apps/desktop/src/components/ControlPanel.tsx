@@ -68,36 +68,24 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          <Group wrap="nowrap" align="stretch">
-            <Button
-              size="xl"
-              radius="xl"
-              className="primary-action control-primary-action"
-              leftSection={<IconPlugConnected size={20} />}
-              onClick={props.onPrimaryAction}
-              loading={props.primaryBusy}
-              color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-              style={{ flex: 1 }}
-              disabled={
-                !props.canConnect &&
-                props.runtimeAssetsPhase !== "failed" &&
-                props.desktopStatus.status !== "connected" &&
-                props.desktopStatus.status !== "error"
-              }
-            >
-              {props.primaryLabel}
-            </Button>
-            <Button
-              size="xl"
-              radius="xl"
-              variant="light"
-              color="cyan"
-              leftSection={<IconRoute size={18} />}
-              onClick={props.onOpenRoutingRules}
-            >
-              分流
-            </Button>
-          </Group>
+          <Button
+            size="xl"
+            radius="xl"
+            className="primary-action control-primary-action"
+            leftSection={<IconPlugConnected size={20} />}
+            onClick={props.onPrimaryAction}
+            loading={props.primaryBusy}
+            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+            fullWidth
+            disabled={
+              !props.canConnect &&
+              props.runtimeAssetsPhase !== "failed" &&
+              props.desktopStatus.status !== "connected" &&
+              props.desktopStatus.status !== "error"
+            }
+          >
+            {props.primaryLabel}
+          </Button>
 
           <SimpleGrid cols={2} spacing="sm" verticalSpacing="sm" className="control-panel__ports">
             <MetricBlock label="HTTP 端口" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} compact />
@@ -118,15 +106,26 @@ export function ControlPanel(props: ControlPanelProps) {
             <Text size="sm" c="dimmed">
               {readRuntimeInstallLabel(props.desktopStatus, props.runtimeAssetsPhase)}
             </Text>
-            <Button
-              size="sm"
-              variant="subtle"
-              leftSection={<IconChartBar size={15} />}
-              className="control-log-button"
-              onClick={props.onOpenLogs}
-            >
-              连接诊断
-            </Button>
+            <Group gap="xs" wrap="nowrap" className="control-footer-actions">
+              <Button
+                size="sm"
+                variant="subtle"
+                leftSection={<IconRoute size={15} />}
+                className="control-routing-button"
+                onClick={props.onOpenRoutingRules}
+              >
+                自定义分流
+              </Button>
+              <Button
+                size="sm"
+                variant="subtle"
+                leftSection={<IconChartBar size={15} />}
+                className="control-log-button"
+                onClick={props.onOpenLogs}
+              >
+                连接诊断
+              </Button>
+            </Group>
           </Group>
         </Stack>
       </Paper>
@@ -154,36 +153,24 @@ export function ControlPanel(props: ControlPanelProps) {
             }))}
           />
 
-          <Group wrap="nowrap" align="stretch">
-            <Button
-              size="lg"
-              radius="md"
-              className="primary-action control-primary-action"
-              leftSection={<IconPlugConnected size={20} />}
-              onClick={props.onPrimaryAction}
-              loading={props.primaryBusy}
-              color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
-              style={{ flex: 1 }}
-              disabled={
-                !props.canConnect &&
-                props.runtimeAssetsPhase !== "failed" &&
-                props.desktopStatus.status !== "connected" &&
-                props.desktopStatus.status !== "error"
-              }
-            >
-              {props.primaryLabel}
-            </Button>
-            <Button
-              size="lg"
-              radius="md"
-              variant="light"
-              color="cyan"
-              leftSection={<IconRoute size={18} />}
-              onClick={props.onOpenRoutingRules}
-            >
-              分流
-            </Button>
-          </Group>
+          <Button
+            size="lg"
+            radius="md"
+            className="primary-action control-primary-action"
+            leftSection={<IconPlugConnected size={20} />}
+            onClick={props.onPrimaryAction}
+            loading={props.primaryBusy}
+            color={props.desktopStatus.status === "connected" ? "green" : "cyan"}
+            fullWidth
+            disabled={
+              !props.canConnect &&
+              props.runtimeAssetsPhase !== "failed" &&
+              props.desktopStatus.status !== "connected" &&
+              props.desktopStatus.status !== "error"
+            }
+          >
+            {props.primaryLabel}
+          </Button>
 
           <Group grow wrap="nowrap" className="control-metrics">
             <MetricBlock label="HTTP" value={props.runtime ? `${props.runtime.localHttpPort}` : "--"} />
@@ -201,15 +188,26 @@ export function ControlPanel(props: ControlPanelProps) {
           <Text size="sm" c="dimmed">
             {readRuntimeInstallLabel(props.desktopStatus, props.runtimeAssetsPhase)}
           </Text>
-          <Button
-            size="compact-sm"
-            variant="subtle"
-            leftSection={<IconChartBar size={15} />}
-            className="control-log-button"
-            onClick={props.onOpenLogs}
-          >
-            连接诊断
-          </Button>
+          <Group gap="xs" wrap="nowrap" className="control-footer-actions">
+            <Button
+              size="compact-sm"
+              variant="subtle"
+              leftSection={<IconRoute size={15} />}
+              className="control-routing-button"
+              onClick={props.onOpenRoutingRules}
+            >
+              自定义分流
+            </Button>
+            <Button
+              size="compact-sm"
+              variant="subtle"
+              leftSection={<IconChartBar size={15} />}
+              className="control-log-button"
+              onClick={props.onOpenLogs}
+            >
+              连接诊断
+            </Button>
+          </Group>
         </Group>
       </Stack>
     </Paper>

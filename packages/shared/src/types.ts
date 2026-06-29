@@ -119,6 +119,8 @@ export interface ClientRoutingRuleTestResultDto {
   matchedRule: ClientRoutingRuleDto | null;
   message: string;
   reconnectRequired: boolean;
+  testHost?: string;
+  elapsedMs?: number | null;
 }
 
 export interface UserProfileDto {

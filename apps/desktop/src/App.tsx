@@ -1808,11 +1808,13 @@ export function App() {
         announcements={bootstrap?.announcements ?? []}
         onClose={() => setAnnouncementDrawerOpened(false)}
       />
-      {session ? (
+      {session && bootstrap ? (
         <RoutingRulesModal
           opened={routingRulesOpened}
           accessToken={session.accessToken}
           connected={desktopStatus.status === "connected"}
+          mode={mode}
+          policies={bootstrap.policies}
           onClose={() => setRoutingRulesOpened(false)}
         />
       ) : null}

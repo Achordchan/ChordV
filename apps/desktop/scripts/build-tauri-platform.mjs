@@ -31,8 +31,8 @@ const baseConfigPath = path.join(desktopRoot, "src-tauri", "tauri.conf.json");
 const tempConfigPath = path.join(desktopRoot, "src-tauri", `.tauri.${platform}.platform.conf.json`);
 const baseConfig = JSON.parse(fs.readFileSync(baseConfigPath, "utf8"));
 const platformConfig = withPlatformVersion(baseConfig, version);
-const buildArgs = ["exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
-const pnpmCommand = "pnpm";
+const buildArgs = ["pnpm", "exec", "tauri", "build", "-c", path.relative(desktopRoot, tempConfigPath)];
+const pnpmCommand = "corepack";
 
 prepareBundledRuntimeResources(platform);
 const bundledResources = buildBundledRuntimeResources(platform);
@@ -103,7 +103,7 @@ process.exit(result.status ?? 1);
 
 function prepareBundledRuntimeResources(platform) {
   const setupScript = path.join(desktopRoot, "scripts", "setup-xray.mjs");
-  const targets = platform === "macos" ? ["darwin-arm64"] : ["win32-x64"];
+  const targets = platform === "macos" ? ["darwin-arm64", "darwin-x64"] : ["win32-x64"];
   for (const target of targets) {
     const result = spawnSync("node", [setupScript], {
       cwd: desktopRoot,
@@ -145,7 +145,7 @@ function formatWindowVersion(version) {
 function buildBundledRuntimeResources(platform) {
   const common = ["bin/geoip.dat", "bin/geosite.dat"];
   if (platform === "macos") {
-    return [...common, "bin/xray-aarch64-apple-darwin"];
+    return [...common, "bin/xray-aarch64-apple-darwin", "bin/xray-x86_64-apple-darwin"];
   }
   return [...common, "bin/xray.exe"];
 }

@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
-import { ActionIcon, Alert, Badge, Button, Group, Modal, Paper, ScrollArea, SegmentedControl, Stack, Switch, Text, TextInput } from "@mantine/core";
+import { ActionIcon, Alert, Badge, Button, Group, Modal, Paper, ScrollArea, Stack, Switch, Text, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconEdit, IconRefresh, IconTrash } from "@tabler/icons-react";
-import type { ClientRoutingRuleAction, ClientRoutingRuleDto, ClientRoutingRuleTestResultDto } from "@chordv/shared";
+import { IconEdit, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
+import type {
+  ClientRoutingRuleAction,
+  ClientRoutingRuleDto,
+  ClientRoutingRuleTestResultDto,
+  ConnectionMode,
+  PolicyBundleDto
+} from "@chordv/shared";
 import {
   createRoutingRule,
   deleteRoutingRule,
@@ -16,6 +22,8 @@ type RoutingRulesModalProps = {
   opened: boolean;
   accessToken: string;
   connected: boolean;
+  mode: ConnectionMode;
+  policies: PolicyBundleDto;
   onClose: () => void;
 };
 
@@ -27,7 +35,6 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
-  const [action, setAction] = useState<ClientRoutingRuleAction>("proxy");
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
 
   useEffect(() => {
@@ -51,30 +58,43 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   async function handleTest() {
     const normalizedValue = value.trim();
     if (!normalizedValue) {
-      setError("请输入要检测的域名或关键词。");
+      setError("请输入要检测的域名或名称。");
       return;
     }
     setBusy("test");
     setError(null);
     try {
-      setTestResult(await testRoutingRule(props.accessToken, normalizedValue));
+      setTestResult(
+        await testRoutingRule({
+          value: normalizedValue,
+          mode: props.mode,
+          features: props.policies.features,
+          customRoutingRules: rules.length > 0 ? rules : props.policies.customRoutingRules
+        })
+      );
     } catch (reason) {
+      setTestResult(null);
       setError(getApiErrorRawMessage(reason));
     } finally {
       setBusy(null);
     }
   }
 
-  async function handleSave() {
+  async function handleSave(nextAction: ClientRoutingRuleAction) {
     const normalizedValue = value.trim();
     if (!normalizedValue) {
-      setError("请输入要保存的域名或关键词。");
+      setError("请输入要保存的域名或名称。");
       return;
     }
-    setBusy("save");
+    if (!isCurrentQueryResult(testResult, normalizedValue)) {
+      setError("请先查询当前输入，再选择强制直连或强制代理。");
+      return;
+    }
+
+    setBusy(`save:${nextAction}`);
     setError(null);
     try {
-      const input = { name: name.trim() || null, value: normalizedValue, action, enabled: true };
+      const input = { name: name.trim() || null, value: normalizedValue, action: nextAction, enabled: true };
       if (editingRuleId) {
         await updateRoutingRule(props.accessToken, editingRuleId, input);
       } else {
@@ -137,7 +157,6 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setEditingRuleId(rule.id);
     setName(rule.name ?? "");
     setValue(rule.value);
-    setAction(rule.action);
     setTestResult(null);
   }
 
@@ -145,18 +164,14 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setEditingRuleId(null);
     setName("");
     setValue("");
-    setAction("proxy");
     setTestResult(null);
   }
 
+  const trimmedValue = value.trim();
+  const queryReady = isCurrentQueryResult(testResult, trimmedValue);
+
   return (
-    <Modal
-      opened={props.opened}
-      onClose={props.onClose}
-      centered
-      size="lg"
-      title="自定义分流"
-    >
+    <Modal opened={props.opened} onClose={props.onClose} centered size="lg" title="自定义分流">
       <Stack gap="md">
         {error ? <Alert color="red">{error}</Alert> : null}
 
@@ -170,7 +185,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
                 onChange={(event) => setName(event.currentTarget.value)}
               />
               <TextInput
-                label="域名或关键词"
+                label="域名或名称"
                 placeholder="example.com 或 youtube"
                 value={value}
                 onChange={(event) => {
@@ -179,31 +194,54 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
                 }}
               />
             </Group>
-            <SegmentedControl
-              value={action}
-              onChange={(nextAction) => setAction(nextAction as ClientRoutingRuleAction)}
-              data={[
-                { value: "proxy", label: "强制代理" },
-                { value: "direct", label: "强制直连" }
-              ]}
-            />
-            {testResult ? (
-              <Alert color={testResult.action === "proxy" ? "blue" : "green"} variant="light">
-                {testResult.message}
-              </Alert>
+
+            <Group justify="space-between" align="center">
+              <Text size="sm" c="dimmed">
+                先查询当前规则结果，再选择是否保存为强制直连或强制代理。
+              </Text>
+              <Button
+                variant="light"
+                leftSection={<IconSearch size={16} />}
+                onClick={() => void handleTest()}
+                loading={busy === "test"}
+              >
+                查询
+              </Button>
+            </Group>
+
+            {testResult ? <RoutingTestResultCard result={testResult} /> : null}
+
+            {queryReady ? (
+              <Group justify="flex-end">
+                <Button
+                  variant="light"
+                  color="green"
+                  loading={busy === "save:direct"}
+                  disabled={busy !== null && busy !== "save:direct"}
+                  onClick={() => void handleSave("direct")}
+                >
+                  保存为强制直连
+                </Button>
+                <Button
+                  color="blue"
+                  loading={busy === "save:proxy"}
+                  disabled={busy !== null && busy !== "save:proxy"}
+                  onClick={() => void handleSave("proxy")}
+                >
+                  保存为强制代理
+                </Button>
+              </Group>
             ) : null}
+
             <Group justify="space-between">
               <Button variant="default" onClick={resetForm} disabled={busy !== null}>
                 {editingRuleId ? "取消编辑" : "清空"}
               </Button>
-              <Group>
-                <Button variant="light" onClick={() => void handleTest()} loading={busy === "test"}>
-                  检测
-                </Button>
-                <Button onClick={() => void handleSave()} loading={busy === "save"}>
-                  {editingRuleId ? "保存修改" : "保存规则"}
-                </Button>
-              </Group>
+              {editingRuleId ? (
+                <Text size="sm" c="dimmed">
+                  正在编辑已有规则，保存前需要重新查询。
+                </Text>
+              ) : null}
             </Group>
           </Stack>
         </Paper>
@@ -226,7 +264,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
             {rules.length === 0 && !loading ? (
               <Paper withBorder radius="md" p="lg">
                 <Text c="dimmed" ta="center">
-                  还没有自定义分流规则。
+                  暂无自定义分流规则。
                 </Text>
               </Paper>
             ) : null}
@@ -274,4 +312,32 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       </Stack>
     </Modal>
   );
+}
+
+function RoutingTestResultCard(props: { result: ClientRoutingRuleTestResultDto }) {
+  const actionLabel = props.result.action === "proxy" ? "当前规则：代理" : "当前规则：直连";
+  const color = props.result.action === "proxy" ? "blue" : "green";
+
+  return (
+    <Alert color={color} variant="light">
+      <Stack gap={4}>
+        <Group gap="xs">
+          <Badge color={color}>{actionLabel}</Badge>
+          <Badge color="gray" variant="light">
+            {props.result.matchType === "domain" ? "域名" : "名称"}
+          </Badge>
+        </Group>
+        <Text size="sm">{props.result.message}</Text>
+        {typeof props.result.elapsedMs === "number" ? (
+          <Text size="xs" c="dimmed">
+            查询耗时：{props.result.elapsedMs}ms
+          </Text>
+        ) : null}
+      </Stack>
+    </Alert>
+  );
+}
+
+function isCurrentQueryResult(result: ClientRoutingRuleTestResultDto | null, value: string) {
+  return Boolean(result && value && result.input.trim().toLowerCase() === value.trim().toLowerCase());
 }

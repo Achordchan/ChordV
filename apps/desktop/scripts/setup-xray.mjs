@@ -9,6 +9,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const tauriRoot = path.join(desktopRoot, "src-tauri");
 const binDir = path.join(tauriRoot, "bin");
+const planTimeoutMs = 30_000;
+const downloadTimeoutMs = 180_000;
 
 const targetMap = {
   "darwin-arm64": {
@@ -106,6 +108,7 @@ function resolveApiBaseUrl() {
 async function fetchRuntimeComponentsPlan(platform, architecture) {
   const url = `${apiBaseUrl}/api/client/runtime-components/plan?platform=${encodeURIComponent(platform)}&architecture=${encodeURIComponent(architecture)}`;
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(planTimeoutMs),
     headers: {
       Accept: "application/json"
     }
@@ -142,7 +145,9 @@ function isOutputReady(outputPath, component) {
 }
 
 async function downloadFile(url, outputPath) {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(downloadTimeoutMs)
+  });
   if (!response.ok || !response.body) {
     throw new Error(`下载失败：HTTP ${response.status}`);
   }

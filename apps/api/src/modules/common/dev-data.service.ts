@@ -35,7 +35,6 @@ import type {
   ClientNodeProbeResultDto,
   ClientPingDto,
   ClientRoutingRuleDto,
-  ClientRoutingRuleTestResultDto,
   ClientRuntimeEventDto,
   ClientSupportTicketDetailDto,
   ClientSupportTicketSummaryDto,
@@ -500,10 +499,6 @@ export class DevDataService implements OnModuleInit {
 
   async deleteClientRoutingRule(ruleId: string, token?: string) {
     return this.clientRoutingRuleService.deleteRule(ruleId, token);
-  }
-
-  async testClientRoutingRule(value: string, token?: string): Promise<ClientRoutingRuleTestResultDto> {
-    return this.clientRoutingRuleService.testRule(value, token);
   }
 
   async connect(request: ConnectRequestDto, token?: string): Promise<GeneratedRuntimeConfigDto> {

@@ -330,6 +330,9 @@ export function getApiErrorRawMessage(reason: unknown) {
   if (reason instanceof Error) {
     return reason.message;
   }
+  if (typeof reason === "string") {
+    return reason;
+  }
   return "";
 }
 
@@ -600,16 +603,6 @@ export function fetchRoutingRules(accessToken: string) {
   });
 }
 
-export function testRoutingRule(accessToken: string, value: string) {
-  return request<ClientRoutingRuleTestResultDto>("/client/routing-rules/test", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
-    body: JSON.stringify({ value })
-  });
-}
-
 export function createRoutingRule(accessToken: string, input: CreateClientRoutingRuleInputDto) {
   return request<ClientRoutingRuleDto>("/client/routing-rules", {
     method: "POST",
@@ -641,6 +634,19 @@ export function deleteRoutingRule(accessToken: string, ruleId: string) {
       Authorization: `Bearer ${accessToken}`
     }
   });
+}
+
+export async function testRoutingRule(input: {
+  value: string;
+  mode: ConnectionMode;
+  features: GeneratedRuntimeConfigDto["features"];
+  customRoutingRules: ClientRoutingRuleDto[];
+}) {
+  const invoke = await loadTauriInvoke();
+  if (!invoke) {
+    throw new Error("当前环境不支持本地 GEO 查询。");
+  }
+  return invoke<ClientRoutingRuleTestResultDto>("test_routing_rule", { input });
 }
 
 export function disconnectSession(accessToken: string, sessionId: string) {

@@ -3,7 +3,6 @@ import type {
   ClientRoutingRuleAction,
   ClientRoutingRuleDto,
   ClientRoutingRuleMatchType,
-  ClientRoutingRuleTestResultDto,
   CreateClientRoutingRuleInputDto,
   UpdateClientRoutingRuleInputDto
 } from "@chordv/shared";
@@ -15,20 +14,6 @@ import { createId } from "./release-center.utils";
 const MAX_ROUTING_RULES_PER_USER = 100;
 const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const KEYWORD_PATTERN = /^[a-z0-9-]{1,64}$/;
-const BUILTIN_PROXY_KEYWORDS = [
-  "openai",
-  "chatgpt",
-  "youtube",
-  "google",
-  "github",
-  "telegram",
-  "twitter",
-  "discord",
-  "netflix",
-  "claude",
-  "anthropic",
-  "perplexity"
-];
 
 type RoutingRuleRow = {
   id: string;
@@ -144,29 +129,6 @@ export class ClientRoutingRuleService {
     return { ok: true, deletedId: ruleId };
   }
 
-  async testRule(value: string, token?: string): Promise<ClientRoutingRuleTestResultDto> {
-    const user = await this.authSessionService.authenticateAccessToken(token);
-    const normalized = normalizeRoutingRuleValue(value);
-    const rules = await this.listEnabledRulesForUserId(user.id);
-    const matchedRule = rules.find((rule) => doesRuleMatchInput(rule, normalized.value, normalized.matchType)) ?? null;
-    const action = matchedRule?.action ?? predictBuiltinAction(normalized.value, normalized.matchType);
-    const message = matchedRule
-      ? `命中自定义规则：${matchedRule.name || matchedRule.value}，将${action === "proxy" ? "强制代理" : "强制直连"}。`
-      : action === "direct"
-        ? "未命中自定义规则，按内置规则预测为直连。"
-        : "未命中自定义规则，按内置规则预测为代理。";
-
-    return {
-      input: value,
-      normalizedValue: normalized.value,
-      matchType: normalized.matchType,
-      action,
-      matchedRule,
-      message,
-      reconnectRequired: false
-    };
-  }
-
   private publishPolicyUpdatedBestEffort(userId: string) {
     try {
       this.clientRuntimeEventsService.publishToUser(userId, {
@@ -236,27 +198,6 @@ function toRoutingRuleDto(row: RoutingRuleRow): ClientRoutingRuleDto {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
-}
-
-function doesRuleMatchInput(
-  rule: ClientRoutingRuleDto,
-  value: string,
-  matchType: ClientRoutingRuleMatchType
-) {
-  if (rule.matchType === "domain") {
-    return matchType === "domain" && (value === rule.value || value.endsWith(`.${rule.value}`));
-  }
-  return value.includes(rule.value);
-}
-
-function predictBuiltinAction(value: string, matchType: ClientRoutingRuleMatchType): ClientRoutingRuleAction {
-  if (matchType === "domain" && (value.endsWith(".cn") || value === "cn")) {
-    return "direct";
-  }
-  if (BUILTIN_PROXY_KEYWORDS.some((keyword) => value.includes(keyword))) {
-    return "proxy";
-  }
-  return "proxy";
 }
 
 function throwDuplicateAsConflict(error: unknown): never {

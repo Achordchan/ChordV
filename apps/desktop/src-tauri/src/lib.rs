@@ -1,5 +1,6 @@
 mod android_mobile_plugin;
 mod android_runtime;
+mod routing_diagnostics;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -303,6 +304,29 @@ struct RuntimePolicyFeaturesDto {
     ai_services_proxy: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoutingRuleTestInput {
+    value: String,
+    mode: String,
+    features: RuntimePolicyFeaturesDto,
+    custom_routing_rules: Vec<ClientRoutingRuleDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoutingRuleTestResultDto {
+    input: String,
+    normalized_value: String,
+    match_type: String,
+    action: String,
+    matched_rule: Option<ClientRoutingRuleDto>,
+    message: String,
+    reconnect_required: bool,
+    test_host: String,
+    elapsed_ms: u128,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct UserProfileDto {
@@ -509,7 +533,6 @@ struct RuntimeComponentPlanItemInput {
     file_size_bytes: Option<RuntimeComponentPlanFileSizeValue>,
     archive_entry_name: Option<String>,
     expected_hash: Option<String>,
-    resolved_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1593,6 +1616,134 @@ fn open_external_url(url: String) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
+fn test_routing_rule(
+    app: AppHandle,
+    input: RoutingRuleTestInput,
+) -> Result<RoutingRuleTestResultDto, String> {
+    let started_at = Instant::now();
+    let target = normalize_routing_test_target(&input.value)?;
+    let host = if target.match_type == "domain" {
+        target.normalized_value.clone()
+    } else {
+        format!("{}.com", target.normalized_value)
+    };
+
+    if input.mode == "global" {
+        return Ok(build_routing_test_result(
+            &target,
+            "proxy",
+            None,
+            "当前是全局代理模式，所有流量走代理。",
+            &host,
+            started_at,
+        ));
+    }
+    if input.mode == "direct" {
+        return Ok(build_routing_test_result(
+            &target,
+            "direct",
+            None,
+            "当前是直连模式，所有流量直连。",
+            &host,
+            started_at,
+        ));
+    }
+
+    if let Some(rule) = input
+        .custom_routing_rules
+        .iter()
+        .find(|rule| routing_test_rule_matches(rule, &target.normalized_value, &host))
+    {
+        let action_label = if rule.action == "proxy" {
+            "强制代理"
+        } else {
+            "强制直连"
+        };
+        return Ok(build_routing_test_result(
+            &target,
+            rule.action.as_str(),
+            Some(rule.clone()),
+            format!(
+                "命中自定义规则 {}:{}，会覆盖内置 GEO 规则并{action_label}。",
+                rule.match_type, rule.value
+            ),
+            &host,
+            started_at,
+        ));
+    }
+
+    let geosite_path = installed_runtime_bin_dir(&app)?.join("geosite.dat");
+    let geo = routing_diagnostics::query_geosite_routing(&geosite_path, &host)?;
+
+    if input.features.block_ads && geo.ads {
+        return Ok(build_routing_test_result(
+            &target,
+            "direct",
+            None,
+            "命中 geosite:category-ads-all 广告拦截规则；该目标会被阻断。",
+            &host,
+            started_at,
+        ));
+    }
+
+    if input.features.china_direct && geo.cn {
+        return Ok(build_routing_test_result(
+            &target,
+            "direct",
+            None,
+            "命中 geosite:cn 国内直连规则。",
+            &host,
+            started_at,
+        ));
+    }
+
+    if routing_test_domain_matches_any(&host, &ai_service_domain_values()) {
+        let action = if input.features.ai_services_proxy {
+            "proxy"
+        } else {
+            "direct"
+        };
+        return Ok(build_routing_test_result(
+            &target,
+            action,
+            None,
+            format!(
+                "命中 AI 服务规则，当前配置为{}。",
+                if action == "proxy" {
+                    "代理"
+                } else {
+                    "直连"
+                }
+            ),
+            &host,
+            started_at,
+        ));
+    }
+
+    if routing_test_domain_matches_any(&host, &built_in_proxy_domain_values())
+        || geo.geolocation_non_cn
+    {
+        return Ok(build_routing_test_result(
+            &target,
+            "proxy",
+            None,
+            "命中内置海外代理规则或 geosite:geolocation-!cn。",
+            &host,
+            started_at,
+        ));
+    }
+
+    Ok(build_routing_test_result(
+        &target,
+        "proxy",
+        None,
+        "未命中特殊直连规则，按默认规则走代理。",
+        &host,
+        started_at,
+    ))
+}
+
+#[tauri::command]
 fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(target_os = "android")]
     {
@@ -1614,6 +1765,7 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
             return Err("安装器文件不存在，请重新下载".into());
         }
         set_installer_operation_active(&app, true)?;
+        shutdown_runtime_state(&app);
         let current_pid = std::process::id();
         if let Err(error) = spawn_deferred_installer_open(&app, &installer_path, current_pid) {
             let _ = set_installer_operation_active(&app, false);
@@ -1676,7 +1828,8 @@ fn apply_desktop_full_update(
                 ));
             }
             let source_hash = sha256_file_plain(&package_path)?;
-            let expected_hash = normalize_optional_sha256(expected_hash.as_deref()).unwrap_or_default();
+            let expected_hash =
+                normalize_optional_sha256(expected_hash.as_deref()).unwrap_or_default();
             let package_hash = if is_valid_sha256(&expected_hash) {
                 if source_hash != expected_hash {
                     return Err("full update package SHA256 mismatch".into());
@@ -1735,6 +1888,7 @@ fn apply_desktop_full_update(
             let ready_marker_path = updater_dir.join("startup-ready.marker");
 
             write_full_update_script(&script_path)?;
+            shutdown_runtime_state(&app);
             spawn_deferred_full_update_apply(
                 &script_path,
                 &private_package_path,
@@ -2324,6 +2478,7 @@ fn hide_main_window(app: AppHandle) -> Result<CommandResult, String> {
 
 #[tauri::command]
 fn quit_application(app: AppHandle) -> Result<CommandResult, String> {
+    shutdown_runtime_state(&app);
     app.exit(0);
     Ok(CommandResult {
         ok: true,
@@ -2672,7 +2827,12 @@ fn installed_runtime_bin_dir(app: &AppHandle) -> Result<PathBuf, String> {
         ensure_runtime_bin_dir(app)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        ensure_runtime_bin_dir(app)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
@@ -2891,10 +3051,103 @@ async fn fetch_runtime_components_plan_for_connect(
     }
 }
 
-async fn auto_repair_runtime_components_for_connect(app: &AppHandle) -> Result<(), String> {
+fn runtime_component_download_item_from_plan(
+    item: &RuntimeComponentPlanItemInput,
+) -> RuntimeComponentDownloadItemInput {
+    RuntimeComponentDownloadItemInput {
+        id: item.id.clone(),
+        component: item.kind,
+        file_name: item.file_name.clone(),
+        file_size_bytes: normalize_runtime_component_plan_file_size(item.file_size_bytes.clone()),
+        source_format: if item
+            .archive_entry_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            RuntimeComponentSourceFormat::ZipEntry
+        } else {
+            RuntimeComponentSourceFormat::Direct
+        },
+        archive_entry_name: item.archive_entry_name.clone(),
+        checksum_sha256: item.expected_hash.clone(),
+    }
+}
+
+fn verify_runtime_component_for_connect(
+    app: &AppHandle,
+    item: &RuntimeComponentPlanItemInput,
+) -> Result<(), String> {
+    let component = runtime_component_download_item_from_plan(item);
+    let target_path = runtime_component_target_path(app, component.component)?;
+    let _ = ensure_runtime_component_from_bundle(app, component.component, &target_path)?;
+
+    if !target_path.exists() {
+        return Err(format!(
+            "{} is missing after bundled runtime restore.",
+            runtime_component_key(component.component)
+        ));
+    }
+
+    validate_runtime_component_file_content(&target_path, component.component).map_err(
+        |error| {
+            format!(
+                "{} failed local validation: {error}",
+                runtime_component_key(component.component)
+            )
+        },
+    )?;
+
+    if component.component == RuntimeComponentKindInput::Xray {
+        ensure_executable(&target_path)?;
+    }
+
+    let Some(expected_hash) = component
+        .checksum_sha256
+        .as_deref()
+        .and_then(|value| normalize_optional_sha256(Some(value)))
+        .filter(|value| is_valid_sha256(value))
+    else {
+        return Ok(());
+    };
+
+    let actual_hash = sha256_file(&target_path)?;
+    if actual_hash == expected_hash {
+        return Ok(());
+    }
+
+    if restore_runtime_component_from_verified_bundle(
+        app,
+        component.component,
+        &target_path,
+        Some(&expected_hash),
+    )? {
+        validate_runtime_component_file_content(&target_path, component.component)?;
+        let repaired_hash = sha256_file(&target_path)?;
+        if repaired_hash == expected_hash {
+            append_download_diagnostic_log(
+                app,
+                "runtime-verify",
+                format!(
+                    "connect-verify component={} restored_from_bundle",
+                    runtime_component_key(component.component)
+                ),
+            );
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "{} hash verification failed before connect.",
+        runtime_component_key(component.component)
+    ))
+}
+
+async fn verify_runtime_components_for_connect(app: &AppHandle) -> Result<(), String> {
     let plan = fetch_runtime_components_plan_for_connect(app).await?;
     if plan.components.is_empty() {
-        return Err("运行时组件计划为空，无法自动修复。".into());
+        return Err("runtime component plan is empty".into());
     }
 
     for required_component in [
@@ -2914,92 +3167,32 @@ async fn auto_repair_runtime_components_for_connect(app: &AppHandle) -> Result<(
         }
     }
 
-    for item in plan.components {
-        let component = RuntimeComponentDownloadItemInput {
-            id: item.id.clone(),
-            component: item.kind,
-            file_name: item.file_name.clone(),
-            file_size_bytes: normalize_runtime_component_plan_file_size(
-                item.file_size_bytes.clone(),
-            ),
-            source_format: if item
-                .archive_entry_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_some()
-            {
-                RuntimeComponentSourceFormat::ZipEntry
-            } else {
-                RuntimeComponentSourceFormat::Direct
-            },
-            archive_entry_name: item.archive_entry_name.clone(),
-            checksum_sha256: item.expected_hash.clone(),
-        };
-
-        emit_runtime_component_progress(
-            app,
-            RuntimeComponentDownloadProgress {
-                phase: "checking".into(),
-                component: runtime_component_key(component.component).into(),
-                file_name: Some(component.file_name.clone()),
-                downloaded_bytes: 0,
-                total_bytes: component.file_size_bytes,
-                message: Some(format!(
-                    "连接前正在校验 {}…",
-                    runtime_component_display_name(component.component)
-                )),
-            },
-        );
-
-        let status = check_runtime_component_file(app.clone(), component.clone())?;
-        if status.ready {
-            continue;
-        }
-
-        let target_path = runtime_component_target_path(app, component.component)?;
-        if restore_runtime_component_from_verified_bundle(
-            app,
-            component.component,
-            &target_path,
-            component.checksum_sha256.as_deref(),
-        )? {
-            let repaired_status = check_runtime_component_file(app.clone(), component.clone())?;
-            if repaired_status.ready {
-                append_download_diagnostic_log(
-                    app,
-                    "runtime-download",
-                    format!(
-                        "connect-auto-repair component={} restored_from_bundle",
-                        runtime_component_key(component.component)
-                    ),
-                );
-                continue;
-            }
-        }
-
-        append_download_diagnostic_log(
-            app,
-            "runtime-download",
-            format!(
-                "connect-auto-repair component={} reason={} message={}",
-                runtime_component_key(component.component),
-                status
-                    .reason_code
-                    .clone()
-                    .unwrap_or_else(|| "unknown".into()),
-                status.message.clone().unwrap_or_else(|| "none".into())
-            ),
-        );
-
-        download_runtime_component(
-            app.clone(),
-            RuntimeComponentDownloadInput {
-                component,
-                url: item.resolved_url.clone(),
-            },
-        )
-        .await?;
+    for required_component in [
+        RuntimeComponentKindInput::Xray,
+        RuntimeComponentKindInput::Geoip,
+        RuntimeComponentKindInput::Geosite,
+    ] {
+        let item = plan
+            .components
+            .iter()
+            .find(|item| item.kind == required_component)
+            .ok_or_else(|| {
+                format!(
+                    "runtime component plan is missing {}",
+                    runtime_component_key(required_component)
+                )
+            })?;
+        verify_runtime_component_for_connect(app, item).map_err(|error| {
+            append_download_diagnostic_log(
+                app,
+                "runtime-verify",
+                format!(
+                    "connect-verify component={} error={error}",
+                    runtime_component_key(required_component)
+                ),
+            );
+            error
+        })?;
     }
 
     Ok(())
@@ -3009,11 +3202,11 @@ async fn prepare_desktop_runtime_components(
     app: &AppHandle,
     runtime_dir: &Path,
 ) -> Result<PathBuf, String> {
-    if let Err(repair_error) = auto_repair_runtime_components_for_connect(app).await {
+    if let Err(repair_error) = verify_runtime_components_for_connect(app).await {
         append_download_diagnostic_log(
             app,
-            "runtime-download",
-            format!("connect-auto-repair-unavailable error={repair_error}"),
+            "runtime-verify",
+            format!("connect-verify-unavailable error={repair_error}"),
         );
         #[cfg(windows)]
         {
@@ -3029,9 +3222,9 @@ async fn prepare_desktop_runtime_components(
             }) {
                 append_download_diagnostic_log(
                     app,
-                    "runtime-download",
+                    "runtime-verify",
                     format!(
-                        "connect-local-runtime-ready-after-auto-repair-unavailable error={repair_error}"
+                        "connect-local-runtime-ready-after-verify-unavailable error={repair_error}"
                     ),
                 );
                 return Ok(xray_path);
@@ -3047,12 +3240,12 @@ async fn prepare_desktop_runtime_components(
         Err(initial_error) => {
             append_download_diagnostic_log(
                 app,
-                "runtime-download",
+                "runtime-verify",
                 format!("connect-preflight-failed initial_error={initial_error}"),
             );
-            auto_repair_runtime_components_for_connect(app)
+            verify_runtime_components_for_connect(app)
                 .await
-                .map_err(|error| format!("运行时组件自动修复失败：{error}"))?;
+                .map_err(|error| format!("runtime component verification failed: {error}"))?;
             let xray_path = ensure_xray_binary(app, runtime_dir)?;
             ensure_geo_data(app, runtime_dir)?;
             Ok(xray_path)
@@ -3162,15 +3355,13 @@ fn ensure_runtime_component_from_bundle(
     component: RuntimeComponentKindInput,
     target_path: &Path,
 ) -> Result<bool, String> {
-    if let Ok(metadata) = fs::metadata(target_path) {
-        if metadata.len() > 0 {
-            return Ok(false);
-        }
-    }
-
     let Some(source_path) = bundled_runtime_component_source_path(app, component) else {
         return Ok(false);
     };
+    validate_runtime_component_file_content(&source_path, component)?;
+    if runtime_component_files_match(&source_path, target_path)? {
+        return Ok(false);
+    }
 
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -3185,6 +3376,19 @@ fn ensure_runtime_component_from_bundle(
         ensure_executable(target_path)?;
     }
     Ok(true)
+}
+
+fn runtime_component_files_match(source_path: &Path, target_path: &Path) -> Result<bool, String> {
+    let source_metadata = fs::metadata(source_path).map_err(|error| {
+        runtime_component_error("write_failed", format!("读取内置组件文件失败：{error}"))
+    })?;
+    let Ok(target_metadata) = fs::metadata(target_path) else {
+        return Ok(false);
+    };
+    if target_metadata.len() == 0 || target_metadata.len() != source_metadata.len() {
+        return Ok(false);
+    }
+    Ok(sha256_file(source_path)? == sha256_file(target_path)?)
 }
 
 fn restore_runtime_component_from_verified_bundle(
@@ -4363,6 +4567,7 @@ pub(crate) fn build_xray_config(
     json!({
       "log": {
         "loglevel": if android_runtime { "info" } else { "warning" },
+        "access": log_path.to_string_lossy().to_string(),
         "error": log_path.to_string_lossy().to_string()
       },
       "dns": build_dns_config(android_runtime),
@@ -4642,6 +4847,151 @@ fn ai_service_domains() -> Value {
     ])
 }
 
+struct NormalizedRoutingTestTarget {
+    input: String,
+    normalized_value: String,
+    match_type: String,
+}
+
+fn normalize_routing_test_target(input: &str) -> Result<NormalizedRoutingTestTarget, String> {
+    let raw_input = input.trim();
+    let normalized_value = raw_input.to_lowercase().trim_start_matches('.').to_string();
+    if normalized_value.is_empty() {
+        return Err("请输入域名或名称。".into());
+    }
+    if normalized_value.contains("://")
+        || normalized_value.len() > 128
+        || normalized_value.chars().any(|character| {
+            matches!(character, '/' | '?' | '#' | '\\') || character.is_whitespace()
+        })
+    {
+        return Err("只支持域名或名称，不要包含协议、路径或空格。".into());
+    }
+
+    if normalized_value.contains('.') {
+        if !is_valid_routing_test_domain(&normalized_value) {
+            return Err("请输入有效域名，例如 example.com。".into());
+        }
+        return Ok(NormalizedRoutingTestTarget {
+            input: raw_input.into(),
+            normalized_value,
+            match_type: "domain".into(),
+        });
+    }
+
+    if !normalized_value.chars().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+    }) || normalized_value.len() > 64
+    {
+        return Err("名称只能包含小写字母、数字和短横线。".into());
+    }
+
+    Ok(NormalizedRoutingTestTarget {
+        input: raw_input.into(),
+        normalized_value,
+        match_type: "keyword".into(),
+    })
+}
+
+fn build_routing_test_result(
+    target: &NormalizedRoutingTestTarget,
+    action: &str,
+    matched_rule: Option<ClientRoutingRuleDto>,
+    reason: impl Into<String>,
+    test_host: &str,
+    started_at: Instant,
+) -> RoutingRuleTestResultDto {
+    RoutingRuleTestResultDto {
+        input: target.input.clone(),
+        normalized_value: target.normalized_value.clone(),
+        match_type: target.match_type.clone(),
+        action: action.into(),
+        matched_rule,
+        message: format!(
+            "规则查询：{} 当前规则为{}。{}",
+            target.normalized_value,
+            if action == "proxy" {
+                "代理"
+            } else {
+                "直连"
+            },
+            reason.into()
+        ),
+        reconnect_required: false,
+        test_host: test_host.into(),
+        elapsed_ms: started_at.elapsed().as_millis().max(1),
+    }
+}
+
+fn routing_test_rule_matches(rule: &ClientRoutingRuleDto, value: &str, host: &str) -> bool {
+    if !rule.enabled || (rule.action != "proxy" && rule.action != "direct") {
+        return false;
+    }
+    let rule_value = rule.value.trim().to_lowercase();
+    if rule_value.is_empty() {
+        return false;
+    }
+    match rule.match_type.as_str() {
+        "domain" => host == rule_value || host.ends_with(&format!(".{rule_value}")),
+        "keyword" => value.contains(&rule_value) || host.contains(&rule_value),
+        _ => false,
+    }
+}
+
+fn is_valid_routing_test_domain(value: &str) -> bool {
+    let labels: Vec<&str> = value.split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.chars().enumerate().all(|(index, character)| {
+                    let valid = character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || character == '-';
+                    let edge_dash = character == '-' && (index == 0 || index + 1 == label.len());
+                    valid && !edge_dash
+                })
+        })
+}
+
+fn routing_test_domain_matches_any(host: &str, domains: &[&str]) -> bool {
+    domains
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{domain}")))
+}
+
+fn ai_service_domain_values() -> [&'static str; 12] {
+    [
+        "openai.com",
+        "chatgpt.com",
+        "oaistatic.com",
+        "oaiusercontent.com",
+        "anthropic.com",
+        "claude.ai",
+        "perplexity.ai",
+        "x.ai",
+        "grok.com",
+        "ai.google.dev",
+        "gemini.google.com",
+        "makersuite.google.com",
+    ]
+}
+
+fn built_in_proxy_domain_values() -> [&'static str; 10] {
+    [
+        "google.com",
+        "youtube.com",
+        "github.com",
+        "telegram.org",
+        "t.me",
+        "twitter.com",
+        "x.com",
+        "discord.com",
+        "discord.gg",
+        "netflix.com",
+    ]
+}
+
 fn refresh_child_state(state: &mut RuntimeState) {
     if let Some(child) = state.child.as_mut() {
         match child.try_wait() {
@@ -4758,8 +5108,25 @@ fn legacy_runtime_bin_dir(app: &AppHandle) -> PathBuf {
         .join("bin")
 }
 
+fn normalized_path_text(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
 fn cleanup_legacy_runtime_component_copies(app: &AppHandle) {
     let legacy_bin_dir = legacy_runtime_bin_dir(app);
+    if installed_runtime_bin_dir(app)
+        .map(|current_bin_dir| {
+            normalized_path_text(&current_bin_dir) == normalized_path_text(&legacy_bin_dir)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
+
     for file_name in [runtime_binary_name(), "geoip.dat", "geosite.dat"] {
         let path = legacy_bin_dir.join(file_name);
         if path.exists() {
@@ -5047,6 +5414,16 @@ fn shutdown_runtime(app: &AppHandle, state: &mut RuntimeState) {
     state.local_http_port = None;
     state.local_socks_port = None;
     state.last_error = None;
+}
+
+fn shutdown_runtime_state(app: &AppHandle) {
+    let state: State<'_, Mutex<RuntimeState>> = app.state();
+    if let Ok(mut state) = state.lock() {
+        shutdown_runtime(app, &mut state);
+    } else {
+        let _ = clear_system_proxy();
+        cleanup_stale_runtime(app);
+    };
 }
 
 fn tail_log(path: &Path, lines: usize) -> String {
@@ -5999,36 +6376,7 @@ fn cleanup_stale_runtime(app: &AppHandle) {
 }
 
 fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
-    if let Some(record) = load_runtime_pid_record(app) {
-        if runtime_pid_belongs_to_chordv(app, &record) {
-            return;
-        }
-        clear_runtime_pid(app);
-    }
-
-    let runtime_dir = app
-        .path()
-        .app_local_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"))
-        .join("runtime");
-
-    let _ = fs::remove_dir_all(runtime_dir.join("bin").join("cache"));
-
-    if let Ok(entries) = fs::read_dir(&runtime_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
-                let _ = fs::remove_file(&path);
-            }
-            if path.extension().and_then(|ext| ext.to_str()) == Some("log") {
-                let _ = fs::remove_file(&path);
-            }
-        }
-    }
-
-    let _ = clear_system_proxy();
-    cleanup_legacy_runtime_component_copies(app);
-    cleanup_legacy_installed_runtime_names(app);
+    cleanup_stale_runtime(app);
 }
 
 #[cfg(not(target_os = "android"))]
@@ -6627,6 +6975,7 @@ pub fn run() {
             download_desktop_installer,
             open_desktop_installer,
             open_external_url,
+            test_routing_rule,
             apply_desktop_full_update,
             quit_for_update,
             desktop_runtime_environment,

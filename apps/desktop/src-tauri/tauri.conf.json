@@ -4,8 +4,8 @@
     "version": "1.1.6",
   "identifier": "app.chordv.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev -- --host 127.0.0.1",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "corepack pnpm dev -- --host 127.0.0.1",
+    "beforeBuildCommand": "corepack pnpm build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -37,6 +37,7 @@
     ],
     "windows": {
       "nsis": {
+        "installerHooks": "windows/chordv-installer-hooks.nsh",
         "languages": [
           "SimpChinese"
         ]

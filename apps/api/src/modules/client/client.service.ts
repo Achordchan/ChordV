@@ -72,10 +72,6 @@ export class ClientService {
     return this.devDataService.deleteClientRoutingRule(ruleId, token);
   }
 
-  testRoutingRule(value: string, token?: string) {
-    return this.devDataService.testClientRoutingRule(value, token);
-  }
-
   connect(nodeId: string, mode: "global" | "rule" | "direct", strategyGroupId?: string, token?: string) {
     return this.devDataService.connect({ nodeId, mode, strategyGroupId }, token);
   }

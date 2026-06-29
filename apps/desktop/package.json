@@ -16,6 +16,7 @@
     "android:build": "node ./scripts/run-tauri-android.mjs build --debug --target aarch64 --split-per-abi --apk --aab --ci",
     "android:build:release": "node ./scripts/run-tauri-android.mjs build --target aarch64 --split-per-abi --apk --aab --ci",
     "check:android-bundle": "node ./scripts/check-android-bundle.mjs ../../output/release/android",
+    "check:macos-bundle": "node ./scripts/check-macos-bundle.mjs",
     "check:windows-bundle": "node ./scripts/check-windows-bundle.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",

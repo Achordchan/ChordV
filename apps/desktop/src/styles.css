@@ -974,6 +974,16 @@ textarea,
   padding-top: 2px;
 }
 
+.control-footer-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.control-routing-button,
+.control-log-button {
+  white-space: nowrap;
+}
+
 .control-metrics {
   min-height: 0;
 }
@@ -1077,6 +1087,7 @@ textarea,
 }
 
 .desktop-app--mobile .node-list-probe-button,
+.desktop-app--mobile .control-routing-button,
 .desktop-app--mobile .control-log-button {
   height: 36px;
 }
@@ -1095,6 +1106,15 @@ textarea,
 
 .desktop-app--mobile .control-footer {
   gap: 8px;
+}
+
+.desktop-app--mobile .control-footer-actions {
+  justify-content: stretch;
+}
+
+.desktop-app--mobile .control-routing-button,
+.desktop-app--mobile .control-log-button {
+  flex: 1 1 0;
 }
 
 .desktop-app--mobile .mantine-Modal-content,

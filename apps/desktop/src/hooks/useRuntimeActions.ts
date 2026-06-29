@@ -691,7 +691,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       return;
     }
     const selectedNode = options.selectedNode;
-    const shouldForceRuntimeAssetCheck = options.desktopStatus.platformTarget === "windows" || !options.runtimeAssetsReady;
+    const shouldForceRuntimeAssetCheck = !options.runtimeAssetsReady || options.runtimeAssets.phase === "failed";
     if (shouldForceRuntimeAssetCheck) {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
