@@ -22910,7 +22910,7 @@ async function testRuntimePlanSkipsUploadedRowsWithStaleMetadata() {
   }
 }
 
-async function testRuntimePlanIgnoresHistoricalMirrorFields() {
+async function testRuntimePlanExposesConfiguredMirrorFields() {
   const makeRemoteComponent = (id: string, kind: "xray" | "geoip" | "geosite") => ({
     id,
     platform: kind === "xray" ? "windows" : "macos",
@@ -22948,10 +22948,18 @@ async function testRuntimePlanIgnoresHistoricalMirrorFields() {
 
   assert.equal(plan.components.length, 3);
   for (const component of plan.components) {
-    assert.equal(component.allowClientMirror, false, "client plan must not expose historical client mirror flags");
-    assert.equal(component.defaultMirrorPrefix, null, "client plan must not expose historical default mirror prefixes");
-    assert.equal(component.resolvedUrl, component.originUrl, "client plan must resolve runtime components to the origin URL");
-    assert.deepEqual(component.candidates, [{ label: "origin", url: component.originUrl }]);
+    assert.equal(component.allowClientMirror, true, "client plan should expose configured allowClientMirror");
+    assert.equal(component.defaultMirrorPrefix, "https://ghfast.top/", "client plan should expose configured default mirrors");
+    assert.equal(
+      component.resolvedUrl,
+      `https://client-mirror.example.com/${component.originUrl}`,
+      "client plan should prefer client mirror when allowed"
+    );
+    assert.deepEqual(component.candidates, [
+      { label: "client_mirror", url: `https://client-mirror.example.com/${component.originUrl}` },
+      { label: "default_mirror", url: `https://ghfast.top/${component.originUrl}` },
+      { label: "origin", url: component.originUrl }
+    ]);
   }
 }
 
@@ -34292,7 +34300,7 @@ async function main() {
   await testRuntimePlanSkipsRemoteRowsWithMismatchedHashMetadata();
   await testRuntimePlanSkipsUploadedRowsMissingFiles();
   await testRuntimePlanSkipsUploadedRowsWithStaleMetadata();
-  await testRuntimePlanIgnoresHistoricalMirrorFields();
+  await testRuntimePlanExposesConfiguredMirrorFields();
   await testRuntimeComponentPatchCannotSwitchToUploadedSource();
   await testRuntimeComponentPatchInvalidatesRemoteMetadata();
   await testRuntimeComponentPatchDeletesOldUploadWhenSwitchingToRemote();
