@@ -79,8 +79,13 @@ require_command ssh
 echo "构建后端与后台..."
 pnpm --filter @chordv/shared build
 pnpm --filter @chordv/api db:generate
-pnpm --filter @chordv/api build
-pnpm --filter @chordv/admin build
+# api / admin 互不依赖，并行构建可明显缩短 CI Deploy 阶段
+pnpm --filter @chordv/api build &
+api_build_pid=$!
+pnpm --filter @chordv/admin build &
+admin_build_pid=$!
+wait "${api_build_pid}"
+wait "${admin_build_pid}"
 
 rm -rf "${STAGE_DIR}"
 mkdir -p "${API_STAGE}/apps/api" "${API_STAGE}/packages/shared" "${ADMIN_STAGE}"
@@ -299,8 +304,37 @@ if [ ! -f "${COREPACK_CLI}" ]; then
   exit 1
 fi
 
-COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" install --frozen-lockfile
-COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:generate
+# 预检目录已装过依赖并生成 Prisma Client，直接复用，避免线上二次 pnpm install
+reuse_stage_dependencies() {
+  local rel
+  for rel in \
+    "node_modules" \
+    "apps/api/node_modules" \
+    "packages/shared/node_modules"
+  do
+    if [ -e "${DEPLOY_STAGE_PATH}/${rel}" ]; then
+      rm -rf "${DEPLOY_PATH}/${rel}"
+      mkdir -p "$(dirname "${DEPLOY_PATH}/${rel}")"
+      if mv "${DEPLOY_STAGE_PATH}/${rel}" "${DEPLOY_PATH}/${rel}"; then
+        echo "Reused stage dependency: ${rel}"
+      else
+        echo "Failed to move ${rel} from stage; falling back to rsync"
+        mkdir -p "${DEPLOY_PATH}/${rel}"
+        rsync -a --delete "${DEPLOY_STAGE_PATH}/${rel}/" "${DEPLOY_PATH}/${rel}/"
+        rm -rf "${DEPLOY_STAGE_PATH}/${rel}"
+      fi
+    fi
+  done
+}
+
+if [ -d "${DEPLOY_STAGE_PATH}/node_modules" ]; then
+  reuse_stage_dependencies
+else
+  echo "Stage node_modules missing; installing dependencies on live path."
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" install --frozen-lockfile
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:generate
+fi
+
 if [ "${DEPLOY_RUN_DB_PUSH}" = "true" ]; then
   echo "Running explicit production prisma db push after live code sync and before restart."
   COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:push
@@ -388,10 +422,10 @@ model = main()
 print(json.dumps(model.start_project(project), ensure_ascii=False))
 PY
 
-sleep 2
+sleep 1
 normalize_start_script
 
-for _ in $(seq 1 30); do
+for _ in $(seq 1 20); do
   if curl -fsS -H "X-Forwarded-Proto: https" "http://127.0.0.1:${DEPLOY_PORT}${DEPLOY_HEALTH_PATH}" >/dev/null; then
     break
   fi
