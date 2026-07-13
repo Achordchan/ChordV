@@ -18,6 +18,7 @@ import type {
 import { ClientEventsPublisher } from "./client-events.publisher";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { PrismaService } from "./prisma.service";
+import { DownloadMirrorService } from "./download-mirror.service";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import {
   assertReleaseArtifactClientUsable,
@@ -77,8 +78,8 @@ export class ReleaseCenterService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly clientEventsPublisher: ClientEventsPublisher,
-    private readonly adminRuntimeEventsService: AdminRuntimeEventsService
-  ) {}
+    private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
+    private readonly downloadMirrorService: DownloadMirrorService) {}
 
   async listAdminReleases(input?: { platform?: PlatformTarget; status?: ReleaseStatus }): Promise<AdminReleaseRecordDto[]> {
     try {
@@ -1047,6 +1048,7 @@ export class ReleaseCenterService {
     preferredType?: ReleaseArtifactType | null,
     clientMirrorPrefix?: string | null
   ) {
+    const globalMirror = await this.downloadMirrorService.getEffectiveConfig();
     const scopedArtifacts = preferredType
       ? artifacts.filter((item) => {
           const artifactType = fromPrismaReleaseArtifactType(item.type);
@@ -1061,14 +1063,14 @@ export class ReleaseCenterService {
       try {
         assertReleaseArtifactClientUsable(artifact, platform);
         await this.assertStoredReleaseArtifactReadable(artifact);
-        const resolvedArtifact = resolveReleaseArtifactForClient(artifact, clientMirrorPrefix ?? null);
+        const resolvedArtifact = resolveReleaseArtifactForClient(artifact, clientMirrorPrefix ?? null, { defaultMirrorPrefix: globalMirror.defaultMirrorPrefix, allowClientMirror: globalMirror.allowClientMirror });
         return resolvedArtifact;
       } catch {
         if (clientMirrorPrefix?.trim()) {
           try {
             assertReleaseArtifactClientUsable(artifact, platform);
             await this.assertStoredReleaseArtifactReadable(artifact);
-            const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null);
+            const resolvedArtifact = resolveReleaseArtifactForClient(artifact, null, { defaultMirrorPrefix: globalMirror.defaultMirrorPrefix, allowClientMirror: globalMirror.allowClientMirror });
             return resolvedArtifact;
           } catch {
           }

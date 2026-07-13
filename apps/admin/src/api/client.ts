@@ -5,6 +5,8 @@ import type {
   AdminImageBedFileListDto,
   AdminUploadLimitsDto,
   AdminReleaseArtifactDto as SharedAdminReleaseArtifactDto,
+  AdminDownloadMirrorConfigDto as SharedAdminDownloadMirrorConfigDto,
+  UpdateAdminDownloadMirrorConfigInputDto as SharedUpdateAdminDownloadMirrorConfigInputDto,
   AdminRuntimeComponentFailureReportDto as SharedAdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto as SharedAdminRuntimeComponentRecordDto,
   AdminRuntimeComponentValidationDto as SharedAdminRuntimeComponentValidationDto,
@@ -92,6 +94,8 @@ export type AdminReleaseRecordDto = {
 };
 
 export type AdminRuntimeComponentRecordDto = SharedAdminRuntimeComponentRecordDto;
+export type AdminDownloadMirrorConfigDto = SharedAdminDownloadMirrorConfigDto;
+export type UpdateAdminDownloadMirrorConfigInputDto = SharedUpdateAdminDownloadMirrorConfigInputDto;
 export type AdminRuntimeComponentValidationDto = SharedAdminRuntimeComponentValidationDto;
 export type AdminRuntimeComponentFailureReportDto = SharedAdminRuntimeComponentFailureReportDto;
 export type AdminSupportTicketSummaryDto = SharedAdminSupportTicketSummaryDto;
@@ -372,6 +376,21 @@ export async function replaceAdminReleaseArtifactUpload(
     timeoutMs: LONG_ADMIN_ACTION_TIMEOUT_MS
   });
   return mapRelease(record);
+}
+
+
+export async function fetchAdminDownloadMirrorConfig() {
+  return request<SharedAdminDownloadMirrorConfigDto>("/admin/download-mirror/config", {
+    method: "GET"
+  });
+}
+
+export async function updateAdminDownloadMirrorConfig(input: SharedUpdateAdminDownloadMirrorConfigInputDto) {
+  return request<SharedAdminDownloadMirrorConfigDto>("/admin/download-mirror/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input)
+  });
 }
 
 export async function fetchAdminRuntimeComponents() {

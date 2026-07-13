@@ -14,6 +14,7 @@ import { DevDataBootstrapService } from "./dev-data-bootstrap.service";
 import { Global, Module } from "@nestjs/common";
 import { DevDataService } from "./dev-data.service";
 import { ImageBedService } from "./image-bed.service";
+import { DownloadMirrorService } from "./download-mirror.service";
 import { ReleaseCenterService } from "./release-center.service";
 import { RuntimeComponentsService } from "./runtime-components.service";
 import { RuntimeSessionService } from "./runtime-session.service";
@@ -39,6 +40,7 @@ import { XuiModule } from "../xui/xui.module";
     ClientTicketService,
     DevDataBootstrapService,
     ImageBedService,
+    DownloadMirrorService,
     ReleaseCenterService,
     RuntimeSessionService,
     ClientAuthGuard,
@@ -60,6 +62,7 @@ import { XuiModule } from "../xui/xui.module";
     ClientTicketService,
     DevDataBootstrapService,
     ImageBedService,
+    DownloadMirrorService,
     ReleaseCenterService,
     RuntimeSessionService,
     ClientAuthGuard,

@@ -220,8 +220,9 @@ function testPoliciesAndRuntimeComponentsUseCurrentNavigationNames() {
   assert.match(runtimeComponentsPanelSource, /复制下载地址/);
   assert.match(runtimeComponentEditorSource, /配置 \$\{kindLabel\}/);
   assert.match(runtimeComponentEditorSource, /更新地址/);
-  assert.match(runtimeComponentEditorSource, /加速镜像/);
   assert.match(runtimeComponentEditorSource, /高级选项/);
+  assert.match(runtimeComponentsPanelSource, /全局加速镜像/);
+  assert.match(runtimeComponentsPanelSource, /发布中心安装包与客户端组件/);
 }
 
 function testNodesPageKeepsNodeAndSyncTaskActions() {

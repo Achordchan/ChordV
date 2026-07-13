@@ -935,6 +935,20 @@ export class UploadReleaseArtifactDto {
 
 }
 
+
+export class UpdateDownloadMirrorConfigDto {
+  @IsOptional()
+  @IsString()
+  defaultMirrorPrefix?: string | null;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => transformOptionalBoolean(value))
+  @IsIn([true, false, "true", "false"], {
+    message: "allowClientMirror must be a boolean value"
+  })
+  allowClientMirror?: boolean;
+}
+
 export class CreateRuntimeComponentDto {
   @IsIn(["macos", "windows", "android", "ios"])
   platform!: PlatformTarget;

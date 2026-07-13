@@ -627,10 +627,14 @@ export function pickPrimaryReleaseArtifact(
 
 export function resolveReleaseArtifactForClient(
   artifact: ReleaseArtifactRowLike,
-  clientMirrorPrefix: string | null
+  clientMirrorPrefix: string | null,
+  options?: {
+    defaultMirrorPrefix?: string | null;
+    allowClientMirror?: boolean;
+  }
 ) {
-  const defaultMirrorPrefix = null;
-  const allowClientMirror = false;
+  const defaultMirrorPrefix = options?.defaultMirrorPrefix ?? null;
+  const allowClientMirror = options?.allowClientMirror ?? true;
   const resolvedUrl = buildReleaseArtifactDownloadUrlForClient(
     artifact.downloadUrl,
     defaultMirrorPrefix,
@@ -641,6 +645,7 @@ export function resolveReleaseArtifactForClient(
     ...artifact,
     downloadUrl: resolvedUrl,
     originDownloadUrl: artifact.downloadUrl,
+    defaultMirrorPrefix,
     allowClientMirror
   };
 }
@@ -652,12 +657,22 @@ export function buildReleaseArtifactDownloadUrlForClient(
   allowClientMirror: boolean
 ) {
   if (allowClientMirror && clientMirrorPrefix?.trim()) {
-    return joinMirrorPrefix(clientMirrorPrefix, originUrl);
+    return joinMirrorPrefix(firstMirrorPrefix(clientMirrorPrefix) ?? clientMirrorPrefix, originUrl);
   }
-  if (defaultMirrorPrefix?.trim()) {
-    return joinMirrorPrefix(defaultMirrorPrefix, originUrl);
+  const defaultPrefix = firstMirrorPrefix(defaultMirrorPrefix);
+  if (defaultPrefix) {
+    return joinMirrorPrefix(defaultPrefix, originUrl);
   }
   return originUrl;
+}
+
+function firstMirrorPrefix(value: string | null | undefined) {
+  if (!value) return null;
+  const items = value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items[0] ?? null;
 }
 
 export function joinMirrorPrefix(prefix: string, originUrl: string) {
@@ -888,7 +903,7 @@ async function requestExternalReleaseArtifactMetadata(
 }
 
 export function buildExternalReleaseArtifactProbeUrl(originUrl: string, defaultMirrorPrefix?: string | null) {
-  const prefix = defaultMirrorPrefix?.trim();
+  const prefix = firstMirrorPrefix(defaultMirrorPrefix);
   if (!prefix) {
     return originUrl;
   }

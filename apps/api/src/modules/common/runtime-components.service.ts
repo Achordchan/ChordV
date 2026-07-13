@@ -26,6 +26,7 @@ import { moveUploadedFile } from "./upload-file.utils";
 import { readZipEntryData } from "./release-center.utils";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
+import { DownloadMirrorService } from "./download-mirror.service";
 
 const RUNTIME_COMPONENT_DOWNLOAD_PREFIX = "/api/downloads/runtime-components";
 const SHARED_RULESET_PLATFORM: PlatformTarget = "macos";
@@ -59,6 +60,7 @@ export class RuntimeComponentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authSessionService: AuthSessionService,
+    private readonly downloadMirrorService: DownloadMirrorService,
     private readonly adminRuntimeEventsService?: AdminRuntimeEventsService
   ) {}
 
@@ -396,48 +398,12 @@ export class RuntimeComponentsService {
       };
     }
 
-    try {
-      if (component.expectedHash) {
-        if (isPrivateOrReservedRuntimeComponentUrl(resolvedUrl)) {
-          return {
-            componentId,
-            status: "unreachable",
-            message: "远程运行组件链接指向内网或保留地址，不允许校验。",
-            finalUrlPreview: resolvedUrl
-          };
-        }
-        if (process.env.CHORDV_ALLOW_PRIVATE_REMOTE_URLS === "true") {
-          const result = await this.validateRemoteRuntimeComponentHash(
-            componentId,
-            resolvedUrl,
-            component.expectedHash,
-            component.archiveEntryName
-          );
-          this.publishRuntimeComponentUpdatedBestEffort();
-          return result;
-        }
-        this.startRemoteRuntimeComponentValidation(componentId, resolvedUrl, component.expectedHash, component.archiveEntryName);
-        return {
-          componentId,
-          status: "pending_validation",
-          message: "Remote runtime component validation has started in background. Refresh this list later for the latest result.",
-          finalUrlPreview: resolvedUrl
-        };
-      }
-      return {
-        componentId,
-        status: "metadata_mismatch",
-        message: "远程内核组件缺少 SHA256 expectedHash，当前 Windows 客户端暂不能下发该组件。请填写校验哈希后重新验证。",
-        finalUrlPreview: resolvedUrl
-      };
-    } catch (error) {
-      return {
-        componentId,
-        status: "unreachable",
-        message: `当前链接不可访问：${toUserRuntimeValidationMessage(error)}`,
-        finalUrlPreview: resolvedUrl
-      };
-    }
+    return {
+      componentId,
+      status: "ready",
+      message: "远程更新地址有效，客户端将按地址下载。",
+      finalUrlPreview: resolvedUrl
+    };
   }
 
   async listRuntimeComponentFailureReports(limit = 100): Promise<AdminRuntimeComponentFailureReportDto[]> {
@@ -508,13 +474,14 @@ export class RuntimeComponentsService {
       };
     }
 
+    const globalMirror = await this.downloadMirrorService.getEffectiveConfig();
     return {
       platform: input.platform,
       architecture: input.architecture,
       components: rows.map((row) => {
         const originUrl = row.originUrl.trim();
-        const defaultMirrorPrefix = normalizeMirrorPrefixList(row.defaultMirrorPrefix);
-        const allowClientMirror = Boolean(row.allowClientMirror);
+        const defaultMirrorPrefix = globalMirror.defaultMirrorPrefix;
+        const allowClientMirror = globalMirror.allowClientMirror;
         const clientMirrorPrefix = allowClientMirror ? normalizeMirrorPrefixList(input.clientMirrorPrefix) : null;
         const candidates = buildRuntimeComponentDownloadCandidates({
           originUrl,
@@ -1274,48 +1241,10 @@ async function resolveAdminRuntimeComponentClientDelivery(row: {
       message: "远程直链不是有效的 http/https 地址，不会下发给客户端。"
     };
   }
-  if (latestValidationFailure && latestValidationFailure.createdAt.getTime() >= row.updatedAt.getTime()) {
-    const status = toRuntimeComponentDeliveryStatus(latestValidationFailure.reason);
-    return {
-      deliverable: false,
-      status,
-      message: latestValidationFailure.message ?? "后台校验失败，客户端不会获取该组件。"
-    };
-  }
-  if (!hasPositiveFileSize(row.fileSizeBytes)) {
-    return {
-      deliverable: false,
-      status: "pending_validation",
-      message: "远程直链还没有文件大小，校验前不会下发。"
-    };
-  }
-  const expectedHash = isValidSha256(row.expectedHash) ? row.expectedHash.toLowerCase() : null;
-  const fileHash = isValidSha256(row.fileHash) ? row.fileHash.toLowerCase() : null;
-  if (!expectedHash) {
-    return {
-      deliverable: false,
-      status: "missing_hash",
-      message: "远程直链缺少 expectedHash，不会下发给客户端。"
-    };
-  }
-  if (!fileHash) {
-    return {
-      deliverable: false,
-      status: "pending_validation",
-      message: "远程直链还没有校验结果，不会下发给客户端。"
-    };
-  }
-  if (fileHash !== expectedHash) {
-    return {
-      deliverable: false,
-      status: "metadata_mismatch",
-      message: "远程文件 Hash 与预期不一致，不会下发给客户端。"
-    };
-  }
   return {
     deliverable: true,
     status: "ready",
-    message: "远程直链已校验通过，可下发给客户端。"
+    message: "远程更新地址有效，可下发给客户端。"
   };
 }
 
@@ -1618,17 +1547,7 @@ async function filterClientUsableRuntimeComponents<T extends {
   const usableRows: T[] = [];
   for (const row of rows) {
     if (row.source !== "uploaded") {
-      const rawExpectedHash = row.expectedHash;
-      const rawFileHash = row.fileHash;
-      const expectedHash = isValidSha256(rawExpectedHash) ? rawExpectedHash.toLowerCase() : null;
-      const fileHash = isValidSha256(rawFileHash) ? rawFileHash.toLowerCase() : null;
-      if (
-        isHttpUrl(row.originUrl) &&
-        hasPositiveFileSize(row.fileSizeBytes) &&
-        expectedHash !== null &&
-        fileHash !== null &&
-        fileHash === expectedHash
-      ) {
+      if (isHttpUrl(row.originUrl)) {
         usableRows.push(row);
       }
       continue;

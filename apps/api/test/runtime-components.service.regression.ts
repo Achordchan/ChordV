@@ -6,7 +6,19 @@ import path from "node:path";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 
 function createRuntimeComponentsService(overrides: Record<string, unknown>) {
-  return Object.assign(Object.create(RuntimeComponentsService.prototype), overrides) as RuntimeComponentsService;
+  return Object.assign(
+    Object.create(RuntimeComponentsService.prototype),
+    {
+      downloadMirrorService: {
+        getEffectiveConfig: async () => ({
+          defaultMirrorPrefix: null,
+          allowClientMirror: true,
+          updatedAt: null
+        })
+      }
+    },
+    overrides
+  ) as RuntimeComponentsService;
 }
 
 function makeUploadedComponent(overrides: Record<string, unknown> = {}) {
@@ -199,16 +211,16 @@ async function testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMi
   }
 }
 
-async function testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable() {
+async function testAdminRuntimeComponentMarksUnverifiedRemoteAsDeliverable() {
   const service = createRuntimeComponentsService({
-    prisma: makeRuntimeComponentListPrisma([makeRemoteComponent({ expectedHash: null })])
+    prisma: makeRuntimeComponentListPrisma([makeRemoteComponent({ expectedHash: null, fileSizeBytes: null, fileHash: null })])
   });
 
   const [result] = await service.listAdminRuntimeComponents();
 
-  assert.equal(result.clientDeliverable, false);
-  assert.equal(result.clientDeliveryStatus, "pending_validation");
-  assert.match(result.clientDeliveryMessage, /不会下发|校验/);
+  assert.equal(result.clientDeliverable, true);
+  assert.equal(result.clientDeliveryStatus, "ready");
+  assert.match(result.clientDeliveryMessage, /可下发|有效/);
 }
 
 async function testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable() {
@@ -246,7 +258,7 @@ async function testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable() {
   assert.match(result.clientDeliveryMessage, /可下发/);
 }
 
-async function testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable() {
+async function testAdminRuntimeComponentMarksRemoteHashMismatchAsDeliverable() {
   const service = createRuntimeComponentsService({
     prisma: makeRuntimeComponentListPrisma([
       makeRemoteComponent({
@@ -259,27 +271,25 @@ async function testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable(
 
   const [result] = await service.listAdminRuntimeComponents();
 
-  assert.equal(result.clientDeliverable, false);
-  assert.equal(result.clientDeliveryStatus, "metadata_mismatch");
-  assert.match(result.clientDeliveryMessage, /Hash/);
+  assert.equal(result.clientDeliverable, true);
+  assert.equal(result.clientDeliveryStatus, "ready");
+  assert.match(result.clientDeliveryMessage, /可下发|有效/);
 }
 
-async function testAdminRuntimeComponentShowsFreshBackgroundValidationFailure() {
+async function testAdminRuntimeComponentIgnoresBackgroundValidationFailureForDelivery() {
   const service = createRuntimeComponentsService({
     prisma: makeRuntimeComponentListPrisma(
       [
         makeRemoteComponent({
-          expectedHash: "a".repeat(64),
-          updatedAt: new Date("2026-01-01T00:00:00.000Z")
+          expectedHash: "a".repeat(64)
         })
       ],
       [
         {
-          componentId: "component_1",
           reason: "unreachable",
-          message: "Remote validation timed out",
-          effectiveUrl: "https://cdn.example.com/xray.exe",
-          createdAt: new Date("2026-01-01T00:01:00.000Z")
+          message: "远端不可达",
+          effectiveUrl: "https://example.com/xray.exe",
+          createdAt: new Date()
         }
       ]
     )
@@ -287,9 +297,8 @@ async function testAdminRuntimeComponentShowsFreshBackgroundValidationFailure() 
 
   const [result] = await service.listAdminRuntimeComponents();
 
-  assert.equal(result.clientDeliverable, false);
-  assert.equal(result.clientDeliveryStatus, "unreachable");
-  assert.equal(result.clientDeliveryMessage, "Remote validation timed out");
+  assert.equal(result.clientDeliverable, true);
+  assert.equal(result.clientDeliveryStatus, "ready");
 }
 
 async function testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure() {
@@ -315,8 +324,8 @@ async function testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure(
 
   const [result] = await service.listAdminRuntimeComponents();
 
-  assert.equal(result.clientDeliverable, false);
-  assert.equal(result.clientDeliveryStatus, "pending_validation");
+  assert.equal(result.clientDeliverable, true);
+  assert.equal(result.clientDeliveryStatus, "ready");
   assert.notEqual(result.clientDeliveryMessage, "Old validation timed out");
 }
 
@@ -339,9 +348,9 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
   const startedAt = Date.now();
   const result = await service.validateAdminRuntimeComponent("component_1");
 
-  assert.equal(validationStarted, true, "remote validation must be delegated to background work");
-  assert.ok(Date.now() - startedAt < 100, "remote validation endpoint must return without waiting for remote download");
-  assert.equal(result.status, "pending_validation");
+  assert.equal(validationStarted, false, "remote validation no longer downloads or hashes remote files");
+  assert.ok(Date.now() - startedAt < 100, "remote validation endpoint must return immediately");
+  assert.equal(result.status, "ready");
   assert.equal(result.componentId, "component_1");
 }
 
@@ -430,11 +439,11 @@ async function main() {
   await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
   await testUploadedRuntimeComponentUploadUsesActualHashWhenExpectedHashDiffers();
   await testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMismatch();
-  await testAdminRuntimeComponentMarksUnverifiedRemoteAsNotDeliverable();
+  await testAdminRuntimeComponentMarksUnverifiedRemoteAsDeliverable();
   await testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable();
   await testAdminRuntimeComponentMarksVerifiedRemoteAsDeliverable();
-  await testAdminRuntimeComponentMarksRemoteHashMismatchAsNotDeliverable();
-  await testAdminRuntimeComponentShowsFreshBackgroundValidationFailure();
+  await testAdminRuntimeComponentMarksRemoteHashMismatchAsDeliverable();
+  await testAdminRuntimeComponentIgnoresBackgroundValidationFailureForDelivery();
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
   await testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefreshEvent();

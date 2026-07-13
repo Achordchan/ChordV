@@ -37,7 +37,7 @@ export function getRuntimeComponentDeliveryState(record: AdminRuntimeComponentRe
     };
   }
   return {
-    label: record.clientDeliveryStatus === "missing_hash" ? "缺少 SHA" : "待校验",
+    label: "待确认",
     color: "yellow",
     description
   };
@@ -50,12 +50,9 @@ export function applyRuntimeComponentValidationToDelivery(
   if (validation.status === "ready") {
     return {
       ...record,
-      fileSizeBytes: validation.actualFileSizeBytes ?? record.fileSizeBytes,
-      fileHash: validation.actualFileHash ?? record.fileHash,
-      expectedHash: validation.actualFileHash ?? record.expectedHash,
       clientDeliverable: true,
       clientDeliveryStatus: "ready",
-      clientDeliveryMessage: validation.message || "组件已校验通过，可下发给客户端。"
+      clientDeliveryMessage: validation.message || "地址可用，可下发给客户端。"
     };
   }
   if (validation.status === "disabled") {
@@ -66,12 +63,21 @@ export function applyRuntimeComponentValidationToDelivery(
       clientDeliveryMessage: validation.message || "组件已停用，客户端不会获取。"
     };
   }
+  // 远程地址检测失败不再阻断下发；仅提示状态。
+  if (record.source !== "uploaded") {
+    return {
+      ...record,
+      clientDeliverable: true,
+      clientDeliveryStatus: "ready",
+      clientDeliveryMessage: validation.message || "远程更新地址已配置，可下发给客户端。"
+    };
+  }
   const status = isRuntimeComponentDeliveryError(validation.status) ? validation.status : "pending_validation";
   return {
     ...record,
     clientDeliverable: false,
     clientDeliveryStatus: status,
-    clientDeliveryMessage: validation.message || "组件校验未通过，不会下发给客户端。"
+    clientDeliveryMessage: validation.message || "组件暂不可用，不会下发给客户端。"
   };
 }
 
@@ -89,7 +95,7 @@ function isRuntimeComponentDeliveryError(
 
 function getRuntimeComponentDeliveryErrorLabel(status: NonNullable<AdminRuntimeComponentRecordDto["clientDeliveryStatus"]>) {
   if (status === "metadata_mismatch") {
-    return "Hash 不一致";
+    return "内容异常";
   }
   if (status === "missing_file") {
     return "文件缺失";

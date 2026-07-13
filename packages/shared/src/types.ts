@@ -256,6 +256,18 @@ export interface AdminReleaseRecordDto {
   artifacts: AdminReleaseArtifactDto[];
 }
 
+
+export interface AdminDownloadMirrorConfigDto {
+  defaultMirrorPrefix: string | null;
+  allowClientMirror: boolean;
+  updatedAt: string | null;
+}
+
+export interface UpdateAdminDownloadMirrorConfigInputDto {
+  defaultMirrorPrefix?: string | null;
+  allowClientMirror?: boolean;
+}
+
 export interface AdminRuntimeComponentRecordDto {
   id: string;
   platform: PlatformTarget;

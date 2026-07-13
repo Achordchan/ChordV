@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   ActionIcon,
   Alert,
@@ -8,7 +8,9 @@ import {
   Group,
   Menu,
   Stack,
+  Switch,
   Text,
+  Textarea,
   Title
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -33,12 +35,15 @@ import type {
 import {
   createAdminRuntimeComponent,
   deleteAdminRuntimeComponent,
+  fetchAdminDownloadMirrorConfig,
   fetchAdminRuntimeComponentFailures,
   replaceAdminRuntimeComponentUpload,
+  updateAdminDownloadMirrorConfig,
   uploadAdminRuntimeComponent,
   updateAdminRuntimeComponent,
   verifyAdminRuntimeComponent
 } from "../../api/client";
+import type { AdminDownloadMirrorConfigDto } from "../../api/client";
 import {
   buildUncertainMutationMessage,
   isPotentiallyCompletedMutationFailure,
@@ -120,6 +125,11 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [failuresRefreshing, setFailuresRefreshing] = useState(false);
   const [form, setForm] = useState<RuntimeComponentEditorFormState>(emptyRuntimeComponentEditorForm());
+  const [mirrorConfig, setMirrorConfig] = useState<AdminDownloadMirrorConfigDto | null>(null);
+  const [mirrorPrefixDraft, setMirrorPrefixDraft] = useState("");
+  const [allowClientMirrorDraft, setAllowClientMirrorDraft] = useState(true);
+  const [mirrorSaving, setMirrorSaving] = useState(false);
+  const [mirrorLoading, setMirrorLoading] = useState(false);
   const savingRef = useRef(false);
   const verifyingRef = useRef<string | null>(null);
   const failureRefreshSeqRef = useRef(0);
@@ -193,17 +203,12 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       }
     } else {
       const originUrl = form.originUrl.trim();
-      const expectedHash = form.expectedHash.trim();
       if (!originUrl) {
         showRuntimeComponentValidation("请填写更新地址");
         return;
       }
       if (!/^https?:\/\//i.test(originUrl)) {
         showRuntimeComponentValidation("更新地址必须是完整的 http/https 地址");
-        return;
-      }
-      if (expectedHash && !/^[a-f0-9]{64}$/i.test(expectedHash)) {
-        showRuntimeComponentValidation("SHA-256 必须是 64 位十六进制；不填写也可以先保存");
         return;
       }
     }
@@ -241,11 +246,11 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           kind: form.kind,
           source: form.source === "github_remote" ? ("custom_remote" as const) : form.source,
           originUrl: form.originUrl.trim(),
-          defaultMirrorPrefix: form.defaultMirrorPrefix.trim() || null,
-          allowClientMirror: form.allowClientMirror,
+          defaultMirrorPrefix: null,
+          allowClientMirror: true,
           fileName: form.fileName.trim(),
           archiveEntryName: form.archiveEntryName.trim() || null,
-          expectedHash: form.expectedHash.trim() || null,
+          expectedHash: null,
           enabled: form.enabled
         };
         record = editingId ? await updateAdminRuntimeComponent(editingId, payload) : await createAdminRuntimeComponent(payload);
@@ -286,12 +291,12 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       notifications.show({
         color: result.status === "ready" ? "green" : result.status === "disabled" || result.status === "pending_validation" ? "yellow" : "red",
         title: "客户端组件",
-        message: summarizeAdminDiagnosticMessage(result.message, "校验未通过，请检查更新地址或文件内容。") ?? "校验完成"
+        message: summarizeAdminDiagnosticMessage(result.message, "地址检测未通过，请检查更新地址。") ?? "地址检测完成"
       });
       void onRefresh({ silent: true });
     } catch (reason) {
-      const result = showRuntimeComponentFailure(reason, "校验失败", {
-        uncertainMessage: (message) => `${message} 校验状态不确定，请刷新后确认。`
+      const result = showRuntimeComponentFailure(reason, "地址检测失败", {
+        uncertainMessage: (message) => `${message} 检测状态不确定，请刷新后确认。`
       });
       if (result.uncertain) {
         void onRefresh({ silent: true });
@@ -366,6 +371,56 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
     }
   }
 
+  async function loadMirrorConfig() {
+    try {
+      setMirrorLoading(true);
+      const config = await fetchAdminDownloadMirrorConfig();
+      setMirrorConfig(config);
+      setMirrorPrefixDraft(config.defaultMirrorPrefix ?? "");
+      setAllowClientMirrorDraft(config.allowClientMirror);
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "客户端组件",
+        message: readError(reason, "加载加速镜像配置失败")
+      });
+    } finally {
+      setMirrorLoading(false);
+    }
+  }
+
+  async function saveMirrorConfig() {
+    if (mirrorSaving) return;
+    try {
+      setMirrorSaving(true);
+      const config = await updateAdminDownloadMirrorConfig({
+        defaultMirrorPrefix: mirrorPrefixDraft.trim() || null,
+        allowClientMirror: allowClientMirrorDraft
+      });
+      setMirrorConfig(config);
+      setMirrorPrefixDraft(config.defaultMirrorPrefix ?? "");
+      setAllowClientMirrorDraft(config.allowClientMirror);
+      notifications.show({
+        color: "green",
+        title: "客户端组件",
+        message: "全局加速镜像已保存"
+      });
+    } catch (reason) {
+      notifications.show({
+        color: "red",
+        title: "客户端组件",
+        message: readError(reason, "保存加速镜像配置失败")
+      });
+    } finally {
+      setMirrorSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadMirrorConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <Stack gap="lg">
       <RuntimeComponentEditorModal
@@ -383,9 +438,47 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         <Stack gap="md">
           <Group justify="space-between" align="flex-start" wrap="wrap">
             <Stack gap={4}>
+              <Title order={4}>全局加速镜像</Title>
+              <Text size="sm" c="dimmed">
+                发布中心安装包与客户端组件共用。每行一个前缀，优先走加速，失败再回源地址。
+              </Text>
+            </Stack>
+            <Button onClick={() => void saveMirrorConfig()} loading={mirrorSaving} disabled={mirrorLoading}>
+              保存镜像
+            </Button>
+          </Group>
+          <Textarea
+            label="加速前缀"
+            description="支持 https://mirror.example/ 或带 {url} 的模板。可填多行。"
+            autosize
+            minRows={3}
+            placeholder={"https://ghfast.top/\nhttps://gh-proxy.com/"}
+            value={mirrorPrefixDraft}
+            onChange={(event) => setMirrorPrefixDraft(event.currentTarget.value)}
+            disabled={mirrorLoading || mirrorSaving}
+          />
+          <Switch
+            label="允许客户端自定义镜像"
+            description="关闭后客户端只能使用后台全局镜像和源地址。"
+            checked={allowClientMirrorDraft}
+            onChange={(event) => setAllowClientMirrorDraft(event.currentTarget.checked)}
+            disabled={mirrorLoading || mirrorSaving}
+          />
+          {mirrorConfig?.updatedAt ? (
+            <Text size="xs" c="dimmed">
+              最近保存 {formatDateTime(mirrorConfig.updatedAt)}
+            </Text>
+          ) : null}
+        </Stack>
+      </Card>
+
+      <Card withBorder radius="xl" p="lg">
+        <Stack gap="md">
+          <Group justify="space-between" align="flex-start" wrap="wrap">
+            <Stack gap={4}>
               <Title order={4}>客户端组件</Title>
               <Text size="sm" c="dimmed">
-                只管理 Xray / GeoIP / GeoSite 的更新来源与加速镜像，不和应用安装包混在一起。
+                只管理 Xray / GeoIP / GeoSite 的更新来源。加速镜像在上方全局配置，并与发布中心共用。
               </Text>
             </Stack>
             <Button variant="light" leftSection={<IconRefresh size={16} />} onClick={() => void onRefresh()} loading={loading}>
@@ -417,6 +510,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
                 validations={validations}
                 saving={saving}
                 verifyingId={verifyingId}
+                mirrorPrefixCount={countMirrorPrefixes(mirrorPrefixDraft)}
                 onAdd={() => openCreate(slot.key)}
                 onEdit={openEdit}
                 onVerify={(record) => void verifyComponent(record)}
@@ -488,6 +582,7 @@ type RuntimeComponentSlotCardProps = {
   validations: Record<string, AdminRuntimeComponentValidationDto>;
   saving: boolean;
   verifyingId: string | null;
+  mirrorPrefixCount: number;
   onAdd: () => void;
   onEdit: (record: AdminRuntimeComponentRecordDto) => void;
   onVerify: (record: AdminRuntimeComponentRecordDto) => void;
@@ -504,6 +599,7 @@ function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
     validations,
     saving,
     verifyingId,
+    mirrorPrefixCount,
     onAdd,
     onEdit,
     onVerify,
@@ -546,7 +642,7 @@ function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
               const deliveryState = getRuntimeComponentDeliveryState(record);
               const validation = validations[record.id];
               const rowIsVerifying = verifyingId === record.id;
-              const mirrorCount = countMirrorPrefixes(record.defaultMirrorPrefix);
+              const mirrorCount = mirrorPrefixCount;
               return (
                 <Card key={record.id} withBorder radius="md" p="md" bg="var(--mantine-color-body)">
                   <Stack gap="sm">
@@ -571,17 +667,14 @@ function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
                           <Text size="xs" c="dimmed">
                             文件 {record.fileName || "-"}
                           </Text>
-                          <Text size="xs" c="dimmed">
-                            大小 {formatBytes(record.fileSizeBytes)}
-                          </Text>
                           {record.source !== "uploaded" ? (
                             <Text size="xs" c="dimmed">
-                              镜像 {mirrorCount > 0 ? `${mirrorCount} 个` : "未配置"}
+                              全局镜像 {mirrorCount > 0 ? `${mirrorCount} 个` : "未配置"}
                             </Text>
                           ) : null}
                           {validation ? (
                             <Text size="xs" c="dimmed">
-                              校验 {translateValidationStatus(validation.status)}
+                              检测 {translateValidationStatus(validation.status)}
                             </Text>
                           ) : null}
                         </Group>
@@ -605,8 +698,8 @@ function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
                           variant="light"
                           color="green"
                           onClick={() => onVerify(record)}
-                          title="校验"
-                          aria-label="校验"
+                          title="检测地址"
+                          aria-label="检测地址"
                           loading={rowIsVerifying}
                           disabled={saving || (verifyingId !== null && verifyingId !== record.id)}
                         >
@@ -684,12 +777,12 @@ function compareRuntimeComponent(a: AdminRuntimeComponentRecordDto, b: AdminRunt
 function translateValidationStatus(status: AdminRuntimeComponentValidationDto["status"]) {
   if (status === "save_failed") return "保存失败";
   if (status === "unreachable") return "无法访问";
-  if (status === "pending_validation") return "待校验";
+  if (status === "pending_validation") return "检测中";
   if (status === "ready") return "可用";
   if (status === "disabled") return "已停用";
   if (status === "invalid_url") return "链接有误";
   if (status === "missing_file") return "文件丢失";
-  if (status === "metadata_mismatch") return "Hash 不一致";
+  if (status === "metadata_mismatch") return "内容异常";
   return "不可达";
 }
 

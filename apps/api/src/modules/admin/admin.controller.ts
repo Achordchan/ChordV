@@ -28,6 +28,7 @@ import { AdminRuntimeEventsService } from "../common/admin-runtime-events.servic
 import { AuthSessionService } from "../common/auth-session.service";
 import { DevDataService } from "../common/dev-data.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "../common/image-bed.service";
+import { DownloadMirrorService } from "../common/download-mirror.service";
 import { RuntimeComponentsService } from "../common/runtime-components.service";
 import { UploadedTempFileCleanupInterceptor } from "../common/uploaded-temp-file-cleanup.interceptor";
 import { setRefreshCookie } from "../auth/auth-cookie";
@@ -67,6 +68,7 @@ import {
   UpdateAnnouncementDto,
   UpdateCurrentAdminSecurityDto,
   UpdateImageBedConfigDto,
+  UpdateDownloadMirrorConfigDto,
   UpdateNodeDto,
   UpdatePlanDto,
   UpdatePlanSecurityDto,
@@ -97,6 +99,7 @@ export class AdminController {
     private readonly devDataService: DevDataService,
     private readonly runtimeComponentsService: RuntimeComponentsService,
     private readonly imageBedService: ImageBedService,
+    private readonly downloadMirrorService: DownloadMirrorService,
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly authSessionService: AuthSessionService
   ) {}
@@ -127,6 +130,16 @@ export class AdminController {
         }
       }
     });
+  }
+
+  @Get("download-mirror/config")
+  getDownloadMirrorConfig() {
+    return this.downloadMirrorService.getAdminConfig();
+  }
+
+  @Patch("download-mirror/config")
+  updateDownloadMirrorConfig(@Body() body: UpdateDownloadMirrorConfigDto) {
+    return this.downloadMirrorService.updateAdminConfig(body);
   }
 
   @Get("image-bed/config")

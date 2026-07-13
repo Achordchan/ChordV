@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   Alert,
   Button,
@@ -14,6 +13,7 @@ import {
   TextInput,
   Textarea
 } from "@mantine/core";
+import { useState } from "react";
 import type { RuntimeComponentEditorFormState } from "./types";
 import {
   defaultFileNameForKind,
@@ -60,8 +60,8 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
       <Stack gap="md">
         <Text size="sm" c="dimmed">
           {isRuleset
-            ? "Geo 数据全平台共用一份，填更新地址和加速镜像即可。"
-            : "Xray 按平台和架构分别配置；优先填更新地址，需要时再上传到服务器。"}
+            ? "Geo 数据全平台共用一份，填更新地址即可。加速镜像在页面顶部统一配置。"
+            : "Xray 按平台和架构分别配置。加速镜像在页面顶部统一配置。"}
         </Text>
 
         <SegmentedControl
@@ -70,8 +70,6 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
             onChange({
               ...value,
               source: next === "uploaded" ? "uploaded" : "custom_remote",
-              defaultMirrorPrefix: next === "uploaded" ? "" : value.defaultMirrorPrefix,
-              allowClientMirror: next === "uploaded" ? false : value.allowClientMirror,
               archiveEntryName: next === "uploaded" ? "" : value.archiveEntryName,
               fileName: value.fileName || defaultFileNameForKind(value.kind)
             })
@@ -126,32 +124,15 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
             ) : null}
           </>
         ) : (
-          <>
-            <Textarea
-              label="更新地址"
-              description="客户端拉取该组件的官方或源站地址。"
-              autosize
-              minRows={2}
-              placeholder="https://github.com/.../geoip.dat"
-              value={value.originUrl}
-              onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
-            />
-            <Textarea
-              label="加速镜像"
-              description="每行一个前缀；客户端优先走镜像，失败后再回退源站。支持完整前缀或 {url} 模板。"
-              autosize
-              minRows={2}
-              placeholder={"https://ghfast.top/\nhttps://mirror.ghproxy.com/"}
-              value={value.defaultMirrorPrefix}
-              onChange={(event) => onChange({ ...value, defaultMirrorPrefix: event.currentTarget.value })}
-            />
-            <Switch
-              label="允许客户端自定义加速前缀"
-              description="开启后，客户端可在本机再叠加自己的加速前缀。"
-              checked={value.allowClientMirror}
-              onChange={(event) => onChange({ ...value, allowClientMirror: event.currentTarget.checked })}
-            />
-          </>
+          <Textarea
+            label="更新地址"
+            description="客户端拉取该组件的官方或源站地址。"
+            autosize
+            minRows={2}
+            placeholder="https://github.com/.../geoip.dat"
+            value={value.originUrl}
+            onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
+          />
         )}
 
         <Switch
@@ -180,21 +161,9 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
                 onChange={(event) => onChange({ ...value, archiveEntryName: event.currentTarget.value })}
               />
             ) : null}
-            <TextInput
-              label="SHA-256"
-              description={
-                usesUploadedSource
-                  ? "可选。上传后系统会自动计算。"
-                  : "可选。远程更新不填也能保存；校验通过前不会下发给客户端。"
-              }
-              value={value.expectedHash}
-              onChange={(event) => onChange({ ...value, expectedHash: event.currentTarget.value })}
-            />
-            {!usesUploadedSource ? (
-              <Alert color="gray" variant="light">
-                日常只需维护更新地址和加速镜像。Hash 校验仍由后端保留，需要时再填。
-              </Alert>
-            ) : null}
+            <Alert color="gray" variant="light">
+              加速镜像已改为页面顶部全局配置，发布中心与客户端组件共用。
+            </Alert>
           </Stack>
         </Collapse>
 

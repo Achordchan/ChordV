@@ -46,9 +46,9 @@ function makeRuntimeComponent(overrides: Partial<AdminRuntimeComponentRecordDto>
     fileSizeBytes: null,
     fileHash: null,
     enabled: true,
-    clientDeliverable: false,
-    clientDeliveryStatus: "pending_validation",
-    clientDeliveryMessage: "远程直链还没有校验结果，不会下发给客户端。",
+    clientDeliverable: true,
+    clientDeliveryStatus: "ready",
+    clientDeliveryMessage: "远程更新地址有效，可下发给客户端。",
     finalUrlPreview: "https://cdn.example.com/xray.exe",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -57,29 +57,37 @@ function makeRuntimeComponent(overrides: Partial<AdminRuntimeComponentRecordDto>
 }
 
 function testEnabledRemotePendingValidationIsNotShownAsDeliverable() {
-  const state = getRuntimeComponentDeliveryState(makeRuntimeComponent());
+  const state = getRuntimeComponentDeliveryState(
+    makeRuntimeComponent({
+      clientDeliverable: false,
+      clientDeliveryStatus: "pending_validation",
+      clientDeliveryMessage: "状态待确认"
+    })
+  );
 
   assert.equal(state.color, "yellow");
-  assert.equal(state.label, "待校验");
-  assert.match(state.description, /不会下发/);
+  assert.equal(state.label, "待确认");
+  assert.match(state.description, /待确认/);
 }
 
 function testEnabledRemoteHashMismatchIsShownAsBlocked() {
   const state = getRuntimeComponentDeliveryState(
     makeRuntimeComponent({
+      clientDeliverable: false,
       clientDeliveryStatus: "metadata_mismatch",
-      clientDeliveryMessage: "远程文件 Hash 与预期不一致，不会下发给客户端。"
+      clientDeliveryMessage: "远程文件内容异常，不会下发给客户端。"
     })
   );
 
   assert.equal(state.color, "red");
-  assert.equal(state.label, "Hash 不一致");
+  assert.equal(state.label, "内容异常");
   assert.match(state.description, /不会下发/);
 }
 
 function testSaveFailedIsNotShownAsHashMismatch() {
   const state = getRuntimeComponentDeliveryState(
     makeRuntimeComponent({
+      clientDeliverable: false,
       clientDeliveryStatus: "save_failed",
       clientDeliveryMessage: "远程组件可访问且 Hash 匹配，但保存校验结果失败。"
     })
@@ -93,6 +101,7 @@ function testSaveFailedIsNotShownAsHashMismatch() {
 function testUnreachableIsShownAsBlocked() {
   const state = getRuntimeComponentDeliveryState(
     makeRuntimeComponent({
+      clientDeliverable: false,
       clientDeliveryStatus: "unreachable",
       clientDeliveryMessage: "远程组件当前不可访问。"
     })
@@ -145,14 +154,13 @@ function testReadyValidationUpdatesDeliveryState() {
 
   assert.equal(next.clientDeliverable, true);
   assert.equal(next.clientDeliveryStatus, "ready");
-  assert.equal(next.fileSizeBytes, "2048");
-  assert.equal(next.fileHash, hash);
   assert.equal(getRuntimeComponentDeliveryState(next).label, "可下发");
 }
 
 function testFailedValidationBlocksDeliveryState() {
   const next = applyRuntimeComponentValidationToDelivery(
     makeRuntimeComponent({
+      source: "uploaded",
       clientDeliverable: true,
       clientDeliveryStatus: "ready",
       clientDeliveryMessage: "旧状态可下发"
@@ -160,7 +168,7 @@ function testFailedValidationBlocksDeliveryState() {
     {
       componentId: "component_1",
       status: "save_failed",
-      message: "保存校验结果失败",
+      message: "保存检测结果失败",
       finalUrlPreview: "https://cdn.example.com/xray.exe"
     } satisfies AdminRuntimeComponentValidationDto
   );
@@ -170,8 +178,29 @@ function testFailedValidationBlocksDeliveryState() {
   assert.equal(getRuntimeComponentDeliveryState(next).label, "保存失败");
 }
 
+function testRemoteFailedValidationKeepsDeliverable() {
+  const next = applyRuntimeComponentValidationToDelivery(
+    makeRuntimeComponent({
+      source: "custom_remote",
+      clientDeliverable: true,
+      clientDeliveryStatus: "ready",
+      clientDeliveryMessage: "远程更新地址有效，可下发给客户端。"
+    }),
+    {
+      componentId: "component_1",
+      status: "unreachable",
+      message: "当前链接不可访问",
+      finalUrlPreview: "https://cdn.example.com/xray.exe"
+    } satisfies AdminRuntimeComponentValidationDto
+  );
+
+  assert.equal(next.clientDeliverable, true);
+  assert.equal(next.clientDeliveryStatus, "ready");
+}
+
 function testRuntimeComponentsPanelUsesSlotCardsInsteadOfWideTable() {
   assert.match(runtimeComponentsPanelSource, /RuntimeComponentSlotCard/);
+  assert.match(runtimeComponentsPanelSource, /全局加速镜像/);
   assert.match(runtimeComponentsPanelSource, /runtimeComponentSlots/);
   assert.match(runtimeComponentsPanelSource, /title="配置"/);
   assert.match(runtimeComponentsPanelSource, /复制下载地址/);
