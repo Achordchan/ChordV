@@ -480,14 +480,17 @@ export class RuntimeComponentsService {
       architecture: input.architecture,
       components: rows.map((row) => {
         const originUrl = row.originUrl.trim();
-        const defaultMirrorPrefix = globalMirror.defaultMirrorPrefix;
-        const allowClientMirror = globalMirror.allowClientMirror;
+        const isRemoteHttp = row.source !== "uploaded" && isHttpUrl(originUrl);
+        const defaultMirrorPrefix = isRemoteHttp ? globalMirror.defaultMirrorPrefix : null;
+        const allowClientMirror = isRemoteHttp ? globalMirror.allowClientMirror : false;
         const clientMirrorPrefix = allowClientMirror ? normalizeMirrorPrefixList(input.clientMirrorPrefix) : null;
-        const candidates = buildRuntimeComponentDownloadCandidates({
-          originUrl,
-          defaultMirrorPrefix,
-          clientMirrorPrefix
-        });
+        const candidates = isRemoteHttp
+          ? buildRuntimeComponentDownloadCandidates({
+              originUrl,
+              defaultMirrorPrefix,
+              clientMirrorPrefix
+            })
+          : [{ label: "origin" as const, url: originUrl }];
 
         return {
           id: row.id,

@@ -633,10 +633,22 @@ export function resolveReleaseArtifactForClient(
     allowClientMirror?: boolean;
   }
 ) {
+  const originUrl = artifact.downloadUrl;
+  // 上传产物走本站相对路径，不套加速镜像。
+  if (artifact.source === "uploaded" || !isHttpReleaseUrl(originUrl)) {
+    return {
+      ...artifact,
+      downloadUrl: originUrl,
+      originDownloadUrl: originUrl,
+      defaultMirrorPrefix: null,
+      allowClientMirror: false
+    };
+  }
+
   const defaultMirrorPrefix = options?.defaultMirrorPrefix ?? null;
   const allowClientMirror = options?.allowClientMirror ?? true;
   const resolvedUrl = buildReleaseArtifactDownloadUrlForClient(
-    artifact.downloadUrl,
+    originUrl,
     defaultMirrorPrefix,
     clientMirrorPrefix,
     allowClientMirror
@@ -644,7 +656,7 @@ export function resolveReleaseArtifactForClient(
   return {
     ...artifact,
     downloadUrl: resolvedUrl,
-    originDownloadUrl: artifact.downloadUrl,
+    originDownloadUrl: originUrl,
     defaultMirrorPrefix,
     allowClientMirror
   };
@@ -656,6 +668,9 @@ export function buildReleaseArtifactDownloadUrlForClient(
   clientMirrorPrefix: string | null,
   allowClientMirror: boolean
 ) {
+  if (!isHttpReleaseUrl(originUrl)) {
+    return originUrl;
+  }
   if (allowClientMirror && clientMirrorPrefix?.trim()) {
     return joinMirrorPrefix(firstMirrorPrefix(clientMirrorPrefix) ?? clientMirrorPrefix, originUrl);
   }
@@ -664,6 +679,10 @@ export function buildReleaseArtifactDownloadUrlForClient(
     return joinMirrorPrefix(defaultPrefix, originUrl);
   }
   return originUrl;
+}
+
+function isHttpReleaseUrl(value: string | null | undefined) {
+  return typeof value === "string" && /^https?:\/\//i.test(value.trim());
 }
 
 function firstMirrorPrefix(value: string | null | undefined) {
