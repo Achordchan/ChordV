@@ -1,10 +1,24 @@
-import { Alert, Button, FileInput, Group, Modal, Select, SegmentedControl, Stack, Switch, Text, TextInput, Textarea } from "@mantine/core";
+import { useState } from "react";
+import {
+  Alert,
+  Button,
+  Collapse,
+  FileInput,
+  Group,
+  Modal,
+  Select,
+  SegmentedControl,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  Textarea
+} from "@mantine/core";
 import type { RuntimeComponentEditorFormState } from "./types";
 import {
+  defaultFileNameForKind,
   runtimeComponentArchitectureOptions,
-  runtimeComponentKindOptions,
-  runtimeComponentPlatformOptions,
-  runtimeComponentSourceOptions
+  runtimeComponentPlatformOptions
 } from "./types";
 
 type RuntimeComponentEditorModalProps = {
@@ -21,8 +35,10 @@ type RuntimeComponentEditorModalProps = {
 export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalProps) {
   const { opened, editing, saving, value, uploadMaxBytes, onChange, onClose, onSubmit } = props;
   const usesUploadedSource = value.source === "uploaded";
-  const supportsLegacyRemote = value.source === "github_remote";
   const isRuleset = value.kind === "geoip" || value.kind === "geosite";
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const kindLabel = value.kind === "xray" ? "Xray" : value.kind === "geoip" ? "GeoIP" : "GeoSite";
+
   const handleClose = () => {
     if (saving) {
       return;
@@ -34,7 +50,7 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
     <Modal
       opened={opened}
       onClose={handleClose}
-      title={editing ? "编辑客户端组件" : "新增客户端组件"}
+      title={editing ? `配置 ${kindLabel}` : `添加 ${kindLabel}`}
       centered
       size="lg"
       closeOnClickOutside={!saving}
@@ -42,119 +58,90 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
       closeButtonProps={{ disabled: saving }}
     >
       <Stack gap="md">
+        <Text size="sm" c="dimmed">
+          {isRuleset
+            ? "Geo 数据全平台共用一份，填更新地址和加速镜像即可。"
+            : "Xray 按平台和架构分别配置；优先填更新地址，需要时再上传到服务器。"}
+        </Text>
+
         <SegmentedControl
           value={usesUploadedSource ? "uploaded" : "remote"}
           onChange={(next) =>
             onChange({
               ...value,
               source: next === "uploaded" ? "uploaded" : "custom_remote",
-              originUrl: next === "uploaded" ? value.originUrl : value.originUrl,
-              defaultMirrorPrefix: "",
-              allowClientMirror: false,
-              archiveEntryName: next === "uploaded" ? "" : value.archiveEntryName
+              defaultMirrorPrefix: next === "uploaded" ? "" : value.defaultMirrorPrefix,
+              allowClientMirror: next === "uploaded" ? false : value.allowClientMirror,
+              archiveEntryName: next === "uploaded" ? "" : value.archiveEntryName,
+              fileName: value.fileName || defaultFileNameForKind(value.kind)
             })
           }
           data={[
-            { label: "上传到服务器", value: "uploaded" },
-            { label: "远程直链", value: "remote" }
+            { label: "远程更新", value: "remote" },
+            { label: "上传到服务器", value: "uploaded" }
           ]}
         />
 
-        <Select
-          label="平台"
-          data={runtimeComponentPlatformOptions}
-          value={value.platform}
-          disabled={editing || isRuleset}
-          onChange={(next) => next && onChange({ ...value, platform: next as RuntimeComponentEditorFormState["platform"] })}
-        />
-        <Select
-          label="架构"
-          data={runtimeComponentArchitectureOptions}
-          value={value.architecture}
-          disabled={editing || isRuleset}
-          onChange={(next) => next && onChange({ ...value, architecture: next as RuntimeComponentEditorFormState["architecture"] })}
-        />
-        <Select
-          label="组件"
-          data={runtimeComponentKindOptions}
-          value={value.kind}
-          disabled={editing}
-          onChange={(next) =>
-            next &&
-            onChange({
-              ...value,
-              kind: next as RuntimeComponentEditorFormState["kind"],
-              ...(next === "xray" ? {} : { platform: "macos", architecture: "arm64" })
-            })
-          }
-        />
-
-        {editing ? (
-          <Alert color="blue" variant="light">
-            编辑已有组件时平台、架构和组件类型不可变；如需换身份，请新建一条组件记录，避免保存后显示和后端实际记录不一致。
-          </Alert>
-        ) : null}
-
-        {isRuleset ? (
-          <Alert color="blue" variant="light">
-            `GeoIP / GeoSite` 规则集现在按全平台通用处理。这里显示的平台和架构只是内部兼容占位，你不需要为每个平台重复上传。
-          </Alert>
-        ) : null}
-
-        {supportsLegacyRemote ? (
-          <Select
-            label="当前来源"
-            description="这条老记录仍在沿用旧的远程配置模型，建议后续改成上传到服务器。"
-            data={runtimeComponentSourceOptions(value.source)}
-            value={value.source}
-            onChange={(next) => next && onChange({ ...value, source: next as RuntimeComponentEditorFormState["source"] })}
-          />
+        {!isRuleset ? (
+          <Group grow align="flex-start">
+            <Select
+              label="平台"
+              data={runtimeComponentPlatformOptions}
+              value={value.platform}
+              disabled={editing}
+              onChange={(next) => next && onChange({ ...value, platform: next as RuntimeComponentEditorFormState["platform"] })}
+            />
+            <Select
+              label="架构"
+              data={runtimeComponentArchitectureOptions}
+              value={value.architecture}
+              disabled={editing}
+              onChange={(next) =>
+                next && onChange({ ...value, architecture: next as RuntimeComponentEditorFormState["architecture"] })
+              }
+            />
+          </Group>
         ) : null}
 
         {usesUploadedSource ? (
           <>
             <FileInput
-              description={`单文件最大 ${formatUploadBytes(uploadMaxBytes)}。大文件上传可能需要数分钟，请等待按钮完成。`}
               label="组件文件"
+              description={`单文件最大 ${formatUploadBytes(uploadMaxBytes)}。`}
               placeholder="选择要上传的文件"
               value={value.selectedFile}
               onChange={(file) =>
                 onChange({
                   ...value,
                   selectedFile: file,
-                  fileName: file?.name ?? value.fileName
+                  fileName: file?.name || value.fileName || defaultFileNameForKind(value.kind)
                 })
               }
               clearable
             />
-            <Alert color="blue" variant="light">
-              推荐把客户端组件直接上传到你自己的服务器。上传后系统会自动生成下载地址、文件大小和 Hash，客户端也会优先从你的服务器下载。
-            </Alert>
             {!value.selectedFile && editing ? (
               <Text size="sm" c="dimmed">
-                不重新选择文件时，只会更新组件的元信息，不会覆盖服务器上的现有文件。
+                不重新选择文件时，只更新启用状态等基础信息。
               </Text>
             ) : null}
           </>
         ) : (
           <>
-            <Alert color="yellow" variant="light">
-              远程直链只建议在特殊情况下使用。可以先保存记录；只有填写 SHA-256 并完成校验后，系统才会把该组件下发给客户端。
-            </Alert>
             <Textarea
-              label="组件下载地址"
-              description="填写可以直接访问的文件地址。只有你明确要走远程直链时才使用这里。"
+              label="更新地址"
+              description="客户端拉取该组件的官方或源站地址。"
               autosize
               minRows={2}
+              placeholder="https://github.com/.../geoip.dat"
               value={value.originUrl}
               onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
             />
             <Textarea
-              label="加速镜像前缀"
-              description="可填多个，每行一个；客户端会优先走这些镜像，全部失败后再回退官方地址。支持完整前缀或 {url} 模板，例如 https://mirror.ghproxy.com/ 或 https://ghfast.top/{url}"
+              label="加速镜像"
+              description="每行一个前缀；客户端优先走镜像，失败后再回退源站。支持完整前缀或 {url} 模板。"
               autosize
               minRows={2}
-              placeholder={"https://mirror.ghproxy.com/\nhttps://ghfast.top/"}
+              placeholder={"https://ghfast.top/\nhttps://mirror.ghproxy.com/"}
               value={value.defaultMirrorPrefix}
               onChange={(event) => onChange({ ...value, defaultMirrorPrefix: event.currentTarget.value })}
             />
@@ -164,41 +151,59 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
               checked={value.allowClientMirror}
               onChange={(event) => onChange({ ...value, allowClientMirror: event.currentTarget.checked })}
             />
-            <TextInput
-              label="压缩包内文件名"
-              description="只有下载地址是 zip 压缩包时才需要填写。普通文件直链留空即可。"
-              value={value.archiveEntryName}
-              onChange={(event) => onChange({ ...value, archiveEntryName: event.currentTarget.value })}
-            />
           </>
         )}
 
-        <TextInput
-          label="输出文件名"
-          description="客户端最终保存成这个文件名，例如 xray、geoip.dat、geosite.dat。"
-          value={value.fileName}
-          onChange={(event) => onChange({ ...value, fileName: event.currentTarget.value })}
-        />
-
-        <TextInput
-          label="预期 Hash"
-          description={usesUploadedSource ? "可选。上传模式留空时会自动使用真实文件的 SHA-256。" : "可选。远程直链不填也能保存，但校验通过前不会下发给客户端。"}
-          value={value.expectedHash}
-          onChange={(event) => onChange({ ...value, expectedHash: event.currentTarget.value })}
-        />
-
         <Switch
-          label="启用该组件"
+          label="启用"
           checked={value.enabled}
           onChange={(event) => onChange({ ...value, enabled: event.currentTarget.checked })}
         />
+
+        <Button variant="subtle" size="compact-sm" onClick={() => setShowAdvanced((current) => !current)} style={{ alignSelf: "flex-start" }}>
+          {showAdvanced ? "收起高级选项" : "高级选项"}
+        </Button>
+
+        <Collapse in={showAdvanced}>
+          <Stack gap="md">
+            <TextInput
+              label="输出文件名"
+              description="客户端最终保存的文件名。"
+              value={value.fileName}
+              onChange={(event) => onChange({ ...value, fileName: event.currentTarget.value })}
+            />
+            {!usesUploadedSource ? (
+              <TextInput
+                label="压缩包内文件名"
+                description="只有更新地址是 zip 时才需要填。"
+                value={value.archiveEntryName}
+                onChange={(event) => onChange({ ...value, archiveEntryName: event.currentTarget.value })}
+              />
+            ) : null}
+            <TextInput
+              label="SHA-256"
+              description={
+                usesUploadedSource
+                  ? "可选。上传后系统会自动计算。"
+                  : "可选。远程更新不填也能保存；校验通过前不会下发给客户端。"
+              }
+              value={value.expectedHash}
+              onChange={(event) => onChange({ ...value, expectedHash: event.currentTarget.value })}
+            />
+            {!usesUploadedSource ? (
+              <Alert color="gray" variant="light">
+                日常只需维护更新地址和加速镜像。Hash 校验仍由后端保留，需要时再填。
+              </Alert>
+            ) : null}
+          </Stack>
+        </Collapse>
 
         <Group justify="flex-end">
           <Button variant="default" onClick={handleClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={onSubmit} loading={saving}>
-            {editing ? "保存组件" : "创建组件"}
+            保存
           </Button>
         </Group>
       </Stack>

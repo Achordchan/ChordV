@@ -3,18 +3,25 @@ import {
   ActionIcon,
   Alert,
   Badge,
-  Box,
   Button,
   Card,
   Group,
-  ScrollArea,
+  Menu,
   Stack,
-  Table,
   Text,
   Title
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconCheck, IconCopy, IconEdit, IconExternalLink, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconCopy,
+  IconDots,
+  IconEdit,
+  IconExternalLink,
+  IconPlus,
+  IconRefresh,
+  IconTrash
+} from "@tabler/icons-react";
 import type {
   AdminRuntimeComponentFailureReportDto,
   AdminRuntimeComponentRecordDto,
@@ -42,10 +49,14 @@ import { formatDateTime } from "../../utils/admin-format";
 import { applyRuntimeComponentValidationToDelivery, getRuntimeComponentDeliveryState } from "./delivery-state";
 import { RuntimeComponentEditorModal } from "./RuntimeComponentEditorModal";
 import {
+  countMirrorPrefixes,
+  displayRuntimeComponentTarget,
   emptyRuntimeComponentEditorForm,
+  runtimeComponentSlots,
   toRuntimeComponentEditorForm,
   translateRuntimeComponentKind,
-  type RuntimeComponentEditorFormState
+  type RuntimeComponentEditorFormState,
+  type RuntimeComponentSlotKey
 } from "./types";
 
 export const DEFAULT_ADMIN_RUNTIME_COMPONENT_MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
@@ -114,24 +125,27 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
   const failureRefreshSeqRef = useRef(0);
   const deletingRef = useRef<Set<string>>(new Set());
 
-  const groupedSummary = useMemo(() => {
-    const runtimeCore = components.filter((item) => item.kind === "xray");
-    const rulesets = components.filter((item) => item.kind !== "xray");
-    return {
-      total: components.length,
-      enabled: components.filter((item) => item.enabled).length,
-      failures: failures.length,
-      runtimeCore,
-      rulesets
-    };
-  }, [components, failures.length]);
+  const slotGroups = useMemo(() => {
+    return runtimeComponentSlots.map((slot) => {
+      const records = components
+        .filter((item) => item.kind === slot.key)
+        .slice()
+        .sort(compareRuntimeComponent);
+      return {
+        ...slot,
+        records,
+        enabledCount: records.filter((item) => item.enabled).length,
+        deliverableCount: records.filter((item) => item.clientDeliverable).length
+      };
+    });
+  }, [components]);
 
-  function openCreate() {
+  function openCreate(kind: RuntimeComponentSlotKey) {
     if (saving || savingRef.current) {
       return;
     }
     setEditingId(null);
-    setForm(emptyRuntimeComponentEditorForm());
+    setForm(emptyRuntimeComponentEditorForm(kind));
     setEditorOpened(true);
   }
 
@@ -181,15 +195,15 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       const originUrl = form.originUrl.trim();
       const expectedHash = form.expectedHash.trim();
       if (!originUrl) {
-        showRuntimeComponentValidation("请填写远程直链下载地址");
+        showRuntimeComponentValidation("请填写更新地址");
         return;
       }
       if (!/^https?:\/\//i.test(originUrl)) {
-        showRuntimeComponentValidation("远程直链下载地址必须是完整的 http/https 地址");
+        showRuntimeComponentValidation("更新地址必须是完整的 http/https 地址");
         return;
       }
       if (expectedHash && !/^[a-f0-9]{64}$/i.test(expectedHash)) {
-        showRuntimeComponentValidation("预期 Hash 必须是 64 位 SHA-256；不填写也可以先保存，但不会下发给客户端");
+        showRuntimeComponentValidation("SHA-256 必须是 64 位十六进制；不填写也可以先保存");
         return;
       }
     }
@@ -225,7 +239,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           platform: form.platform,
           architecture: form.architecture,
           kind: form.kind,
-          source: form.source,
+          source: form.source === "github_remote" ? ("custom_remote" as const) : form.source,
           originUrl: form.originUrl.trim(),
           defaultMirrorPrefix: form.defaultMirrorPrefix.trim() || null,
           allowClientMirror: form.allowClientMirror,
@@ -234,9 +248,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
           expectedHash: form.expectedHash.trim() || null,
           enabled: form.enabled
         };
-        record = editingId
-          ? await updateAdminRuntimeComponent(editingId, payload)
-          : await createAdminRuntimeComponent(payload);
+        record = editingId ? await updateAdminRuntimeComponent(editingId, payload) : await createAdminRuntimeComponent(payload);
       }
 
       onMutationCommit?.();
@@ -246,7 +258,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       notifications.show({
         color: "green",
         title: "客户端组件",
-        message: editingId ? "客户端组件已更新" : "客户端组件已创建"
+        message: editingId ? "配置已更新" : "配置已添加"
       });
     } catch (reason) {
       const result = showRuntimeComponentFailure(reason, "保存客户端组件失败");
@@ -274,12 +286,12 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       notifications.show({
         color: result.status === "ready" ? "green" : result.status === "disabled" || result.status === "pending_validation" ? "yellow" : "red",
         title: "客户端组件",
-        message: summarizeAdminDiagnosticMessage(result.message, "客户端组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "客户端组件校验完成"
+        message: summarizeAdminDiagnosticMessage(result.message, "校验未通过，请检查更新地址或文件内容。") ?? "校验完成"
       });
       void onRefresh({ silent: true });
     } catch (reason) {
-      const result = showRuntimeComponentFailure(reason, "校验下载链接失败", {
-        uncertainMessage: (message) => `${message} 校验状态不确定，请刷新组件列表确认最新校验结果。`
+      const result = showRuntimeComponentFailure(reason, "校验失败", {
+        uncertainMessage: (message) => `${message} 校验状态不确定，请刷新后确认。`
       });
       if (result.uncertain) {
         void onRefresh({ silent: true });
@@ -297,9 +309,10 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       return;
     }
 
+    const target = displayRuntimeComponentTarget(record);
     const confirmMessage = record.enabled
-      ? `确认删除已启用的客户端组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？除非紧急处理，建议先停用再删除。`
-      : `确认删除客户端组件 ${record.platform}/${record.kind}/${record.architecture}/${record.fileName} 吗？`;
+      ? `确认删除已启用的 ${translateRuntimeComponentKind(record.kind)}（${target}）吗？`
+      : `确认删除 ${translateRuntimeComponentKind(record.kind)}（${target}）吗？`;
     if (!window.confirm(confirmMessage)) {
       return;
     }
@@ -316,7 +329,7 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       notifications.show({
         color: "green",
         title: "客户端组件",
-        message: "客户端组件已删除"
+        message: "配置已删除"
       });
     } catch (reason) {
       const result = showRuntimeComponentFailure(reason, "删除客户端组件失败");
@@ -372,34 +385,13 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
             <Stack gap={4}>
               <Title order={4}>客户端组件</Title>
               <Text size="sm" c="dimmed">
-                这里管理桌面端运行时依赖，不和应用安装包混在一起。
+                只管理 Xray / GeoIP / GeoSite 的更新来源与加速镜像，不和应用安装包混在一起。
               </Text>
             </Stack>
-          <Group gap="xs">
             <Button variant="light" leftSection={<IconRefresh size={16} />} onClick={() => void onRefresh()} loading={loading}>
               刷新
             </Button>
-            <Button leftSection={<IconPlus size={16} />} onClick={openCreate} disabled={saving}>
-              新增组件
-            </Button>
           </Group>
-          </Group>
-
-          <Group gap="md">
-            <Badge color="blue" variant="light">
-              共 {groupedSummary.total} 条
-            </Badge>
-            <Badge color="green" variant="light">
-              已启用 {groupedSummary.enabled} 条
-            </Badge>
-            <Badge color={groupedSummary.failures > 0 ? "red" : "gray"} variant="light">
-              失败上报 {groupedSummary.failures} 条
-            </Badge>
-          </Group>
-
-          <Alert color="blue" variant="light">
-            安装包更新走“应用版本发布”。这里专门管理 `Xray / GeoIP / GeoSite` 组件，优先推荐直接上传到你自己的服务器，只有特殊情况才使用远程直链。
-          </Alert>
 
           {error ? (
             <Alert color="red" variant="light">
@@ -409,33 +401,29 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
 
           {loading ? (
             <Alert color="blue" variant="light">
-              正在加载客户端组件，请稍候。
+              正在加载客户端组件。
             </Alert>
           ) : null}
 
-          <RuntimeComponentSection
-            title="内核主体"
-            description="这里只放真正的 Xray 可执行内核，按平台和架构分别准备。"
-            records={groupedSummary.runtimeCore}
-            validations={validations}
-            saving={saving}
-            verifyingId={verifyingId}
-            onEdit={openEdit}
-            onVerify={(record) => void verifyComponent(record)}
-            onRemove={(record) => void removeComponent(record)}
-          />
-
-          <RuntimeComponentSection
-            title="规则集"
-            description="这里放 GeoIP 和 GeoSite 数据文件。规则集现在按全平台通用处理，只需要保留一份。"
-            records={groupedSummary.rulesets}
-            validations={validations}
-            saving={saving}
-            verifyingId={verifyingId}
-            onEdit={openEdit}
-            onVerify={(record) => void verifyComponent(record)}
-            onRemove={(record) => void removeComponent(record)}
-          />
+          <Stack gap="md">
+            {slotGroups.map((slot) => (
+              <RuntimeComponentSlotCard
+                key={slot.key}
+                title={slot.title}
+                summary={slot.summary}
+                records={slot.records}
+                enabledCount={slot.enabledCount}
+                deliverableCount={slot.deliverableCount}
+                validations={validations}
+                saving={saving}
+                verifyingId={verifyingId}
+                onAdd={() => openCreate(slot.key)}
+                onEdit={openEdit}
+                onVerify={(record) => void verifyComponent(record)}
+                onRemove={(record) => void removeComponent(record)}
+              />
+            ))}
+          </Stack>
         </Stack>
       </Card>
 
@@ -443,9 +431,9 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
         <Stack gap="md">
           <Group justify="space-between" align="flex-start" wrap="wrap">
             <Stack gap={4}>
-              <Title order={4}>失败上报</Title>
+              <Title order={4}>下载失败</Title>
               <Text size="sm" c="dimmed">
-                客户端内核下载失败后，会把失败原因上报到这里，后续可以再接邮件通知。
+                客户端拉取失败后会汇总到这里，便于排查地址或镜像问题。
               </Text>
             </Stack>
             <Button
@@ -454,21 +442,19 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
               onClick={() => void refreshFailures()}
               loading={failuresRefreshing}
             >
-              刷新失败上报
+              刷新
             </Button>
           </Group>
 
-          <Stack gap="sm">
-            {failures.length === 0 ? (
-              <Card withBorder>
-                <Text c="dimmed">目前还没有客户端组件失败上报。</Text>
-              </Card>
-            ) : (
-              failures.map((item) => (
-                <Card key={item.id} withBorder>
+          {failures.length === 0 ? (
+            <Text c="dimmed">暂无失败上报。</Text>
+          ) : (
+            <Stack gap="sm">
+              {failures.map((item) => (
+                <Card key={item.id} withBorder radius="md" p="md">
                   <Stack gap={4}>
                     <Group justify="space-between" wrap="nowrap">
-                      <Title order={5}>{item.componentLabel}</Title>
+                      <Text fw={600}>{item.componentLabel}</Text>
                       <Badge color="red" variant="light">
                         {item.reason}
                       </Badge>
@@ -484,202 +470,199 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
                     ) : null}
                   </Stack>
                 </Card>
-              ))
-            )}
-          </Stack>
+              ))}
+            </Stack>
+          )}
         </Stack>
       </Card>
     </Stack>
   );
 }
 
-type RuntimeComponentSectionProps = {
+type RuntimeComponentSlotCardProps = {
   title: string;
-  description: string;
+  summary: string;
   records: AdminRuntimeComponentRecordDto[];
+  enabledCount: number;
+  deliverableCount: number;
   validations: Record<string, AdminRuntimeComponentValidationDto>;
   saving: boolean;
   verifyingId: string | null;
+  onAdd: () => void;
   onEdit: (record: AdminRuntimeComponentRecordDto) => void;
   onVerify: (record: AdminRuntimeComponentRecordDto) => void;
   onRemove: (record: AdminRuntimeComponentRecordDto) => void;
 };
 
-function RuntimeComponentSection(props: RuntimeComponentSectionProps) {
-  const { title, description, records, validations, saving, verifyingId, onEdit, onVerify, onRemove } = props;
+function RuntimeComponentSlotCard(props: RuntimeComponentSlotCardProps) {
+  const {
+    title,
+    summary,
+    records,
+    enabledCount,
+    deliverableCount,
+    validations,
+    saving,
+    verifyingId,
+    onAdd,
+    onEdit,
+    onVerify,
+    onRemove
+  } = props;
 
   return (
-    <Stack gap="sm">
-      <Stack gap={4}>
-        <Group gap="xs">
-          <Title order={5}>{title}</Title>
-          <Badge variant="light" color="gray">
-            {records.length} 条
-          </Badge>
+    <Card withBorder radius="lg" p="md">
+      <Stack gap="md">
+        <Group justify="space-between" align="flex-start" wrap="wrap">
+          <Stack gap={4}>
+            <Group gap="xs">
+              <Title order={5}>{title}</Title>
+              <Badge variant="light" color="gray">
+                {records.length} 项
+              </Badge>
+              <Badge variant="light" color={enabledCount > 0 ? "green" : "gray"}>
+                启用 {enabledCount}
+              </Badge>
+              <Badge variant="light" color={deliverableCount > 0 ? "teal" : "yellow"}>
+                可下发 {deliverableCount}
+              </Badge>
+            </Group>
+            <Text size="sm" c="dimmed">
+              {summary}
+            </Text>
+          </Stack>
+          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={onAdd} disabled={saving}>
+            添加
+          </Button>
         </Group>
-        <Text size="sm" c="dimmed">
-          {description}
-        </Text>
-      </Stack>
 
-      <ScrollArea>
-        <Box style={{ minWidth: 1200 }}>
-        <Table striped highlightOnHover withTableBorder>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>平台</Table.Th>
-              <Table.Th>架构</Table.Th>
-              <Table.Th>组件</Table.Th>
-              <Table.Th>来源</Table.Th>
-              <Table.Th>文件信息</Table.Th>
-              <Table.Th>下载地址</Table.Th>
-              <Table.Th>启用 / 下发</Table.Th>
-              <Table.Th>验证结果</Table.Th>
-              <Table.Th>操作</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
+        {records.length === 0 ? (
+          <Text c="dimmed" size="sm">
+            还没有配置。添加后，客户端检查更新时会按这里的地址和镜像拉取。
+          </Text>
+        ) : (
+          <Stack gap="sm">
             {records.map((record) => {
+              const deliveryState = getRuntimeComponentDeliveryState(record);
               const validation = validations[record.id];
               const rowIsVerifying = verifyingId === record.id;
-              const deliveryState = getRuntimeComponentDeliveryState(record);
+              const mirrorCount = countMirrorPrefixes(record.defaultMirrorPrefix);
               return (
-                <Table.Tr key={record.id}>
-                  <Table.Td>{displayRuntimeComponentPlatform(record)}</Table.Td>
-                  <Table.Td>{displayRuntimeComponentArchitecture(record)}</Table.Td>
-                  <Table.Td>{translateRuntimeComponentKind(record.kind)}</Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Badge color={record.source === "uploaded" ? "teal" : "blue"} variant="light">
-                        {record.source === "uploaded" ? "已上传到服务器" : record.source === "github_remote" ? "远程直链（旧）" : "远程直链"}
-                      </Badge>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Text size="sm" fw={600}>
-                        {record.fileName}
-                      </Text>
-                      <Text size="xs" c="dimmed">
-                        大小：{record.fileSizeBytes ? formatBytes(record.fileSizeBytes) : "待校验"}
-                      </Text>
-                      <Text size="xs" c="dimmed" lineClamp={1}>
-                        Hash：{record.fileHash ? shrinkHash(record.fileHash) : "未记录"}
-                      </Text>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Text size="sm" lineClamp={1}>
-                        {record.finalUrlPreview}
-                      </Text>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Badge color={record.enabled ? "green" : "gray"} variant="light">
-                        {record.enabled ? "已启用" : "已停用"}
-                      </Badge>
-                      <Badge color={deliveryState.color} variant="light">
-                        {deliveryState.label}
-                      </Badge>
-                      <Text size="xs" c="dimmed" lineClamp={2}>
-                        {deliveryState.description}
-                      </Text>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Badge color={validationColor(validation?.status)} variant="light">
-                        {validation ? translateValidationStatus(validation.status) : "未校验"}
-                      </Badge>
-                      <Text size="xs" c="dimmed" lineClamp={2}>
-                        {summarizeAdminDiagnosticMessage(validation?.message, "客户端组件校验未通过，请检查下载地址、文件大小或哈希配置。") ?? "点击校验后会检查最终下载地址是否可用"}
-                      </Text>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Group gap={6} wrap="nowrap">
-                      <ActionIcon
-                        variant="light"
-                        color="blue"
-                        onClick={() => onEdit(record)}
-                        title="编辑客户端组件"
-                        aria-label="编辑客户端组件"
-                        disabled={saving || rowIsVerifying}
-                      >
-                        <IconEdit size={16} />
-                      </ActionIcon>
-                      <ActionIcon
-                        variant="light"
-                        color="green"
-                        onClick={() => onVerify(record)}
-                        title="校验客户端组件"
-                        aria-label="校验客户端组件"
-                        loading={rowIsVerifying}
-                        disabled={saving || (verifyingId !== null && verifyingId !== record.id)}
-                      >
-                        <IconCheck size={16} />
-                      </ActionIcon>
-                      <ActionIcon
-                        variant="light"
-                        color="gray"
-                        onClick={() =>
-                          void navigator.clipboard
-                            .writeText(record.finalUrlPreview)
-                            .then(() => {
-                              notifications.show({ color: "green", title: "客户端组件", message: "最终下载地址已复制" });
-                            })
-                            .catch(() => {
-                              notifications.show({ color: "yellow", title: "客户端组件", message: "复制失败，请手动复制下载地址" });
-                            })
-                        }
-                        title="复制最终下载地址"
-                        aria-label="复制最终下载地址"
-                      >
-                        <IconCopy size={16} />
-                      </ActionIcon>
-                      <ActionIcon
-                        variant="light"
-                        color="dark"
-                        component="a"
-                        href={record.finalUrlPreview}
-                        target="_blank"
-                        rel="noreferrer"
-                        title="打开最终下载地址"
-                        aria-label="打开最终下载地址"
-                      >
-                        <IconExternalLink size={16} />
-                      </ActionIcon>
-                      <ActionIcon
-                        variant="light"
-                        color="red"
-                        onClick={() => onRemove(record)}
-                        title="删除客户端组件"
-                        aria-label="删除客户端组件"
-                        disabled={saving || rowIsVerifying}
-                      >
-                        <IconTrash size={16} />
-                      </ActionIcon>
+                <Card key={record.id} withBorder radius="md" p="md" bg="var(--mantine-color-body)">
+                  <Stack gap="sm">
+                    <Group justify="space-between" align="flex-start" wrap="wrap">
+                      <Stack gap={4} style={{ flex: 1, minWidth: 240 }}>
+                        <Group gap="xs" wrap="wrap">
+                          <Text fw={600}>{displayRuntimeComponentTarget(record)}</Text>
+                          <Badge color={record.enabled ? "green" : "gray"} variant="light">
+                            {record.enabled ? "已启用" : "已停用"}
+                          </Badge>
+                          <Badge color={record.source === "uploaded" ? "teal" : "blue"} variant="light">
+                            {record.source === "uploaded" ? "服务器文件" : "远程更新"}
+                          </Badge>
+                          <Badge color={deliveryState.color} variant="light">
+                            {deliveryState.label}
+                          </Badge>
+                        </Group>
+                        <Text size="sm" lineClamp={2}>
+                          {record.source === "uploaded" ? record.finalUrlPreview : record.originUrl || record.finalUrlPreview}
+                        </Text>
+                        <Group gap="md" wrap="wrap">
+                          <Text size="xs" c="dimmed">
+                            文件 {record.fileName || "-"}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            大小 {formatBytes(record.fileSizeBytes)}
+                          </Text>
+                          {record.source !== "uploaded" ? (
+                            <Text size="xs" c="dimmed">
+                              镜像 {mirrorCount > 0 ? `${mirrorCount} 个` : "未配置"}
+                            </Text>
+                          ) : null}
+                          {validation ? (
+                            <Text size="xs" c="dimmed">
+                              校验 {translateValidationStatus(validation.status)}
+                            </Text>
+                          ) : null}
+                        </Group>
+                        <Text size="xs" c="dimmed" lineClamp={2}>
+                          {deliveryState.description}
+                        </Text>
+                      </Stack>
+
+                      <Group gap={6} wrap="nowrap">
+                        <ActionIcon
+                          variant="light"
+                          color="blue"
+                          onClick={() => onEdit(record)}
+                          title="配置"
+                          aria-label="配置"
+                          disabled={saving || rowIsVerifying}
+                        >
+                          <IconEdit size={16} />
+                        </ActionIcon>
+                        <ActionIcon
+                          variant="light"
+                          color="green"
+                          onClick={() => onVerify(record)}
+                          title="校验"
+                          aria-label="校验"
+                          loading={rowIsVerifying}
+                          disabled={saving || (verifyingId !== null && verifyingId !== record.id)}
+                        >
+                          <IconCheck size={16} />
+                        </ActionIcon>
+                        <Menu withinPortal position="bottom-end" shadow="md">
+                          <Menu.Target>
+                            <ActionIcon variant="light" color="gray" title="更多" aria-label="更多">
+                              <IconDots size={16} />
+                            </ActionIcon>
+                          </Menu.Target>
+                          <Menu.Dropdown>
+                            <Menu.Item
+                              leftSection={<IconCopy size={14} />}
+                              onClick={() =>
+                                void navigator.clipboard
+                                  .writeText(record.finalUrlPreview)
+                                  .then(() => {
+                                    notifications.show({ color: "green", title: "客户端组件", message: "下载地址已复制" });
+                                  })
+                                  .catch(() => {
+                                    notifications.show({ color: "yellow", title: "客户端组件", message: "复制失败，请手动复制" });
+                                  })
+                              }
+                            >
+                              复制下载地址
+                            </Menu.Item>
+                            <Menu.Item
+                              leftSection={<IconExternalLink size={14} />}
+                              component="a"
+                              href={record.finalUrlPreview}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              打开下载地址
+                            </Menu.Item>
+                            <Menu.Item
+                              color="red"
+                              leftSection={<IconTrash size={14} />}
+                              onClick={() => onRemove(record)}
+                              disabled={saving || rowIsVerifying}
+                            >
+                              删除
+                            </Menu.Item>
+                          </Menu.Dropdown>
+                        </Menu>
+                      </Group>
                     </Group>
-                  </Table.Td>
-                </Table.Tr>
+                  </Stack>
+                </Card>
               );
             })}
-            {records.length === 0 ? (
-              <Table.Tr>
-                <Table.Td colSpan={9}>
-                  <Text c="dimmed" ta="center">
-                    当前分组还没有组件。
-                  </Text>
-                </Table.Td>
-              </Table.Tr>
-            ) : null}
-          </Table.Tbody>
-        </Table>
-        </Box>
-      </ScrollArea>
-    </Stack>
+          </Stack>
+        )}
+      </Stack>
+    </Card>
   );
 }
 
@@ -692,38 +675,10 @@ function upsertRuntimeComponent(current: AdminRuntimeComponentRecordDto[], next:
 }
 
 function compareRuntimeComponent(a: AdminRuntimeComponentRecordDto, b: AdminRuntimeComponentRecordDto) {
-  return `${a.platform}-${a.architecture}-${a.kind}`.localeCompare(`${b.platform}-${b.architecture}-${b.kind}`);
-}
-
-function translatePlatform(platform: AdminRuntimeComponentRecordDto["platform"]) {
-  if (platform === "macos") return "macOS";
-  if (platform === "windows") return "Windows";
-  if (platform === "android") return "Android";
-  return "iOS";
-}
-
-function displayRuntimeComponentPlatform(record: AdminRuntimeComponentRecordDto) {
-  if (record.kind === "geoip" || record.kind === "geosite") {
-    return "通用";
-  }
-  return translatePlatform(record.platform);
-}
-
-function displayRuntimeComponentArchitecture(record: AdminRuntimeComponentRecordDto) {
-  if (record.kind === "geoip" || record.kind === "geosite") {
-    return "通用";
-  }
-  return record.architecture.toUpperCase();
-}
-
-function validationColor(status?: AdminRuntimeComponentValidationDto["status"]) {
-  if (status === undefined) return "gray";
-  if (status === "ready") return "green";
-  if (status === "disabled") return "yellow";
-  if (status === "pending_validation") return "yellow";
-  if (status === "invalid_url") return "orange";
-  if (status === "missing_file" || status === "metadata_mismatch" || status === "unreachable" || status === "save_failed") return "red";
-  return "red";
+  const kindOrder = { xray: 0, geoip: 1, geosite: 2 } as const;
+  const kindDiff = kindOrder[a.kind] - kindOrder[b.kind];
+  if (kindDiff !== 0) return kindDiff;
+  return `${a.platform}-${a.architecture}`.localeCompare(`${b.platform}-${b.architecture}`);
 }
 
 function translateValidationStatus(status: AdminRuntimeComponentValidationDto["status"]) {
@@ -734,14 +689,14 @@ function translateValidationStatus(status: AdminRuntimeComponentValidationDto["s
   if (status === "disabled") return "已停用";
   if (status === "invalid_url") return "链接有误";
   if (status === "missing_file") return "文件丢失";
-  if (status === "metadata_mismatch") return "元信息不一致";
-  return "链接不可达";
+  if (status === "metadata_mismatch") return "Hash 不一致";
+  return "不可达";
 }
 
 function formatBytes(value?: string | null) {
-  if (!value) return "待校验";
+  if (!value) return "未知";
   const bytes = Number(value);
-  if (!Number.isFinite(bytes) || bytes <= 0) return "待校验";
+  if (!Number.isFinite(bytes) || bytes <= 0) return "未知";
   const units = ["B", "KB", "MB", "GB"];
   let current = bytes;
   let unitIndex = 0;
@@ -749,10 +704,6 @@ function formatBytes(value?: string | null) {
     current /= 1024;
     unitIndex += 1;
   }
-  return `${current >= 100 ? current.toFixed(0) : current.toFixed(1)} ${units[unitIndex]}`;
+  return `${current.toFixed(current >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function shrinkHash(value: string) {
-  if (value.length <= 16) return value;
-  return `${value.slice(0, 8)}...${value.slice(-8)}`;
-}

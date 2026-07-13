@@ -22,8 +22,8 @@ export type RuntimeComponentEditorFormState = {
 };
 
 export const runtimeComponentPlatformOptions = [
-  { value: "macos", label: "macOS" },
   { value: "windows", label: "Windows" },
+  { value: "macos", label: "macOS" },
   { value: "android", label: "Android" },
   { value: "ios", label: "iOS" }
 ] as const;
@@ -34,32 +34,62 @@ export const runtimeComponentArchitectureOptions = [
 ] as const;
 
 export const runtimeComponentKindOptions = [
-  { value: "xray", label: "Xray 内核" },
-  { value: "geoip", label: "GeoIP 数据" },
-  { value: "geosite", label: "GeoSite 数据" }
+  { value: "xray", label: "Xray" },
+  { value: "geoip", label: "GeoIP" },
+  { value: "geosite", label: "GeoSite" }
 ] as const;
 
-export function runtimeComponentSourceOptions(current?: AdminRuntimeComponentSource) {
-  const options: Array<{ value: AdminRuntimeComponentSource; label: string }> = [
-    { value: "uploaded", label: "上传到服务器" },
-    { value: "custom_remote", label: "远程直链" }
-  ];
-  if (current === "github_remote") {
-    options.push({ value: "github_remote", label: "远程直链（旧配置）" });
+export type RuntimeComponentSlotKey = "xray" | "geoip" | "geosite";
+
+export const runtimeComponentSlots: Array<{
+  key: RuntimeComponentSlotKey;
+  title: string;
+  summary: string;
+  defaultFileName: string;
+}> = [
+  {
+    key: "xray",
+    title: "Xray",
+    summary: "按平台和架构分别配置内核文件。",
+    defaultFileName: "xray"
+  },
+  {
+    key: "geoip",
+    title: "GeoIP",
+    summary: "全平台共用一份规则数据。",
+    defaultFileName: "geoip.dat"
+  },
+  {
+    key: "geosite",
+    title: "GeoSite",
+    summary: "全平台共用一份规则数据。",
+    defaultFileName: "geosite.dat"
   }
-  return options;
+];
+
+export function defaultFileNameForKind(kind: AdminRuntimeComponentKind) {
+  if (kind === "geoip") return "geoip.dat";
+  if (kind === "geosite") return "geosite.dat";
+  return "xray";
 }
 
-export function emptyRuntimeComponentEditorForm(): RuntimeComponentEditorFormState {
+export function emptyRuntimeComponentEditorForm(
+  kind: AdminRuntimeComponentKind = "xray",
+  options?: {
+    platform?: AdminReleasePlatform;
+    architecture?: AdminRuntimeComponentArchitecture;
+  }
+): RuntimeComponentEditorFormState {
+  const isRuleset = kind === "geoip" || kind === "geosite";
   return {
-    platform: "macos",
-    architecture: "arm64",
-    kind: "xray",
-    source: "uploaded",
+    platform: options?.platform ?? (isRuleset ? "macos" : "windows"),
+    architecture: options?.architecture ?? (isRuleset ? "arm64" : "x64"),
+    kind,
+    source: "custom_remote",
     originUrl: "",
     defaultMirrorPrefix: "",
-    allowClientMirror: false,
-    fileName: "",
+    allowClientMirror: true,
+    fileName: defaultFileNameForKind(kind),
     archiveEntryName: "",
     expectedHash: "",
     enabled: true,
@@ -72,11 +102,11 @@ export function toRuntimeComponentEditorForm(record: AdminRuntimeComponentRecord
     platform: record.platform,
     architecture: record.architecture,
     kind: record.kind,
-    source: record.source,
+    source: record.source === "github_remote" ? "custom_remote" : record.source,
     originUrl: record.originUrl,
     defaultMirrorPrefix: record.defaultMirrorPrefix ?? "",
     allowClientMirror: record.allowClientMirror,
-    fileName: record.fileName,
+    fileName: record.fileName || defaultFileNameForKind(record.kind),
     archiveEntryName: record.archiveEntryName ?? "",
     expectedHash: record.expectedHash ?? "",
     enabled: record.enabled,
@@ -85,7 +115,29 @@ export function toRuntimeComponentEditorForm(record: AdminRuntimeComponentRecord
 }
 
 export function translateRuntimeComponentKind(kind: AdminRuntimeComponentKind) {
-  if (kind === "xray") return "Xray 内核";
-  if (kind === "geoip") return "GeoIP 数据";
-  return "GeoSite 数据";
+  if (kind === "xray") return "Xray";
+  if (kind === "geoip") return "GeoIP";
+  return "GeoSite";
+}
+
+export function translatePlatform(platform: AdminReleasePlatform) {
+  if (platform === "macos") return "macOS";
+  if (platform === "windows") return "Windows";
+  if (platform === "android") return "Android";
+  return "iOS";
+}
+
+export function displayRuntimeComponentTarget(record: AdminRuntimeComponentRecordDto) {
+  if (record.kind === "geoip" || record.kind === "geosite") {
+    return "全平台通用";
+  }
+  return `${translatePlatform(record.platform)} / ${record.architecture.toUpperCase()}`;
+}
+
+export function countMirrorPrefixes(value?: string | null) {
+  if (!value) return 0;
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean).length;
 }
