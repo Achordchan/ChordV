@@ -9,6 +9,7 @@ import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-e
 import { AuthSessionService } from "../src/modules/common/auth-session.service";
 import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { DevDataService } from "../src/modules/common/dev-data.service";
+import { DownloadMirrorService } from "../src/modules/common/download-mirror.service";
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 import { ClientController } from "../src/modules/client/client.controller";
@@ -33,7 +34,7 @@ let clientSseObservedInput: { authorization?: string; lastEventId?: string } | n
 
 Reflect.defineMetadata(
   "design:paramtypes",
-  [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+  [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
   AdminController
 );
 Reflect.defineMetadata("design:paramtypes", [DevDataService, RuntimeComponentsService], DownloadsController);
@@ -259,6 +260,10 @@ async function testAdminSseRejectsNonAdminWithForbiddenException() {
     runtimeComponentsServiceStub as any,
     imageBedServiceStub as any,
     {
+      getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }),
+      updateAdminConfig: async (input: unknown) => input
+    } as any,
+    {
       stream: (input: { validate?: () => Promise<void> }) => {
         validate = input.validate;
         return {};
@@ -296,6 +301,10 @@ async function testAdminSseRouteMetadataAndAdminValidation() {
     runtimeComponentsServiceStub as any,
     imageBedServiceStub as any,
     {
+      getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }),
+      updateAdminConfig: async (input: unknown) => input
+    } as any,
+    {
       stream: (input: { lastEventId?: string; validate?: () => Promise<void> }) => {
         observedInput = input;
         return {};
@@ -332,6 +341,13 @@ async function testAdminSseRouteMetadataAndAdminValidation() {
     { provide: ClientService, useValue: clientServiceStub },
     { provide: RuntimeComponentsService, useValue: runtimeComponentsServiceStub },
     { provide: ImageBedService, useValue: imageBedServiceStub },
+    {
+      provide: DownloadMirrorService,
+      useValue: {
+        getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }),
+        updateAdminConfig: async (input: unknown) => input
+      }
+    },
     {
       provide: AdminRuntimeEventsService,
       useValue: {

@@ -11,6 +11,7 @@ import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-e
 import { AuthSessionService } from "../src/modules/common/auth-session.service";
 import { ClientAuthGuard } from "../src/modules/common/client-auth.guard";
 import { DevDataService } from "../src/modules/common/dev-data.service";
+import { DownloadMirrorService } from "../src/modules/common/download-mirror.service";
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
 import { ClientService } from "../src/modules/client/client.service";
@@ -47,7 +48,7 @@ const requestMethodNames = new Map<RequestMethod, string>([
 
 Reflect.defineMetadata(
   "design:paramtypes",
-  [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+  [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
   AdminController
 );
 Reflect.defineMetadata("design:paramtypes", [CreatePlanDto], AdminController.prototype, "createPlan");
@@ -259,6 +260,11 @@ const clientServiceStub = {
   disconnect: async (sessionId: string, authorization?: string) => record("client-session-disconnect", sessionId, { authorization })
 };
 
+const downloadMirrorServiceStub = {
+  getAdminConfig: async () => record("download-mirror-config-get", "config"),
+  updateAdminConfig: async (body: unknown) => record("download-mirror-config-update", "config", body)
+};
+
 const imageBedServiceStub = {
   getAdminConfig: async () => record("image-bed-config-get", "config"),
   updateAdminConfig: async (body: unknown) => record("image-bed-config-update", "config", body),
@@ -282,6 +288,7 @@ const imageBedServiceStub = {
     { provide: ClientService, useValue: clientServiceStub },
     { provide: RuntimeComponentsService, useValue: runtimeComponentsServiceStub },
     { provide: ImageBedService, useValue: imageBedServiceStub },
+    { provide: DownloadMirrorService, useValue: downloadMirrorServiceStub },
     { provide: AdminRuntimeEventsService, useValue: {} }
   ]
 })
@@ -494,6 +501,16 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/image-bed/config", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/image-bed/config", { method: "PATCH", body: { apiToken: "imgbed_test_token" } })).status,
+      200
+    );
+    assert.equal((await requestJson(baseUrl, "/api/admin/download-mirror/config", { method: "GET" })).status, 200);
+    assert.equal(
+      (
+        await requestJson(baseUrl, "/api/admin/download-mirror/config", {
+          method: "PATCH",
+          body: { defaultMirrorPrefix: "https://ghfast.top/", allowClientMirror: true }
+        })
+      ).status,
       200
     );
     assert.equal((await requestJson(baseUrl, "/api/admin/image-bed/files?prefix=tickets", { method: "GET" })).status, 200);
@@ -834,6 +851,12 @@ async function main() {
         { route: "dashboard-get", value: "dashboard" },
         { route: "image-bed-config-get", value: "config" },
         { route: "image-bed-config-update", value: "config", body: { apiToken: "imgbed_test_token" } },
+        { route: "download-mirror-config-get", value: "config" },
+        {
+          route: "download-mirror-config-update",
+          value: "config",
+          body: { defaultMirrorPrefix: "https://ghfast.top/", allowClientMirror: true }
+        },
         { route: "image-bed-files-list", value: "all", body: { prefix: "tickets" } },
         { route: "image-bed-file-delete", value: "file", body: { key: "tickets/a.png" } },
         {

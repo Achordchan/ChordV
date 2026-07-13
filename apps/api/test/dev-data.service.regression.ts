@@ -31,6 +31,7 @@ import { ClientAccessService } from "../src/modules/common/client-access.service
 import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
 import { ReleaseCenterService } from "../src/modules/common/release-center.service";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
+import { DownloadMirrorService } from "../src/modules/common/download-mirror.service";
 import { ImageBedService } from "../src/modules/common/image-bed.service";
 import {
   assertReleaseArtifactClientUsable,
@@ -3896,6 +3897,10 @@ async function testAdminControllerForwardsPreviouslyUncoveredManagementRoutes() 
         calls.push("image-bed:config");
         return { enabled: true };
       }
+    } as any,
+    {
+      getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }),
+      updateAdminConfig: async (input: unknown) => input
     } as any,
     {} as any,
     {} as any
@@ -8221,7 +8226,7 @@ async function testRenewSubscriptionHttpReturnsPendingWhenResetTrafficPanelQueue
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -8238,6 +8243,7 @@ async function testRenewSubscriptionHttpReturnsPendingWhenResetTrafficPanelQueue
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -8851,7 +8857,7 @@ async function testResetSubscriptionTrafficHttpReturnsPendingWhenPanelQueueFails
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -8868,6 +8874,7 @@ async function testResetSubscriptionTrafficHttpReturnsPendingWhenPanelQueueFails
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -10346,7 +10353,7 @@ async function testProbeAllNodesHttpContinuesWhenSingleNodeProbeFails() {
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -10363,6 +10370,7 @@ async function testProbeAllNodesHttpContinuesWhenSingleNodeProbeFails() {
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -14176,7 +14184,7 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -14193,6 +14201,7 @@ async function testNodeAccessHttpReturnsPendingWhenOfflinePanelQueueFailsAfterLo
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -14334,7 +14343,7 @@ async function testNodeAccessHttpRemoveOnlyReturnsPendingWhenOfflinePanelQueueFa
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -14351,6 +14360,7 @@ async function testNodeAccessHttpRemoveOnlyReturnsPendingWhenOfflinePanelQueueFa
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -14572,7 +14582,7 @@ async function testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFai
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -14589,6 +14599,7 @@ async function testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFai
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -14676,7 +14687,7 @@ async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailab
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -14693,6 +14704,7 @@ async function testNodeAccessHttpMapsSubscriptionLookupFailureToServiceUnavailab
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -14759,7 +14771,7 @@ async function testNodeAccessHttpMapsNodeListFailureToServiceUnavailable() {
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -14776,6 +14788,7 @@ async function testNodeAccessHttpMapsNodeListFailureToServiceUnavailable() {
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -14900,7 +14913,7 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -14917,6 +14930,7 @@ async function testNodeAccessHttpReplaceReturnsPendingWhenOfflinePanelQueuesFail
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -15036,7 +15050,7 @@ async function testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueue
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -15053,6 +15067,7 @@ async function testNodeAccessHttpAddOnlyReturnsPendingWhenPanelEnsurePrismaQueue
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
@@ -15173,7 +15188,7 @@ async function testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfte
   Reflect.defineMetadata("design:paramtypes", [AuthSessionService], AdminAuthGuard);
   Reflect.defineMetadata(
     "design:paramtypes",
-    [DevDataService, RuntimeComponentsService, ImageBedService, AdminRuntimeEventsService, AuthSessionService],
+    [DevDataService, RuntimeComponentsService, ImageBedService, DownloadMirrorService, AdminRuntimeEventsService, AuthSessionService],
     AdminController
   );
 
@@ -15190,6 +15205,7 @@ async function testNodeAccessHttpReturnsOkWhenAdminRuntimeEventPublishThrowsAfte
       { provide: DevDataService, useValue: devDataService },
       { provide: RuntimeComponentsService, useValue: {} },
       { provide: ImageBedService, useValue: {} },
+      { provide: DownloadMirrorService, useValue: { getAdminConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null }), updateAdminConfig: async (input: unknown) => input } },
       { provide: AdminRuntimeEventsService, useValue: {} }
     ]
   })
