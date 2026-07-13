@@ -214,11 +214,14 @@ function testPoliciesAndRuntimeComponentsUseCurrentNavigationNames() {
   assert.match(runtimeComponentsPageSource, /加载客户端组件失败/);
   assert.match(runtimeComponentsPanelSource, /<Title order=\{4\}>客户端组件<\/Title>/);
   assert.match(runtimeComponentsPanelSource, /客户端组件请求状态不确定/);
-  assert.match(runtimeComponentsPanelSource, /title="编辑客户端组件"/);
-  assert.match(runtimeComponentsPanelSource, /aria-label="编辑客户端组件"/);
-  assert.match(runtimeComponentsPanelSource, /title="复制最终下载地址"/);
-  assert.match(runtimeComponentsPanelSource, /aria-label="复制最终下载地址"/);
-  assert.match(runtimeComponentEditorSource, /编辑客户端组件/);
+  assert.match(runtimeComponentsPanelSource, /RuntimeComponentSlotCard/);
+  assert.match(runtimeComponentsPanelSource, /title="配置"/);
+  assert.match(runtimeComponentsPanelSource, /aria-label="配置"/);
+  assert.match(runtimeComponentsPanelSource, /复制下载地址/);
+  assert.match(runtimeComponentEditorSource, /配置 \$\{kindLabel\}/);
+  assert.match(runtimeComponentEditorSource, /更新地址/);
+  assert.match(runtimeComponentEditorSource, /加速镜像/);
+  assert.match(runtimeComponentEditorSource, /高级选项/);
 }
 
 function testNodesPageKeepsNodeAndSyncTaskActions() {

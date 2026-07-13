@@ -170,9 +170,13 @@ function testFailedValidationBlocksDeliveryState() {
   assert.equal(getRuntimeComponentDeliveryState(next).label, "保存失败");
 }
 
-function testRuntimeComponentsTableKeepsReadableMinimumWidth() {
-  assert.match(runtimeComponentsPanelSource, /<ScrollArea>/);
-  assert.match(runtimeComponentsPanelSource, /<Box style={{ minWidth: 1200 }}>/);
+function testRuntimeComponentsPanelUsesSlotCardsInsteadOfWideTable() {
+  assert.match(runtimeComponentsPanelSource, /RuntimeComponentSlotCard/);
+  assert.match(runtimeComponentsPanelSource, /runtimeComponentSlots/);
+  assert.match(runtimeComponentsPanelSource, /title="配置"/);
+  assert.match(runtimeComponentsPanelSource, /复制下载地址/);
+  assert.doesNotMatch(runtimeComponentsPanelSource, /<ScrollArea>/);
+  assert.doesNotMatch(runtimeComponentsPanelSource, /minWidth: 1200/);
 }
 
 function testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash() {
@@ -228,7 +232,7 @@ testDeliverableComponentIsShownAsDeliverable();
 testMissingDeliveryFieldsAreShownAsUnknown();
 testReadyValidationUpdatesDeliveryState();
 testFailedValidationBlocksDeliveryState();
-testRuntimeComponentsTableKeepsReadableMinimumWidth();
+testRuntimeComponentsPanelUsesSlotCardsInsteadOfWideTable();
 testUploadedRuntimeComponentSaveDoesNotSubmitExpectedHash();
 testRuntimeComponentMutationsAlwaysReleaseBusyState();
 testRuntimeComponentUncertainMutationsRefreshSilently();
