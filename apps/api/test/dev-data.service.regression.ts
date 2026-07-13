@@ -21085,7 +21085,7 @@ async function testRuntimeComponentCreateRejectsBlankFileName() {
   );
 }
 
-async function testRuntimeComponentCreateIgnoresRemoteMirrorFields() {
+async function testRuntimeComponentCreatePersistsRemoteMirrorFields() {
   let createdData: Record<string, unknown> | null = null;
   const service = createRuntimeComponentsService({
     prisma: {
@@ -21113,10 +21113,18 @@ async function testRuntimeComponentCreateIgnoresRemoteMirrorFields() {
     fileName: "xray.exe"
   });
 
-  assert.equal(createdData?.defaultMirrorPrefix, null, "remote runtime components must keep the origin URL without default mirrors");
-  assert.equal(createdData?.allowClientMirror, false, "remote runtime components must not enable client mirror rewriting");
-  assert.equal(result.defaultMirrorPrefix, null);
-  assert.equal(result.allowClientMirror, false);
+  assert.equal(
+    createdData?.defaultMirrorPrefix,
+    "https://ghfast.top/",
+    "remote runtime components should persist default mirror prefixes for client acceleration"
+  );
+  assert.equal(
+    createdData?.allowClientMirror,
+    true,
+    "remote runtime components should honor allowClientMirror"
+  );
+  assert.equal(result.defaultMirrorPrefix, "https://ghfast.top/");
+  assert.equal(result.allowClientMirror, true);
 }
 
 async function testRuntimeComponentCreateMapsUniqueIdentityConflict() {
@@ -34247,7 +34255,7 @@ async function main() {
   await testRuntimeComponentCreateRejectsUploadedSource();
   await testRuntimeComponentCreateRequiresHttpUrl();
   await testRuntimeComponentCreateRejectsBlankFileName();
-  await testRuntimeComponentCreateIgnoresRemoteMirrorFields();
+  await testRuntimeComponentCreatePersistsRemoteMirrorFields();
   await testRuntimeComponentCreateMapsUniqueIdentityConflict();
   await testRuntimeComponentCreateMapsLocalSaveFailure();
   await testRuntimeComponentUpdateMapsUniqueIdentityConflict();
