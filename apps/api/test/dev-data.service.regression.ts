@@ -22347,116 +22347,72 @@ async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
 }
 
 async function testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash() {
-  const entry = Buffer.from("runtime-entry-binary");
-  const zip = createStoredZipWithSingleEntry("xray.exe", entry);
-  const entryHash = createHash("sha256").update(entry).digest("hex");
-  const zipHash = createHash("sha256").update(zip).digest("hex");
-  const updates: Array<Record<string, any>> = [];
-  const server = createServer((_request, response) => {
-    response.writeHead(200, {
-      "content-type": "application/zip",
-      "content-length": String(zip.byteLength)
-    });
-    response.end(zip);
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.zip`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: "xray.exe",
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash: entryHash,
-            enabled: true
-          }),
-          update: async (payload: Record<string, any>) => {
-            updates.push(payload);
-            return payload;
-          }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.zip",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: "xray.exe",
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        }),
+        update: async () => {
+          throw new Error("remote validation must not download zip entries for hash checks");
         }
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "ready");
-    assert.notEqual(zipHash, entryHash, "test must prove archive hash differs from extracted entry hash");
-    assert.equal(updates[0].data.fileSizeBytes, BigInt(zip.byteLength));
-    assert.equal(updates[0].data.fileHash, entryHash);
-    assert.equal(updates[0].data.expectedHash, entryHash);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote zip components only need a valid update URL");
 }
+
 
 async function testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup() {
-  const entry = Buffer.from("runtime-entry-binary");
-  const zip = createStoredZipWithSingleEntry("xray.exe", entry);
-  const entryHash = createHash("sha256").update(entry).digest("hex");
   const cleanupCalls: Array<{ absolutePath: string | null; label: string }> = [];
-  const server = createServer((_request, response) => {
-    response.writeHead(200, {
-      "content-type": "application/zip",
-      "content-length": String(zip.byteLength)
-    });
-    response.end(zip);
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      startRuntimeComponentFileCleanupBestEffort: (absolutePath: string | null, label: string) => {
-        cleanupCalls.push({ absolutePath, label });
-      },
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.zip`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: "xray.exe",
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash: entryHash,
-            enabled: true
-          }),
-          update: async (payload: Record<string, any>) => payload
-        }
+  const service = createRuntimeComponentsService({
+    startRuntimeComponentFileCleanupBestEffort: (absolutePath: string | null, label: string) => {
+      cleanupCalls.push({ absolutePath, label });
+    },
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.zip",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: "xray.exe",
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "ready");
-    assert.equal(cleanupCalls.length, 1);
-    assert.equal(cleanupCalls[0].label, "temporary remote runtime archive");
-    assert.match(cleanupCalls[0].absolutePath ?? "", /chordv-runtime-component-/);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready");
+  assert.equal(cleanupCalls.length, 0, "remote validation no longer extracts temporary zip archives");
 }
+
 
 async function testRemoteRuntimeValidationRejectsOversizeExpectedHashResponse() {
   const service = createRuntimeComponentsService({
