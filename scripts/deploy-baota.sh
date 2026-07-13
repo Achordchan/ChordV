@@ -72,6 +72,16 @@ assert_safe_deploy_path DEPLOY_ADMIN_PATH "${DEPLOY_ADMIN_PATH}"
 REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
 DEPLOY_STAGE_PATH="${DEPLOY_PATH}.stage-$(date +%Y%m%d%H%M%S)"
 
+# 复用同一条 SSH 连接，减少多次 rsync/ssh 握手开销
+SSH_CONTROL_DIR="$(mktemp -d)"
+SSH_CONTROL_PATH="${SSH_CONTROL_DIR}/control-%C"
+SSH_BASE_OPTS="${SSH_OPTS} -o ControlMaster=auto -o ControlPath=${SSH_CONTROL_PATH} -o ControlPersist=120"
+cleanup_ssh_control() {
+  ssh ${SSH_BASE_OPTS} -O exit "${REMOTE}" >/dev/null 2>&1 || true
+  rm -rf "${SSH_CONTROL_DIR}"
+}
+trap cleanup_ssh_control EXIT
+
 require_command pnpm
 require_command rsync
 require_command ssh
@@ -101,18 +111,27 @@ rsync -a \
   --exclude ".DS_Store" \
   --exclude "._*" \
   --exclude "prisma/dev.db" \
+  --exclude "test/" \
+  --exclude ".turbo/" \
+  --exclude "src/" \
+  --exclude "tsconfig.json" \
+  --exclude "tsconfig.tsbuildinfo" \
   apps/api/ "${API_STAGE}/apps/api/"
 
 rsync -a \
   --exclude "node_modules/" \
   --exclude ".DS_Store" \
   --exclude "._*" \
+  --exclude "src/" \
+  --exclude ".turbo/" \
+  --exclude "tsconfig.json" \
+  --exclude "tsconfig.tsbuildinfo" \
   packages/shared/ "${API_STAGE}/packages/shared/"
 
 rsync -a --delete apps/admin/dist/ "${ADMIN_STAGE}/"
 
 echo "Preparing remote API stage: ${DEPLOY_STAGE_PATH}"
-ssh ${SSH_OPTS} "${REMOTE}" \
+ssh ${SSH_BASE_OPTS} "${REMOTE}" \
   DEPLOY_PATH="${DEPLOY_PATH}" \
   DEPLOY_STAGE_PATH="${DEPLOY_STAGE_PATH}" \
   'bash -s' <<'REMOTE_STAGE_PREP'
@@ -134,7 +153,7 @@ rsync -az --delete \
   --no-perms \
   --no-owner \
   --no-group \
-  -e "ssh ${SSH_OPTS}" \
+  -e "ssh ${SSH_BASE_OPTS}" \
   --exclude ".env" \
   --exclude ".env.*" \
   --exclude ".well-known/" \
@@ -147,7 +166,7 @@ rsync -az --delete \
   --exclude "*.db" \
   "${API_STAGE}/" "${REMOTE}:${DEPLOY_STAGE_PATH}/"
 
-ssh ${SSH_OPTS} "${REMOTE}" \
+ssh ${SSH_BASE_OPTS} "${REMOTE}" \
   DEPLOY_PATH="${DEPLOY_PATH}" \
   DEPLOY_STAGE_PATH="${DEPLOY_STAGE_PATH}" \
   DEPLOY_NODE_VERSION="${DEPLOY_NODE_VERSION}" \
@@ -187,13 +206,19 @@ if [ -f "${LIVE_SCHEMA}" ] && [ -f "${STAGE_SCHEMA}" ] && ! cmp -s "${LIVE_SCHEM
 fi
 REMOTE_STAGE_SCHEMA
 
-echo "同步 API 到宝塔项目：${DEPLOY_PROJECT}"
-rsync -az --delete \
+echo "Promoting staged API payload to live path on remote host..."
+ssh ${SSH_BASE_OPTS} "${REMOTE}" \
+  DEPLOY_PATH="${DEPLOY_PATH}" \
+  DEPLOY_STAGE_PATH="${DEPLOY_STAGE_PATH}" \
+  'bash -s' <<'REMOTE_PROMOTE_API'
+set -euo pipefail
+
+# 线上二次网络 rsync 改为本机 stage->live，显著减少 Deploy 耗时
+rsync -a --delete \
   --omit-dir-times \
   --no-perms \
   --no-owner \
   --no-group \
-  -e "ssh ${SSH_OPTS}" \
   --exclude ".env" \
   --exclude ".env.*" \
   --exclude ".well-known/" \
@@ -205,7 +230,8 @@ rsync -az --delete \
   --exclude "logs/" \
   --exclude "*.log" \
   --exclude "*.db" \
-  "${API_STAGE}/" "${REMOTE}:${DEPLOY_PATH}/"
+  "${DEPLOY_STAGE_PATH}/" "${DEPLOY_PATH}/"
+REMOTE_PROMOTE_API
 
 echo "同步后台静态文件..."
 rsync -az --delete \
@@ -213,11 +239,11 @@ rsync -az --delete \
   --no-perms \
   --no-owner \
   --no-group \
-  -e "ssh ${SSH_OPTS}" \
+  -e "ssh ${SSH_BASE_OPTS}" \
   --exclude ".well-known/" \
   "${ADMIN_STAGE}/" "${REMOTE}:${DEPLOY_ADMIN_PATH}/"
 
-ssh ${SSH_OPTS} "${REMOTE}" \
+ssh ${SSH_BASE_OPTS} "${REMOTE}" \
   DEPLOY_PATH="${DEPLOY_PATH}" \
   DEPLOY_ADMIN_PATH="${DEPLOY_ADMIN_PATH}" \
   DEPLOY_STAGE_PATH="${DEPLOY_STAGE_PATH}" \
