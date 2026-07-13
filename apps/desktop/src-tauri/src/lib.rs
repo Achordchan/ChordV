@@ -142,6 +142,7 @@ fn shell_state_matches(
 #[derive(Default)]
 struct RuntimeComponentDownloadState {
     active: bool,
+    cancel_requested: bool,
 }
 
 #[derive(Default)]
@@ -577,6 +578,25 @@ struct RuntimeComponentDownloadProgress {
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
     message: Option<String>,
+}
+
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeComponentLocalInfo {
+    kind: String,
+    exists: bool,
+    path: Option<String>,
+    size_bytes: Option<u64>,
+    checksum_sha256: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteTextFetchResult {
+    url: String,
+    status: u16,
+    body: String,
 }
 
 #[tauri::command]
@@ -1940,6 +1960,94 @@ fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironme
     }
 }
 
+
+#[tauri::command]
+fn get_runtime_component_local_info(
+    app: AppHandle,
+    component: RuntimeComponentKindInput,
+) -> Result<RuntimeComponentLocalInfo, String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, component);
+        return Ok(RuntimeComponentLocalInfo {
+            kind: runtime_component_key(component).into(),
+            exists: false,
+            path: None,
+            size_bytes: None,
+            checksum_sha256: None,
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let target_path = runtime_component_target_path(&app, component)?;
+        let _ = ensure_runtime_component_from_bundle(&app, component, &target_path)?;
+        if !target_path.exists() {
+            return Ok(RuntimeComponentLocalInfo {
+                kind: runtime_component_key(component).into(),
+                exists: false,
+                path: None,
+                size_bytes: None,
+                checksum_sha256: None,
+            });
+        }
+        let metadata = fs::metadata(&target_path).map_err(|error| {
+            runtime_component_error("write_failed", format!("读取组件文件状态失败：{error}"))
+        })?;
+        let size_bytes = metadata.len();
+        if size_bytes == 0 {
+            return Ok(RuntimeComponentLocalInfo {
+                kind: runtime_component_key(component).into(),
+                exists: true,
+                path: Some(target_path.to_string_lossy().into_owned()),
+                size_bytes: Some(0),
+                checksum_sha256: None,
+            });
+        }
+        let checksum = sha256_file(&target_path)?;
+        Ok(RuntimeComponentLocalInfo {
+            kind: runtime_component_key(component).into(),
+            exists: true,
+            path: Some(target_path.to_string_lossy().into_owned()),
+            size_bytes: Some(size_bytes),
+            checksum_sha256: Some(checksum),
+        })
+    }
+}
+
+#[tauri::command]
+async fn fetch_remote_text(url: String) -> Result<RemoteTextFetchResult, String> {
+    let parsed = Url::parse(url.trim()).map_err(|error| format!("远程地址无效：{error}"))?;
+    if !installer_download_url_allowed(&parsed) {
+        return Err("远程地址仅支持 HTTP 或 HTTPS".into());
+    }
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(20))
+        .user_agent("ChordV-Desktop-GEO-Update/1.0")
+        .build()
+        .map_err(|error| format!("初始化远程请求失败：{error}"))?;
+    let response = client
+        .get(parsed.clone())
+        .header("Accept", "application/vnd.github+json, text/plain, */*")
+        .send()
+        .await
+        .map_err(|error| format!("请求远程资源失败：{error}"))?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("读取远程响应失败：{error}"))?;
+    if !(200..300).contains(&status) {
+        return Err(format!("请求远程资源失败：HTTP {status}"));
+    }
+    Ok(RemoteTextFetchResult {
+        url: parsed.to_string(),
+        status,
+        body,
+    })
+}
+
 #[tauri::command]
 fn check_runtime_component_file(
     app: AppHandle,
@@ -2273,6 +2381,7 @@ async fn download_runtime_component(
             );
             last_downloaded_bytes = downloaded_bytes;
 
+            ensure_runtime_component_download_not_cancelled(&app)?;
             while let Some(chunk) = tokio::time::timeout(
                 Duration::from_secs(DOWNLOAD_IDLE_TIMEOUT_SECS),
                 response.chunk(),
@@ -2296,6 +2405,7 @@ async fn download_runtime_component(
                         .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
                     downloaded_bytes += slice.len() as u64;
                     last_downloaded_bytes = downloaded_bytes;
+                    ensure_runtime_component_download_not_cancelled(&app)?;
                     emit_runtime_component_progress(
                         &app,
                         RuntimeComponentDownloadProgress {
@@ -2447,6 +2557,17 @@ async fn download_runtime_component(
         let _ = set_runtime_component_download_active(&app, false);
         result
     }
+}
+
+#[tauri::command]
+fn cancel_runtime_component_download(app: AppHandle) -> Result<CommandResult, String> {
+    request_runtime_component_download_cancel(&app)?;
+    Ok(CommandResult {
+        ok: true,
+        config_path: None,
+        log_path: None,
+        active_pid: None,
+    })
 }
 
 #[tauri::command]
@@ -3510,9 +3631,41 @@ fn set_runtime_component_download_active(app: &AppHandle, active: bool) -> Resul
         .lock()
         .map_err(|_| "运行时组件下载状态异常".to_string())?;
     if active && state.active {
-        return Err("必要内核组件正在下载，请稍后再试。".into());
+        return Err("必要核心组件正在下载，请稍后再试。".into());
     }
     state.active = active;
+    if active {
+        state.cancel_requested = false;
+    }
+    Ok(())
+}
+
+fn request_runtime_component_download_cancel(app: &AppHandle) -> Result<(), String> {
+    let state: State<'_, Mutex<RuntimeComponentDownloadState>> = app.state();
+    let mut state = state
+        .lock()
+        .map_err(|_| "运行时组件下载状态异常".to_string())?;
+    if state.active {
+        state.cancel_requested = true;
+    }
+    Ok(())
+}
+
+fn is_runtime_component_download_cancel_requested(app: &AppHandle) -> bool {
+    let state: State<'_, Mutex<RuntimeComponentDownloadState>> = app.state();
+    state
+        .lock()
+        .map(|value| value.cancel_requested)
+        .unwrap_or(false)
+}
+
+fn ensure_runtime_component_download_not_cancelled(app: &AppHandle) -> Result<(), String> {
+    if is_runtime_component_download_cancel_requested(app) {
+        return Err(runtime_component_error(
+            "download_cancelled",
+            "下载已取消".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -7009,8 +7162,11 @@ pub fn run() {
             quit_for_update,
             desktop_runtime_environment,
             ensure_bundled_runtime_components,
+            get_runtime_component_local_info,
+            fetch_remote_text,
             check_runtime_component_file,
             download_runtime_component,
+            cancel_runtime_component_download,
             update_shell_summary,
             runtime_status,
             runtime_snapshot,

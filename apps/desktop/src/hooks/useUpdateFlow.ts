@@ -48,6 +48,14 @@ type RunUpdateCheckOptions = {
   silent?: boolean;
 };
 
+type RuntimeAssetsCheckSummary = {
+  checked: boolean;
+  updated: string[];
+  failed: string[];
+  current: boolean;
+  releaseTag: string | null;
+};
+
 type UseUpdateFlowOptions = {
   appVersion: string;
   platformTarget: RuntimeStatus["platformTarget"];
@@ -60,6 +68,10 @@ type UseUpdateFlowOptions = {
   showError?: (message: string) => void;
   onUnauthorized?: () => Promise<unknown> | unknown;
   isPromptBlocked?: () => boolean;
+  checkRuntimeComponents?: (input: {
+    source: "startup" | "login" | "manual" | "refresh";
+    silent?: boolean;
+  }) => Promise<RuntimeAssetsCheckSummary | null | void>;
 };
 
 function defaultReadError(message: string) {
@@ -411,6 +423,19 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         // 如果服务端返回的最新版本就是当前版本，说明当前已是最新，不触发更新提示
         const effectiveHasUpdate = hasActionableUpdate(result, options.appVersion);
 
+        let runtimeSummary: RuntimeAssetsCheckSummary | null = null;
+        if (options.checkRuntimeComponents) {
+          try {
+            const summary = await options.checkRuntimeComponents({
+              source: runOptions.source,
+              silent: runOptions.silent
+            });
+            runtimeSummary = summary ?? null;
+          } catch {
+            runtimeSummary = null;
+          }
+        }
+
         if (!result || !effectiveHasUpdate) {
           setUpdateDialogOpened(false);
           setUpdateDownload(createIdleUpdateDownloadState());
@@ -418,11 +443,25 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           lastUpdatePromptVersionRef.current = null;
           lastKnownUpdateArtifactRef.current = null;
           if (runOptions.source === "manual" && !runOptions.silent) {
-            options.notify?.({
-              color: "green",
-              title: "当前已是最新版本",
-              message: `你当前使用的是 ${formatVersionLabel(options.appVersion)}。`
-            });
+            if (runtimeSummary?.updated?.length) {
+              options.notify?.({
+                color: "green",
+                title: "客户端已是最新",
+                message: `软件版本 ${formatVersionLabel(options.appVersion)} 已是最新；已更新 ${runtimeSummary.updated.join("、")}。`
+              });
+            } else if (runtimeSummary?.failed?.length) {
+              options.notify?.({
+                color: "yellow",
+                title: "客户端已是最新",
+                message: `软件版本 ${formatVersionLabel(options.appVersion)} 已是最新；${runtimeSummary.failed.join("、")} 更新失败，将继续使用本地文件。`
+              });
+            } else {
+              options.notify?.({
+                color: "green",
+                title: "当前已是最新版本",
+                message: `软件版本 ${formatVersionLabel(options.appVersion)}，核心组件也已检查完毕。`
+              });
+            }
           }
           return result;
         }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolveProactiveAccessTokenRefreshDelay } from "../src/lib/desktopSessionRecovery";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../src/lib/sessionLeaseState";
 
 function testResolveProtectedAccessReason() {
@@ -18,9 +19,44 @@ function testBuildProtectedAccessNotice() {
   });
 }
 
+function testResolveProactiveAccessTokenRefreshDelay() {
+  const now = Date.parse("2026-06-30T02:00:00.000Z");
+  assert.equal(
+    resolveProactiveAccessTokenRefreshDelay(
+      {
+        refreshToken: "refresh",
+        accessTokenExpiresAt: "2026-06-30T02:15:00.000Z"
+      },
+      now
+    ),
+    13 * 60 * 1000
+  );
+  assert.equal(
+    resolveProactiveAccessTokenRefreshDelay(
+      {
+        refreshToken: "refresh",
+        accessTokenExpiresAt: "2026-06-30T02:01:00.000Z"
+      },
+      now
+    ),
+    0
+  );
+  assert.equal(
+    resolveProactiveAccessTokenRefreshDelay(
+      {
+        refreshToken: "",
+        accessTokenExpiresAt: "2026-06-30T02:15:00.000Z"
+      },
+      now
+    ),
+    null
+  );
+}
+
 function main() {
   testResolveProtectedAccessReason();
   testBuildProtectedAccessNotice();
+  testResolveProactiveAccessTokenRefreshDelay();
   console.log("desktop session lease regression checks passed");
 }
 

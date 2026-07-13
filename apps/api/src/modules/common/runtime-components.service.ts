@@ -103,8 +103,8 @@ export class RuntimeComponentsService {
               kind: input.kind,
               source,
               originUrl,
-              defaultMirrorPrefix: null,
-              allowClientMirror: false,
+              defaultMirrorPrefix: normalizeMirrorPrefixList(input.defaultMirrorPrefix),
+              allowClientMirror: Boolean(input.allowClientMirror),
               fileName,
               storedFilePath: null,
               fileSizeBytes: null,
@@ -131,8 +131,8 @@ export class RuntimeComponentsService {
           kind: input.kind,
           source,
           originUrl,
-          defaultMirrorPrefix: null,
-          allowClientMirror: false,
+          defaultMirrorPrefix: normalizeMirrorPrefixList(input.defaultMirrorPrefix),
+          allowClientMirror: Boolean(input.allowClientMirror),
           fileName,
           storedFilePath: null,
           fileSizeBytes: null,
@@ -252,11 +252,14 @@ export class RuntimeComponentsService {
         data: {
           ...(input.source !== undefined ? { source: input.source } : {}),
           ...(input.originUrl !== undefined ? { originUrl: nextOriginUrl } : {}),
-          ...(nextSource !== "uploaded" ? { defaultMirrorPrefix: null, allowClientMirror: false } : {}),
           ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
           ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
           ...(input.expectedHash !== undefined ? { expectedHash: normalizedExpectedHash } : {}),
           ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+          ...(input.defaultMirrorPrefix !== undefined
+            ? { defaultMirrorPrefix: normalizeMirrorPrefixList(input.defaultMirrorPrefix) }
+            : {}),
+          ...(input.allowClientMirror !== undefined ? { allowClientMirror: Boolean(input.allowClientMirror) } : {}),
           ...(remoteValidationInvalidated
             ? {
                 storedFilePath: null,
@@ -510,9 +513,14 @@ export class RuntimeComponentsService {
       architecture: input.architecture,
       components: rows.map((row) => {
         const originUrl = row.originUrl.trim();
-        const defaultMirrorPrefix = null;
-        const allowClientMirror = false;
-        const candidates = [{ label: "origin" as const, url: originUrl }];
+        const defaultMirrorPrefix = normalizeMirrorPrefixList(row.defaultMirrorPrefix);
+        const allowClientMirror = Boolean(row.allowClientMirror);
+        const clientMirrorPrefix = allowClientMirror ? normalizeMirrorPrefixList(input.clientMirrorPrefix) : null;
+        const candidates = buildRuntimeComponentDownloadCandidates({
+          originUrl,
+          defaultMirrorPrefix,
+          clientMirrorPrefix
+        });
 
         return {
           id: row.id,
@@ -1088,6 +1096,69 @@ export class RuntimeComponentsService {
   }
 }
 
+
+function normalizeMirrorPrefixList(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const parts = value
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (parts.length === 0) {
+    return null;
+  }
+  return parts.join("\n");
+}
+
+function splitMirrorPrefixes(value: string | null | undefined) {
+  const normalized = normalizeMirrorPrefixList(value);
+  if (!normalized) {
+    return [] as string[];
+  }
+  return normalized.split("\n").map((item) => item.trim()).filter(Boolean);
+}
+
+function applyRuntimeMirrorPrefix(originUrl: string, mirrorPrefix: string) {
+  const prefix = mirrorPrefix.trim();
+  if (!prefix) {
+    return originUrl;
+  }
+  if (prefix.includes("{url}")) {
+    return prefix.replaceAll("{url}", originUrl);
+  }
+  if (prefix.endsWith("/")) {
+    return `${prefix}${originUrl}`;
+  }
+  return `${prefix}/${originUrl}`;
+}
+
+function buildRuntimeComponentDownloadCandidates(input: {
+  originUrl: string;
+  defaultMirrorPrefix?: string | null;
+  clientMirrorPrefix?: string | null;
+}) {
+  const candidates: Array<{ label: "client_mirror" | "default_mirror" | "origin"; url: string }> = [];
+  const seen = new Set<string>();
+  const push = (label: "client_mirror" | "default_mirror" | "origin", url: string) => {
+    const normalized = url.trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    candidates.push({ label, url: normalized });
+  };
+
+  for (const prefix of splitMirrorPrefixes(input.clientMirrorPrefix)) {
+    push("client_mirror", applyRuntimeMirrorPrefix(input.originUrl, prefix));
+  }
+  for (const prefix of splitMirrorPrefixes(input.defaultMirrorPrefix)) {
+    push("default_mirror", applyRuntimeMirrorPrefix(input.originUrl, prefix));
+  }
+  push("origin", input.originUrl);
+  return candidates;
+}
+
 function resolveRuntimeComponentUrl(
   component: {
     source?: "uploaded" | "github_remote" | "custom_remote";
@@ -1130,8 +1201,8 @@ async function toAdminRuntimeComponentRecord(row: {
     kind: row.kind,
     source: row.source,
     originUrl: row.originUrl,
-    defaultMirrorPrefix: null,
-    allowClientMirror: false,
+    defaultMirrorPrefix: normalizeMirrorPrefixList(row.defaultMirrorPrefix),
+    allowClientMirror: Boolean(row.allowClientMirror),
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes ? row.fileSizeBytes.toString() : null,
     fileHash: row.fileHash,

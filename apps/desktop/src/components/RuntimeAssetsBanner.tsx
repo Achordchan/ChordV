@@ -10,6 +10,7 @@ import {
 type RuntimeAssetsBannerProps = {
   state: RuntimeAssetsUiState;
   onRetry?: (() => void) | null;
+  onCancel?: (() => void) | null;
   compact?: boolean;
 };
 
@@ -43,16 +44,30 @@ export function RuntimeAssetsBanner(props: RuntimeAssetsBannerProps) {
               animated={props.state.phase === "downloading"}
               striped={props.state.phase === "downloading" && shouldRenderStageProgress(props.state)}
             />
-            <Text size="xs" c="dimmed">
-              {describeRuntimeAssetsProgress(props.state)}
-            </Text>
+            <Group justify="space-between" align="center" gap="xs">
+              <Text size="xs" c="dimmed">
+                {describeRuntimeAssetsProgress(props.state)}
+              </Text>
+              {props.state.phase === "downloading" && props.onCancel ? (
+                <Button size="xs" variant="default" color="red" onClick={props.onCancel}>
+                  取消
+                </Button>
+              ) : null}
+            </Group>
           </Stack>
         ) : null}
 
         {props.state.phase === "checking" ? (
-          <Text size="xs" c="dimmed">
-            {describeRuntimeAssetsProgress(props.state)}
-          </Text>
+          <Group justify="space-between" align="center" gap="xs">
+            <Text size="xs" c="dimmed">
+              {describeRuntimeAssetsProgress(props.state)}
+            </Text>
+            {props.onCancel ? (
+              <Button size="xs" variant="default" color="red" onClick={props.onCancel}>
+                取消
+              </Button>
+            ) : null}
+          </Group>
         ) : null}
 
         {props.state.phase === "failed" ? (

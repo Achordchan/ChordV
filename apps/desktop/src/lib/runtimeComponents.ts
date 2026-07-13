@@ -37,6 +37,7 @@ export type RuntimeDownloadFailureReason =
   | "component_missing"
   | "component_invalid"
   | "download_failed"
+  | "download_cancelled"
   | "extract_failed"
   | "write_failed"
   | "hash_mismatch"

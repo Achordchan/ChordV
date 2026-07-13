@@ -149,6 +149,21 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
               value={value.originUrl}
               onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
             />
+            <Textarea
+              label="加速镜像前缀"
+              description="可填多个，每行一个；客户端会优先走这些镜像，全部失败后再回退官方地址。支持完整前缀或 {url} 模板，例如 https://mirror.ghproxy.com/ 或 https://ghfast.top/{url}"
+              autosize
+              minRows={2}
+              placeholder={"https://mirror.ghproxy.com/\nhttps://ghfast.top/"}
+              value={value.defaultMirrorPrefix}
+              onChange={(event) => onChange({ ...value, defaultMirrorPrefix: event.currentTarget.value })}
+            />
+            <Switch
+              label="允许客户端自定义加速前缀"
+              description="开启后，客户端可在本机再叠加自己的加速前缀。"
+              checked={value.allowClientMirror}
+              onChange={(event) => onChange({ ...value, allowClientMirror: event.currentTarget.checked })}
+            />
             <TextInput
               label="压缩包内文件名"
               description="只有下载地址是 zip 压缩包时才需要填写。普通文件直链留空即可。"

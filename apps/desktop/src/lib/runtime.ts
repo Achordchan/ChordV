@@ -7,8 +7,10 @@ import type {
 import type {
   RuntimeComponentDownloadItem,
   RuntimeComponentDownloadProgress,
-  RuntimeComponentFileStatus
+  RuntimeComponentFileStatus,
+  RuntimeComponentKind
 } from "./runtimeComponents";
+import type { RuntimeComponentLocalInfo } from "./geoUpdate";
 
 export type RuntimeStatus = {
   status: string;
@@ -104,6 +106,13 @@ export type BundledRuntimeComponentsStatus = {
   missingComponents: string[];
   message: string | null;
 };
+
+export type RemoteTextFetchResult = {
+  url: string;
+  status: number;
+  body: string;
+};
+
 
 export type RuntimeComponentDownloadResult = {
   component: string;
@@ -591,6 +600,33 @@ export async function downloadRuntimeComponent(input: {
   }
   return invoke<RuntimeComponentDownloadResult>("download_runtime_component", { input });
 }
+
+export async function cancelRuntimeComponentDownload() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return false;
+  }
+  await invoke("cancel_runtime_component_download");
+  return true;
+}
+
+
+export async function getRuntimeComponentLocalInfo(component: RuntimeComponentKind) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<RuntimeComponentLocalInfo>("get_runtime_component_local_info", { component });
+}
+
+export async function fetchRemoteText(url: string) {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<RemoteTextFetchResult>("fetch_remote_text", { url });
+}
+
 
 export async function subscribeRuntimeComponentDownloadProgress(
   handler: (progress: RuntimeComponentDownloadProgress) => void

@@ -159,6 +159,9 @@ export function extractRuntimeAssetsErrorCode(message: string): RuntimeDownloadF
   if (message.includes("write")) {
     return "write_failed";
   }
+  if (message.includes("cancel") || message.includes("取消")) {
+    return "download_cancelled";
+  }
   if (message.includes("download")) {
     return "download_failed";
   }

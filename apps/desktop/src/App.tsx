@@ -69,7 +69,10 @@ import {
   toneToToastColor,
   toSubscriptionServerProbe
 } from "./lib/appState";
-import { recoverDesktopSessionAfterUnauthorized } from "./lib/desktopSessionRecovery";
+import {
+  recoverDesktopSessionAfterUnauthorized,
+  resolveProactiveAccessTokenRefreshDelay
+} from "./lib/desktopSessionRecovery";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "./lib/sessionLeaseState";
 import {
   formatVersionLabel,
@@ -226,6 +229,13 @@ export function App() {
     readError,
     notify: notifications.show
   });
+  const runtimeComponentsCheckRef = useRef<
+    | ((input: {
+        source: "startup" | "login" | "manual" | "refresh";
+        silent?: boolean;
+      }) => Promise<import("./hooks/useRuntimeAssets").RuntimeAssetsCheckSummary | null>)
+    | null
+  >(null);
   const updateFlow = useUpdateFlow({
     appVersion,
     platformTarget: desktopStatus.platformTarget,
@@ -238,7 +248,14 @@ export function App() {
     showError: showErrorToast,
     onUnauthorized: recoverSessionAfterUnauthorized,
     isPromptBlocked: () =>
-      runtimeAssetsBusy || runtimeAssetsDialogOpened || announcementDrawerOpened || Boolean(forcedAnnouncement)
+      runtimeAssetsBusy || runtimeAssetsDialogOpened || announcementDrawerOpened || Boolean(forcedAnnouncement),
+    checkRuntimeComponents: async (input) => {
+      const runner = runtimeComponentsCheckRef.current;
+      if (!runner) {
+        return null;
+      }
+      return runner(input);
+    }
   });
   const {
     updatePlatform,
@@ -270,6 +287,8 @@ export function App() {
     runtimeAssetsDialogOpened,
     setRuntimeAssetsDialogOpened,
     ensureRuntimeAssetsReady,
+    getLastRuntimeAssetsCheckSummary,
+    handleCancelRuntimeAssets,
     handleRetryRuntimeAssets
   } = useRuntimeAssets({
     appVersion,
@@ -286,6 +305,16 @@ export function App() {
     onUnauthorized: recoverSessionAfterUnauthorized,
     readError
   });
+  runtimeComponentsCheckRef.current = async (input) => {
+    const forceCheck = input.source === "manual" || input.source === "refresh";
+    await ensureRuntimeAssetsReady({
+      source: "update_check",
+      interactive: input.source === "manual" && !input.silent,
+      blockConnection: false,
+      forceCheck
+    });
+    return getLastRuntimeAssetsCheckSummary();
+  };
   const {
     probeBusy,
     probeCooldownLeft,
@@ -479,6 +508,18 @@ export function App() {
     recoverSessionAfterUnauthorized,
     readError
   });
+
+  useEffect(() => {
+    const refreshDelayMs = resolveProactiveAccessTokenRefreshDelay(session);
+    if (refreshDelayMs === null) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void recoverSessionAfterUnauthorized();
+    }, refreshDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [session?.accessToken, session?.accessTokenExpiresAt, session?.refreshToken]);
 
   const applyLeaseHeartbeatSuccess = useCallback(
     (lease: Awaited<ReturnType<typeof heartbeatSession>>, sessionId: string) => {
@@ -1570,6 +1611,11 @@ export function App() {
             <RuntimeAssetsBanner
               state={runtimeAssets}
               onRetry={runtimeAssets.phase === "failed" ? handleRetryRuntimeAssets : null}
+              onCancel={
+                runtimeAssets.phase === "downloading" || runtimeAssets.phase === "checking"
+                  ? handleCancelRuntimeAssets
+                  : null
+              }
             />
           </div>
         </div>
@@ -1945,10 +1991,18 @@ export function App() {
             >
               复制错误信息
             </Button>
-            <Button variant="default" onClick={() => setRuntimeAssetsDialogOpened(false)}>
-              稍后重试
-            </Button>
-            <Button onClick={handleRetryRuntimeAssets}>重试下载</Button>
+            {(runtimeAssets.phase === "downloading" || runtimeAssets.phase === "checking") ? (
+              <Button variant="default" color="red" onClick={handleCancelRuntimeAssets}>
+                取消下载
+              </Button>
+            ) : (
+              <>
+                <Button variant="default" onClick={() => setRuntimeAssetsDialogOpened(false)}>
+                  稍后重试
+                </Button>
+                <Button onClick={handleRetryRuntimeAssets}>重试下载</Button>
+              </>
+            )}
           </div>
         </Stack>
       </Modal>

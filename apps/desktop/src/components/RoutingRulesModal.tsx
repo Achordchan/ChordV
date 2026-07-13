@@ -1,7 +1,30 @@
-import { useEffect, useState } from "react";
-import { ActionIcon, Alert, Badge, Button, Group, Modal, Paper, ScrollArea, Stack, Switch, Text, TextInput } from "@mantine/core";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ActionIcon,
+  Alert,
+  Badge,
+  Button,
+  Collapse,
+  Group,
+  Modal,
+  Paper,
+  ScrollArea,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  UnstyledButton
+} from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { IconEdit, IconRefresh, IconSearch, IconTrash } from "@tabler/icons-react";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconEdit,
+  IconRefresh,
+  IconSearch,
+  IconTrash,
+  IconX
+} from "@tabler/icons-react";
 import type {
   ClientRoutingRuleAction,
   ClientRoutingRuleDto,
@@ -36,11 +59,15 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [testResult, setTestResult] = useState<ClientRoutingRuleTestResultDto | null>(null);
+  const [rulesExpanded, setRulesExpanded] = useState(true);
+  const [showAllRules, setShowAllRules] = useState(false);
 
   useEffect(() => {
-    if (props.opened) {
-      void loadRules();
+    if (!props.opened) {
+      return;
     }
+    setShowAllRules(false);
+    void loadRules();
   }, [props.opened, props.accessToken]);
 
   async function loadRules() {
@@ -158,6 +185,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setName(rule.name ?? "");
     setValue(rule.value);
     setTestResult(null);
+    setRulesExpanded(true);
   }
 
   function resetForm() {
@@ -165,10 +193,18 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     setName("");
     setValue("");
     setTestResult(null);
+    setError(null);
   }
 
   const trimmedValue = value.trim();
   const queryReady = isCurrentQueryResult(testResult, trimmedValue);
+  const showNameField = queryReady || Boolean(editingRuleId);
+  const previewCount = 5;
+  const visibleRules = useMemo(
+    () => (showAllRules ? rules : rules.slice(0, previewCount)),
+    [rules, showAllRules]
+  );
+  const hiddenCount = Math.max(rules.length - previewCount, 0);
 
   return (
     <Modal opened={props.opened} onClose={props.onClose} centered size="lg" title="自定义分流">
@@ -177,14 +213,9 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
 
         <Paper withBorder radius="md" p="md">
           <Stack gap="sm">
-            <Group grow align="flex-end">
+            <Group align="flex-end" wrap="nowrap" gap="sm">
               <TextInput
-                label="名称"
-                placeholder="可选，例如视频服务"
-                value={name}
-                onChange={(event) => setName(event.currentTarget.value)}
-              />
-              <TextInput
+                style={{ flex: 1, minWidth: 0 }}
                 label="域名或名称"
                 placeholder="example.com 或 youtube"
                 value={value}
@@ -192,123 +223,186 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
                   setValue(event.currentTarget.value);
                   setTestResult(null);
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleTest();
+                  }
+                }}
               />
-            </Group>
-
-            <Group justify="space-between" align="center">
-              <Text size="sm" c="dimmed">
-                先查询当前规则结果，再选择是否保存为强制直连或强制代理。
-              </Text>
               <Button
                 variant="light"
                 leftSection={<IconSearch size={16} />}
                 onClick={() => void handleTest()}
                 loading={busy === "test"}
+                disabled={busy !== null && busy !== "test"}
               >
                 查询
               </Button>
             </Group>
 
+            <Text size="sm" c="dimmed">
+              先查询匹配结果，再选择强制直连或强制代理。
+            </Text>
+
             {testResult ? <RoutingTestResultCard result={testResult} /> : null}
 
             {queryReady ? (
-              <Group justify="flex-end">
+              <Stack gap="sm">
+                {showNameField ? (
+                  <TextInput
+                    label="显示名称"
+                    placeholder="可选，保存后便于识别"
+                    value={name}
+                    onChange={(event) => setName(event.currentTarget.value)}
+                  />
+                ) : null}
+                <Group justify="space-between" align="center" wrap="wrap">
+                  <Group gap="xs">
+                    <Button
+                      variant="light"
+                      color="green"
+                      loading={busy === "save:direct"}
+                      disabled={busy !== null && busy !== "save:direct"}
+                      onClick={() => void handleSave("direct")}
+                    >
+                      强制直连
+                    </Button>
+                    <Button
+                      color="blue"
+                      loading={busy === "save:proxy"}
+                      disabled={busy !== null && busy !== "save:proxy"}
+                      onClick={() => void handleSave("proxy")}
+                    >
+                      强制代理
+                    </Button>
+                  </Group>
+                  {editingRuleId ? (
+                    <Button
+                      variant="subtle"
+                      color="gray"
+                      leftSection={<IconX size={14} />}
+                      onClick={resetForm}
+                      disabled={busy !== null}
+                    >
+                      取消编辑
+                    </Button>
+                  ) : null}
+                </Group>
+                {editingRuleId ? (
+                  <Text size="sm" c="dimmed">
+                    正在编辑已有规则，保存前需要重新查询。
+                  </Text>
+                ) : null}
+              </Stack>
+            ) : editingRuleId ? (
+              <Group justify="space-between" align="center">
+                <Text size="sm" c="dimmed">
+                  正在编辑已有规则，请重新查询后再保存。
+                </Text>
                 <Button
-                  variant="light"
-                  color="green"
-                  loading={busy === "save:direct"}
-                  disabled={busy !== null && busy !== "save:direct"}
-                  onClick={() => void handleSave("direct")}
+                  variant="subtle"
+                  color="gray"
+                  leftSection={<IconX size={14} />}
+                  onClick={resetForm}
+                  disabled={busy !== null}
                 >
-                  保存为强制直连
-                </Button>
-                <Button
-                  color="blue"
-                  loading={busy === "save:proxy"}
-                  disabled={busy !== null && busy !== "save:proxy"}
-                  onClick={() => void handleSave("proxy")}
-                >
-                  保存为强制代理
+                  取消编辑
                 </Button>
               </Group>
             ) : null}
-
-            <Group justify="space-between">
-              <Button variant="default" onClick={resetForm} disabled={busy !== null}>
-                {editingRuleId ? "取消编辑" : "清空"}
-              </Button>
-              {editingRuleId ? (
-                <Text size="sm" c="dimmed">
-                  正在编辑已有规则，保存前需要重新查询。
-                </Text>
-              ) : null}
-            </Group>
           </Stack>
         </Paper>
 
-        <Group justify="space-between">
-          <Text fw={700}>我的规则</Text>
-          <Button
-            size="compact-sm"
-            variant="subtle"
-            leftSection={<IconRefresh size={14} />}
-            loading={loading}
-            onClick={() => void loadRules()}
-          >
-            刷新
-          </Button>
-        </Group>
+        <Stack gap="xs">
+          <Group justify="space-between" align="center">
+            <UnstyledButton
+              onClick={() => setRulesExpanded((current) => !current)}
+              style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
+              aria-label={rulesExpanded ? "折叠我的规则" : "展开我的规则"}
+            >
+              {rulesExpanded ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />}
+              <Text fw={700}>我的规则</Text>
+              <Badge color="gray" variant="light">
+                {rules.length}
+              </Badge>
+            </UnstyledButton>
+            <Button
+              size="compact-sm"
+              variant="subtle"
+              leftSection={<IconRefresh size={14} />}
+              loading={loading}
+              onClick={() => void loadRules()}
+            >
+              刷新
+            </Button>
+          </Group>
 
-        <ScrollArea.Autosize mah={320} type="auto">
-          <Stack gap="sm">
-            {rules.length === 0 && !loading ? (
-              <Paper withBorder radius="md" p="lg">
-                <Text c="dimmed" ta="center">
-                  暂无自定义分流规则。
-                </Text>
-              </Paper>
-            ) : null}
-            {rules.map((rule) => (
-              <Paper key={rule.id} withBorder radius="md" p="sm">
-                <Group justify="space-between" align="flex-start" wrap="nowrap">
-                  <Stack gap={4}>
-                    <Group gap="xs">
-                      <Text fw={700}>{rule.name || rule.value}</Text>
-                      <Badge color={rule.action === "proxy" ? "blue" : "green"} variant="light">
-                        {rule.action === "proxy" ? "强制代理" : "强制直连"}
-                      </Badge>
-                      <Badge color="gray" variant="light">
-                        {rule.matchType === "domain" ? "域名" : "关键词"}
-                      </Badge>
-                    </Group>
-                    <Text size="sm" c="dimmed">
-                      {rule.matchType === "domain" ? `domain:${rule.value}` : `keyword:${rule.value}`}
+          <Collapse in={rulesExpanded}>
+            <ScrollArea.Autosize mah={280} type="auto">
+              <Stack gap={6}>
+                {rules.length === 0 && !loading ? (
+                  <Paper withBorder radius="md" p="md">
+                    <Text c="dimmed" ta="center" size="sm">
+                      暂无自定义分流规则。
                     </Text>
-                  </Stack>
-                  <Group gap="xs" wrap="nowrap">
-                    <Switch
-                      checked={rule.enabled}
-                      disabled={busy === `toggle:${rule.id}`}
-                      onChange={(event) => void handleToggle(rule, event.currentTarget.checked)}
-                    />
-                    <ActionIcon variant="subtle" aria-label="编辑规则" onClick={() => startEdit(rule)}>
-                      <IconEdit size={16} />
-                    </ActionIcon>
-                    <ActionIcon
-                      variant="subtle"
-                      color="red"
-                      aria-label="删除规则"
-                      loading={busy === `delete:${rule.id}`}
-                      onClick={() => void handleDelete(rule.id)}
-                    >
-                      <IconTrash size={16} />
-                    </ActionIcon>
-                  </Group>
-                </Group>
-              </Paper>
-            ))}
-          </Stack>
-        </ScrollArea.Autosize>
+                  </Paper>
+                ) : null}
+
+                {visibleRules.map((rule) => (
+                  <Paper key={rule.id} withBorder radius="md" px="sm" py={8}>
+                    <Group justify="space-between" align="center" wrap="nowrap" gap="sm">
+                      <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
+                        <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+                          <Text fw={700} lineClamp={1} style={{ minWidth: 0 }}>
+                            {rule.name || rule.value}
+                          </Text>
+                          <Badge color={rule.action === "proxy" ? "blue" : "green"} variant="light">
+                            {rule.action === "proxy" ? "强制代理" : "强制直连"}
+                          </Badge>
+                          <Badge color="gray" variant="light">
+                            {rule.matchType === "domain" ? "域名" : "关键词"}
+                          </Badge>
+                        </Group>
+                        {rule.name ? (
+                          <Text size="xs" c="dimmed" lineClamp={1}>
+                            {rule.matchType === "domain" ? `domain:${rule.value}` : `keyword:${rule.value}`}
+                          </Text>
+                        ) : null}
+                      </Stack>
+                      <Group gap={4} wrap="nowrap">
+                        <Switch
+                          size="sm"
+                          checked={rule.enabled}
+                          disabled={busy === `toggle:${rule.id}`}
+                          onChange={(event) => void handleToggle(rule, event.currentTarget.checked)}
+                        />
+                        <ActionIcon variant="subtle" aria-label="编辑规则" onClick={() => startEdit(rule)}>
+                          <IconEdit size={16} />
+                        </ActionIcon>
+                        <ActionIcon
+                          variant="subtle"
+                          color="red"
+                          aria-label="删除规则"
+                          loading={busy === `delete:${rule.id}`}
+                          onClick={() => void handleDelete(rule.id)}
+                        >
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      </Group>
+                    </Group>
+                  </Paper>
+                ))}
+
+                {hiddenCount > 0 ? (
+                  <Button variant="subtle" size="compact-sm" onClick={() => setShowAllRules((current) => !current)}>
+                    {showAllRules ? "收起规则" : `展开全部 ${rules.length} 条`}
+                  </Button>
+                ) : null}
+              </Stack>
+            </ScrollArea.Autosize>
+          </Collapse>
+        </Stack>
       </Stack>
     </Modal>
   );

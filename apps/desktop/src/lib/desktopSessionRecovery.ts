@@ -34,6 +34,24 @@ export type RefreshDesktopSessionWithFallbackOptions = {
   refreshSessionNative?: typeof refreshStoredSessionNativeRuntime;
 };
 
+const PROACTIVE_ACCESS_TOKEN_REFRESH_SAFETY_WINDOW_MS = 2 * 60 * 1000;
+
+export function resolveProactiveAccessTokenRefreshDelay(
+  session: Pick<AuthSessionDto, "refreshToken" | "accessTokenExpiresAt"> | null,
+  nowMs = Date.now()
+) {
+  if (!session?.refreshToken) {
+    return null;
+  }
+
+  const expiresAtMs = Date.parse(session.accessTokenExpiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return null;
+  }
+
+  return Math.max(0, expiresAtMs - nowMs - PROACTIVE_ACCESS_TOKEN_REFRESH_SAFETY_WINDOW_MS);
+}
+
 export async function refreshDesktopSessionWithFallback(
   options: RefreshDesktopSessionWithFallbackOptions
 ) {
