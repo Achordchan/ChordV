@@ -22192,240 +22192,158 @@ async function testRemoteSharedRulesetCreateReturnsWhenCleanupStalls() {
 }
 
 async function testRemoteRuntimeValidationChecksExpectedHashWithGet() {
-  const body = Buffer.from("runtime-binary");
-  const expectedHash = createHash("sha256").update("different-binary").digest("hex");
-  const methods: string[] = [];
-  const server = createServer((request, response) => {
-    methods.push(request.method ?? "");
-    response.writeHead(200, { "content-type": "application/octet-stream" });
-    response.end(body);
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash,
-            enabled: true
-          })
-        }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "metadata_mismatch");
-    assert.deepEqual(methods, ["GET"], "remote expectedHash validation must download bytes instead of only checking HEAD");
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote validation no longer downloads or compares SHA-256");
+  assert.match(result.message, /有效|下载|地址/);
 }
 
 async function testRemoteRuntimeValidationReturnsUnreachableForHttp500() {
-  const server = createServer((_request, response) => {
-    response.writeHead(500, { "content-type": "text/plain" });
-    response.end("upstream failed");
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash: "a".repeat(64),
-            enabled: true
-          })
-        }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/missing-xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "unreachable");
-    assert.equal(result.httpStatus, 500);
-    assert.match(result.message, /HTTP 500/);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote validation no longer probes upstream HTTP status");
 }
 
 async function testRemoteRuntimeValidationPersistsDownloadMetadata() {
-  const body = Buffer.from("runtime-binary");
-  const expectedHash = createHash("sha256").update(body).digest("hex");
   const updates: Array<Record<string, any>> = [];
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/octet-stream" });
-    response.end(body);
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash,
-            enabled: true
-          }),
-          update: async (payload: Record<string, any>) => {
-            updates.push(payload);
-            return payload;
-          }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        }),
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return payload.data;
         }
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "ready");
-    assert.equal(updates.length, 1, "successful remote validation must persist metadata required by desktop downloads");
-    assert.equal(updates[0].data.fileSizeBytes, BigInt(body.byteLength));
-    assert.equal(updates[0].data.fileHash, expectedHash);
-    assert.equal(updates[0].data.expectedHash, expectedHash);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready");
+  assert.equal(updates.length, 0, "remote validation no longer persists downloaded hash metadata");
 }
 
 async function testRemoteRuntimeValidationRejectsLargeDefaultContentLength() {
-  const server = createServer((_request, response) => {
-    response.writeHead(200, {
-      "content-type": "application/octet-stream",
-      "content-length": String(65 * 1024 * 1024)
-    });
-    response.end();
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash: "a".repeat(64),
-            enabled: true
-          })
-        }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "metadata_mismatch");
-    assert.match(result.message, /过大|超过/);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote validation no longer inspects Content-Length");
 }
 
 async function testRemoteRuntimeValidationReportsMetadataPersistFailure() {
-  const body = Buffer.from("runtime-binary");
-  const expectedHash = createHash("sha256").update(body).digest("hex");
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/octet-stream" });
-    response.end(body);
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash,
-            enabled: true
-          }),
-          update: async () => {
-            throw new Error("runtime metadata write failed");
-          }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        }),
+        update: async () => {
+          throw new Error("should not update remote metadata");
         }
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "save_failed");
-    assert.match(result.message, /保存校验结果失败/);
-    assert.doesNotMatch(result.message, /runtime metadata write failed/);
-    assert.notEqual(result.status, "unreachable", "local DB write failures must not be reported as unreachable remote URLs");
-    assert.equal(result.actualFileSizeBytes, String(body.byteLength));
-    assert.equal(result.actualFileHash, expectedHash);
-  } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready");
 }
 
 async function testRemoteRuntimeZipEntryValidationUsesExtractedEntryHash() {
@@ -22541,194 +22459,90 @@ async function testRemoteRuntimeZipEntryValidationUsesBestEffortArchiveCleanup()
 }
 
 async function testRemoteRuntimeValidationRejectsOversizeExpectedHashResponse() {
-  const previousMaxBytes = process.env.CHORDV_RUNTIME_REMOTE_HASH_MAX_BYTES;
-  process.env.CHORDV_RUNTIME_REMOTE_HASH_MAX_BYTES = "10";
-  const updates: Array<Record<string, any>> = [];
-  const body = Buffer.from("runtime-binary-is-too-large");
-  const expectedHash = createHash("sha256").update(body).digest("hex");
-  const server = createServer((_request, response) => {
-    response.writeHead(200, {
-      "content-type": "application/octet-stream",
-      "content-length": String(body.byteLength)
-    });
-    response.end(body);
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash,
-            enabled: true
-          }),
-          update: async (payload: Record<string, any>) => {
-            updates.push(payload);
-            return payload;
-          }
-        }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
-
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "metadata_mismatch");
-    assert.equal(updates.length, 0, "oversize remote validation must not persist metadata");
-  } finally {
-    if (previousMaxBytes === undefined) {
-      delete process.env.CHORDV_RUNTIME_REMOTE_HASH_MAX_BYTES;
-    } else {
-      process.env.CHORDV_RUNTIME_REMOTE_HASH_MAX_BYTES = previousMaxBytes;
     }
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  });
+
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote validation no longer streams remote bodies for hash limits");
 }
 
 async function testRemoteRuntimeValidationRejectsIdleTimeoutExpectedHashResponse() {
-  const previousIdleTimeout = process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS;
-  const previousTotalTimeout = process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS;
-  process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS = "25";
-  process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS = "1000";
-  const sockets = new Set<{ destroy: () => void }>();
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/octet-stream" });
-    response.write("partial");
-  });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash: "a".repeat(64),
-            enabled: true
-          })
-        }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "unreachable");
-    assert.match(result.message, /空闲|超时|网络连接失败|connection/i);
-  } finally {
-    if (previousIdleTimeout === undefined) {
-      delete process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS;
-    } else {
-      process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS = previousIdleTimeout;
-    }
-    if (previousTotalTimeout === undefined) {
-      delete process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS;
-    } else {
-      process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS = previousTotalTimeout;
-    }
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote validation no longer waits on remote hash download idle timeout");
 }
 
 async function testRemoteRuntimeValidationRejectsTotalTimeoutExpectedHashResponse() {
-  const previousIdleTimeout = process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS;
-  const previousTotalTimeout = process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS;
-  process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS = "1000";
-  process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS = "30";
-  const sockets = new Set<{ destroy: () => void }>();
-  let interval: ReturnType<typeof setInterval> | null = null;
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/octet-stream" });
-    interval = setInterval(() => response.write("x"), 5);
-  });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  await listenOnFetchSafeLocalhost(server);
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address === "object");
-    const service = createRuntimeComponentsService({
-      prisma: {
-        runtimeComponent: {
-          findUnique: async () => ({
-            id: "component_1",
-            platform: "windows",
-            architecture: "x64",
-            kind: "xray",
-            source: "custom_remote",
-            originUrl: `http://127.0.0.1:${address.port}/xray.exe`,
-            defaultMirrorPrefix: null,
-            allowClientMirror: false,
-            fileName: "xray.exe",
-            archiveEntryName: null,
-            storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
-            expectedHash: "a".repeat(64),
-            enabled: true
-          })
-        }
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findUnique: async () => ({
+          id: "component_1",
+          platform: "windows",
+          architecture: "x64",
+          kind: "xray",
+          source: "custom_remote",
+          originUrl: "https://example.com/xray.exe",
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "xray.exe",
+          archiveEntryName: null,
+          storedFilePath: null,
+          fileSizeBytes: null,
+          fileHash: null,
+          expectedHash: "a".repeat(64),
+          enabled: true
+        })
       }
-    });
+    }
+  });
 
-    const result = await withPrivateRemoteUrlsAllowed(() => service.validateAdminRuntimeComponent("component_1"));
-
-    assert.equal(result.status, "unreachable");
-    assert.match(result.message, /总耗时|超时/);
-  } finally {
-    if (interval) {
-      clearInterval(interval);
-    }
-    if (previousIdleTimeout === undefined) {
-      delete process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS;
-    } else {
-      process.env.CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS = previousIdleTimeout;
-    }
-    if (previousTotalTimeout === undefined) {
-      delete process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS;
-    } else {
-      process.env.CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS = previousTotalTimeout;
-    }
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  const result = await service.validateAdminRuntimeComponent("component_1");
+  assert.equal(result.status, "ready", "remote validation no longer waits on remote hash download total timeout");
 }
 
 async function testRuntimePlanSkipsRemoteRowsMissingDownloadMetadata() {
@@ -22962,16 +22776,24 @@ async function testRuntimePlanExposesConfiguredMirrorFields() {
     kind,
     source: "custom_remote",
     originUrl: `https://origin.example.com/${kind}.dat`,
-    defaultMirrorPrefix: "https://ghfast.top/",
+    defaultMirrorPrefix: null,
     allowClientMirror: true,
     fileName: `${kind}.dat`,
     storedFilePath: null,
     fileSizeBytes: 1024n,
     fileHash: "a".repeat(64),
     archiveEntryName: null,
-    expectedHash: "a".repeat(64)
+    expectedHash: "a".repeat(64),
+    enabled: true
   });
   const service = createRuntimeComponentsService({
+    downloadMirrorService: {
+      getEffectiveConfig: async () => ({
+        defaultMirrorPrefix: "https://ghfast.top/",
+        allowClientMirror: true,
+        updatedAt: null
+      })
+    },
     prisma: {
       runtimeComponent: {
         findMany: async (payload: { where: { kind?: string | { in: string[] } } }) => {
@@ -22993,7 +22815,7 @@ async function testRuntimePlanExposesConfiguredMirrorFields() {
   assert.equal(plan.components.length, 3);
   for (const component of plan.components) {
     assert.equal(component.allowClientMirror, true, "client plan should expose configured allowClientMirror");
-    assert.equal(component.defaultMirrorPrefix, "https://ghfast.top/", "client plan should expose configured default mirrors");
+    assert.equal(component.defaultMirrorPrefix, "https://ghfast.top/", "client plan should expose global default mirrors");
     assert.equal(
       component.resolvedUrl,
       `https://client-mirror.example.com/${component.originUrl}`,
@@ -23006,6 +22828,7 @@ async function testRuntimePlanExposesConfiguredMirrorFields() {
     ]);
   }
 }
+
 
 async function testRuntimeComponentPatchCannotSwitchToUploadedSource() {
   const service = createRuntimeComponentsService({

@@ -398,6 +398,15 @@ export class RuntimeComponentsService {
       };
     }
 
+    if (isPrivateOrReservedRuntimeComponentUrl(resolvedUrl)) {
+      return {
+        componentId,
+        status: "unreachable",
+        message: "远程运行组件链接指向内网或保留地址，不允许使用。",
+        finalUrlPreview: resolvedUrl
+      };
+    }
+
     return {
       componentId,
       status: "ready",
