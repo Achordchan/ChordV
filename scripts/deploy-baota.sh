@@ -113,7 +113,7 @@ rsync -a \
   --exclude "prisma/dev.db" \
   --exclude "test/" \
   --exclude ".turbo/" \
-  --exclude "src/" \
+  --exclude "/src/" \
   --exclude "tsconfig.json" \
   --exclude "tsconfig.tsbuildinfo" \
   apps/api/ "${API_STAGE}/apps/api/"
@@ -122,7 +122,7 @@ rsync -a \
   --exclude "node_modules/" \
   --exclude ".DS_Store" \
   --exclude "._*" \
-  --exclude "src/" \
+  --exclude "/src/" \
   --exclude ".turbo/" \
   --exclude "tsconfig.json" \
   --exclude "tsconfig.tsbuildinfo" \
