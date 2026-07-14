@@ -3766,10 +3766,8 @@ fn validate_desktop_full_update_package(package_path: &Path, exe_name: &str) -> 
             ));
         }
         let normalized = entry_name.trim_end_matches('/').to_ascii_lowercase();
-        if entry_name == exe_name
-            || normalized == "chordv.exe"
-            || normalized == "chordv-desktop.exe"
-        {
+        // Future full updates only ship ChordV.exe.
+        if entry_name == exe_name || normalized == "chordv.exe" {
             if entry.size() == 0 {
                 return Err(format!("full update ZIP executable is empty: {entry_name}"));
             }
@@ -3821,7 +3819,7 @@ fn validate_desktop_full_update_package(package_path: &Path, exe_name: &str) -> 
 
     if !has_main_exe {
         return Err(format!(
-            "full update ZIP must contain {exe_name}, ChordV.exe, or chordv-desktop.exe at the package root"
+            "full update ZIP must contain {exe_name} or ChordV.exe at the package root"
         ));
     }
     if !has_xray || !has_geoip || !has_geosite {
@@ -4267,15 +4265,10 @@ try {
       throw "unsafe extracted path: $fullPath"
     }
   }
-  $stagedExe = Join-Path $staging $ExeName
+  # Future packages only ship ChordV.exe as the main binary.
+  $stagedExe = Join-Path $staging "ChordV.exe"
   if (!(Test-Path -LiteralPath $stagedExe)) {
-    $stagedExe = Join-Path $staging "ChordV.exe"
-  }
-  if (!(Test-Path -LiteralPath $stagedExe)) {
-    $stagedExe = Join-Path $staging "chordv-desktop.exe"
-  }
-  if (!(Test-Path -LiteralPath $stagedExe)) {
-    throw "staged executable not found"
+    throw "staged executable not found: ChordV.exe"
   }
   Test-MinimumFileLength $stagedExe "staged executable" 1048576
   Test-MzHeader $stagedExe "staged executable"
@@ -4310,15 +4303,49 @@ try {
     Get-ChildItem -LiteralPath $staging -Force | ForEach-Object {
       Copy-Item -LiteralPath $_.FullName -Destination $InstallDir -Recurse -Force
     }
-    $exePath = Join-Path $InstallDir $ExeName
+    $exePath = Join-Path $InstallDir "ChordV.exe"
     if (!(Test-Path -LiteralPath $exePath)) {
-      $exePath = Join-Path $InstallDir (Split-Path -Leaf $stagedExe)
-    }
-    if (!(Test-Path -LiteralPath $exePath)) {
-      throw "updated executable not found"
+      throw "updated executable not found: ChordV.exe"
     }
     Test-MinimumFileLength $exePath "updated executable" 1048576
     Test-MzHeader $exePath "updated executable"
+    # Rewrite desktop/start-menu shortcuts that still point at the legacy crate binary.
+    try {
+      $shell = New-Object -ComObject WScript.Shell
+      $legacyNames = @("chordv-desktop.exe", "chordv_desktop.exe")
+      $searchRoots = @(
+        [Environment]::GetFolderPath("Desktop"),
+        [Environment]::GetFolderPath("StartMenu"),
+        [Environment]::GetFolderPath("Programs"),
+        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"),
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs")
+      ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+      foreach ($root in $searchRoots) {
+        Get-ChildItem -LiteralPath $root -Filter "*.lnk" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+          try {
+            $shortcut = $shell.CreateShortcut($_.FullName)
+            $targetPath = [string]$shortcut.TargetPath
+            if (-not $targetPath) { return }
+            $targetLeaf = [System.IO.Path]::GetFileName($targetPath)
+            $sameDir = [string]::Equals(
+              [System.IO.Path]::GetFullPath([System.IO.Path]::GetDirectoryName($targetPath)),
+              [System.IO.Path]::GetFullPath($InstallDir),
+              [System.StringComparison]::OrdinalIgnoreCase
+            )
+            if ($sameDir -and ($legacyNames -contains $targetLeaf.ToLowerInvariant())) {
+              $shortcut.TargetPath = $exePath
+              $shortcut.WorkingDirectory = $InstallDir
+              $shortcut.Save()
+              Write-UpdateLog ("rewrote shortcut " + $_.FullName + " -> ChordV.exe")
+            }
+          } catch {
+            Write-UpdateLog ("shortcut rewrite skipped for " + $_.FullName + ": " + $_.Exception.Message)
+          }
+        }
+      }
+    } catch {
+      Write-UpdateLog ("shortcut rewrite failed: " + $_.Exception.Message)
+    }
     $startedProcess = $null
     if (Test-Path -LiteralPath $ReadyMarkerPath) {
       Remove-Item -LiteralPath $ReadyMarkerPath -Force -ErrorAction SilentlyContinue
@@ -6545,8 +6572,123 @@ fn cleanup_stale_runtime(app: &AppHandle) {
     cleanup_legacy_installed_runtime_names(app);
 }
 
+#[cfg(windows)]
+fn windows_install_dir_from_current_exe() -> Option<PathBuf> {
+    let current_exe = std::env::current_exe().ok()?;
+    current_exe.parent().map(Path::to_path_buf)
+}
+
+#[cfg(windows)]
+fn migrate_windows_main_binary_on_startup() {
+    let Some(install_dir) = windows_install_dir_from_current_exe() else {
+        return;
+    };
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(current_name) = current_exe.file_name().and_then(|value| value.to_str()) else {
+        return;
+    };
+    let main_exe = install_dir.join("ChordV.exe");
+    let legacy_exe = install_dir.join("chordv-desktop.exe");
+
+    // If this process is the legacy binary and ChordV.exe is missing, seed the new name first.
+    if current_name.eq_ignore_ascii_case("chordv-desktop.exe") && !main_exe.exists() {
+        let _ = fs::copy(&current_exe, &main_exe);
+    }
+
+    // Prefer the product binary after migration; rewrite common shortcuts that still point at the crate name.
+    let target_exe = if main_exe.exists() {
+        main_exe.clone()
+    } else {
+        current_exe.clone()
+    };
+    rewrite_windows_shortcuts_to_main_binary(&install_dir, &target_exe);
+
+    // Once ChordV.exe is the real entrypoint, drop the duplicate legacy binary to reclaim disk.
+    if main_exe.exists()
+        && legacy_exe.exists()
+        && current_name.eq_ignore_ascii_case("ChordV.exe")
+    {
+        let same_file = fs::canonicalize(&main_exe)
+            .ok()
+            .zip(fs::canonicalize(&legacy_exe).ok())
+            .map(|(left, right)| left == right)
+            .unwrap_or(false);
+        if !same_file {
+            let _ = fs::remove_file(&legacy_exe);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn rewrite_windows_shortcuts_to_main_binary(install_dir: &Path, target_exe: &Path) {
+    let install_dir_display = install_dir.to_string_lossy().replace('\'', "''");
+    let target_exe_display = target_exe.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$InstallDir = '{install_dir}'
+$TargetExe = '{target_exe}'
+try {{
+  $shell = New-Object -ComObject WScript.Shell
+  $legacyNames = @('chordv-desktop.exe', 'chordv_desktop.exe')
+  $searchRoots = @(
+    [Environment]::GetFolderPath('Desktop'),
+    [Environment]::GetFolderPath('StartMenu'),
+    [Environment]::GetFolderPath('Programs'),
+    (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'),
+    (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs')
+  ) | Where-Object {{ $_ -and (Test-Path -LiteralPath $_) }} | Select-Object -Unique
+  foreach ($root in $searchRoots) {{
+    Get-ChildItem -LiteralPath $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{
+      try {{
+        $shortcut = $shell.CreateShortcut($_.FullName)
+        $targetPath = [string]$shortcut.TargetPath
+        if (-not $targetPath) {{ return }}
+        $targetLeaf = [System.IO.Path]::GetFileName($targetPath)
+        $sameDir = [string]::Equals(
+          [System.IO.Path]::GetFullPath([System.IO.Path]::GetDirectoryName($targetPath)),
+          [System.IO.Path]::GetFullPath($InstallDir),
+          [System.StringComparison]::OrdinalIgnoreCase
+        )
+        if ($sameDir -and ($legacyNames -contains $targetLeaf.ToLowerInvariant())) {{
+          $shortcut.TargetPath = $TargetExe
+          $shortcut.WorkingDirectory = $InstallDir
+          $shortcut.Save()
+        }}
+      }} catch {{
+      }}
+    }}
+  }}
+}} catch {{
+}}
+"#,
+        install_dir = install_dir_display,
+        target_exe = target_exe_display
+    );
+    let mut command = Command::new("powershell");
+    command.creation_flags(CREATE_NO_WINDOW);
+    let _ = command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 fn cleanup_runtime_artifacts_on_startup(app: &AppHandle) {
     cleanup_stale_runtime(app);
+    #[cfg(windows)]
+    migrate_windows_main_binary_on_startup();
 }
 
 #[cfg(not(target_os = "android"))]

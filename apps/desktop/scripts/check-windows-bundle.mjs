@@ -79,13 +79,14 @@ function validateFullUpdateZip(zipPath, version) {
         throw new Error(`Full update ZIP contains invalid ${relativePath}`);
       }
     }
-    const exeCandidates = ["ChordV.exe", "chordv-desktop.exe"]
-      .map((name) => path.join(extractDir, name))
-      .filter((candidate) => existsSync(candidate));
-    if (exeCandidates.length === 0) {
-      throw new Error("Full update ZIP is missing root ChordV.exe or chordv-desktop.exe");
+    const mainExe = path.join(extractDir, "ChordV.exe");
+    if (!existsSync(mainExe)) {
+      throw new Error("Full update ZIP is missing root ChordV.exe");
     }
-    validateExecutableProductVersion(exeCandidates[0], version, "Full update ZIP executable");
+    if (existsSync(path.join(extractDir, "chordv-desktop.exe"))) {
+      throw new Error("Full update ZIP must not include legacy chordv-desktop.exe alias");
+    }
+    validateExecutableProductVersion(mainExe, version, "Full update ZIP executable");
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

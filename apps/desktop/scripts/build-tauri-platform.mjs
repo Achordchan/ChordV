@@ -212,13 +212,8 @@ function createWindowsFullUpdateZip(version, outputDir, buildStartedAt) {
   fs.mkdirSync(stagingDir, { recursive: true });
 
   try {
-    const sourceExeName = path.basename(sourceExe);
-    fs.copyFileSync(sourceExe, path.join(stagingDir, sourceExeName));
-    for (const aliasName of ["ChordV.exe", "chordv-desktop.exe"]) {
-      if (aliasName !== sourceExeName) {
-        fs.copyFileSync(sourceExe, path.join(stagingDir, aliasName));
-      }
-    }
+    // Future Windows full updates only ship one main executable name.
+    fs.copyFileSync(sourceExe, path.join(stagingDir, "ChordV.exe"));
 
     const sourceBinDir = path.join(desktopRoot, "src-tauri", "bin");
     const stagingBinDir = path.join(stagingDir, "bin");
@@ -263,6 +258,7 @@ function validateWindowsFullUpdateResource(sourcePath, resource) {
 }
 
 function findWindowsReleaseExecutable(releaseDir, buildStartedAt) {
+  // Prefer mainBinaryName output; keep crate-name fallback for local/dev builds.
   const preferred = ["ChordV.exe", "chordv-desktop.exe"].map((name) => path.join(releaseDir, name));
   for (const candidate of preferred) {
     if (fs.existsSync(candidate) && fs.statSync(candidate).mtimeMs >= buildStartedAt) {
