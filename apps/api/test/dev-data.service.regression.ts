@@ -21553,8 +21553,8 @@ async function testRuntimeComponentUploadUsesActualHashWhenExpectedHashMismatch(
 
   assert.deepEqual(cleanupCalls, []);
   assert.equal(createdData?.fileHash, "a".repeat(64));
-  assert.equal(createdData?.expectedHash, "a".repeat(64));
-  assert.equal(result.expectedHash, "a".repeat(64));
+  assert.equal(createdData?.expectedHash, null);
+  assert.equal(result.expectedHash, null);
 }
 
 async function testRuntimeComponentUploadMapsUniqueIdentityConflict() {
@@ -21796,8 +21796,8 @@ async function testRuntimeComponentReplaceUploadUsesActualHashWhenExpectedHashMi
     { storedFilePath: "component_1/xray.exe", label: "old runtime component upload" }
   ]);
   assert.equal(updatedData?.fileHash, "a".repeat(64));
-  assert.equal(updatedData?.expectedHash, "a".repeat(64));
-  assert.equal(result.expectedHash, "a".repeat(64));
+  assert.equal(updatedData?.expectedHash, null);
+  assert.equal(result.expectedHash, null);
 }
 
 async function testRuntimeComponentReplaceUploadMapsUniqueIdentityConflict() {
@@ -22116,7 +22116,7 @@ async function testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails() {
 
   assert.equal(result.id, "component_existing");
   assert.equal(result.kind, "geosite");
-  assert.equal(result.expectedHash, expectedHash);
+  assert.equal(result.expectedHash, null);
   assert.equal(cleanupCalls, 0, "shared ruleset cleanup must not block the local save response");
   await waitUntil(() => cleanupCalls > 0);
   assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted in background");
@@ -23268,10 +23268,11 @@ async function testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChang
   });
 
   assert.equal(updates.length, 1);
-  assert.equal(updates[0].data.expectedHash, "b".repeat(64));
-  assert.equal(updates[0].data.storedFilePath, null);
-  assert.equal(updates[0].data.fileSizeBytes, null);
-  assert.equal(updates[0].data.fileHash, null);
+  assert.equal(updates[0].data.expectedHash, null);
+  // expectedHash 已废弃，单独修改它不再清远程文件元数据。
+  assert.equal(updates[0].data.storedFilePath, undefined);
+  assert.equal(updates[0].data.fileSizeBytes, undefined);
+  assert.equal(updates[0].data.fileHash, undefined);
 }
 
 async function testRuntimeComponentDeleteMapsLocalSaveFailure() {
