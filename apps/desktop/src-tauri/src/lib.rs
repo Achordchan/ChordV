@@ -4500,10 +4500,10 @@ fn spawn_deferred_installer_open(
     };
     let script = format!(
         r#"pid={current_pid}
-dmg={{}}
-target_app={{}}
-log_path={{}}
-report_path={{}}
+dmg={}
+target_app={}
+log_path={}
+report_path={}
 remove_installer={remove_installer}
 while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 exec >>"$log_path" 2>&1
