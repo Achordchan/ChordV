@@ -45,7 +45,7 @@ const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 const BULK_NODE_PROBE_START_GUARD_MS = 5;
 const NODE_PANEL_SYNC_RECENT_ERROR_LIMIT = 500;
 const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
-const NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE = "节点已本地停用。面板当前不可达，远端客户端清理已放弃重试，订阅已用流量保持不变。";
+const NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE = "失联面板节点已删除。本地清理已完成，远端客户端清理已放弃重试，订阅已用流量保持不变。";
 
 @Injectable()
 export class AdminNodeService {
@@ -1404,6 +1404,87 @@ export class AdminNodeService {
       current.panelStatus === "offline" ||
       current.panelStatus === "degraded";
 
+    // Capture targets before hard delete removes node access rows.
+    const userIds = await this.runAfterLocalNodeSaveWithBudget(
+      "resolve node access event targets before node delete",
+      [] as string[],
+      () => this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId)
+    );
+
+    if (offlinePanelDelete) {
+      // Offline/degraded panels must never depend on remote delete_client.
+      // Await local cleanup, then hard-delete the node so admin/client both stop waiting.
+      try {
+        await this.prisma.node.update({
+          where: { id: current.id },
+          data: {
+            isActive: false,
+            recommended: false,
+            panelStatus: "offline",
+            panelError: "面板不可达，节点正在本地删除"
+          }
+        });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "节点删除保存失败，请刷新节点列表后重试。");
+      }
+
+      try {
+        await this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted");
+      } catch (error) {
+        this.logger?.warn(
+          `Offline node delete revoked leases with warning: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      try {
+        await this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted");
+      } catch (error) {
+        this.logger?.warn(
+          `Offline node delete queued lease revocation with warning: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      try {
+        await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "失联面板本地清理失败，节点未删除，请重试。");
+      }
+
+      try {
+        await this.prisma.node.delete({ where: { id: current.id } });
+      } catch (error) {
+        throwLocalSaveAsServiceUnavailable(error, "失联面板节点删除失败，请刷新节点列表后重试。");
+      }
+
+      this.publishAdminNodeAccessUpdatedBestEffort(nodeId);
+      try {
+        this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
+      } catch (error) {
+        this.logger?.warn(
+          `Offline node delete completed, but node access publish failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+      for (const userId of userIds) {
+        try {
+          await this.clientEventsPublisher.publishSubscriptionUpdated({ userId });
+        } catch (error) {
+          this.logger?.warn(
+            `Offline node delete completed, but subscription refresh publish failed for ${userId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+
+      return {
+        ok: true,
+        deleted: true,
+        panelSyncStatus: "synced" as const,
+        panelSyncMessage: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE,
+        message: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE
+      };
+    }
+
     try {
       await this.prisma.node.update({
         where: { id: current.id },
@@ -1411,14 +1492,14 @@ export class AdminNodeService {
           isActive: false,
           recommended: false,
           panelStatus: "offline",
-          panelError: offlinePanelDelete ? "面板不可达，节点已本地停用，远端清理已放弃重试" : null
+          panelError: null
         }
       });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "节点删除保存失败，请刷新节点列表后重试。");
     }
 
-    // Local revoke first so client metering/calibration stops waiting on this node.
+    // Online panels: local revoke first, then queue remote cleanup.
     await this.tryRunAfterLocalNodeSave("revoke local leases after node delete", () =>
       this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted")
     );
@@ -1426,33 +1507,22 @@ export class AdminNodeService {
       this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
     );
 
-    let panelCleanupFinalizedLocally = offlinePanelDelete;
-    if (offlinePanelDelete) {
-      // Offline/degraded panels cannot complete remote delete_client jobs.
-      // Local truth first: mark bindings deleted, abandon remote cleanup, keep subscription used traffic.
-      await this.tryRunAfterLocalNodeSave("finalize offline panel delete without remote dependency", async () => {
+    let panelCleanupFinalizedLocally = false;
+    await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", async () => {
+      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+      if (result.failed.length > 0) {
         await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
-      });
-    } else {
-      await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", async () => {
-        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
-        if (result.failed.length > 0) {
-          await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
-          panelCleanupFinalizedLocally = true;
-        }
-      });
-    }
+        panelCleanupFinalizedLocally = true;
+      }
+    });
 
-    const userIds = await this.runAfterLocalNodeSaveWithBudget(
-      "resolve node access event targets after node delete",
-      [] as string[],
-      () => this.clientEventsPublisher.resolveUserIdsForNodeAccess(nodeId)
-    );
     this.publishAdminNodeAccessUpdatedBestEffort(nodeId);
     try {
       this.clientEventsPublisher.publishNodeAccessUpdatedToUsers(userIds, nodeId);
     } catch (error) {
-      this.logger?.warn(`Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger?.warn(
+        `Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     if (panelCleanupFinalizedLocally) {

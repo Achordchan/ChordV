@@ -98,7 +98,8 @@ async function testUsageSyncResolvesResidualIncidentsOnOfflineNodes() {
   assert.deepEqual(updates[0].where.node.OR, [
     { isActive: false },
     { panelEnabled: false },
-    { panelStatus: "offline" }
+    { panelStatus: "offline" },
+    { panelStatus: "degraded" }
   ]);
   assert.equal(updates[0].data.status, "resolved");
   assert.match(String(updates[0].data.detail ?? ""), /面板不可用/);

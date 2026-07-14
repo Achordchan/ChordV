@@ -770,7 +770,8 @@ export class UsageSyncService {
           OR: [
             { isActive: false },
             { panelEnabled: false },
-            { panelStatus: "offline" }
+            { panelStatus: "offline" },
+            { panelStatus: "degraded" }
           ]
         }
       },

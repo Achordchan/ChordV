@@ -153,7 +153,7 @@ export function NodesPage(props: NodesPageProps) {
                       <ActionIcon variant="subtle" title="编辑本地节点配置" aria-label="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
                         <IconPencil size={16} />
                       </ActionIcon>
-                      <ActionIcon color="red" variant="subtle" title="停用节点并清理" aria-label="停用节点并清理" onClick={() => props.onDeleteNode(item)}>
+                      <ActionIcon color="red" variant="subtle" title="删除节点" aria-label="删除节点" onClick={() => props.onDeleteNode(item)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </RowActions>

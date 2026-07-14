@@ -9860,12 +9860,16 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   let nodeDeleted = false;
   let offlineCleanupCalled = false;
   let remoteDeleteQueued = false;
+  let subscriptionPublishCount = 0;
   const nodeUpdates: Array<Record<string, any>> = [];
   const calls: string[] = [];
   const service = createAdminNodeService({
     clientEventsPublisher: {
       resolveUserIdsForNodeAccess: async () => ["user_1"],
-      publishNodeAccessUpdatedToUsers: () => undefined
+      publishNodeAccessUpdatedToUsers: () => undefined,
+      publishSubscriptionUpdated: async () => {
+        subscriptionPublishCount += 1;
+      }
     },
     runtimeSessionService: {
       revokeNodeLeases: async () => {
@@ -9891,7 +9895,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
         findMany: async () => [{ subscriptionId: "sub_1" }]
       },
       node: {
-        // Missing/offline panel must finalize locally and keep used traffic untouched.
+        // Offline panel must finalize locally, hard-delete the node row, and keep used traffic untouched.
         findUnique: async () => ({ id: "node_1", panelEnabled: true, panelStatus: "offline" }),
         update: async (payload: Record<string, any>) => {
           calls.push("local_update");
@@ -9899,6 +9903,7 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
           return {};
         },
         delete: async () => {
+          calls.push("hard_delete");
           nodeDeleted = true;
         }
       }
@@ -9908,13 +9913,21 @@ async function testDeleteNodeStopsBeforeLocalDeleteWhenPanelCleanupFails() {
   const result = await service.deleteNode("node_1");
 
   assert.equal(result.ok, true);
+  assert.equal(result.deleted, true);
   assert.equal(result.panelSyncStatus, "synced");
   assert.equal(offlineCleanupCalled, true, "offline panel delete must finalize local cleanup without waiting for remote panel");
   assert.equal(remoteDeleteQueued, false, "offline panel delete must not keep queueing remote delete_client forever");
-  assert.deepEqual(calls, ["local_update", "revoke_local_leases", "queue_lease_revocation", "finalize_offline_cleanup"]);
-  assert.equal(nodeUpdates[0].data.isActive, false, "node must be hidden locally before remote cleanup completes");
+  assert.deepEqual(calls, [
+    "local_update",
+    "revoke_local_leases",
+    "queue_lease_revocation",
+    "finalize_offline_cleanup",
+    "hard_delete"
+  ]);
+  assert.equal(nodeUpdates[0].data.isActive, false, "node must be marked offline before hard delete");
   assert.equal(nodeUpdates[0].data.panelStatus, "offline");
-  assert.equal(nodeDeleted, false, "node row must be kept for historical traffic ledger references");
+  assert.equal(nodeDeleted, true, "offline panel node must be hard-deleted after local finalize; traffic ledger uses SetNull");
+  assert.equal(subscriptionPublishCount, 1, "clients must refresh subscription metering after offline hard delete");
 }
 
 async function testDeleteNodeMarksBindingsDeletedWhenPanelDeleteQueuePartiallyFails() {
@@ -10030,11 +10043,11 @@ async function testDeleteNodeReturnsWhenEventTargetResolutionStallsAfterLocalSav
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.deepEqual(calls, [
+    "resolve_event_targets",
     "local_update",
     "revoke_local_leases",
     "queue_lease_revocation",
     "queue_panel_delete",
-    "resolve_event_targets",
     "publish_event"
   ]);
   assert.deepEqual(publishedUserIds, []);
@@ -10135,11 +10148,11 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.deepEqual(calls, [
+    "resolve_event_targets",
     "local_update",
     "revoke_local_leases",
     "queue_lease_revocation",
     "queue_panel_delete",
-    "resolve_event_targets",
     "publish_event"
   ]);
   assert.deepEqual(publishedUserIds, ["user_1"]);
@@ -10148,10 +10161,15 @@ async function testDeleteNodeReturnsWhenPanelCleanupStallsAfterLocalSave() {
 async function testDeleteNodeOfflinePanelFinalizesWithoutRemoteQueueAndKeepsLocalTraffic() {
   const calls: string[] = [];
   let usedTrafficReads = 0;
+  let nodeDeleted = false;
+  let subscriptionPublishCount = 0;
   const service = createAdminNodeService({
     clientEventsPublisher: {
       resolveUserIdsForNodeAccess: async () => ["user_1"],
-      publishNodeAccessUpdatedToUsers: () => undefined
+      publishNodeAccessUpdatedToUsers: () => undefined,
+      publishSubscriptionUpdated: async () => {
+        subscriptionPublishCount += 1;
+      }
     },
     runtimeSessionService: {
       revokeNodeLeases: async () => {
@@ -10188,6 +10206,10 @@ async function testDeleteNodeOfflinePanelFinalizesWithoutRemoteQueueAndKeepsLoca
           assert.equal(payload.data.isActive, false);
           assert.equal(payload.data.panelStatus, "offline");
           return {};
+        },
+        delete: async () => {
+          calls.push("hard_delete");
+          nodeDeleted = true;
         }
       }
     }
@@ -10196,9 +10218,22 @@ async function testDeleteNodeOfflinePanelFinalizesWithoutRemoteQueueAndKeepsLoca
   const result = await service.deleteNode("node_1");
 
   assert.equal(result.ok, true);
+  assert.equal(result.deleted, true);
   assert.equal(result.panelSyncStatus, "synced");
-  assert.ok(String(result.panelSyncMessage ?? result.message ?? "").includes("已用流量保持不变") || String(result.panelSyncMessage ?? result.message ?? "").includes("本地停用") || String(result.panelSyncMessage ?? result.message ?? "").includes("放弃重试"));
-  assert.deepEqual(calls, ["local_update", "revoke_local_leases", "queue_lease_revocation", "finalize_offline_cleanup"]);
+  assert.ok(
+    String(result.panelSyncMessage ?? result.message ?? "").includes("已用流量保持不变") ||
+      String(result.panelSyncMessage ?? result.message ?? "").includes("已删除") ||
+      String(result.panelSyncMessage ?? result.message ?? "").includes("放弃重试")
+  );
+  assert.deepEqual(calls, [
+    "local_update",
+    "revoke_local_leases",
+    "queue_lease_revocation",
+    "finalize_offline_cleanup",
+    "hard_delete"
+  ]);
+  assert.equal(nodeDeleted, true);
+  assert.equal(subscriptionPublishCount, 1);
   assert.equal(usedTrafficReads, 0, "delete must not rewrite subscription usedTrafficGb");
 }
 
@@ -10362,14 +10397,20 @@ async function testPanelDeleteJobAbandonsAfterMaxAttemptsOnInactiveNode() {
 async function testDeleteNodeMapsLocalSaveFailure() {
   let leaseQueued = false;
   let panelCleanupStarted = false;
-  let publishStarted = false;
+  let eventTargetsResolved = false;
+  let accessPublished = false;
   const service = createAdminNodeService({
     clientEventsPublisher: {
       resolveUserIdsForNodeAccess: async () => {
-        publishStarted = true;
+        eventTargetsResolved = true;
         return ["user_1"];
       },
-      publishNodeAccessUpdatedToUsers: () => undefined
+      publishNodeAccessUpdatedToUsers: () => {
+        accessPublished = true;
+      },
+      publishSubscriptionUpdated: async () => {
+        accessPublished = true;
+      }
     },
     runtimeSessionService: {
       queueLeaseRevocationJobForNode: async () => {
@@ -10378,13 +10419,20 @@ async function testDeleteNodeMapsLocalSaveFailure() {
       removePanelBindingsForNode: async () => {
         panelCleanupStarted = true;
         return { requested: 0, updated: 0, failed: [] };
+      },
+      finalizeOfflineNodePanelCleanup: async () => {
+        panelCleanupStarted = true;
       }
     },
     prisma: {
       node: {
+        // Missing panel fields are treated as offline-safe delete.
         findUnique: async () => ({ id: "node_1" }),
         update: async () => {
           throw new Error("server closed the connection unexpectedly");
+        },
+        delete: async () => {
+          panelCleanupStarted = true;
         }
       }
     }
@@ -10400,7 +10448,8 @@ async function testDeleteNodeMapsLocalSaveFailure() {
   );
   assert.equal(leaseQueued, false);
   assert.equal(panelCleanupStarted, false);
-  assert.equal(publishStarted, false);
+  assert.equal(eventTargetsResolved, true, "event target resolution may run before local save");
+  assert.equal(accessPublished, false, "failed local save must not publish access/subscription events");
 }
 
 async function testListAdminNodesMapsLocalReadFailure() {

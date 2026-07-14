@@ -17,16 +17,18 @@ export function DeleteNodeModal(props: {
   };
 
   return (
-    <Modal opened={props.target !== null} onClose={close} title="停用节点" centered>
+    <Modal opened={props.target !== null} onClose={close} title="删除节点" centered>
       <Stack>
-        <Text>该操作会立即停用节点并隐藏入口。订阅已用流量会保留，不会因删除节点而清零。面板在线时后台清理远端客户端；面板失联时本地完成清理并停止无限重试。</Text>
+        <Text>
+          订阅已用流量会保留，不会因删除节点而清零。面板在线时先停用节点并后台清理远端客户端；面板失联或异常时本地清理后直接删除节点记录，并停止无限重试。
+        </Text>
         <Text fw={600}>{props.target?.name}</Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={close} disabled={props.submitting}>
             取消
           </Button>
           <Button color="red" onClick={props.onConfirm} loading={props.submitting}>
-            停用并清理
+            确认删除
           </Button>
         </Group>
       </Stack>
