@@ -118,7 +118,7 @@ export class UsageSyncService {
     try {
       await this.resolveResidualUnavailableNodeIncidents();
     } catch (error) {
-      this.logger.warn(
+      this.logger?.warn?.(
         `Could not resolve residual metering incidents for unavailable nodes: ${
           error instanceof Error ? error.message : String(error)
         }`
@@ -759,7 +759,11 @@ export class UsageSyncService {
   private async resolveResidualUnavailableNodeIncidents() {
     // Only settle terminals that cannot recover without admin action.
     // Keep degraded incidents for temporary remote failures; client UI already ignores non-online nodes.
-    await this.prisma.meteringIncident.updateMany({
+    const meteringIncident = (this.prisma as { meteringIncident?: { updateMany?: Function } }).meteringIncident;
+    if (typeof meteringIncident?.updateMany !== "function") {
+      return;
+    }
+    await meteringIncident.updateMany({
       where: {
         status: "open",
         node: {
