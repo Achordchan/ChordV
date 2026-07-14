@@ -85,6 +85,40 @@ async function testProbeTimeoutKeepsPanelOnline() {
   }
 }
 
+
+async function testProbeSoftFailureKeepsOffline() {
+  const current = makeNode({
+    panelStatus: "offline",
+    panelError: "panel previously unreachable"
+  });
+  const service = createInstance<AdminNodeService>(AdminNodeService.prototype, {
+    logger: { warn: () => undefined },
+    panelProbeFailureCounts: new Map(),
+    xuiService: {
+      checkNodeHealth: async () => {
+        throw new Error("temporary panel glitch");
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => current,
+        update: async (payload: any) => {
+          Object.assign(current, payload.data);
+          return { ...current };
+        }
+      }
+    }
+  });
+  const first = await service.probeNode("node_1");
+  assert.equal(first.panelStatus, "offline", "soft failure must not promote offline to online");
+  assert.equal(first.panelError, "panel previously unreachable");
+  const second = await service.probeNode("node_1");
+  assert.equal(second.panelStatus, "offline");
+  const third = await service.probeNode("node_1");
+  assert.equal(third.panelStatus, "degraded");
+  assert.match(String(third.panelError ?? ""), /temporary panel glitch/);
+}
+
 async function testProbeDegradesAfterThreeFailures() {
   const current = makeNode();
   const service = createInstance<AdminNodeService>(AdminNodeService.prototype, {
@@ -174,6 +208,7 @@ async function testUsageSyncDegradesOnlyAfterThreshold() {
 
 async function main() {
   await testProbeTimeoutKeepsPanelOnline();
+  await testProbeSoftFailureKeepsOffline();
   await testProbeDegradesAfterThreeFailures();
   await testUsageSyncDegradesOnlyAfterThreshold();
   console.log("panel status stability regression checks passed");

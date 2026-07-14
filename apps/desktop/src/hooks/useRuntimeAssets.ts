@@ -23,6 +23,15 @@ import {
   type RuntimeComponentLocalInfo
 } from "../lib/geoUpdate";
 import {
+  basenamePath,
+  buildXrayInstalledIdentityFromPlan,
+  clearStoredXrayInstalledIdentity,
+  isXrayIdentityCurrent,
+  readStoredXrayInstalledIdentity,
+  resolveXrayVersionLabel,
+  writeStoredXrayInstalledIdentity
+} from "../lib/xrayInstall";
+import {
   cancelRuntimeComponentDownload,
   checkRuntimeComponentFile,
   downloadRuntimeComponent,
@@ -107,6 +116,20 @@ function defaultReadError(message: string) {
   return message;
 }
 
+
+async function refreshLocalRuntimeInfos() {
+  const localExists = await Promise.all([
+    getRuntimeComponentLocalInfo("xray").catch(() => null),
+    getRuntimeComponentLocalInfo("geoip").catch(() => null),
+    getRuntimeComponentLocalInfo("geosite").catch(() => null)
+  ]);
+  return {
+    xray: localExists[0],
+    geoip: localExists[1],
+    geosite: localExists[2]
+  };
+}
+
 function hasRequiredRuntimeComponents(plan: { components: Array<{ component: string }> }) {
   const kinds = new Set(plan.components.map((component) => component.component));
   return kinds.has("xray") && kinds.has("geoip") && kinds.has("geosite");
@@ -134,14 +157,6 @@ function emptySummary(): RuntimeAssetsCheckSummary {
       message: "尚未检查"
     }
   };
-}
-
-function resolveXrayVersionLabel(item: { fileName?: string | null; checksumSha256?: string | null } | null | undefined) {
-  if (!item) return null;
-  const fileName = String(item.fileName ?? "").trim();
-  const match = fileName.match(/(\d+\.\d+\.\d+(?:[-_][\w.]+)?)/);
-  if (match?.[1]) return match[1];
-  return fileName || null;
 }
 
 async function downloadComponentWithFallback(component: RuntimeComponentDownloadItem, preferredUrl?: string | null) {
@@ -468,6 +483,9 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               clearStoredGeoInstalledTag();
               clearStoredGeoLastCheckAt();
             }
+            if (copied.some((name) => name === "xray")) {
+              clearStoredXrayInstalledIdentity();
+            }
             // 回填后重新读取本地大小，避免沿用删除前的空状态或旧缓存。
             localExists = await Promise.all([
               getRuntimeComponentLocalInfo("xray").catch(() => null),
@@ -476,7 +494,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             ]);
           }
 
-          const localInfos = {
+          let localInfos = {
             xray: localExists[0],
             geoip: localExists[1],
             geosite: localExists[2]
@@ -500,10 +518,11 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             !shouldCheckGeoUpdate(readStoredGeoLastCheckAt())
           ) {
             summary.xray.localVersion = localInfos.xray?.exists
-              ? resolveXrayVersionLabel({
-                  fileName: localInfos.xray.path?.split(/[\\/]/).pop() ?? "xray",
+              ? (readStoredXrayInstalledIdentity()?.versionLabel
+                ?? resolveXrayVersionLabel({
+                  fileName: basenamePath(localInfos.xray.path, "xray"),
                   checksumSha256: localInfos.xray.checksumSha256
-                })
+                }))
               : null;
             summary.geo.localVersion = readStoredGeoInstalledTag() ?? (localInfos.geoip?.exists ? "已安装" : null);
             summary.xray.current = Boolean(localInfos.xray?.exists);
@@ -526,8 +545,12 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
           }
 
           summary.xray.localVersion = localInfos.xray?.exists
-            ? resolveXrayVersionLabel({ fileName: localInfos.xray.path?.split(/[\\/]/).pop() ?? "xray", checksumSha256: localInfos.xray.checksumSha256 })
-            : null;
+              ? (readStoredXrayInstalledIdentity()?.versionLabel
+                ?? resolveXrayVersionLabel({
+                  fileName: basenamePath(localInfos.xray.path, "xray"),
+                  checksumSha256: localInfos.xray.checksumSha256
+                }))
+              : null;
           summary.geo.localVersion = readStoredGeoInstalledTag() ?? (localInfos.geoip?.exists ? "已安装" : null);
           if (!localInfos.xray?.exists) {
             summary.xray.current = false;
@@ -571,6 +594,18 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               const status = await checkRuntimeComponentFile(component).catch(() => null);
               if (!status?.ready) {
                 pendingComponents.push(component);
+                continue;
+              }
+              // Xray readiness alone is not version identity; refresh when installed plan identity is missing/mismatched.
+              if (component.component === "xray") {
+                const identityCurrent = isXrayIdentityCurrent(
+                  readStoredXrayInstalledIdentity(),
+                  component,
+                  localInfos.xray?.sizeBytes ?? null
+                );
+                if (!identityCurrent) {
+                  pendingComponents.push(component);
+                }
               }
             }
 
@@ -592,6 +627,12 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
               }
               try {
                 await downloadComponentWithFallback(component, candidate?.url ?? null);
+                if (component.component === "xray") {
+                  localInfos = await refreshLocalRuntimeInfos();
+                  writeStoredXrayInstalledIdentity(
+                    buildXrayInstalledIdentityFromPlan(component, localInfos.xray?.sizeBytes ?? null)
+                  );
+                }
                 summary.updated.push(component.displayName);
               } catch (reason) {
                 const rawMessage = reason instanceof Error ? reason.message : String(reason);
@@ -810,9 +851,24 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                 if (xrayItem) {
                   const remoteLabel = resolveXrayVersionLabel(xrayItem);
                   summary.xray.remoteVersion = remoteLabel;
-                  summary.xray.localVersion = summary.xray.localVersion ?? remoteLabel;
+                  const installedIdentity = readStoredXrayInstalledIdentity();
+                  if (!summary.xray.localVersion) {
+                    summary.xray.localVersion =
+                      installedIdentity?.versionLabel
+                      ?? (localInfos.xray?.exists
+                        ? resolveXrayVersionLabel({
+                            fileName: basenamePath(localInfos.xray.path, "xray"),
+                            checksumSha256: localInfos.xray.checksumSha256
+                          })
+                        : null);
+                  }
                   const status = await checkRuntimeComponentFile(xrayItem).catch(() => null);
-                  if (status?.ready) {
+                  const identityCurrent = isXrayIdentityCurrent(
+                    installedIdentity,
+                    xrayItem,
+                    localInfos.xray?.sizeBytes ?? null
+                  );
+                  if (status?.ready && identityCurrent) {
                     summary.xray.current = true;
                     summary.xray.available = false;
                     summary.xray.message = remoteLabel
@@ -844,11 +900,15 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                     }
                     try {
                       await downloadComponentWithFallback(xrayItem, candidate?.url ?? null);
+                      localInfos = await refreshLocalRuntimeInfos();
                       summary.updated.push(xrayItem.displayName);
                       summary.current = false;
                       summary.xray.current = true;
                       summary.xray.available = false;
                       summary.xray.localVersion = remoteLabel;
+                      writeStoredXrayInstalledIdentity(
+                        buildXrayInstalledIdentityFromPlan(xrayItem, localInfos.xray?.sizeBytes ?? null)
+                      );
                       summary.xray.remoteVersion = remoteLabel;
                       summary.xray.message = remoteLabel
                         ? `Xray 已更新到 ${remoteLabel}`
@@ -905,10 +965,17 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
             return true;
           }
 
+          // Downloads may have completed after the pre-download snapshot; re-read disk before final readiness.
+          if (summary.updated.length > 0) {
+            localInfos = await refreshLocalRuntimeInfos();
+          }
           const finalLocalReady = Boolean(
             localInfos.xray?.exists &&
+              (localInfos.xray.sizeBytes ?? 0) > 0 &&
               localInfos.geoip?.exists &&
-              localInfos.geosite?.exists
+              (localInfos.geoip.sizeBytes ?? 0) > 0 &&
+              localInfos.geosite?.exists &&
+              (localInfos.geosite.sizeBytes ?? 0) > 0
           );
           if (!finalLocalReady) {
             return failRuntimeAssets(

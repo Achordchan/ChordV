@@ -74,6 +74,10 @@ const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
 const DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 180;
 const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DOWNLOAD_IDLE_TIMEOUT_SECS: u64 = 20;
+const MAX_RUNTIME_COMPONENT_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_XRAY_RUNTIME_COMPONENT_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_RUNTIME_COMPONENT_EXTRACTED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_XRAY_RUNTIME_COMPONENT_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
 const CLIENT_EVENT_STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const MIN_WINDOWS_PE_BYTES: u64 = 1024 * 1024;
 const MIN_GEO_DATA_BYTES: u64 = 64 * 1024;
@@ -2283,17 +2287,25 @@ async fn download_runtime_component(
             if !installer_download_url_allowed(&download_url) {
                 return Err(runtime_component_error("download_failed", "下载地址仅支持 HTTP 或 HTTPS".into()));
             }
+            let max_download_bytes = runtime_component_max_download_bytes(component);
             let expected_total_bytes = input
                 .component
                 .file_size_bytes
-                .filter(|value| *value > 0)
-                .ok_or_else(|| {
-                    runtime_component_error(
-                        "metadata_missing",
-                        format!("{} requires positive file size metadata.", runtime_component_display_name(component)),
-                    )
-                })?;
-            // 文件完整性不再使用 SHA256；下载只校验大小/格式。
+                .filter(|value| *value > 0);
+            if let Some(expected) = expected_total_bytes {
+                if expected > max_download_bytes {
+                    return Err(runtime_component_error(
+                        "metadata_invalid",
+                        format!(
+                            "{} file size metadata is too large: {} bytes (max {}).",
+                            runtime_component_display_name(component),
+                            expected,
+                            max_download_bytes
+                        ),
+                    ));
+                }
+            }
+            // Prefer known size for progress/mismatch checks; remote plans may omit size and fall back to response Content-Length / max cap.
             append_download_diagnostic_log(
                 &app,
                 "runtime-download",
@@ -2360,18 +2372,40 @@ async fn download_runtime_component(
                 ));
             }
 
-            if let Some(content_length) = response_content_length {
-                if content_length != expected_total_bytes {
+            if let (Some(content_length), Some(expected)) = (response_content_length, expected_total_bytes) {
+                if content_length != expected {
                     return Err(runtime_component_error(
                         "metadata_mismatch",
                         format!(
-                            "{} Content-Length mismatch: expected {expected_total_bytes}, got {content_length}",
+                            "{} Content-Length mismatch: expected {expected}, got {content_length}",
                             runtime_component_display_name(component)
                         ),
                     ));
                 }
             }
-            let total_bytes = Some(expected_total_bytes);
+            if let Some(content_length) = response_content_length {
+                if content_length == 0 {
+                    return Err(runtime_component_error(
+                        "metadata_invalid",
+                        format!(
+                            "{} Content-Length is empty.",
+                            runtime_component_display_name(component)
+                        ),
+                    ));
+                }
+                if content_length > max_download_bytes {
+                    return Err(runtime_component_error(
+                        "metadata_invalid",
+                        format!(
+                            "{} Content-Length is too large: {} bytes (max {}).",
+                            runtime_component_display_name(component),
+                            content_length,
+                            max_download_bytes
+                        ),
+                    ));
+                }
+            }
+            let total_bytes = expected_total_bytes.or(response_content_length);
             let mut downloaded_bytes = 0_u64;
             last_total_bytes = total_bytes;
             let mut last_logged_bytes = 0_u64;
@@ -2414,6 +2448,19 @@ async fn download_runtime_component(
                         .write_all(slice)
                         .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
                     downloaded_bytes += slice.len() as u64;
+                    if downloaded_bytes > max_download_bytes
+                        || total_bytes.is_some_and(|expected| downloaded_bytes > expected)
+                    {
+                        let _ = fs::remove_file(&archive_path);
+                        return Err(runtime_component_error(
+                            "metadata_mismatch",
+                            format!(
+                                "{} download exceeded allowed size: got {downloaded_bytes} bytes (limit {}).",
+                                runtime_component_display_name(component),
+                                total_bytes.unwrap_or(max_download_bytes)
+                            ),
+                        ));
+                    }
                     last_downloaded_bytes = downloaded_bytes;
                     ensure_runtime_component_download_not_cancelled(&app)?;
                     emit_runtime_component_progress(
@@ -2440,15 +2487,38 @@ async fn download_runtime_component(
             archive_file
                 .flush()
                 .map_err(|error| runtime_component_error("write_failed", format!("写入组件文件失败：{error}")))?;
-            if downloaded_bytes != expected_total_bytes {
+            if downloaded_bytes == 0 {
                 let _ = fs::remove_file(&archive_path);
                 return Err(runtime_component_error(
-                    "metadata_mismatch",
+                    "download_failed",
                     format!(
-                        "{} size mismatch: expected {expected_total_bytes}, got {downloaded_bytes}",
+                        "{} download returned an empty file.",
                         runtime_component_display_name(component)
                     ),
                 ));
+            }
+            if let Some(expected) = expected_total_bytes {
+                if downloaded_bytes != expected {
+                    let _ = fs::remove_file(&archive_path);
+                    return Err(runtime_component_error(
+                        "metadata_mismatch",
+                        format!(
+                            "{} size mismatch: expected {expected}, got {downloaded_bytes}",
+                            runtime_component_display_name(component)
+                        ),
+                    ));
+                }
+            } else if let Some(content_length) = response_content_length {
+                if downloaded_bytes != content_length {
+                    let _ = fs::remove_file(&archive_path);
+                    return Err(runtime_component_error(
+                        "metadata_mismatch",
+                        format!(
+                            "{} size mismatch: expected {content_length}, got {downloaded_bytes}",
+                            runtime_component_display_name(component)
+                        ),
+                    ));
+                }
             }
             append_download_diagnostic_log(
                 &app,
@@ -2486,7 +2556,7 @@ async fn download_runtime_component(
                         .clone()
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or_else(|| input.component.file_name.clone());
-                    extract_zip_entry(&archive_path, &temp_target_path, &entry_name)
+                    extract_zip_entry(&archive_path, &temp_target_path, &entry_name, runtime_component_max_extracted_bytes(component))
                         .map_err(|error| runtime_component_error("extract_failed", error))?;
                 }
             }
@@ -3027,6 +3097,24 @@ fn set_private_permissions(_path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn runtime_component_max_extracted_bytes(component: RuntimeComponentKindInput) -> u64 {
+    match component {
+        RuntimeComponentKindInput::Xray => MAX_XRAY_RUNTIME_COMPONENT_EXTRACTED_BYTES,
+        RuntimeComponentKindInput::Geoip | RuntimeComponentKindInput::Geosite => {
+            MAX_RUNTIME_COMPONENT_EXTRACTED_BYTES
+        }
+    }
+}
+
+fn runtime_component_max_download_bytes(component: RuntimeComponentKindInput) -> u64 {
+    match component {
+        RuntimeComponentKindInput::Xray => MAX_XRAY_RUNTIME_COMPONENT_DOWNLOAD_BYTES,
+        RuntimeComponentKindInput::Geoip | RuntimeComponentKindInput::Geosite => {
+            MAX_RUNTIME_COMPONENT_DOWNLOAD_BYTES
+        }
+    }
 }
 
 fn runtime_component_min_size(component: RuntimeComponentKindInput) -> u64 {
@@ -3711,6 +3799,7 @@ fn extract_zip_entry(
     archive_path: &Path,
     target_path: &Path,
     entry_name: &str,
+    max_bytes: u64,
 ) -> Result<(), String> {
     let file = File::open(archive_path).map_err(|error| format!("打开组件压缩包失败：{error}"))?;
     let mut archive =
@@ -3733,12 +3822,55 @@ fn extract_zip_entry(
     let mut entry = archive
         .by_index(idx)
         .map_err(|error| format!("读取压缩包内容失败：{error}"))?;
+    let declared_size = entry.size();
+    if declared_size == 0 {
+        return Err(format!("压缩包内文件为空：{entry_name}"));
+    }
+    if declared_size > max_bytes {
+        return Err(format!(
+            "压缩包内文件过大：{entry_name} declares {declared_size} bytes (max {max_bytes})"
+        ));
+    }
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建目标目录失败：{error}"))?;
     }
     let mut target =
         File::create(target_path).map_err(|error| format!("创建目标文件失败：{error}"))?;
-    io::copy(&mut entry, &mut target).map_err(|error| format!("写入解压文件失败：{error}"))?;
+    let mut written = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = entry
+            .read(&mut buffer)
+            .map_err(|error| format!("读取解压内容失败：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        written = written
+            .checked_add(read as u64)
+            .ok_or_else(|| format!("解压写入计数溢出：{entry_name}"))?;
+        if written > max_bytes {
+            drop(target);
+            let _ = fs::remove_file(target_path);
+            return Err(format!(
+                "解压结果超过上限：{entry_name} wrote {written} bytes (max {max_bytes})"
+            ));
+        }
+        target
+            .write_all(&buffer[..read])
+            .map_err(|error| format!("写入解压文件失败：{error}"))?;
+    }
+    if written == 0 {
+        drop(target);
+        let _ = fs::remove_file(target_path);
+        return Err(format!("解压结果为空：{entry_name}"));
+    }
+    if declared_size > 0 && written != declared_size {
+        drop(target);
+        let _ = fs::remove_file(target_path);
+        return Err(format!(
+            "解压大小与声明不一致：{entry_name} declared {declared_size}, got {written}"
+        ));
+    }
     target
         .flush()
         .map_err(|error| format!("写入解压文件失败：{error}"))?;

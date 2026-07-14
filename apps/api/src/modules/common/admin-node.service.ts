@@ -1421,8 +1421,9 @@ export class AdminNodeService {
       };
     }
     return {
-      panelStatus: current.panelStatus === "offline" ? "online" : ((current.panelStatus as "online" | "degraded" | "offline" | null) ?? "online"),
-      panelError: null
+      // Soft failures must preserve the current state. Never promote offline to online without a successful probe.
+      panelStatus: ((current.panelStatus as "online" | "degraded" | "offline" | null) ?? "online"),
+      panelError: current.panelStatus === "offline" ? (current.panelError ?? null) : null
     };
   }
 
