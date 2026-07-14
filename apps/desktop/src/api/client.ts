@@ -92,13 +92,14 @@ type ParsedServerSentEvent = {
 type ClientRuntimeEventType = ClientRuntimeEventDto["type"];
 
 export function createClientRuntimeFallbackRefreshEventTypes(includeVersion: boolean): ClientRuntimeEventType[] {
+  // SSE 断流时的兜底只刷新账号/节点/订阅等关键状态。
+  // 工单必须走真实 ticket_updated 事件，避免每 15 秒假轮询刷列表。
   return [
     "subscription_updated",
     "node_access_updated",
     "account_updated",
     "announcement_updated",
     "policy_updated",
-    "ticket_updated",
     ...(includeVersion ? (["version_updated"] as const) : [])
   ];
 }
@@ -1325,7 +1326,7 @@ function normalizeRuntimeComponentsPlan(
       fileSizeBytes: readNumber(item.fileSizeBytes),
       sourceFormat: item.archiveEntryName ? "zip_entry" : "direct",
       archiveEntryName: item.archiveEntryName ?? null,
-      checksumSha256: item.expectedHash ?? null,
+      checksumSha256: null,
       candidates: item.candidates.map((candidate) => ({
         label: candidate.label,
         url: candidate.url,

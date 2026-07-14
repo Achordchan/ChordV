@@ -12,11 +12,11 @@ function testDefaultItems() {
 
 function testAppItemAvailable() {
   const item = buildAppUpdateCenterItem({
-    appVersion: "1.1.6",
+    appVersion: "1.1.7",
     update: {
       hasUpdate: true,
       forceUpgrade: false,
-      currentVersion: "1.1.6",
+      currentVersion: "1.1.7",
       latestVersion: "1.2.0",
       minimumVersion: "1.0.0",
       title: "发现新版本",
@@ -35,12 +35,12 @@ function testAppItemAvailable() {
 
 function testAppItemCurrent() {
   const item = buildAppUpdateCenterItem({
-    appVersion: "1.1.6",
+    appVersion: "1.1.7",
     update: {
       hasUpdate: false,
       forceUpgrade: false,
-      currentVersion: "1.1.6",
-      latestVersion: "1.1.6",
+      currentVersion: "1.1.7",
+      latestVersion: "1.1.7",
       minimumVersion: "1.0.0",
       title: "当前已是最新",
       changelog: [],

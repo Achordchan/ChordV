@@ -23,7 +23,6 @@ import { PrismaService } from "./prisma.service";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { AuthSessionService } from "./auth-session.service";
 import { moveUploadedFile } from "./upload-file.utils";
-import { readZipEntryData } from "./release-center.utils";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { DownloadMirrorService } from "./download-mirror.service";
@@ -31,9 +30,6 @@ import { DownloadMirrorService } from "./download-mirror.service";
 const RUNTIME_COMPONENT_DOWNLOAD_PREFIX = "/api/downloads/runtime-components";
 const SHARED_RULESET_PLATFORM: PlatformTarget = "macos";
 const SHARED_RULESET_ARCHITECTURE: RuntimeComponentArchitecture = "arm64";
-const DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES = 64 * 1024 * 1024;
-const DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS = 15 * 1000;
-const DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS = 5 * 1000;
 const DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS = 300;
 const DEFAULT_RUNTIME_COMPONENT_FILE_CLEANUP_BUDGET_MS = 300;
 const ADMIN_RUNTIME_VALIDATION_REPORT_VERSION = "admin_validation";
@@ -89,7 +85,8 @@ export class RuntimeComponentsService {
       throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
     const source = input.source ?? "github_remote";
-    const expectedHash = normalizeExpectedHash(input.expectedHash);
+    // 不再收集/下发文件 SHA256；兼容字段统一置空。
+    const expectedHash = null;
     const normalizedInput = normalizeRuntimeComponentIdentity(input.platform, input.architecture, input.kind);
     const fileName = normalizeRequiredText(input.fileName, "fileName");
     if (isSharedRuleset(input.kind)) {
@@ -190,7 +187,7 @@ export class RuntimeComponentsService {
               fileSizeBytes: preparedFile.fileSizeBytes,
               fileHash: preparedFile.fileHash,
               archiveEntryName: null,
-              expectedHash: expectedHashForUploadedFile(preparedFile.fileHash),
+              expectedHash: null,
               enabled: input.enabled ?? true
             }
           }),
@@ -231,20 +228,13 @@ export class RuntimeComponentsService {
     if (nextSource !== "uploaded" && (!nextOriginUrl || !isHttpUrl(nextOriginUrl))) {
       throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
-    const normalizedExpectedHash =
-      nextSource === "uploaded"
-        ? input.expectedHash !== undefined
-          ? expectedHashForUploadedFile(current.fileHash)
-          : current.expectedHash
-        : input.expectedHash !== undefined
-          ? normalizeExpectedHash(input.expectedHash)
-          : current.expectedHash;
+    // expectedHash 已废弃，不再参与更新/下发门禁。
+    const normalizedExpectedHash = null;
     const remoteValidationInvalidated =
       nextSource !== "uploaded" &&
       (current.source === "uploaded" ||
         nextSource !== current.source ||
-        nextOriginUrl !== current.originUrl ||
-        normalizedExpectedHash !== current.expectedHash);
+        nextOriginUrl !== current.originUrl);
     const staleUploadedFilePath =
       remoteValidationInvalidated && current.storedFilePath ? current.storedFilePath : null;
 
@@ -256,7 +246,7 @@ export class RuntimeComponentsService {
           ...(input.originUrl !== undefined ? { originUrl: nextOriginUrl } : {}),
           ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
           ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
-          ...(input.expectedHash !== undefined ? { expectedHash: normalizedExpectedHash } : {}),
+          expectedHash: null,
           ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
           ...(input.defaultMirrorPrefix !== undefined
             ? { defaultMirrorPrefix: normalizeMirrorPrefixList(input.defaultMirrorPrefix) }
@@ -324,7 +314,7 @@ export class RuntimeComponentsService {
               fileSizeBytes: preparedFile.fileSizeBytes,
               fileHash: preparedFile.fileHash,
               archiveEntryName: null,
-              expectedHash: expectedHashForUploadedFile(preparedFile.fileHash),
+              expectedHash: null,
               enabled: input.enabled ?? current.enabled
             }
           }),
@@ -509,7 +499,7 @@ export class RuntimeComponentsService {
           fileName: row.fileName,
           fileSizeBytes: row.fileSizeBytes ? row.fileSizeBytes.toString() : null,
           archiveEntryName: row.archiveEntryName,
-          expectedHash: row.expectedHash,
+          expectedHash: null,
           allowClientMirror,
           originUrl,
           defaultMirrorPrefix,
@@ -641,38 +631,6 @@ export class RuntimeComponentsService {
     }
   }
 
-  private startRemoteRuntimeComponentValidation(
-    componentId: string,
-    resolvedUrl: string,
-    expectedHash: string,
-    archiveEntryName: string | null
-  ) {
-    const timer = setTimeout(() => {
-      void this.validateRemoteRuntimeComponentHash(componentId, resolvedUrl, expectedHash, archiveEntryName)
-        .then((result) => {
-          if (result.status !== "ready") {
-            this.logger.warn(`Runtime component ${componentId} background validation finished with ${result.status}: ${result.message}`);
-            return this.persistAdminValidationFailure(componentId, resolvedUrl, result);
-          }
-          return undefined;
-        })
-        .catch((error) => {
-          const message = readErrorMessage(error);
-          this.logger.warn(`Runtime component ${componentId} background validation failed: ${message}`);
-          return this.persistAdminValidationFailure(componentId, resolvedUrl, {
-            componentId,
-            status: "unreachable",
-            message,
-            finalUrlPreview: resolvedUrl
-          });
-        })
-        .finally(() => {
-          this.publishRuntimeComponentUpdatedBestEffort();
-        });
-    }, 0);
-    timer.unref?.();
-  }
-
   private publishRuntimeComponentUpdatedBestEffort() {
     try {
       this.adminRuntimeEventsService?.publishRuntimeComponentUpdated();
@@ -745,129 +703,6 @@ export class RuntimeComponentsService {
       }
     }
     return latestByComponent;
-  }
-
-  private async validateRemoteRuntimeComponentHash(
-    componentId: string,
-    resolvedUrl: string,
-    expectedHash: string,
-    archiveEntryName: string | null
-  ): Promise<AdminRuntimeComponentValidationDto> {
-    const limits = getRemoteRuntimeHashLimits();
-    const controller = new AbortController();
-    let timeoutReason: "total" | "idle" | null = null;
-    const archiveDownloadPath = archiveEntryName
-      ? path.join(tmpdir(), `chordv-runtime-component-${randomUUID()}.download`)
-      : null;
-    const totalTimeout = setTimeout(() => {
-      timeoutReason = "total";
-      controller.abort();
-    }, limits.totalTimeoutMs);
-    try {
-      const { response } = await fetchPublicHttpUrl(resolvedUrl, { method: "GET", signal: controller.signal }, {
-        errorPrefix: "Remote runtime component URL"
-      });
-      if (!response.ok) {
-        return {
-          componentId,
-          status: "unreachable",
-          message: `远程组件当前不可访问，HTTP ${response.status}。`,
-          finalUrlPreview: resolvedUrl,
-          httpStatus: response.status
-        };
-      }
-
-      const contentLength = parseContentLength(response.headers.get("content-length"));
-      if (contentLength !== null && contentLength > limits.maxBytes) {
-        return {
-          componentId,
-          status: "metadata_mismatch",
-          message: `远程组件文件过大：${contentLength} 字节，超过 ${limits.maxBytes} 字节限制。`,
-          finalUrlPreview: resolvedUrl,
-          httpStatus: response.status
-        };
-      }
-
-      const metadata = await hashResponseBody(response, {
-        maxBytes: limits.maxBytes,
-        idleTimeoutMs: limits.idleTimeoutMs,
-        writePath: archiveDownloadPath,
-        onIdleTimeout: () => {
-          timeoutReason = "idle";
-          controller.abort();
-        }
-      });
-      const actualFileHash = archiveEntryName
-        ? createHash("sha256")
-            .update(await readZipEntryData(archiveDownloadPath as string, archiveEntryName))
-            .digest("hex")
-        : metadata.fileHash;
-      if (actualFileHash !== expectedHash) {
-        return {
-          componentId,
-          status: "metadata_mismatch",
-          message: "远程组件 SHA256 与预期 Hash 不一致。",
-          finalUrlPreview: resolvedUrl,
-          httpStatus: response.status
-        };
-      }
-
-      try {
-        await this.prisma.runtimeComponent.update({
-          where: { id: componentId },
-          data: {
-            fileSizeBytes: metadata.fileSizeBytes,
-            fileHash: actualFileHash,
-            expectedHash
-          }
-        });
-      } catch (error) {
-        return {
-          componentId,
-          status: "save_failed",
-          message: "远程组件可访问且 Hash 匹配，但保存校验结果失败，请稍后重试。",
-          finalUrlPreview: resolvedUrl,
-          httpStatus: response.status,
-          actualFileSizeBytes: metadata.fileSizeBytes.toString(),
-          actualFileHash
-        };
-      }
-
-      return {
-        componentId,
-        status: "ready",
-        message: "远程组件可访问，SHA256 已匹配。",
-        finalUrlPreview: resolvedUrl,
-        httpStatus: response.status,
-        actualFileSizeBytes: metadata.fileSizeBytes.toString(),
-        actualFileHash
-      };
-    } catch (error) {
-      if (error instanceof RemoteRuntimeHashSizeError) {
-        controller.abort();
-        return {
-          componentId,
-          status: "metadata_mismatch",
-          message: error.message,
-          finalUrlPreview: resolvedUrl
-        };
-      }
-      if (timeoutReason) {
-        const timeoutMs = timeoutReason === "total" ? limits.totalTimeoutMs : limits.idleTimeoutMs;
-        return {
-          componentId,
-          status: "unreachable",
-          message: `远程组件下载校验超时：${timeoutMs}ms（${timeoutReason === "total" ? "总耗时" : "读数据空闲"}）。`,
-          finalUrlPreview: resolvedUrl
-        };
-      }
-      throw error;
-    } finally {
-      clearTimeout(totalTimeout);
-      if (archiveDownloadPath) {
-        this.startRuntimeComponentFileCleanupBestEffort(archiveDownloadPath, "temporary remote runtime archive");
-      }
-    }
   }
 
   private async cleanupSharedRulesetDuplicatesBestEffort(kind: RuntimeComponentKind, keepId: string) {
@@ -1380,145 +1215,9 @@ function normalizeRequiredText(value: string | null | undefined, fieldName: stri
   return trimmed;
 }
 
-function normalizeExpectedHash(value?: string | null) {
-  const normalized = normalizeNullableText(value);
-  if (!normalized) {
-    return null;
-  }
-  if (!/^[a-f0-9]{64}$/i.test(normalized)) {
-    throw new BadRequestException("校验值 SHA256 必须是 64 位十六进制字符串。");
-  }
-  return normalized.toLowerCase();
-}
-
-function expectedHashForUploadedFile(fileHash: string | null | undefined) {
-  return isValidSha256(fileHash) ? fileHash.toLowerCase() : null;
-}
 
 
-async function hashResponseBody(
-  response: { body: any },
-  options: {
-    maxBytes: number;
-    idleTimeoutMs: number;
-    writePath?: string | null;
-    onIdleTimeout: () => void;
-  }
-) {
-  const hash = createHash("sha256");
-  let fileSizeBytes = 0n;
-  if (!response.body) {
-    return {
-      fileSizeBytes,
-      fileHash: hash.digest("hex")
-    };
-  }
 
-  const reader = response.body.getReader() as {
-    read: () => Promise<{ done: boolean; value?: Uint8Array }>;
-    releaseLock: () => void;
-  };
-  const output = options.writePath ? await fs.open(options.writePath, "w") : null;
-  try {
-    while (true) {
-      const { done, value } = await readRuntimeComponentBodyChunkWithIdleTimeout(
-        reader,
-        options.idleTimeoutMs,
-        options.onIdleTimeout
-      );
-      if (done) {
-        break;
-      }
-      if (!value) {
-        continue;
-      }
-      hash.update(value);
-      if (output) {
-        await output.write(value);
-      }
-      fileSizeBytes += BigInt(value.byteLength);
-      if (fileSizeBytes > BigInt(options.maxBytes)) {
-        throw new RemoteRuntimeHashSizeError(`远程组件文件过大：已下载内容超过 ${options.maxBytes} 字节限制。`);
-      }
-    }
-  } finally {
-    if (output) {
-      await output.close();
-    }
-    reader.releaseLock();
-  }
-
-  return {
-    fileSizeBytes,
-    fileHash: hash.digest("hex")
-  };
-}
-
-async function readRuntimeComponentBodyChunkWithIdleTimeout(
-  reader: {
-    read: () => Promise<{ done: boolean; value?: Uint8Array }>;
-  },
-  idleTimeoutMs: number,
-  onIdleTimeout: () => void
-) {
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const timeoutTask = new Promise<never>((_resolve, reject) => {
-    timeoutHandle = setTimeout(() => {
-      onIdleTimeout();
-      reject(new Error("远程组件下载读数据超时。"));
-    }, idleTimeoutMs);
-    timeoutHandle.unref?.();
-  });
-  try {
-    return await Promise.race([reader.read(), timeoutTask]);
-  } finally {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
-    }
-  }
-}
-
-async function assertStoredRuntimeComponentReadable(component: {
-  storedFilePath: string | null;
-  fileSizeBytes?: bigint | number | null;
-  fileHash?: string | null;
-  expectedHash?: string | null;
-}) {
-  if (!component.storedFilePath) {
-    throw new NotFoundException("上传型运行组件缺少已保存文件。");
-  }
-  const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
-  await ensureFileReadable(absolutePath);
-  const stat = await statReadableFile(absolutePath);
-  const actualSize = BigInt(stat.size);
-  if (!hasPositiveFileSize(component.fileSizeBytes) || toBigInt(component.fileSizeBytes) !== actualSize) {
-    throw new BadRequestException("上传型运行组件的文件大小元数据与已保存文件不一致。");
-  }
-  if (!isValidSha256(component.fileHash)) {
-    throw new BadRequestException("上传型运行组件缺少 SHA256 元数据。");
-  }
-  return {
-    absolutePath,
-    fileSizeBytes: actualSize,
-    fileHash: component.fileHash
-  };
-}
-
-class RemoteRuntimeHashSizeError extends Error {}
-
-function getRemoteRuntimeHashLimits() {
-  return {
-    maxBytes: readPositiveIntegerEnv("CHORDV_RUNTIME_REMOTE_HASH_MAX_BYTES", DEFAULT_REMOTE_RUNTIME_HASH_MAX_BYTES),
-    totalTimeoutMs: readPositiveIntegerEnv(
-      "CHORDV_RUNTIME_REMOTE_HASH_TOTAL_TIMEOUT_MS",
-      DEFAULT_REMOTE_RUNTIME_HASH_TOTAL_TIMEOUT_MS
-    ),
-    idleTimeoutMs: readPositiveIntegerEnv(
-      "CHORDV_RUNTIME_REMOTE_HASH_IDLE_TIMEOUT_MS",
-      DEFAULT_REMOTE_RUNTIME_HASH_IDLE_TIMEOUT_MS
-    )
-  };
-}
 
 function readSharedRulesetCleanupBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_SHARED_RULESET_CLEANUP_BUDGET_MS", DEFAULT_SHARED_RULESET_CLEANUP_BUDGET_MS);
@@ -1591,9 +1290,31 @@ function toBigInt(value: bigint | number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? BigInt(value) : null;
 }
 
-function isValidSha256(value: string | null | undefined): value is string {
-  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+
+async function assertStoredRuntimeComponentReadable(component: {
+  storedFilePath: string | null;
+  fileSizeBytes?: bigint | number | null;
+  fileHash?: string | null;
+  expectedHash?: string | null;
+}) {
+  if (!component.storedFilePath) {
+    throw new NotFoundException("上传型运行组件缺少已保存文件。");
+  }
+  const absolutePath = resolveRuntimeComponentAbsolutePath(component.storedFilePath);
+  await ensureFileReadable(absolutePath);
+  const stat = await statReadableFile(absolutePath);
+  const actualSize = BigInt(stat.size);
+  if (!hasPositiveFileSize(component.fileSizeBytes) || toBigInt(component.fileSizeBytes) !== actualSize) {
+    throw new BadRequestException("上传型运行组件的文件大小元数据与已保存文件不一致。");
+  }
+  return {
+    absolutePath,
+    fileSizeBytes: actualSize,
+    fileHash: component.fileHash ?? null
+  };
 }
+
+
 
 function readErrorMessage(error: unknown) {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : String(error);

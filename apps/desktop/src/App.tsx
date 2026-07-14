@@ -282,7 +282,8 @@ export function App() {
     setUpdateCenterItemEnabled,
     handleUpdateCenterCheckOnly,
     handleUpdateCenterUpdateOne,
-    handleUpdateCenterUpdateSelected
+    handleUpdateCenterUpdateSelected,
+    consumeUpdateInstallReport
   } = updateFlow;
   const effectiveUpdateActionable = hasActionableUpdate(effectiveUpdate, appVersion);
   const runUpdateCheck = runUpdateCheckFromHook;
@@ -774,7 +775,7 @@ export function App() {
         void focusDesktopWindow();
         return;
       }
-      setLogDrawerOpened(true);
+      openRuntimeLogs();
       void focusDesktopWindow();
     };
   });
@@ -821,21 +822,35 @@ export function App() {
     let runtimeTimer: number | null = null;
     const startRuntimePolling = window.setTimeout(() => {
       runtimeTimer = window.setInterval(() => {
-        void refreshRuntime();
-      }, 3000);
+        void refreshRuntime({ includeLogs: false });
+      }, 5000);
     }, 5000);
-    const clockTimer = window.setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
 
     return () => {
       window.clearTimeout(startRuntimePolling);
       if (runtimeTimer !== null) {
         window.clearInterval(runtimeTimer);
       }
-      window.clearInterval(clockTimer);
     };
   }, []);
+
+  const openRuntimeLogs = () => {
+    setLogDrawerOpened(true);
+    void refreshRuntime({ includeLogs: true }).catch(() => null);
+  };
+
+  useEffect(() => {
+    const needsClock = countdown > 0 || probeCooldownLeft > 0;
+    if (!needsClock) {
+      return;
+    }
+    const clockTimer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(clockTimer);
+    };
+  }, [countdown, probeCooldownLeft]);
 
   useEffect(() => {
     if (!forcedAnnouncement) {
@@ -1101,16 +1116,16 @@ export function App() {
       if (disposed || !event.sessionId) {
         return;
       }
-        if (event.status === "ok") {
-          leaseHeartbeatFailedAtRef.current = null;
-          if (event.leaseExpiresAt) {
-            const nextLeaseExpiresAt = event.leaseExpiresAt;
-            setRuntime((current) =>
-              current && current.sessionId === event.sessionId
+      if (event.status === "ok") {
+        leaseHeartbeatFailedAtRef.current = null;
+        if (event.leaseExpiresAt) {
+          const nextLeaseExpiresAt = event.leaseExpiresAt;
+          setRuntime((current) =>
+            current && current.sessionId === event.sessionId
               ? { ...current, leaseExpiresAt: nextLeaseExpiresAt }
               : current
-            );
-          }
+          );
+        }
         return;
       }
 
@@ -1123,6 +1138,7 @@ export function App() {
         void (async () => {
           const recoveredSession = await recoverSessionAfterUnauthorized();
           if (recoveredSession) {
+            leaseHeartbeatFailedAtRef.current = null;
             return;
           }
           await clearSession(true);
@@ -1135,16 +1151,37 @@ export function App() {
         return;
       }
 
+      // 403/404 属于明确失效；网络抖动/5xx 等 heartbeat_failed 必须先走宽限，避免闲置一会儿就弹“连接已失效”。
+      const definitiveInvalid =
+        event.reasonCode === "session_invalid" ||
+        event.reasonCode === "session_expired" ||
+        event.reasonCode === "session_replaced";
+      if (!definitiveInvalid) {
+        const graceSeconds = Math.max(30, runtimeRef.current?.leaseGraceSeconds ?? 300);
+        const nowMs = Date.now();
+        if (!leaseHeartbeatFailedAtRef.current) {
+          leaseHeartbeatFailedAtRef.current = nowMs;
+          return;
+        }
+        if (nowMs - leaseHeartbeatFailedAtRef.current < graceSeconds * 1000) {
+          return;
+        }
+      }
+
       const guidance =
-        deriveGuidanceFromMessage(event.message ?? "当前连接已失效，请重新连接", {
+        deriveGuidanceFromMessage(event.message ?? "", {
           fallbackNodeId: fallbackNode?.id ?? null
         }) ??
-        deriveGuidanceFromMessage("当前连接已失效，请重新连接", {
-          fallbackNodeId: fallbackNode?.id ?? null
+        ({
+          code: "session_invalid" as const,
+          tone: "warning" as const,
+          title: "连接已失效",
+          message: "当前连接已失效，请重新连接。",
+          actionLabel: "重新连接",
+          recommendedNodeId: fallbackNode?.id ?? null
         });
-      if (guidance) {
-        void handleForcedGuidance(guidance);
-      }
+      leaseHeartbeatFailedAtRef.current = null;
+      void handleForcedGuidance(guidance);
     })
       .then((cleanup) => {
         if (disposed) {
@@ -1538,6 +1575,9 @@ export function App() {
         });
       });
       window.setTimeout(() => {
+        void consumeUpdateInstallReport();
+      }, 200);
+      window.setTimeout(() => {
         void runUpdateCheck({
           accessToken: restoredAccessToken,
           source: "startup",
@@ -1700,7 +1740,7 @@ export function App() {
                   onModeChange={setMode}
                   onPrimaryAction={() => void handlePrimaryAction()}
                   onOpenRoutingRules={() => setRoutingRulesOpened(true)}
-                  onOpenLogs={() => setLogDrawerOpened(true)}
+                  onOpenLogs={openRuntimeLogs}
                 />
               </div>
             ) : mobileTab === "nodes" ? (
@@ -1870,7 +1910,7 @@ export function App() {
               onModeChange={setMode}
               onPrimaryAction={() => void handlePrimaryAction()}
               onOpenRoutingRules={() => setRoutingRulesOpened(true)}
-              onOpenLogs={() => setLogDrawerOpened(true)}
+              onOpenLogs={openRuntimeLogs}
             />
           </div>
         </div>
@@ -2065,8 +2105,8 @@ export function App() {
             {forceUpdateRequired
               ? "当前版本已低于最低支持版本，必须先升级客户端后再继续使用。"
               : effectiveUpdate?.deliveryMode === "desktop_full_replace"
-                ? "下载完整更新包后会自动静默替换并重启应用。"
-                : "下载完成后自动打开安装程序，再由你手动完成安装。"}
+                ? "下载完整更新包后会自动替换并重启应用。"
+                : "下载完成后点击“安装并重启”。应用会退出并自动完成替换安装。"}
           </Alert>
           <Text size="sm" c="dimmed">
             当前版本：{formatVersionLabel(appVersion)}
@@ -2089,10 +2129,8 @@ export function App() {
               </Text>
               <Text size="sm" c="dimmed">
                 {effectiveUpdate?.deliveryMode === "desktop_full_replace"
-                  ? "新版本会先在应用内下载完整 ZIP 更新包，校验完成后自动替换并重启。"
-                  : `新版本会先在应用内下载安装器，下载完成后自动打开 ${
-                      updatePlatform === "windows" ? "Setup 安装程序" : "DMG 安装包"
-                    }，再由你手动完成安装。`}
+                  ? "新版本会先在应用内下载完整 ZIP 更新包，完成后自动替换并重启。"
+                  : "新版本会先在应用内下载安装包。下载完成后点击“安装并重启”，应用退出后自动完成替换安装；失败时会打开安装包并提示原因。"}
               </Text>
               <Progress
                 value={readUpdateDownloadProgress()}

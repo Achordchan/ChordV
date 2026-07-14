@@ -17,7 +17,7 @@ export type GeoRemoteAsset = {
   fileName: GeoFileName;
   releaseTag: string;
   fileSizeBytes: number;
-  checksumSha256: string;
+  checksumSha256: string | null;
   originUrl: string;
 };
 
@@ -87,7 +87,7 @@ export function clearStoredGeoLastCheckAt(storage: Storage = localStorage) {
 export function isGeoAssetInSync(
   local: RuntimeComponentLocalInfo | null | undefined,
   remoteSizeBytes: number | null | undefined,
-  remoteChecksumSha256?: string | null
+  _remoteChecksumSha256?: string | null
 ) {
   if (!local?.exists || !local.sizeBytes || !remoteSizeBytes || remoteSizeBytes <= 0) {
     return false;
@@ -95,33 +95,15 @@ export function isGeoAssetInSync(
   if (local.sizeBytes !== remoteSizeBytes) {
     return false;
   }
-  if (!local.checksumSha256 || !remoteChecksumSha256) {
-    return true;
-  }
-  return local.checksumSha256.toLowerCase() === remoteChecksumSha256.toLowerCase();
-}
-
-export function parseSha256Sum(content: string) {
-  const match = content.trim().match(/\b([a-fA-F0-9]{64})\b/);
-  return match?.[1]?.toLowerCase() ?? null;
+  // 文件完整性不再使用 SHA256；版本同步只看 size（配合已安装 tag）。
+  return true;
 }
 
 export function buildGithubReleaseLatestApiUrl(repo = GEO_UPSTREAM_REPO) {
   return `https://api.github.com/repos/${repo}/releases/latest`;
 }
 
-/** GEO 校验文件镜像列表：加速镜像优先，官方源兜底 */
-export function buildGeoSha256sumUrls(releaseTag: string, fileName: GeoFileName, repo = GEO_UPSTREAM_REPO) {
-  const originSumUrl = `https://github.com/${repo}/releases/download/${encodeURIComponent(releaseTag)}/${fileName}.sha256sum`;
-  return [
-    `https://cdn.jsdelivr.net/gh/${repo}@${releaseTag}/${fileName}.sha256sum`,
-    `https://ghfast.top/${originSumUrl}`,
-    `https://mirror.ghproxy.com/${originSumUrl}`,
-    originSumUrl
-  ];
-}
-
-/** 本地已安装 GEO 标签与远端一致时，可跳过 sha256 二次校验与重复下载 */
+/** 本地已安装 GEO 标签与远端一致时，可跳过重复下载 */
 export function isInstalledGeoTagCurrent(installedTag: string | null | undefined, remoteTag: string | null | undefined) {
   const local = String(installedTag ?? "").trim();
   const remote = String(remoteTag ?? "").trim();
@@ -212,7 +194,7 @@ export function buildGeoComponentItem(
     fileSizeBytes: asset.fileSizeBytes,
     sourceFormat: "direct",
     archiveEntryName: null,
-    checksumSha256: asset.checksumSha256,
+    checksumSha256: null,
     candidates,
     selectedUrl: candidates[0]?.url ?? asset.originUrl,
     displayName: asset.kind === "geoip" ? "GeoIP 数据" : "GeoSite 数据"
@@ -244,14 +226,11 @@ export function findReleaseAsset(assets: GitHubReleaseAsset[], fileName: string)
 }
 
 export function buildGeoRemoteAssetsFromRelease(
-  release: { tag: string; publishedAt: string | null; assets: GitHubReleaseAsset[] },
-  checksums: Partial<Record<GeoFileName, string>>
+  release: { tag: string; publishedAt: string | null; assets: GitHubReleaseAsset[] }
 ): GeoRemotePlan | null {
   const geoip = findReleaseAsset(release.assets, "geoip.dat");
   const geosite = findReleaseAsset(release.assets, "geosite.dat");
-  const geoipHash = checksums["geoip.dat"];
-  const geositeHash = checksums["geosite.dat"];
-  if (!geoip?.browser_download_url || !geosite?.browser_download_url || !geoipHash || !geositeHash) {
+  if (!geoip?.browser_download_url || !geosite?.browser_download_url) {
     return null;
   }
   if (!geoip.size || !geosite.size || geoip.size <= 0 || geosite.size <= 0) {
@@ -267,7 +246,7 @@ export function buildGeoRemoteAssetsFromRelease(
         fileName: "geoip.dat",
         releaseTag: release.tag,
         fileSizeBytes: geoip.size,
-        checksumSha256: geoipHash,
+        checksumSha256: null,
         originUrl: geoip.browser_download_url
       },
       {
@@ -275,7 +254,7 @@ export function buildGeoRemoteAssetsFromRelease(
         fileName: "geosite.dat",
         releaseTag: release.tag,
         fileSizeBytes: geosite.size,
-        checksumSha256: geositeHash,
+        checksumSha256: null,
         originUrl: geosite.browser_download_url
       }
     ]
@@ -287,7 +266,7 @@ export function isLocalGeoCurrent(
   remote: GeoRemoteAsset
 ) {
   // 必须比对远端大小；仅“文件存在 + 本地有标签”不能算最新（bundle 回填的是旧包）。
-  return isGeoAssetInSync(local, remote.fileSizeBytes, remote.checksumSha256);
+  return isGeoAssetInSync(local, remote.fileSizeBytes);
 }
 
 export function pickGeoCandidateUrls(item: RuntimeComponentDownloadItem) {

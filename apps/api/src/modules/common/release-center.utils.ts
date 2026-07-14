@@ -296,10 +296,7 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   assertReleaseArtifactTypeAllowed(platform, type);
   assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
 
-  if (artifact.fileHash) {
-    normalizeSha256Input(artifact.fileHash);
-  }
-
+  // fileHash 已废弃，不再作为发布校验条件。
   if (artifact.fileSizeBytes !== null && artifact.fileSizeBytes !== undefined && artifact.fileSizeBytes <= 0n) {
     throw new BadRequestException("安装包文件大小元数据必须是正数。");
   }

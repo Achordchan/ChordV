@@ -7,12 +7,10 @@ import {
 import {
   buildGeoComponentItem,
   buildGeoRemoteAssetsFromRelease,
-  buildGeoSha256sumUrls,
   buildGithubReleaseLatestApiUrl,
   isInstalledGeoTagCurrent,
   isLocalGeoCurrent,
   parseGithubReleasePayload,
-  parseSha256Sum,
   clearStoredGeoInstalledTag,
   clearStoredGeoLastCheckAt,
   readStoredGeoInstalledTag,
@@ -138,20 +136,12 @@ function emptySummary(): RuntimeAssetsCheckSummary {
   };
 }
 
-function shortHash(value: string | null | undefined) {
-  const text = String(value ?? "").trim().toLowerCase();
-  if (!text) return null;
-  if (text.length <= 12) return text;
-  return `${text.slice(0, 8)}…${text.slice(-4)}`;
-}
-
 function resolveXrayVersionLabel(item: { fileName?: string | null; checksumSha256?: string | null } | null | undefined) {
   if (!item) return null;
   const fileName = String(item.fileName ?? "").trim();
   const match = fileName.match(/(\d+\.\d+\.\d+(?:[-_][\w.]+)?)/);
   if (match?.[1]) return match[1];
-  const hash = shortHash(item.checksumSha256);
-  return hash ? `build ${hash}` : fileName || null;
+  return fileName || null;
 }
 
 async function downloadComponentWithFallback(component: RuntimeComponentDownloadItem, preferredUrl?: string | null) {
@@ -327,29 +317,14 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     return parseGithubReleasePayload(response.body);
   }, [fetchFirstRemoteText]);
 
-  const loadGeoChecksums = useCallback(async (releaseTag: string) => {
-    const fileNames = ["geoip.dat", "geosite.dat"] as const;
-    const checksums: Partial<Record<"geoip.dat" | "geosite.dat", string>> = {};
-    await Promise.all(
-      fileNames.map(async (fileName) => {
-        const response = await fetchFirstRemoteText(buildGeoSha256sumUrls(releaseTag, fileName));
-        const hash = response?.body ? parseSha256Sum(response.body) : null;
-        if (hash) {
-          checksums[fileName] = hash;
-        }
-      })
-    );
-    return checksums;
-  }, [fetchFirstRemoteText]);
 
   const loadGeoRemotePlan = useCallback(async (): Promise<GeoRemotePlan | null> => {
     const release = await loadGeoReleaseMeta();
     if (!release) {
       return null;
     }
-    const checksums = await loadGeoChecksums(release.tag);
-    return buildGeoRemoteAssetsFromRelease(release, checksums);
-  }, [loadGeoChecksums, loadGeoReleaseMeta]);
+    return buildGeoRemoteAssetsFromRelease(release);
+  }, [loadGeoReleaseMeta]);
 
 
   const collectServerMirrorPrefixes = useCallback((plan: Awaited<ReturnType<typeof fetchRuntimeComponentsPlan>>) => {
@@ -691,8 +666,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                       clearStoredGeoInstalledTag();
                     }
 
-                    const checksums = await loadGeoChecksums(releaseMeta.tag);
-                    const geoPlan = buildGeoRemoteAssetsFromRelease(releaseMeta, checksums);
+                    const geoPlan = buildGeoRemoteAssetsFromRelease(releaseMeta);
                     if (!geoPlan) {
                       summary.failed.push("GEO 数据源");
                       summary.geo.current = false;
@@ -763,7 +737,7 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
                               exists: true,
                               path: local?.path ?? null,
                               sizeBytes: asset.fileSizeBytes,
-                              checksumSha256: asset.checksumSha256
+                              checksumSha256: null
                             };
                           } catch (reason) {
                             const message = reason instanceof Error ? reason.message : String(reason);
@@ -1026,7 +1000,6 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     },
     [
       failRuntimeAssets,
-      loadGeoChecksums,
       loadGeoReleaseMeta,
       loadGeoRemotePlan,
       markReady,
@@ -1044,6 +1017,9 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
       return;
     }
     const timer = window.setInterval(() => {
+      if (!shouldCheckGeoUpdate(readStoredGeoLastCheckAt())) {
+        return;
+      }
       void ensureRuntimeAssetsReady({
         source: "update_check",
         interactive: false,

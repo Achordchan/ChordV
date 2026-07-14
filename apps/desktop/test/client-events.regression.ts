@@ -44,13 +44,13 @@ function testIgnoresCommentsAndPreservesDataSpacing() {
 }
 
 function testFallbackRefreshIncludesPolicyUpdates() {
+  // 工单不得进入 SSE 断流兜底轮询列表。
   assert.deepEqual(createClientRuntimeFallbackRefreshEventTypes(false), [
     "subscription_updated",
     "node_access_updated",
     "account_updated",
     "announcement_updated",
-    "policy_updated",
-    "ticket_updated"
+    "policy_updated"
   ]);
   assert.deepEqual(createClientRuntimeFallbackRefreshEventTypes(true), [
     "subscription_updated",
@@ -58,9 +58,9 @@ function testFallbackRefreshIncludesPolicyUpdates() {
     "account_updated",
     "announcement_updated",
     "policy_updated",
-    "ticket_updated",
     "version_updated"
   ]);
+  assert.ok(!createClientRuntimeFallbackRefreshEventTypes(true).includes("ticket_updated"));
 }
 
 function main() {

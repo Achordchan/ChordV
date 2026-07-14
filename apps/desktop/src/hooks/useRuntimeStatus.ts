@@ -19,22 +19,48 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
   const [runtimeLog, setRuntimeLog] = useState("");
   const localStopInFlightRef = useRef<Promise<void> | null>(null);
   const runtimeRefreshRequestSeqRef = useRef(0);
+  const setRuntimeRef = useRef(options.setRuntime);
+  const leaseFailedAtRef = useRef(options.leaseHeartbeatFailedAtRef);
+
+  setRuntimeRef.current = options.setRuntime;
+  leaseFailedAtRef.current = options.leaseHeartbeatFailedAtRef;
 
   const refreshRuntime = useCallback(async (optionsInput?: { includeLogs?: boolean }) => {
     const requestId = runtimeRefreshRequestSeqRef.current + 1;
     runtimeRefreshRequestSeqRef.current = requestId;
-    const includeLogs = optionsInput?.includeLogs ?? true;
+    // Keep logs off by default so the 5s poll does not push large text into React state.
+    const includeLogs = optionsInput?.includeLogs ?? false;
 
     try {
       const status = await loadRuntimeStatus();
       if (runtimeRefreshRequestSeqRef.current !== requestId) {
         return null;
       }
-      setDesktopStatus(status);
+      setDesktopStatus((current) => {
+        if (
+          current.status === status.status &&
+          current.activeSessionId === status.activeSessionId &&
+          current.activePid === status.activePid &&
+          current.activeNodeId === status.activeNodeId &&
+          current.lastError === status.lastError &&
+          current.configPath === status.configPath &&
+          current.logPath === status.logPath &&
+          current.xrayBinaryPath === status.xrayBinaryPath &&
+          current.tunName === status.tunName &&
+          current.lastStartedAt === status.lastStartedAt &&
+          current.reasonCode === status.reasonCode &&
+          current.recoveryHint === status.recoveryHint &&
+          current.vpnActive === status.vpnActive &&
+          current.connectivityVerified === status.connectivityVerified &&
+          current.platformTarget === status.platformTarget
+        ) {
+          return current;
+        }
+        return status;
+      });
       if (!status.activeSessionId && status.status !== "connecting" && status.status !== "disconnecting") {
-        options.setRuntime(null);
+        setRuntimeRef.current(null);
       }
-      // 空闲态不必每次读日志文件；有活跃会话/连接中才拉日志，降低同步 IPC 压力。
       const shouldLoadLogs =
         includeLogs &&
         (Boolean(status.activeSessionId) ||
@@ -47,7 +73,7 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
         if (runtimeRefreshRequestSeqRef.current !== requestId) {
           return null;
         }
-        setRuntimeLog(logs.log);
+        setRuntimeLog((current) => (current === logs.log ? current : logs.log));
       }
       return status;
     } catch {
@@ -56,11 +82,11 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
       }
       const idleStatus = createIdleRuntimeStatus();
       setDesktopStatus(idleStatus);
-      options.setRuntime(null);
+      setRuntimeRef.current(null);
       setRuntimeLog("");
       return idleStatus;
     }
-  }, [options]);
+  }, []);
 
   const forceStopLocalRuntime = useCallback(async () => {
     if (localStopInFlightRef.current) {
@@ -72,10 +98,10 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
       try {
         await disconnectRuntime();
       } catch {
-        // 本地断开兜底不向外抛，避免阻断后续清理。
+        // Best-effort local disconnect must not block later cleanup.
       } finally {
-        options.leaseHeartbeatFailedAtRef.current = null;
-        options.setRuntime(null);
+        leaseFailedAtRef.current.current = null;
+        setRuntimeRef.current(null);
         await refreshRuntime().catch(() => {
           setDesktopStatus(createIdleRuntimeStatus());
           setRuntimeLog("");
@@ -89,7 +115,7 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
     } finally {
       localStopInFlightRef.current = null;
     }
-  }, [options, refreshRuntime]);
+  }, [refreshRuntime]);
 
   return {
     desktopStatus,

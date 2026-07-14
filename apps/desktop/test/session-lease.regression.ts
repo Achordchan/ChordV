@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { resolveProactiveAccessTokenRefreshDelay } from "../src/lib/desktopSessionRecovery";
 import { buildProtectedAccessNotice, resolveProtectedAccessReason } from "../src/lib/sessionLeaseState";
 
@@ -53,10 +55,45 @@ function testResolveProactiveAccessTokenRefreshDelay() {
   );
 }
 
+
+function testNativeLeaseHeartbeatUsesGrace() {
+  const appSource = readFileSync(resolve(import.meta.dirname, "../src/App.tsx"), "utf8");
+  assert.match(
+    appSource,
+    /reasonCode === "session_invalid"[\s\S]*?leaseGraceSeconds/,
+    "desktop native lease errors must wait for grace before forcing reconnect"
+  );
+  assert.match(
+    appSource,
+    /heartbeat_failed[\s\S]*?leaseHeartbeatFailedAtRef|!definitiveInvalid[\s\S]*?leaseHeartbeatFailedAtRef/,
+    "transient heartbeat failures should accumulate grace instead of immediate disconnect"
+  );
+  assert.match(
+    appSource,
+    /if \(!leaseHeartbeatFailedAtRef\.current\) {[\s\S]*?leaseHeartbeatFailedAtRef\.current = nowMs;[\s\S]*?return;/,
+    "first transient lease failure should only start the grace window"
+  );
+
+  const clientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
+  assert.doesNotMatch(
+    clientSource,
+    /createClientRuntimeFallbackRefreshEventTypes[\s\S]*?"ticket_updated"/,
+    "SSE fallback refresh must not synthesize ticket_updated polls"
+  );
+
+  const actionsSource = readFileSync(resolve(import.meta.dirname, "../src/hooks/useRuntimeActions.ts"), "utf8");
+  assert.match(
+    actionsSource,
+    /isSyntheticTicketEvent && !runtimeEvent\.ticketId/,
+    "synthetic ticket events without ticketId must be ignored"
+  );
+}
+
 function main() {
   testResolveProtectedAccessReason();
   testBuildProtectedAccessNotice();
   testResolveProactiveAccessTokenRefreshDelay();
+  testNativeLeaseHeartbeatUsesGrace();
   console.log("desktop session lease regression checks passed");
 }
 

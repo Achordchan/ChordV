@@ -456,7 +456,6 @@ export async function downloadDesktopInstaller(input: {
   url: string;
   fileName?: string | null;
   expectedTotalBytes?: number | null;
-  expectedHash?: string | null;
   packageKind?: "installer" | "full_update";
   onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
@@ -468,7 +467,6 @@ export async function downloadDesktopInstaller(input: {
     url: input.url,
     fileName: input.fileName,
     expectedTotalBytes: input.expectedTotalBytes,
-    expectedHash: input.expectedHash,
     packageKind: input.packageKind
   };
   const { Channel } = await import("@tauri-apps/api/core");
@@ -485,7 +483,6 @@ export function downloadDesktopFullUpdatePackage(input: {
   url: string;
   fileName?: string | null;
   expectedTotalBytes?: number | null;
-  expectedHash?: string | null;
   onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
   return downloadDesktopInstaller({
@@ -545,7 +542,6 @@ export async function openExternalUrl(url: string) {
 export async function applyDesktopFullUpdate(input: {
   path: string;
   expectedTotalBytes?: number | null;
-  expectedHash?: string | null;
 }) {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {
@@ -553,8 +549,7 @@ export async function applyDesktopFullUpdate(input: {
   }
   return invoke("apply_desktop_full_update", {
     path: input.path,
-    expectedTotalBytes: input.expectedTotalBytes,
-    expectedHash: input.expectedHash
+    expectedTotalBytes: input.expectedTotalBytes
   });
 }
 
@@ -564,6 +559,24 @@ export async function quitForUpdate() {
     return { ok: false as const };
   }
   return invoke("quit_for_update");
+}
+
+export type DesktopUpdateInstallReport = {
+  ok: boolean;
+  platform: string;
+  mode: string;
+  summary: string | null;
+  detail: string | null;
+  logPath: string | null;
+  createdAt: string | null;
+};
+
+export async function consumeDesktopUpdateInstallReport() {
+  const invoke = await loadInvoke();
+  if (!invoke || isAndroidPlatform()) {
+    return null;
+  }
+  return invoke<DesktopUpdateInstallReport | null>("consume_desktop_update_install_report");
 }
 
 export async function loadDesktopRuntimeEnvironment() {

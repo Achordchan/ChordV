@@ -15,6 +15,7 @@ import {
   openDesktopInstaller,
   openExternalLink,
   quitForUpdate,
+  consumeDesktopUpdateInstallReport,
   subscribeDesktopUpdateDownloadProgress,
   type RuntimeStatus
 } from "../lib/runtime";
@@ -138,8 +139,7 @@ function buildUpdateArtifactIdentity(update: ClientUpdateCheckResult | null) {
     artifact?.originDownloadUrl ?? "",
     artifact?.fileName ?? "",
     artifact?.fileType ?? "",
-    artifact?.fileSizeBytes ?? "",
-    artifact?.fileHash ?? ""
+    artifact?.fileSizeBytes ?? ""
   ].join("|");
 }
 
@@ -318,22 +318,21 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           await applyDesktopFullUpdate({
             path: updateDownload.localPath,
             expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-            expectedHash: effectiveUpdate.artifact?.fileHash ?? null
           });
         } else {
           await openDesktopInstaller(updateDownload.localPath);
         }
         options.notify?.({
           color: "green",
-          title: "安装器已打开",
-          message: "已复用本地安装器，请按安装向导完成升级。"
+          title: "准备安装",
+          message: "本地更新包可用。请点击“安装并重启”完成安装。"
         });
         return true;
       } catch (reason) {
         setUpdateDownload(createIdleUpdateDownloadState());
         options.notify?.({
           color: "yellow",
-          title: "本地安装器不可用",
+          title: "本地更新包不可用",
           message: reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "已切换为重新下载安装器。"
         });
       }
@@ -361,7 +360,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           url: resolvedDownloadUrl,
           fileName: preferredFileName,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          expectedHash: effectiveUpdate.artifact?.fileHash ?? null,
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
@@ -381,7 +379,6 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           url: originDownloadUrl,
           fileName: preferredFileName,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          expectedHash: effectiveUpdate.artifact?.fileHash ?? null,
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
@@ -398,7 +395,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         downloadedBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? 0,
         totalBytes: result.totalBytes ?? effectiveUpdate.artifact?.fileSizeBytes ?? null,
         localPath: result.localPath,
-        message: "安装器下载完成，点击下方按钮开始安装。"
+        message: "更新包下载完成，点击下方按钮开始安装。"
       });
 
       completedDownloadIdentityRef.current = updateArtifactIdentity;
@@ -406,14 +403,27 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         await applyDesktopFullUpdate({
           path: result.localPath,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
         });
-      } else {
-        await openDesktopInstaller(result.localPath);
+        return true;
       }
+
+      // Mac/DMG 与安装器路径：先登记待安装文件，由用户点击“安装并重启”再退出安装。
+      await openDesktopInstaller(result.localPath);
+      setUpdateDownload((current) => ({
+        ...current,
+        phase: "completed",
+        message: usedFallback
+          ? "更新包已下载完成（已回退原始地址）。请点击“安装并重启”。"
+          : "更新包已下载完成。请点击“安装并重启”，应用退出后自动完成替换安装。"
+      }));
+      options.notify?.({
+        color: "green",
+        title: "更新包已就绪",
+        message: "下载完成。点击“安装并重启”后，应用会退出并自动完成安装。"
+      });
       return true;
     } catch (reason) {
-      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "安装器下载失败";
+      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "更新包下载失败";
       setUpdateDownload((current) => ({
         phase: "failed",
         fileName: current.fileName,
@@ -793,28 +803,46 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
   const handleQuitForUpdate = useCallback(async () => {
     if (updateDownload.phase !== "completed" || !updateDownload.localPath) {
-      options.showError?.("安装器尚未准备就绪，请先完成下载。");
+      options.showError?.("更新包尚未准备就绪，请先完成下载。");
       return false;
     }
     try {
-      // 清空更新状态，避免重启后短暂显示旧的"有更新"提示
+      // 清空更新状态，避免重启后短暂显示旧的“有更新”提示
       setUpdateCheckResult(null);
       if (effectiveUpdate && isFullReplaceUpdate(effectiveUpdate, updatePlatform)) {
         await applyDesktopFullUpdate({
           path: updateDownload.localPath,
           expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          expectedHash: effectiveUpdate.artifact?.fileHash ?? null
         });
       } else {
+        await openDesktopInstaller(updateDownload.localPath);
         await quitForUpdate();
       }
       return true;
     } catch (reason) {
-      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "启动安装器失败";
+      const message = reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "启动安装失败";
       options.showError?.(message);
       return false;
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
+
+  const consumeUpdateInstallReport = useCallback(async () => {
+    try {
+      const report = await consumeDesktopUpdateInstallReport();
+      if (!report || report.ok) {
+        return null;
+      }
+      const summary = report.summary?.trim() || "自动替换安装未成功，已改为打开安装包。";
+      options.notify?.({
+        color: "yellow",
+        title: "更新安装未完全成功",
+        message: summary
+      });
+      return report;
+    } catch {
+      return null;
+    }
+  }, [options]);
 
   return {
     updatePlatform,
@@ -843,6 +871,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     setUpdateCenterItemEnabled,
     handleUpdateCenterCheckOnly,
     handleUpdateCenterUpdateOne,
-    handleUpdateCenterUpdateSelected
+    handleUpdateCenterUpdateSelected,
+    consumeUpdateInstallReport
   };
 }

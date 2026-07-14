@@ -599,6 +599,11 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       }
 
       if (eventType === "ticket_updated" || eventType === "ticket_read_state_updated") {
+        const isSyntheticTicketEvent = Boolean((event as ClientRuntimeEventDto & { synthetic?: boolean }).synthetic);
+        // 合成兜底事件没有真实 ticketId，不应触发工单列表/详情刷新。
+        if (isSyntheticTicketEvent && !runtimeEvent.ticketId) {
+          return;
+        }
         const preferredTicketId = runtimeEvent.ticketId ?? options.selectedTicketIdRef.current;
         const isVisibleSelectedTicket =
           options.ticketCenterOpenedRef.current &&
@@ -634,7 +639,8 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           } finally {
             clearSupportTicketBackgroundDetailRefresh(preferredTicketId);
           }
-        } else {
+        } else if (options.ticketCenterOpenedRef.current || runtimeEvent.ticketId) {
+          // 工单中心关闭时，仅在带 ticketId 的真实事件下刷新列表以更新未读角标。
           await options.loadTicketList(preferredTicketId);
         }
       }

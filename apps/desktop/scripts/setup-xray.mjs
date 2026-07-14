@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { copyFile, rename, chmod, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -131,15 +130,12 @@ function isOutputReady(outputPath, component) {
   if (!existsSync(outputPath)) {
     return false;
   }
-  if (!component.expectedHash && !component.fileSizeBytes) {
+  if (!component.fileSizeBytes) {
     return true;
   }
   const fileStat = statSync(outputPath);
   if (component.fileSizeBytes && BigInt(fileStat.size) !== BigInt(component.fileSizeBytes)) {
     return false;
-  }
-  if (component.expectedHash) {
-    return computeSha256(outputPath) === component.expectedHash.toLowerCase();
   }
   return true;
 }
@@ -161,18 +157,6 @@ async function verifyDownloadedFile(filePath, component, kind) {
     await safeUnlink(filePath);
     throw new Error(`${kind} 文件大小与后台计划不一致`);
   }
-  if (component.expectedHash) {
-    const actual = computeSha256(filePath);
-    if (actual !== component.expectedHash.toLowerCase()) {
-      await safeUnlink(filePath);
-      throw new Error(`${kind} 文件哈希与后台计划不一致`);
-    }
-  }
-}
-
-function computeSha256(filePath) {
-  const hash = createHash("sha256");
-  return hash.update(readFileSync(filePath)).digest("hex");
 }
 
 async function safeUnlink(filePath) {

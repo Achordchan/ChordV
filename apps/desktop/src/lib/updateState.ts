@@ -241,24 +241,24 @@ export function createLegacyUpdateResult(
 export function updateActionLabel(update: ClientUpdateCheckResult, downloadState?: UpdateDownloadState) {
   if (update.deliveryMode === "desktop_full_replace") {
     if (downloadState?.phase === "preparing") {
-      return "Preparing update";
+      return "正在准备更新包";
     }
     if (downloadState?.phase === "downloading") {
-      return "Downloading update package";
+      return "正在下载更新包";
     }
     if (downloadState?.phase === "completed") {
-      return "Restart and apply update";
+      return "安装并重启";
     }
-    return "Download and update";
+    return "下载并更新";
   }
   if (downloadState?.phase === "preparing") {
     return "正在准备下载";
   }
   if (downloadState?.phase === "downloading") {
-    return "正在下载安装器";
+    return "正在下载安装包";
   }
   if (downloadState?.phase === "completed") {
-    return "重新打开安装器";
+    return "安装并重启";
   }
   if (update.deliveryMode === "apk_download") {
     return "下载 APK 安装包";
@@ -266,7 +266,7 @@ export function updateActionLabel(update: ClientUpdateCheckResult, downloadState
   if (update.deliveryMode === "external_download") {
     return "打开下载页";
   }
-  return "下载并安装更新";
+  return "下载更新";
 }
 
 export function createIdleUpdateDownloadState(): UpdateDownloadState {
@@ -367,11 +367,11 @@ export function phaseMessage(phase: UpdateDownloadState["phase"]) {
     case "preparing":
       return "正在准备下载";
     case "downloading":
-      return "正在下载安装器";
+      return "正在下载更新包";
     case "completed":
-      return "安装器已下载完成";
+      return "更新包已下载完成";
     case "failed":
-      return "安装器下载失败";
+      return "更新包下载失败";
     default:
       return "等待开始下载";
   }
@@ -395,7 +395,7 @@ export function formatByteSize(bytes: number) {
 
 export function describeUpdateDownload(downloadState: UpdateDownloadState) {
   if (downloadState.phase === "idle") {
-    return "点击下方按钮后，系统会先下载完整安装器。";
+    return "点击下方按钮后，系统会先下载更新包。";
   }
   const amount = hasKnownTotalBytes(downloadState.totalBytes)
     ? `${formatByteSize(downloadState.downloadedBytes)} / ${formatByteSize(downloadState.totalBytes)}`

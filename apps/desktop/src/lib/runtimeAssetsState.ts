@@ -151,7 +151,7 @@ export function extractRuntimeAssetsErrorCode(message: string): RuntimeDownloadF
     return prefixed[1] as RuntimeDownloadFailureReason;
   }
   if (message.includes("hash")) {
-    return "hash_mismatch";
+    return "download_failed";
   }
   if (message.includes("extract")) {
     return "extract_failed";

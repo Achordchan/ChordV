@@ -67,7 +67,7 @@ function makeRuntimeComponentListPrisma(rows: Array<Record<string, unknown>>, fa
   };
 }
 
-async function testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHashDiffers() {
+async function testUploadedRuntimeComponentPatchIgnoresExpectedHash() {
   const updates: Array<Record<string, any>> = [];
   const current = makeUploadedComponent();
   const service = createRuntimeComponentsService({
@@ -91,43 +91,13 @@ async function testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHa
   const result = await service.updateAdminRuntimeComponent("component_1", { expectedHash: "b".repeat(64) });
 
   assert.equal(updates.length, 1);
-  assert.equal(updates[0].data.expectedHash, "a".repeat(64));
+  assert.equal(updates[0].data.expectedHash, null);
   assert.equal(updates[0].data.fileHash, undefined, "metadata save must not clear uploaded file metadata");
-  assert.equal(result.expectedHash, "a".repeat(64));
+  assert.equal(result.expectedHash, null);
   assert.equal(result.fileHash, "a".repeat(64));
 }
 
-async function testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch() {
-  const updates: Array<Record<string, any>> = [];
-  const current = makeUploadedComponent({ expectedHash: null });
-  const service = createRuntimeComponentsService({
-    ensureRuntimeComponentExists: async () => current,
-    prisma: {
-      runtimeComponent: {
-        update: async (payload: Record<string, any>) => {
-          updates.push(payload);
-          return {
-            ...current,
-            ...payload.data,
-            updatedAt: new Date("2026-01-01T00:01:00.000Z")
-          };
-        }
-      }
-    },
-    startSharedRulesetDuplicatesCleanup: () => undefined,
-    startRuntimeComponentStoredFileCleanupBestEffort: () => undefined
-  });
-
-  const result = await service.updateAdminRuntimeComponent("component_1", { expectedHash: "A".repeat(64) });
-
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].data.expectedHash, "a".repeat(64));
-  assert.equal(updates[0].data.fileHash, undefined, "matching expectedHash must not clear uploaded file metadata");
-  assert.equal(result.expectedHash, "a".repeat(64));
-  assert.equal(result.fileHash, "a".repeat(64));
-}
-
-async function testUploadedRuntimeComponentUploadUsesActualHashWhenExpectedHashDiffers() {
+async function testUploadedRuntimeComponentUploadIgnoresExpectedHash() {
   const actualHash = "a".repeat(64);
   let createdData: Record<string, any> | null = null;
   let cleanupCalled = false;
@@ -172,10 +142,10 @@ async function testUploadedRuntimeComponentUploadUsesActualHashWhenExpectedHashD
     }
   );
 
-  assert.equal(cleanupCalled, false, "mismatched expectedHash must not fail upload and clean the uploaded file");
-  assert.equal(createdData?.expectedHash, actualHash);
+  assert.equal(cleanupCalled, false, "expectedHash must not fail upload");
+  assert.equal(createdData?.expectedHash, null);
   assert.equal(createdData?.fileHash, actualHash);
-  assert.equal(result.expectedHash, actualHash);
+  assert.equal(result.expectedHash, null);
 }
 
 async function testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMismatch() {
@@ -354,43 +324,6 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
   assert.equal(result.componentId, "component_1");
 }
 
-async function testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefreshEvent() {
-  let published = false;
-  const publishedPromise = new Promise<void>((resolve) => {
-    const service = createRuntimeComponentsService({
-      logger: {
-        warn: () => undefined
-      },
-      validateRemoteRuntimeComponentHash: async () => ({
-        componentId: "component_1",
-        status: "ready",
-        message: "ready",
-        finalUrlPreview: "https://cdn.example.com/xray.exe"
-      }),
-      adminRuntimeEventsService: {
-        publishRuntimeComponentUpdated: () => {
-          published = true;
-          resolve();
-        }
-      }
-    });
-
-    service["startRemoteRuntimeComponentValidation"](
-      "component_1",
-      "https://cdn.example.com/xray.exe",
-      "a".repeat(64),
-      null
-    );
-  });
-
-  await Promise.race([
-    publishedPromise,
-    new Promise((_resolve, reject) => setTimeout(() => reject(new Error("runtime component refresh event timed out")), 250))
-  ]);
-
-  assert.equal(published, true, "background validation completion should notify admin pages to refresh runtime components");
-}
-
 async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
   let publishedCount = 0;
   const created = makeRemoteComponent({ id: "component_created", expectedHash: "a".repeat(64) });
@@ -435,9 +368,8 @@ async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
 }
 
 async function main() {
-  await testUploadedRuntimeComponentPatchUsesActualFileHashWhenExpectedHashDiffers();
-  await testUploadedRuntimeComponentAcceptsMatchingExpectedHashOnPatch();
-  await testUploadedRuntimeComponentUploadUsesActualHashWhenExpectedHashDiffers();
+  await testUploadedRuntimeComponentPatchIgnoresExpectedHash();
+  await testUploadedRuntimeComponentUploadIgnoresExpectedHash();
   await testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMismatch();
   await testAdminRuntimeComponentMarksUnverifiedRemoteAsDeliverable();
   await testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable();
@@ -446,7 +378,6 @@ async function main() {
   await testAdminRuntimeComponentIgnoresBackgroundValidationFailureForDelivery();
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
-  await testRemoteRuntimeComponentBackgroundValidationPublishesAdminRefreshEvent();
   await testRuntimeComponentMutationsPublishAdminRefreshEvent();
   console.log("runtime component service regression checks passed");
 }
