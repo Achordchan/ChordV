@@ -10992,10 +10992,8 @@ async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
     assert.match(String(result[2]?.probeError ?? ""), /request budget 80ms exhausted/);
     assert.equal(result[2]?.panelStatus, "online");
     assert.equal(result[2]?.panelError, null);
-    assert.equal(updateManyCalls.length, 1, "unstarted nodes should be marked with one bulk update");
-    assert.deepEqual(updateManyCalls[0].where.id.in, ["node_skipped"]);
-    // Budget-skipped nodes keep previous panelStatus and should not force offline/degraded writes.
-    assert.equal(updateManyCalls.length, 0);
+    // Budget-skipped nodes only annotate the response; do not write panel/probe status to DB.
+    assert.equal(updateManyCalls.length, 0, "budget-skipped nodes must not trigger bulk status writes");
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
@@ -11212,10 +11210,11 @@ async function testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls() {
       })
     ]);
 
-    assert.equal(updateManyStarted, true);
+    assert.equal(updateManyStarted, false, "budget-skipped nodes must not call updateMany");
     assert.deepEqual(result.map((item) => item.id), ["node_stalled", "node_stalled_2", "node_skipped"]);
     assert.match(String(result[2]?.probeError ?? ""), /request budget 80ms exhausted/);
     assert.equal(result[2]?.panelStatus, "online");
+    assert.equal(result[2]?.panelError, null);
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
