@@ -19186,15 +19186,19 @@ async function testRefreshNodeSlowPanelReturnsDegradedWithinBudget() {
   const currentNode = makeAdminNodeRow({
     panelEnabled: true
   });
+  const previousRefreshBudget = process.env.CHORDV_REFRESH_NODE_RUNTIME_READ_TIMEOUT_MS;
+  process.env.CHORDV_REFRESH_NODE_RUNTIME_READ_TIMEOUT_MS = "40";
   let runtimeReadStarted = false;
   let savedData: Record<string, unknown> | null = null;
+  let runtimeOptions: Record<string, unknown> | null = null;
   const service = createAdminNodeService({
     logger: {
       warn: () => undefined
     },
     xuiService: {
-      getInboundRuntime: async () => {
+      getInboundRuntime: async (options: Record<string, unknown>) => {
         runtimeReadStarted = true;
+        runtimeOptions = options;
         return new Promise<any>(() => undefined);
       }
     },
@@ -19213,14 +19217,75 @@ async function testRefreshNodeSlowPanelReturnsDegradedWithinBudget() {
     }
   });
 
-  const startedAt = Date.now();
+  try {
+    const startedAt = Date.now();
+    const record = await service.refreshNode("node_1");
+
+    assert.equal(runtimeReadStarted, true, "panel runtime read should still be attempted");
+    assert.equal(runtimeOptions?.panelRequestTimeoutMs, 40, "refresh should use dedicated runtime budget");
+    assert.equal(record.panelStatus, "degraded");
+    assert.match(record.panelError ?? "", /panel runtime refresh exceeded 40ms/);
+    assert.equal(savedData?.serverHost, undefined, "slow panel refresh must not overwrite local node host");
+    assert.equal(Date.now() - startedAt < 1500, true, "slow panel refresh should return inside the refresh budget");
+  } finally {
+    if (previousRefreshBudget === undefined) {
+      delete process.env.CHORDV_REFRESH_NODE_RUNTIME_READ_TIMEOUT_MS;
+    } else {
+      process.env.CHORDV_REFRESH_NODE_RUNTIME_READ_TIMEOUT_MS = previousRefreshBudget;
+    }
+  }
+}
+
+async function testRefreshNodeSuccessClearsDegradedStatus() {
+  const currentNode = makeAdminNodeRow({
+    panelEnabled: true,
+    panelStatus: "degraded",
+    panelError: "stale panel error",
+    serverHost: "old.example.com",
+    uuid: "old-uuid"
+  });
+  let savedData: Record<string, unknown> | null = null;
+  const service = createAdminNodeService({
+    xuiService: {
+      getInboundRuntime: async () => ({
+        inboundId: 7,
+        name: "node",
+        serverHost: "new.example.com",
+        serverPort: 443,
+        uuid: "new-uuid",
+        flow: "xtls-rprx-vision",
+        realityPublicKey: "public_key",
+        shortId: "short_id",
+        serverName: "new.example.com",
+        fingerprint: "chrome",
+        spiderX: "/",
+        mldsa65Verify: ""
+      })
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: { data: Record<string, unknown> }) => {
+          savedData = payload.data;
+          return {
+            ...currentNode,
+            ...payload.data,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
   const record = await service.refreshNode("node_1");
 
-  assert.equal(runtimeReadStarted, true, "panel runtime read should still be attempted");
-  assert.equal(record.panelStatus, "degraded");
-  assert.match(record.panelError ?? "", /panel runtime read is still running in background/);
-  assert.equal(savedData?.serverHost, undefined, "slow panel refresh must not overwrite local node host");
-  assert.equal(Date.now() - startedAt < 1500, true, "slow panel refresh should return inside the local follow-up budget");
+  assert.equal(record.panelStatus, "online");
+  assert.equal(record.panelError, null);
+  assert.equal(savedData?.serverHost, "new.example.com");
+  assert.equal(savedData?.uuid, "new-uuid");
+  assert.equal(savedData?.panelStatus, "online");
+  assert.equal(savedData?.panelError, null);
+  assert.ok(savedData?.panelLastSyncedAt instanceof Date);
 }
 
 async function testRefreshNodeMapsLocalSaveFailure() {
@@ -33966,6 +34031,7 @@ async function main() {
   await testImportNodeFromSlowPanelFailsBeforeLocalSave();
   await testRefreshNodeOfflinePanelKeepsLocalRuntime();
   await testRefreshNodeSlowPanelReturnsDegradedWithinBudget();
+  await testRefreshNodeSuccessClearsDegradedStatus();
   await testRefreshNodeMapsLocalSaveFailure();
   await testRefreshNodeMapsLocalReadFailureBeforePanelRead();
   await testUpdateNodeMapsLocalSaveFailure();

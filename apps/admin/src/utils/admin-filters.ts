@@ -123,6 +123,12 @@ export function summarizeAdminDiagnosticMessage(message?: string | null, fallbac
   if (normalized !== trimmed) {
     return normalized;
   }
+  if (/panel runtime refresh exceeded\s+\d+ms/i.test(trimmed) || /subscription runtime refresh exceeded\s+\d+ms/i.test(trimmed)) {
+    return "读取 3x-ui 面板超时，请稍后重试；若持续出现，检查 API 服务器到面板的网络连通性。";
+  }
+  if (/panel runtime read is still running in background/i.test(trimmed) || /panel runtime refresh is still running in background/i.test(trimmed)) {
+    return "面板读取仍在后台进行，请稍后刷新节点列表查看最新状态。";
+  }
   if (!hasTechnicalErrorSignal(trimmed)) {
     return trimmed;
   }

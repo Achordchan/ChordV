@@ -37,6 +37,7 @@ const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
 const DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS = 5_000;
 const DEFAULT_LIST_NODE_PANEL_INBOUNDS_BUDGET_MS = 5_000;
+const DEFAULT_REFRESH_NODE_RUNTIME_READ_BUDGET_MS = 30_000;
 const DEFAULT_BULK_NODE_PROBE_BUDGET_MS = 5_000;
 const DEFAULT_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
 const MAX_BULK_NODE_PROBE_REQUEST_BUDGET_MS = 45_000;
@@ -870,20 +871,16 @@ export class AdminNodeService {
     let derived: ReturnType<typeof parseVlessLink> | Awaited<ReturnType<XuiService["getInboundRuntime"]>>;
     try {
       if (current.panelEnabled) {
-        const runtime = await this.readPanelRuntimeForNodeSaveBestEffort({
-          id: current.id,
-          panelBaseUrl: current.panelBaseUrl,
-          panelApiBasePath: current.panelApiBasePath,
-          panelUsername: current.panelUsername,
-          panelPassword: current.panelPassword,
-          panelInboundId: current.panelInboundId
-        });
+        const runtime = await this.readPanelRuntimeForNodeRefresh(current);
         if (!runtime.derived) {
-          return this.markNodeRuntimeRefreshDegraded(current, runtime.errorMessage ?? "panel runtime refresh is still running in background");
+          return this.markNodeRuntimeRefreshDegraded(
+            current,
+            runtime.errorMessage ?? "panel runtime refresh is still running in background"
+          );
         }
         derived = runtime.derived;
       } else {
-        const runtime = await this.readSubscriptionNodeForNodeSaveBestEffort(current.subscriptionUrl!);
+        const runtime = await this.readSubscriptionNodeForNodeRefresh(current.subscriptionUrl!);
         if (!runtime.derived) {
           return this.markNodeRuntimeRefreshDegraded(
             current,
@@ -895,6 +892,7 @@ export class AdminNodeService {
     } catch (error) {
       return this.markNodeRuntimeRefreshDegraded(current, readAdminNodeErrorMessage(error));
     }
+    const checkedAt = new Date();
     let row: any;
     try {
       row = await this.prisma.node.update({
@@ -909,7 +907,10 @@ export class AdminNodeService {
           serverName: derived.serverName,
           fingerprint: derived.fingerprint,
           spiderX: derived.spiderX,
-          mldsa65Verify: derived.mldsa65Verify ?? ""
+          mldsa65Verify: derived.mldsa65Verify ?? "",
+          panelStatus: current.panelEnabled ? "online" : current.panelStatus,
+          panelError: current.panelEnabled ? null : current.panelError,
+          panelLastSyncedAt: current.panelEnabled ? checkedAt : current.panelLastSyncedAt
         }
       });
     } catch (error) {
@@ -920,6 +921,105 @@ export class AdminNodeService {
       this.publishNodeAccessUpdatedForNode(nodeId)
     );
     return toAdminNodeRecord(row);
+  }
+
+  private async readPanelRuntimeForNodeRefresh(current: {
+    id: string;
+    panelBaseUrl: string | null;
+    panelApiBasePath: string | null;
+    panelUsername: string | null;
+    panelPassword: string | null;
+    panelInboundId: number | null;
+  }): Promise<{
+    derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
+    errorMessage: string | null;
+  }> {
+    const budgetMs = readRefreshNodeRuntimeBudgetMs();
+    let settled = false;
+    const runtimeTask = this.xuiService
+      .getInboundRuntime({
+        id: current.id,
+        panelBaseUrl: current.panelBaseUrl,
+        panelApiBasePath: current.panelApiBasePath,
+        panelUsername: current.panelUsername,
+        panelPassword: current.panelPassword,
+        panelInboundId: current.panelInboundId,
+        panelRequestTimeoutMs: budgetMs,
+        panelAbortSignal: AbortSignal.timeout(budgetMs)
+      })
+      .then((derived) => {
+        settled = true;
+        return { derived, errorMessage: null as string | null };
+      });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        resolve({
+          derived: null,
+          errorMessage: `panel runtime refresh exceeded ${budgetMs}ms`
+        });
+      }, budgetMs);
+    });
+
+    try {
+      return await Promise.race([runtimeTask, timeoutTask]);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger?.warn(`Node ${current.id} panel runtime refresh failed: ${errorMessage}`);
+      return { derived: null, errorMessage };
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private async readSubscriptionNodeForNodeRefresh(subscriptionUrl: string): Promise<{
+    derived: ReturnType<typeof parseVlessLink> | null;
+    errorMessage: string | null;
+  }> {
+    const budgetMs = readRefreshNodeRuntimeBudgetMs();
+    let settled = false;
+    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then(
+      (derived) => {
+        settled = true;
+        return { derived, errorMessage: null as string | null };
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        resolve({
+          derived: null,
+          errorMessage: `subscription runtime refresh exceeded ${budgetMs}ms`
+        });
+      }, budgetMs);
+    });
+
+    try {
+      return await Promise.race([runtimeTask, timeoutTask]);
+    } catch (error) {
+      return {
+        derived: null,
+        errorMessage: readAdminNodeErrorMessage(error)
+      };
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private async markNodeRuntimeRefreshDegraded(current: any, errorMessage: string): Promise<AdminNodeRecordDto> {
@@ -1608,6 +1708,10 @@ function readBulkNodeProbeRequestBudgetMs() {
 
 function readImportNodeRuntimeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_IMPORT_NODE_RUNTIME_READ_TIMEOUT_MS", DEFAULT_IMPORT_NODE_RUNTIME_READ_BUDGET_MS);
+}
+
+function readRefreshNodeRuntimeBudgetMs() {
+  return readPositiveIntegerEnv("CHORDV_REFRESH_NODE_RUNTIME_READ_TIMEOUT_MS", DEFAULT_REFRESH_NODE_RUNTIME_READ_BUDGET_MS);
 }
 
 function readListNodePanelInboundsBudgetMs() {
