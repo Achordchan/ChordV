@@ -232,6 +232,9 @@ export class UsageSyncService {
     for (const [nodeId, result] of nodeResults) {
       if (result.errors.length > 0) {
         const message = result.errors.join("; ");
+        if (!this.panelUsageFailureCounts) {
+          this.panelUsageFailureCounts = new Map();
+        }
         const nextCount = (this.panelUsageFailureCounts.get(nodeId) ?? 0) + 1;
         this.panelUsageFailureCounts.set(nodeId, nextCount);
         const threshold = readPanelStatusFailureThreshold();
@@ -254,7 +257,7 @@ export class UsageSyncService {
       if (!result.lastSuccessfulSyncAt) {
         continue;
       }
-      this.panelUsageFailureCounts.delete(nodeId);
+      this.panelUsageFailureCounts?.delete(nodeId);
       await this.prisma.node.update({
         where: { id: nodeId },
         data: {

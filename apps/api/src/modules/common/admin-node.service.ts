@@ -1184,7 +1184,7 @@ export class AdminNodeService {
     let panelError = current.panelError;
     let panelLastSyncedAt = current.panelLastSyncedAt;
     if (!current.isActive || !current.panelEnabled) {
-      this.panelProbeFailureCounts.delete(current.id);
+      this.panelProbeFailureCounts?.delete(current.id);
       panelStatus = "offline";
       panelError = null;
     } else if (current.panelEnabled) {
@@ -1200,7 +1200,7 @@ export class AdminNodeService {
           panelRequestTimeoutMs: panelProbeBudgetMs,
           panelAbortSignal: AbortSignal.timeout(panelProbeBudgetMs)
         });
-        this.panelProbeFailureCounts.delete(current.id);
+        this.panelProbeFailureCounts?.delete(current.id);
         panelStatus = "online";
         panelError = null;
         panelLastSyncedAt = new Date();
@@ -1396,6 +1396,9 @@ export class AdminNodeService {
     source: string
   ): { panelStatus: "online" | "degraded" | "offline"; panelError: string | null } {
     const hardFailure = PANEL_STATUS_HARD_FAILURE_PATTERN.test(message);
+    if (!this.panelProbeFailureCounts) {
+      this.panelProbeFailureCounts = new Map();
+    }
     const nextCount = (this.panelProbeFailureCounts.get(current.id) ?? 0) + 1;
     this.panelProbeFailureCounts.set(current.id, nextCount);
     const threshold = readPanelStatusFailureThreshold();
