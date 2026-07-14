@@ -18846,10 +18846,15 @@ async function testUsageSyncKeepsNodeDegradedWhenAnyInboundFails() {
 
   assert.equal(openedIncidents.length, 1);
   assert.equal(resolvedIncidents.length, 0, "one successful inbound must not resolve the node incident while another inbound failed");
+  assert.equal(nodeUpdates.length, 0, "first soft usage failure must not degrade panel yet");
+
+  await service["syncXuiUsage"]();
+  await service["syncXuiUsage"]();
+
   assert.deepEqual(
     nodeUpdates.map((item) => item.panelStatus),
     ["degraded"],
-    "node status must remain degraded when any inbound sync fails"
+    "node status degrades only after consecutive soft inbound sync failures"
   );
   assert.match(nodeUpdates[0].panelError, /inbound 7 failed/);
 }
@@ -18942,7 +18947,11 @@ async function testUsageSyncDoesNotLetStalledNodesBlockHealthyNode() {
 
   assert.equal(openedIncidents.length, 2);
   assert.equal(nodeUpdates.filter((item) => item.data.panelStatus === "online").length, 1);
-  assert.equal(nodeUpdates.filter((item) => item.data.panelStatus === "degraded").length, 2);
+  assert.equal(
+    nodeUpdates.filter((item) => item.data.panelStatus === "degraded").length,
+    0,
+    "single soft panel offline failure must not degrade stalled nodes yet"
+  );
 }
 
 async function testUsageSyncIncidentWriteFailureDoesNotBlockHealthyNode() {
@@ -19030,7 +19039,11 @@ async function testUsageSyncIncidentWriteFailureDoesNotBlockHealthyNode() {
     "incident write failures should be logged for diagnostics"
   );
   assert.deepEqual(appliedNodes, ["node_healthy"], "healthy node usage must still be applied when incident writes fail");
-  assert.equal(nodeUpdates.find((item) => item.nodeId === "node_offline")?.data.panelStatus, "degraded");
+  assert.equal(
+    nodeUpdates.find((item) => item.nodeId === "node_offline")?.data.panelStatus,
+    undefined,
+    "single soft offline failure must not degrade panel yet"
+  );
   assert.equal(nodeUpdates.find((item) => item.nodeId === "node_healthy")?.data.panelStatus, "online");
 }
 
