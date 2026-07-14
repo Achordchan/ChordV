@@ -99,7 +99,7 @@ const DEFAULT_PANEL_SYNC_JOB_CONCURRENCY = 4;
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
 const PANEL_SYNC_DELETE_MAX_ATTEMPTS = Number(process.env.CHORDV_PANEL_SYNC_DELETE_MAX_ATTEMPTS ?? 8);
-const PANEL_SYNC_DELETE_ABANDON_MESSAGE = "?????????????????? delete_client ?????";
+const PANEL_SYNC_DELETE_ABANDON_MESSAGE = "面板不可达，delete_client 已停止重试";
 const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
 const DEFAULT_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES = 16n * 1024n * 1024n;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
@@ -1622,9 +1622,9 @@ export class RuntimeSessionService {
         })
       ]);
       this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
-        } catch (error) {
+    } catch (error) {
       const nextAttempts = job.attempts + 1;
-      const message = error instanceof Error ? error.message : "3x-ui ???????";
+      const message = error instanceof Error ? error.message : "3x-ui 客户端同步失败";
       const abandonDelete =
         job.action === "delete_client" &&
         (nextAttempts >= PANEL_SYNC_DELETE_MAX_ATTEMPTS || !job.node.isActive);
@@ -1678,11 +1678,13 @@ export class RuntimeSessionService {
           this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
         } catch (persistError) {
           this.logger.warn(
-          `?????????????????${job.nodeId}/${job.panelClientEmail}: ${message}`
-        );
+            `面板 delete_client 放弃重试后状态保存失败（${job.nodeId}/${job.panelClientEmail}）: ${
+              persistError instanceof Error ? persistError.message : String(persistError)
+            }`
+          );
         }
         this.logger.warn(
-          `?????????????????${job.nodeId}/${job.panelClientEmail}: ${message}`
+          `面板 delete_client 已放弃重试，${job.nodeId}/${job.panelClientEmail}: ${message}`
         );
         return;
       }

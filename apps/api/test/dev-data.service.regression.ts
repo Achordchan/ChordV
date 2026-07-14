@@ -919,11 +919,16 @@ function createAdminNodeService(overrides: Record<string, unknown> = {}) {
   return createInstance<AdminNodeService>(AdminNodeService.prototype, {
     ...overrides,
     runtimeSessionService: {
+      revokeNodeLeases: async () => 0,
       queueLeaseRevocationJobForNode: async () => undefined,
+      finalizeOfflineNodePanelCleanup: async () => ({ bindingsDeleted: 0, abandonedAt: new Date() }),
+      removePanelBindingsForNode: async () => ({ requested: 0, updated: 0, failed: [] }),
+      markPanelBindingsDeletedForNode: async () => 0,
       ...runtimeSessionOverride
     }
   });
 }
+
 
 function createAnnouncementPolicyService(overrides: Record<string, unknown> = {}) {
   return createInstance<AnnouncementPolicyService>(AnnouncementPolicyService.prototype, {
@@ -6109,7 +6114,7 @@ async function testPanelSyncRemoteFailuresBecomeVisibleFailedJobs() {
     assert.equal(jobUpdates[0].data.status, "failed");
     assert.equal(jobUpdates[0].data.attempts, 2);
     assert.equal(jobUpdates[0].data.lockedAt, null);
-  assert.ok(String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("delete_client") || String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("unreachable") || String(jobUpdates[0].data.lastError ?? "").includes("panel"));
+    assert.match(jobUpdates[0].data.lastError, item.expectedError);
     assert.ok(jobUpdates[0].data.nextRunAt instanceof Date, `${item.action} failure should schedule a retry`);
     assert.equal(adminEvents.length, 1, `${item.action} failure should publish a queue refresh event`);
     assert.equal(adminEvents[0].type, "sync_queue_updated");
@@ -6293,7 +6298,7 @@ async function testPanelTrafficResetRequiresRemoteCounterConfirmation() {
   assert.equal(nodeUpdates.length, 1, "unconfirmed reset should mark the node degraded");
   assert.equal(jobUpdates.length, 1);
   assert.equal(jobUpdates[0].data.status, "failed");
-  assert.ok(String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("delete_client") || String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("unreachable") || String(jobUpdates[0].data.lastError ?? "").includes("panel"));
+  assert.match(jobUpdates[0].data.lastError, /traffic reset is not confirmed/);
 }
 
 async function testPanelTrafficResetMissingRemoteClientFailsTheJob() {
@@ -6372,7 +6377,7 @@ async function testPanelTrafficResetMissingRemoteClientFailsTheJob() {
   assert.equal(nodeUpdates.length, 1, "missing remote client should mark the node degraded");
   assert.equal(jobUpdates.length, 1);
   assert.equal(jobUpdates[0].data.status, "failed");
-  assert.ok(String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("delete_client") || String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("unreachable") || String(jobUpdates[0].data.lastError ?? "").includes("panel"));
+  assert.match(jobUpdates[0].data.lastError, /did not find the panel client/);
 }
 
 async function testPanelSyncBatchContinuesAfterStalledRemoteJob() {
@@ -14906,7 +14911,7 @@ async function testNodeAccessHttpClearQueuesDisableJobBeforeOfflinePanelRetryFai
     assert.equal(jobUpdates.length, 1, "offline panel retry should keep the job for background retry");
     assert.equal(jobUpdates[0].data.status, "failed");
     assert.equal(jobUpdates[0].data.attempts, 1);
-  assert.ok(String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("delete_client") || String(jobUpdates[0].data.lastError ?? "").toLowerCase().includes("unreachable") || String(jobUpdates[0].data.lastError ?? "").includes("panel"));
+    assert.match(jobUpdates[0].data.lastError, /offline panel connection refused/);
     assert.equal(adminEvents.some((event) => event.type === "sync_queue_updated"), true);
     assert.match(warnings.join("\n"), /offline panel connection refused/);
   } finally {
