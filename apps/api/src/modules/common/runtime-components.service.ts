@@ -498,7 +498,13 @@ export class RuntimeComponentsService {
           kind: row.kind as RuntimeComponentKind,
           fileName: row.fileName,
           fileSizeBytes: row.fileSizeBytes ? row.fileSizeBytes.toString() : null,
-          archiveEntryName: row.archiveEntryName,
+          archiveEntryName: resolveClientRuntimeComponentArchiveEntryName({
+            platform: row.platform,
+            kind: row.kind as RuntimeComponentKind,
+            fileName: row.fileName,
+            originUrl,
+            archiveEntryName: row.archiveEntryName
+          }),
           expectedHash: null,
           allowClientMirror,
           originUrl,
@@ -971,6 +977,40 @@ function buildRuntimeComponentDownloadCandidates(input: {
   }
   push("origin", input.originUrl);
   return candidates;
+}
+
+
+function resolveClientRuntimeComponentArchiveEntryName(input: {
+  platform?: string;
+  kind: RuntimeComponentKind;
+  fileName: string;
+  originUrl: string;
+  archiveEntryName: string | null | undefined;
+}) {
+  const explicit = normalizeNullableText(input.archiveEntryName);
+  if (explicit) {
+    return explicit;
+  }
+
+  const references = [input.fileName, input.originUrl].map((value) => String(value ?? "").toLowerCase());
+  const looksLikeZip = references.some((value) => value.includes(".zip"));
+  if (!looksLikeZip) {
+    return null;
+  }
+
+  if (input.kind === "xray") {
+    if (input.platform === "windows" || references.some((value) => value.includes("windows"))) {
+      return "xray.exe";
+    }
+    return "xray";
+  }
+  if (input.kind === "geoip") {
+    return "geoip.dat";
+  }
+  if (input.kind === "geosite") {
+    return "geosite.dat";
+  }
+  return null;
 }
 
 function resolveRuntimeComponentUrl(

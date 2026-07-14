@@ -3175,13 +3175,13 @@ async fn fetch_runtime_components_plan_for_connect(
 fn runtime_component_download_item_from_plan(
     item: &RuntimeComponentPlanItemInput,
 ) -> RuntimeComponentDownloadItemInput {
+    let archive_entry_name = resolve_runtime_component_archive_entry_name(item);
     RuntimeComponentDownloadItemInput {
         id: item.id.clone(),
         component: item.kind,
         file_name: item.file_name.clone(),
         file_size_bytes: normalize_runtime_component_plan_file_size(item.file_size_bytes.clone()),
-        source_format: if item
-            .archive_entry_name
+        source_format: if archive_entry_name
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -3191,10 +3191,46 @@ fn runtime_component_download_item_from_plan(
         } else {
             RuntimeComponentSourceFormat::Direct
         },
-        archive_entry_name: item.archive_entry_name.clone(),
+        archive_entry_name,
         checksum_sha256: item.expected_hash.clone(),
     }
 }
+
+fn resolve_runtime_component_archive_entry_name(
+    item: &RuntimeComponentPlanItemInput,
+) -> Option<String> {
+    if let Some(value) = item
+        .archive_entry_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(value.to_string());
+    }
+
+    let file_name = item.file_name.trim();
+    let lower = file_name.to_ascii_lowercase();
+    let looks_like_zip = lower.ends_with(".zip") || lower.contains(".zip");
+    if !looks_like_zip {
+        return None;
+    }
+
+    match item.kind {
+        RuntimeComponentKindInput::Xray => {
+            #[cfg(target_os = "windows")]
+            {
+                Some("xray.exe".into())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Some("xray".into())
+            }
+        }
+        RuntimeComponentKindInput::Geoip => Some("geoip.dat".into()),
+        RuntimeComponentKindInput::Geosite => Some("geosite.dat".into()),
+    }
+}
+
 
 fn verify_runtime_component_for_connect(
     app: &AppHandle,

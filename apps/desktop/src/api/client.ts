@@ -1324,8 +1324,8 @@ function normalizeRuntimeComponentsPlan(
       component: item.kind,
       fileName: item.fileName,
       fileSizeBytes: readNumber(item.fileSizeBytes),
-      sourceFormat: item.archiveEntryName ? "zip_entry" : "direct",
-      archiveEntryName: item.archiveEntryName ?? null,
+      sourceFormat: resolveRuntimeComponentSourceFormat(item),
+      archiveEntryName: resolveRuntimeComponentArchiveEntryName(item),
       checksumSha256: null,
       candidates: item.candidates.map((candidate) => ({
         label: candidate.label,
@@ -1341,6 +1341,50 @@ function normalizeRuntimeComponentsPlan(
       displayName: runtimeComponentDisplayName(item.kind, environment?.platform ?? raw.platform)
     }))
   };
+}
+
+
+function resolveRuntimeComponentSourceFormat(
+  item: Pick<ClientRuntimeComponentsPlanDto["components"][number], "archiveEntryName" | "fileName" | "originUrl" | "resolvedUrl" | "kind">
+): "zip_entry" | "direct" {
+  return resolveRuntimeComponentArchiveEntryName(item) ? "zip_entry" : "direct";
+}
+
+function resolveRuntimeComponentArchiveEntryName(
+  item: Pick<ClientRuntimeComponentsPlanDto["components"][number], "archiveEntryName" | "fileName" | "originUrl" | "resolvedUrl" | "kind">
+): string | null {
+  const explicit = item.archiveEntryName?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const references = [item.fileName, item.originUrl, item.resolvedUrl]
+    .map((value) => String(value ?? "").toLowerCase());
+  const looksLikeZip = references.some((value) => value.includes(".zip"));
+  if (!looksLikeZip) {
+    return null;
+  }
+
+  if (item.kind === "xray") {
+    const fileName = item.fileName?.trim() ?? "";
+    const lowerName = fileName.toLowerCase();
+    const windowsHint = references.some((value) => value.includes("windows") || value.endsWith(".exe"));
+    // 源是 zip 时，包内文件名通常是 xray.exe / xray，不要误用后台展示用 fileName。
+    if (looksLikeZip) {
+      return windowsHint ? "xray.exe" : "xray";
+    }
+    if (lowerName && !lowerName.endsWith(".zip")) {
+      return fileName;
+    }
+    return windowsHint ? "xray.exe" : "xray";
+  }
+  if (item.kind === "geoip") {
+    return "geoip.dat";
+  }
+  if (item.kind === "geosite") {
+    return "geosite.dat";
+  }
+  return item.fileName?.trim() || null;
 }
 
 function runtimeComponentDisplayName(
