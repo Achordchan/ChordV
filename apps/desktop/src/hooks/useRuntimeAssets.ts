@@ -7,10 +7,14 @@ import {
 import {
   buildGeoComponentItem,
   buildGeoRemoteAssetsFromRelease,
+  buildGeoSha256sumUrls,
   buildGithubReleaseLatestApiUrl,
+  isInstalledGeoTagCurrent,
   isLocalGeoCurrent,
   parseGithubReleasePayload,
   parseSha256Sum,
+  clearStoredGeoInstalledTag,
+  clearStoredGeoLastCheckAt,
   readStoredGeoInstalledTag,
   readStoredGeoLastCheckAt,
   shouldCheckGeoUpdate,
@@ -58,6 +62,20 @@ export type RuntimeAssetsCheckSummary = {
   failed: string[];
   current: boolean;
   releaseTag: string | null;
+  xray: {
+    localVersion: string | null;
+    remoteVersion: string | null;
+    current: boolean;
+    available: boolean;
+    message: string;
+  };
+  geo: {
+    localVersion: string | null;
+    remoteVersion: string | null;
+    current: boolean;
+    available: boolean;
+    message: string;
+  };
 };
 
 type EnsureRuntimeAssetsOptions = {
@@ -65,6 +83,10 @@ type EnsureRuntimeAssetsOptions = {
   interactive: boolean;
   blockConnection: boolean;
   forceCheck?: boolean;
+  /** 仅检查版本，不下载 */
+  inspectOnly?: boolean;
+  /** 指定更新目标；默认全部 */
+  targets?: Array<"xray" | "geo">;
 };
 
 type UseRuntimeAssetsOptions = {
@@ -98,8 +120,38 @@ function emptySummary(): RuntimeAssetsCheckSummary {
     updated: [],
     failed: [],
     current: true,
-    releaseTag: null
+    releaseTag: null,
+    xray: {
+      localVersion: null,
+      remoteVersion: null,
+      current: true,
+      available: false,
+      message: "尚未检查"
+    },
+    geo: {
+      localVersion: null,
+      remoteVersion: null,
+      current: true,
+      available: false,
+      message: "尚未检查"
+    }
   };
+}
+
+function shortHash(value: string | null | undefined) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  if (text.length <= 12) return text;
+  return `${text.slice(0, 8)}…${text.slice(-4)}`;
+}
+
+function resolveXrayVersionLabel(item: { fileName?: string | null; checksumSha256?: string | null } | null | undefined) {
+  if (!item) return null;
+  const fileName = String(item.fileName ?? "").trim();
+  const match = fileName.match(/(\d+\.\d+\.\d+(?:[-_][\w.]+)?)/);
+  if (match?.[1]) return match[1];
+  const hash = shortHash(item.checksumSha256);
+  return hash ? `build ${hash}` : fileName || null;
 }
 
 async function downloadComponentWithFallback(component: RuntimeComponentDownloadItem, preferredUrl?: string | null) {
@@ -154,13 +206,17 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     };
   }, [options.platformTarget]);
 
-  const runtimeAssetsReady = useMemo(
-    () =>
-      options.platformTarget === "android" || options.platformTarget === "web"
-        ? true
-        : runtimeAssets.phase === "ready",
-    [options.platformTarget, runtimeAssets.phase]
-  );
+  const runtimeAssetsReady = useMemo(() => {
+    if (options.platformTarget === "android" || options.platformTarget === "web") {
+      return true;
+    }
+    // idle 也允许点连接：真正缺组件时由连接流程 ensure；failed/checking/downloading 才灰掉。
+    return (
+      runtimeAssets.phase === "ready" ||
+      runtimeAssets.phase === "idle" ||
+      runtimeAssets.phase === "completed"
+    );
+  }, [options.platformTarget, runtimeAssets.phase]);
 
   const runtimeAssetsBusy = runtimeAssets.phase === "checking" || runtimeAssets.phase === "downloading";
 
@@ -220,41 +276,80 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     [options]
   );
 
-  const loadGeoRemotePlan = useCallback(async (): Promise<GeoRemotePlan | null> => {
-    const releaseResponse = await fetchRemoteText(buildGithubReleaseLatestApiUrl());
-    if (!releaseResponse?.body) {
+  const fetchFirstRemoteText = useCallback(async (urls: string[]) => {
+    if (!urls.length) {
       return null;
     }
-    const release = parseGithubReleasePayload(releaseResponse.body);
+    type RemoteTextResult = Awaited<ReturnType<typeof fetchRemoteText>>;
+    // 多镜像并行竞速，谁先返回有效内容用谁（含加速域名）
+    return await new Promise<RemoteTextResult | null>((resolve) => {
+      let pending = urls.length;
+      let settled = false;
+      for (const url of urls) {
+        void fetchRemoteText(url)
+          .then((response) => {
+            if (settled) {
+              return;
+            }
+            if (response?.body) {
+              settled = true;
+              resolve(response);
+              return;
+            }
+            pending -= 1;
+            if (pending <= 0) {
+              resolve(null);
+            }
+          })
+          .catch(() => {
+            if (settled) {
+              return;
+            }
+            pending -= 1;
+            if (pending <= 0) {
+              resolve(null);
+            }
+          });
+      }
+    });
+  }, []);
+
+  const loadGeoReleaseMeta = useCallback(async () => {
+    const releaseApi = buildGithubReleaseLatestApiUrl();
+    const response = await fetchFirstRemoteText([
+      `https://ghfast.top/${releaseApi}`,
+      `https://mirror.ghproxy.com/${releaseApi}`,
+      releaseApi
+    ]);
+    if (!response?.body) {
+      return null;
+    }
+    return parseGithubReleasePayload(response.body);
+  }, [fetchFirstRemoteText]);
+
+  const loadGeoChecksums = useCallback(async (releaseTag: string) => {
+    const fileNames = ["geoip.dat", "geosite.dat"] as const;
+    const checksums: Partial<Record<"geoip.dat" | "geosite.dat", string>> = {};
+    await Promise.all(
+      fileNames.map(async (fileName) => {
+        const response = await fetchFirstRemoteText(buildGeoSha256sumUrls(releaseTag, fileName));
+        const hash = response?.body ? parseSha256Sum(response.body) : null;
+        if (hash) {
+          checksums[fileName] = hash;
+        }
+      })
+    );
+    return checksums;
+  }, [fetchFirstRemoteText]);
+
+  const loadGeoRemotePlan = useCallback(async (): Promise<GeoRemotePlan | null> => {
+    const release = await loadGeoReleaseMeta();
     if (!release) {
       return null;
     }
-
-    const checksums: Partial<Record<"geoip.dat" | "geosite.dat", string>> = {};
-    for (const fileName of ["geoip.dat", "geosite.dat"] as const) {
-      const originSumUrl = `https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${encodeURIComponent(release.tag)}/${fileName}.sha256sum`;
-      const sumUrls = [
-        originSumUrl,
-        `https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@${release.tag}/${fileName}.sha256sum`,
-        `https://mirror.ghproxy.com/${originSumUrl}`,
-        `https://ghfast.top/${originSumUrl}`
-      ];
-      for (const sumUrl of sumUrls) {
-        try {
-          const response = await fetchRemoteText(sumUrl);
-          const hash = response?.body ? parseSha256Sum(response.body) : null;
-          if (hash) {
-            checksums[fileName] = hash;
-            break;
-          }
-        } catch {
-          // try next mirror
-        }
-      }
-    }
-
+    const checksums = await loadGeoChecksums(release.tag);
     return buildGeoRemoteAssetsFromRelease(release, checksums);
-  }, []);
+  }, [loadGeoChecksums, loadGeoReleaseMeta]);
 
 
   const collectServerMirrorPrefixes = useCallback((plan: Awaited<ReturnType<typeof fetchRuntimeComponentsPlan>>) => {
@@ -298,7 +393,8 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
   const ensureRuntimeAssetsReady = useCallback(
     async (ensureOptions: EnsureRuntimeAssetsOptions) => {
       if (options.platformTarget === "android" || options.platformTarget === "web") {
-        lastSummaryRef.current = { checked: true, updated: [], failed: [], current: true, releaseTag: null };
+        lastSummaryRef.current = emptySummary();
+        lastSummaryRef.current.checked = true;
         return true;
       }
       if (
@@ -322,9 +418,9 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
         return runtimeAssetsTaskRef.current;
       }
 
-      const silentBackground =
+      // 本地已就绪时，版本巡检默认静默；只有缺件/下载/连接阻塞才展示横幅
+      const preferSilentUi =
         (ensureOptions.source === "startup" || ensureOptions.source === "update_check") &&
-        !ensureOptions.interactive &&
         !ensureOptions.blockConnection;
 
       const task = (async () => {
@@ -334,48 +430,148 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
           updated: [],
           failed: [],
           current: true,
-          releaseTag: null
+          releaseTag: null,
+          xray: {
+            localVersion: null,
+            remoteVersion: null,
+            current: true,
+            available: false,
+            message: "本地已就绪"
+          },
+          geo: {
+            localVersion: readStoredGeoInstalledTag(),
+            remoteVersion: null,
+            current: true,
+            available: false,
+            message: "本地已就绪"
+          }
         };
+        const targetSet = new Set(ensureOptions.targets?.length ? ensureOptions.targets : ["xray", "geo"]);
+        const inspectOnly = Boolean(ensureOptions.inspectOnly);
+        let silentBackground = preferSilentUi && !ensureOptions.interactive;
 
-        if (!silentBackground) {
+        const showCheckingBanner = (message: string) => {
+          if (silentBackground) {
+            return;
+          }
           setRuntimeAssets((current) => ({
             ...current,
             phase: "checking",
-            message: "正在检查必要核心组件，请稍候。",
+            message,
             blocking: ensureOptions.blockConnection,
             errorCode: null,
             errorMessage: null
           }));
-        }
+        };
 
         try {
           const environment = await loadDesktopRuntimeEnvironment().catch(() => null);
           const platform = environment?.platform ?? resolveRuntimePlanPlatform(options.platformTarget);
           const architecture = environment?.architecture ?? "arm64";
 
-          const bundled = await ensureBundledRuntimeComponents().catch(() => null);
-          const localInfos = {
-            xray: await getRuntimeComponentLocalInfo("xray").catch(() => null),
-            geoip: await getRuntimeComponentLocalInfo("geoip").catch(() => null),
-            geosite: await getRuntimeComponentLocalInfo("geosite").catch(() => null)
-          };
-          const localReady = Boolean(
-            bundled?.ready ||
-              (localInfos.xray?.exists &&
-                (localInfos.xray.sizeBytes ?? 0) > 0 &&
-                localInfos.geoip?.exists &&
-                (localInfos.geoip.sizeBytes ?? 0) > 0 &&
-                localInfos.geosite?.exists &&
-                (localInfos.geosite.sizeBytes ?? 0) > 0)
-          );
+          // 先快速确认本地文件是否存在，避免一上来就做大文件 sha256
+                    // 启动/静默巡检：只查本地存在性，不触发 bundle 复制（大文件 sha256 会卡 UI）。
+          // 连接/重试/强制检查时才 ensure 内置组件。
+          const needsBundleEnsure =
+            !inspectOnly ||
+            ensureOptions.blockConnection ||
+            ensureOptions.interactive ||
+            ensureOptions.forceCheck ||
+            ensureOptions.source === "connect" ||
+            ensureOptions.source === "retry";
+          let localExists = await Promise.all([
+            getRuntimeComponentLocalInfo("xray").catch(() => null),
+            getRuntimeComponentLocalInfo("geoip").catch(() => null),
+            getRuntimeComponentLocalInfo("geosite").catch(() => null)
+          ]);
+          let bundled: Awaited<ReturnType<typeof ensureBundledRuntimeComponents>> = null;
+          if (needsBundleEnsure) {
+            bundled = await ensureBundledRuntimeComponents().catch(() => null);
+            // 内置包是打包时的旧 GEO；一旦从 bundle 回填，必须清掉“远端已最新”标记。
+            const copied = bundled?.copiedComponents ?? [];
+            if (copied.some((name) => name === "geoip" || name === "geosite")) {
+              clearStoredGeoInstalledTag();
+              clearStoredGeoLastCheckAt();
+            }
+            // 回填后重新读取本地大小，避免沿用删除前的空状态或旧缓存。
+            localExists = await Promise.all([
+              getRuntimeComponentLocalInfo("xray").catch(() => null),
+              getRuntimeComponentLocalInfo("geoip").catch(() => null),
+              getRuntimeComponentLocalInfo("geosite").catch(() => null)
+            ]);
+          }
 
+          const localInfos = {
+            xray: localExists[0],
+            geoip: localExists[1],
+            geosite: localExists[2]
+          };
+          const localFilesReady = Boolean(
+            localInfos.xray?.exists &&
+              (localInfos.xray.sizeBytes ?? 0) > 0 &&
+              localInfos.geoip?.exists &&
+              (localInfos.geoip.sizeBytes ?? 0) > 0 &&
+              localInfos.geosite?.exists &&
+              (localInfos.geosite.sizeBytes ?? 0) > 0
+          );
+          const localReady = Boolean(bundled?.ready || localFilesReady);
+
+          // 启动空闲巡检：本地已齐且未到 GEO 远端检查周期时直接返回，不打远程、不复制 bundle。
+          if (
+            inspectOnly &&
+            preferSilentUi &&
+            !ensureOptions.forceCheck &&
+            localReady &&
+            !shouldCheckGeoUpdate(readStoredGeoLastCheckAt())
+          ) {
+            summary.xray.localVersion = localInfos.xray?.exists
+              ? resolveXrayVersionLabel({
+                  fileName: localInfos.xray.path?.split(/[\\/]/).pop() ?? "xray",
+                  checksumSha256: localInfos.xray.checksumSha256
+                })
+              : null;
+            summary.geo.localVersion = readStoredGeoInstalledTag() ?? (localInfos.geoip?.exists ? "已安装" : null);
+            summary.xray.current = Boolean(localInfos.xray?.exists);
+            summary.geo.current = Boolean(localInfos.geoip?.exists && localInfos.geosite?.exists);
+            summary.current = summary.xray.current && summary.geo.current;
+            summary.xray.message = summary.xray.current ? "本地已就绪" : "本地缺少 Xray";
+            summary.geo.message = summary.geo.current ? "本地已就绪" : "本地缺少 GEO 数据";
+            lastSummaryRef.current = summary;
+            // 本地已齐必须立刻置 ready，否则连接按钮会一直灰。
+            markReady(summary.current ? "核心组件已就绪。" : "核心组件待补齐。");
+            return true;
+          }
+
+
+          // 本地已齐：手动检测更新也先静默比对版本，只有需要下载时再显示横幅
+          if (preferSilentUi && localReady) {
+            silentBackground = true;
+          } else if (!silentBackground) {
+            showCheckingBanner("正在检查必要核心组件，请稍候。");
+          }
+
+          summary.xray.localVersion = localInfos.xray?.exists
+            ? resolveXrayVersionLabel({ fileName: localInfos.xray.path?.split(/[\\/]/).pop() ?? "xray", checksumSha256: localInfos.xray.checksumSha256 })
+            : null;
+          summary.geo.localVersion = readStoredGeoInstalledTag() ?? (localInfos.geoip?.exists ? "已安装" : null);
+          if (!localInfos.xray?.exists) {
+            summary.xray.current = false;
+            summary.xray.message = "本地缺少 Xray";
+          }
+          if (!localInfos.geoip?.exists || !localInfos.geosite?.exists) {
+            summary.geo.current = false;
+            summary.geo.message = "本地缺少 GEO 数据";
+          }
+
+          // 启动空闲巡检只确认本地是否就位；远端版本留给手动检测更新 / 半天周期任务。
           const shouldRefreshRemote =
             ensureOptions.forceCheck ||
             ensureOptions.source === "retry" ||
-            shouldCheckGeoUpdate(readStoredGeoLastCheckAt());
+            (ensureOptions.source !== "startup" && shouldCheckGeoUpdate(readStoredGeoLastCheckAt()));
 
           // Missing local files: fall back to server plan for first install.
-          if (!localReady) {
+          // 仅检查模式不在这里直接下载，先进入版本检查结果。
+          if (!localReady && !inspectOnly) {
             const plan = await fetchRuntimeComponentsPlan({
               accessToken: options.accessToken ?? null,
               clientMirrorPrefix: options.runtimeMirrorPrefix
@@ -444,154 +640,301 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
           if (shouldRefreshRemote) {
             writeStoredGeoLastCheckAt(Date.now());
 
+            let sharedPlan: Awaited<ReturnType<typeof fetchRuntimeComponentsPlan>> = null;
             try {
-              const mirrorPlan = await fetchRuntimeComponentsPlan({
-                accessToken: options.accessToken ?? null,
-                clientMirrorPrefix: options.runtimeMirrorPrefix
-              }).catch(() => null);
+              const [mirrorPlan, releaseMeta] = await Promise.all([
+                targetSet.has("xray") || targetSet.has("geo")
+                  ? fetchRuntimeComponentsPlan({
+                      accessToken: options.accessToken ?? null,
+                      clientMirrorPrefix: options.runtimeMirrorPrefix
+                    }).catch(() => null)
+                  : Promise.resolve(null),
+                targetSet.has("geo") ? loadGeoReleaseMeta() : Promise.resolve(null)
+              ]);
+              sharedPlan = mirrorPlan;
               const serverMirrorPrefixes = collectServerMirrorPrefixes(mirrorPlan);
-              const geoPlan = await loadGeoRemotePlan();
-              if (geoPlan) {
-                summary.releaseTag = geoPlan.releaseTag;
-                for (const asset of geoPlan.assets) {
-                  const local = localInfos[asset.kind] as RuntimeComponentLocalInfo | null;
-                  if (isLocalGeoCurrent(local, asset)) {
-                    continue;
-                  }
-                  const component = buildGeoComponentItem(
-                    asset,
-                    options.runtimeMirrorPrefix,
-                    serverMirrorPrefixes
-                  );
-                  setRuntimeAssets({
-                    phase: "downloading",
-                    currentComponent: component.component,
-                    fileName: component.fileName,
-                    downloadedBytes: 0,
-                    totalBytes: component.fileSizeBytes,
-                    message: `正在更新 ${component.displayName}…`,
-                    errorCode: null,
-                    errorMessage: null,
-                    blocking: ensureOptions.blockConnection
-                  });
-              if (ensureOptions.blockConnection || ensureOptions.interactive) {
-                setRuntimeAssetsDialogOpened(true);
-              }
-                  try {
-                    await downloadComponentWithFallback(component, component.selectedUrl);
-                    summary.updated.push(component.displayName);
-                    summary.current = false;
-                    localInfos[asset.kind] = {
-                      kind: asset.kind,
-                      exists: true,
-                      path: local?.path ?? null,
-                      sizeBytes: asset.fileSizeBytes,
-                      checksumSha256: asset.checksumSha256
-                    };
-                  } catch (reason) {
-                    const message = reason instanceof Error ? reason.message : String(reason);
-                    summary.failed.push(component.displayName);
-                    summary.current = false;
-                    if (!localReady && ensureOptions.blockConnection) {
-                      return failRuntimeAssets(
-                        {
-                          code: extractRuntimeAssetsErrorCode(message),
-                          message: stripRuntimeAssetsErrorPrefix(message),
-                          component: component.component,
-                          effectiveUrl: component.selectedUrl,
-                          platform,
-                          architecture
-                        },
-                        ensureOptions,
-                        component.id
-                      );
+              const installedGeoTag = readStoredGeoInstalledTag();
+              const localGeoReady = Boolean(
+                localInfos.geoip?.exists &&
+                  (localInfos.geoip.sizeBytes ?? 0) > 0 &&
+                  localInfos.geosite?.exists &&
+                  (localInfos.geosite.sizeBytes ?? 0) > 0
+              );
+
+              if (targetSet.has("geo")) {
+                if (!releaseMeta) {
+                  summary.failed.push("GEO 数据源");
+                  summary.geo.current = false;
+                  summary.geo.available = false;
+                  summary.geo.message = "GEO 数据源不可用";
+                } else {
+                  const remoteGeoip = releaseMeta.assets.find((asset) => asset.name === "geoip.dat");
+                  const remoteGeosite = releaseMeta.assets.find((asset) => asset.name === "geosite.dat");
+                  const sizesMatchRemote =
+                    localGeoReady &&
+                    Boolean(remoteGeoip?.size) &&
+                    Boolean(remoteGeosite?.size) &&
+                    localInfos.geoip?.sizeBytes === remoteGeoip?.size &&
+                    localInfos.geosite?.sizeBytes === remoteGeosite?.size;
+
+                  // 标签只是缓存：必须本地文件大小也与远端一致，才能跳过下载。
+                  if (isInstalledGeoTagCurrent(installedGeoTag, releaseMeta.tag) && sizesMatchRemote) {
+                    summary.releaseTag = releaseMeta.tag;
+                    summary.geo.localVersion = releaseMeta.tag;
+                    summary.geo.remoteVersion = releaseMeta.tag;
+                    summary.geo.current = true;
+                    summary.geo.available = false;
+                    summary.geo.message = `GEO ${releaseMeta.tag} 已是最新版本。`;
+                    writeStoredGeoInstalledTag(releaseMeta.tag);
+                  } else {
+                    if (installedGeoTag && !sizesMatchRemote) {
+                      clearStoredGeoInstalledTag();
+                    }
+
+                    const checksums = await loadGeoChecksums(releaseMeta.tag);
+                    const geoPlan = buildGeoRemoteAssetsFromRelease(releaseMeta, checksums);
+                    if (!geoPlan) {
+                      summary.failed.push("GEO 数据源");
+                      summary.geo.current = false;
+                      summary.geo.available = false;
+                      summary.geo.message = "GEO 数据源不可用";
+                    } else {
+                      summary.releaseTag = geoPlan.releaseTag;
+                      summary.geo.remoteVersion = geoPlan.releaseTag;
+                      // localVersion 在确认文件是否与远端一致后再写，避免缓存 tag 误导 UI
+
+                      const geoNeedsUpdate = geoPlan.assets.some((asset) => {
+                        const local = localInfos[asset.kind] as RuntimeComponentLocalInfo | null;
+                        return !isLocalGeoCurrent(local, asset);
+                      });
+
+                      if (!geoNeedsUpdate) {
+                        summary.geo.current = true;
+                        summary.geo.available = false;
+                        summary.geo.localVersion = geoPlan.releaseTag;
+                        summary.geo.message = `GEO ${geoPlan.releaseTag} 已是最新版本。`;
+                        writeStoredGeoInstalledTag(geoPlan.releaseTag);
+                      } else if (inspectOnly) {
+                        summary.geo.current = false;
+                        summary.geo.available = true;
+                        // 本地版本不能再显示成远端 tag，否则会出现“可更新但本地=远端”
+                        summary.geo.localVersion = localGeoReady
+                          ? (isInstalledGeoTagCurrent(installedGeoTag, geoPlan.releaseTag)
+                              ? "本地文件过旧"
+                              : (installedGeoTag ?? "已安装(未同步)"))
+                          : "未安装";
+                        summary.geo.remoteVersion = geoPlan.releaseTag;
+                        summary.geo.message = localGeoReady
+                          ? `本地文件与远端不一致，可更新至 ${geoPlan.releaseTag}`
+                          : `有新版本可用：${geoPlan.releaseTag}`;
+                        summary.current = false;
+                      } else {
+                        for (const asset of geoPlan.assets) {
+                          const local = localInfos[asset.kind] as RuntimeComponentLocalInfo | null;
+                          if (isLocalGeoCurrent(local, asset)) {
+                            continue;
+                          }
+                          silentBackground = false;
+                          const component = buildGeoComponentItem(
+                            asset,
+                            options.runtimeMirrorPrefix,
+                            serverMirrorPrefixes
+                          );
+                          setRuntimeAssets({
+                            phase: "downloading",
+                            currentComponent: component.component,
+                            fileName: component.fileName,
+                            downloadedBytes: 0,
+                            totalBytes: component.fileSizeBytes,
+                            message: `正在更新 ${component.displayName}…`,
+                            errorCode: null,
+                            errorMessage: null,
+                            blocking: ensureOptions.blockConnection
+                          });
+                          if (ensureOptions.blockConnection || ensureOptions.interactive) {
+                            setRuntimeAssetsDialogOpened(true);
+                          }
+                          try {
+                            await downloadComponentWithFallback(component, component.selectedUrl);
+                            summary.updated.push(component.displayName);
+                            summary.current = false;
+                            localInfos[asset.kind] = {
+                              kind: asset.kind,
+                              exists: true,
+                              path: local?.path ?? null,
+                              sizeBytes: asset.fileSizeBytes,
+                              checksumSha256: asset.checksumSha256
+                            };
+                          } catch (reason) {
+                            const message = reason instanceof Error ? reason.message : String(reason);
+                            summary.failed.push(component.displayName);
+                            summary.current = false;
+                            if (!localReady && ensureOptions.blockConnection) {
+                              return failRuntimeAssets(
+                                {
+                                  code: extractRuntimeAssetsErrorCode(message),
+                                  message: stripRuntimeAssetsErrorPrefix(message),
+                                  component: component.component,
+                                  effectiveUrl: component.selectedUrl,
+                                  platform,
+                                  architecture
+                                },
+                                ensureOptions,
+                                component.id
+                              );
+                            }
+                          }
+                        }
+
+                        const bothCurrent =
+                          isLocalGeoCurrent(localInfos.geoip, geoPlan.assets[0]) &&
+                          isLocalGeoCurrent(localInfos.geosite, geoPlan.assets[1]);
+                        if (bothCurrent) {
+                          writeStoredGeoInstalledTag(geoPlan.releaseTag);
+                          summary.geo.localVersion = geoPlan.releaseTag;
+                          summary.geo.remoteVersion = geoPlan.releaseTag;
+                          summary.geo.current = true;
+                          summary.geo.available = false;
+                          summary.geo.message = summary.updated.some((name) => /geo/i.test(name))
+                            ? `GEO 已更新到 ${geoPlan.releaseTag}`
+                            : `GEO ${geoPlan.releaseTag} 已是最新版本。`;
+                        } else if (summary.updated.some((name) => /geo/i.test(name))) {
+                          summary.geo.localVersion = geoPlan.releaseTag;
+                          summary.geo.remoteVersion = geoPlan.releaseTag;
+                          summary.geo.current = false;
+                          summary.geo.available = true;
+                          summary.geo.message = `GEO 部分更新失败，远端 ${geoPlan.releaseTag}`;
+                        } else {
+                          summary.geo.localVersion = readStoredGeoInstalledTag() ?? summary.geo.localVersion;
+                          summary.geo.remoteVersion = geoPlan.releaseTag;
+                          summary.geo.current = false;
+                          summary.geo.available = true;
+                          summary.geo.message = `有新版本可用：${geoPlan.releaseTag}`;
+                        }
+                      }
                     }
                   }
                 }
-                if (summary.failed.length === 0) {
-                  writeStoredGeoInstalledTag(geoPlan.releaseTag);
-                } else if (readStoredGeoInstalledTag() !== geoPlan.releaseTag && summary.updated.length > 0) {
-                  // partial update: still record tag only when both assets match remote
-                }
-                if (
-                  isLocalGeoCurrent(localInfos.geoip, geoPlan.assets[0]) &&
-                  isLocalGeoCurrent(localInfos.geosite, geoPlan.assets[1])
-                ) {
-                  writeStoredGeoInstalledTag(geoPlan.releaseTag);
-                }
-              } else {
-                summary.failed.push("GEO 数据源");
               }
             } catch {
               summary.failed.push("GEO 数据源");
+              summary.geo.current = false;
+              summary.geo.available = false;
+              summary.geo.message = "GEO 数据源检查失败";
             }
 
             // xray remains server-managed; refresh when plan hash differs.
-            try {
-              const plan = await fetchRuntimeComponentsPlan({
-                accessToken: options.accessToken ?? null,
-                clientMirrorPrefix: options.runtimeMirrorPrefix
-              });
-              const xrayItem = plan?.components.find((item) => item.component === "xray") ?? null;
-              if (xrayItem) {
-                const status = await checkRuntimeComponentFile(xrayItem).catch(() => null);
-                if (!status?.ready) {
-                  const candidate = resolveRuntimeComponentCandidate(xrayItem, options.runtimeMirrorPrefix);
-                  setRuntimeAssets({
-                    phase: "downloading",
-                    currentComponent: "xray",
-                    fileName: xrayItem.fileName,
-                    downloadedBytes: 0,
-                    totalBytes: xrayItem.fileSizeBytes,
-                    message: `正在更新 ${xrayItem.displayName}…`,
-                    errorCode: null,
-                    errorMessage: null,
-                    blocking: ensureOptions.blockConnection
-                  });
-              if (ensureOptions.blockConnection || ensureOptions.interactive) {
-                setRuntimeAssetsDialogOpened(true);
-              }
-                  try {
-                    await downloadComponentWithFallback(xrayItem, candidate?.url ?? null);
-                    summary.updated.push(xrayItem.displayName);
+            if (targetSet.has("xray")) {
+              try {
+                const plan =
+                  sharedPlan ??
+                  (await fetchRuntimeComponentsPlan({
+                    accessToken: options.accessToken ?? null,
+                    clientMirrorPrefix: options.runtimeMirrorPrefix
+                  }));
+                const xrayItem = plan?.components.find((item) => item.component === "xray") ?? null;
+                if (xrayItem) {
+                  const remoteLabel = resolveXrayVersionLabel(xrayItem);
+                  summary.xray.remoteVersion = remoteLabel;
+                  summary.xray.localVersion = summary.xray.localVersion ?? remoteLabel;
+                  const status = await checkRuntimeComponentFile(xrayItem).catch(() => null);
+                  if (status?.ready) {
+                    summary.xray.current = true;
+                    summary.xray.available = false;
+                    summary.xray.message = remoteLabel
+                      ? `Xray ${remoteLabel} 已是最新版本。`
+                      : "Xray 已是最新版本。";
+                  } else if (inspectOnly) {
+                    summary.xray.current = false;
+                    summary.xray.available = true;
+                    summary.xray.message = remoteLabel
+                      ? `有新版本可用：${remoteLabel}`
+                      : "检测到 Xray 可更新";
                     summary.current = false;
-                  } catch (reason) {
-                    const message = reason instanceof Error ? reason.message : String(reason);
-                    summary.failed.push(xrayItem.displayName);
-                    summary.current = false;
-                    if (!localReady && ensureOptions.blockConnection) {
-                      return failRuntimeAssets(
-                        {
-                          code: extractRuntimeAssetsErrorCode(message),
-                          message: stripRuntimeAssetsErrorPrefix(message),
-                          component: "xray",
-                          effectiveUrl: candidate?.url ?? null,
-                          platform: plan?.platform ?? platform,
-                          architecture: plan?.architecture ?? architecture
-                        },
-                        ensureOptions,
-                        xrayItem.id
-                      );
+                  } else {
+                    const candidate = resolveRuntimeComponentCandidate(xrayItem, options.runtimeMirrorPrefix);
+                    silentBackground = false;
+                    setRuntimeAssets({
+                      phase: "downloading",
+                      currentComponent: "xray",
+                      fileName: xrayItem.fileName,
+                      downloadedBytes: 0,
+                      totalBytes: xrayItem.fileSizeBytes,
+                      message: `正在更新 ${xrayItem.displayName}…`,
+                      errorCode: null,
+                      errorMessage: null,
+                      blocking: ensureOptions.blockConnection
+                    });
+                    if (ensureOptions.blockConnection || ensureOptions.interactive) {
+                      setRuntimeAssetsDialogOpened(true);
+                    }
+                    try {
+                      await downloadComponentWithFallback(xrayItem, candidate?.url ?? null);
+                      summary.updated.push(xrayItem.displayName);
+                      summary.current = false;
+                      summary.xray.current = true;
+                      summary.xray.available = false;
+                      summary.xray.localVersion = remoteLabel;
+                      summary.xray.remoteVersion = remoteLabel;
+                      summary.xray.message = remoteLabel
+                        ? `Xray 已更新到 ${remoteLabel}`
+                        : "Xray 已更新";
+                    } catch (reason) {
+                      const message = reason instanceof Error ? reason.message : String(reason);
+                      summary.failed.push(xrayItem.displayName);
+                      summary.current = false;
+                      summary.xray.current = Boolean(localInfos.xray?.exists);
+                      summary.xray.available = true;
+                      summary.xray.message = "Xray 更新失败";
+                      if (!localInfos.xray?.exists && ensureOptions.blockConnection) {
+                        return failRuntimeAssets(
+                          {
+                            code: extractRuntimeAssetsErrorCode(message),
+                            message: stripRuntimeAssetsErrorPrefix(message),
+                            component: "xray",
+                            effectiveUrl: candidate?.url ?? null,
+                            platform: plan?.platform ?? platform,
+                            architecture: plan?.architecture ?? architecture
+                          },
+                          ensureOptions,
+                          xrayItem.id
+                        );
+                      }
                     }
                   }
+                } else {
+                  summary.xray.message = localInfos.xray?.exists ? "服务端未配置 Xray 组件" : "本地缺少 Xray";
+                  summary.xray.current = Boolean(localInfos.xray?.exists);
+                  summary.xray.available = false;
                 }
-              }
-            } catch (reason) {
-              if (isUnauthorizedApiError(reason)) {
-                await options.onUnauthorized?.();
-                return false;
-              }
-              // non-blocking when local xray already exists
-              if (!localInfos.xray?.exists && ensureOptions.blockConnection) {
-                throw reason;
+              } catch (reason) {
+                if (isUnauthorizedApiError(reason)) {
+                  await options.onUnauthorized?.();
+                  return false;
+                }
+                // non-blocking when local xray already exists
+                if (!localInfos.xray?.exists && ensureOptions.blockConnection) {
+                  throw reason;
+                }
+                summary.xray.current = Boolean(localInfos.xray?.exists);
+                summary.xray.available = false;
+                summary.xray.message = localInfos.xray?.exists ? "Xray 检查失败，继续使用本地文件" : "Xray 检查失败";
               }
             }
           }
 
+          if (inspectOnly) {
+            summary.current = !summary.xray.available && !summary.geo.available;
+            lastSummaryRef.current = summary;
+            // 静默巡检也要置 ready，避免启动后连接按钮长期灰色。
+            markReady(summary.current ? "核心组件已就绪。" : "组件版本检查完成。");
+            return true;
+          }
+
           const finalLocalReady = Boolean(
-            (await getRuntimeComponentLocalInfo("xray").catch(() => null))?.exists &&
-              (await getRuntimeComponentLocalInfo("geoip").catch(() => null))?.exists &&
-              (await getRuntimeComponentLocalInfo("geosite").catch(() => null))?.exists
+            localInfos.xray?.exists &&
+              localInfos.geoip?.exists &&
+              localInfos.geosite?.exists
           );
           if (!finalLocalReady) {
             return failRuntimeAssets(
@@ -683,6 +1026,8 @@ export function useRuntimeAssets(options: UseRuntimeAssetsOptions) {
     },
     [
       failRuntimeAssets,
+      loadGeoChecksums,
+      loadGeoReleaseMeta,
       loadGeoRemotePlan,
       markReady,
       options,

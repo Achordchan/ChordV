@@ -75,6 +75,32 @@ export function writeStoredGeoInstalledTag(tag: string, storage: Storage = local
   storage.setItem(GEO_INSTALLED_TAG_STORAGE_KEY, tag);
 }
 
+export function clearStoredGeoInstalledTag(storage: Storage = localStorage) {
+  storage.removeItem(GEO_INSTALLED_TAG_STORAGE_KEY);
+}
+
+export function clearStoredGeoLastCheckAt(storage: Storage = localStorage) {
+  storage.removeItem(GEO_LAST_CHECK_STORAGE_KEY);
+}
+
+/** 仅标签一致不够；本地文件大小也必须与远端一致，才能判定已是最新。 */
+export function isGeoAssetInSync(
+  local: RuntimeComponentLocalInfo | null | undefined,
+  remoteSizeBytes: number | null | undefined,
+  remoteChecksumSha256?: string | null
+) {
+  if (!local?.exists || !local.sizeBytes || !remoteSizeBytes || remoteSizeBytes <= 0) {
+    return false;
+  }
+  if (local.sizeBytes !== remoteSizeBytes) {
+    return false;
+  }
+  if (!local.checksumSha256 || !remoteChecksumSha256) {
+    return true;
+  }
+  return local.checksumSha256.toLowerCase() === remoteChecksumSha256.toLowerCase();
+}
+
 export function parseSha256Sum(content: string) {
   const match = content.trim().match(/\b([a-fA-F0-9]{64})\b/);
   return match?.[1]?.toLowerCase() ?? null;
@@ -82,6 +108,24 @@ export function parseSha256Sum(content: string) {
 
 export function buildGithubReleaseLatestApiUrl(repo = GEO_UPSTREAM_REPO) {
   return `https://api.github.com/repos/${repo}/releases/latest`;
+}
+
+/** GEO 校验文件镜像列表：加速镜像优先，官方源兜底 */
+export function buildGeoSha256sumUrls(releaseTag: string, fileName: GeoFileName, repo = GEO_UPSTREAM_REPO) {
+  const originSumUrl = `https://github.com/${repo}/releases/download/${encodeURIComponent(releaseTag)}/${fileName}.sha256sum`;
+  return [
+    `https://cdn.jsdelivr.net/gh/${repo}@${releaseTag}/${fileName}.sha256sum`,
+    `https://ghfast.top/${originSumUrl}`,
+    `https://mirror.ghproxy.com/${originSumUrl}`,
+    originSumUrl
+  ];
+}
+
+/** 本地已安装 GEO 标签与远端一致时，可跳过 sha256 二次校验与重复下载 */
+export function isInstalledGeoTagCurrent(installedTag: string | null | undefined, remoteTag: string | null | undefined) {
+  const local = String(installedTag ?? "").trim();
+  const remote = String(remoteTag ?? "").trim();
+  return Boolean(local) && Boolean(remote) && local === remote;
 }
 
 export function buildGeoOriginUrl(releaseTag: string, fileName: string) {
@@ -242,13 +286,8 @@ export function isLocalGeoCurrent(
   local: RuntimeComponentLocalInfo | null | undefined,
   remote: GeoRemoteAsset
 ) {
-  if (!local?.exists || !local.checksumSha256 || !local.sizeBytes) {
-    return false;
-  }
-  if (local.sizeBytes !== remote.fileSizeBytes) {
-    return false;
-  }
-  return local.checksumSha256.toLowerCase() === remote.checksumSha256.toLowerCase();
+  // 必须比对远端大小；仅“文件存在 + 本地有标签”不能算最新（bundle 回填的是旧包）。
+  return isGeoAssetInSync(local, remote.fileSizeBytes, remote.checksumSha256);
 }
 
 export function pickGeoCandidateUrls(item: RuntimeComponentDownloadItem) {

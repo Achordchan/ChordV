@@ -54,6 +54,10 @@ export type RunUpdateCheckInput = {
   bootstrapVersion?: ClientVersionDto | null;
   source: UpdateCheckSource;
   silent?: boolean;
+  inspectOnly?: boolean;
+  includeRuntimeComponents?: boolean;
+  runtimeTargets?: Array<"xray" | "geo">;
+  openUpdateCenter?: boolean;
 };
 
 type CredentialsState = {
@@ -251,7 +255,8 @@ export function useAuthBootstrap(options: UseAuthBootstrapOptions) {
               accessToken: nextSession.accessToken,
               bootstrapVersion: nextBootstrap.version,
               source: "login",
-              silent: true
+              silent: true,
+              includeRuntimeComponents: false
             });
           } catch (reason) {
             showErrorToast(reason instanceof Error ? readError(reason.message) : "更新信息同步失败");

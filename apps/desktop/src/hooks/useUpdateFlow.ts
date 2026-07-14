@@ -34,6 +34,14 @@ import {
   type ResolvedUpdatePlatform,
   type UpdateDownloadState
 } from "../lib/updateState";
+import {
+  buildAppUpdateCenterItem,
+  createDefaultUpdateCenterItems,
+  createIdleUpdateCenterState,
+  type UpdateCenterItem,
+  type UpdateCenterItemKey,
+  type UpdateCenterState
+} from "../lib/updateCenter";
 
 type NoticeInput = {
   color: "green" | "yellow" | "red" | "blue";
@@ -46,6 +54,11 @@ type RunUpdateCheckOptions = {
   bootstrapVersion?: ClientVersionDto | null;
   source: "startup" | "login" | "manual" | "refresh";
   silent?: boolean;
+  /** 手动检测默认仅检查；需要下载时再显式关闭 */
+  inspectOnly?: boolean;
+  includeRuntimeComponents?: boolean;
+  runtimeTargets?: Array<"xray" | "geo">;
+  openUpdateCenter?: boolean;
 };
 
 type RuntimeAssetsCheckSummary = {
@@ -54,6 +67,20 @@ type RuntimeAssetsCheckSummary = {
   failed: string[];
   current: boolean;
   releaseTag: string | null;
+  xray?: {
+    localVersion: string | null;
+    remoteVersion: string | null;
+    current: boolean;
+    available: boolean;
+    message: string;
+  };
+  geo?: {
+    localVersion: string | null;
+    remoteVersion: string | null;
+    current: boolean;
+    available: boolean;
+    message: string;
+  };
 };
 
 type UseUpdateFlowOptions = {
@@ -71,6 +98,8 @@ type UseUpdateFlowOptions = {
   checkRuntimeComponents?: (input: {
     source: "startup" | "login" | "manual" | "refresh";
     silent?: boolean;
+    inspectOnly?: boolean;
+    targets?: Array<"xray" | "geo">;
   }) => Promise<RuntimeAssetsCheckSummary | null | void>;
 };
 
@@ -132,9 +161,19 @@ function mergePendingUpdateCheck(
     accessToken: next.accessToken ?? current.accessToken,
     bootstrapVersion: next.bootstrapVersion ?? current.bootstrapVersion,
     source: current.source === "manual" || next.source === "manual" ? "manual" : next.source,
-    silent: Boolean(current.silent && next.silent)
+    silent: Boolean(current.silent && next.silent),
+    inspectOnly: Boolean(current.inspectOnly && next.inspectOnly),
+    includeRuntimeComponents:
+      current.includeRuntimeComponents === true || next.includeRuntimeComponents === true
+        ? true
+        : current.includeRuntimeComponents === false && next.includeRuntimeComponents === false
+          ? false
+          : next.includeRuntimeComponents ?? current.includeRuntimeComponents,
+    runtimeTargets: next.runtimeTargets ?? current.runtimeTargets,
+    openUpdateCenter: Boolean(current.openUpdateCenter || next.openUpdateCenter)
   };
 }
+
 
 export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const updatePlatform = useMemo<ResolvedUpdatePlatform>(
@@ -144,6 +183,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<ClientUpdateCheckResult | null>(null);
   const [updateDialogOpened, setUpdateDialogOpened] = useState(false);
+  const [updateCenter, setUpdateCenter] = useState<UpdateCenterState>(createIdleUpdateCenterState);
   const [updateDownload, setUpdateDownload] = useState<UpdateDownloadState>(createIdleUpdateDownloadState);
   const [indeterminateUpdateProgress, setIndeterminateUpdateProgress] = useState(18);
   const lastKnownUpdateArtifactRef = useRef<ClientUpdateArtifact | null>(null);
@@ -387,6 +427,36 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     }
   }, [effectiveUpdate, options, updateDownload, updatePlatform]);
 
+
+  const patchUpdateCenterItems = useCallback((patchers: Partial<Record<UpdateCenterItemKey, Partial<UpdateCenterItem>>>) => {
+    setUpdateCenter((current) => ({
+      ...current,
+      items: current.items.map((item) => {
+        const patch = patchers[item.key];
+        return patch ? { ...item, ...patch } : item;
+      })
+    }));
+  }, []);
+
+  const openUpdateCenter = useCallback(() => {
+    setUpdateCenter((current) => ({
+      ...current,
+      opened: true,
+      items: current.items.length ? current.items : createDefaultUpdateCenterItems()
+    }));
+  }, []);
+
+  const closeUpdateCenter = useCallback(() => {
+    setUpdateCenter((current) => ({
+      ...current,
+      opened: false
+    }));
+  }, []);
+
+  const setUpdateCenterItemEnabled = useCallback((key: UpdateCenterItemKey, enabled: boolean) => {
+    patchUpdateCenterItems({ [key]: { enabled } });
+  }, [patchUpdateCenterItems]);
+
   const runUpdateCheck = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
       if (updateCheckBusyRef.current) {
@@ -395,8 +465,28 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       }
 
       try {
-        updateCheckBusyRef.current = true;
-        setUpdateCheckBusy(true);
+        // 启动/登录等静默检查不占用「检测更新」按钮 loading，避免一进软件就转圈、影响连接
+        const isInteractiveCheck =
+          runOptions.source === "manual" || Boolean(runOptions.openUpdateCenter);
+        if (isInteractiveCheck) {
+          updateCheckBusyRef.current = true;
+          setUpdateCheckBusy(true);
+          setUpdateCenter((current) => ({
+            ...current,
+            opened: true,
+            checking: true,
+            updatingKey: null,
+            items: current.items.map((item) =>
+              item.enabled
+                ? {
+                    ...item,
+                    status: "checking",
+                    message: "正在检查…"
+                  }
+                : item
+            )
+          }));
+        }
         const checkedUpdate = await checkClientUpdate({
           currentVersion: options.appVersion,
           platform: updatePlatform,
@@ -423,12 +513,21 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         // 如果服务端返回的最新版本就是当前版本，说明当前已是最新，不触发更新提示
         const effectiveHasUpdate = hasActionableUpdate(result, options.appVersion);
 
+        // 默认：仅手动/更新中心检查核心组件；启动只查软件版本（国内接口快）
+        const includeRuntime =
+          runOptions.includeRuntimeComponents ?? runOptions.source === "manual";
+        const inspectOnly =
+          runOptions.inspectOnly ?? (runOptions.source === "manual" || runOptions.source === "startup" || runOptions.source === "login");
+        const runtimeTargets = runOptions.runtimeTargets;
+
         let runtimeSummary: RuntimeAssetsCheckSummary | null = null;
-        if (options.checkRuntimeComponents) {
+        if (includeRuntime && options.checkRuntimeComponents) {
           try {
             const summary = await options.checkRuntimeComponents({
               source: runOptions.source,
-              silent: runOptions.silent
+              silent: runOptions.silent ?? !isInteractiveCheck,
+              inspectOnly,
+              targets: runtimeTargets
             });
             runtimeSummary = summary ?? null;
           } catch {
@@ -436,35 +535,78 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
           }
         }
 
+        const appItem = buildAppUpdateCenterItem({
+          appVersion: options.appVersion,
+          update: result,
+          hasActionableUpdate: effectiveHasUpdate
+        });
+        const xrayItem: UpdateCenterItem = {
+          key: "xray",
+          label: "Xray",
+          enabled: true,
+          status: runtimeSummary?.xray?.available
+            ? "available"
+            : runtimeSummary?.xray
+              ? runtimeSummary.xray.current
+                ? "current"
+                : "failed"
+              : includeRuntime
+                ? "failed"
+                : "idle",
+          localVersion: runtimeSummary?.xray?.localVersion ?? null,
+          remoteVersion: runtimeSummary?.xray?.remoteVersion ?? null,
+          message: runtimeSummary?.xray?.message ?? (includeRuntime ? "未检查" : "未检查"),
+          canUpdate: Boolean(runtimeSummary?.xray?.available)
+        };
+        const geoItem: UpdateCenterItem = {
+          key: "geo",
+          label: "GEO 数据",
+          enabled: true,
+          status: runtimeSummary?.geo?.available
+            ? "available"
+            : runtimeSummary?.geo
+              ? runtimeSummary.geo.current
+                ? "current"
+                : "failed"
+              : includeRuntime
+                ? "failed"
+                : "idle",
+          localVersion: runtimeSummary?.geo?.localVersion ?? null,
+          remoteVersion: runtimeSummary?.geo?.remoteVersion ?? runtimeSummary?.releaseTag ?? null,
+          message: runtimeSummary?.geo?.message ?? (includeRuntime ? "未检查" : "未检查"),
+          canUpdate: Boolean(runtimeSummary?.geo?.available)
+        };
+
+        const shouldOpenCenter =
+          runOptions.openUpdateCenter === true ||
+          (runOptions.source === "manual" && !runOptions.silent);
+
+        setUpdateCenter((current) => {
+          const enabledMap = new Map(current.items.map((item) => [item.key, item.enabled]));
+          const nextItems = [appItem, xrayItem, geoItem].map((item) => ({
+            ...item,
+            enabled: enabledMap.has(item.key) ? Boolean(enabledMap.get(item.key)) : item.enabled
+          }));
+          return {
+            ...current,
+            opened: shouldOpenCenter ? true : current.opened,
+            checking: false,
+            updatingKey: null,
+            lastCheckedAt: Date.now(),
+            items: nextItems
+          };
+        });
+
         if (!result || !effectiveHasUpdate) {
           setUpdateDialogOpened(false);
           setUpdateDownload(createIdleUpdateDownloadState());
           deferredUpdatePromptKeyRef.current = null;
           lastUpdatePromptVersionRef.current = null;
           lastKnownUpdateArtifactRef.current = null;
-          if (runOptions.source === "manual" && !runOptions.silent) {
-            if (runtimeSummary?.updated?.length) {
-              options.notify?.({
-                color: "green",
-                title: "客户端已是最新",
-                message: `软件版本 ${formatVersionLabel(options.appVersion)} 已是最新；已更新 ${runtimeSummary.updated.join("、")}。`
-              });
-            } else if (runtimeSummary?.failed?.length) {
-              options.notify?.({
-                color: "yellow",
-                title: "客户端已是最新",
-                message: `软件版本 ${formatVersionLabel(options.appVersion)} 已是最新；${runtimeSummary.failed.join("、")} 更新失败，将继续使用本地文件。`
-              });
-            } else {
-              options.notify?.({
-                color: "green",
-                title: "当前已是最新版本",
-                message: `软件版本 ${formatVersionLabel(options.appVersion)}，核心组件也已检查完毕。`
-              });
-            }
-          }
+          // 手动检测走更新中心弹窗，不再用 toast 刷屏
           return result;
         }
+
 
         const promptKey = buildUpdatePromptKey(result)!;
         const shouldPrompt =
@@ -500,8 +642,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }
         return null;
       } finally {
-        updateCheckBusyRef.current = false;
-        setUpdateCheckBusy(false);
+        if (runOptions.source === "manual" || runOptions.openUpdateCenter) {
+          updateCheckBusyRef.current = false;
+          setUpdateCheckBusy(false);
+        }
         const pendingRun = pendingUpdateCheckRef.current;
         pendingUpdateCheckRef.current = null;
         if (pendingRun) {
@@ -518,9 +662,123 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     return runUpdateCheck({
       accessToken: options.accessToken,
       bootstrapVersion: options.bootstrapVersion ?? null,
-      source: "manual"
+      source: "manual",
+      silent: true,
+      inspectOnly: true,
+      includeRuntimeComponents: true,
+      openUpdateCenter: true
     });
   }, [options.accessToken, options.bootstrapVersion, runUpdateCheck]);
+
+  const handleUpdateCenterCheckOnly = useCallback(async () => {
+    return runUpdateCheck({
+      accessToken: options.accessToken,
+      bootstrapVersion: options.bootstrapVersion ?? null,
+      source: "manual",
+      silent: true,
+      inspectOnly: true,
+      includeRuntimeComponents: true,
+      openUpdateCenter: true
+    });
+  }, [options.accessToken, options.bootstrapVersion, runUpdateCheck]);
+
+  const handleUpdateCenterUpdateOne = useCallback(
+    async (key: UpdateCenterItemKey) => {
+      setUpdateCenter((current) => ({
+        ...current,
+        opened: true,
+        updatingKey: key,
+        items: current.items.map((item) =>
+          item.key === key
+            ? {
+                ...item,
+                status: "updating",
+                message: "正在更新…"
+              }
+            : item
+        )
+      }));
+      try {
+        if (key === "app") {
+          const result = await runUpdateCheck({
+            accessToken: options.accessToken,
+            bootstrapVersion: options.bootstrapVersion ?? null,
+            source: "manual",
+            silent: true,
+            inspectOnly: true,
+            includeRuntimeComponents: false,
+            openUpdateCenter: true
+          });
+          if (hasActionableUpdate(result, options.appVersion)) {
+            setUpdateDialogOpened(true);
+          }
+          return result;
+        }
+        return runUpdateCheck({
+          accessToken: options.accessToken,
+          bootstrapVersion: options.bootstrapVersion ?? null,
+          source: "manual",
+          silent: true,
+          inspectOnly: false,
+          includeRuntimeComponents: true,
+          runtimeTargets: [key === "xray" ? "xray" : "geo"],
+          openUpdateCenter: true
+        });
+      } finally {
+        setUpdateCenter((current) => ({
+          ...current,
+          updatingKey: null
+        }));
+      }
+    },
+    [options.accessToken, options.appVersion, options.bootstrapVersion, runUpdateCheck]
+  );
+
+  const handleUpdateCenterUpdateSelected = useCallback(async () => {
+    const enabled = updateCenter.items.filter((item) => item.enabled);
+    if (!enabled.length) {
+      return null;
+    }
+    setUpdateCenter((current) => ({
+      ...current,
+      opened: true,
+      updatingKey: "all",
+      items: current.items.map((item) =>
+        item.enabled
+          ? {
+              ...item,
+              status: item.canUpdate || item.status === "available" || item.status === "idle" ? "updating" : item.status,
+              message: item.enabled ? "正在处理…" : item.message
+            }
+          : item
+      )
+    }));
+    try {
+      const runtimeTargets = enabled
+        .map((item) => item.key)
+        .filter((key): key is "xray" | "geo" => key === "xray" || key === "geo");
+      const includeApp = enabled.some((item) => item.key === "app");
+      const result = await runUpdateCheck({
+        accessToken: options.accessToken,
+        bootstrapVersion: options.bootstrapVersion ?? null,
+        source: "manual",
+        silent: true,
+        inspectOnly: false,
+        includeRuntimeComponents: runtimeTargets.length > 0,
+        runtimeTargets: runtimeTargets.length ? runtimeTargets : undefined,
+        openUpdateCenter: true
+      });
+      if (includeApp && hasActionableUpdate(result, options.appVersion)) {
+        setUpdateDialogOpened(true);
+      }
+      return result;
+    } finally {
+      setUpdateCenter((current) => ({
+        ...current,
+        updatingKey: null
+      }));
+    }
+  }, [options.accessToken, options.appVersion, options.bootstrapVersion, runUpdateCheck, updateCenter.items]);
 
   const runUpdateCheckAndFocus = useCallback(
     async (runOptions: RunUpdateCheckOptions) => {
@@ -578,6 +836,13 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     runUpdateCheckAndFocus,
     handleManualUpdateCheck,
     handleUpdateDownload,
-    handleQuitForUpdate
+    handleQuitForUpdate,
+    updateCenter,
+    openUpdateCenter,
+    closeUpdateCenter,
+    setUpdateCenterItemEnabled,
+    handleUpdateCenterCheckOnly,
+    handleUpdateCenterUpdateOne,
+    handleUpdateCenterUpdateSelected
   };
 }

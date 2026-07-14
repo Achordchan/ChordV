@@ -47,7 +47,10 @@ type RoutingRulesModalProps = {
   connected: boolean;
   mode: ConnectionMode;
   policies: PolicyBundleDto;
+  reconnecting?: boolean;
   onClose: () => void;
+  /** 已连接时规则变更后触发，用于自动重连使规则立即生效 */
+  onApplyWhileConnected?: () => Promise<boolean | void> | boolean | void;
 };
 
 export function RoutingRulesModal(props: RoutingRulesModalProps) {
@@ -79,6 +82,40 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       setError(getApiErrorRawMessage(reason));
     } finally {
       setLoading(false);
+    }
+  }
+
+
+  async function applyIfConnected(title: string) {
+    if (!props.connected) {
+      notifications.show({
+        color: "green",
+        title,
+        message: "规则已保存，下次连接生效。"
+      });
+      return;
+    }
+    notifications.show({
+      color: "blue",
+      title,
+      message: "规则已保存，正在重新连接以立即生效。"
+    });
+    try {
+      const result = await props.onApplyWhileConnected?.();
+      if (result === false) {
+        notifications.show({
+          color: "yellow",
+          title: "稍后手动重连",
+          message: "规则已保存，当前有其他操作进行中，请稍后手动重新连接。"
+        });
+      }
+    } catch (reason) {
+      setError(getApiErrorRawMessage(reason) || "自动重连失败，请手动重新连接。");
+      notifications.show({
+        color: "red",
+        title: "自动重连失败",
+        message: "规则已保存，但重连未完成，请手动重新连接。"
+      });
     }
   }
 
@@ -129,11 +166,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
       }
       resetForm();
       await loadRules();
-      notifications.show({
-        color: props.connected ? "yellow" : "green",
-        title: "规则已保存",
-        message: props.connected ? "规则已保存，重连后生效。" : "规则已保存，下次连接生效。"
-      });
+      await applyIfConnected("规则已保存");
     } catch (reason) {
       setError(getApiErrorRawMessage(reason));
     } finally {
@@ -147,11 +180,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     try {
       await updateRoutingRule(props.accessToken, rule.id, { enabled });
       await loadRules();
-      notifications.show({
-        color: props.connected ? "yellow" : "green",
-        title: enabled ? "规则已启用" : "规则已停用",
-        message: props.connected ? "规则变更将在重连后生效。" : "规则变更将在下次连接生效。"
-      });
+      await applyIfConnected(enabled ? "规则已启用" : "规则已停用");
     } catch (reason) {
       setError(getApiErrorRawMessage(reason));
     } finally {
@@ -168,11 +197,7 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
         resetForm();
       }
       await loadRules();
-      notifications.show({
-        color: props.connected ? "yellow" : "green",
-        title: "规则已删除",
-        message: props.connected ? "删除结果将在重连后生效。" : "删除结果将在下次连接生效。"
-      });
+      await applyIfConnected("规则已删除");
     } catch (reason) {
       setError(getApiErrorRawMessage(reason));
     } finally {
@@ -210,6 +235,11 @@ export function RoutingRulesModal(props: RoutingRulesModalProps) {
     <Modal opened={props.opened} onClose={props.onClose} centered size="lg" title="自定义分流">
       <Stack gap="md">
         {error ? <Alert color="red">{error}</Alert> : null}
+        {props.connected ? (
+          <Alert color="blue" variant="light">
+            {props.reconnecting ? "正在重新连接，使分流规则立即生效…" : "当前已连接。保存、启停或删除规则后会自动重连生效。"}
+          </Alert>
+        ) : null}
 
         <Paper withBorder radius="md" p="md">
           <Stack gap="sm">

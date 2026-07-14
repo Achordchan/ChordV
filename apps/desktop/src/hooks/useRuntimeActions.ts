@@ -78,6 +78,10 @@ type RunUpdateCheckInput = {
   bootstrapVersion?: ClientVersionDto | null;
   source: "startup" | "login" | "manual" | "refresh";
   silent?: boolean;
+  inspectOnly?: boolean;
+  includeRuntimeComponents?: boolean;
+  runtimeTargets?: Array<"xray" | "geo">;
+  openUpdateCenter?: boolean;
 };
 
 type UseRuntimeActionsOptions = {
@@ -680,30 +684,56 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     [handleForcedGuidance, options, syncAnnouncementsState, syncSubscriptionState]
   );
 
-  const handleConnect = useCallback(async () => {
-    if (!options.session || !options.selectedNode || actionBusy || !options.canAttemptConnect) {
+  const handleConnect = useCallback(async (connectOptions?: { bypassStatusGate?: boolean; nodeId?: string | null }) => {
+    const bypassStatusGate = Boolean(connectOptions?.bypassStatusGate);
+    const preferredNodeId =
+      connectOptions?.nodeId ??
+      options.selectedNodeId ??
+      options.selectedNode?.id ??
+      options.runtime?.node.id ??
+      options.desktopStatus.activeNodeId ??
+      null;
+    const selectedNode =
+      (preferredNodeId
+        ? options.nodesRef.current.find((node) => node.id === preferredNodeId) ?? null
+        : null) ??
+      options.selectedNode;
+    const statusBlocksConnect =
+      options.desktopStatus.status === "connected" || options.desktopStatus.status === "connecting";
+    // 自动重连时 React 状态可能仍短暂停留在 connected，需绕过状态门闩；其它条件仍校验。
+    const canAttempt =
+      Boolean(selectedNode) &&
+      options.nodesRef.current.length > 0 &&
+      !options.forceUpdateRequired &&
+      (bypassStatusGate || options.canAttemptConnect || !statusBlocksConnect);
+
+    if (!options.session || !selectedNode || actionBusy || !canAttempt) {
       debugAndroidConnect("handleConnect:skip", {
         hasSession: Boolean(options.session),
-        selectedNodeId: options.selectedNode?.id ?? null,
+        selectedNodeId: selectedNode?.id ?? null,
         actionBusy,
-        canAttemptConnect: options.canAttemptConnect
+        canAttemptConnect: options.canAttemptConnect,
+        bypassStatusGate
       });
       return;
     }
-    const selectedNode = options.selectedNode;
-    const shouldForceRuntimeAssetCheck = !options.runtimeAssetsReady || options.runtimeAssets.phase === "failed";
-    if (shouldForceRuntimeAssetCheck) {
+    const shouldEnsureRuntimeAssets =
+      !options.runtimeAssetsReady ||
+      options.runtimeAssets.phase === "idle" ||
+      options.runtimeAssets.phase === "failed";
+    if (shouldEnsureRuntimeAssets) {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
         interactive: true,
         blockConnection: true,
-        forceCheck: true
+        // 失败重试才强制远端；普通连接只保证本地组件就位，避免一点连接就重新扫 GEO。
+        forceCheck: options.runtimeAssets.phase === "failed"
       });
       if (!ready) {
         return;
       }
     }
-    if (!options.canAttemptConnect) {
+    if (!bypassStatusGate && !options.canAttemptConnect) {
       debugAndroidConnect("handleConnect:blocked", {
         canConnect: options.canConnect,
         nodeId: selectedNode.id
@@ -842,6 +872,41 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     await disconnectCurrentRuntime({ notifyServer: true });
   }, [actionBusy, disconnectCurrentRuntime, options]);
 
+  const handleReconnect = useCallback(async () => {
+    if (actionBusy) {
+      return false;
+    }
+    // 先记住当前节点：断开后 runtime 会被清空，不能再从 runtime 取。
+    const preferredNodeId =
+      options.runtime?.node.id ??
+      options.desktopStatus.activeNodeId ??
+      options.selectedNodeId ??
+      options.selectedNode?.id ??
+      null;
+    if (preferredNodeId && preferredNodeId !== options.selectedNodeId) {
+      options.setSelectedNodeId(preferredNodeId);
+    }
+
+    const wasConnected =
+      options.desktopStatus.status === "connected" ||
+      options.desktopStatus.status === "connecting" ||
+      Boolean(options.desktopStatus.activePid) ||
+      Boolean(options.runtime?.sessionId);
+
+    if (wasConnected) {
+      options.setConnectionGuidance(null);
+      await disconnectCurrentRuntime({ notifyServer: true });
+    }
+
+    await handleConnect({ bypassStatusGate: true, nodeId: preferredNodeId });
+    return true;
+  }, [
+    actionBusy,
+    disconnectCurrentRuntime,
+    handleConnect,
+    options
+  ]);
+
   const handleEmergencyDisconnect = useCallback(async () => {
     if (actionBusy === "disconnect") {
       return;
@@ -885,12 +950,12 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
       return;
     }
 
-    if (!options.runtimeAssetsReady) {
+    if (!options.runtimeAssetsReady || options.runtimeAssets.phase === "idle" || options.runtimeAssets.phase === "failed") {
       const ready = await options.ensureRuntimeAssetsReady({
         source: options.runtimeAssets.phase === "failed" ? "retry" : "connect",
         interactive: true,
         blockConnection: true,
-        forceCheck: true
+        forceCheck: options.runtimeAssets.phase === "failed"
       });
       if (!ready) {
         return;
@@ -906,6 +971,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
     handleRuntimeEvent,
     handlePrimaryAction,
     handleDisconnect,
+    handleReconnect,
     handleEmergencyDisconnect,
     handleForcedGuidance,
     syncForegroundState,

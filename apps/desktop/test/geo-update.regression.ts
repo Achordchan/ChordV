@@ -3,6 +3,9 @@ import {
   buildGeoComponentItem,
   buildGeoDownloadCandidates,
   buildGeoRemoteAssetsFromRelease,
+  buildGeoSha256sumUrls,
+  isGeoAssetInSync,
+  isInstalledGeoTagCurrent,
   isLocalGeoCurrent,
   parseGithubReleasePayload,
   parseSha256Sum,
@@ -114,11 +117,78 @@ function testDownloadCandidatesOrder() {
   assert.ok(candidates.length >= 3);
 }
 
+
+function testInstalledGeoTagCurrent() {
+  assert.equal(isInstalledGeoTagCurrent("202607122240", "202607122240"), true);
+  assert.equal(isInstalledGeoTagCurrent("202607122240", "202607130101"), false);
+  assert.equal(isInstalledGeoTagCurrent(null, "202607122240"), false);
+}
+
+function testSha256sumUrlOrder() {
+  const urls = buildGeoSha256sumUrls("202607122240", "geoip.dat");
+  assert.ok(urls[0].includes("jsdelivr"));
+  assert.equal(urls[urls.length - 1].startsWith("https://github.com/"), true);
+}
+
+function testLocalGeoCurrentSizeOnly() {
+  const remote = {
+    kind: "geoip" as const,
+    fileName: "geoip.dat" as const,
+    releaseTag: "202607122240",
+    fileSizeBytes: 100,
+    checksumSha256: "A".repeat(64),
+    originUrl: "https://example.com/geoip.dat"
+  };
+  assert.equal(
+    isLocalGeoCurrent(
+      {
+        kind: "geoip",
+        exists: true,
+        path: "C:/tmp/geoip.dat",
+        sizeBytes: 100,
+        checksumSha256: null
+      },
+      remote
+    ),
+    true
+  );
+  // 大小不一致时不能判最新（例如 bundle 回填了 4 月旧包）
+  assert.equal(
+    isLocalGeoCurrent(
+      {
+        kind: "geoip",
+        exists: true,
+        path: "C:/tmp/geoip.dat",
+        sizeBytes: 20226649,
+        checksumSha256: null
+      },
+      remote
+    ),
+    false
+  );
+  assert.equal(
+    isGeoAssetInSync(
+      {
+        kind: "geoip",
+        exists: true,
+        path: "C:/tmp/geoip.dat",
+        sizeBytes: 20226649,
+        checksumSha256: null
+      },
+      17872715
+    ),
+    false
+  );
+}
+
 function main() {
   testParseSha256Sum();
   testShouldCheckGeoUpdate();
   testParseGithubReleaseAndBuildPlan();
   testLocalGeoCurrent();
+  testLocalGeoCurrentSizeOnly();
+  testInstalledGeoTagCurrent();
+  testSha256sumUrlOrder();
   testDownloadCandidatesOrder();
   console.log("desktop geo update regression checks passed");
 }

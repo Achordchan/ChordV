@@ -30,6 +30,7 @@ import { RuntimeAssetsBanner } from "./components/RuntimeAssetsBanner";
 import { RoutingRulesModal } from "./components/RoutingRulesModal";
 import { SubscriptionPanel } from "./components/SubscriptionPanel";
 import { TicketCenterModal } from "./components/TicketCenterModal";
+import { UpdateCenterModal } from "./components/UpdateCenterModal";
 import {
   appReady,
   focusDesktopWindow,
@@ -233,6 +234,8 @@ export function App() {
     | ((input: {
         source: "startup" | "login" | "manual" | "refresh";
         silent?: boolean;
+        inspectOnly?: boolean;
+        targets?: Array<"xray" | "geo">;
       }) => Promise<import("./hooks/useRuntimeAssets").RuntimeAssetsCheckSummary | null>)
     | null
   >(null);
@@ -273,7 +276,13 @@ export function App() {
     runUpdateCheckAndFocus,
     handleManualUpdateCheck,
     handleUpdateDownload,
-    handleQuitForUpdate
+    handleQuitForUpdate,
+    updateCenter,
+    closeUpdateCenter,
+    setUpdateCenterItemEnabled,
+    handleUpdateCenterCheckOnly,
+    handleUpdateCenterUpdateOne,
+    handleUpdateCenterUpdateSelected
   } = updateFlow;
   const effectiveUpdateActionable = hasActionableUpdate(effectiveUpdate, appVersion);
   const runUpdateCheck = runUpdateCheckFromHook;
@@ -309,9 +318,11 @@ export function App() {
     const forceCheck = input.source === "manual" || input.source === "refresh";
     await ensureRuntimeAssetsReady({
       source: "update_check",
-      interactive: input.source === "manual" && !input.silent,
+      interactive: false,
       blockConnection: false,
-      forceCheck
+      forceCheck,
+      inspectOnly: input.inspectOnly,
+      targets: input.targets
     });
     return getLastRuntimeAssetsCheckSummary();
   };
@@ -433,6 +444,7 @@ export function App() {
     handleRuntimeEvent,
     handlePrimaryAction,
     handleDisconnect,
+    handleReconnect,
     handleEmergencyDisconnect,
     handleForcedGuidance,
     syncForegroundState,
@@ -502,7 +514,8 @@ export function App() {
       await runUpdateCheck({
         bootstrapVersion: bootstrap?.version ?? null,
         source: "refresh",
-        silent: true
+        silent: true,
+        includeRuntimeComponents: false
       });
     },
     recoverSessionAfterUnauthorized,
@@ -804,15 +817,22 @@ export function App() {
   useEffect(() => {
     void initializeApp();
 
-    const runtimeTimer = window.setInterval(() => {
-      void refreshRuntime();
-    }, 2000);
+    // 启动动画/首屏交互优先；运行态轮询延后，避免与启动 IPC 叠压。
+    let runtimeTimer: number | null = null;
+    const startRuntimePolling = window.setTimeout(() => {
+      runtimeTimer = window.setInterval(() => {
+        void refreshRuntime();
+      }, 3000);
+    }, 5000);
     const clockTimer = window.setInterval(() => {
       setNow(Date.now());
     }, 1000);
 
     return () => {
-      window.clearInterval(runtimeTimer);
+      window.clearTimeout(startRuntimePolling);
+      if (runtimeTimer !== null) {
+        window.clearInterval(runtimeTimer);
+      }
       window.clearInterval(clockTimer);
     };
   }, []);
@@ -1475,42 +1495,40 @@ export function App() {
     if (desktopStatus.platformTarget === "android" || desktopStatus.platformTarget === "web") {
       return;
     }
-    if (runtimeAssets.phase !== "idle") {
-      return;
-    }
+    // 首屏可交互后再做本地轻量巡检（无 bundle 哈希、无远端），用于尽快点亮连接按钮。
     const timer = window.setTimeout(() => {
       void ensureRuntimeAssetsReady({
         source: "startup",
         interactive: false,
-        blockConnection: false
+        blockConnection: false,
+        inspectOnly: true,
+        forceCheck: false
       });
-    }, 400);
+    }, 200);
     return () => {
       window.clearTimeout(timer);
     };
-  }, [booting, bootstrap, desktopStatus.platformTarget, ensureRuntimeAssetsReady, runtimeAssets.phase, session]);
+  }, [booting, bootstrap, desktopStatus.platformTarget, ensureRuntimeAssetsReady, session]);
 
   async function initializeApp() {
+    let restoredAccessToken: string | undefined;
     try {
       const rememberedCredentials = loadRememberedCredentials();
       if (rememberedCredentials) {
         setCredentials(rememberedCredentials);
         setRememberPassword(true);
       }
-      await refreshRuntime();
+      // 首屏只做轻量状态恢复；软件版本检查放到可交互之后，避免启动卡死拖动/点击。
+      await refreshRuntime({ includeLogs: false });
       const localRuntime = await loadActiveRuntimeConfig().catch(() => null);
       if (localRuntime?.sessionId) {
         setRuntime(localRuntime);
       }
       const restoredSession = await restoreStoredSession();
+      restoredAccessToken = restoredSession?.accessToken;
       if (restoredSession?.accessToken && localRuntime?.sessionId) {
         await syncForegroundState(restoredSession.accessToken).catch(() => null);
       }
-      await runUpdateCheck({
-        accessToken: restoredSession?.accessToken,
-        source: "startup",
-        silent: true
-      });
     } finally {
       await appReady().catch(() => null);
       window.requestAnimationFrame(() => {
@@ -1519,6 +1537,14 @@ export function App() {
           void focusDesktopWindow();
         });
       });
+      window.setTimeout(() => {
+        void runUpdateCheck({
+          accessToken: restoredAccessToken,
+          source: "startup",
+          silent: true,
+          includeRuntimeComponents: false
+        });
+      }, 300);
     }
   }
 
@@ -1859,10 +1885,14 @@ export function App() {
         <RoutingRulesModal
           opened={routingRulesOpened}
           accessToken={session.accessToken}
-          connected={desktopStatus.status === "connected"}
+          connected={desktopStatus.status === "connected" || desktopStatus.status === "connecting"}
           mode={mode}
           policies={bootstrap.policies}
+          reconnecting={actionBusy === "connect" || actionBusy === "disconnect" || desktopStatus.status === "connecting" || desktopStatus.status === "disconnecting"}
           onClose={() => setRoutingRulesOpened(false)}
+          onApplyWhileConnected={async () => {
+            return await handleReconnect();
+          }}
         />
       ) : null}
       <LogDrawer opened={logDrawerOpened} log={runtimeLog} onClose={() => setLogDrawerOpened(false)} />
@@ -2006,6 +2036,16 @@ export function App() {
           </div>
         </Stack>
       </Modal>
+
+            <UpdateCenterModal
+        state={updateCenter}
+        busy={updateCheckBusy || runtimeAssetsBusy || updateCenter.checking || Boolean(updateCenter.updatingKey)}
+        onClose={closeUpdateCenter}
+        onToggle={setUpdateCenterItemEnabled}
+        onCheckOnly={() => void handleUpdateCenterCheckOnly()}
+        onUpdateSelected={() => void handleUpdateCenterUpdateSelected()}
+        onUpdateOne={(key) => void handleUpdateCenterUpdateOne(key)}
+      />
 
       <Modal
         opened={updateDialogOpened && effectiveUpdate !== null}

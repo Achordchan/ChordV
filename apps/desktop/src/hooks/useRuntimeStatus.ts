@@ -20,12 +20,13 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
   const localStopInFlightRef = useRef<Promise<void> | null>(null);
   const runtimeRefreshRequestSeqRef = useRef(0);
 
-  const refreshRuntime = useCallback(async () => {
+  const refreshRuntime = useCallback(async (optionsInput?: { includeLogs?: boolean }) => {
     const requestId = runtimeRefreshRequestSeqRef.current + 1;
     runtimeRefreshRequestSeqRef.current = requestId;
+    const includeLogs = optionsInput?.includeLogs ?? true;
 
     try {
-      const [status, logs] = await Promise.all([loadRuntimeStatus(), loadRuntimeLogs()]);
+      const status = await loadRuntimeStatus();
       if (runtimeRefreshRequestSeqRef.current !== requestId) {
         return null;
       }
@@ -33,7 +34,21 @@ export function useRuntimeStatus(options: UseRuntimeStatusOptions) {
       if (!status.activeSessionId && status.status !== "connecting" && status.status !== "disconnecting") {
         options.setRuntime(null);
       }
-      setRuntimeLog(logs.log);
+      // 空闲态不必每次读日志文件；有活跃会话/连接中才拉日志，降低同步 IPC 压力。
+      const shouldLoadLogs =
+        includeLogs &&
+        (Boolean(status.activeSessionId) ||
+          status.status === "connecting" ||
+          status.status === "connected" ||
+          status.status === "disconnecting" ||
+          Boolean(status.lastError));
+      if (shouldLoadLogs) {
+        const logs = await loadRuntimeLogs();
+        if (runtimeRefreshRequestSeqRef.current !== requestId) {
+          return null;
+        }
+        setRuntimeLog(logs.log);
+      }
       return status;
     } catch {
       if (runtimeRefreshRequestSeqRef.current !== requestId) {

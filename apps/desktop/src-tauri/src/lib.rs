@@ -1981,7 +1981,7 @@ fn get_runtime_component_local_info(
     #[cfg(not(target_os = "android"))]
     {
         let target_path = runtime_component_target_path(&app, component)?;
-        let _ = ensure_runtime_component_from_bundle(&app, component, &target_path)?;
+        // 本地信息查询只看存在性与大小，不触发 bundle 复制/哈希，避免启动卡 UI。
         if !target_path.exists() {
             return Ok(RuntimeComponentLocalInfo {
                 kind: runtime_component_key(component).into(),
@@ -2004,13 +2004,14 @@ fn get_runtime_component_local_info(
                 checksum_sha256: None,
             });
         }
-        let checksum = sha256_file(&target_path)?;
+        // 检测更新/启动巡检只需要存在性与大小；GEO 大文件每次全量 sha256 会明显卡 UI。
+        // 精确校验仍由 check_runtime_component_file / 下载落盘逻辑负责。
         Ok(RuntimeComponentLocalInfo {
             kind: runtime_component_key(component).into(),
             exists: true,
             path: Some(target_path.to_string_lossy().into_owned()),
             size_bytes: Some(size_bytes),
-            checksum_sha256: Some(checksum),
+            checksum_sha256: None,
         })
     }
 }
@@ -2062,7 +2063,7 @@ fn check_runtime_component_file(
     #[cfg(not(target_os = "android"))]
     {
         let target_path = runtime_component_target_path(&app, component.component)?;
-        let _ = ensure_runtime_component_from_bundle(&app, component.component, &target_path)?;
+        // 检查状态时不要回填 bundle，否则会把刚更新的远端文件状态掩盖掉。
         if !target_path.exists() {
             return Ok(RuntimeComponentFileStatus {
                 ready: false,
@@ -3476,13 +3477,27 @@ fn ensure_runtime_component_from_bundle(
     component: RuntimeComponentKindInput,
     target_path: &Path,
 ) -> Result<bool, String> {
+    // 内置包只用于“首次补齐 / 本地损坏回退”。
+    // 绝不能因为本地文件与 bundle 大小不同就覆盖：用户可能已从远端更新了更新的 GEO/Xray。
+    if target_path.exists() {
+        match fs::metadata(target_path) {
+            Ok(metadata) if metadata.len() > 0 => {
+                if validate_runtime_component_file_content(target_path, component).is_ok() {
+                    if component == RuntimeComponentKindInput::Xray {
+                        let _ = ensure_executable(target_path);
+                    }
+                    return Ok(false);
+                }
+                // 本地文件损坏（过小/非 PE 等）时才允许用内置包覆盖。
+            }
+            _ => {}
+        }
+    }
+
     let Some(source_path) = bundled_runtime_component_source_path(app, component) else {
         return Ok(false);
     };
     validate_runtime_component_file_content(&source_path, component)?;
-    if runtime_component_files_match(&source_path, target_path)? {
-        return Ok(false);
-    }
 
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -3499,18 +3514,6 @@ fn ensure_runtime_component_from_bundle(
     Ok(true)
 }
 
-fn runtime_component_files_match(source_path: &Path, target_path: &Path) -> Result<bool, String> {
-    let source_metadata = fs::metadata(source_path).map_err(|error| {
-        runtime_component_error("write_failed", format!("读取内置组件文件失败：{error}"))
-    })?;
-    let Ok(target_metadata) = fs::metadata(target_path) else {
-        return Ok(false);
-    };
-    if target_metadata.len() == 0 || target_metadata.len() != source_metadata.len() {
-        return Ok(false);
-    }
-    Ok(sha256_file(source_path)? == sha256_file(target_path)?)
-}
 
 fn restore_runtime_component_from_verified_bundle(
     app: &AppHandle,

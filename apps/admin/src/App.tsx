@@ -435,6 +435,8 @@ export function App() {
   const leaseRevocationRetryBusyRef = useRef(false);
   const dashboardRefreshSeqRef = useRef(0);
   const sectionRequestSeqRef = useRef(0);
+  const sectionLoadingOwnerSeqRef = useRef(0);
+  const loadedSectionsRef = useRef<Set<SectionKey>>(new Set());
   const sectionMutationSeqRef = useRef(0);
   const pendingSyncQueueRefreshRef = useRef(false);
 
@@ -534,7 +536,11 @@ export function App() {
     }
     const dataSection = section === "users" ? "subscriptions" : section;
     void loadSectionData(dataSection);
-  }, [authenticated, section, snapshot]);
+  }, [authenticated, section, Boolean(snapshot)]);
+
+  useEffect(() => {
+    loadedSectionsRef.current = loadedSections;
+  }, [loadedSections]);
 
   useEffect(() => {
     sectionRef.current = section;
@@ -784,7 +790,9 @@ export function App() {
     setAuthenticated(false);
     setLoading(false);
     setSectionLoading(false);
+    sectionLoadingOwnerSeqRef.current = 0;
     setLoadedSections(new Set());
+    loadedSectionsRef.current = new Set();
     setRefreshingDashboard(false);
     setError(null);
     setAuthError("登录已失效，请重新登录");
@@ -865,6 +873,7 @@ export function App() {
         });
       }
       setLoadedSections(new Set());
+      loadedSectionsRef.current = new Set();
     } catch (reason) {
       const message = readError(reason, "加载失败");
       if (ensureAuthenticated(message)) {
@@ -912,9 +921,11 @@ export function App() {
       });
 
       mergeSnapshot(patch);
-      setLoadedSections(
-        new Set((Object.keys(sectionMeta) as SectionKey[]).filter((sectionKey) => !failedSections.has(sectionKey)))
+      const nextLoadedSections = new Set(
+        (Object.keys(sectionMeta) as SectionKey[]).filter((sectionKey) => !failedSections.has(sectionKey))
       );
+      loadedSectionsRef.current = nextLoadedSections;
+      setLoadedSections(nextLoadedSections);
       if (failedMessages.length > 0) {
         notifications.show({
           color: "yellow",
@@ -1036,25 +1047,107 @@ export function App() {
     return failures.filter(Boolean).join("; ");
   }
 
-  async function loadSectionData(targetSection: SectionKey, options?: { force?: boolean; silent?: boolean }) {
-    if (!options?.force && loadedSections.has(targetSection)) {
-      return;
-    }
+  function beginSectionLoad(options?: { silent?: boolean }) {
     const requestSeq = sectionRequestSeqRef.current + 1;
     sectionRequestSeqRef.current = requestSeq;
-    const mutationSeqAtStart = sectionMutationSeqRef.current;
-    const canApplySectionResult = () =>
-      sectionRequestSeqRef.current === requestSeq && sectionMutationSeqRef.current === mutationSeqAtStart;
-    try {
-      if (!options?.silent) {
-        setSectionLoading(true);
+    if (!options?.silent) {
+      sectionLoadingOwnerSeqRef.current = requestSeq;
+      setSectionLoading(true);
+    }
+    return requestSeq;
+  }
+
+  function finishSectionLoad(requestSeq: number, options?: { silent?: boolean }) {
+    if (options?.silent) {
+      return;
+    }
+    if (sectionLoadingOwnerSeqRef.current === requestSeq) {
+      sectionLoadingOwnerSeqRef.current = 0;
+      setSectionLoading(false);
+    }
+  }
+
+  function canApplySectionResult(requestSeq: number, mutationSeqAtStart: number) {
+    return sectionRequestSeqRef.current === requestSeq && sectionMutationSeqRef.current === mutationSeqAtStart;
+  }
+
+  function markSectionLoaded(targetSection: SectionKey) {
+    setLoadedSections((current) => {
+      if (current.has(targetSection)) {
+        loadedSectionsRef.current = current;
+        return current;
       }
+      const next = new Set(current).add(targetSection);
+      loadedSectionsRef.current = next;
+      return next;
+    });
+  }
+
+  async function loadSecondarySectionData(
+    targetSection: SectionKey,
+    requestSeq: number,
+    mutationSeqAtStart: number,
+    options?: { silent?: boolean }
+  ) {
+    if (targetSection === "users" || targetSection === "subscriptions") {
+      const leaseRevocationJobsResult = await settleAdminLoad(fetchAdminLeaseRevocationJobs());
+      if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
+        return;
+      }
+      if (leaseRevocationJobsResult.ok) {
+        mergeSnapshot({ leaseRevocationJobs: leaseRevocationJobsResult.value });
+        return;
+      }
+      if (!options?.silent) {
+        notifications.show({
+          color: "yellow",
+          title: targetSection === "users" ? "用户页部分数据加载失败" : "订阅页部分数据加载失败",
+          message: readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+        });
+      }
+      return;
+    }
+
+    if (targetSection !== "nodes") {
+      return;
+    }
+
+    const [panelSyncJobsResult, leaseRevocationJobsResult] = await Promise.all([
+      settleAdminLoad(fetchAdminPanelSyncJobs()),
+      settleAdminLoad(fetchAdminLeaseRevocationJobs())
+    ]);
+    if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) {
+      return;
+    }
+    mergeSnapshot({
+      ...(panelSyncJobsResult.ok ? { panelSyncJobs: panelSyncJobsResult.value } : {}),
+      ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
+    });
+    if ((!panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
+      notifications.show({
+        color: "yellow",
+        title: "同步任务加载失败",
+        message: joinAdminLoadFailures([
+          panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步任务加载失败"),
+          leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+        ])
+      });
+    }
+  }
+
+  async function loadSectionData(targetSection: SectionKey, options?: { force?: boolean; silent?: boolean }) {
+    if (!options?.force && loadedSectionsRef.current.has(targetSection)) {
+      return;
+    }
+    const requestSeq = beginSectionLoad(options);
+    const mutationSeqAtStart = sectionMutationSeqRef.current;
+    try {
       if (targetSection === "overview") {
         const [subscriptionsResult, nodesResult] = await Promise.all([
           settleAdminLoad(fetchAdminSubscriptions()),
           settleAdminLoad(fetchAdminNodes())
         ]);
-        if (!canApplySectionResult()) return;
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         mergeSnapshot({
           ...(subscriptionsResult.ok ? { subscriptions: subscriptionsResult.value } : {}),
           ...(nodesResult.ok ? { nodes: nodesResult.value } : {})
@@ -1076,105 +1169,74 @@ export function App() {
           }
         }
       } else if (targetSection === "users") {
-        const [usersResult, teamsResult, leaseRevocationJobsResult] = await Promise.all([
+        const [usersResult, teamsResult] = await Promise.all([
           settleAdminLoad(fetchAdminUsers()),
-          settleAdminLoad(fetchAdminTeams()),
-          settleAdminLoad(fetchAdminLeaseRevocationJobs())
+          settleAdminLoad(fetchAdminTeams())
         ]);
-        if (!canApplySectionResult()) return;
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         mergeSnapshot({
           ...(usersResult.ok ? { users: usersResult.value } : {}),
-          ...(teamsResult.ok ? { teams: teamsResult.value } : {}),
-          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
+          ...(teamsResult.ok ? { teams: teamsResult.value } : {})
         });
         if (!usersResult.ok) {
           throw usersResult.reason;
         }
-        if ((!teamsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
+        if (!teamsResult.ok && !options?.silent) {
           notifications.show({
             color: "yellow",
             title: "用户页部分数据加载失败",
-            message: joinAdminLoadFailures([
-              teamsResult.ok ? null : readError(teamsResult.reason, "团队列表加载失败"),
-              leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
-            ])
+            message: readError(teamsResult.reason, "团队列表加载失败")
           });
         }
+        void loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
       } else if (targetSection === "plans") {
         const plans = await fetchAdminPlans();
-        if (!canApplySectionResult()) return;
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         applyListPatch("plans", plans);
       } else if (targetSection === "subscriptions") {
-        const [usersResult, plansResult, subscriptionsResult, teamsResult, leaseRevocationJobsResult] = await Promise.all([
+        const [usersResult, plansResult, subscriptionsResult, teamsResult] = await Promise.all([
           settleAdminLoad(fetchAdminUsers()),
           settleAdminLoad(fetchAdminPlans()),
           settleAdminLoad(fetchAdminSubscriptions()),
-          settleAdminLoad(fetchAdminTeams()),
-          settleAdminLoad(fetchAdminLeaseRevocationJobs())
+          settleAdminLoad(fetchAdminTeams())
         ]);
-        if (!canApplySectionResult()) return;
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         mergeSnapshot({
           ...(usersResult.ok ? { users: usersResult.value } : {}),
           ...(plansResult.ok ? { plans: plansResult.value } : {}),
           ...(subscriptionsResult.ok ? { subscriptions: subscriptionsResult.value } : {}),
-          ...(teamsResult.ok ? { teams: teamsResult.value } : {}),
-          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.value } : {})
+          ...(teamsResult.ok ? { teams: teamsResult.value } : {})
         });
         if (!subscriptionsResult.ok) {
           throw subscriptionsResult.reason;
         }
-        if ((!usersResult.ok || !plansResult.ok || !teamsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
+        if ((!usersResult.ok || !plansResult.ok || !teamsResult.ok) && !options?.silent) {
           notifications.show({
             color: "yellow",
             title: "订阅页部分数据加载失败",
             message: joinAdminLoadFailures([
               usersResult.ok ? null : readError(usersResult.reason, "用户列表加载失败"),
               plansResult.ok ? null : readError(plansResult.reason, "套餐列表加载失败"),
-              teamsResult.ok ? null : readError(teamsResult.reason, "团队列表加载失败"),
-              leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
+              teamsResult.ok ? null : readError(teamsResult.reason, "团队列表加载失败")
             ])
           });
         }
+        void loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
       } else if (targetSection === "nodes") {
-        const [nodes, panelSyncJobsResult, leaseRevocationJobsResult] = await Promise.all([
-          fetchAdminNodes(),
-          fetchAdminPanelSyncJobs().then(
-            (panelSyncJobs) => ({ ok: true as const, panelSyncJobs }),
-            (reason) => ({ ok: false as const, reason })
-          ),
-          fetchAdminLeaseRevocationJobs().then(
-            (leaseRevocationJobs) => ({ ok: true as const, leaseRevocationJobs }),
-            (reason) => ({ ok: false as const, reason })
-          )
-        ]);
-        if (!canApplySectionResult()) return;
-        mergeSnapshot({
-          nodes,
-          ...(panelSyncJobsResult.ok ? { panelSyncJobs: panelSyncJobsResult.panelSyncJobs } : {}),
-          ...(leaseRevocationJobsResult.ok ? { leaseRevocationJobs: leaseRevocationJobsResult.leaseRevocationJobs } : {})
-        });
-        if ((!panelSyncJobsResult.ok || !leaseRevocationJobsResult.ok) && !options?.silent) {
-          notifications.show({
-            color: "yellow",
-            title: "同步任务加载失败",
-            message: [
-              panelSyncJobsResult.ok ? null : readError(panelSyncJobsResult.reason, "面板同步任务加载失败"),
-              leaseRevocationJobsResult.ok ? null : readError(leaseRevocationJobsResult.reason, "连接撤销队列加载失败")
-            ]
-              .filter(Boolean)
-              .join("；")
-          });
-        }
+        const nodes = await fetchAdminNodes();
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
+        mergeSnapshot({ nodes });
+        void loadSecondarySectionData(targetSection, requestSeq, mutationSeqAtStart, options);
       } else if (targetSection === "announcements") {
         const announcements = await fetchAdminAnnouncements();
-        if (!canApplySectionResult()) return;
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         applyListPatch("announcements", announcements);
       } else if (targetSection === "policies") {
         const policy = await fetchAdminPolicy();
-        if (!canApplySectionResult()) return;
+        if (!canApplySectionResult(requestSeq, mutationSeqAtStart)) return;
         mergeSnapshot({ policy });
       }
-      setLoadedSections((current) => new Set(current).add(targetSection));
+      markSectionLoaded(targetSection);
     } catch (reason) {
       const message = readError(reason, "加载失败");
       if (ensureAuthenticated(message)) {
@@ -1191,9 +1253,7 @@ export function App() {
         throw reason;
       }
     } finally {
-      if (!options?.silent && sectionRequestSeqRef.current === requestSeq) {
-        setSectionLoading(false);
-      }
+      finishSectionLoad(requestSeq, options);
     }
   }
 
