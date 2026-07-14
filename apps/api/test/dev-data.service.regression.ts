@@ -10566,8 +10566,8 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeFails() {
   assert.deepEqual(probed, ["node_bad", "node_good"], "bulk probe must continue after one node fails");
   assert.deepEqual(result.map((item) => item.id), ["node_bad", "node_good"]);
   assert.equal(result[0]?.probeStatus, "unknown");
-  assert.equal(result[0]?.panelStatus, "degraded");
-  assert.match(result[0]?.panelError ?? "", /panel unavailable/);
+  assert.equal(result[0]?.panelStatus, "online");
+  assert.equal(result[0]?.panelError, null);
   assert.equal(result[1]?.probeStatus, "healthy");
 }
 
@@ -10713,8 +10713,8 @@ async function testProbeAllNodesHttpContinuesWhenSingleNodeProbeFails() {
       ["node_bad", "node_good"]
     );
     assert.equal(body[0]?.probeStatus, "unknown");
-    assert.equal(body[0]?.panelStatus, "degraded");
-    assert.match(body[0]?.panelError ?? "", /panel unavailable/);
+    assert.equal(body[0]?.panelStatus, "online");
+    assert.equal(body[0]?.panelError, null);
     assert.equal(body[1]?.probeStatus, "healthy");
   } finally {
     await app.close();
@@ -10801,8 +10801,8 @@ async function testProbeAllNodesContinuesWhenSingleNodeProbeStalls() {
     assert.deepEqual(probed, ["node_stalled", "node_good"], "bulk probe must continue after one node stalls");
     assert.deepEqual(result.map((item) => item.id), ["node_stalled", "node_good"]);
     assert.equal(result[0]?.probeStatus, "unknown");
-    assert.equal(result[0]?.panelStatus, "degraded");
-    assert.match(result[0]?.panelError ?? "", /bulk node probe exceeded/);
+    assert.equal(result[0]?.panelStatus, "online");
+    assert.equal(result[0]?.panelError, null);
     assert.equal(result[1]?.probeStatus, "healthy");
   } finally {
     if (previousProbeBudget === undefined) {
@@ -10890,7 +10890,7 @@ async function testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially() {
     assert.equal(probed.length, nodes.length);
     assert.deepEqual(result.map((item) => item.id), nodes.map((node) => node.id));
     assert.equal(result.every((item) => item.probeStatus === "unknown"), true);
-    assert.equal(result.every((item) => item.panelStatus === "degraded"), true);
+    assert.equal(result.every((item) => item.panelStatus === "online"), true);
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
@@ -10989,12 +10989,13 @@ async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
     assert.deepEqual(probed, ["node_stalled_1", "node_stalled_2"]);
     assert.deepEqual(result.map((item) => item.id), nodes.map((node) => node.id));
     assert.equal(result[2]?.probeStatus, "unknown");
-    assert.equal(result[2]?.probeError, null);
-    assert.equal(result[2]?.panelStatus, "degraded");
-    assert.match(result[2]?.panelError ?? "", /request budget 80ms exhausted/);
+    assert.match(String(result[2]?.probeError ?? ""), /request budget 80ms exhausted/);
+    assert.equal(result[2]?.panelStatus, "online");
+    assert.equal(result[2]?.panelError, null);
     assert.equal(updateManyCalls.length, 1, "unstarted nodes should be marked with one bulk update");
     assert.deepEqual(updateManyCalls[0].where.id.in, ["node_skipped"]);
-    assert.equal("probeStatus" in updateManyCalls[0].data, false, "skipped nodes must not be marked offline");
+    // Budget-skipped nodes keep previous panelStatus and should not force offline/degraded writes.
+    assert.equal(updateManyCalls.length, 0);
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
@@ -11213,7 +11214,8 @@ async function testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls() {
 
     assert.equal(updateManyStarted, true);
     assert.deepEqual(result.map((item) => item.id), ["node_stalled", "node_stalled_2", "node_skipped"]);
-    assert.match(result[2]?.panelError ?? "", /request budget 80ms exhausted/);
+    assert.match(String(result[2]?.probeError ?? ""), /request budget 80ms exhausted/);
+    assert.equal(result[2]?.panelStatus, "online");
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_BULK_NODE_PROBE_TIMEOUT_MS;
