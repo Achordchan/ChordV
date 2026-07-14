@@ -757,12 +757,22 @@ export class UsageSyncService {
 
 
   private async resolveResidualUnavailableNodeIncidents() {
-    // Only settle terminals that cannot recover without admin action.
-    // Keep degraded incidents for temporary remote failures; client UI already ignores non-online nodes.
-    const meteringIncident = (this.prisma as { meteringIncident?: { updateMany?: Function } }).meteringIncident;
+    // Settle incidents that should never keep the whole client population on calibration:
+    // unavailable panels, plus open incidents that no longer have a live session on the same node.
+    const meteringIncident = (this.prisma as {
+      meteringIncident?: {
+        findMany?: Function;
+        updateMany?: Function;
+      };
+      nodeSessionLease?: {
+        findMany?: Function;
+      };
+    }).meteringIncident;
     if (typeof meteringIncident?.updateMany !== "function") {
       return;
     }
+
+    const now = new Date();
     await meteringIncident.updateMany({
       where: {
         status: "open",
@@ -777,8 +787,75 @@ export class UsageSyncService {
       },
       data: {
         status: "resolved",
-        resolvedAt: new Date(),
+        resolvedAt: now,
         detail: "面板不可用，已停止计量校准等待"
+      }
+    });
+
+    if (typeof meteringIncident.findMany !== "function") {
+      return;
+    }
+
+    const openIncidents = (await meteringIncident.findMany({
+      where: { status: "open" },
+      select: {
+        id: true,
+        subscriptionId: true,
+        nodeId: true
+      },
+      take: 5000
+    })) as Array<{ id: string; subscriptionId: string; nodeId: string }>;
+
+    if (!Array.isArray(openIncidents) || openIncidents.length === 0) {
+      return;
+    }
+
+    const leaseFinder = (this.prisma as {
+      nodeSessionLease?: {
+        findMany?: Function;
+      };
+    }).nodeSessionLease;
+    if (typeof leaseFinder?.findMany !== "function") {
+      return;
+    }
+
+    const activeLeases = (await leaseFinder.findMany({
+      where: {
+        status: "active",
+        expiresAt: { gt: now },
+        OR: openIncidents.map((incident) => ({
+          subscriptionId: incident.subscriptionId,
+          nodeId: incident.nodeId
+        }))
+      },
+      select: {
+        subscriptionId: true,
+        nodeId: true
+      }
+    })) as Array<{ subscriptionId: string; nodeId: string }>;
+
+    const activeLeaseKeys = new Set(
+      (Array.isArray(activeLeases) ? activeLeases : []).map(
+        (lease) => `${lease.subscriptionId}:${lease.nodeId}`
+      )
+    );
+    const residualIds = openIncidents
+      .filter((incident) => !activeLeaseKeys.has(`${incident.subscriptionId}:${incident.nodeId}`))
+      .map((incident) => incident.id);
+
+    if (residualIds.length === 0) {
+      return;
+    }
+
+    await meteringIncident.updateMany({
+      where: {
+        id: { in: residualIds },
+        status: "open"
+      },
+      data: {
+        status: "resolved",
+        resolvedAt: now,
+        detail: "当前节点无活跃连接，已停止计量校准等待"
       }
     });
   }

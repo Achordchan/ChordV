@@ -144,7 +144,7 @@ export class ClientAccessService {
       throw new NotFoundException("当前没有可用订阅");
     }
 
-    const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
+    const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id, user.id);
     const policies = await this.announcementPolicyService.getPolicies();
     const customRoutingRules = await this.loadOptionalBootstrapPart(
       () => this.clientRoutingRuleService.listRulesForUserId(user.id),
@@ -189,7 +189,7 @@ export class ClientAccessService {
       throw new NotFoundException("当前没有可用订阅");
     }
 
-    const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id);
+    const metering = await this.meteringIncidentService.getSubscriptionMeteringState(access.subscription.id, user.id);
     return toSubscriptionStatusDto(access.subscription, access.team, access.memberUsedTrafficGb, metering);
     } catch (error) {
       throwLocalReadAsServiceUnavailable(error, "订阅数据暂时不可用，请稍后重试。");

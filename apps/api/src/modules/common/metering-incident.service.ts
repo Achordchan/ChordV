@@ -7,39 +7,50 @@ import { PrismaService } from "./prisma.service";
 export class MeteringIncidentService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getSubscriptionMeteringState(subscriptionId: string) {
+  async getSubscriptionMeteringState(subscriptionId: string, userId?: string) {
+    // Only the current user's live connection can affect the metering banner.
+    // Team-shared subscription incidents on idle/other nodes must not show for everyone.
     const activeLeases = await this.prisma.nodeSessionLease.findMany({
       where: {
         subscriptionId,
         status: "active",
-        expiresAt: { gt: new Date() }
+        expiresAt: { gt: new Date() },
+        ...(userId ? { userId } : {})
       },
       select: {
-        nodeId: true
-      }
+        nodeId: true,
+        updatedAt: true,
+        lastHeartbeatAt: true,
+        createdAt: true
+      },
+      orderBy: [{ lastHeartbeatAt: "desc" }, { updatedAt: "desc" }, { createdAt: "desc" }]
     });
 
-    const activeNodeIds = Array.from(new Set(activeLeases.map((lease) => lease.nodeId)));
-    if (activeNodeIds.length === 0) {
+    if (activeLeases.length === 0) {
       return {
         meteringStatus: "ok" as const,
         meteringMessage: null
       };
     }
 
-    // Offline / disabled / inactive panels are no longer metering sources.
-    // Keep residual open incidents from blocking the whole client UI.
-    const usableNodes = await this.prisma.node.findMany({
+    const connectedNodeId = activeLeases[0]?.nodeId;
+    if (!connectedNodeId) {
+      return {
+        meteringStatus: "ok" as const,
+        meteringMessage: null
+      };
+    }
+
+    const connectedNode = await this.prisma.node.findFirst({
       where: {
-        id: { in: activeNodeIds },
+        id: connectedNodeId,
         isActive: true,
         panelEnabled: true,
         panelStatus: "online"
       },
       select: { id: true }
     });
-    const usableNodeIds = usableNodes.map((node) => node.id);
-    if (usableNodeIds.length === 0) {
+    if (!connectedNode) {
       return {
         meteringStatus: "ok" as const,
         meteringMessage: null
@@ -50,7 +61,7 @@ export class MeteringIncidentService {
       where: {
         subscriptionId,
         status: "open",
-        nodeId: { in: usableNodeIds }
+        nodeId: connectedNode.id
       },
       orderBy: [{ openedAt: "desc" }, { createdAt: "desc" }]
     });
@@ -124,7 +135,6 @@ export class MeteringIncidentService {
       }
     });
   }
-
 
   async resolveAllOpenForNode(nodeId: string, detail?: string) {
     await this.prisma.meteringIncident.updateMany({
