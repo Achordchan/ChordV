@@ -37,7 +37,7 @@ const USAGE_RESET_CONFIRM_MAX_BYTES = readPositiveBigIntEnv("CHORDV_PANEL_TRAFFI
 
 @Injectable()
 export class UsageSyncService {
-  private readonly panelUsageFailureCounts = new Map<string, number>();
+  private panelUsageFailureCounts = new Map<string, number>();
   private readonly logger = new Logger(UsageSyncService.name);
   private readonly warningTimestamps = new Map<string, number>();
 

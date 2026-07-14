@@ -54,7 +54,7 @@ const PANEL_STATUS_HARD_FAILURE_PATTERN =
 @Injectable()
 export class AdminNodeService {
   private readonly logger = new Logger(AdminNodeService.name);
-  private readonly panelProbeFailureCounts = new Map<string, number>();
+  private panelProbeFailureCounts = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
