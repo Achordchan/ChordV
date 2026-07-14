@@ -209,16 +209,21 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.match(overviewBranch, /settleAdminLoad\(fetchAdminNodes\(\)\)/);
   assert.match(overviewBranch, /subscriptionsResult\.ok \? \{ subscriptions: subscriptionsResult\.value \} : \{\}/);
   assert.match(overviewBranch, /nodesResult\.ok \? \{ nodes: nodesResult\.value \} : \{\}/);
+  assert.doesNotMatch(overviewBranch, /fetchAdminLeaseRevocationJobs|fetchAdminPanelSyncJobs/);
 
   const usersBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "users"');
   assert.match(usersBranch, /fetchAdminUsers\(\)/);
   assert.match(usersBranch, /fetchAdminTeams\(\)/);
   assert.match(usersBranch, /settleAdminLoad\(fetchAdminUsers\(\)\)/);
   assert.match(usersBranch, /settleAdminLoad\(fetchAdminTeams\(\)\)/);
-  assert.match(usersBranch, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
   assert.match(usersBranch, /usersResult\.ok \? \{ users: usersResult\.value \} : \{\}/);
   assert.match(usersBranch, /teamsResult\.ok \? \{ teams: teamsResult\.value \} : \{\}/);
-  assert.match(usersBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
+  assert.doesNotMatch(usersBranch, /fetchAdminLeaseRevocationJobs/);
+  assert.match(
+    usersBranch,
+    /void loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
+    "users section should load lease revocation jobs after the main list"
+  );
 
   const subscriptionsBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "subscriptions"');
   assert.match(subscriptionsBranch, /fetchAdminSubscriptions\(\)/);
@@ -226,19 +231,58 @@ function testQueueLoadsDoNotBlockMainSectionData() {
   assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminPlans\(\)\)/);
   assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminSubscriptions\(\)\)/);
   assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminTeams\(\)\)/);
-  assert.match(subscriptionsBranch, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
   assert.match(subscriptionsBranch, /usersResult\.ok \? \{ users: usersResult\.value \} : \{\}/);
   assert.match(subscriptionsBranch, /plansResult\.ok \? \{ plans: plansResult\.value \} : \{\}/);
   assert.match(subscriptionsBranch, /subscriptionsResult\.ok \? \{ subscriptions: subscriptionsResult\.value \} : \{\}/);
   assert.match(subscriptionsBranch, /teamsResult\.ok \? \{ teams: teamsResult\.value \} : \{\}/);
-  assert.match(subscriptionsBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
+  assert.doesNotMatch(subscriptionsBranch, /fetchAdminLeaseRevocationJobs/);
+  assert.match(
+    subscriptionsBranch,
+    /void loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
+    "subscriptions section should load lease revocation jobs after the main list"
+  );
 
   const nodesBranch = extractBranchBody(loadSectionDataBody, 'targetSection === "nodes"');
   assert.match(nodesBranch, /fetchAdminNodes\(\)/);
-  assert.match(nodesBranch, /fetchAdminPanelSyncJobs\(\)\.then\(/);
-  assert.match(nodesBranch, /fetchAdminLeaseRevocationJobs\(\)\.then\(/);
-  assert.match(nodesBranch, /panelSyncJobsResult\.ok \? \{ panelSyncJobs: panelSyncJobsResult\.panelSyncJobs \} : \{\}/);
-  assert.match(nodesBranch, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.leaseRevocationJobs \} : \{\}/);
+  assert.match(nodesBranch, /mergeSnapshot\(\{ nodes \}\)/);
+  assert.doesNotMatch(nodesBranch, /fetchAdminPanelSyncJobs|fetchAdminLeaseRevocationJobs/);
+  assert.match(
+    nodesBranch,
+    /void loadSecondarySectionData\(targetSection, requestSeq, mutationSeqAtStart, options\)/,
+    "nodes section should load queue data after the main node list"
+  );
+
+  const secondaryBody = extractFunctionBody("loadSecondarySectionData");
+  assert.match(secondaryBody, /targetSection === "users" \|\| targetSection === "subscriptions"/);
+  assert.match(secondaryBody, /settleAdminLoad\(fetchAdminLeaseRevocationJobs\(\)\)/);
+  assert.match(secondaryBody, /mergeSnapshot\(\{ leaseRevocationJobs: leaseRevocationJobsResult\.value \}\)/);
+  assert.match(secondaryBody, /settleAdminLoad\(fetchAdminPanelSyncJobs\(\)\)/);
+  assert.match(secondaryBody, /panelSyncJobsResult\.ok \? \{ panelSyncJobs: panelSyncJobsResult\.value \} : \{\}/);
+  assert.match(secondaryBody, /leaseRevocationJobsResult\.ok \? \{ leaseRevocationJobs: leaseRevocationJobsResult\.value \} : \{\}/);
+}
+
+
+function testSectionLoadingOwnershipSurvivesSilentRefresh() {
+  assert.match(source, /const sectionLoadingOwnerSeqRef = useRef\(0\);/);
+  assert.match(source, /const loadedSectionsRef = useRef<Set<SectionKey>>\(new Set\(\)\);/);
+  assert.match(
+    source,
+    /function beginSectionLoad\(options\?: \{ silent\?: boolean \}\) \{[\s\S]*?if \(!options\?\.silent\) \{[\s\S]*?sectionLoadingOwnerSeqRef\.current = requestSeq;[\s\S]*?setSectionLoading\(true\);[\s\S]*?\}/
+  );
+  assert.match(
+    source,
+    /function finishSectionLoad\(requestSeq: number, options\?: \{ silent\?: boolean \}\) \{[\s\S]*?if \(options\?\.silent\) \{[\s\S]*?return;[\s\S]*?\}[\s\S]*?if \(sectionLoadingOwnerSeqRef\.current === requestSeq\) \{[\s\S]*?setSectionLoading\(false\);/
+  );
+  assert.match(
+    source,
+    /\}, \[authenticated, section, Boolean\(snapshot\)\]\);/,
+    "section load effect must not re-run on every snapshot merge"
+  );
+  assert.match(
+    loadSectionDataBody,
+    /if \(!options\?\.force && loadedSectionsRef\.current\.has\(targetSection\)\) \{\s*return;\s*\}/
+  );
+  assert.match(loadSectionDataBody, /finishSectionLoad\(requestSeq, options\);/);
 }
 
 function testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure() {
@@ -483,6 +527,7 @@ testSignalBackedSectionsUseLocalRefreshSignals();
 testSnapshotBackedSectionsUseSectionLoader();
 testCriticalSnapshotSectionsStayLocalInSectionLoader();
 testQueueLoadsDoNotBlockMainSectionData();
+testSectionLoadingOwnershipSurvivesSilentRefresh();
 testPendingQueueRefreshKeepsNodeRefreshOnQueueFailure();
 testGenericAdminRuntimeEventsRefreshCurrentSection();
 testSignalBackedSectionsRefreshSilentlyThroughSignals();
