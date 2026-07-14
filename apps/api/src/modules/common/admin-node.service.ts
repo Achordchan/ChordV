@@ -45,6 +45,7 @@ const DEFAULT_BULK_NODE_PROBE_CONCURRENCY = 10;
 const BULK_NODE_PROBE_START_GUARD_MS = 5;
 const NODE_PANEL_SYNC_RECENT_ERROR_LIMIT = 500;
 const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
+const NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE = "节点已本地停用。面板当前不可达，远端客户端清理已放弃重试，订阅已用流量保持不变。";
 
 @Injectable()
 export class AdminNodeService {
@@ -1398,6 +1399,11 @@ export class AdminNodeService {
       throw new NotFoundException("节点不存在");
     }
 
+    const offlinePanelDelete =
+      current.panelEnabled !== true ||
+      current.panelStatus === "offline" ||
+      current.panelStatus === "degraded";
+
     try {
       await this.prisma.node.update({
         where: { id: current.id },
@@ -1405,21 +1411,38 @@ export class AdminNodeService {
           isActive: false,
           recommended: false,
           panelStatus: "offline",
-          panelError: null
+          panelError: offlinePanelDelete ? "面板不可达，节点已本地停用，远端清理已放弃重试" : null
         }
       });
     } catch (error) {
       throwLocalSaveAsServiceUnavailable(error, "节点删除保存失败，请刷新节点列表后重试。");
     }
+
+    // Local revoke first so client metering/calibration stops waiting on this node.
+    await this.tryRunAfterLocalNodeSave("revoke local leases after node delete", () =>
+      this.runtimeSessionService.revokeNodeLeases(nodeId, "node_deleted")
+    );
     await this.tryRunAfterLocalNodeSave("queue lease revocation after node delete", () =>
       this.runtimeSessionService.queueLeaseRevocationJobForNode(nodeId, "node_deleted")
     );
-    await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", async () => {
-      const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
-      if (result.failed.length > 0) {
-        await this.runtimeSessionService.markPanelBindingsDeletedForNode(nodeId);
-      }
-    });
+
+    let panelCleanupFinalizedLocally = offlinePanelDelete;
+    if (offlinePanelDelete) {
+      // Offline/degraded panels cannot complete remote delete_client jobs.
+      // Local truth first: mark bindings deleted, abandon remote cleanup, keep subscription used traffic.
+      await this.tryRunAfterLocalNodeSave("finalize offline panel delete without remote dependency", async () => {
+        await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
+      });
+    } else {
+      await this.tryRunAfterLocalNodeSave("queue panel binding deletion after node delete", async () => {
+        const result = await this.runtimeSessionService.removePanelBindingsForNode(nodeId);
+        if (result.failed.length > 0) {
+          await this.runtimeSessionService.finalizeOfflineNodePanelCleanup(nodeId);
+          panelCleanupFinalizedLocally = true;
+        }
+      });
+    }
+
     const userIds = await this.runAfterLocalNodeSaveWithBudget(
       "resolve node access event targets after node delete",
       [] as string[],
@@ -1431,6 +1454,16 @@ export class AdminNodeService {
     } catch (error) {
       this.logger?.warn(`Local node delete saved, but node access publish failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+
+    if (panelCleanupFinalizedLocally) {
+      return {
+        ok: true,
+        panelSyncStatus: "synced" as const,
+        panelSyncMessage: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE,
+        message: NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE
+      };
+    }
+
     return {
       ok: true,
       panelSyncStatus: "pending" as const,

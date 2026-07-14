@@ -2473,7 +2473,7 @@ export function App() {
     try {
       deleteNodeSubmittingRef.current = true;
       setDeleteNodeSubmitting(true);
-      const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已停用，面板清理任务已排队", {
+      const success = await runAction(() => deleteNode(deleteNodeTarget.id), "节点已停用", {
         ...dbFirstMutationOptions
       });
       if (success) setDeleteNodeTarget(null);

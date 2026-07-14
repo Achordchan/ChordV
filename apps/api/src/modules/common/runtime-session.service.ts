@@ -98,6 +98,8 @@ const PANEL_SYNC_BATCH_SIZE = Number(process.env.CHORDV_PANEL_SYNC_BATCH_SIZE ??
 const DEFAULT_PANEL_SYNC_JOB_CONCURRENCY = 4;
 const PANEL_SYNC_RETRY_BASE_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_BASE_SECONDS ?? 30);
 const PANEL_SYNC_RETRY_MAX_SECONDS = Number(process.env.CHORDV_PANEL_SYNC_RETRY_MAX_SECONDS ?? 1800);
+const PANEL_SYNC_DELETE_MAX_ATTEMPTS = Number(process.env.CHORDV_PANEL_SYNC_DELETE_MAX_ATTEMPTS ?? 8);
+const PANEL_SYNC_DELETE_ABANDON_MESSAGE = "?????????????????? delete_client ?????";
 const DEFAULT_PANEL_SYNC_JOB_TIMEOUT_MS = 30_000;
 const DEFAULT_PANEL_TRAFFIC_RESET_CONFIRM_MAX_BYTES = 16n * 1024n * 1024n;
 const LEASE_REVOCATION_BATCH_SIZE = Number(process.env.CHORDV_LEASE_REVOCATION_BATCH_SIZE ?? 50);
@@ -1101,6 +1103,45 @@ export class RuntimeSessionService {
     return { requested, updated, failed };
   }
 
+  async finalizeOfflineNodePanelCleanup(nodeId: string) {
+    const abandonedAt = new Date();
+    const abandonedMessage = PANEL_SYNC_DELETE_ABANDON_MESSAGE;
+
+    const bindingResult = await this.markPanelBindingsDeletedForNode(nodeId);
+
+    // Cancel any remaining remote cleanup jobs so admin queue/client calibration can finish.
+    await this.prisma.panelSyncJob.updateMany({
+      where: {
+        nodeId,
+        status: { in: ["pending", "running", "failed"] }
+      },
+      data: {
+        status: "completed",
+        lockedAt: null,
+        lastError: abandonedMessage,
+        completedAt: abandonedAt
+      }
+    });
+
+    // Drop open metering incidents for this node so clients stop showing calibration status.
+    await this.prisma.meteringIncident.updateMany({
+      where: {
+        nodeId,
+        status: "open"
+      },
+      data: {
+        status: "resolved",
+        resolvedAt: abandonedAt
+      }
+    });
+
+    this.publishSyncQueueUpdatedBestEffort({ nodeId, subscriptionId: null });
+    return {
+      bindingsDeleted: bindingResult,
+      abandonedAt
+    };
+  }
+
   async markPanelBindingsDeletedForNode(nodeId: string) {
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
@@ -1581,13 +1622,75 @@ export class RuntimeSessionService {
         })
       ]);
       this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
-    } catch (error) {
+        } catch (error) {
       const nextAttempts = job.attempts + 1;
+      const message = error instanceof Error ? error.message : "3x-ui ???????";
+      const abandonDelete =
+        job.action === "delete_client" &&
+        (nextAttempts >= PANEL_SYNC_DELETE_MAX_ATTEMPTS || !job.node.isActive);
+
+      if (abandonDelete) {
+        try {
+          await this.prisma.$transaction([
+            this.prisma.trafficSnapshot.deleteMany({
+              where: {
+                snapshotKey: buildSnapshotKey(job.nodeId, job.subscriptionId, job.userId ?? null)
+              }
+            }),
+            this.prisma.panelClientBinding.updateMany({
+              where: {
+                id: job.bindingId,
+                status: { in: ["active", "disabled", "deleted"] }
+              },
+              data: {
+                status: "deleted"
+              }
+            }),
+            this.prisma.meteringIncident.updateMany({
+              where: {
+                nodeId: job.nodeId,
+                subscriptionId: job.subscriptionId,
+                status: "open"
+              },
+              data: {
+                status: "resolved",
+                resolvedAt: new Date()
+              }
+            }),
+            this.prisma.panelSyncJob.update({
+              where: { id: job.id },
+              data: {
+                status: "completed",
+                attempts: nextAttempts,
+                lockedAt: null,
+                lastError: `${PANEL_SYNC_DELETE_ABANDON_MESSAGE}: ${message}`,
+                completedAt: new Date()
+              }
+            }),
+            this.prisma.node.update({
+              where: { id: job.nodeId },
+              data: {
+                panelStatus: job.node.isActive ? "degraded" : "offline",
+                panelError: job.node.isActive ? message : PANEL_SYNC_DELETE_ABANDON_MESSAGE
+              }
+            })
+          ]);
+          this.publishSyncQueueUpdatedBestEffort({ nodeId: job.nodeId, subscriptionId: job.subscriptionId });
+        } catch (persistError) {
+          this.logger.warn(
+          `?????????????????${job.nodeId}/${job.panelClientEmail}: ${message}`
+        );
+        }
+        this.logger.warn(
+          `?????????????????${job.nodeId}/${job.panelClientEmail}: ${message}`
+        );
+        return;
+      }
+
       const retrySeconds = Math.min(
         PANEL_SYNC_RETRY_MAX_SECONDS,
         PANEL_SYNC_RETRY_BASE_SECONDS * 2 ** Math.min(nextAttempts - 1, 6)
       );
-      const message = error instanceof Error ? error.message : "3x-ui 客户端同步失败";
       try {
         await this.prisma.$transaction([
           this.prisma.node.update({
