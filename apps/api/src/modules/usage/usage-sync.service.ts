@@ -106,11 +106,24 @@ export class UsageSyncService {
             panelApiBasePath: true,
             panelUsername: true,
             panelPassword: true,
-            panelInboundId: true
+            panelInboundId: true,
+            panelStatus: true
           }
         }
       }
     });
+
+    // Residual open incidents from offline/inactive panels keep clients stuck on calibration.
+    // Resolve them every sync cycle so banner clears without waiting for a manual panel delete.
+    try {
+      await this.resolveResidualUnavailableNodeIncidents();
+    } catch (error) {
+      this.logger.warn(
+        `Could not resolve residual metering incidents for unavailable nodes: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
 
     const nodeMap = new Map<
       string,
@@ -740,6 +753,29 @@ export class UsageSyncService {
       leaseMappingsByUuid,
       invalidMappings: []
     };
+  }
+
+
+  private async resolveResidualUnavailableNodeIncidents() {
+    // Only settle terminals that cannot recover without admin action.
+    // Keep degraded incidents for temporary remote failures; client UI already ignores non-online nodes.
+    await this.prisma.meteringIncident.updateMany({
+      where: {
+        status: "open",
+        node: {
+          OR: [
+            { isActive: false },
+            { panelEnabled: false },
+            { panelStatus: "offline" }
+          ]
+        }
+      },
+      data: {
+        status: "resolved",
+        resolvedAt: new Date(),
+        detail: "面板不可用，已停止计量校准等待"
+      }
+    });
   }
 
   private async openIncidentForSubscriptions(

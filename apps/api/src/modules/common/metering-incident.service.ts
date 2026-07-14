@@ -27,11 +27,30 @@ export class MeteringIncidentService {
       };
     }
 
+    // Offline / disabled / inactive panels are no longer metering sources.
+    // Keep residual open incidents from blocking the whole client UI.
+    const usableNodes = await this.prisma.node.findMany({
+      where: {
+        id: { in: activeNodeIds },
+        isActive: true,
+        panelEnabled: true,
+        panelStatus: "online"
+      },
+      select: { id: true }
+    });
+    const usableNodeIds = usableNodes.map((node) => node.id);
+    if (usableNodeIds.length === 0) {
+      return {
+        meteringStatus: "ok" as const,
+        meteringMessage: null
+      };
+    }
+
     const incidents = await this.prisma.meteringIncident.findMany({
       where: {
         subscriptionId,
         status: "open",
-        nodeId: { in: activeNodeIds }
+        nodeId: { in: usableNodeIds }
       },
       orderBy: [{ openedAt: "desc" }, { createdAt: "desc" }]
     });
@@ -102,6 +121,21 @@ export class MeteringIncidentService {
         status: "open",
         detail: detail?.trim() || null,
         openedAt: new Date()
+      }
+    });
+  }
+
+
+  async resolveAllOpenForNode(nodeId: string, detail?: string) {
+    await this.prisma.meteringIncident.updateMany({
+      where: {
+        nodeId,
+        status: "open"
+      },
+      data: {
+        status: "resolved",
+        resolvedAt: new Date(),
+        ...(detail ? { detail } : {})
       }
     });
   }
