@@ -11014,7 +11014,7 @@ async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
   }
 }
 
-async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
+async function testProbeNodeKeepsStatusWhenPanelHealthCheckStalls() {
   const previousProbeBudget = process.env.CHORDV_NODE_PROBE_TIMEOUT_MS;
   process.env.CHORDV_NODE_PROBE_TIMEOUT_MS = "25";
   const currentNode = makeAdminNodeRow({
@@ -11052,11 +11052,11 @@ async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
       })
     ]);
 
-    assert.equal(updates.length, 1);
-    assert.equal(result.probeStatus, "unknown");
-    assert.equal(result.panelStatus, "degraded");
-    assert.equal(result.probeError, null);
-    assert.match(result.panelError ?? "", /node probe exceeded/);
+    // Timeout must not flip healthy panels to degraded.
+    assert.equal(updates.length, 0);
+    assert.equal(result.probeStatus, currentNode.probeStatus);
+    assert.equal(result.panelStatus, currentNode.panelStatus);
+    assert.equal(result.panelError, currentNode.panelError);
   } finally {
     if (previousProbeBudget === undefined) {
       delete process.env.CHORDV_NODE_PROBE_TIMEOUT_MS;
@@ -11064,6 +11064,52 @@ async function testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls() {
       process.env.CHORDV_NODE_PROBE_TIMEOUT_MS = previousProbeBudget;
     }
   }
+}
+
+async function testProbeNodeDegradesAfterConsecutivePanelFailures() {
+  const currentNode = makeAdminNodeRow({
+    serverHost: "127.0.0.1",
+    serverPort: 9,
+    panelStatus: "online",
+    panelError: null
+  });
+  const updates: Array<Record<string, any>> = [];
+  const service = createAdminNodeService({
+    logger: {
+      warn: () => undefined
+    },
+    xuiService: {
+      checkNodeHealth: async () => {
+        throw new Error("temporary panel glitch");
+      }
+    },
+    prisma: {
+      node: {
+        findUnique: async () => currentNode,
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          Object.assign(currentNode, payload.data);
+          return {
+            ...currentNode,
+            updatedAt: new Date()
+          };
+        }
+      }
+    }
+  });
+
+  const first = await service.probeNode("node_1");
+  assert.equal(first.panelStatus, "online");
+  assert.equal(first.panelError, null);
+
+  const second = await service.probeNode("node_1");
+  assert.equal(second.panelStatus, "online");
+  assert.equal(second.panelError, null);
+
+  const third = await service.probeNode("node_1");
+  assert.equal(third.panelStatus, "degraded");
+  assert.match(third.panelError ?? "", /temporary panel glitch/);
+  assert.equal(updates.some((item) => item.data?.panelStatus === "degraded"), true);
 }
 
 async function testProbeNodeReturnsFallbackWhenResultSaveFails() {
@@ -19472,10 +19518,10 @@ async function testRefreshNodeOfflinePanelKeepsLocalRuntime() {
 
   const record = await service.refreshNode("node_1");
 
-  assert.equal(record.panelStatus, "degraded");
-  assert.match(record.panelError ?? "", /panel refresh unavailable/);
-  assert.equal(savedData?.serverHost, undefined, "offline panel refresh must not overwrite local node host");
-  assert.equal(savedData?.uuid, undefined, "offline panel refresh must not overwrite local node uuid");
+  // First transient failure keeps previous panel status; local runtime stays untouched.
+  assert.equal(record.panelStatus, currentNode.panelStatus);
+  assert.equal(record.panelError, currentNode.panelError);
+  assert.equal(savedData, null, "transient refresh failure must not overwrite local node runtime");
 }
 
 async function testRefreshNodeSlowPanelReturnsDegradedWithinBudget() {
@@ -19519,9 +19565,9 @@ async function testRefreshNodeSlowPanelReturnsDegradedWithinBudget() {
 
     assert.equal(runtimeReadStarted, true, "panel runtime read should still be attempted");
     assert.equal(runtimeOptions?.panelRequestTimeoutMs, 40, "refresh should use dedicated runtime budget");
-    assert.equal(record.panelStatus, "degraded");
-    assert.match(record.panelError ?? "", /panel runtime refresh exceeded 40ms/);
-    assert.equal(savedData?.serverHost, undefined, "slow panel refresh must not overwrite local node host");
+    assert.equal(record.panelStatus, currentNode.panelStatus, "first slow refresh must not degrade panel");
+    assert.equal(record.panelError, currentNode.panelError);
+    assert.equal(savedData, null, "slow panel refresh must not overwrite local node host");
     assert.equal(Date.now() - startedAt < 1500, true, "slow panel refresh should return inside the refresh budget");
   } finally {
     if (previousRefreshBudget === undefined) {
@@ -34288,7 +34334,8 @@ async function main() {
   await testProbeAllNodesContinuesWhenSingleNodeProbeStalls();
   await testProbeAllNodesDoesNotAccumulateStalledNodeBudgetsSerially();
   await testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong();
-  await testProbeNodeReturnsDegradedWhenPanelHealthCheckStalls();
+  await testProbeNodeKeepsStatusWhenPanelHealthCheckStalls();
+  await testProbeNodeDegradesAfterConsecutivePanelFailures();
   await testProbeNodeReturnsFallbackWhenResultSaveFails();
   await testProbeNodeMapsLocalReadFailureBeforeHealthCheck();
   await testProbeAllNodesReturnsWhenSkippedFallbackSaveStalls();

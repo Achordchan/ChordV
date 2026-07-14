@@ -19,6 +19,15 @@ import { XuiService } from "../xui/xui.service";
 
 const GB_IN_BYTES = 1024 ** 3;
 const NODE_USAGE_STALE_SECONDS = Number(process.env.CHORDV_NODE_USAGE_STALE_SECONDS ?? 90);
+const DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD = 3;
+const PANEL_STATUS_HARD_FAILURE_PATTERN = /账号或密码错误|用户名或密码|credential|unauthorized|401|403|登录接口不存在|入站信息为空|未找到入站/i;
+function readPanelStatusFailureThreshold() {
+  const raw = Number(process.env.CHORDV_PANEL_STATUS_FAILURE_THRESHOLD ?? DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD);
+  if (!Number.isFinite(raw) || raw < 1) {
+    return DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD;
+  }
+  return Math.floor(raw);
+}
 const NODE_USAGE_WARN_INTERVAL_MS = Number(process.env.CHORDV_NODE_USAGE_WARN_INTERVAL_SECONDS ?? 600) * 1000;
 const USAGE_SYNC_LOCK_KEY_1 = 420_701;
 const USAGE_SYNC_LOCK_KEY_2 = 917_503;
@@ -28,6 +37,7 @@ const USAGE_RESET_CONFIRM_MAX_BYTES = readPositiveBigIntEnv("CHORDV_PANEL_TRAFFI
 
 @Injectable()
 export class UsageSyncService {
+  private readonly panelUsageFailureCounts = new Map<string, number>();
   private readonly logger = new Logger(UsageSyncService.name);
   private readonly warningTimestamps = new Map<string, number>();
 
@@ -221,18 +231,30 @@ export class UsageSyncService {
 
     for (const [nodeId, result] of nodeResults) {
       if (result.errors.length > 0) {
-        await this.prisma.node.update({
-          where: { id: nodeId },
-          data: {
-            panelStatus: "degraded",
-            panelError: result.errors.join("; ")
-          }
-        });
+        const message = result.errors.join("; ");
+        const nextCount = (this.panelUsageFailureCounts.get(nodeId) ?? 0) + 1;
+        this.panelUsageFailureCounts.set(nodeId, nextCount);
+        const threshold = readPanelStatusFailureThreshold();
+        const hardFailure = PANEL_STATUS_HARD_FAILURE_PATTERN.test(message);
+        if (hardFailure || nextCount >= threshold) {
+          await this.prisma.node.update({
+            where: { id: nodeId },
+            data: {
+              panelStatus: "degraded",
+              panelError: message
+            }
+          });
+        } else {
+          this.logger?.warn?.(
+            `Node ${nodeId} usage sync failure ${nextCount}/${threshold} kept panelStatus unchanged: ${message}`
+          );
+        }
         continue;
       }
       if (!result.lastSuccessfulSyncAt) {
         continue;
       }
+      this.panelUsageFailureCounts.delete(nodeId);
       await this.prisma.node.update({
         where: { id: nodeId },
         data: {

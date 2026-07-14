@@ -46,10 +46,15 @@ const BULK_NODE_PROBE_START_GUARD_MS = 5;
 const NODE_PANEL_SYNC_RECENT_ERROR_LIMIT = 500;
 const NODE_PANEL_SYNC_PENDING_MESSAGE = "本地节点变更已保存，面板同步将在后台继续重试。";
 const NODE_PANEL_SYNC_OFFLINE_ABANDONED_MESSAGE = "失联面板节点已删除。本地清理已完成，远端客户端清理已放弃重试，订阅已用流量保持不变。";
+const DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD = 3;
+const PANEL_STATUS_HARD_FAILURE_PATTERN =
+  /账号或密码错误|用户名或密码|credential|unauthorized|401|403|登录接口不存在|入站信息为空|未找到入站/i;
+
 
 @Injectable()
 export class AdminNodeService {
   private readonly logger = new Logger(AdminNodeService.name);
+  private readonly panelProbeFailureCounts = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1027,12 +1032,29 @@ export class AdminNodeService {
     const checkedAt = new Date();
     const message = errorMessage || "node runtime refresh failed";
     this.logger?.warn(`Node ${current.id} runtime refresh failed; keeping local runtime unchanged: ${message}`);
+    if (!current.isActive || !current.panelEnabled) {
+      return toAdminNodeRecord({
+        ...current,
+        panelStatus: "offline",
+        panelError: null,
+        updatedAt: checkedAt
+      });
+    }
+    const next = this.resolveTransientPanelFailure(current, message, "refresh");
+    if (next.panelStatus !== "degraded") {
+      return toAdminNodeRecord({
+        ...current,
+        panelStatus: next.panelStatus,
+        panelError: next.panelError,
+        updatedAt: checkedAt
+      });
+    }
     try {
       const row = await this.prisma.node.update({
         where: { id: current.id },
         data: {
-          panelStatus: "degraded",
-          panelError: message
+          panelStatus: next.panelStatus,
+          panelError: next.panelError
         }
       });
       return toAdminNodeRecord(row);
@@ -1040,8 +1062,8 @@ export class AdminNodeService {
       this.logger?.warn(`Node ${current.id} runtime refresh fallback update failed: ${readAdminNodeErrorMessage(error)}`);
       return toAdminNodeRecord({
         ...current,
-        panelStatus: "degraded",
-        panelError: message,
+        panelStatus: next.panelStatus,
+        panelError: next.panelError,
         updatedAt: checkedAt
       });
     }
@@ -1162,6 +1184,7 @@ export class AdminNodeService {
     let panelError = current.panelError;
     let panelLastSyncedAt = current.panelLastSyncedAt;
     if (!current.isActive || !current.panelEnabled) {
+      this.panelProbeFailureCounts.delete(current.id);
       panelStatus = "offline";
       panelError = null;
     } else if (current.panelEnabled) {
@@ -1177,12 +1200,15 @@ export class AdminNodeService {
           panelRequestTimeoutMs: panelProbeBudgetMs,
           panelAbortSignal: AbortSignal.timeout(panelProbeBudgetMs)
         });
+        this.panelProbeFailureCounts.delete(current.id);
         panelStatus = "online";
         panelError = null;
         panelLastSyncedAt = new Date();
       } catch (error) {
-        panelStatus = "degraded";
-        panelError = error instanceof Error ? error.message : "3x-ui 面板探测失败";
+        const message = error instanceof Error ? error.message : "3x-ui 面板探测失败";
+        const next = this.resolveTransientPanelFailure(current, message, "probe");
+        panelStatus = next.panelStatus;
+        panelError = next.panelError;
       }
     }
     const checkedAt = new Date();
@@ -1216,23 +1242,13 @@ export class AdminNodeService {
 
   private markNodeProbeTimedOut(current: any, timeoutMs: number) {
     const checkedAt = new Date();
-    const message = `node probe exceeded ${timeoutMs}ms`;
-    const fallbackStatus = current.isActive && current.panelEnabled ? "degraded" : "offline";
-    this.logger.warn(`Node ${current.id} probe exceeded ${timeoutMs}ms and will continue in background.`);
-    void this.prisma.node.update({
-        where: { id: current.id },
-        data: {
-          panelStatus: fallbackStatus,
-          panelError: fallbackStatus === "degraded" ? message : null
-        }
-      })
-      .catch((error) => {
-        this.logger.warn(`Node ${current.id} probe timeout fallback update failed: ${readAdminNodeErrorMessage(error)}`);
-      });
+    // Timeout is not a confirmed panel outage. Keep current panel status and let the
+    // background probe finish; only consecutive confirmed failures should degrade.
+    this.logger.warn(
+      `Node ${current.id} probe exceeded ${timeoutMs}ms; keeping panelStatus=${current.panelStatus} while probe continues in background.`
+    );
     return toAdminNodeRecord({
       ...current,
-      panelStatus: fallbackStatus,
-      panelError: fallbackStatus === "degraded" ? message : null,
       updatedAt: checkedAt
     });
   }
@@ -1281,25 +1297,36 @@ export class AdminNodeService {
       const message = readAdminNodeErrorMessage(error);
       this.logger.warn(`Node ${node.id} bulk probe failed; continuing with remaining nodes: ${message}`);
       const checkedAt = new Date();
-      const fallbackStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
-      try {
-        const row = await this.prisma.node.update({
-          where: { id: node.id },
-          data: {
-            panelStatus: fallbackStatus,
-            panelError: fallbackStatus === "degraded" ? message : null
-          }
-        });
-        return toAdminNodeRecord(row);
-      } catch (updateError) {
-        this.logger.warn(`Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`);
+      if (!node.isActive || !node.panelEnabled) {
         return toAdminNodeRecord({
           ...node,
-          panelStatus: fallbackStatus,
-          panelError: fallbackStatus === "degraded" ? message : null,
+          panelStatus: "offline",
+          panelError: null,
           updatedAt: checkedAt
         });
       }
+      const next = this.resolveTransientPanelFailure(node, message, "bulk_probe");
+      // Only persist when threshold actually flips/keeps degraded; avoid noisy soft-fail writes.
+      if (next.panelStatus === "degraded" && (node.panelStatus !== "degraded" || node.panelError !== next.panelError)) {
+        try {
+          const row = await this.prisma.node.update({
+            where: { id: node.id },
+            data: {
+              panelStatus: next.panelStatus,
+              panelError: next.panelError
+            }
+          });
+          return toAdminNodeRecord(row);
+        } catch (updateError) {
+          this.logger.warn(`Node ${node.id} bulk probe fallback update failed: ${readAdminNodeErrorMessage(updateError)}`);
+        }
+      }
+      return toAdminNodeRecord({
+        ...node,
+        panelStatus: next.panelStatus,
+        panelError: next.panelError,
+        updatedAt: checkedAt
+      });
     }
   }
 
@@ -1341,37 +1368,11 @@ export class AdminNodeService {
   private async markBulkProbeSkippedNodes(
     nodes: Awaited<ReturnType<PrismaService["node"]["findMany"]>>,
     requestBudgetMs: number,
-    checkedAt: Date
+    _checkedAt: Date
   ) {
-    const groups = [
-      {
-        ids: nodes.filter((node) => node.isActive && node.panelEnabled).map((node) => node.id),
-        panelStatus: "degraded" as const
-      },
-      {
-        ids: nodes.filter((node) => !(node.isActive && node.panelEnabled)).map((node) => node.id),
-        panelStatus: "offline" as const
-      }
-    ];
-    await Promise.all(
-      groups
-        .filter((group) => group.ids.length > 0)
-        .map((group) =>
-          this.prisma.node
-            .updateMany({
-              where: { id: { in: group.ids } },
-              data: {
-                panelStatus: group.panelStatus,
-                panelError:
-                  group.panelStatus === "degraded"
-                    ? `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`
-                    : null
-              }
-            })
-            .catch((error) => {
-              this.logger.warn(`Bulk probe skipped-node fallback update failed: ${readAdminNodeErrorMessage(error)}`);
-            })
-        )
+    // Skipping due to bulk budget is not a panel outage. Do not flip healthy panels to degraded.
+    this.logger.warn(
+      `Bulk node probe skipped ${nodes.length} nodes after ${requestBudgetMs}ms request budget; panelStatus left unchanged.`
     );
   }
 
@@ -1380,14 +1381,46 @@ export class AdminNodeService {
     requestBudgetMs: number,
     checkedAt: Date
   ) {
-    const message = `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`;
-    const panelStatus = node.isActive && node.panelEnabled ? "degraded" : "offline";
     return toAdminNodeRecord({
       ...node,
-      panelStatus,
-      panelError: panelStatus === "degraded" ? message : null,
+      // Keep previous panel status; budget skip is not a confirmed failure.
+      probeError: `bulk node probe request budget ${requestBudgetMs}ms exhausted before this node was probed`,
       updatedAt: checkedAt
     });
+  }
+
+
+  private resolveTransientPanelFailure(
+    current: { id: string; panelStatus?: string | null; panelError?: string | null },
+    message: string,
+    source: string
+  ): { panelStatus: "online" | "degraded" | "offline"; panelError: string | null } {
+    const hardFailure = PANEL_STATUS_HARD_FAILURE_PATTERN.test(message);
+    const nextCount = (this.panelProbeFailureCounts.get(current.id) ?? 0) + 1;
+    this.panelProbeFailureCounts.set(current.id, nextCount);
+    const threshold = readPanelStatusFailureThreshold();
+    if (hardFailure || nextCount >= threshold) {
+      this.logger.warn(
+        `Node ${current.id} panel marked degraded after ${nextCount} consecutive ${source} failure(s): ${message}`
+      );
+      return {
+        panelStatus: "degraded",
+        panelError: message
+      };
+    }
+    this.logger.warn(
+      `Node ${current.id} panel ${source} failure ${nextCount}/${threshold} kept status=${current.panelStatus ?? "online"}: ${message}`
+    );
+    if (current.panelStatus === "degraded") {
+      return {
+        panelStatus: "degraded",
+        panelError: message
+      };
+    }
+    return {
+      panelStatus: current.panelStatus === "offline" ? "online" : ((current.panelStatus as "online" | "degraded" | "offline" | null) ?? "online"),
+      panelError: null
+    };
   }
 
   async deleteNode(nodeId: string) {
@@ -1827,4 +1860,8 @@ function readBulkNodeProbeConcurrency() {
 
 function readNodeProbeBudgetMs() {
   return readPositiveIntegerEnv("CHORDV_NODE_PROBE_TIMEOUT_MS", readBulkNodeProbeBudgetMs());
+}
+
+function readPanelStatusFailureThreshold() {
+  return readPositiveIntegerEnv("CHORDV_PANEL_STATUS_FAILURE_THRESHOLD", DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD);
 }
