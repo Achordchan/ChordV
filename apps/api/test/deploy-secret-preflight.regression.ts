@@ -64,6 +64,7 @@ assert.match(deployScript, /cat scripts\/install-panel-password-key\.py/);
 assert.match(deployScript, /scripts\/prisma-migrate-with-baseline\.mjs/);
 assert.match(deployScript, /export DEPLOY_PATH; python3 -/);
 assert.doesNotMatch(deployScript, /ensure_panel_password_master_key/);
+assert.doesNotMatch(deployScript, /export PATH="\/usr\/local\/bin/);
 assert.doesNotMatch(deployScript, /CHORDV_PANEL_PASSWORD_MASTER_KEY=.*secrets/);
 
 console.log("deploy secret preflight regression tests passed");

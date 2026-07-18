@@ -17,10 +17,6 @@ DEPLOY_RUN_MIGRATE_DEPLOY="${DEPLOY_RUN_MIGRATE_DEPLOY:-${DEPLOY_RUN_DB_PUSH:-fa
 DEPLOY_RUN_DB_PUSH="${DEPLOY_RUN_MIGRATE_DEPLOY}"
 SSH_OPTS="${SSH_OPTS:-}"
 
-if [ -x /usr/local/bin/node ]; then
-  export PATH="/usr/local/bin:${PATH}"
-fi
-
 STAGE_DIR="_deploy/baota"
 API_STAGE="${STAGE_DIR}/api"
 ADMIN_STAGE="${STAGE_DIR}/admin"
