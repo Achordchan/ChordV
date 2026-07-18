@@ -12,7 +12,9 @@ DEPLOY_PORT="${DEPLOY_PORT:-3001}"
 DEPLOY_HEALTH_PATH="${DEPLOY_HEALTH_PATH:-/api/client/version}"
 DEPLOY_XUI_TIMEOUT_MS="${DEPLOY_XUI_TIMEOUT_MS:-30000}"
 DEPLOY_ALLOW_ROOT="${DEPLOY_ALLOW_ROOT:-false}"
-DEPLOY_RUN_DB_PUSH="${DEPLOY_RUN_DB_PUSH:-false}"
+# Historical name DEPLOY_RUN_DB_PUSH is kept for compatibility, but it runs prisma migrate deploy (not db push).
+DEPLOY_RUN_MIGRATE_DEPLOY="${DEPLOY_RUN_MIGRATE_DEPLOY:-${DEPLOY_RUN_DB_PUSH:-false}}"
+DEPLOY_RUN_DB_PUSH="${DEPLOY_RUN_MIGRATE_DEPLOY}"
 SSH_OPTS="${SSH_OPTS:-}"
 
 if [ -x /usr/local/bin/node ]; then
@@ -60,6 +62,10 @@ require_env DEPLOY_HOST
 require_env DEPLOY_USER
 require_env DEPLOY_PATH
 require_env DEPLOY_ADMIN_PATH
+
+# Production panel password encryption key must already exist in the server .env.
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# and set CHORDV_PANEL_PASSWORD_MASTER_KEY=... (or CHORDV_SECRET_ENCRYPTION_KEY=...).
 
 if [ "${DEPLOY_USER}" = "root" ] && [ "${DEPLOY_ALLOW_ROOT}" != "true" ]; then
   echo "Refusing root deploy user unless DEPLOY_ALLOW_ROOT=true is set explicitly."
@@ -199,10 +205,10 @@ LIVE_SCHEMA="${DEPLOY_PATH}/apps/api/prisma/schema.prisma"
 STAGE_SCHEMA="${DEPLOY_STAGE_PATH}/apps/api/prisma/schema.prisma"
 if [ -f "${LIVE_SCHEMA}" ] && [ -f "${STAGE_SCHEMA}" ] && ! cmp -s "${LIVE_SCHEMA}" "${STAGE_SCHEMA}"; then
   if [ "${DEPLOY_RUN_DB_PUSH}" != "true" ]; then
-    echo "Prisma schema changed, but DEPLOY_RUN_DB_PUSH is not true. Refusing to sync incompatible API code before an explicit database update."
+    echo "Prisma schema changed, but DEPLOY_RUN_MIGRATE_DEPLOY/DEPLOY_RUN_DB_PUSH is not true. Refusing to sync incompatible API code before an explicit database update (prisma migrate deploy)."
     exit 1
   fi
-  echo "Prisma schema changed and DEPLOY_RUN_DB_PUSH=true; database push will run after live code sync and before restart."
+  echo "Prisma schema changed and DEPLOY_RUN_MIGRATE_DEPLOY=true; prisma migrate deploy will run after live code sync and before restart."
 fi
 REMOTE_STAGE_SCHEMA
 
@@ -272,6 +278,35 @@ if [ ! -f "start.sh" ]; then
   exit 1
 fi
 
+
+ensure_panel_password_master_key() {
+  local env_file
+  for env_file in \
+    "${DEPLOY_PATH}/.env" \
+    "${DEPLOY_PATH}/.env.local" \
+    "${DEPLOY_PATH}/apps/api/.env" \
+    "${DEPLOY_PATH}/apps/api/.env.local"; do
+    if [ -f "${env_file}" ]; then
+      if grep -Eq '^(export[[:space:]]+)?(CHORDV_PANEL_PASSWORD_MASTER_KEY|CHORDV_SECRET_ENCRYPTION_KEY)=' "${env_file}"; then
+        local value
+        value="$(grep -E '^(export[[:space:]]+)?(CHORDV_PANEL_PASSWORD_MASTER_KEY|CHORDV_SECRET_ENCRYPTION_KEY)=' "${env_file}" | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -e 's/^\"//' -e 's/\"$//' -e "s/^'//" -e "s/'$//")"
+        if [ -n "${value}" ]; then
+          echo "Detected panel password master key in ${env_file}"
+          return 0
+        fi
+      fi
+    fi
+  done
+  if [ "${CHORDV_ALLOW_PLAINTEXT_PANEL_PASSWORD:-}" = "true" ]; then
+    echo "WARNING: CHORDV_ALLOW_PLAINTEXT_PANEL_PASSWORD=true; panel passwords may remain plaintext."
+    return 0
+  fi
+  echo "Missing CHORDV_PANEL_PASSWORD_MASTER_KEY (or CHORDV_SECRET_ENCRYPTION_KEY) in production env files under ${DEPLOY_PATH}."
+  echo "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+  echo "Then add CHORDV_PANEL_PASSWORD_MASTER_KEY=<64-char-hex> to the API env before deploy."
+  exit 1
+}
+
 normalize_start_script() {
 python3 - <<'PY'
 from pathlib import Path
@@ -319,6 +354,7 @@ PY
 }
 
 normalize_start_script
+ensure_panel_password_master_key
 
 if [ ! -x "${NODE_BIN}" ]; then
   echo "宝塔 Node 不存在：${NODE_BIN}"
@@ -362,10 +398,10 @@ else
 fi
 
 if [ "${DEPLOY_RUN_DB_PUSH}" = "true" ]; then
-  echo "Running explicit production prisma db push after live code sync and before restart."
-  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:push
+  echo "Running explicit production prisma migrate deploy after live code sync and before restart (DEPLOY_RUN_MIGRATE_DEPLOY/DEPLOY_RUN_DB_PUSH)."
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${NODE_BIN}" "${COREPACK_CLI}" "pnpm@${PNPM_VERSION}" --filter @chordv/api db:migrate:baseline-deploy
 else
-  echo "Skipping prisma db push. Set DEPLOY_RUN_DB_PUSH=true only for an explicitly approved schema update."
+  echo "Skipping prisma migrate deploy. Set DEPLOY_RUN_MIGRATE_DEPLOY=true (or legacy DEPLOY_RUN_DB_PUSH=true) only for an explicitly approved schema update."
 fi
 
 find "${DEPLOY_PATH}" "${DEPLOY_ADMIN_PATH}" \( -name ".DS_Store" -o -name "._*" \) -type f -print0 | xargs -0 -r rm -f

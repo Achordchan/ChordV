@@ -1004,12 +1004,12 @@ async function runWithConcurrency<T>(
 }
 
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  // Keep the timer referenced so a never-settling task still times out reliably.
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutTask = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => {
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    timeoutHandle.unref?.();
   });
   try {
     return await Promise.race([task, timeoutTask]);

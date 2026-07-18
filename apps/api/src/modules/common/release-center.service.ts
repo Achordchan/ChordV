@@ -23,6 +23,7 @@ import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable 
 import {
   assertReleaseArtifactClientUsable,
   assertReleaseArtifactTypeAllowed,
+  downloadExternalReleaseArtifactFileStrict,
   buildReleaseArtifactDownloadUrl,
   compareSemver,
   createId,
@@ -40,6 +41,7 @@ import {
   releaseArtifactStorageRoot,
   removeReleaseArtifactDirectory,
   removeReleaseArtifactFile,
+  readZipEntryData,
   resolveReleaseArtifactAbsolutePath,
   resolveReleaseArtifactDeliveryMode,
   resolveReleaseArtifactForClient,
@@ -70,6 +72,85 @@ type ReleaseFallbackArtifact = ReleaseRowLike["artifacts"][number];
 
 const RELEASE_FILE_CLEANUP_BUDGET_MS = 300;
 const RELEASE_RESPONSE_REFRESH_BUDGET_MS = 300;
+
+function normalizeReleaseArtifactFileHash(value: string | null | undefined) {
+  const raw = value?.trim() ?? "";
+  if (!raw) {
+    return null;
+  }
+  if (!/^[a-fA-F0-9]{64}$/.test(raw)) {
+    throw new BadRequestException("安装包 SHA-256 校验值格式无效。");
+  }
+  return raw.toLowerCase();
+}
+
+function normalizeOptionalReleaseFileSizeBytes(value: string | number | bigint | null | undefined) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const text = String(value).trim();
+  if (!/^[1-9]\d*$/.test(text)) {
+    throw new BadRequestException("安装包文件大小必须是正整数。");
+  }
+  return BigInt(text);
+}
+
+
+async function calculateUploadedReleaseArtifactSha256(absolutePath: string) {
+  const { createHash } = await import("node:crypto");
+  const { createReadStream } = await import("node:fs");
+  return await new Promise<string>((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(absolutePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+
+const MIN_WINDOWS_FULL_UPDATE_PE_BYTES = 1024 * 1024;
+const MIN_WINDOWS_FULL_UPDATE_GEO_BYTES = 64 * 1024;
+
+async function assertWindowsFullUpdateZipEntry(
+  absolutePath: string,
+  entryName: string,
+  minimumBytes: number,
+  requireMzHeader = false
+) {
+  const data = await readZipEntryData(absolutePath, entryName);
+  if (data.byteLength < minimumBytes) {
+    throw new BadRequestException(`Windows 全量更新 ZIP 中的 ${entryName} 过小。`);
+  }
+  if (requireMzHeader && (data[0] !== 0x4d || data[1] !== 0x5a)) {
+    throw new BadRequestException(`Windows 全量更新 ZIP 中的 ${entryName} 不是有效的 PE 文件。`);
+  }
+}
+
+async function assertWindowsFullUpdateZipContents(absolutePath: string) {
+  await assertWindowsFullUpdateZipEntry(
+    absolutePath,
+    "ChordV.exe",
+    MIN_WINDOWS_FULL_UPDATE_PE_BYTES,
+    true
+  );
+  await assertWindowsFullUpdateZipEntry(
+    absolutePath,
+    "bin/xray.exe",
+    MIN_WINDOWS_FULL_UPDATE_PE_BYTES,
+    true
+  );
+  await assertWindowsFullUpdateZipEntry(
+    absolutePath,
+    "bin/geoip.dat",
+    MIN_WINDOWS_FULL_UPDATE_GEO_BYTES
+  );
+  await assertWindowsFullUpdateZipEntry(
+    absolutePath,
+    "bin/geosite.dat",
+    MIN_WINDOWS_FULL_UPDATE_GEO_BYTES
+  );
+}
 
 @Injectable()
 export class ReleaseCenterService {
@@ -448,8 +529,8 @@ export class ReleaseCenterService {
             allowClientMirror: false,
             fileName: normalizeNullableText(input.fileName),
             storedFilePath: null,
-            fileSizeBytes: null,
-            fileHash: null,
+            fileSizeBytes: normalizeOptionalReleaseFileSizeBytes((input as { fileSizeBytes?: string | number | null }).fileSizeBytes),
+            fileHash: normalizeReleaseArtifactFileHash((input as { fileHash?: string | null }).fileHash),
             isPrimary: isPrimary ?? false,
             isFullPackage: true
           }
@@ -567,8 +648,19 @@ export class ReleaseCenterService {
             ...(nextSource === "external"
               ? {
                   fileName: nextExternalFileName,
-                  fileSizeBytes: null,
-                  fileHash: null
+                  // 外链地址变化后旧哈希作废；未显式提供新元数据时清空，避免继续信任失效校验值。
+                  fileSizeBytes:
+                    (input as { fileSizeBytes?: string | number | null }).fileSizeBytes !== undefined
+                      ? normalizeOptionalReleaseFileSizeBytes((input as { fileSizeBytes?: string | number | null }).fileSizeBytes)
+                      : input.downloadUrl !== undefined && input.downloadUrl.trim() !== current.downloadUrl
+                        ? null
+                        : current.fileSizeBytes,
+                  fileHash:
+                    (input as { fileHash?: string | null }).fileHash !== undefined
+                      ? normalizeReleaseArtifactFileHash((input as { fileHash?: string | null }).fileHash)
+                      : input.downloadUrl !== undefined && input.downloadUrl.trim() !== current.downloadUrl
+                        ? null
+                        : current.fileHash
                 }
               : {}),
             ...(nextSource !== "external" && input.fileName !== undefined ? { fileName: normalizeNullableText(input.fileName) } : {}),
@@ -1018,16 +1110,10 @@ export class ReleaseCenterService {
       try {
         assertReleaseArtifactClientUsable(artifact, release.platform as PlatformTarget);
         await this.assertStoredReleaseArtifactReadable(artifact);
-        if (artifact.source === "uploaded") {
-          await this.assertUploadedReleaseArtifactValidForWindowsFullUpdate({
-            platform: release.platform as PlatformTarget,
-            type: fromPrismaReleaseArtifactType(artifact.type),
-            deliveryMode: artifact.deliveryMode as UpdateDeliveryMode,
-            absolutePath: artifact.storedFilePath ? resolveReleaseArtifactAbsolutePath(artifact.storedFilePath) : null,
-            fileName: artifact.fileName,
-            version: release.version
-          });
-        }
+        await this.assertReleaseArtifactContentMatchesMetadata(
+          artifact,
+          release.platform as PlatformTarget
+        );
         lastArtifactError = null;
         break;
       } catch (error) {
@@ -1040,6 +1126,71 @@ export class ReleaseCenterService {
       );
     }
     assertMinimumVersionNotAboveRelease(release.version, release.minimumVersion);
+  }
+
+
+  private async assertReleaseArtifactContentMatchesMetadata(
+    artifact: ReleaseRowLike["artifacts"][number],
+    platform: PlatformTarget
+  ) {
+    const expectedSize = artifact.fileSizeBytes;
+    const expectedHash = artifact.fileHash?.trim().toLowerCase() ?? "";
+    if (expectedSize === null || expectedSize === undefined || expectedSize <= 0n || !/^[a-f0-9]{64}$/.test(expectedHash)) {
+      throw new BadRequestException("安装包缺少可验证的文件大小或 SHA-256。");
+    }
+
+    let absolutePath: string;
+    let actualSize: bigint;
+    let actualHash: string;
+    let cleanup: (() => Promise<void>) | null = null;
+
+    try {
+      if (artifact.source === "uploaded") {
+        if (!artifact.storedFilePath) {
+          throw new BadRequestException("上传型安装包缺少已保存文件。");
+        }
+        absolutePath = resolveReleaseArtifactAbsolutePath(artifact.storedFilePath);
+        const fs = await import("node:fs/promises");
+        const stat = await fs.stat(absolutePath);
+        actualSize = BigInt(stat.size);
+        actualHash = await calculateUploadedReleaseArtifactSha256(absolutePath);
+      } else {
+        const downloaded = await this.downloadExternalReleaseArtifactForValidation(artifact.downloadUrl);
+        absolutePath = downloaded.absolutePath;
+        actualSize = downloaded.fileSizeBytes;
+        actualHash = downloaded.fileHash.toLowerCase();
+        cleanup = downloaded.cleanup;
+      }
+
+      if (actualSize !== expectedSize) {
+        throw new BadRequestException(
+          `安装包实际大小与填写值不一致：填写 ${expectedSize} 字节，实际 ${actualSize} 字节。`
+        );
+      }
+      if (actualHash !== expectedHash) {
+        throw new BadRequestException("安装包实际 SHA-256 与填写值不一致。");
+      }
+
+      if (
+        platform === "windows" &&
+        fromPrismaReleaseArtifactType(artifact.type) === "zip" &&
+        artifact.deliveryMode === "desktop_full_replace"
+      ) {
+        await assertWindowsFullUpdateZipContents(absolutePath);
+      }
+    } finally {
+      if (cleanup) {
+        await cleanup().catch((error) => {
+          this.logger.warn(
+            `External release validation temp-file cleanup failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        });
+      }
+    }
+  }
+
+  private downloadExternalReleaseArtifactForValidation(rawUrl: string) {
+    return downloadExternalReleaseArtifactFileStrict(rawUrl);
   }
 
   private async pickClientUsableArtifact(
@@ -1149,8 +1300,8 @@ export class ReleaseCenterService {
       allowClientMirror: false,
       fileName: normalizeNullableText(input.fileName),
       storedFilePath: null,
-      fileSizeBytes: null,
-      fileHash: null,
+      fileSizeBytes: normalizeOptionalReleaseFileSizeBytes((input as { fileSizeBytes?: string | number | null }).fileSizeBytes),
+      fileHash: normalizeReleaseArtifactFileHash((input as { fileHash?: string | null }).fileHash),
       isPrimary: true,
       isFullPackage: true
     };
@@ -1170,13 +1321,14 @@ export class ReleaseCenterService {
       const fs = await import("node:fs/promises");
       await fs.mkdir(path.dirname(absolutePath), { recursive: true });
       await moveUploadedFile(file.path, absolutePath);
+      const fileHash = await calculateUploadedReleaseArtifactSha256(absolutePath);
 
       return {
         absolutePath,
         storedFilePath,
         fileName: finalFileName,
         fileSizeBytes: BigInt(file.size),
-        fileHash: null,
+        fileHash,
         downloadUrl: buildReleaseArtifactDownloadUrl(artifactId)
       };
     } catch (error) {

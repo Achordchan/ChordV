@@ -623,6 +623,25 @@ model SupportTicketMessage {
   @@index([authorUserId, createdAt])
 }
 
+
+model SupportTicketPendingAttachment {
+  tokenId         String   @id
+  userId          String
+  ticketId        String
+  url             String
+  providerFileId  String?
+  fileName        String
+  mimeType        String
+  fileSizeBytes   BigInt?
+  consumed        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime
+
+  @@index([expiresAt, consumed])
+  @@index([userId, ticketId, createdAt])
+  @@index([ticketId, createdAt])
+}
+
 model SupportTicketAttachment {
   id            String               @id
   ticketId      String

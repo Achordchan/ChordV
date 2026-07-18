@@ -50,6 +50,7 @@ import {
 import { pickCurrentSubscription } from "./subscription.utils";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { createOrRefreshLeaseRevocationJob, createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
+import { decryptPanelPassword } from "./panel-password-crypto";
 import { XuiService } from "../xui/xui.service";
 
 type ResolvedSubscriptionAccess = {
@@ -1508,7 +1509,7 @@ export class RuntimeSessionService {
         panelBaseUrl: job.panelBaseUrl ?? job.node.panelBaseUrl,
         panelApiBasePath: job.panelApiBasePath ?? job.node.panelApiBasePath,
         panelUsername: job.panelUsername ?? job.node.panelUsername,
-        panelPassword: job.panelPassword ?? job.node.panelPassword,
+        panelPassword: decryptPanelPassword(job.panelPassword ?? job.node.panelPassword),
         panelInboundId: job.panelInboundId ?? job.node.panelInboundId,
         panelRequestTimeoutMs: panelSyncTimeoutMs
       };

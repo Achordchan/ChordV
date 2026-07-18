@@ -2449,7 +2449,8 @@ export class DevDataService implements OnModuleInit {
     panelBaseUrl: string;
     panelApiBasePath?: string;
     panelUsername: string;
-    panelPassword: string;
+    panelPassword?: string;
+    nodeId?: string;
   }): Promise<AdminNodePanelInboundDto[]> {
     return this.adminNodeService.listNodePanelInbounds(input);
   }

@@ -17,7 +17,7 @@ function makeXrayItem(overrides: Partial<RuntimeComponentDownloadItem> = {}): Ru
     fileSizeBytes: 12_000_000,
     sourceFormat: "zip_entry",
     archiveEntryName: "xray.exe",
-    checksumSha256: null,
+    checksumSha256: "a".repeat(64),
     candidates: [
       {
         label: "origin",

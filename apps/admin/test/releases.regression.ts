@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { MantineProvider } from "@mantine/core";
+import updateLimits from "@chordv/shared/update-limits";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildExternalArtifactPayload } from "../src/features/releases/artifactPayloads";
+import { NewReleaseArtifactFields } from "../src/features/releases/ReleaseEditorModal";
 import { buildCreateReleasePayload, buildUpdateReleasePayload, emptyReleaseEditorForm } from "../src/features/releases/types";
+
+const { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } = updateLimits;
 
 const releaseRecordCardSource = readFileSync(resolve(import.meta.dirname, "../src/features/releases/ReleaseRecordCard.tsx"), "utf8");
 const adminClientSource = readFileSync(resolve(import.meta.dirname, "../src/api/client.ts"), "utf8");
@@ -122,6 +129,8 @@ function testWindowsZipExternalArtifactCanStayExternalDownload() {
     "windows",
     " https://cdn.example.com/ChordV_1.1.6_x64-full.zip ",
     true,
+    "104857600",
+    "a".repeat(64),
     "external_download"
   );
 
@@ -131,6 +140,8 @@ function testWindowsZipExternalArtifactCanStayExternalDownload() {
   assert.equal(payload.downloadUrl, "https://cdn.example.com/ChordV_1.1.6_x64-full.zip");
   assert.equal(payload.fileName, "ChordV_1.1.6_x64-full.zip");
   assert.equal(payload.isPrimary, true);
+  assert.equal(payload.fileSizeBytes, "104857600");
+  assert.equal(payload.fileHash, "a".repeat(64));
 }
 
 function testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit() {
@@ -138,6 +149,8 @@ function testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit() {
     "windows",
     "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
     true,
+    "104857600",
+    "a".repeat(64),
     "windows_full_replace_zip"
   );
 
@@ -151,6 +164,8 @@ function testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit() {
     "windows",
     " https://cdn.example.com/download?id=ChordV_1.1.6_x64-full ",
     true,
+    "104857600",
+    "a".repeat(64),
     "windows_full_replace_zip"
   );
 
@@ -159,8 +174,66 @@ function testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit() {
   assert.equal(payload.deliveryMode, "desktop_full_replace");
   assert.equal(payload.downloadUrl, "https://cdn.example.com/download?id=ChordV_1.1.6_x64-full");
   assert.equal(payload.isPrimary, true);
+  assert.equal(payload.fileSizeBytes, "104857600");
+  assert.equal(payload.fileHash, "a".repeat(64));
 }
 
+
+function testDesktopExternalArtifactRejectsHttpUrl() {
+  assert.throws(
+    () =>
+      buildExternalArtifactPayload(
+        "windows",
+        "http://cdn.example.com/ChordV-full.zip",
+        true,
+        "104857600",
+        "a".repeat(64),
+        "windows_full_replace_zip"
+      ),
+    /HTTPS/
+  );
+}
+
+function testNewReleaseModalRendersExternalMetadataFields() {
+  const form = {
+    ...emptyReleaseEditorForm("windows"),
+    version: "1.2.0",
+    downloadUrl: "https://cdn.example.com/ChordV-full.zip",
+    fileSizeBytes: "104857600",
+    fileHash: "a".repeat(64)
+  };
+  const markup = renderToStaticMarkup(
+    createElement(
+      MantineProvider,
+      null,
+      createElement(NewReleaseArtifactFields, {
+        form,
+        saving: false,
+        onChange: () => undefined
+      })
+    )
+  );
+
+  assert.match(markup, /外链下载地址/);
+  assert.match(markup, /文件大小（字节）/);
+  assert.match(markup, /SHA-256 校验值/);
+  assert.match(markup, new RegExp(String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES)));
+}
+
+function testExternalArtifactPayloadRejectsDesktopOversize() {
+  assert.throws(
+    () =>
+      buildExternalArtifactPayload(
+        "windows",
+        "https://cdn.example.com/ChordV-full.zip",
+        true,
+        String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES + 1),
+        "a".repeat(64),
+        "windows_full_replace_zip"
+      ),
+    /不能超过 1 GiB/
+  );
+}
 function testReleaseArtifactLongDownloadUrlDoesNotForceWideCards() {
   assert.match(releaseRecordCardSource, /lineClamp=\{2\}/);
   assert.match(releaseRecordCardSource, /overflowWrap: "anywhere"/);
@@ -222,6 +295,9 @@ testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
 testWindowsZipExternalArtifactCanStayExternalDownload();
 testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
 testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
+testDesktopExternalArtifactRejectsHttpUrl();
+testNewReleaseModalRendersExternalMetadataFields();
+testExternalArtifactPayloadRejectsDesktopOversize();
 testReleaseArtifactLongDownloadUrlDoesNotForceWideCards();
 testReleaseMutationsAlwaysReleaseSavingState();
 testReleaseUncertainMutationsRefreshInsteadOfHardFailing();

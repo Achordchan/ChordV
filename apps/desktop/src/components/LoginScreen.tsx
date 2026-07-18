@@ -123,7 +123,7 @@ export function LoginScreen(props: LoginScreenProps) {
 
             <div className="auth-screen__helper">
               <Checkbox
-                label="记住密码"
+                label="记住邮箱"
                 checked={props.rememberPassword}
                 onChange={(event) => props.onRememberPasswordChange(event.currentTarget.checked)}
                 classNames={{

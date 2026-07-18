@@ -275,7 +275,7 @@ export const mockAdminNodes: AdminNodeRecordDto[] = mockNodes.map((node) => ({
   panelBaseUrl: null,
   panelApiBasePath: "/",
   panelUsername: null,
-  panelPassword: null,
+  hasPanelPassword: false,
   panelInboundId: null,
   panelEnabled: false,
   panelStatus: "offline",

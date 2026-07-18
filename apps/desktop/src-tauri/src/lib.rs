@@ -12,7 +12,7 @@ use std::{
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -74,6 +74,7 @@ const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
 const DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 180;
 const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DOWNLOAD_IDLE_TIMEOUT_SECS: u64 = 20;
+const SHARED_UPDATE_LIMITS_JSON: &str = include_str!("../../../../packages/shared/src/update-limits.data.json");
 const MAX_RUNTIME_COMPONENT_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_XRAY_RUNTIME_COMPONENT_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RUNTIME_COMPONENT_EXTRACTED_BYTES: u64 = 512 * 1024 * 1024;
@@ -81,6 +82,25 @@ const MAX_XRAY_RUNTIME_COMPONENT_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
 const CLIENT_EVENT_STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
 const MIN_WINDOWS_PE_BYTES: u64 = 1024 * 1024;
 const MIN_GEO_DATA_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedUpdateLimits {
+    max_desktop_update_download_bytes: u64,
+}
+
+fn max_desktop_update_download_bytes() -> u64 {
+    static LIMIT: OnceLock<u64> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let limits: SharedUpdateLimits = serde_json::from_str(SHARED_UPDATE_LIMITS_JSON)
+            .expect("shared update-limits.data.json must be valid");
+        assert!(
+            limits.max_desktop_update_download_bytes > 0,
+            "shared desktop update download limit must be positive"
+        );
+        limits.max_desktop_update_download_bytes
+    })
+}
 
 struct RuntimeState {
     status: String,
@@ -157,6 +177,9 @@ struct InstallerOperationState {
 #[derive(Default)]
 struct PendingInstallerState {
     path: Option<PathBuf>,
+    expected_hash: Option<String>,
+    expected_total_bytes: Option<u64>,
+    package_kind: Option<String>,
 }
 
 #[derive(Default)]
@@ -481,11 +504,11 @@ struct NativeClientEventErrorPayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopInstallerDownloadInput {
-    url: String,
     file_name: Option<String>,
-    expected_total_bytes: Option<u64>,
-    expected_hash: Option<String>,
     package_kind: Option<String>,
+    current_version: Option<String>,
+    channel: Option<String>,
+    preferred_candidate: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1289,6 +1312,244 @@ fn api_proxy_bypass_hosts() -> Vec<String> {
     hosts
 }
 
+
+#[derive(Debug, Clone)]
+struct TrustedDesktopUpdatePackage {
+    url: Url,
+    file_name: Option<String>,
+    expected_total_bytes: Option<u64>,
+    expected_hash: String,
+    package_kind: String,
+}
+
+fn api_base_url_parsed() -> Result<Url, String> {
+    let base = api_base_url().trim_end_matches('/').to_string();
+    Url::parse(&base).map_err(|error| format!("API 地址无效：{error}"))
+}
+
+fn is_url_under_api_base(url: &Url, api_base: &Url) -> bool {
+    if url.scheme() != api_base.scheme() {
+        return false;
+    }
+    if url.host_str().map(|value| value.to_ascii_lowercase())
+        != api_base.host_str().map(|value| value.to_ascii_lowercase())
+    {
+        return false;
+    }
+    if url.port_or_known_default() != api_base.port_or_known_default() {
+        return false;
+    }
+    let base_path = api_base.path().trim_end_matches('/');
+    let path = url.path();
+    path == base_path
+        || path.starts_with(&format!("{base_path}/"))
+        || path.starts_with("/api/")
+}
+
+fn json_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(raw) = value.get(*key).and_then(|item| item.as_str()) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn json_u64_field(value: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(number) = value.get(*key).and_then(|item| item.as_u64()) {
+            return Some(number);
+        }
+        if let Some(raw) = value.get(*key).and_then(|item| item.as_str()) {
+            if let Ok(number) = raw.trim().parse::<u64>() {
+                return Some(number);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_trusted_desktop_update_url(
+    api_base: &Url,
+    download_url: &str,
+    origin_download_url: Option<&str>,
+    preferred_candidate: &str,
+) -> Result<Url, String> {
+    let (candidate_label, candidate_url) = match preferred_candidate {
+        "mirror" => ("更新", download_url),
+        "origin" => (
+            "原始更新",
+            origin_download_url.ok_or_else(|| "服务端更新清单缺少 originDownloadUrl".to_string())?,
+        ),
+        _ => return Err("更新下载候选仅支持 mirror 或 origin".into()),
+    };
+    let url = Url::parse(candidate_url)
+        .or_else(|_| api_base.join(candidate_url))
+        .map_err(|error| format!("服务端{candidate_label}地址无效：{error}"))?;
+    if !installer_download_url_allowed(&url) {
+        return Err(format!("服务端{candidate_label}地址协议不被允许"));
+    }
+    Ok(url)
+}
+async fn fetch_trusted_desktop_update_package(
+    app: &AppHandle,
+    current_version: &str,
+    channel: &str,
+    package_kind: &str,
+    preferred_candidate: &str,
+) -> Result<TrustedDesktopUpdatePackage, String> {
+    let api_base = api_base_url_parsed()?;
+    let check_url = api_base
+        .join("/api/client/update/check")
+        .map_err(|error| format!("更新检查地址无效：{error}"))?;
+    let force_https = std::env::var("CHORDV_DESKTOP_FORCE_HTTPS")
+        .unwrap_or_else(|_| {
+            if cfg!(debug_assertions) {
+                "false".into()
+            } else {
+                "true".into()
+            }
+        })
+        .to_lowercase()
+        == "true";
+    if force_https && check_url.scheme() != "https" {
+        return Err("生产环境仅允许 HTTPS API".into());
+    }
+
+    let access_token = read_session_from_disk(app)?
+        .map(|session| session.access_token)
+        .filter(|value| !value.trim().is_empty());
+
+    let artifact_type = match package_kind {
+        "full_update" => "zip",
+        _ => {
+            if cfg!(target_os = "macos") {
+                "dmg"
+            } else if cfg!(target_os = "windows") {
+                "zip"
+            } else {
+                "external"
+            }
+        }
+    };
+    let platform = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    };
+
+    let body = serde_json::json!({
+        "currentVersion": current_version,
+        "platform": platform,
+        "channel": channel,
+        "artifactType": artifact_type
+    });
+
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECS))
+        .build()
+        .map_err(|error| format!("初始化更新检查客户端失败：{error}"))?;
+    let mut request = client
+        .post(check_url.clone())
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&body);
+    if let Some(token) = access_token.as_deref() {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("查询桌面更新清单失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "查询桌面更新清单失败：HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| format!("解析桌面更新清单失败：{error}"))?;
+
+    let delivery_mode = json_string_field(&payload, &["deliveryMode", "delivery_mode"])
+        .unwrap_or_else(|| "none".into());
+    let expected_delivery = if package_kind == "full_update" {
+        "desktop_full_replace"
+    } else {
+        "desktop_installer_download"
+    };
+    if delivery_mode != expected_delivery {
+        return Err(format!(
+            "服务端更新清单不匹配：expected deliveryMode={expected_delivery}, got={delivery_mode}"
+        ));
+    }
+
+    let artifact = payload
+        .get("recommendedArtifact")
+        .or_else(|| payload.get("artifact"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let download_url = json_string_field(&artifact, &["downloadUrl", "download_url"])
+        .or_else(|| json_string_field(&payload, &["downloadUrl", "download_url"]))
+        .ok_or_else(|| "服务端更新清单缺少 downloadUrl".to_string())?;
+    let expected_hash = require_sha256_hex(
+        json_string_field(&artifact, &["fileHash", "file_hash"])
+            .or_else(|| json_string_field(&payload, &["fileHash", "file_hash"]))
+            .as_deref(),
+        "server update package",
+    )?;
+    let expected_total_bytes = Some(require_desktop_update_download_size(
+        json_u64_field(&artifact, &["fileSizeBytes", "file_size_bytes", "fileSize"])
+            .or_else(|| json_u64_field(&payload, &["fileSizeBytes", "file_size_bytes", "fileSize"])),
+    )?);
+    let file_name = json_string_field(&artifact, &["fileName", "file_name"])
+        .or_else(|| json_string_field(&payload, &["fileName", "file_name"]));
+    let origin_download_url =
+        json_string_field(&artifact, &["originDownloadUrl", "origin_download_url"]);
+
+    let url = resolve_trusted_desktop_update_url(
+        &api_base,
+        &download_url,
+        origin_download_url.as_deref(),
+        preferred_candidate,
+    )?;
+    let _ = is_url_under_api_base(&url, &api_base);
+
+    Ok(TrustedDesktopUpdatePackage {
+        url,
+        file_name,
+        expected_total_bytes,
+        expected_hash,
+        package_kind: package_kind.to_string(),
+    })
+}
+
+async fn fetch_trusted_desktop_full_update_package(
+    app: &AppHandle,
+    current_version: &str,
+    channel: &str,
+    preferred_candidate: &str,
+) -> Result<TrustedDesktopUpdatePackage, String> {
+    fetch_trusted_desktop_update_package(app, current_version, channel, "full_update", preferred_candidate).await
+}
+
+async fn fetch_trusted_desktop_installer_package(
+    app: &AppHandle,
+    current_version: &str,
+    channel: &str,
+    preferred_candidate: &str,
+) -> Result<TrustedDesktopUpdatePackage, String> {
+    fetch_trusted_desktop_update_package(app, current_version, channel, "installer", preferred_candidate).await
+}
+
 #[tauri::command]
 async fn download_desktop_installer(
     app: AppHandle,
@@ -1305,15 +1566,77 @@ async fn download_desktop_installer(
     {
         set_installer_operation_active(&app, true)?;
         let result = async {
-            let url = Url::parse(input.url.trim()).map_err(|error| format!("下载地址无效：{error}"))?;
-            if !installer_download_url_allowed(&url) {
-                return Err("安装器下载地址仅支持 HTTPS，开发环境仅允许 localhost/127.0.0.1".into());
-            }
+            let requested_full_update = input.package_kind.as_deref() == Some("full_update");
+            let preferred_candidate = match input
+                .preferred_candidate
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("mirror")
+            {
+                "mirror" => "mirror",
+                "origin" => "origin",
+                _ => return Err("更新下载候选仅支持 mirror 或 origin".into()),
+            };
+            let (url, file_name_hint, expected_total_bytes, expected_hash, package_kind) =
+                if requested_full_update {
+                    let current_version = input
+                        .current_version
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| app.package_info().version.to_string());
+                    let channel = input
+                        .channel
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("stable");
+                    let trusted =
+                        fetch_trusted_desktop_full_update_package(&app, &current_version, channel, preferred_candidate)
+                            .await?;
+                    (
+                        trusted.url,
+                        trusted.file_name.or(input.file_name.clone()),
+                        trusted.expected_total_bytes,
+                        Some(trusted.expected_hash),
+                        Some(trusted.package_kind),
+                    )
+                } else {
+                    let current_version = input
+                        .current_version
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| app.package_info().version.to_string());
+                    let channel = input
+                        .channel
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("stable");
+                    // Classic installers must also come from the trusted update-check API.
+                    // Frontend-supplied URL/hash is intentionally ignored to prevent RCE via WebView.
+                    let trusted =
+                        fetch_trusted_desktop_installer_package(&app, &current_version, channel, preferred_candidate)
+                            .await?;
+                    (
+                        trusted.url,
+                        trusted.file_name.or(input.file_name.clone()),
+                        trusted.expected_total_bytes,
+                        Some(trusted.expected_hash),
+                        Some(trusted.package_kind),
+                    )
+                };
 
-            let is_full_update = input.package_kind.as_deref() == Some("full_update");
-            let package_label = desktop_update_package_label(input.package_kind.as_deref());
-            let file_name = resolve_installer_file_name(&url, input.file_name.as_deref(), input.package_kind.as_deref());
-            let _ = input.expected_hash;
+            let package_label = desktop_update_package_label(package_kind.as_deref());
+            let file_name = resolve_installer_file_name(
+                &url,
+                file_name_hint.as_deref(),
+                package_kind.as_deref(),
+            );
             append_download_diagnostic_log(
                 &app,
                 "update-download",
@@ -1322,7 +1645,7 @@ async fn download_desktop_installer(
                     package_label,
                     url,
                     file_name,
-                    input.expected_total_bytes
+                    expected_total_bytes
                 ),
             );
             send_update_download_progress(
@@ -1332,7 +1655,7 @@ async fn download_desktop_installer(
                     phase: "preparing".into(),
                     file_name: Some(file_name.clone()),
                     downloaded_bytes: 0,
-                    total_bytes: input.expected_total_bytes,
+                    total_bytes: expected_total_bytes,
                     local_path: None,
                     message: Some("正在准备下载安装器…".into()),
                 },
@@ -1344,8 +1667,8 @@ async fn download_desktop_installer(
             if final_path.exists() {
                 if installer_file_matches_expectation(
                     &final_path,
-                    input.expected_total_bytes,
-                    None,
+                    expected_total_bytes,
+                    expected_hash.as_deref(),
                 )? {
                     let metadata = fs::metadata(&final_path)
                         .map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
@@ -1357,7 +1680,7 @@ async fn download_desktop_installer(
                             "reuse-cache path={} size={} expected_total_bytes={:?}",
                             local_path,
                             metadata.len(),
-                            input.expected_total_bytes
+                            expected_total_bytes
                         ),
                     );
                     send_update_download_progress(
@@ -1367,15 +1690,23 @@ async fn download_desktop_installer(
                             phase: "completed".into(),
                             file_name: Some(file_name.clone()),
                             downloaded_bytes: metadata.len(),
-                            total_bytes: input.expected_total_bytes.or(Some(metadata.len())),
+                            total_bytes: expected_total_bytes.or(Some(metadata.len())),
                             local_path: Some(local_path.clone()),
                             message: Some("已复用本地安装器，正在打开安装程序…".into()),
                         },
                     );
+                    let expected_hash = require_sha256_hex(expected_hash.as_deref(), package_label)?;
+                    remember_pending_installer_package(
+                        &app,
+                        final_path.clone(),
+                        Some(expected_hash),
+                        Some(metadata.len()),
+                        package_kind.clone(),
+                    )?;
                     return Ok(DesktopInstallerDownloadResult {
                         file_name,
                         local_path,
-                        total_bytes: input.expected_total_bytes.or(Some(metadata.len())),
+                        total_bytes: expected_total_bytes.or(Some(metadata.len())),
                     });
                 }
                 append_download_diagnostic_log(
@@ -1410,7 +1741,7 @@ async fn download_desktop_installer(
                     phase: "downloading".into(),
                     file_name: Some(file_name.clone()),
                     downloaded_bytes: 0,
-                    total_bytes: input.expected_total_bytes,
+                    total_bytes: expected_total_bytes,
                     local_path: None,
                     message: Some("正在连接下载服务器…".into()),
                 },
@@ -1427,7 +1758,7 @@ async fn download_desktop_installer(
                 "update-download",
                 format!(
                     "response status={} content_length={:?} expected_total_bytes={:?}",
-                    response_status, response_content_length, input.expected_total_bytes
+                    response_status, response_content_length, expected_total_bytes
                 ),
             );
 
@@ -1435,18 +1766,26 @@ async fn download_desktop_installer(
                 return Err(format!("下载安装器失败：HTTP {}", response.status().as_u16()));
             }
 
-            if is_full_update {
-                if let (Some(content_length), Some(expected_total_bytes)) =
-                    (response_content_length, input.expected_total_bytes)
+            let expected_download_bytes = expected_total_bytes
+                .filter(|value| *value > 0)
+                .ok_or_else(|| "trusted update package is missing file size metadata".to_string())?;
+            let max_download_bytes = max_desktop_update_download_bytes();
+            if expected_download_bytes > max_download_bytes {
+                return Err(format!(
+                    "update package exceeds the maximum download size: {expected_download_bytes} bytes"
+                ));
+            }
+            if let Some(content_length) = response_content_length {
+                if content_length == 0
+                    || content_length > max_download_bytes
+                    || content_length != expected_download_bytes
                 {
-                    if content_length != expected_total_bytes {
-                        return Err(format!(
-                            "full update package Content-Length mismatch: expected {expected_total_bytes}, got {content_length}"
-                        ));
-                    }
+                    return Err(format!(
+                        "update package Content-Length mismatch: expected {expected_download_bytes}, got {content_length}"
+                    ));
                 }
             }
-            let total_bytes = response_content_length.or(input.expected_total_bytes);
+            let total_bytes = response_content_length.or(expected_total_bytes);
             let mut downloaded_bytes = 0_u64;
             let mut last_logged_bytes = 0_u64;
             let mut last_emitted_bytes = 0_u64;
@@ -1480,9 +1819,21 @@ async fn download_desktop_installer(
                 .map_err(|error| format!("下载安装器失败：{error}"))?
             {
                 for slice in chunk.chunks(DOWNLOAD_PROGRESS_SLICE_BYTES) {
+                    let next_downloaded_bytes = match checked_desktop_update_download_size(
+                        downloaded_bytes,
+                        slice.len() as u64,
+                        expected_download_bytes,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            drop(file);
+                            let _ = fs::remove_file(&temp_path);
+                            return Err(error);
+                        }
+                    };
                     file.write_all(slice)
                         .map_err(|error| format!("写入安装器文件失败：{error}"))?;
-                    downloaded_bytes += slice.len() as u64;
+                    downloaded_bytes = next_downloaded_bytes;
                     if !first_chunk_logged {
                         append_download_diagnostic_log(
                             &app,
@@ -1544,8 +1895,8 @@ async fn download_desktop_installer(
             validate_installer_file(
                 &temp_path,
                 downloaded_bytes,
-                input.expected_total_bytes,
-                None,
+                expected_total_bytes,
+                expected_hash.as_deref(),
             )?;
             fs::rename(&temp_path, &final_path).map_err(|error| format!("保存安装器文件失败：{error}"))?;
 
@@ -1565,16 +1916,24 @@ async fn download_desktop_installer(
                     phase: "completed".into(),
                     file_name: Some(file_name.clone()),
                     downloaded_bytes,
-                    total_bytes: input.expected_total_bytes.or(total_bytes).or(Some(downloaded_bytes)),
+                    total_bytes: expected_total_bytes.or(total_bytes).or(Some(downloaded_bytes)),
                     local_path: Some(local_path.clone()),
                     message: Some("安装器下载完成，正在打开安装程序…".into()),
                 },
             );
+            let expected_hash = require_sha256_hex(expected_hash.as_deref(), package_label)?;
+            remember_pending_installer_package(
+                &app,
+                final_path.clone(),
+                Some(expected_hash),
+                Some(downloaded_bytes),
+                package_kind.clone(),
+            )?;
 
             Ok(DesktopInstallerDownloadResult {
                 file_name,
                 local_path,
-                total_bytes: input.expected_total_bytes.or(total_bytes).or(Some(downloaded_bytes)),
+                total_bytes: expected_total_bytes.or(total_bytes).or(Some(downloaded_bytes)),
             })
         }
         .await;
@@ -1607,6 +1966,48 @@ async fn download_desktop_installer(
     }
 }
 
+
+fn remember_pending_installer_package(
+    app: &AppHandle,
+    path: PathBuf,
+    expected_hash: Option<String>,
+    expected_total_bytes: Option<u64>,
+    package_kind: Option<String>,
+) -> Result<(), String> {
+    let state: State<'_, Mutex<PendingInstallerState>> = app.state();
+    let mut pending = state.lock().map_err(|_| "installer pending state lock failed".to_string())?;
+    pending.path = Some(path);
+    pending.expected_hash = expected_hash;
+    pending.expected_total_bytes = expected_total_bytes;
+    pending.package_kind = package_kind;
+    Ok(())
+}
+
+fn take_pending_full_update_package(
+    app: &AppHandle,
+) -> Result<(PathBuf, String, u64), String> {
+    let state: State<'_, Mutex<PendingInstallerState>> = app.state();
+    let pending = state.lock().map_err(|_| "installer pending state lock failed".to_string())?;
+    if pending.package_kind.as_deref() != Some("full_update") {
+        return Err("no verified full update package is pending".into());
+    }
+    let path = pending
+        .path
+        .clone()
+        .ok_or_else(|| "no verified full update package is pending".to_string())?;
+    let expected_hash = pending
+        .expected_hash
+        .clone()
+        .ok_or_else(|| "pending full update package is missing verified SHA-256".to_string())?;
+    let expected_total_bytes = pending
+        .expected_total_bytes
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "pending full update package is missing verified size".to_string())?;
+    // Keep pending until apply succeeds far enough to exit process; clear on explicit failure path only.
+    let _ = (&pending.package_kind,);
+    Ok((path, expected_hash, expected_total_bytes))
+}
+
 #[tauri::command]
 fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult, String> {
     #[cfg(target_os = "android")]
@@ -1621,10 +2022,34 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
         if !installer_path.exists() {
             return Err("安装器文件不存在".into());
         }
-        let state: State<'_, Mutex<PendingInstallerState>> = app.state();
-        if let Ok(mut pending) = state.lock() {
-            pending.path = Some(installer_path.clone());
+        let download_dir = ensure_installer_download_dir(&app)?;
+        let canonical_installer = installer_path
+            .canonicalize()
+            .map_err(|error| format!("无法解析安装器路径：{error}"))?;
+        let canonical_download_dir = download_dir
+            .canonicalize()
+            .map_err(|error| format!("无法解析安装器缓存目录：{error}"))?;
+        if !canonical_installer.starts_with(&canonical_download_dir) {
+            return Err("只允许打开已由原生层校验的安装器缓存文件".into());
         }
+
+        let state: State<'_, Mutex<PendingInstallerState>> = app.state();
+        let pending = state
+            .lock()
+            .map_err(|_| "安装器状态异常".to_string())?;
+        let Some(pending_path) = pending.path.as_ref() else {
+            return Err("没有已校验的待安装文件，请先完成原生下载".into());
+        };
+        let canonical_pending = pending_path
+            .canonicalize()
+            .map_err(|error| format!("无法解析待安装路径：{error}"))?;
+        if canonical_pending != canonical_installer {
+            return Err("安装器路径与原生校验记录不一致".into());
+        }
+        if pending.expected_hash.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
+            return Err("待安装文件缺少已校验的 SHA-256".into());
+        }
+        // Do not accept arbitrary local paths. Only acknowledge already-verified pending.
         Ok(CommandResult {
             ok: true,
             config_path: Some(installer_path.to_string_lossy().into_owned()),
@@ -1869,16 +2294,44 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
 
     #[cfg(not(target_os = "android"))]
     {
-        let installer_path = {
+        let (installer_path, expected_hash, expected_total_bytes, package_kind) = {
             let state: State<'_, Mutex<PendingInstallerState>> = app.state();
             let pending = state.lock().map_err(|_| "安装器状态异常".to_string())?;
-            pending
+            let path = pending
                 .path
                 .clone()
-                .ok_or_else(|| "没有待安装的安装器文件".to_string())?
+                .ok_or_else(|| "没有待安装的安装器文件".to_string())?;
+            let expected_hash = pending
+                .expected_hash
+                .clone()
+                .ok_or_else(|| "待安装文件缺少已校验的 SHA-256".to_string())?;
+            let expected_total_bytes = pending.expected_total_bytes;
+            let package_kind = pending.package_kind.clone();
+            (path, expected_hash, expected_total_bytes, package_kind)
         };
+        if package_kind.as_deref() == Some("full_update") {
+            return Err("完整替换更新请使用 apply_desktop_full_update".into());
+        }
         if !installer_path.exists() {
             return Err("安装器文件不存在，请重新下载".into());
+        }
+        let download_dir = ensure_installer_download_dir(&app)?;
+        let canonical_installer = installer_path
+            .canonicalize()
+            .map_err(|error| format!("无法解析安装器路径：{error}"))?;
+        let canonical_download_dir = download_dir
+            .canonicalize()
+            .map_err(|error| format!("无法解析安装器缓存目录：{error}"))?;
+        if !canonical_installer.starts_with(&canonical_download_dir) {
+            return Err("安装器路径不在原生缓存目录内".into());
+        }
+        let expected_hash = require_sha256_hex(Some(expected_hash.as_str()), "pending installer")?;
+        if !installer_file_matches_expectation(
+            &installer_path,
+            expected_total_bytes,
+            Some(expected_hash.as_str()),
+        )? {
+            return Err("安装器校验失败，请重新下载".into());
         }
         set_installer_operation_active(&app, true)?;
         shutdown_runtime_state(&app);
@@ -1904,13 +2357,10 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
 #[tauri::command]
 fn apply_desktop_full_update(
     app: AppHandle,
-    path: String,
-    expected_hash: Option<String>,
-    expected_total_bytes: Option<u64>,
 ) -> Result<CommandResult, String> {
     #[cfg(not(windows))]
     {
-        let _ = (app, path, expected_hash, expected_total_bytes);
+        let _ = app;
         return Err("full replacement updates are only supported on Windows".into());
     }
 
@@ -1918,32 +2368,21 @@ fn apply_desktop_full_update(
     {
         set_installer_operation_active(&app, true)?;
         let result = (|| {
-            let package_path = PathBuf::from(path);
+            let (package_path, expected_hash, expected_total_bytes) =
+                take_pending_full_update_package(&app)?;
             if !package_path.exists() {
                 return Err("update package file does not exist".to_string());
             }
-            let expected_total_bytes = expected_total_bytes.unwrap_or(0);
-            if expected_total_bytes == 0 {
-                let metadata = fs::metadata(&package_path)
-                    .map_err(|error| format!("failed to read update package metadata: {error}"))?;
-                if metadata.len() == 0 {
-                    return Err("full update package is empty".into());
-                }
-            }
             let source_metadata = fs::metadata(&package_path)
                 .map_err(|error| format!("failed to read update package metadata: {error}"))?;
-            let effective_total_bytes = if expected_total_bytes > 0 {
-                expected_total_bytes
-            } else {
-                source_metadata.len()
-            };
+            let effective_total_bytes = expected_total_bytes;
             if source_metadata.len() != effective_total_bytes {
                 return Err(format!(
                     "full update package size mismatch: expected {effective_total_bytes}, got {}",
                     source_metadata.len()
                 ));
             }
-            let _ = expected_hash;
+            verify_file_sha256(&package_path, &expected_hash, "full update package")?;
 
             let current_exe = std::env::current_exe()
                 .map_err(|error| format!("failed to resolve current executable path: {error}"))?;
@@ -2176,9 +2615,11 @@ fn check_runtime_component_file(
             ensure_executable(&target_path)?;
         }
 
-        if let Err(message) =
-            validate_runtime_component_file_content(&target_path, component.component)
-        {
+        if let Err(message) = validate_runtime_component_file_content_with_checksum(
+            &target_path,
+            component.component,
+            component.checksum_sha256.as_deref(),
+        ) {
             return Ok(RuntimeComponentFileStatus {
                 ready: false,
                 exists: true,
@@ -2561,8 +3002,17 @@ async fn download_runtime_component(
                 }
             }
 
-            validate_runtime_component_file_content(&temp_target_path, component)
-                .map_err(|message| runtime_component_error("content_invalid", message))?;
+            let expected_checksum = require_sha256_hex(
+                input.component.checksum_sha256.as_deref(),
+                runtime_component_display_name(component),
+            )
+            .map_err(|message| runtime_component_error("metadata_invalid", message))?;
+            validate_runtime_component_file_content_with_checksum(
+                &temp_target_path,
+                component,
+                Some(expected_checksum.as_str()),
+            )
+            .map_err(|message| runtime_component_error("content_invalid", message))?;
 
             if component == RuntimeComponentKindInput::Xray {
                 ensure_executable(&temp_target_path)?;
@@ -3128,6 +3578,14 @@ fn validate_runtime_component_file_content(
     path: &Path,
     component: RuntimeComponentKindInput,
 ) -> Result<(), String> {
+    validate_runtime_component_file_content_with_checksum(path, component, None)
+}
+
+fn validate_runtime_component_file_content_with_checksum(
+    path: &Path,
+    component: RuntimeComponentKindInput,
+    expected_hash: Option<&str>,
+) -> Result<(), String> {
     let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
     let min_size = runtime_component_min_size(component);
     if metadata.len() < min_size {
@@ -3140,6 +3598,13 @@ fn validate_runtime_component_file_content(
     #[cfg(windows)]
     if component == RuntimeComponentKindInput::Xray {
         validate_mz_header(path, runtime_component_display_name(component))?;
+    }
+    if let Some(expected_hash) = expected_hash
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let expected_hash = require_sha256_hex(Some(expected_hash), runtime_component_display_name(component))?;
+        verify_file_sha256(path, &expected_hash, runtime_component_display_name(component))?;
     }
     Ok(())
 }
@@ -3335,14 +3800,17 @@ fn verify_runtime_component_for_connect(
         ));
     }
 
-    validate_runtime_component_file_content(&target_path, component.component).map_err(
-        |error| {
-            format!(
-                "{} failed local validation: {error}",
-                runtime_component_key(component.component)
-            )
-        },
-    )?;
+    validate_runtime_component_file_content_with_checksum(
+        &target_path,
+        component.component,
+        component.checksum_sha256.as_deref(),
+    )
+    .map_err(|error| {
+        format!(
+            "{} failed local validation: {error}",
+            runtime_component_key(component.component)
+        )
+    })?;
 
     if component.component == RuntimeComponentKindInput::Xray {
         ensure_executable(&target_path)?;
@@ -3416,28 +3884,9 @@ async fn prepare_desktop_runtime_components(
             "runtime-verify",
             format!("connect-verify-unavailable error={repair_error}"),
         );
-        #[cfg(windows)]
-        {
-            return Err(format!(
-                "Windows runtime component verification failed before connect: {repair_error}"
-            ));
-        }
-        #[cfg(not(windows))]
-        {
-            if let Ok(xray_path) = ensure_xray_binary(app, runtime_dir).and_then(|xray_path| {
-                ensure_geo_data(app, runtime_dir)?;
-                Ok(xray_path)
-            }) {
-                append_download_diagnostic_log(
-                    app,
-                    "runtime-verify",
-                    format!(
-                        "connect-local-runtime-ready-after-verify-unavailable error={repair_error}"
-                    ),
-                );
-                return Ok(xray_path);
-            }
-        }
+        return Err(format!(
+            "runtime component verification failed before connect: {repair_error}"
+        ));
     }
 
     match ensure_xray_binary(app, runtime_dir).and_then(|xray_path| {
@@ -3605,9 +4054,8 @@ fn restore_runtime_component_from_verified_bundle(
     app: &AppHandle,
     component: RuntimeComponentKindInput,
     target_path: &Path,
-    _expected_hash: Option<&str>,
+    expected_hash: Option<&str>,
 ) -> Result<bool, String> {
-    // 不再用 SHA256 门禁；仅在需要时从内置包恢复本地缺失/异常文件。
     let Some(source_path) = bundled_runtime_component_source_path(app, component) else {
         return Ok(false);
     };
@@ -3620,6 +4068,15 @@ fn restore_runtime_component_from_verified_bundle(
             runtime_component_display_name(component)
         )
     })?;
+    if let Some(expected_hash) = expected_hash
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let expected_hash = require_sha256_hex(Some(expected_hash), runtime_component_display_name(component))?;
+        verify_file_sha256(target_path, &expected_hash, runtime_component_display_name(component))?;
+    } else {
+        validate_runtime_component_file_content(target_path, component)?;
+    }
     if component == RuntimeComponentKindInput::Xray {
         ensure_executable(target_path)?;
     }
@@ -4039,13 +4496,86 @@ fn installer_download_url_allowed(url: &Url) -> bool {
     )
 }
 
+fn normalize_sha256_hex(value: &str) -> Option<String> {
+    let normalized = value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| *ch != ':')
+        .collect::<String>();
+    if normalized.len() != 64 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn require_sha256_hex(expected_hash: Option<&str>, label: &str) -> Result<String, String> {
+    let raw = expected_hash
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{label} missing SHA-256 checksum"))?;
+    normalize_sha256_hex(raw).ok_or_else(|| format!("{label} has invalid SHA-256 checksum"))
+}
+
+fn require_desktop_update_download_size(value: Option<u64>) -> Result<u64, String> {
+    let size = value
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "server update package missing positive fileSizeBytes".to_string())?;
+    let max_download_bytes = max_desktop_update_download_bytes();
+    if size > max_download_bytes {
+        return Err(format!(
+            "server update package is too large: {size} bytes (max {max_download_bytes})"
+        ));
+    }
+    Ok(size)
+}
+fn checked_desktop_update_download_size(
+    downloaded_bytes: u64,
+    chunk_bytes: u64,
+    expected_total_bytes: u64,
+) -> Result<u64, String> {
+    let next = downloaded_bytes
+        .checked_add(chunk_bytes)
+        .ok_or_else(|| "update package download size overflow".to_string())?;
+    if next > expected_total_bytes || next > max_desktop_update_download_bytes() {
+        return Err(format!(
+            "update package exceeded the trusted size limit: {next} bytes"
+        ));
+    }
+    Ok(next)
+}
+fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|error| format!("failed to open file for checksum: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read file for checksum: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn verify_file_sha256(path: &Path, expected_hash: &str, label: &str) -> Result<(), String> {
+    let actual = sha256_file_hex(path)?;
+    if actual != expected_hash {
+        return Err(format!(
+            "{label} SHA-256 mismatch: expected {expected_hash}, got {actual}"
+        ));
+    }
+    Ok(())
+}
+
 fn installer_file_matches_expectation(
     path: &Path,
     expected_total_bytes: Option<u64>,
     expected_hash: Option<&str>,
 ) -> Result<bool, String> {
-    let metadata =
-        fs::metadata(path).map_err(|error| format!("读取安装器文件状态失败：{error}"))?;
+    let metadata = fs::metadata(path).map_err(|error| format!("failed to read installer metadata: {error}"))?;
     if metadata.len() == 0 {
         return Ok(false);
     }
@@ -4055,9 +4585,17 @@ fn installer_file_matches_expectation(
     {
         return Ok(false);
     }
-    // 不再使用 expected_hash 参与缓存命中判断。
-    let _ = expected_hash;
-    Ok(true)
+    let Some(expected_hash) = expected_hash
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(normalize_sha256_hex)
+    else {
+        return Ok(false);
+    };
+    match verify_file_sha256(path, &expected_hash, "installer package") {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 fn validate_installer_file(
@@ -4068,7 +4606,7 @@ fn validate_installer_file(
 ) -> Result<(), String> {
     if downloaded_bytes == 0 {
         let _ = fs::remove_file(path);
-        return Err("下载安装器失败：下载结果为空文件".into());
+        return Err("download failed: empty installer file".into());
     }
     let metadata = fs::metadata(path)
         .map_err(|error| format!("read downloaded file metadata failed: {error}"))?;
@@ -4089,8 +4627,17 @@ fn validate_installer_file(
             ));
         }
     }
-    // 不再校验 SHA256；保留大小与非空检查。
-    let _ = expected_hash;
+    let expected_hash = match require_sha256_hex(expected_hash, "installer package") {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = fs::remove_file(path);
+            return Err(error);
+        }
+    };
+    if let Err(error) = verify_file_sha256(path, &expected_hash, "installer package") {
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -7528,4 +8075,98 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+
+#[cfg(test)]
+mod update_trust_tests {
+    use super::{
+        checked_desktop_update_download_size, installer_download_url_allowed, max_desktop_update_download_bytes,
+        normalize_sha256_hex, require_desktop_update_download_size, require_sha256_hex,
+        resolve_trusted_desktop_update_url,
+    };
+    use url::Url;
+
+    #[test]
+    fn normalize_sha256_hex_accepts_colon_separated_hex() {
+        let value = "AA:bb:CC:dd:EE:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:01:23:45:67:89:ab:cd:ef:00:11";
+        let normalized = normalize_sha256_hex(value).expect("valid hash");
+        assert_eq!(normalized.len(), 64);
+        assert!(normalized.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn require_sha256_hex_rejects_missing_and_invalid() {
+        assert!(require_sha256_hex(None, "pkg").is_err());
+        assert!(require_sha256_hex(Some("  "), "pkg").is_err());
+        assert!(require_sha256_hex(Some("zzz"), "pkg").is_err());
+        let ok = require_sha256_hex(
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            "pkg",
+        )
+        .expect("valid");
+        assert_eq!(ok.len(), 64);
+    }
+
+    #[test]
+    fn installer_download_url_allowed_https_and_local_http_only() {
+        let https = Url::parse("https://cdn.example.com/ChordV.zip").unwrap();
+        assert!(installer_download_url_allowed(&https));
+
+        let local = Url::parse("http://127.0.0.1:3000/ChordV.zip").unwrap();
+        assert!(installer_download_url_allowed(&local));
+
+        let remote_http = Url::parse("http://evil.example.com/ChordV.zip").unwrap();
+        assert!(!installer_download_url_allowed(&remote_http));
+    }
+
+    #[test]
+    fn trusted_update_candidate_switches_only_within_manifest_urls() {
+        let api_base = Url::parse("https://api.example.com").unwrap();
+        let mirror = resolve_trusted_desktop_update_url(
+            &api_base,
+            "https://mirror.example.com/ChordV.zip",
+            Some("https://origin.example.com/ChordV.zip"),
+            "mirror",
+        )
+        .expect("mirror candidate");
+        assert_eq!(mirror.as_str(), "https://mirror.example.com/ChordV.zip");
+
+        let origin = resolve_trusted_desktop_update_url(
+            &api_base,
+            "https://mirror.example.com/ChordV.zip",
+            Some("/downloads/ChordV.zip"),
+            "origin",
+        )
+        .expect("origin candidate");
+        assert_eq!(origin.as_str(), "https://api.example.com/downloads/ChordV.zip");
+
+        assert!(resolve_trusted_desktop_update_url(
+            &api_base,
+            "https://mirror.example.com/ChordV.zip",
+            None,
+            "origin",
+        )
+        .is_err());
+        assert!(resolve_trusted_desktop_update_url(
+            &api_base,
+            "https://mirror.example.com/ChordV.zip",
+            Some("https://origin.example.com/ChordV.zip"),
+            "untrusted",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn desktop_update_size_guards_reject_missing_and_overflow() {
+        let max_download_bytes = max_desktop_update_download_bytes();
+        assert_eq!(max_download_bytes, 1_073_741_824);
+        assert!(require_desktop_update_download_size(None).is_err());
+        assert!(require_desktop_update_download_size(Some(0)).is_err());
+        assert!(require_desktop_update_download_size(Some(1024)).is_ok());
+        assert!(require_desktop_update_download_size(Some(max_download_bytes + 1)).is_err());
+        assert!(checked_desktop_update_download_size(900, 124, 1024).is_ok());
+        assert!(checked_desktop_update_download_size(900, 125, 1024).is_err());
+        assert!(checked_desktop_update_download_size(u64::MAX, 1, u64::MAX).is_err());
+    }
 }

@@ -30,6 +30,7 @@ import type {
 } from "../lib/runtimeComponents";
 import { loadDesktopRuntimeEnvironment } from "../lib/runtime";
 
+import { normalizeSha256Hex } from "../lib/checksum";
 const API_BASE = readApiBaseUrl();
 const DEFAULT_RELEASE_CHANNEL = "stable";
 const JSON_REQUEST_TIMEOUT_MS = 60_000;
@@ -609,7 +610,7 @@ export function uploadSupportTicketAttachment(
         }
         try {
           const body = xhr.responseText ? (JSON.parse(xhr.responseText) as UploadedSupportTicketAttachmentReferenceInputDto) : null;
-          if (!body?.url || !body.fileName || !body.mimeType) {
+          if (!body?.uploadToken || !body?.url || !body.fileName || !body.mimeType) {
             reject(new ApiRequestError(xhr.status, "附件上传响应异常，请重新上传。"));
             return;
           }
@@ -811,10 +812,13 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
   let activeController: AbortController | null = null;
   let nativeCleanup: (() => void) | null = null;
   let lastEventId: string | null = null;
+  let reconnectAttempt = 0;
   const handshakeTimeoutMs = 25_000;
   const streamIdleTimeoutMs = 45_000;
   const fallbackRefreshMs = 15_000;
   const fallbackVersionRefreshMs = 60_000;
+  const reconnectBaseDelayMs = 1_000;
+  const reconnectMaxDelayMs = 30_000;
 
   const isReplayableEventId = (eventId: string | null) => Boolean(eventId && /^\d+-\d+$/.test(eventId));
 
@@ -822,10 +826,18 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
     if (disposed || reconnectTimer !== null) {
       return;
     }
+    const exp = Math.min(reconnectMaxDelayMs, reconnectBaseDelayMs * 2 ** Math.min(reconnectAttempt, 5));
+    const jitter = Math.floor(Math.random() * 500);
+    const delay = exp + jitter;
+    reconnectAttempt += 1;
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
       void connect();
-    }, 3000);
+    }, delay);
+  };
+
+  const markStreamStable = () => {
+    reconnectAttempt = 0;
   };
 
   const connectNative = async () => {
@@ -876,6 +888,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
         lastEventId = payload.eventId ?? null;
       }
       stopFallbackRefresh();
+      markStreamStable();
       subscriber.onEvent(payload.event);
     });
     const unlistenError = await listen<{
@@ -1101,6 +1114,7 @@ export function subscribeClientEvents(accessToken: string, subscriber: ClientEve
             if (isReplayableEventId(parsedEvent.id)) {
               lastEventId = parsedEvent.id;
             }
+            markStreamStable();
             subscriber.onEvent(payload);
           } catch (error) {
             subscriber.onError?.(error instanceof Error ? error : new Error("事件解析失败"), {
@@ -1326,7 +1340,7 @@ function normalizeRuntimeComponentsPlan(
       fileSizeBytes: readNumber(item.fileSizeBytes),
       sourceFormat: resolveRuntimeComponentSourceFormat(item),
       archiveEntryName: resolveRuntimeComponentArchiveEntryName(item),
-      checksumSha256: null,
+      checksumSha256: normalizeSha256Hex(item.expectedHash),
       candidates: item.candidates.map((candidate) => ({
         label: candidate.label,
         url: candidate.url,
@@ -1342,6 +1356,7 @@ function normalizeRuntimeComponentsPlan(
     }))
   };
 }
+
 
 
 function resolveRuntimeComponentSourceFormat(

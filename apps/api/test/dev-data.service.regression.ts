@@ -780,6 +780,7 @@ function createReleaseCenterService(overrides: Record<string, unknown> = {}) {
     clientEventsPublisher: {
       publishVersionUpdated: async () => undefined
     },
+    assertReleaseArtifactContentMatchesMetadata: async () => undefined,
     ...overrides,
     downloadMirrorService: createDefaultDownloadMirrorService(downloadMirrorOverride),
     adminRuntimeEventsService: {
@@ -802,9 +803,218 @@ function createRuntimeComponentsService(overrides: Record<string, unknown> = {})
 }
 
 function createClientTicketService(overrides: Record<string, unknown> = {}) {
-  return createInstance<ClientTicketService>(ClientTicketService.prototype, overrides);
-}
+  const prismaOverride =
+    typeof overrides.prisma === "object" && overrides.prisma !== null ? (overrides.prisma as Record<string, unknown>) : {};
 
+  // Attachment quota/pending storage now lives in Postgres; keep in-memory defaults so unit
+  // tests that never model those tables still exercise the happy path.
+  const rateBuckets = new Map<string, { key: string; count: number; blockedUntil: Date | null }>();
+  const pendingAttachments = new Map<string, Record<string, unknown>>();
+
+  const defaultRateLimitBucket = {
+    findUnique: async ({ where }: { where: { key: string } }) => rateBuckets.get(where.key) ?? null,
+    upsert: async ({
+      where,
+      create,
+      update
+    }: {
+      where: { key: string };
+      create: { key: string; count: number };
+      update: { count?: number | { increment?: number } };
+    }) => {
+      const existing = rateBuckets.get(where.key);
+      if (!existing) {
+        const created = { key: create.key, count: create.count, blockedUntil: null as Date | null };
+        rateBuckets.set(where.key, created);
+        return created;
+      }
+      const increment =
+        update.count && typeof update.count === "object" && typeof update.count.increment === "number"
+          ? update.count.increment
+          : 0;
+      const nextCount = typeof update.count === "number" ? update.count : existing.count + increment;
+      const next = { ...existing, count: nextCount };
+      rateBuckets.set(where.key, next);
+      return next;
+    },
+    update: async ({
+      where,
+      data
+    }: {
+      where: { key: string };
+      data: Partial<{ count: number; blockedUntil: Date | null }>;
+    }) => {
+      const existing = rateBuckets.get(where.key) ?? {
+        key: where.key,
+        count: 0,
+        blockedUntil: null as Date | null
+      };
+      const next = { ...existing, ...data };
+      rateBuckets.set(where.key, next);
+      return next;
+    },
+    updateMany: async ({
+      where,
+      data
+    }: {
+      where: { key: string; count?: { lte?: number; gte?: number } };
+      data: { count?: number | { increment?: number; decrement?: number } };
+    }) => {
+      const existing = rateBuckets.get(where.key);
+      if (!existing) {
+        return { count: 0 };
+      }
+      if (typeof where.count?.lte === "number" && existing.count > where.count.lte) {
+        return { count: 0 };
+      }
+      if (typeof where.count?.gte === "number" && existing.count < where.count.gte) {
+        return { count: 0 };
+      }
+      let nextCount = existing.count;
+      if (typeof data.count === "number") {
+        nextCount = data.count;
+      } else if (typeof data.count?.increment === "number") {
+        nextCount = existing.count + data.count.increment;
+      } else if (typeof data.count?.decrement === "number") {
+        nextCount = existing.count - data.count.decrement;
+      }
+      rateBuckets.set(where.key, { ...existing, count: nextCount });
+      return { count: 1 };
+    }
+  };
+
+  const defaultPendingAttachment = {
+    findMany: async (args?: { where?: Record<string, unknown>; take?: number }) => {
+      const rows = [...pendingAttachments.values()];
+      const take = typeof args?.take === "number" ? args.take : rows.length;
+      return rows.slice(0, take);
+    },
+    findUnique: async ({ where }: { where: { tokenId: string } }) => pendingAttachments.get(where.tokenId) ?? null,
+    create: async ({ data }: { data: Record<string, unknown> }) => {
+      pendingAttachments.set(String(data.tokenId), data);
+      return data;
+    },
+    deleteMany: async ({ where }: { where: Record<string, unknown> }) => {
+      const tokenIds = Array.isArray((where as any)?.tokenId?.in)
+        ? ((where as any).tokenId.in as string[])
+        : where.tokenId
+          ? [String(where.tokenId)]
+          : [...pendingAttachments.keys()];
+      let count = 0;
+      for (const tokenId of tokenIds) {
+        if (pendingAttachments.delete(String(tokenId))) {
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    delete: async ({ where }: { where: { tokenId: string } }) => {
+      const existing = pendingAttachments.get(where.tokenId) ?? null;
+      pendingAttachments.delete(where.tokenId);
+      return existing;
+    }
+  };
+
+  const rateLimitBucket =
+    (prismaOverride.rateLimitBucket as typeof defaultRateLimitBucket | undefined) ?? defaultRateLimitBucket;
+  const supportTicketPendingAttachment =
+    (prismaOverride.supportTicketPendingAttachment as typeof defaultPendingAttachment | undefined) ??
+    defaultPendingAttachment;
+
+  const defaultTx = {
+    rateLimitBucket,
+    supportTicketPendingAttachment,
+    ...prismaOverride
+  };
+
+  const userTransaction =
+    typeof prismaOverride.$transaction === "function"
+      ? (prismaOverride.$transaction as (task: (tx: Record<string, unknown>) => unknown) => unknown)
+      : null;
+
+  const runWithAccessTracking = async (task: (tx: Record<string, unknown>) => unknown, tx: Record<string, unknown>) => {
+    const accessed = new Set<string>();
+    const proxy = new Proxy(tx, {
+      get(target, prop, receiver) {
+        if (typeof prop === "string") {
+          accessed.add(prop);
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
+    const result = await task(proxy);
+    return { result, accessed };
+  };
+
+  const prisma = {
+    rateLimitBucket,
+    supportTicketPendingAttachment,
+    ...prismaOverride,
+    $transaction: async (task: (tx: Record<string, unknown>) => unknown) => {
+      if (!userTransaction) {
+        return task({
+          ...defaultTx,
+          rateLimitBucket,
+          supportTicketPendingAttachment
+        });
+      }
+
+      let invoked = false;
+      try {
+        return await userTransaction((tx) => {
+          invoked = true;
+          return task({
+            ...defaultTx,
+            ...tx,
+            rateLimitBucket: (tx as any)?.rateLimitBucket ?? rateLimitBucket,
+            supportTicketPendingAttachment:
+              (tx as any)?.supportTicketPendingAttachment ?? supportTicketPendingAttachment
+          });
+        });
+      } catch (error) {
+        // Hard-fail stubs often throw without calling the callback. Allow attachment quota /
+        // pending storage transactions to use defaults, but keep real write failures.
+        if (invoked) {
+          throw error;
+        }
+        try {
+          const { result, accessed } = await runWithAccessTracking(task, {
+            ...defaultTx,
+            rateLimitBucket,
+            supportTicketPendingAttachment
+          });
+          const businessAccess = [...accessed].some(
+            (key) => key !== "rateLimitBucket" && key !== "supportTicketPendingAttachment"
+          );
+          if (businessAccess) {
+            throw error;
+          }
+          return result;
+        } catch {
+          throw error;
+        }
+      }
+    }
+  };
+
+  const imageBedOverride =
+    typeof overrides.imageBedService === "object" && overrides.imageBedService !== null
+      ? (overrides.imageBedService as Record<string, unknown>)
+      : {};
+
+  return createInstance<ClientTicketService>(ClientTicketService.prototype, {
+    ...overrides,
+    prisma,
+    imageBedService: {
+      assertSupportTicketAttachment: () => undefined,
+      uploadSupportTicketAttachment: async () => {
+        throw new Error("imageBedService.uploadSupportTicketAttachment is not mocked");
+      },
+      deleteUploadedSupportTicketAttachmentBestEffort: async () => undefined,
+      ...imageBedOverride
+    }
+  });
+}
 function createAdminSubscriptionService(overrides: Record<string, unknown> = {}) {
   const runtimeSessionOverride =
     typeof overrides.runtimeSessionService === "object" && overrides.runtimeSessionService !== null
@@ -3746,29 +3956,60 @@ async function testReleaseDownloadMapsSendFileMissingToNotFound() {
   );
 }
 
-function testReleaseArtifactClientUsableAllowsHttpFullReplacementUrl() {
-  assert.doesNotThrow(() =>
-    assertReleaseArtifactClientUsable(
-      {
-        id: "artifact_1",
-        releaseId: "release_1",
-        source: "external",
-        type: "zip",
-        deliveryMode: "desktop_full_replace",
-        downloadUrl: "http://download.example.com/ChordV_1.1.6_x64-full.zip",
-        originDownloadUrl: null,
-        defaultMirrorPrefix: null,
-        allowClientMirror: false,
-        fileName: "ChordV_1.1.6_x64-full.zip",
-        fileSizeBytes: null,
-        fileHash: null,
-        isPrimary: true,
-        isFullPackage: true,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      "windows"
-    )
+function testReleaseArtifactClientUsableRejectsHttpFullReplacementUrl() {
+  assert.throws(
+    () =>
+      assertReleaseArtifactClientUsable(
+        {
+          id: "artifact_1",
+          releaseId: "release_1",
+          source: "external",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          downloadUrl: "http://download.example.com/ChordV_1.1.6_x64-full.zip",
+          originDownloadUrl: null,
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "ChordV_1.1.6_x64-full.zip",
+          fileSizeBytes: 104857600n,
+          fileHash: "a".repeat(64),
+          isPrimary: true,
+          isFullPackage: true,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        },
+        "windows"
+      ),
+    /HTTPS/
+  );
+}
+
+function testReleaseArtifactClientUsableRejectsMissingFileHash() {
+  assert.throws(
+    () =>
+      assertReleaseArtifactClientUsable(
+        {
+          id: "artifact_1",
+          releaseId: "release_1",
+          source: "external",
+          type: "zip",
+          deliveryMode: "desktop_full_replace",
+          downloadUrl: "http://download.example.com/ChordV_1.1.6_x64-full.zip",
+          originDownloadUrl: null,
+          defaultMirrorPrefix: null,
+          allowClientMirror: false,
+          fileName: "ChordV_1.1.6_x64-full.zip",
+          fileSizeBytes: null,
+          fileHash: null,
+          isPrimary: true,
+          isFullPackage: true,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        },
+        "windows"
+      ),
+    /SHA-256|校验|hash/i,
+    "client-visible release artifacts must provide a valid SHA-256 file hash"
   );
 }
 
@@ -4610,8 +4851,8 @@ async function testAssertReleasePublishableAllowsExternalWindowsZipWithoutOption
     fileName: "ChordV_1.1.6_windows.zip",
     downloadUrl: "https://example.com/ChordV_1.1.6_windows.zip",
     storedFilePath: null,
-    fileHash: null,
-    fileSizeBytes: null,
+    fileHash: "a".repeat(64),
+    fileSizeBytes: 104857600n,
     allowClientMirror: false
   });
   const secondaryArtifact = makeReleaseCenterTestArtifact({
@@ -4665,8 +4906,8 @@ async function testPublishReleaseAllowsWindowsZipWithoutOptionalMetadata() {
         fileName: "ChordV_1.1.6_x64-full.zip",
         downloadUrl: "/api/downloads/releases/artifact_1",
         storedFilePath,
-        fileSizeBytes: null,
-        fileHash: null,
+        fileSizeBytes: 104857600n,
+        fileHash: "a".repeat(64),
         allowClientMirror: false
       })
     ]
@@ -4710,8 +4951,8 @@ async function testPublishReleaseAllowsReadableUploadedWindowsZipWithoutDeepInsp
         fileName: "ChordV_1.1.6_x64-full.zip",
         downloadUrl: "/api/downloads/releases/artifact_1",
         storedFilePath,
-        fileSizeBytes: null,
-        fileHash: null,
+        fileSizeBytes: 104857600n,
+        fileHash: "a".repeat(64),
         allowClientMirror: false
       })
     ]
@@ -4747,7 +4988,7 @@ async function testPublishReleaseRejectsMissingUploadedArtifactFile() {
         fileName: "ChordV_1.1.6_x64-full.zip",
         downloadUrl: "/api/downloads/releases/artifact_1",
         storedFilePath: null,
-        fileSizeBytes: null,
+        fileSizeBytes: 104857600n,
         fileHash: null,
         allowClientMirror: false
       })
@@ -4780,8 +5021,8 @@ async function testPublishReleaseAllowsUsableExternalWhenSecondaryUploadIsMissin
         fileName: "ChordV_1.1.6_x64-full.zip",
         downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
         storedFilePath: null,
-        fileSizeBytes: null,
-        fileHash: null,
+        fileSizeBytes: 104857600n,
+        fileHash: "a".repeat(64),
         allowClientMirror: false,
         isPrimary: true
       }),
@@ -4823,8 +5064,8 @@ async function testPublishReleaseAllowsWindowsExternalZipWithoutOptionalMetadata
         downloadUrl: "https://cdn.example.com/ChordV_1.1.6_x64-full.zip",
         defaultMirrorPrefix: null,
         storedFilePath: null,
-        fileSizeBytes: null,
-        fileHash: null,
+        fileSizeBytes: 104857600n,
+        fileHash: "a".repeat(64),
         allowClientMirror: false
       })
     ]
@@ -7875,8 +8116,8 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
                 panelBaseUrl: "https://panel.example.com",
                 panelApiBasePath: "/",
                 panelUsername: "admin",
-                panelPassword: "password"
-              }
+      panelPassword: "password"
+    }
             },
             {
               id: "binding_2",
@@ -7892,8 +8133,8 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
                 panelBaseUrl: "https://panel.example.com",
                 panelApiBasePath: "/",
                 panelUsername: "admin",
-                panelPassword: "password"
-              }
+      panelPassword: "password"
+    }
             }
           ];
         }
@@ -7943,8 +8184,8 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
                     panelBaseUrl: "https://panel.example.com",
                     panelApiBasePath: "/",
                     panelUsername: "admin",
-                    panelPassword: "password"
-                  }
+      panelPassword: "password"
+    }
                 },
                 {
                   id: "binding_2",
@@ -7960,8 +8201,8 @@ async function testRenewSubscriptionResetTrafficClearsPanelBaselines() {
                     panelBaseUrl: "https://panel.example.com",
                     panelApiBasePath: "/",
                     panelUsername: "admin",
-                    panelPassword: "password"
-                  }
+      panelPassword: "password"
+    }
                 }
               ];
             },
@@ -8060,8 +8301,8 @@ async function testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFai
               panelBaseUrl: "https://panel.example.com",
               panelApiBasePath: "/",
               panelUsername: "admin",
-              panelPassword: "password"
-            }
+      panelPassword: "password"
+    }
           }
         ]
       },
@@ -8097,8 +8338,8 @@ async function testRenewSubscriptionResetTrafficKeepsLocalUsageWhenPanelQueueFai
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             update: async () => ({})
@@ -8200,8 +8441,8 @@ async function testRenewSubscriptionHttpReturnsPendingWhenResetTrafficPanelQueue
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             update: async () => ({})
@@ -8732,8 +8973,8 @@ async function testResetSubscriptionTrafficKeepsLocalResetWhenPanelQueueFails() 
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             update: async () => ({})
@@ -8837,8 +9078,8 @@ async function testResetSubscriptionTrafficHttpReturnsPendingWhenPanelQueueFails
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             update: async () => ({})
@@ -9007,8 +9248,8 @@ async function testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAft
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             update: async () => ({})
@@ -9116,8 +9357,8 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
                   panelBaseUrl: "https://offline-panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             update: async () => ({})
@@ -9249,8 +9490,8 @@ async function testResetTeamMemberTrafficKeepsLocalResetWhenPanelQueueFails() {
                     panelBaseUrl: "https://offline-panel.example.com",
                     panelApiBasePath: "/",
                     panelUsername: "admin",
-                    panelPassword: "password"
-                  }
+      panelPassword: "password"
+    }
                 }
               ];
             },
@@ -9457,8 +9698,8 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
         panelBaseUrl: "https://panel.example.com",
         panelApiBasePath: "/",
         panelUsername: "admin",
-        panelPassword: "password"
-      }
+      panelPassword: "password"
+    }
     },
     {
       id: "binding_failed",
@@ -9474,8 +9715,8 @@ async function testRenewSubscriptionPartialPanelResetPersistsSuccessfulBaselines
         panelBaseUrl: "https://panel.example.com",
         panelApiBasePath: "/",
         panelUsername: "admin",
-        panelPassword: "password"
-      }
+      panelPassword: "password"
+    }
     }
   ];
 
@@ -10952,6 +11193,9 @@ async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
     });
     const nodes = [makeNode("node_stalled_1"), makeNode("node_stalled_2"), makeNode("node_skipped")];
     const probed: string[] = [];
+    const virtualProbeClock = {
+      now: () => (probed.length === 0 ? 0 : probed.length === 1 ? 50 : 80)
+    };
     const updateManyCalls: Array<Record<string, any>> = [];
     const service = createAdminNodeService({
       logger: {
@@ -10979,7 +11223,7 @@ async function testProbeAllNodesStopsBeforeRequestTimeoutWhenQueueIsLong() {
 
     const startedAt = Date.now();
     const result = await Promise.race([
-      service.probeAllNodes(),
+      service.probeAllNodes(virtualProbeClock),
       new Promise<never>((_resolve, reject) => {
         setTimeout(() => reject(new Error("bulk probe exceeded request budget guard")), 250);
       })
@@ -11566,8 +11810,8 @@ async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
             panelBaseUrl: "https://panel.example.com",
             panelApiBasePath: "/",
             panelUsername: "admin",
-            panelPassword: "password"
-          }
+      panelPassword: "password"
+    }
         }
       ],
       updateMany: async (payload: Record<string, any>) => {
@@ -18676,8 +18920,8 @@ async function testDisablePanelBindingUsesStoredInboundId() {
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ]
           },
@@ -19347,8 +19591,8 @@ async function testListNodePanelInboundsPropagatesOfflinePanelError() {
         panelBaseUrl: "https://panel.example.com",
         panelApiBasePath: "/",
         panelUsername: "admin",
-        panelPassword: "password"
-      }),
+      panelPassword: "password"
+    }),
     (error) => error instanceof ServiceUnavailableException && /panel offline/.test(error.message),
     "offline panel inbound reads must return a controlled 503 instead of HTTP 500"
   );
@@ -19400,8 +19644,8 @@ async function testListNodePanelInboundsTimesOutBeforeXuiDefaultTimeout() {
           panelBaseUrl: "https://panel.example.com",
           panelApiBasePath: "/",
           panelUsername: "admin",
-          panelPassword: "password"
-        }),
+      panelPassword: "password"
+    }),
       (error) => error instanceof ServiceUnavailableException && /inbound list read timed out/.test(error.message),
       "slow panel inbound reads must return controlled 503 instead of a validation-style 400"
     );
@@ -19835,8 +20079,9 @@ async function testUpdateNodePanelMigrationPersistsNewConfigWhenOldCleanupFails(
 
   const record = await service.updateNode("node_1", {
     panelBaseUrl: "https://new-panel.example.com",
-    panelApiBasePath: "/new"
-  });
+    panelApiBasePath: "/new",
+      panelPassword: "password"
+    });
 
   assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
   assert.equal(record.panelApiBasePath, "/new");
@@ -19895,8 +20140,9 @@ async function testUpdateNodePanelMigrationKeepsLocalConfigWhenNewPanelReadFails
 
   const record = await service.updateNode("node_1", {
     panelBaseUrl: "https://new-panel.example.com",
-    panelApiBasePath: "/new"
-  });
+    panelApiBasePath: "/new",
+      panelPassword: "password"
+    });
 
   assert.equal(record.panelBaseUrl, "https://new-panel.example.com");
   assert.equal(record.panelApiBasePath, "/new");
@@ -19970,7 +20216,8 @@ async function testUpdateNodePanelMigrationReturnsWhenOldPanelCleanupStalls() {
   const record = await Promise.race([
     service.updateNode("node_1", {
       panelBaseUrl: "https://new-panel.example.com",
-      panelApiBasePath: "/new"
+      panelApiBasePath: "/new",
+      panelPassword: "password"
     }),
     new Promise<never>((_resolve, reject) => {
       setTimeout(() => reject(new Error("node update waited for stalled old panel cleanup")), 750);
@@ -20029,7 +20276,8 @@ async function testUpdateNodePanelMigrationReturnsWhenNewPanelReadStalls() {
   const record = await Promise.race([
     service.updateNode("node_1", {
       panelBaseUrl: "https://new-panel.example.com",
-      panelApiBasePath: "/new"
+      panelApiBasePath: "/new",
+      panelPassword: "password"
     }),
     new Promise<never>((_resolve, reject) => {
       setTimeout(() => reject(new Error("node update waited for stalled panel runtime read")), 750);
@@ -20094,8 +20342,9 @@ async function testUpdateNodePanelMigrationDoesNotCleanupOldPanelWhenLocalSaveFa
     () =>
       service.updateNode("node_1", {
         panelBaseUrl: "https://new-panel.example.com",
-        panelApiBasePath: "/new"
-      }),
+        panelApiBasePath: "/new",
+      panelPassword: "password"
+    }),
     (error) =>
       error instanceof ServiceUnavailableException &&
       !/local save failed/i.test(error.message) &&
@@ -21243,8 +21492,8 @@ async function testRemovePanelBindingQueuesDeleteWithoutRemoteCall() {
                   panelBaseUrl: "https://panel.example.com",
                   panelApiBasePath: "/",
                   panelUsername: "admin",
-                  panelPassword: "password"
-                }
+      panelPassword: "password"
+    }
               }
             ],
             updateMany: async (payload: Record<string, any>) => {
@@ -21543,7 +21792,8 @@ async function testRuntimeComponentCreateRejectsBlankFileName() {
       kind: "xray",
       source: "custom_remote",
       originUrl: "https://example.com/xray.zip",
-      fileName: "   "
+      fileName: "   ",
+      expectedHash: "a".repeat(64)
     }),
     (error: unknown) => error instanceof BadRequestException,
     "remote runtime component create must reject blank output file names"
@@ -21575,7 +21825,8 @@ async function testRuntimeComponentCreatePersistsRemoteMirrorFields() {
     originUrl: "https://example.com/xray.zip",
     defaultMirrorPrefix: "https://ghfast.top/",
     allowClientMirror: true,
-    fileName: "xray.exe"
+    fileName: "xray.exe",
+      expectedHash: "a".repeat(64)
   });
 
   assert.equal(
@@ -21612,7 +21863,8 @@ async function testRuntimeComponentCreateMapsUniqueIdentityConflict() {
         kind: "xray",
         source: "custom_remote",
         originUrl: "https://example.com/xray.exe",
-        fileName: "xray.exe"
+        fileName: "xray.exe",
+        expectedHash: "a".repeat(64)
       }),
     ConflictException,
     "runtime component duplicate identity must return a controlled 409 instead of HTTP 500"
@@ -21639,7 +21891,8 @@ async function testRuntimeComponentCreateMapsLocalSaveFailure() {
         kind: "xray",
         source: "custom_remote",
         originUrl: "https://example.com/xray.exe",
-        fileName: "xray.exe"
+        fileName: "xray.exe",
+        expectedHash: "a".repeat(64)
       }),
     (error) =>
       error instanceof ServiceUnavailableException &&
@@ -22472,7 +22725,7 @@ async function testRemoteSharedRulesetCreateKeepsSaveWhenCleanupFails() {
 
   assert.equal(result.id, "component_existing");
   assert.equal(result.kind, "geosite");
-  assert.equal(result.expectedHash, null);
+  assert.equal(result.expectedHash, expectedHash);
   assert.equal(cleanupCalls, 0, "shared ruleset cleanup must not block the local save response");
   await waitUntil(() => cleanupCalls > 0);
   assert.equal(cleanupCalls, 1, "shared ruleset cleanup should still be attempted in background");
@@ -23273,7 +23526,8 @@ async function testRuntimeComponentPatchInvalidatesRemoteMetadata() {
   });
 
   await service.updateAdminRuntimeComponent("component_1", {
-    originUrl: "https://example.com/new-xray.zip"
+    originUrl: "https://example.com/new-xray.zip",
+    expectedHash: "b".repeat(64)
   });
 
   assert.equal(updates.length, 1);
@@ -23624,8 +23878,8 @@ async function testRuntimeComponentPatchInvalidatesMetadataWhenExpectedHashChang
   });
 
   assert.equal(updates.length, 1);
-  assert.equal(updates[0].data.expectedHash, null);
-  // expectedHash 已废弃，单独修改它不再清远程文件元数据。
+  assert.equal(updates[0].data.expectedHash, "b".repeat(64));
+  // 单独修改 expectedHash 不应清空远程文件元数据。
   assert.equal(updates[0].data.storedFilePath, undefined);
   assert.equal(updates[0].data.fileSizeBytes, undefined);
   assert.equal(updates[0].data.fileHash, undefined);
@@ -23798,12 +24052,15 @@ async function testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck() {
     status: "draft"
   });
 
+  const externalHash = "a".repeat(64);
   await service.createReleaseArtifact(release.id, {
     source: "external",
     type: "zip",
     deliveryMode: "desktop_full_replace",
     downloadUrl: "https://cdn.example.com/ChordV_1.1.7_x64-full.zip",
     fileName: "ChordV_1.1.7_x64-full.zip",
+    fileHash: externalHash,
+    fileSizeBytes: "104857600",
     isPrimary: true
   });
   await service.publishRelease(release.id);
@@ -23818,8 +24075,8 @@ async function testExternalReleaseFlowPublishesAndFeedsClientUpdateCheck() {
   assert.equal(result.hasUpdate, true);
   assert.equal(result.latestVersion, "1.1.7");
   assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.7_x64-full.zip");
-  assert.equal(result.fileHash, null);
-  assert.equal(result.fileSizeBytes, null);
+  assert.equal(result.fileHash, externalHash);
+  assert.equal(result.fileSizeBytes, "104857600");
   assert.equal(result.recommendedArtifact?.source, "external");
   assert.equal(result.recommendedArtifact?.defaultMirrorPrefix, null);
   assert.equal(result.recommendedArtifact?.allowClientMirror, false);
@@ -23872,7 +24129,7 @@ async function testUploadedReleaseFlowPublishesAndFeedsClientDownloadDescriptor(
     assert.equal(result.hasUpdate, true);
     assert.equal(result.latestVersion, "1.1.8");
     assert.match(result.downloadUrl ?? "", /^\/api\/downloads\/releases\/artifact_/);
-    assert.equal(result.fileHash, null);
+    assert.match(result.fileHash ?? "", /^[a-f0-9]{64}$/);
     assert.equal(result.fileSizeBytes, String(Buffer.byteLength(uploadBody)));
     assert.equal(result.recommendedArtifact?.source, "uploaded");
     assert.equal(result.recommendedArtifact?.defaultMirrorPrefix, null);
@@ -24946,7 +25203,7 @@ async function testUpdateUploadedReleaseArtifactToExternalDeletesOldFile() {
                 downloadUrl: "https://example.com/new.zip",
                 storedFilePath: null,
                 fileName: null,
-                fileSizeBytes: null,
+                fileSizeBytes: 104857600n,
                 fileHash: null
               })
             ]
@@ -25254,6 +25511,94 @@ async function testPublishWindowsReleaseAllowsClientUsableArtifact() {
   });
 
   await service["assertReleasePublishable"]("release_1");
+}
+
+
+async function testReleaseArtifactContentValidationMatchesDownloadedBytes() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "release-content-validation-"));
+  const artifactPath = path.join(tempDir, "artifact.bin");
+  const body = Buffer.from("verified external artifact");
+  await writeFile(artifactPath, body);
+  const actualHash = createHash("sha256").update(body).digest("hex");
+  const artifact = makeReleaseCenterTestArtifact({
+    source: "external",
+    type: "dmg",
+    deliveryMode: "desktop_installer_download",
+    downloadUrl: "https://cdn.example.com/ChordV.dmg",
+    fileName: "ChordV.dmg",
+    fileSizeBytes: BigInt(body.byteLength),
+    fileHash: actualHash
+  });
+  let cleanupCalls = 0;
+  try {
+    const service = createReleaseCenterService({
+      assertReleaseArtifactContentMatchesMetadata:
+        (ReleaseCenterService.prototype as any).assertReleaseArtifactContentMatchesMetadata,
+      downloadExternalReleaseArtifactForValidation: async () => ({
+        absolutePath: artifactPath,
+        resolvedUrl: artifact.downloadUrl,
+        fileName: artifact.fileName,
+        fileSizeBytes: BigInt(body.byteLength),
+        fileHash: actualHash,
+        cleanup: async () => {
+          cleanupCalls += 1;
+        }
+      })
+    });
+
+    await service["assertReleaseArtifactContentMatchesMetadata"](artifact, "macos");
+    assert.equal(cleanupCalls, 1, "successful external validation must clean its temporary file");
+
+    await assert.rejects(
+      () =>
+        service["assertReleaseArtifactContentMatchesMetadata"](
+          { ...artifact, fileHash: "0".repeat(64) },
+          "macos"
+        ),
+      /SHA-256/
+    );
+    assert.equal(cleanupCalls, 2, "failed external validation must also clean its temporary file");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function testReleaseArtifactContentValidationRejectsInvalidWindowsZip() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "release-content-invalid-zip-"));
+  const artifactPath = path.join(tempDir, "ChordV-full.zip");
+  const body = Buffer.from("not a zip");
+  await writeFile(artifactPath, body);
+  const actualHash = createHash("sha256").update(body).digest("hex");
+  const artifact = makeReleaseCenterTestArtifact({
+    source: "external",
+    type: "zip",
+    deliveryMode: "desktop_full_replace",
+    downloadUrl: "https://cdn.example.com/ChordV-full.zip",
+    fileName: "ChordV-full.zip",
+    fileSizeBytes: BigInt(body.byteLength),
+    fileHash: actualHash
+  });
+  try {
+    const service = createReleaseCenterService({
+      assertReleaseArtifactContentMatchesMetadata:
+        (ReleaseCenterService.prototype as any).assertReleaseArtifactContentMatchesMetadata,
+      downloadExternalReleaseArtifactForValidation: async () => ({
+        absolutePath: artifactPath,
+        resolvedUrl: artifact.downloadUrl,
+        fileName: artifact.fileName,
+        fileSizeBytes: BigInt(body.byteLength),
+        fileHash: actualHash,
+        cleanup: async () => undefined
+      })
+    });
+
+    await assert.rejects(
+      () => service["assertReleaseArtifactContentMatchesMetadata"](artifact, "windows"),
+      /ZIP/
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function testUploadWindowsReleaseRejectsExeFileName() {
@@ -25720,11 +26065,9 @@ async function testUpdateCheckAllowsUploadedArtifactWithoutMetadata() {
       artifactType: "zip"
     });
 
-    assert.equal(result.hasUpdate, true, "client update check should announce uploaded packages without size/hash metadata");
-    assert.equal(result.recommendedArtifact?.id, "artifact_null_metadata");
-    assert.equal(result.downloadUrl, "/api/downloads/releases/artifact_null_metadata");
-    assert.equal(result.fileSizeBytes, null);
-    assert.equal(result.fileHash, null);
+    assert.equal(result.hasUpdate, false, "client update check must not announce uploaded packages without SHA-256 metadata");
+    assert.equal(result.recommendedArtifact, null);
+    assert.equal(result.downloadUrl, null);
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -25879,13 +26222,9 @@ async function testWindowsUpdateCheckKeepsExternalZipWithoutHashMetadata() {
     artifactType: "zip"
   });
 
-  assert.equal(result.hasUpdate, true);
-  assert.equal(result.deliveryMode, "desktop_full_replace");
-  assert.equal(result.downloadUrl, "https://cdn.example.com/ChordV_1.1.3_x64-full.zip");
-  assert.equal(result.recommendedArtifact?.source, "external");
-  assert.equal(result.recommendedArtifact?.type, "zip");
-  assert.equal(result.fileSizeBytes, null);
-  assert.equal(result.fileHash, null);
+  assert.equal(result.hasUpdate, false, "client update check must not announce external packages without SHA-256 metadata");
+  assert.equal(result.recommendedArtifact, null);
+  assert.equal(result.downloadUrl, null);
 }
 
 async function testWindowsUpdateCheckSkipsClientUnusablePublishedArtifact() {
@@ -34219,7 +34558,8 @@ async function main() {
   testReleaseArtifactPathTraversalIsRejected();
   testUploadedReleaseArtifactDoesNotUseClientMirror();
   testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads();
-  testReleaseArtifactClientUsableAllowsHttpFullReplacementUrl();
+  testReleaseArtifactClientUsableRejectsHttpFullReplacementUrl();
+  testReleaseArtifactClientUsableRejectsMissingFileHash();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
   await testExternalReleaseMetadataMapsHttp500ToBadRequest();
@@ -34585,6 +34925,8 @@ async function main() {
   await testCreateReleaseArtifactRejectsBlankExternalDownloadUrl();
   await testPublishWindowsReleaseRejectsClientUnusableArtifact();
   await testPublishWindowsReleaseAllowsClientUsableArtifact();
+  await testReleaseArtifactContentValidationMatchesDownloadedBytes();
+  await testReleaseArtifactContentValidationRejectsInvalidWindowsZip();
   await testUploadWindowsReleaseRejectsExeFileName();
   await testReleaseCleanupBestEffortReturnsWhenCleanupStalls();
   await testDeleteReleaseStartsCleanupAfterLocalReturn();

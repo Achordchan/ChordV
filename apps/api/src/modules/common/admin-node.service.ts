@@ -15,6 +15,7 @@ import type {
   UpdateNodeInputDto
 } from "@chordv/shared";
 import { XuiService } from "../xui/xui.service";
+import { decryptPanelPassword, encryptPanelPassword } from "./panel-password-crypto";
 import { PrismaService } from "./prisma.service";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { ClientEventsPublisher } from "./client-events.publisher";
@@ -32,6 +33,13 @@ import {
   toAdminNodeRecord,
   toNodeId
 } from "./node-import.utils";
+
+export type AdminNodeProbeClock = {
+  now: () => number;
+};
+const SYSTEM_ADMIN_NODE_PROBE_CLOCK: AdminNodeProbeClock = {
+  now: () => Date.now()
+};
 
 const NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS = 300;
 const NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS = 50;
@@ -367,7 +375,20 @@ export class AdminNodeService {
     const nextPanelBaseUrl = panelBaseUrl ?? current?.panelBaseUrl ?? null;
     const nextPanelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/");
     const nextPanelUsername = panelUsername ?? current?.panelUsername ?? null;
-    const nextPanelPassword = panelPassword ?? current?.panelPassword ?? null;
+    const panelIdentityChanged = Boolean(
+      current &&
+        (
+          (panelBaseUrl !== null && panelBaseUrl !== (current.panelBaseUrl ?? null)) ||
+          normalizePanelApiBasePath(input.panelApiBasePath ?? current?.panelApiBasePath ?? "/") !==
+            normalizePanelApiBasePath(current.panelApiBasePath ?? "/") ||
+          (panelUsername !== null && panelUsername !== (current.panelUsername ?? null))
+        )
+    );
+    if (!panelPassword && panelIdentityChanged) {
+      throw new BadRequestException("面板地址、路径或账号已变更，请重新输入面板密码。");
+    }
+    const nextPanelPassword =
+      panelPassword ?? decryptPanelPassword(current?.panelPassword) ?? null;
     const resolvedInboundId = readRuntimeInboundId(imported);
     const nextPanelInboundId = input.panelInboundId ?? current?.panelInboundId ?? resolvedInboundId ?? null;
     const nextCountry = resolveNodeCountry({
@@ -391,7 +412,7 @@ export class AdminNodeService {
         nextPanelBaseUrl !== current.panelBaseUrl ||
         nextPanelApiBasePath !== current.panelApiBasePath ||
         nextPanelUsername !== current.panelUsername ||
-        nextPanelPassword !== current.panelPassword ||
+        nextPanelPassword !== decryptPanelPassword(current.panelPassword) ||
         nextPanelInboundId !== current.panelInboundId
       )
     );
@@ -428,7 +449,7 @@ export class AdminNodeService {
           panelBaseUrl: nextPanelBaseUrl,
           panelApiBasePath: nextPanelApiBasePath,
           panelUsername: nextPanelUsername,
-          panelPassword: nextPanelPassword,
+          panelPassword: encryptPanelPassword(nextPanelPassword),
           panelInboundId: nextPanelInboundId,
           panelEnabled: nextPanelEnabled,
           panelStatus: nextPanelEnabled ? current?.panelStatus ?? "offline" : "offline",
@@ -457,7 +478,7 @@ export class AdminNodeService {
           panelBaseUrl: nextPanelBaseUrl,
           panelApiBasePath: nextPanelApiBasePath,
           panelUsername: nextPanelUsername,
-          panelPassword: nextPanelPassword,
+          panelPassword: encryptPanelPassword(nextPanelPassword),
           panelInboundId: nextPanelInboundId,
           panelEnabled: nextPanelEnabled,
           ...(!nextPanelEnabled ? { panelStatus: "offline", panelError: null } : {})
@@ -478,6 +499,7 @@ export class AdminNodeService {
           panelBaseUrl: current.panelBaseUrl,
           panelApiBasePath: current.panelApiBasePath,
           panelUsername: current.panelUsername,
+          // Keep ciphertext for PanelSyncJob snapshots; encrypt/decrypt only at storage/use edges.
           panelPassword: current.panelPassword
         });
         if (result.failed.length > 0) {
@@ -518,16 +540,54 @@ export class AdminNodeService {
     panelBaseUrl: string;
     panelApiBasePath?: string;
     panelUsername: string;
-    panelPassword: string;
+    panelPassword?: string;
+    nodeId?: string;
   }): Promise<AdminNodePanelInboundDto[]> {
+    const panelBaseUrl = input.panelBaseUrl?.trim() || "";
+    const panelApiBasePath = normalizePanelApiBasePath(input.panelApiBasePath ?? "/");
+    const panelUsername = input.panelUsername?.trim() || "";
+    let panelPassword = input.panelPassword?.trim() || "";
+
+    // 复用已存密码时，必须使用完整已存连接配置，禁止把旧密码发到请求方提供的新地址。
+    if (!panelPassword && input.nodeId?.trim()) {
+      const node = await this.prisma.node.findUnique({
+        where: { id: input.nodeId.trim() },
+        select: {
+          panelBaseUrl: true,
+          panelApiBasePath: true,
+          panelUsername: true,
+          panelPassword: true
+        }
+      });
+      if (!node?.panelPassword?.trim()) {
+        throw new BadRequestException("面板密码不能为空。");
+      }
+      const storedBaseUrl = node.panelBaseUrl?.trim() || "";
+      const storedApiBasePath = normalizePanelApiBasePath(node.panelApiBasePath ?? "/");
+      const storedUsername = node.panelUsername?.trim() || "";
+      if (
+        storedBaseUrl !== panelBaseUrl ||
+        storedApiBasePath !== panelApiBasePath ||
+        storedUsername !== panelUsername
+      ) {
+        throw new BadRequestException("面板地址、路径或账号已变更，请重新输入面板密码。");
+      }
+      panelPassword = decryptPanelPassword(node.panelPassword) ?? "";
+    }
+    if (!panelPassword) {
+      throw new BadRequestException("面板密码不能为空。");
+    }
+    if (!panelBaseUrl || !panelUsername) {
+      throw new BadRequestException("面板地址和账号不能为空。");
+    }
     const budgetMs = readListNodePanelInboundsBudgetMs();
     const inbounds = await this.readNodePanelInboundsWithBudget(
       this.xuiService.listInbounds({
         id: createId("panel"),
-        panelBaseUrl: input.panelBaseUrl,
-        panelApiBasePath: input.panelApiBasePath ?? "/",
-        panelUsername: input.panelUsername,
-        panelPassword: input.panelPassword,
+        panelBaseUrl,
+        panelApiBasePath,
+        panelUsername,
+        panelPassword,
         panelInboundId: null,
         panelRequestTimeoutMs: budgetMs,
         panelAbortSignal: AbortSignal.timeout(budgetMs)
@@ -642,7 +702,20 @@ export class AdminNodeService {
     const nextPanelApiBasePath =
       input.panelApiBasePath !== undefined ? normalizePanelApiBasePath(input.panelApiBasePath) : current.panelApiBasePath;
     const nextPanelUsername = input.panelUsername !== undefined ? input.panelUsername?.trim() || null : current.panelUsername;
-    const nextPanelPassword = input.panelPassword !== undefined ? input.panelPassword?.trim() || null : current.panelPassword;
+    const panelIdentityChanged =
+      (input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
+      (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
+      (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false);
+    // Never reuse a stored password against a new panel address/path/username.
+    // Old credentials remain available only for cleanup of the previous panel binding.
+    let nextPanelPassword: string | null;
+    if (input.panelPassword !== undefined) {
+      nextPanelPassword = input.panelPassword?.trim() || null;
+    } else if (panelIdentityChanged) {
+      throw new BadRequestException("面板地址、路径或账号已变更，请重新输入面板密码。");
+    } else {
+      nextPanelPassword = decryptPanelPassword(current.panelPassword);
+    }
     const nextPanelInboundId =
       input.panelInboundId !== undefined ? input.panelInboundId : current.panelInboundId;
     const nextPanelEnabled =
@@ -660,7 +733,7 @@ export class AdminNodeService {
       (input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
       (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
       (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false) ||
-      (input.panelPassword !== undefined ? nextPanelPassword !== current.panelPassword : false) ||
+      (input.panelPassword !== undefined ? nextPanelPassword !== decryptPanelPassword(current.panelPassword) : false) ||
       (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false) ||
       (input.panelEnabled !== undefined ? nextPanelEnabled !== current.panelEnabled : false);
     const panelConnectionChanged =
@@ -669,7 +742,7 @@ export class AdminNodeService {
       ((input.panelBaseUrl !== undefined ? nextPanelBaseUrl !== current.panelBaseUrl : false) ||
         (input.panelApiBasePath !== undefined ? nextPanelApiBasePath !== current.panelApiBasePath : false) ||
         (input.panelUsername !== undefined ? nextPanelUsername !== current.panelUsername : false) ||
-        (input.panelPassword !== undefined ? nextPanelPassword !== current.panelPassword : false) ||
+        (input.panelPassword !== undefined ? nextPanelPassword !== decryptPanelPassword(current.panelPassword) : false) ||
         (input.panelInboundId !== undefined ? nextPanelInboundId !== current.panelInboundId : false));
     const panelWillBeDisabled = current.panelEnabled && !nextPanelEnabled;
     const nodeWillBeDisabled = current.isActive && input.isActive === false;
@@ -721,7 +794,7 @@ export class AdminNodeService {
           ...(input.panelBaseUrl !== undefined ? { panelBaseUrl: input.panelBaseUrl?.trim() || null } : {}),
           ...(input.panelApiBasePath !== undefined ? { panelApiBasePath: normalizePanelApiBasePath(input.panelApiBasePath) } : {}),
           ...(input.panelUsername !== undefined ? { panelUsername: input.panelUsername?.trim() || null } : {}),
-          ...(input.panelPassword !== undefined ? { panelPassword: input.panelPassword?.trim() || null } : {}),
+          ...(input.panelPassword !== undefined ? { panelPassword: encryptPanelPassword(input.panelPassword?.trim() || null) } : {}),
           ...(input.panelInboundId !== undefined
             ? { panelInboundId: input.panelInboundId }
             : shouldPersistDerivedInboundId
@@ -765,6 +838,7 @@ export class AdminNodeService {
           panelBaseUrl: current.panelBaseUrl,
           panelApiBasePath: current.panelApiBasePath,
           panelUsername: current.panelUsername,
+          // Keep ciphertext for PanelSyncJob snapshots; encrypt/decrypt only at storage/use edges.
           panelPassword: current.panelPassword
         });
         if (result.failed.length > 0) {
@@ -948,7 +1022,7 @@ export class AdminNodeService {
         panelBaseUrl: current.panelBaseUrl,
         panelApiBasePath: current.panelApiBasePath,
         panelUsername: current.panelUsername,
-        panelPassword: current.panelPassword,
+        panelPassword: decryptPanelPassword(current.panelPassword),
         panelInboundId: current.panelInboundId,
         panelRequestTimeoutMs: budgetMs,
         panelAbortSignal: AbortSignal.timeout(budgetMs)
@@ -1195,7 +1269,7 @@ export class AdminNodeService {
           panelBaseUrl: current.panelBaseUrl,
           panelApiBasePath: current.panelApiBasePath,
           panelUsername: current.panelUsername,
-          panelPassword: current.panelPassword,
+          panelPassword: decryptPanelPassword(current.panelPassword),
           panelInboundId: current.panelInboundId,
           panelRequestTimeoutMs: panelProbeBudgetMs,
           panelAbortSignal: AbortSignal.timeout(panelProbeBudgetMs)
@@ -1253,7 +1327,7 @@ export class AdminNodeService {
     });
   }
 
-  async probeAllNodes() {
+  async probeAllNodes(clock: AdminNodeProbeClock = SYSTEM_ADMIN_NODE_PROBE_CLOCK) {
     const nodes = await runAdminNodeLocalOperation(
       () => this.prisma.node.findMany({ orderBy: { createdAt: "desc" } }),
       "节点列表读取失败，请刷新后重试。"
@@ -1261,11 +1335,11 @@ export class AdminNodeService {
     const results = new Array<AdminNodeRecordDto>(nodes.length);
     let nextIndex = 0;
     const requestBudgetMs = readBulkNodeProbeRequestBudgetMs();
-    const deadlineAt = Date.now() + requestBudgetMs;
+    const deadlineAt = clock.now() + requestBudgetMs;
     const workerCount = Math.min(nodes.length, readBulkNodeProbeConcurrency());
     const workers = Array.from({ length: workerCount }, async () => {
       while (nextIndex < nodes.length) {
-        const remainingBudgetMs = deadlineAt - Date.now();
+        const remainingBudgetMs = deadlineAt - clock.now();
         if (remainingBudgetMs <= BULK_NODE_PROBE_START_GUARD_MS) {
           return;
         }

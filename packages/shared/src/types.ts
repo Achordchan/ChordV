@@ -520,7 +520,7 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   panelBaseUrl: string | null;
   panelApiBasePath: string | null;
   panelUsername: string | null;
-  panelPassword: string | null;
+  hasPanelPassword: boolean;
   panelInboundId: number | null;
   panelEnabled: boolean;
   panelStatus: XuiPanelStatus;
@@ -757,7 +757,9 @@ export interface UploadedSupportTicketAttachmentInputDto {
 }
 
 export interface UploadedSupportTicketAttachmentReferenceInputDto {
+  uploadToken: string;
   url: string;
+  providerFileId?: string | null;
   fileName: string;
   mimeType: string;
   fileSizeBytes: string | null;
@@ -1190,22 +1192,27 @@ export interface CreateReleaseArtifactInputDto {
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
   fileName?: string | null;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
   isPrimary?: boolean;
 }
 
-export interface CreateRuntimeComponentInputDto {
+type CreateRuntimeComponentInputBase = {
   platform: PlatformTarget;
   architecture: RuntimeComponentArchitecture;
   kind: RuntimeComponentKind;
-  source?: Exclude<RuntimeComponentSource, "uploaded">;
-  originUrl?: string;
+  originUrl: string;
   defaultMirrorPrefix?: string | null;
   allowClientMirror?: boolean;
   fileName: string;
   archiveEntryName?: string | null;
-  expectedHash?: string | null;
+  expectedHash: string;
   enabled?: boolean;
-}
+};
+
+export type CreateRuntimeComponentInputDto =
+  | (CreateRuntimeComponentInputBase & { source?: "github_remote" })
+  | (CreateRuntimeComponentInputBase & { source: "custom_remote" });
 
 export interface UploadRuntimeComponentInputDto {
   platform: PlatformTarget;
@@ -1253,6 +1260,8 @@ export interface UpdateReleaseArtifactInputDto {
   allowClientMirror?: boolean;
   fileName?: string | null;
   isPrimary?: boolean;
+  fileSizeBytes?: string | null;
+  fileHash?: string | null;
 }
 
 export interface UploadReleaseArtifactInputDto {

@@ -18,6 +18,7 @@ const copyTargets = [
   "apps/api/prisma",
   "packages/shared/package.json",
   "packages/shared/tsconfig.json",
+  "packages/shared/scripts",
   "packages/shared/src",
   "apps/admin/dist",
   "deploy/1panel/chordv/Dockerfile.api",

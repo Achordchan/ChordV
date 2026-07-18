@@ -139,7 +139,8 @@ function buildUpdateArtifactIdentity(update: ClientUpdateCheckResult | null) {
     artifact?.originDownloadUrl ?? "",
     artifact?.fileName ?? "",
     artifact?.fileType ?? "",
-    artifact?.fileSizeBytes ?? ""
+    artifact?.fileSizeBytes ?? "",
+    artifact?.fileHash ?? ""
   ].join("|");
 }
 
@@ -315,10 +316,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
     ) {
       try {
         if (fullReplaceUpdate) {
-          await applyDesktopFullUpdate({
-            path: updateDownload.localPath,
-            expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-          });
+          await applyDesktopFullUpdate();
         } else {
           await openDesktopInstaller(updateDownload.localPath);
         }
@@ -357,9 +355,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       try {
         const downloadPackage = fullReplaceUpdate ? downloadDesktopFullUpdatePackage : downloadDesktopInstaller;
         result = await downloadPackage({
-          url: resolvedDownloadUrl,
+          preferredCandidate: "mirror",
           fileName: preferredFileName,
-          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+          currentVersion: options.appVersion,
+          channel: "stable",
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
@@ -376,9 +375,10 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
         }));
         const downloadPackage = fullReplaceUpdate ? downloadDesktopFullUpdatePackage : downloadDesktopInstaller;
         result = await downloadPackage({
-          url: originDownloadUrl,
+          preferredCandidate: "origin",
           fileName: preferredFileName,
-          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
+          currentVersion: options.appVersion,
+          channel: "stable",
           onProgress: (progress) => {
             setUpdateDownload((current) => normalizeUpdateDownloadProgress(current, progress));
           }
@@ -400,10 +400,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
 
       completedDownloadIdentityRef.current = updateArtifactIdentity;
       if (fullReplaceUpdate) {
-        await applyDesktopFullUpdate({
-          path: result.localPath,
-          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-        });
+        await applyDesktopFullUpdate();
         return true;
       }
 
@@ -810,10 +807,7 @@ export function useUpdateFlow(options: UseUpdateFlowOptions) {
       // 清空更新状态，避免重启后短暂显示旧的“有更新”提示
       setUpdateCheckResult(null);
       if (effectiveUpdate && isFullReplaceUpdate(effectiveUpdate, updatePlatform)) {
-        await applyDesktopFullUpdate({
-          path: updateDownload.localPath,
-          expectedTotalBytes: effectiveUpdate.artifact?.fileSizeBytes ?? null,
-        });
+        await applyDesktopFullUpdate();
       } else {
         await openDesktopInstaller(updateDownload.localPath);
         await quitForUpdate();

@@ -1494,11 +1494,17 @@ export function App() {
     }
   }
 
-  async function handleLoadNodePanelInbounds(form: NodeFormState = nodeForm, options: { automatic?: boolean } = {}) {
-    if (!form.panelBaseUrl || !form.panelUsername || !form.panelPassword) {
+  async function handleLoadNodePanelInbounds(
+    form: NodeFormState = nodeForm,
+    options: { automatic?: boolean; nodeId?: string | null } = {}
+  ) {
+    const nodeId = options.nodeId ?? (drawer.type === "node" ? drawer.recordId : null);
+    const editingNode = nodeId ? nodes.find((item) => item.id === nodeId) : null;
+    const canUseSavedPassword = Boolean(editingNode?.hasPanelPassword && !form.panelPassword.trim());
+    if (!form.panelBaseUrl || !form.panelUsername || (!form.panelPassword && !canUseSavedPassword)) {
       notifications.show({
         title: "缺少面板信息",
-        message: "请先填写面板地址、账号和密码",
+        message: canUseSavedPassword ? "请先填写面板地址和账号" : "请先填写面板地址、账号和密码",
         color: "yellow"
       });
       return;
@@ -1510,7 +1516,8 @@ export function App() {
         panelBaseUrl: form.panelBaseUrl,
         panelApiBasePath: form.panelApiBasePath || "/",
         panelUsername: form.panelUsername,
-        panelPassword: form.panelPassword
+        panelPassword: form.panelPassword || undefined,
+        nodeId: editingNode?.id
       });
       setNodePanelInbounds(result);
 
@@ -2069,14 +2076,14 @@ export function App() {
           panelBaseUrl: record.panelBaseUrl ?? "",
           panelApiBasePath: record.panelApiBasePath ?? "/",
           panelUsername: record.panelUsername ?? "",
-          panelPassword: record.panelPassword ?? "",
+          panelPassword: "",
           panelInboundId: record.panelInboundId ?? 1,
           panelEnabled: record.panelEnabled
         };
         setNodePanelInbounds([]);
         setNodeForm(nextForm);
-        if (nextForm.panelBaseUrl && nextForm.panelUsername && nextForm.panelPassword) {
-          void handleLoadNodePanelInbounds(nextForm, { automatic: true });
+        if (nextForm.panelBaseUrl && nextForm.panelUsername && (record.hasPanelPassword || nextForm.panelPassword)) {
+          void handleLoadNodePanelInbounds(nextForm, { automatic: true, nodeId: recordId });
         }
       } else {
         setNodePanelInbounds([]);
@@ -2288,11 +2295,13 @@ export function App() {
       }
 
       if (drawer.type === "node") {
+        const editingNode = drawer.recordId ? nodes.find((item) => item.id === drawer.recordId) : null;
+        const hasExistingPanelPassword = Boolean(editingNode?.hasPanelPassword);
         if (
           nodeForm.panelEnabled &&
           (!nodeForm.panelBaseUrl.trim() ||
             !nodeForm.panelUsername.trim() ||
-            !nodeForm.panelPassword.trim() ||
+            (!nodeForm.panelPassword.trim() && !hasExistingPanelPassword) ||
             !Number.isFinite(Number(nodeForm.panelInboundId)) ||
             Number(nodeForm.panelInboundId) <= 0)
         ) {

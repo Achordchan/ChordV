@@ -149,7 +149,7 @@ export function toNodeId(host: string, port: number) {
 
 export async function fetchSubscriptionNode(subscriptionUrl: string) {
   const timeoutMs = Number(process.env.CHORDV_SUBSCRIPTION_TIMEOUT_MS ?? 15000);
-  const allowInsecureTls = (process.env.CHORDV_SUBSCRIPTION_ALLOW_INSECURE_TLS ?? "true").toLowerCase() === "true";
+  const allowInsecureTls = (process.env.CHORDV_SUBSCRIPTION_ALLOW_INSECURE_TLS ?? "false").toLowerCase() === "true";
   let response: Awaited<ReturnType<typeof undiciFetch>>;
   try {
     response = await undiciFetch(subscriptionUrl, {
@@ -266,7 +266,7 @@ export function toAdminNodeRecord(row: {
     panelBaseUrl: row.panelBaseUrl,
     panelApiBasePath: row.panelApiBasePath,
     panelUsername: row.panelUsername,
-    panelPassword: row.panelPassword,
+    hasPanelPassword: Boolean(row.panelPassword && row.panelPassword.trim()),
     panelInboundId: row.panelInboundId,
     panelEnabled: row.panelEnabled,
     panelStatus: row.panelStatus,

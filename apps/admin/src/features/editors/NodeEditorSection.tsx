@@ -110,6 +110,7 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
           label="面板密码"
           type="password"
           value={props.nodeForm.panelPassword}
+          placeholder="留空则保留已保存密码"
           onChange={(event) => props.setNodeForm((current) => ({ ...current, panelPassword: event.currentTarget.value }))}
         />
       </Group>

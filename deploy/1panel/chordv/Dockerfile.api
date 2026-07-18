@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:20.19.0-bookworm-slim
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
@@ -16,6 +16,7 @@ RUN pnpm install --filter @chordv/api... --frozen-lockfile
 
 COPY apps/api apps/api
 COPY packages/shared packages/shared
+COPY scripts/prisma-migrate-with-baseline.mjs scripts/prisma-migrate-with-baseline.mjs
 
 RUN pnpm --filter @chordv/shared build \
   && pnpm --filter @chordv/api db:generate \
@@ -23,7 +24,9 @@ RUN pnpm --filter @chordv/shared build \
 
 ENV NODE_ENV=production
 ENV CHORDV_API_PORT=3000
+# Production must provide CHORDV_PANEL_PASSWORD_MASTER_KEY (32-byte hex/base64) at runtime.
 
 EXPOSE 3000
 
-CMD ["node", "apps/api/dist/apps/api/src/main.js"]
+# Pre-existing db-push databases are baselined before migrate deploy.
+CMD ["sh", "-c", "node scripts/prisma-migrate-with-baseline.mjs && node apps/api/dist/apps/api/src/main.js"]

@@ -69,7 +69,8 @@ export function fetchNodePanelInbounds(input: {
   panelBaseUrl: string;
   panelApiBasePath?: string;
   panelUsername: string;
-  panelPassword: string;
+  panelPassword?: string;
+  nodeId?: string;
 }) {
   return request<AdminNodePanelInboundDto[]>("/admin/nodes/panel-inbounds", {
     method: "POST",

@@ -85,8 +85,7 @@ export class RuntimeComponentsService {
       throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
     const source = input.source ?? "github_remote";
-    // 不再收集/下发文件 SHA256；兼容字段统一置空。
-    const expectedHash = null;
+    const expectedHash = requireRuntimeComponentSha256(input.expectedHash);
     const normalizedInput = normalizeRuntimeComponentIdentity(input.platform, input.architecture, input.kind);
     const fileName = normalizeRequiredText(input.fileName, "fileName");
     if (isSharedRuleset(input.kind)) {
@@ -228,13 +227,22 @@ export class RuntimeComponentsService {
     if (nextSource !== "uploaded" && (!nextOriginUrl || !isHttpUrl(nextOriginUrl))) {
       throw new BadRequestException("远程运行组件需要填写有效的 HTTP(S) 源地址。");
     }
-    // expectedHash 已废弃，不再参与更新/下发门禁。
-    const normalizedExpectedHash = null;
+    // 上传型组件以服务端 fileHash 为准，忽略客户端手填 expectedHash。
+    // 远程组件在 originUrl/source 变化时必须提供新哈希，禁止继承旧哈希。
     const remoteValidationInvalidated =
       nextSource !== "uploaded" &&
       (current.source === "uploaded" ||
         nextSource !== current.source ||
         nextOriginUrl !== current.originUrl);
+    if (remoteValidationInvalidated && input.expectedHash === undefined) {
+      throw new BadRequestException("修改远程组件来源地址后必须同时提供新的 expectedHash。");
+    }
+    const normalizedExpectedHash =
+      nextSource === "uploaded"
+        ? null
+        : input.expectedHash !== undefined
+          ? requireRuntimeComponentSha256(input.expectedHash)
+          : normalizeSha256Hex(current.expectedHash);
     const staleUploadedFilePath =
       remoteValidationInvalidated && current.storedFilePath ? current.storedFilePath : null;
 
@@ -246,7 +254,7 @@ export class RuntimeComponentsService {
           ...(input.originUrl !== undefined ? { originUrl: nextOriginUrl } : {}),
           ...(input.fileName !== undefined ? { fileName: nextFileName } : {}),
           ...(input.archiveEntryName !== undefined ? { archiveEntryName: normalizeNullableText(input.archiveEntryName) } : {}),
-          expectedHash: null,
+          expectedHash: normalizedExpectedHash,
           ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
           ...(input.defaultMirrorPrefix !== undefined
             ? { defaultMirrorPrefix: normalizeMirrorPrefixList(input.defaultMirrorPrefix) }
@@ -464,20 +472,9 @@ export class RuntimeComponentsService {
     }
     const sharedRulesetRows = dedupeSharedRulesets(sharedRuleRowsRaw);
     const rows = await filterClientUsableRuntimeComponents([...runtimeRows, ...sharedRulesetRows]);
-
-    if (!hasCompleteRuntimeComponentSet(rows)) {
-      return {
-        platform: input.platform,
-        architecture: input.architecture,
-        components: []
-      };
-    }
-
     const globalMirror = await this.downloadMirrorService.getEffectiveConfig();
-    return {
-      platform: input.platform,
-      architecture: input.architecture,
-      components: rows.map((row) => {
+    const components = rows
+      .map((row) => {
         const originUrl = row.originUrl.trim();
         const isRemoteHttp = row.source !== "uploaded" && isHttpUrl(originUrl);
         const defaultMirrorPrefix = isRemoteHttp ? globalMirror.defaultMirrorPrefix : null;
@@ -490,6 +487,7 @@ export class RuntimeComponentsService {
               clientMirrorPrefix
             })
           : [{ label: "origin" as const, url: originUrl }];
+        const expectedHash = normalizeSha256Hex(row.source === "uploaded" ? row.fileHash : (row.fileHash ?? row.expectedHash));
 
         return {
           id: row.id,
@@ -505,7 +503,7 @@ export class RuntimeComponentsService {
             originUrl,
             archiveEntryName: row.archiveEntryName
           }),
-          expectedHash: null,
+          expectedHash,
           allowClientMirror,
           originUrl,
           defaultMirrorPrefix,
@@ -513,6 +511,21 @@ export class RuntimeComponentsService {
           candidates
         };
       })
+      .filter((component) => Boolean(component.expectedHash));
+
+    // 先过滤不可交付组件，再检查三类必要组件是否齐全，避免返回残缺计划。
+    if (!hasCompleteRuntimeComponentSet(components)) {
+      return {
+        platform: input.platform,
+        architecture: input.architecture,
+        components: []
+      };
+    }
+
+    return {
+      platform: input.platform,
+      architecture: input.architecture,
+      components
     };
   }
 
@@ -1072,6 +1085,34 @@ async function toAdminRuntimeComponentRecord(row: {
   };
 }
 
+
+function normalizeSha256Hex(value: string | null | undefined) {
+  const raw = value?.trim() ?? "";
+  if (!/^[a-fA-F0-9]{64}$/.test(raw)) {
+    return null;
+  }
+  return raw.toLowerCase();
+}
+
+function requireRuntimeComponentSha256(value: string | null | undefined) {
+  const normalized = normalizeSha256Hex(value);
+  if (!normalized) {
+    throw new BadRequestException("远程运行组件必须提供有效的 64 位 SHA-256 expectedHash。");
+  }
+  return normalized;
+}
+function hasValidRuntimeComponentHash(row: {
+  source?: string;
+  fileHash?: string | null;
+  expectedHash?: string | null;
+}) {
+  // 上传型以服务端落盘 fileHash 为准；远程型允许 fileHash 或 expectedHash。
+  if (row.source === "uploaded") {
+    return Boolean(normalizeSha256Hex(row.fileHash));
+  }
+  return Boolean(normalizeSha256Hex(row.fileHash ?? row.expectedHash));
+}
+
 async function resolveAdminRuntimeComponentClientDelivery(row: {
   source: "uploaded" | "github_remote" | "custom_remote";
   originUrl: string;
@@ -1115,6 +1156,13 @@ async function resolveAdminRuntimeComponentClientDelivery(row: {
         message: `上传型组件服务器文件不可用，不会下发给客户端：${readErrorMessage(error)}`
       };
     }
+    if (!hasValidRuntimeComponentHash(row)) {
+      return {
+        deliverable: false,
+        status: "missing_file",
+        message: "组件缺少有效的 SHA-256 校验值，不会下发给客户端。"
+      };
+    }
     return {
       deliverable: true,
       status: "ready",
@@ -1126,6 +1174,13 @@ async function resolveAdminRuntimeComponentClientDelivery(row: {
       deliverable: false,
       status: "invalid_url",
       message: "远程直链不是有效的 http/https 地址，不会下发给客户端。"
+    };
+  }
+  if (!hasValidRuntimeComponentHash(row)) {
+    return {
+      deliverable: false,
+      status: "missing_file",
+      message: "远程组件缺少有效的 SHA-256 校验值，不会下发给客户端。"
     };
   }
   return {
@@ -1347,10 +1402,21 @@ async function assertStoredRuntimeComponentReadable(component: {
   if (!hasPositiveFileSize(component.fileSizeBytes) || toBigInt(component.fileSizeBytes) !== actualSize) {
     throw new BadRequestException("上传型运行组件的文件大小元数据与已保存文件不一致。");
   }
+  const expectedHash = (component.fileHash ?? component.expectedHash ?? "").trim();
+  if (!expectedHash) {
+    throw new BadRequestException("上传型运行组件缺少 SHA-256 校验值。");
+  }
+  if (!/^[a-fA-F0-9]{64}$/.test(expectedHash)) {
+    throw new BadRequestException("上传型运行组件 SHA-256 校验值无效。");
+  }
+  const actualHash = await calculateFileSha256(absolutePath);
+  if (actualHash.toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new BadRequestException("上传型运行组件文件内容与 SHA-256 校验值不一致。");
+  }
   return {
     absolutePath,
     fileSizeBytes: actualSize,
-    fileHash: component.fileHash ?? null
+    fileHash: actualHash
   };
 }
 

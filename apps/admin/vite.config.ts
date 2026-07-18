@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      "@chordv/shared/update-limits": fileURLToPath(new URL("../../packages/shared/src/update-limits.ts", import.meta.url)),
       "@chordv/shared": fileURLToPath(new URL("../../packages/shared/src/index.ts", import.meta.url))
     }
   },

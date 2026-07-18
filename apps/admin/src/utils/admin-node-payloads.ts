@@ -22,7 +22,7 @@ export function buildUpdateNodePayload(nodeForm: NodeFormState): UpdateNodeInput
     panelBaseUrl: nodeForm.panelBaseUrl || null,
     panelApiBasePath: nodeForm.panelApiBasePath || null,
     panelUsername: nodeForm.panelUsername || null,
-    panelPassword: nodeForm.panelPassword || null,
+    panelPassword: nodeForm.panelPassword.trim() ? nodeForm.panelPassword : undefined,
     panelInboundId: Number(nodeForm.panelInboundId) || null,
     panelEnabled: nodeForm.panelEnabled
   };

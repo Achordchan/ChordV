@@ -17,6 +17,8 @@ export type ReleaseEditorFormState = {
   artifactSource: "uploaded" | "external";
   externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
+  fileSizeBytes: string;
+  fileHash: string;
   fileName: string;
   selectedFile: File | null;
   changelog: string;
@@ -27,6 +29,8 @@ export type ArtifactEditorFormState = {
   type: AdminReleaseArtifactType;
   externalDeliveryMode: "external_download" | "windows_full_replace_zip";
   downloadUrl: string;
+  fileSizeBytes: string;
+  fileHash: string;
   fileName: string;
   isPrimary: boolean;
   selectedFile: File | null;
@@ -48,6 +52,8 @@ export function emptyReleaseEditorForm(platform: AdminReleasePlatform = "macos")
     artifactSource: "external",
     externalDeliveryMode: platform === "windows" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
+    fileSizeBytes: "",
+    fileHash: "",
     fileName: "",
     selectedFile: null,
     changelog: ""
@@ -68,6 +74,8 @@ export function toReleaseEditorForm(record: AdminReleaseRecordDto): ReleaseEdito
         ? "windows_full_replace_zip"
         : "external_download",
     downloadUrl: record.artifacts.find((artifact) => artifact.isPrimary)?.originDownloadUrl ?? "",
+    fileSizeBytes: record.artifacts.find((artifact) => artifact.isPrimary)?.fileSizeBytes ?? "",
+    fileHash: record.artifacts.find((artifact) => artifact.isPrimary)?.fileHash ?? "",
     fileName: record.artifacts.find((artifact) => artifact.isPrimary)?.fileName ?? "",
     selectedFile: null,
     changelog: record.changelog.join("\n")
@@ -112,6 +120,8 @@ export function emptyArtifactEditorForm(
     type,
     externalDeliveryMode: type === "zip" ? "windows_full_replace_zip" : "external_download",
     downloadUrl: "",
+    fileSizeBytes: "",
+    fileHash: "",
     fileName: "",
     isPrimary: true,
     selectedFile: null
@@ -127,6 +137,8 @@ export function toArtifactEditorForm(record: AdminReleaseArtifactRecordDto): Art
         ? "windows_full_replace_zip"
         : "external_download",
     downloadUrl: record.source === "external" ? record.originDownloadUrl ?? record.downloadUrl : "",
+    fileSizeBytes: record.fileSizeBytes ?? "",
+    fileHash: record.fileHash ?? "",
     fileName: record.fileName ?? "",
     isPrimary: record.isPrimary,
     selectedFile: null

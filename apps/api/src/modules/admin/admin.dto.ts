@@ -1,5 +1,6 @@
 import { Transform, Type } from "class-transformer";
 import { ArrayMaxSize, ArrayNotEmpty, ArrayUnique, IsArray, IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUrl, IsDefined, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested, registerDecorator } from "class-validator";
+import { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } from "@chordv/shared/update-limits";
 import type {
   ClientRuntimeComponentFailureReportInputDto,
   AnnouncementDisplayMode,
@@ -53,6 +54,33 @@ function transformBlankStringToNull(value: unknown) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function IsReleaseArtifactFileSizeWithinLimit() {
+  return function (object: object, propertyName: string) {
+    registerDecorator({
+      name: "isReleaseArtifactFileSizeWithinLimit",
+      target: object.constructor,
+      propertyName,
+      options: {
+        message: `fileSizeBytes must not exceed ${MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES} bytes`
+      },
+      validator: {
+        validate(value: unknown) {
+          if (value === null || value === undefined) {
+            return true;
+          }
+          if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
+            return true;
+          }
+          const maxSizeText = String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES);
+          if (value.length > maxSizeText.length) {
+            return false;
+          }
+          return BigInt(value) <= BigInt(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES);
+        }
+      }
+    });
+  };
+}
 export class CreateUserDto {
   @IsEmail()
   email!: string;
@@ -608,9 +636,13 @@ export class ReadNodePanelInboundsDto {
   @IsNotEmpty()
   panelUsername!: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  panelPassword!: string;
+  panelPassword?: string;
+
+  @IsOptional()
+  @IsString()
+  nodeId?: string;
 }
 
 export class CreateAnnouncementDto {
@@ -854,6 +886,16 @@ export class CreateReleaseArtifactDto {
   })
   isPrimary?: boolean;
 
+  @IsOptional()
+  @IsString()
+  @Matches(/^[1-9]\d*$/)
+  @IsReleaseArtifactFileSizeWithinLimit()
+  fileSizeBytes?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-fA-F0-9]{64}$/)
+  fileHash?: string | null;
 }
 
 export class UpdateReleaseArtifactDto {
@@ -897,6 +939,16 @@ export class UpdateReleaseArtifactDto {
   })
   isPrimary?: boolean;
 
+  @IsOptional()
+  @IsString()
+  @Matches(/^[1-9]\d*$/)
+  @IsReleaseArtifactFileSizeWithinLimit()
+  fileSizeBytes?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-fA-F0-9]{64}$/)
+  fileHash?: string | null;
 }
 
 export class UploadReleaseArtifactDto {
@@ -963,11 +1015,10 @@ export class CreateRuntimeComponentDto {
   @IsIn(["github_remote", "custom_remote"])
   source?: Exclude<RuntimeComponentSource, "uploaded">;
 
-  @ValidateIf((_object, value) => value !== undefined)
   @IsUrl({
     require_tld: false
   })
-  originUrl?: string;
+  originUrl!: string;
 
   @IsOptional()
   @IsString()
@@ -988,9 +1039,9 @@ export class CreateRuntimeComponentDto {
   @IsString()
   archiveEntryName?: string | null;
 
-  @IsOptional()
   @IsString()
-  expectedHash?: string | null;
+  @Matches(/^[a-fA-F0-9]{64}$/)
+  expectedHash!: string;
 
   @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
@@ -1031,9 +1082,10 @@ export class UpdateRuntimeComponentDto {
   @IsString()
   archiveEntryName?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
-  expectedHash?: string | null;
+  @Matches(/^[a-fA-F0-9]{64}$/)
+  expectedHash?: string;
 
   @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))

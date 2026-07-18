@@ -15,6 +15,7 @@ import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable 
 import { PrismaService } from "./prisma.service";
 import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   hasUnreadTicketMessages,
   readSupportTicketAuthorDisplayName,
@@ -42,6 +43,7 @@ const TICKET_ATTACHMENT_UPLOAD_BUDGET_MS = readPositiveIntegerEnv("CHORDV_TICKET
 @Injectable()
 export class ClientTicketService {
   private readonly logger = new Logger(ClientTicketService.name);
+  private pendingAttachmentJanitorRunning = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -49,7 +51,58 @@ export class ClientTicketService {
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly imageBedService: ImageBedService
-  ) {}
+  ) {
+    if (process.env.NODE_ENV !== "test" && process.env.CHORDV_DISABLE_ATTACHMENT_JANITOR !== "true") {
+      this.startPendingAttachmentJanitor();
+    }
+  }
+
+  private startPendingAttachmentJanitor() {
+    // Pending attachment rows are shared in Postgres so restarts/multi-instance stay consistent.
+    const intervalMs = Math.max(30_000, Math.floor(SUPPORT_TICKET_ATTACHMENT_UPLOAD_TOKEN_TTL_MS / 2));
+    void this.pruneExpiredPendingAttachmentsAndCleanup();
+    const timer = setInterval(() => {
+      void this.pruneExpiredPendingAttachmentsAndCleanup();
+    }, intervalMs);
+    timer.unref?.();
+  }
+
+  private async pruneExpiredPendingAttachmentsAndCleanup() {
+    if (this.pendingAttachmentJanitorRunning) {
+      return;
+    }
+    this.pendingAttachmentJanitorRunning = true;
+    try {
+      const expired = await prunePendingSupportTicketAttachments(this.prisma);
+      const cleanedTokenIds: string[] = [];
+      for (const pending of expired) {
+        const deleted = await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort({
+          url: pending.url,
+          providerFileId: pending.providerFileId,
+          fileName: pending.fileName,
+          mimeType: pending.mimeType,
+          fileSizeBytes: pending.fileSizeBytes
+        });
+        if (deleted) {
+          cleanedTokenIds.push(pending.tokenId);
+        } else {
+          this.logger.warn(
+            `Pending support-ticket attachment remote cleanup failed for ${pending.tokenId}; credentials retained for retry`
+          );
+        }
+      }
+      await deletePendingSupportTicketAttachmentCredentials(this.prisma, cleanedTokenIds);
+      await pruneExpiredSupportTicketAttachmentRateBuckets(this.prisma);
+    } catch (error) {
+      this.logger.warn(
+        `Pending support-ticket attachment janitor failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    } finally {
+      this.pendingAttachmentJanitorRunning = false;
+    }
+  }
 
   async getClientSupportTicketInbox(userId: string) {
     try {
@@ -322,8 +375,22 @@ export class ClientTicketService {
     const messageId = createId("ticket_msg");
     const attachmentId = attachment ? createId("ticket_att") : null;
     const messageBody = body || (attachment ? `Uploaded attachment: ${attachment.fileName}` : "");
+    let pendingAttachment: PendingSupportTicketAttachment | null | undefined = null;
+    let attachmentTokenId: string | null = null;
+    if (attachment) {
+      attachmentTokenId = assertSupportTicketAttachmentUploadToken(attachment.uploadToken, user.id, ticketId);
+    }
     try {
       await this.prisma.$transaction(async (tx) => {
+        if (attachment && attachmentTokenId) {
+          pendingAttachment = await consumePendingSupportTicketAttachment(
+            tx,
+            attachmentTokenId,
+            user.id,
+            ticketId,
+            attachment.url
+          );
+        }
         const message = await tx.supportTicketMessage.create({
           data: {
             id: messageId,
@@ -333,17 +400,17 @@ export class ClientTicketService {
             body: messageBody
           }
         });
-        if (attachment) {
+        if (attachment && pendingAttachment) {
           await tx.supportTicketAttachment.create({
             data: {
               id: attachmentId!,
               ticketId,
               messageId: message.id,
               provider: "image-bed",
-              url: attachment.url,
-              fileName: attachment.fileName,
-              mimeType: attachment.mimeType,
-              fileSizeBytes: attachment.fileSizeBytes
+              url: pendingAttachment.url,
+              fileName: pendingAttachment.fileName,
+              mimeType: pendingAttachment.mimeType,
+              fileSizeBytes: pendingAttachment.fileSizeBytes
             }
           });
         }
@@ -376,17 +443,12 @@ export class ClientTicketService {
         });
       });
     } catch (error) {
-      await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(
-        attachment
-          ? {
-              url: attachment.url,
-              providerFileId: null,
-              fileName: attachment.fileName,
-              mimeType: attachment.mimeType,
-              fileSizeBytes: attachment.fileSizeBytes ?? BigInt(0)
-            }
-          : null
-      );
+      // Claim/delete of pending rows participate in the same DB transaction.
+      // On failure Postgres rolls them back, so remote cleanup here would create
+      // a live pending token pointing at an already-deleted image.
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试。");
     }
 
@@ -402,14 +464,14 @@ export class ClientTicketService {
         messageId,
         body: messageBody,
         attachments:
-          attachment && attachmentId
+          attachment && attachmentId && pendingAttachment
             ? [
                 {
                   id: attachmentId,
-                  url: attachment.url,
-                  fileName: attachment.fileName,
-                  mimeType: attachment.mimeType,
-                  fileSizeBytes: attachment.fileSizeBytes?.toString() ?? null,
+                  url: pendingAttachment.url,
+                  fileName: pendingAttachment.fileName,
+                  mimeType: pendingAttachment.mimeType,
+                  fileSizeBytes: pendingAttachment.fileSizeBytes.toString(),
                   createdAt: now.toISOString()
                 }
               ]
@@ -444,13 +506,49 @@ export class ClientTicketService {
       throw new BadRequestException("请先选择要上传的附件。");
     }
     this.imageBedService.assertSupportTicketAttachment(file);
-    const uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
-    return {
-      url: uploaded.url,
-      fileName: uploaded.fileName,
-      mimeType: uploaded.mimeType,
-      fileSizeBytes: uploaded.fileSizeBytes.toString()
-    };
+    const quotaReservation = await assertSupportTicketAttachmentUploadQuota(this.prisma, user.id, file.size);
+    let uploaded: Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null = null;
+    try {
+      uploaded = await this.imageBedService.uploadSupportTicketAttachment(file);
+      const attachmentToken = createSupportTicketAttachmentUploadToken(user.id, ticketId);
+      try {
+        await this.prisma.supportTicketPendingAttachment.create({
+          data: {
+            tokenId: attachmentToken.tokenId,
+            userId: user.id,
+            ticketId,
+            url: uploaded.url,
+            providerFileId: uploaded.providerFileId,
+            fileName: uploaded.fileName,
+            mimeType: uploaded.mimeType,
+            fileSizeBytes: uploaded.fileSizeBytes,
+            consumed: false,
+            expiresAt: new Date(attachmentToken.expiresAt)
+          }
+        });
+        consumeSupportTicketAttachmentUploadQuota(quotaReservation);
+      } catch (error) {
+        // Leave remote cleanup to the outer catch so the file is deleted exactly once.
+        throwLocalSaveAsServiceUnavailable(error, "附件记录保存失败，请稍后重试。");
+      }
+      return {
+        uploadToken: attachmentToken.uploadToken,
+        url: uploaded.url,
+        providerFileId: uploaded.providerFileId,
+        fileName: uploaded.fileName,
+        mimeType: uploaded.mimeType,
+        fileSizeBytes: uploaded.fileSizeBytes.toString()
+      };
+    } catch (error) {
+      await releaseSupportTicketAttachmentUploadQuota(this.prisma, quotaReservation).catch(() => undefined);
+      if (uploaded) {
+        await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
+      }
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw error;
+    }
   }
 
   async replyClientSupportTicketWithAttachment(
@@ -510,8 +608,10 @@ export class ClientTicketService {
 
     let uploaded = null as Awaited<ReturnType<ImageBedService["uploadSupportTicketAttachment"]>> | null;
     let attachmentUploadError: string | null = null;
+    let quotaReservation: SupportTicketAttachmentQuotaReservation | null = null;
     if (file) {
       this.imageBedService.assertSupportTicketAttachment?.(file);
+      quotaReservation = await assertSupportTicketAttachmentUploadQuota(this.prisma, user.id, file.size);
       try {
         uploaded = await this.imageBedService.uploadSupportTicketAttachment(file, {
           timeoutMs: TICKET_ATTACHMENT_UPLOAD_BUDGET_MS
@@ -519,6 +619,9 @@ export class ClientTicketService {
       } catch (error) {
         attachmentUploadError = readErrorMessage(error);
         this.logger.warn(`Client ticket attachment upload failed for ${ticketId}: ${attachmentUploadError}`);
+        if (quotaReservation) {
+          await releaseSupportTicketAttachmentUploadQuota(this.prisma, quotaReservation).catch(() => undefined);
+        }
         if (!body) {
           if (error instanceof HttpException) {
             throw error;
@@ -589,8 +692,17 @@ export class ClientTicketService {
         });
       });
     } catch (error) {
-      await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
+      if (quotaReservation) {
+        await releaseSupportTicketAttachmentUploadQuota(this.prisma, quotaReservation).catch(() => undefined);
+      }
+      if (uploaded) {
+        await this.imageBedService.deleteUploadedSupportTicketAttachmentBestEffort(uploaded);
+      }
       throwLocalSaveAsServiceUnavailable(error, "工单回复保存失败，请刷新后重试；已尝试清理本次上传附件。");
+    }
+
+    if (uploaded) {
+      consumeSupportTicketAttachmentUploadQuota(quotaReservation);
     }
 
     this.publishTicketEventBestEffort(user.id, {
@@ -915,16 +1027,364 @@ function buildSupportTicketAttachmentReplyBody(body: string, attachmentFallbackB
   return body ? `${baseBody}\n\n${notice}` : notice;
 }
 
+
+const SUPPORT_TICKET_ATTACHMENT_UPLOAD_TOKEN_TTL_MS = readPositiveIntegerEnv(
+  "CHORDV_SUPPORT_TICKET_ATTACHMENT_TOKEN_TTL_MS",
+  30 * 60 * 1000
+);
+const SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_LIMIT = readPositiveIntegerEnv(
+  "CHORDV_SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_LIMIT",
+  20
+);
+const SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_WINDOW_MS = readPositiveIntegerEnv(
+  "CHORDV_SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_WINDOW_MS",
+  60 * 60 * 1000
+);
+const SUPPORT_TICKET_ATTACHMENT_DAILY_BYTES_LIMIT = readPositiveIntegerEnv(
+  "CHORDV_SUPPORT_TICKET_ATTACHMENT_DAILY_BYTES_LIMIT",
+  50 * 1024 * 1024
+);
+
+type PendingSupportTicketAttachment = {
+  tokenId: string;
+  userId: string;
+  ticketId: string;
+  url: string;
+  providerFileId: string | null;
+  fileName: string;
+  mimeType: string;
+  fileSizeBytes: bigint;
+  createdAt: number;
+  consumed: boolean;
+};
+
+type TicketAttachmentPrisma = {
+  supportTicketPendingAttachment: {
+    findMany: (args?: any) => Promise<Array<Record<string, any>>>;
+    findUnique: (args: any) => Promise<Record<string, any> | null>;
+    create: (args: any) => Promise<unknown>;
+    updateMany: (args: any) => Promise<{ count: number }>;
+    deleteMany: (args: any) => Promise<unknown>;
+    delete: (args: any) => Promise<unknown>;
+  };
+  rateLimitBucket: {
+    findUnique: (args: any) => Promise<{ key: string; count: number; blockedUntil: Date | null } | null>;
+    upsert: (args: any) => Promise<unknown>;
+    update: (args: any) => Promise<unknown>;
+    updateMany: (args: any) => Promise<{ count: number }>;
+    deleteMany: (args: any) => Promise<{ count: number }>;
+  };
+  $transaction: <T>(fn: (tx: any) => Promise<T>) => Promise<T>;
+};
+
+function getSupportTicketAttachmentTokenSecret() {
+  return (
+    process.env.CHORDV_SUPPORT_TICKET_ATTACHMENT_TOKEN_SECRET?.trim() ||
+    process.env.CHORDV_JWT_SECRET?.trim() ||
+    "chordv-dev-support-ticket-attachment-secret"
+  );
+}
+
+function signSupportTicketAttachmentToken(tokenId: string, userId: string, ticketId: string, expiresAt: number) {
+  return createHash("sha256")
+    .update(`${tokenId}.${userId}.${ticketId}.${expiresAt}.${getSupportTicketAttachmentTokenSecret()}`)
+    .digest("hex");
+}
+
+function createSupportTicketAttachmentUploadToken(userId: string, ticketId: string) {
+  const tokenId = randomBytes(16).toString("hex");
+  const expiresAt = Date.now() + SUPPORT_TICKET_ATTACHMENT_UPLOAD_TOKEN_TTL_MS;
+  const signature = signSupportTicketAttachmentToken(tokenId, userId, ticketId, expiresAt);
+  return {
+    tokenId,
+    expiresAt,
+    uploadToken: `${tokenId}.${expiresAt}.${signature}`
+  };
+}
+
+function parseSupportTicketAttachmentUploadToken(uploadToken: string) {
+  const [tokenId, expiresAtRaw, signature] = uploadToken.split(".");
+  if (!tokenId || !expiresAtRaw || !signature) {
+    return null;
+  }
+  const expiresAt = Number(expiresAtRaw);
+  if (!Number.isFinite(expiresAt)) {
+    return null;
+  }
+  return { tokenId, expiresAt, signature };
+}
+
+function assertSupportTicketAttachmentUploadToken(uploadToken: string, userId: string, ticketId: string) {
+  const parsed = parseSupportTicketAttachmentUploadToken(uploadToken);
+  if (!parsed) {
+    throw new BadRequestException("附件凭证无效，请重新上传。");
+  }
+  if (parsed.expiresAt < Date.now()) {
+    throw new BadRequestException("附件凭证已过期，请重新上传。");
+  }
+  const expected = signSupportTicketAttachmentToken(parsed.tokenId, userId, ticketId, parsed.expiresAt);
+  const left = Buffer.from(expected);
+  const right = Buffer.from(parsed.signature);
+  if (left.length !== right.length || !timingSafeEqual(left, right)) {
+    throw new BadRequestException("附件凭证无效，请重新上传。");
+  }
+  return parsed.tokenId;
+}
+
+function toPendingSupportTicketAttachment(row: Record<string, unknown>): PendingSupportTicketAttachment {
+  const createdAtValue = row.createdAt instanceof Date ? row.createdAt.getTime() : Number(row.createdAt ?? Date.now());
+  return {
+    tokenId: String(row.tokenId ?? ""),
+    userId: String(row.userId ?? ""),
+    ticketId: String(row.ticketId ?? ""),
+    url: String(row.url ?? ""),
+    providerFileId: row.providerFileId == null ? null : String(row.providerFileId),
+    fileName: String(row.fileName ?? "attachment"),
+    mimeType: String(row.mimeType ?? "application/octet-stream"),
+    fileSizeBytes: typeof row.fileSizeBytes === "bigint" ? row.fileSizeBytes : BigInt(Number(row.fileSizeBytes ?? 0)),
+    createdAt: createdAtValue,
+    consumed: Boolean(row.consumed)
+  };
+}
+
+async function prunePendingSupportTicketAttachments(prisma: TicketAttachmentPrisma, now = Date.now()) {
+  const expiredRows = await prisma.supportTicketPendingAttachment.findMany({
+    where: {
+      OR: [
+        { consumed: true },
+        { expiresAt: { lte: new Date(now) } }
+      ]
+    },
+    take: 200
+  });
+  const expired: PendingSupportTicketAttachment[] = [];
+  for (const row of expiredRows) {
+    const pending = toPendingSupportTicketAttachment(row);
+    // Keep DB credentials until remote cleanup succeeds so failed deletes can retry.
+    if (!pending.consumed || pending.providerFileId || pending.url) {
+      expired.push(pending);
+    }
+  }
+  return expired;
+}
+
+async function deletePendingSupportTicketAttachmentCredentials(
+  prisma: TicketAttachmentPrisma,
+  tokenIds: string[]
+) {
+  if (tokenIds.length === 0) {
+    return;
+  }
+  await prisma.supportTicketPendingAttachment.deleteMany({
+    where: {
+      tokenId: { in: tokenIds }
+    }
+  });
+}
+
+async function pruneExpiredSupportTicketAttachmentRateBuckets(
+  prisma: TicketAttachmentPrisma,
+  now = Date.now()
+) {
+  const hourlyStaleBefore = new Date(now - SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_WINDOW_MS * 2);
+  const currentUtcDayStart = new Date(now);
+  currentUtcDayStart.setUTCHours(0, 0, 0, 0);
+  if (typeof prisma.rateLimitBucket.deleteMany !== "function") {
+    return;
+  }
+  await prisma.rateLimitBucket.deleteMany({
+    where: {
+      OR: [
+        {
+          key: { startsWith: "ticket-att-rate:" },
+          updatedAt: { lt: hourlyStaleBefore }
+        },
+        {
+          key: { startsWith: "ticket-att-daily:" },
+          updatedAt: { lt: currentUtcDayStart }
+        }
+      ]
+    }
+  });
+}
+
+async function reserveRateLimitBucket(
+  tx: any,
+  key: string,
+  increment: number,
+  limit: number,
+  overLimitMessage: string
+) {
+  // Atomic create-or-increment under a limit. Concurrent requests cannot all pass the old
+  // read-then-upsert race: only one of the conditional updates succeeds past the ceiling.
+  await tx.rateLimitBucket.upsert({
+    where: { key },
+    create: { key, count: 0 },
+    update: {}
+  });
+  const updated = await tx.rateLimitBucket.updateMany({
+    where: {
+      key,
+      count: { lte: limit - increment }
+    },
+    data: {
+      count: { increment }
+    }
+  });
+  if (updated.count === 0) {
+    throw new BadRequestException(overLimitMessage);
+  }
+}
+
+type SupportTicketAttachmentQuotaReservation = {
+  rateKey: string;
+  dailyKey: string;
+  fileSizeBytes: number;
+  status: "reserved" | "refunding" | "refunded" | "consumed";
+};
+function buildSupportTicketAttachmentQuotaKeys(userId: string, now = Date.now()) {
+  const windowStart = now - (now % SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_WINDOW_MS);
+  const rateKey = `ticket-att-rate:${userId}:${windowStart}`;
+  const day = new Date(now).toISOString().slice(0, 10);
+  const dailyKey = `ticket-att-daily:${userId}:${day}`;
+  return { rateKey, dailyKey };
+}
+
+async function assertSupportTicketAttachmentUploadQuota(
+  prisma: TicketAttachmentPrisma,
+  userId: string,
+  fileSizeBytes: number
+): Promise<SupportTicketAttachmentQuotaReservation> {
+  const now = Date.now();
+  const { rateKey, dailyKey } = buildSupportTicketAttachmentQuotaKeys(userId, now);
+
+  await prisma.$transaction(async (tx) => {
+    await reserveRateLimitBucket(
+      tx,
+      rateKey,
+      1,
+      SUPPORT_TICKET_ATTACHMENT_UPLOAD_RATE_LIMIT,
+      "附件上传过于频繁，请稍后再试。"
+    );
+    await reserveRateLimitBucket(
+      tx,
+      dailyKey,
+      fileSizeBytes,
+      SUPPORT_TICKET_ATTACHMENT_DAILY_BYTES_LIMIT,
+      "今日附件上传容量已用尽，请明天再试。"
+    );
+  });
+
+  return { rateKey, dailyKey, fileSizeBytes, status: "reserved" };
+}
+
+async function releaseSupportTicketAttachmentUploadQuota(
+  prisma: TicketAttachmentPrisma,
+  reservation: SupportTicketAttachmentQuotaReservation
+) {
+  if (reservation.status !== "reserved") {
+    return false;
+  }
+  reservation.status = "refunding";
+  const { rateKey, dailyKey, fileSizeBytes } = reservation;
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.rateLimitBucket.updateMany({
+        where: { key: rateKey, count: { gte: 1 } },
+        data: { count: { decrement: 1 } }
+      });
+      if (fileSizeBytes > 0) {
+        await tx.rateLimitBucket.updateMany({
+          where: { key: dailyKey, count: { gte: fileSizeBytes } },
+          data: { count: { decrement: fileSizeBytes } }
+        });
+      }
+    });
+    reservation.status = "refunded";
+    return true;
+  } catch (error) {
+    reservation.status = "reserved";
+    throw error;
+  }
+}
+
+function consumeSupportTicketAttachmentUploadQuota(
+  reservation: SupportTicketAttachmentQuotaReservation | null
+) {
+  if (reservation?.status === "reserved") {
+    reservation.status = "consumed";
+  }
+}
+async function consumePendingSupportTicketAttachment(
+  prisma: Pick<TicketAttachmentPrisma, "supportTicketPendingAttachment">,
+  tokenId: string,
+  userId: string,
+  ticketId: string,
+  expectedUrl?: string
+) {
+  // Atomic claim: only one concurrent consumer can flip consumed=false -> true.
+  // Losers must not remote-delete the winner's already-saved image.
+  // URL validation happens before claim so mismatch does not consume the token.
+  const now = new Date();
+  const existing = await prisma.supportTicketPendingAttachment.findUnique({ where: { tokenId } });
+  if (!existing || Boolean(existing.consumed)) {
+    throw new BadRequestException("附件不存在或已使用，请重新上传。");
+  }
+  const preview = toPendingSupportTicketAttachment(existing);
+  if (preview.userId !== userId || preview.ticketId !== ticketId) {
+    throw new BadRequestException("附件不属于当前工单，请重新上传。");
+  }
+  const expiresAt =
+    existing.expiresAt instanceof Date
+      ? existing.expiresAt.getTime()
+      : preview.createdAt + SUPPORT_TICKET_ATTACHMENT_UPLOAD_TOKEN_TTL_MS;
+  if (expiresAt < Date.now()) {
+    await prisma.supportTicketPendingAttachment
+      .deleteMany({ where: { tokenId, consumed: false } })
+      .catch(() => undefined);
+    throw new BadRequestException("附件凭证已过期，请重新上传。");
+  }
+  if (expectedUrl && preview.url !== expectedUrl) {
+    throw new BadRequestException("附件凭证与上传记录不匹配，请重新上传。");
+  }
+
+  const claimed = await prisma.supportTicketPendingAttachment.updateMany({
+    where: {
+      tokenId,
+      userId,
+      ticketId,
+      consumed: false,
+      expiresAt: { gt: now },
+      ...(expectedUrl ? { url: expectedUrl } : {})
+    },
+    data: {
+      consumed: true
+    }
+  });
+  if (claimed.count !== 1) {
+    throw new BadRequestException("附件不存在或已使用，请重新上传。");
+  }
+
+  const row = await prisma.supportTicketPendingAttachment.findUnique({ where: { tokenId } });
+  if (!row) {
+    throw new BadRequestException("附件不存在或已使用，请重新上传。");
+  }
+  const pending = toPendingSupportTicketAttachment(row);
+  await prisma.supportTicketPendingAttachment.delete({ where: { tokenId } }).catch(() => undefined);
+  return pending;
+}
+
 function normalizeUploadedSupportTicketAttachmentReference(
   input: UploadedSupportTicketAttachmentReferenceInputDto | null | undefined
 ) {
   if (!input) {
     return null;
   }
+  const uploadToken = input.uploadToken?.trim();
   const url = input.url?.trim();
   const fileName = input.fileName?.trim();
   const mimeType = input.mimeType?.trim();
-  if (!url || !fileName || !mimeType) {
+  if (!uploadToken || !url || !fileName || !mimeType) {
     throw new BadRequestException("附件信息不完整，请重新上传。");
   }
   try {
@@ -939,22 +1399,33 @@ function normalizeUploadedSupportTicketAttachmentReference(
     throw new BadRequestException("仅支持图片附件。");
   }
   const fileSizeBytes = parseNullableBigInt(input.fileSizeBytes);
+  if (fileSizeBytes !== null && fileSizeBytes <= 0n) {
+    throw new BadRequestException("附件大小无效，请重新上传。");
+  }
   return {
+    uploadToken,
     url,
+    providerFileId: input.providerFileId?.trim() || null,
     fileName: fileName.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 255) || "attachment",
     mimeType: mimeType.slice(0, 120),
     fileSizeBytes
   };
 }
 
+
 function parseNullableBigInt(value: string | null | undefined) {
   if (value === null || value === undefined || value.trim() === "") {
     return null;
   }
-  if (!/^\d+$/.test(value.trim())) {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
     throw new BadRequestException("附件大小无效，请重新上传。");
   }
-  return BigInt(value.trim());
+  const parsed = BigInt(trimmed);
+  if (parsed > 9223372036854775807n) {
+    throw new BadRequestException("附件大小无效，请重新上传。");
+  }
+  return parsed;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

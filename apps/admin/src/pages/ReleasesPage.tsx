@@ -24,7 +24,7 @@ import {
   uploadAdminReleaseArtifact
 } from "../api/client";
 import { ArtifactEditorModal } from "../features/releases/ArtifactEditorModal";
-import { buildExternalArtifactPayload } from "../features/releases/artifactPayloads";
+import { buildExternalArtifactPayload, validateExternalArtifactMetadata } from "../features/releases/artifactPayloads";
 import { ReleaseEditorModal } from "../features/releases/ReleaseEditorModal";
 import { ReleaseRecordCard } from "../features/releases/ReleaseRecordCard";
 import {
@@ -266,6 +266,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
               releaseForm.platform,
               releaseForm.downloadUrl,
               true,
+              releaseForm.fileSizeBytes,
+              releaseForm.fileHash,
               releaseForm.externalDeliveryMode
             )
           : undefined
@@ -488,6 +490,16 @@ export function ReleasesPage(props: ReleasesPageProps) {
     if (artifactForm.source === "external" && !/^https?:\/\//i.test(artifactForm.downloadUrl.trim())) {
       return "外链下载地址必须是完整的 http/https 地址。";
     }
+    if (
+      artifactForm.source === "external" &&
+      (artifactEditor.platform === "windows" || artifactEditor.platform === "macos") &&
+      !/^https:\/\//i.test(artifactForm.downloadUrl.trim())
+    ) {
+      return "桌面外链安装包必须使用 HTTPS 下载地址。";
+    }
+    if (artifactForm.source === "external") {
+      return validateExternalArtifactMetadata(artifactForm.fileSizeBytes, artifactForm.fileHash);
+    }
     return null;
   }
 
@@ -523,6 +535,8 @@ export function ReleasesPage(props: ReleasesPageProps) {
             artifactEditor.platform,
             artifactForm.downloadUrl,
             artifactForm.isPrimary,
+            artifactForm.fileSizeBytes,
+            artifactForm.fileHash,
             artifactForm.externalDeliveryMode
           );
           record = artifactEditor.artifactId
@@ -823,7 +837,11 @@ function validateReleaseEditorInput(
   if (!/^https?:\/\//i.test(downloadUrl)) {
     return "外链下载地址必须是完整的 http/https 地址。";
   }
-  return null;
+  const targetPlatform = platform ?? form.platform;
+  if ((targetPlatform === "windows" || targetPlatform === "macos") && !/^https:\/\//i.test(downloadUrl)) {
+    return "桌面外链安装包必须使用 HTTPS 下载地址。";
+  }
+  return validateExternalArtifactMetadata(form.fileSizeBytes, form.fileHash);
 }
 
 function compareReleaseRecord(left: AdminReleaseRecordDto, right: AdminReleaseRecordDto) {

@@ -69,10 +69,14 @@ export function loadRememberedCredentials(key: string) {
 
   try {
     const parsed = JSON.parse(raw) as { email?: string; password?: string };
-    if (typeof parsed.email === "string" && typeof parsed.password === "string") {
+    if (typeof parsed.email === "string" && parsed.email.trim()) {
+      // 兼容旧版本：若本地仍有明文密码字段，读取后立即清除，避免继续落盘。
+      if (typeof parsed.password === "string" && parsed.password.length > 0) {
+        localStorage.setItem(key, JSON.stringify({ email: parsed.email.trim() }));
+      }
       return {
-        email: parsed.email,
-        password: parsed.password
+        email: parsed.email.trim(),
+        password: ""
       };
     }
   } catch {
@@ -82,12 +86,16 @@ export function loadRememberedCredentials(key: string) {
   return null;
 }
 
-export function saveRememberedCredentials(key: string, email: string, password: string) {
+export function saveRememberedCredentials(key: string, email: string, _password?: string) {
+  const normalizedEmail = email.trim();
+  if (!normalizedEmail) {
+    localStorage.removeItem(key);
+    return;
+  }
   localStorage.setItem(
     key,
     JSON.stringify({
-      email,
-      password
+      email: normalizedEmail
     })
   );
 }

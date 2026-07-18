@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { decryptPanelPassword } from "../common/panel-password-crypto";
 import { BadGatewayException, BadRequestException, Injectable } from "@nestjs/common";
 import { fetch as undiciFetch, Headers, FormData, type Dispatcher, Agent } from "undici";
 
@@ -1047,7 +1048,8 @@ function hashCredential(value: string) {
 }
 
 function normalizeNodeConfig(node: XuiNodeConfig) {
-  if (!node.panelBaseUrl?.trim() || !node.panelUsername?.trim() || !node.panelPassword?.trim()) {
+  const panelPassword = decryptPanelPassword(node.panelPassword)?.trim() || "";
+  if (!node.panelBaseUrl?.trim() || !node.panelUsername?.trim() || !panelPassword) {
     throw new BadRequestException("节点缺少 3x-ui 面板配置");
   }
 
@@ -1057,7 +1059,7 @@ function normalizeNodeConfig(node: XuiNodeConfig) {
     panelBaseUrl: panelLocation.panelBaseUrl,
     panelApiBasePath: panelLocation.panelApiBasePath,
     panelUsername: node.panelUsername.trim(),
-    panelPassword: node.panelPassword.trim()
+    panelPassword
   } satisfies NormalizedXuiNodeConfig;
 }
 

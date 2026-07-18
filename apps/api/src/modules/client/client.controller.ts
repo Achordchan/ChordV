@@ -205,8 +205,18 @@ class CreateSupportTicketDto {
 class UploadedSupportTicketAttachmentReferenceDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(256)
+  uploadToken!: string;
+
+  @IsString()
+  @IsNotEmpty()
   @MaxLength(2048)
   url!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  providerFileId?: string | null;
 
   @IsString()
   @IsNotEmpty()
@@ -406,7 +416,9 @@ export class ClientController {
         body: body.body,
         attachment: body.attachment
           ? {
+              uploadToken: body.attachment.uploadToken,
               url: body.attachment.url,
+              providerFileId: body.attachment.providerFileId ?? null,
               fileName: body.attachment.fileName,
               mimeType: body.attachment.mimeType,
               fileSizeBytes: body.attachment.fileSizeBytes ?? null

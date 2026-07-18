@@ -124,15 +124,29 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
             ) : null}
           </>
         ) : (
-          <Textarea
-            label="更新地址"
-            description="客户端拉取该组件的官方或源站地址。"
-            autosize
-            minRows={2}
-            placeholder="https://github.com/.../geoip.dat"
-            value={value.originUrl}
-            onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
-          />
+          <Stack gap="md">
+            <Textarea
+              label="更新地址"
+              description="客户端拉取该组件的官方或源站地址。"
+              autosize
+              minRows={2}
+              placeholder="https://github.com/.../geoip.dat"
+              value={value.originUrl}
+              onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
+            />
+            <TextInput
+              label="SHA-256 校验值"
+              description="填写远程文件的 64 位十六进制 SHA-256，用于客户端安装前校验。"
+              placeholder="64 位十六进制字符串"
+              value={value.expectedHash}
+              onChange={(event) => onChange({ ...value, expectedHash: event.currentTarget.value })}
+              error={
+                value.expectedHash.trim() && !/^[a-fA-F0-9]{64}$/.test(value.expectedHash.trim())
+                  ? "请输入有效的 64 位 SHA-256"
+                  : undefined
+              }
+            />
+          </Stack>
         )}
 
         <Switch

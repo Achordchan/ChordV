@@ -1,10 +1,26 @@
+import { encryptPanelPassword } from "./panel-password-crypto";
+
 type CreateOrRefreshJobInput = {
   create: Record<string, unknown>;
   update: Record<string, unknown>;
 };
 
+function normalizePanelSyncJobPasswordFields(data: Record<string, unknown>) {
+  if (!Object.prototype.hasOwnProperty.call(data, "panelPassword")) {
+    return data;
+  }
+  const raw = data.panelPassword;
+  return {
+    ...data,
+    panelPassword: encryptPanelPassword(raw == null ? null : String(raw))
+  };
+}
+
 export async function createOrRefreshPanelSyncJob(writer: any, dedupeKey: string, input: CreateOrRefreshJobInput) {
-  await createOrRefreshQueuedJob(writer.panelSyncJob, dedupeKey, input);
+  await createOrRefreshQueuedJob(writer.panelSyncJob, dedupeKey, {
+    create: normalizePanelSyncJobPasswordFields(input.create),
+    update: normalizePanelSyncJobPasswordFields(input.update)
+  });
 }
 
 export async function createOrRefreshLeaseRevocationJob(writer: any, dedupeKey: string, input: CreateOrRefreshJobInput) {

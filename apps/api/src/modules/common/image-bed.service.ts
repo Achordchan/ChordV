@@ -259,43 +259,36 @@ export class ImageBedService {
     }
   }
 
-  async deleteUploadedSupportTicketAttachmentBestEffort(uploaded: UploadedImageBedFile | null | undefined) {
-    const path = uploaded?.providerFileId ?? uploaded?.url;
+  async deleteUploadedSupportTicketAttachmentBestEffort(uploaded: UploadedImageBedFile | null | undefined): Promise<boolean> {
+    // Only delete using server-side providerFileId; never trust client-supplied URLs.
+    const path = uploaded?.providerFileId?.trim();
     if (!path) {
-      return;
-    }
-    let settled = false;
-    const cleanupTask = this.deleteAdminFile({ path })
-      .then((result) => {
-        if (!result.success) {
-          this.logger.warn(
-            `Support ticket attachment cleanup failed for ${path}: ${result.failed.join(", ") || "delete returned unsuccessful"}`
-          );
-        }
-      })
-      .catch((error) => {
+      if (uploaded?.url) {
         this.logger.warn(
-          `Support ticket attachment cleanup failed for ${path}: ${error instanceof Error ? error.message : String(error)}`
+          `Skip support ticket attachment cleanup because providerFileId is missing for ${uploaded.url}`
         );
-      })
-      .finally(() => {
-        settled = true;
-      });
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (!settled) {
-          this.logger.warn(
-            `Support ticket attachment cleanup exceeded ${IMAGE_BED_CLEANUP_BUDGET_MS}ms for ${path}; continuing in background.`
-          );
-        }
-        resolve();
-      }, IMAGE_BED_CLEANUP_BUDGET_MS);
-      timeoutHandle.unref?.();
-    });
-    await Promise.race([cleanupTask, timeoutTask]);
-    if (settled && timeoutHandle) {
-      clearTimeout(timeoutHandle);
+      }
+      // No remote object to delete; treat as cleaned so callers can drop orphan credentials.
+      return true;
+    }
+    try {
+      const result = await withTimeout(
+        this.deleteAdminFile({ path }),
+        IMAGE_BED_CLEANUP_BUDGET_MS,
+        "Support ticket attachment cleanup exceeded " + IMAGE_BED_CLEANUP_BUDGET_MS + "ms"
+      );
+      if (!result.success) {
+        this.logger.warn(
+          `Support ticket attachment cleanup failed for ${path}: ${result.failed.join(", ") || "delete returned unsuccessful"}`
+        );
+        return false;
+      }
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        `Support ticket attachment cleanup failed for ${path}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return false;
     }
   }
 
@@ -726,10 +719,11 @@ function readImageBedConfigReadTimeoutMs() {
 }
 
 function withTimeout<T>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  // Keep the timer referenced: unref() can drop the only event-loop handle while a
+  // never-settling Prisma promise is racing, so the timeout never fires (and tests exit early).
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutTask = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-    timeoutHandle.unref?.();
   });
   return Promise.race([task, timeoutTask]).finally(() => {
     if (timeoutHandle) {

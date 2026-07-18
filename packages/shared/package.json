@@ -9,13 +9,19 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./update-limits": {
+      "types": "./dist/update-limits.d.ts",
+      "import": "./dist/update-limits.mjs",
+      "require": "./dist/update-limits.cjs",
+      "default": "./dist/update-limits.mjs"
+    },
     "./mock": {
       "types": "./dist/mock.d.ts",
       "default": "./dist/mock.js"
     }
   },
   "scripts": {
-    "build": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('tsconfig.tsbuildinfo',{force:true});\" && tsc -p tsconfig.json",
+    "build": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('tsconfig.tsbuildinfo',{force:true});\" && tsc -p tsconfig.json && node ./scripts/build-update-limits-runtime.mjs",
     "check": "tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.json"
   },

@@ -156,12 +156,16 @@ async function testUploadedRuntimeComponentDeliverableIgnoresStaleExpectedHashMi
     const storedFilePath = path.join("component_1", "xray.zip");
     const absolutePath = path.join(storageRoot, "runtime-components", storedFilePath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-    await fs.writeFile(absolutePath, Buffer.alloc(1024));
+    const body = Buffer.alloc(1024);
+    await fs.writeFile(absolutePath, body);
+    const actualHash = require("node:crypto").createHash("sha256").update(body).digest("hex");
 
     const service = createRuntimeComponentsService({
       prisma: makeRuntimeComponentListPrisma([
         makeUploadedComponent({
           storedFilePath,
+          fileHash: actualHash,
+          // stale expectedHash must not block uploaded deliverability when fileHash is valid
           expectedHash: "b".repeat(64)
         })
       ])
@@ -188,9 +192,9 @@ async function testAdminRuntimeComponentMarksUnverifiedRemoteAsDeliverable() {
 
   const [result] = await service.listAdminRuntimeComponents();
 
-  assert.equal(result.clientDeliverable, true);
-  assert.equal(result.clientDeliveryStatus, "ready");
-  assert.match(result.clientDeliveryMessage, /可下发|有效/);
+  assert.equal(result.clientDeliverable, false);
+  assert.equal(result.clientDeliveryStatus, "missing_file");
+  assert.match(result.clientDeliveryMessage, /SHA-256|校验|不会下发/);
 }
 
 async function testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable() {
@@ -324,6 +328,113 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
   assert.equal(result.componentId, "component_1");
 }
 
+
+async function testRemoteCreateRequiresValidExpectedHash() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        create: async () => {
+          throw new Error("create should not run for invalid expectedHash");
+        }
+      }
+    }
+  });
+  const input = {
+    platform: "windows" as const,
+    architecture: "x64" as const,
+    kind: "xray" as const,
+    source: "custom_remote" as const,
+    originUrl: "https://cdn.example.com/xray.exe",
+    fileName: "xray.exe"
+  };
+
+  await assert.rejects(
+    () => service.createAdminRuntimeComponent(input),
+    /64 位 SHA-256/
+  );
+  await assert.rejects(
+    () => service.createAdminRuntimeComponent({ ...input, expectedHash: "invalid" }),
+    /64 位 SHA-256/
+  );
+}
+
+async function testRemoteUpdateRejectsInvalidExpectedHash() {
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => makeRemoteComponent({ expectedHash: "a".repeat(64) }),
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw new Error("update should not run for invalid expectedHash");
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => service.updateAdminRuntimeComponent("component_1", { expectedHash: "invalid" }),
+    /64 位 SHA-256/
+  );
+}
+
+async function testLegacyRemoteWithoutHashAllowsUnrelatedPatch() {
+  const updates: Array<Record<string, any>> = [];
+  const current = makeRemoteComponent({ expectedHash: null });
+  const service = createRuntimeComponentsService({
+    ensureRuntimeComponentExists: async () => current,
+    prisma: {
+      runtimeComponent: {
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return {
+            ...current,
+            ...payload.data,
+            updatedAt: new Date("2026-01-01T00:01:00.000Z")
+          };
+        }
+      }
+    },
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task(),
+    startSharedRulesetDuplicatesCleanup: () => undefined,
+    startRuntimeComponentStoredFileCleanupBestEffort: () => undefined,
+    publishRuntimeComponentUpdatedBestEffort: () => undefined
+  });
+
+  const result = await service.updateAdminRuntimeComponent("component_1", {
+    fileName: "xray-renamed.exe"
+  });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].data.expectedHash, null);
+  assert.equal(result.expectedHash, null);
+  assert.equal(result.fileName, "xray-renamed.exe");
+}
+async function testRemoteOriginUrlChangeRequiresExpectedHash() {
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        update: async () => {
+          throw new Error("update should not be called when expectedHash is missing");
+        }
+      }
+    },
+    ensureRuntimeComponentExists: async () =>
+      makeRemoteComponent({
+        id: "component_1",
+        originUrl: "https://cdn.example.com/xray.exe",
+        expectedHash: "a".repeat(64)
+      }),
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task()
+  });
+
+  await assert.rejects(
+    () =>
+      service.updateAdminRuntimeComponent("component_1", {
+        originUrl: "https://cdn.example.com/xray-new.exe"
+      }),
+    /expectedHash/
+  );
+}
+
 async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
   let publishedCount = 0;
   const created = makeRemoteComponent({ id: "component_created", expectedHash: "a".repeat(64) });
@@ -378,6 +489,10 @@ async function main() {
   await testAdminRuntimeComponentIgnoresBackgroundValidationFailureForDelivery();
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
+  await testRemoteCreateRequiresValidExpectedHash();
+  await testRemoteUpdateRejectsInvalidExpectedHash();
+  await testLegacyRemoteWithoutHashAllowsUnrelatedPatch();
+  await testRemoteOriginUrlChangeRequiresExpectedHash();
   await testRuntimeComponentMutationsPublishAdminRefreshEvent();
   console.log("runtime component service regression checks passed");
 }

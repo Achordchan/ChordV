@@ -680,7 +680,7 @@ async function main() {
     assert.equal((await requestJson(baseUrl, "/api/admin/runtime-components/failures?limit=5", { method: "GET" })).status, 200);
     assert.equal(
       (await requestJson(baseUrl, "/api/admin/runtime-components", {
-        body: { platform: "windows", architecture: "x64", kind: "xray", source: "custom_remote", originUrl: "https://cdn.example.com/xray.zip", fileName: "xray.zip" }
+        body: { platform: "windows", architecture: "x64", kind: "xray", source: "custom_remote", originUrl: "https://cdn.example.com/xray.zip", fileName: "xray.zip", expectedHash: "a".repeat(64) }
       })).status,
       201
     );
@@ -963,7 +963,8 @@ async function main() {
             kind: "xray",
             source: "custom_remote",
             originUrl: "https://cdn.example.com/xray.zip",
-            fileName: "xray.zip"
+            fileName: "xray.zip",
+            expectedHash: "a".repeat(64)
           }
         },
         {

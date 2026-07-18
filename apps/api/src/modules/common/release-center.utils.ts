@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { Agent, fetch as undiciFetch } from "undici";
+import { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } from "@chordv/shared/update-limits";
 import type {
   AdminReleaseArtifactDto,
   AdminReleaseRecordDto,
@@ -28,6 +29,7 @@ const DEFAULT_EXTERNAL_RELEASE_METADATA_TIMEOUT_MS = 30_000;
 const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_IDLE_TIMEOUT_MS = 15_000;
 const MAX_EXTERNAL_RELEASE_ARTIFACT_BYTES = RELEASE_ARTIFACT_MAX_UPLOAD_BYTES;
+const MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES_BIGINT = BigInt(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES);
 const configuredMaxWindowsFullUpdateZipEntryBytes = Number(
   process.env.CHORDV_RELEASE_MAX_ZIP_ENTRY_BYTES ?? DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES
 );
@@ -296,9 +298,22 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   assertReleaseArtifactTypeAllowed(platform, type);
   assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
 
-  // fileHash 已废弃，不再作为发布校验条件。
-  if (artifact.fileSizeBytes !== null && artifact.fileSizeBytes !== undefined && artifact.fileSizeBytes <= 0n) {
-    throw new BadRequestException("安装包文件大小元数据必须是正数。");
+  const fileHash = artifact.fileHash?.trim() ?? "";
+  if (!/^[a-fA-F0-9]{64}$/.test(fileHash)) {
+    throw new BadRequestException("安装包必须提供有效的 SHA-256 校验值。");
+  }
+  if (artifact.fileSizeBytes === null || artifact.fileSizeBytes === undefined || artifact.fileSizeBytes <= 0n) {
+    throw new BadRequestException("安装包必须提供正数文件大小元数据。");
+  }
+  if (artifact.fileSizeBytes > MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES_BIGINT) {
+    throw new BadRequestException(`安装包不能超过 ${MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES} 字节。`);
+  }
+  if (
+    artifact.source === "external" &&
+    (deliveryMode === "desktop_full_replace" || deliveryMode === "desktop_installer_download") &&
+    !/^https:\/\//i.test(artifact.downloadUrl.trim())
+  ) {
+    throw new BadRequestException("桌面外链安装包必须使用 HTTPS 下载地址。");
   }
 
   if (deliveryMode === "desktop_full_replace") {

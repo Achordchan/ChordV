@@ -1,5 +1,6 @@
 import type {
   AdminRuntimeComponentArchitecture,
+  CreateAdminRuntimeComponentInputDto,
   AdminRuntimeComponentKind,
   AdminRuntimeComponentRecordDto,
   AdminRuntimeComponentSource,
@@ -114,6 +115,26 @@ export function toRuntimeComponentEditorForm(record: AdminRuntimeComponentRecord
   };
 }
 
+export function buildRemoteRuntimeComponentPayload(
+  form: RuntimeComponentEditorFormState
+): CreateAdminRuntimeComponentInputDto {
+  if (form.source === "uploaded") {
+    throw new Error("uploaded runtime components must use the upload API");
+  }
+  return {
+    platform: form.platform,
+    architecture: form.architecture,
+    kind: form.kind,
+    source: form.source === "github_remote" ? "custom_remote" : form.source,
+    originUrl: form.originUrl.trim(),
+    defaultMirrorPrefix: null,
+    allowClientMirror: true,
+    fileName: form.fileName.trim(),
+    archiveEntryName: form.archiveEntryName.trim() || null,
+    expectedHash: form.expectedHash.trim().toLowerCase(),
+    enabled: form.enabled
+  };
+}
 export function translateRuntimeComponentKind(kind: AdminRuntimeComponentKind) {
   if (kind === "xray") return "Xray";
   if (kind === "geoip") return "GeoIP";

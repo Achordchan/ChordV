@@ -453,10 +453,11 @@ export async function subscribeDesktopUpdateDownloadProgress(
 }
 
 export async function downloadDesktopInstaller(input: {
-  url: string;
   fileName?: string | null;
-  expectedTotalBytes?: number | null;
   packageKind?: "installer" | "full_update";
+  currentVersion?: string | null;
+  channel?: string | null;
+  preferredCandidate?: "mirror" | "origin";
   onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
   const invoke = await loadInvoke();
@@ -464,10 +465,11 @@ export async function downloadDesktopInstaller(input: {
     return null;
   }
   const commandInput: Record<string, unknown> = {
-    url: input.url,
     fileName: input.fileName,
-    expectedTotalBytes: input.expectedTotalBytes,
-    packageKind: input.packageKind
+    packageKind: input.packageKind,
+    currentVersion: input.currentVersion,
+    channel: input.channel,
+    preferredCandidate: input.preferredCandidate
   };
   const { Channel } = await import("@tauri-apps/api/core");
   const progressChannel = new Channel<DesktopUpdateDownloadProgressPayload>((payload) => {
@@ -480,9 +482,10 @@ export async function downloadDesktopInstaller(input: {
 }
 
 export function downloadDesktopFullUpdatePackage(input: {
-  url: string;
   fileName?: string | null;
-  expectedTotalBytes?: number | null;
+  currentVersion?: string | null;
+  channel?: string | null;
+  preferredCandidate?: "mirror" | "origin";
   onProgress?: (progress: DesktopUpdateDownloadProgress) => void;
 }) {
   return downloadDesktopInstaller({
@@ -539,18 +542,17 @@ export async function openExternalUrl(url: string) {
   return invoke("open_external_url", { url: normalizedUrl });
 }
 
-export async function applyDesktopFullUpdate(input: {
-  path: string;
+export async function applyDesktopFullUpdate(_input?: {
+  path?: string;
   expectedTotalBytes?: number | null;
+  expectedHash?: string | null;
 }) {
   const invoke = await loadInvoke();
   if (!invoke || isAndroidPlatform()) {
     return { ok: false as const };
   }
-  return invoke("apply_desktop_full_update", {
-    path: input.path,
-    expectedTotalBytes: input.expectedTotalBytes
-  });
+  // Path/hash must come from native pending state created by a verified download.
+  return invoke("apply_desktop_full_update");
 }
 
 export async function quitForUpdate() {

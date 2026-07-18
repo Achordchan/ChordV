@@ -1,4 +1,5 @@
 import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
+import { ExternalArtifactMetadataFields } from "./ExternalArtifactMetadataFields";
 import type { ReleaseEditorFormState } from "./types";
 import { releasePlatformOptions } from "./types";
 
@@ -84,72 +85,11 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
         />
 
         {!props.editing ? (
-          <>
-            <SegmentedControl
-              value={props.form.artifactSource}
-              onChange={(value) =>
-                props.onChange({
-                  ...props.form,
-                  artifactSource: value as ReleaseEditorFormState["artifactSource"]
-                })
-              }
-              data={[
-                { value: "external", label: "外链地址" },
-                { value: "uploaded", label: "上传文件" }
-              ]}
-              disabled={props.saving}
-            />
-
-            {props.form.artifactSource === "external" ? (
-              <>
-                <TextInput
-                  label="外链下载地址"
-                  placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
-                  value={props.form.downloadUrl}
-                  onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
-                  disabled={props.saving}
-                />
-                {props.form.platform === "windows" ? (
-                  <Checkbox
-                    label="按 Windows 全量替换 ZIP 发布"
-                    description="外链地址即使没有 .zip 后缀，也会让客户端执行静默全量替换。"
-                    checked={props.form.externalDeliveryMode === "windows_full_replace_zip"}
-                    onChange={(event) =>
-                      props.onChange({
-                        ...props.form,
-                        externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "external_download"
-                      })
-                    }
-                    disabled={props.saving}
-                  />
-                ) : null}
-              </>
-            ) : (
-              <FileInput
-                label="上传安装包文件"
-                description="也保留本地上传路径；如果外链下载慢，可以上传到服务器。"
-                placeholder="选择安装包文件"
-                accept={acceptedArtifactExtensionForPlatform(props.form.platform)}
-                value={props.form.selectedFile}
-                onChange={(file) =>
-                  props.onChange({
-                    ...props.form,
-                    artifactSource: "uploaded",
-                    selectedFile: file,
-                    fileName: file?.name ?? props.form.fileName
-                  })
-                }
-                clearable
-                disabled={props.saving}
-              />
-            )}
-
-            <Alert color="blue" variant="light">
-              {props.form.artifactSource === "external"
-                ? "外链会直接下发给客户端，不经过本地服务器中转下载；也可以先留空创建草稿，稍后再补。"
-                : "上传文件会保存到本地服务器；也可以先不选文件创建草稿，稍后再上传。"}
-            </Alert>
-          </>
+          <NewReleaseArtifactFields
+            form={props.form}
+            saving={props.saving}
+            onChange={props.onChange}
+          />
         ) : (
           <Alert color={props.artifactEditingDisabled ? "yellow" : "blue"} variant="light">
             <Stack gap="xs">
@@ -205,6 +145,87 @@ export function ReleaseEditorModal(props: ReleaseEditorModalProps) {
   );
 }
 
+type NewReleaseArtifactFieldsProps = {
+  form: ReleaseEditorFormState;
+  saving: boolean;
+  onChange: (value: ReleaseEditorFormState) => void;
+};
+
+export function NewReleaseArtifactFields(props: NewReleaseArtifactFieldsProps) {
+  return (
+    <>
+      <SegmentedControl
+        value={props.form.artifactSource}
+        onChange={(value) =>
+          props.onChange({
+            ...props.form,
+            artifactSource: value as ReleaseEditorFormState["artifactSource"]
+          })
+        }
+        data={[
+          { value: "external", label: "外链地址" },
+          { value: "uploaded", label: "上传文件" }
+        ]}
+        disabled={props.saving}
+      />
+
+      {props.form.artifactSource === "external" ? (
+        <>
+          <TextInput
+            label="外链下载地址"
+            placeholder="https://example.com/ChordV_1.1.6_x64-full.zip"
+            value={props.form.downloadUrl}
+            onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
+            disabled={props.saving}
+          />
+          <ExternalArtifactMetadataFields
+            value={props.form}
+            disabled={props.saving}
+            onChange={(patch) => props.onChange({ ...props.form, ...patch })}
+          />
+          {props.form.platform === "windows" ? (
+            <Checkbox
+              label="按 Windows 全量替换 ZIP 发布"
+              description="外链地址即使没有 .zip 后缀，也会让客户端执行静默全量替换。"
+              checked={props.form.externalDeliveryMode === "windows_full_replace_zip"}
+              onChange={(event) =>
+                props.onChange({
+                  ...props.form,
+                  externalDeliveryMode: event.currentTarget.checked ? "windows_full_replace_zip" : "external_download"
+                })
+              }
+              disabled={props.saving}
+            />
+          ) : null}
+        </>
+      ) : (
+        <FileInput
+          label="上传安装包文件"
+          description="也保留本地上传路径；如果外链下载慢，可以上传到服务器。"
+          placeholder="选择安装包文件"
+          accept={acceptedArtifactExtensionForPlatform(props.form.platform)}
+          value={props.form.selectedFile}
+          onChange={(file) =>
+            props.onChange({
+              ...props.form,
+              artifactSource: "uploaded",
+              selectedFile: file,
+              fileName: file?.name ?? props.form.fileName
+            })
+          }
+          clearable
+          disabled={props.saving}
+        />
+      )}
+
+      <Alert color="blue" variant="light">
+        {props.form.artifactSource === "external"
+          ? "外链会直接下发给客户端，不经过本地服务器中转下载；也可以先留空创建草稿，稍后再补。"
+          : "上传文件会保存到本地服务器；也可以先不选文件创建草稿，稍后再上传。"}
+      </Alert>
+    </>
+  );
+}
 function acceptedArtifactExtensionForPlatform(platform: ReleaseEditorFormState["platform"]) {
   if (platform === "windows") {
     return ".zip";

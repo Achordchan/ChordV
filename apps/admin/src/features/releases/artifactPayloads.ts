@@ -1,3 +1,4 @@
+import updateLimits from "@chordv/shared/update-limits";
 import type {
   AdminReleaseArtifactType,
   AdminReleasePlatform,
@@ -5,14 +6,45 @@ import type {
 } from "../../api/client";
 import type { ArtifactEditorFormState, ReleaseEditorFormState } from "./types";
 
+const { MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES } = updateLimits;
+
 type WindowsExternalDeliveryMode = ReleaseEditorFormState["externalDeliveryMode"] | ArtifactEditorFormState["externalDeliveryMode"];
+
+export const DESKTOP_UPDATE_DOWNLOAD_LIMIT_LABEL = `1 GiB（${MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES} 字节）`;
+
+export function validateExternalArtifactMetadata(fileSizeBytes: string, fileHash: string) {
+  const normalizedSize = fileSizeBytes.trim();
+  if (!/^[1-9]\d*$/.test(normalizedSize)) {
+    return "文件大小必须是正整数字节数。";
+  }
+  const maxSizeText = String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES);
+  if (
+    normalizedSize.length > maxSizeText.length ||
+    (normalizedSize.length === maxSizeText.length && normalizedSize > maxSizeText)
+  ) {
+    return `文件大小不能超过 ${DESKTOP_UPDATE_DOWNLOAD_LIMIT_LABEL}。`;
+  }
+  if (!/^[a-fA-F0-9]{64}$/.test(fileHash.trim())) {
+    return "请填写有效的 64 位 SHA-256 校验值。";
+  }
+  return null;
+}
 
 export function buildExternalArtifactPayload(
   platform: AdminReleasePlatform,
   downloadUrl: string,
   isPrimary: boolean,
+  fileSizeBytes: string,
+  fileHash: string,
   externalDeliveryMode: WindowsExternalDeliveryMode = "external_download"
 ): CreateAdminReleaseArtifactInputDto {
+  if ((platform === "windows" || platform === "macos") && !/^https:\/\//i.test(downloadUrl.trim())) {
+    throw new Error("桌面外链安装包必须使用 HTTPS 下载地址。");
+  }
+  const metadataError = validateExternalArtifactMetadata(fileSizeBytes, fileHash);
+  if (metadataError) {
+    throw new Error(metadataError);
+  }
   const type =
     platform === "windows" && externalDeliveryMode === "windows_full_replace_zip"
       ? "zip"
@@ -28,6 +60,8 @@ export function buildExternalArtifactPayload(
         : deliveryModeForExternalArtifact(platform, type),
     downloadUrl: downloadUrl.trim(),
     fileName: inferFileNameFromUrl(downloadUrl),
+    fileSizeBytes: fileSizeBytes.trim(),
+    fileHash: fileHash.trim().toLowerCase(),
     isPrimary
   };
 }

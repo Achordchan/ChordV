@@ -1,4 +1,5 @@
 import { Alert, Button, Checkbox, FileInput, Group, Modal, SegmentedControl, Stack, TextInput } from "@mantine/core";
+import { ExternalArtifactMetadataFields } from "./ExternalArtifactMetadataFields";
 import type { ArtifactEditorFormState } from "./types";
 import type { AdminReleasePlatform } from "../../api/client";
 
@@ -75,6 +76,11 @@ export function ArtifactEditorModal(props: ArtifactEditorModalProps) {
               value={props.form.downloadUrl}
               onChange={(event) => props.onChange({ ...props.form, downloadUrl: event.currentTarget.value })}
               disabled={props.saving}
+            />
+            <ExternalArtifactMetadataFields
+              value={props.form}
+              disabled={props.saving}
+              onChange={(patch) => props.onChange({ ...props.form, ...patch })}
             />
             {props.platform === "windows" ? (
               <Checkbox
