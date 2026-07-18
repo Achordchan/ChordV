@@ -15,6 +15,7 @@ DEPLOY_ALLOW_ROOT="${DEPLOY_ALLOW_ROOT:-false}"
 # Historical name DEPLOY_RUN_DB_PUSH is kept for compatibility, but it runs prisma migrate deploy (not db push).
 DEPLOY_RUN_MIGRATE_DEPLOY="${DEPLOY_RUN_MIGRATE_DEPLOY:-${DEPLOY_RUN_DB_PUSH:-false}}"
 DEPLOY_RUN_DB_PUSH="${DEPLOY_RUN_MIGRATE_DEPLOY}"
+CHORDV_PANEL_PASSWORD_MASTER_KEY="${CHORDV_PANEL_PASSWORD_MASTER_KEY:-}"
 SSH_OPTS="${SSH_OPTS:-}"
 
 if [ -x /usr/local/bin/node ]; then
@@ -63,9 +64,7 @@ require_env DEPLOY_USER
 require_env DEPLOY_PATH
 require_env DEPLOY_ADMIN_PATH
 
-# Production panel password encryption key must already exist in the server .env.
-# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-# and set CHORDV_PANEL_PASSWORD_MASTER_KEY=... (or CHORDV_SECRET_ENCRYPTION_KEY=...).
+# Preserve an existing server key; install the approved deployment secret only when no key exists.
 
 if [ "${DEPLOY_USER}" = "root" ] && [ "${DEPLOY_ALLOW_ROOT}" != "true" ]; then
   echo "Refusing root deploy user unless DEPLOY_ALLOW_ROOT=true is set explicitly."
@@ -91,6 +90,24 @@ trap cleanup_ssh_control EXIT
 require_command pnpm
 require_command rsync
 require_command ssh
+
+configure_remote_panel_password_master_key() {
+  if [ -n "${CHORDV_PANEL_PASSWORD_MASTER_KEY}" ] &&
+    [[ ! "${CHORDV_PANEL_PASSWORD_MASTER_KEY}" =~ ^[[:xdigit:]]{64}$ ]]; then
+    echo "CHORDV_PANEL_PASSWORD_MASTER_KEY must be a 64-character hexadecimal key."
+    exit 1
+  fi
+
+  {
+    printf '%s\n' "${CHORDV_PANEL_PASSWORD_MASTER_KEY}"
+    printf '%s\n' "${DEPLOY_PATH}"
+    cat scripts/install-panel-password-key.py
+  } | ssh ${SSH_BASE_OPTS} "${REMOTE}" \
+    'IFS= read -r CHORDV_PANEL_PASSWORD_MASTER_KEY; IFS= read -r DEPLOY_PATH; export CHORDV_PANEL_PASSWORD_MASTER_KEY DEPLOY_PATH; python3 -'
+}
+
+# Run before building or syncing payloads so a missing secret cannot cause a partial deployment.
+configure_remote_panel_password_master_key
 
 echo "构建后端与后台..."
 pnpm --filter @chordv/shared build
@@ -279,34 +296,6 @@ if [ ! -f "start.sh" ]; then
 fi
 
 
-ensure_panel_password_master_key() {
-  local env_file
-  for env_file in \
-    "${DEPLOY_PATH}/.env" \
-    "${DEPLOY_PATH}/.env.local" \
-    "${DEPLOY_PATH}/apps/api/.env" \
-    "${DEPLOY_PATH}/apps/api/.env.local"; do
-    if [ -f "${env_file}" ]; then
-      if grep -Eq '^(export[[:space:]]+)?(CHORDV_PANEL_PASSWORD_MASTER_KEY|CHORDV_SECRET_ENCRYPTION_KEY)=' "${env_file}"; then
-        local value
-        value="$(grep -E '^(export[[:space:]]+)?(CHORDV_PANEL_PASSWORD_MASTER_KEY|CHORDV_SECRET_ENCRYPTION_KEY)=' "${env_file}" | tail -n 1 | cut -d= -f2- | tr -d '\r' | sed -e 's/^\"//' -e 's/\"$//' -e "s/^'//" -e "s/'$//")"
-        if [ -n "${value}" ]; then
-          echo "Detected panel password master key in ${env_file}"
-          return 0
-        fi
-      fi
-    fi
-  done
-  if [ "${CHORDV_ALLOW_PLAINTEXT_PANEL_PASSWORD:-}" = "true" ]; then
-    echo "WARNING: CHORDV_ALLOW_PLAINTEXT_PANEL_PASSWORD=true; panel passwords may remain plaintext."
-    return 0
-  fi
-  echo "Missing CHORDV_PANEL_PASSWORD_MASTER_KEY (or CHORDV_SECRET_ENCRYPTION_KEY) in production env files under ${DEPLOY_PATH}."
-  echo "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
-  echo "Then add CHORDV_PANEL_PASSWORD_MASTER_KEY=<64-char-hex> to the API env before deploy."
-  exit 1
-}
-
 normalize_start_script() {
 python3 - <<'PY'
 from pathlib import Path
@@ -354,7 +343,6 @@ PY
 }
 
 normalize_start_script
-ensure_panel_password_master_key
 
 if [ ! -x "${NODE_BIN}" ]; then
   echo "宝塔 Node 不存在：${NODE_BIN}"
