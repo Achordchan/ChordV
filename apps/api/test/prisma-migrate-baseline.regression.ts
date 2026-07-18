@@ -9,6 +9,25 @@ async function loadBaselineModule() {
   return import(pathToFileURL(modulePath).href);
 }
 
+async function testDeploymentEnvLoading() {
+  const mod = await loadBaselineModule();
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-env-"));
+  const apiDir = path.join(root, "apps/api");
+  try {
+    mkdirSync(apiDir, { recursive: true });
+    writeFileSync(
+      path.join(apiDir, ".env"),
+      '\uFEFFDATABASE_URL="postgresql://from-file"\nexport CHORDV_TEST_VALUE=loaded # comment\n',
+      "utf8"
+    );
+    const env: Record<string, string | undefined> = { CHORDV_TEST_VALUE: "preserved" };
+    mod.loadDeploymentEnv({ cwd: apiDir, root, env });
+    assert.equal(env.DATABASE_URL, "postgresql://from-file");
+    assert.equal(env.CHORDV_TEST_VALUE, "preserved");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 async function testListMigrationNames() {
   const mod = await loadBaselineModule();
   const dir = mkdtempSync(path.join(tmpdir(), "chordv-mig-"));
@@ -132,6 +151,7 @@ async function testInspectBaselineModes() {
 }
 
 async function main() {
+  await testDeploymentEnvLoading();
   await testListMigrationNames();
   await testDiffInterpretsExitCodes();
   await testInitDiffUsesSchemaDatamodelNotShadow();

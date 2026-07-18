@@ -18,12 +18,58 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
+
+export function loadEnvFile(filePath, env = process.env) {
+  if (!existsSync(filePath)) return false;
+  const contents = readFileSync(filePath, "utf8");
+  for (const rawLine of contents.split(/\r?\n/)) {
+    let line = rawLine.replace(/^\uFEFF/, "").trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice(7).trimStart();
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+    const name = line.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || env[name] !== undefined) continue;
+    let value = line.slice(separator + 1).trim();
+    if (value.length >= 2 && value[0] === value[value.length - 1] && ["'", '"'].includes(value[0])) {
+      const quote = value[0];
+      value = value.slice(1, -1);
+      if (quote === '"') {
+        value = value
+          .replace(/\\n/g, "\n")
+          .replace(/\\r/g, "\r")
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, "\\");
+      }
+    } else {
+      value = value.replace(/\s+#.*$/, "").trim();
+    }
+    env[name] = value;
+  }
+  return true;
+}
+
+export function loadDeploymentEnv({ cwd = process.cwd(), root = repoRoot, env = process.env } = {}) {
+  const candidates = [
+    resolve(cwd, ".env.local"),
+    resolve(cwd, ".env"),
+    resolve(root, "apps/api/.env.local"),
+    resolve(root, "apps/api/.env"),
+    resolve(root, ".env.local"),
+    resolve(root, ".env")
+  ];
+  for (const filePath of new Set(candidates)) loadEnvFile(filePath, env);
+  return env;
+}
+
+loadDeploymentEnv();
+
 const INIT_MIGRATION = process.env.CHORDV_PRISMA_BASELINE_MIGRATION || "20260717000000_init";
 const DATABASE_URL = process.env.DATABASE_URL?.trim();
 const forceBaseline = (process.env.CHORDV_PRISMA_FORCE_BASELINE || "").toLowerCase() === "true";
 const skip = (process.env.CHORDV_SKIP_MIGRATION_BASELINE_CHECK || "").toLowerCase() === "true";
-const scriptDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(scriptDir, "..");
 const migrationsDir = resolve(repoRoot, "apps/api/prisma/migrations");
 const schemaPath = resolve(repoRoot, "apps/api/prisma/schema.prisma");
 
