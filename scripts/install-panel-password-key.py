@@ -4,12 +4,12 @@ import binascii
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import tempfile
 
 
 deploy_path = Path(os.environ["DEPLOY_PATH"])
-injected_key = os.environ.get("CHORDV_PANEL_PASSWORD_MASTER_KEY", "").strip()
 key_line = re.compile(
     r"^(?:export\s+)?(?:CHORDV_PANEL_PASSWORD_MASTER_KEY|CHORDV_SECRET_ENCRYPTION_KEY)=(.*)$"
 )
@@ -58,25 +58,19 @@ for env_file in candidates:
         print(f"Detected existing panel password master key in {env_file}; preserving it.")
         raise SystemExit(0)
 
-if not injected_key:
-    raise SystemExit(
-        "Missing CHORDV_PANEL_PASSWORD_MASTER_KEY in both production env files and the deployment secret."
-    )
-if not is_valid_key(injected_key):
-    raise SystemExit("Injected CHORDV_PANEL_PASSWORD_MASTER_KEY is not a valid 32-byte key.")
-
+new_key = secrets.token_hex(32)
 original = target.read_text(encoding="utf-8")
 updated_lines = []
 inserted = False
 for line in original.splitlines():
     if key_line.match(line):
         if not inserted:
-            updated_lines.append(f"CHORDV_PANEL_PASSWORD_MASTER_KEY={injected_key}")
+            updated_lines.append(f"CHORDV_PANEL_PASSWORD_MASTER_KEY={new_key}")
             inserted = True
         continue
     updated_lines.append(line)
 if not inserted:
-    updated_lines.append(f"CHORDV_PANEL_PASSWORD_MASTER_KEY={injected_key}")
+    updated_lines.append(f"CHORDV_PANEL_PASSWORD_MASTER_KEY={new_key}")
 updated = "\n".join(updated_lines) + "\n"
 
 metadata = target.stat()
@@ -100,4 +94,4 @@ except BaseException:
         pass
     raise
 
-print(f"Installed panel password master key in {target}.")
+print(f"Generated and installed panel password master key in {target}.")

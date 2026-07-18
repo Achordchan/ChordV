@@ -66,6 +66,5 @@ jobs:
           DEPLOY_HEALTH_PATH: /api/client/version
           DEPLOY_ALLOW_ROOT: ${{ secrets.BAOTA_ALLOW_ROOT }}
           DEPLOY_RUN_DB_PUSH: ${{ secrets.BAOTA_RUN_DB_PUSH || 'false' }}
-          CHORDV_PANEL_PASSWORD_MASTER_KEY: ${{ secrets.CHORDV_PANEL_PASSWORD_MASTER_KEY }}
           SSH_OPTS: -i ~/.ssh/baota_deploy -o StrictHostKeyChecking=yes
         run: bash scripts/deploy-baota.sh

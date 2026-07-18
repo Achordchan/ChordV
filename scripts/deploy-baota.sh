@@ -15,7 +15,6 @@ DEPLOY_ALLOW_ROOT="${DEPLOY_ALLOW_ROOT:-false}"
 # Historical name DEPLOY_RUN_DB_PUSH is kept for compatibility, but it runs prisma migrate deploy (not db push).
 DEPLOY_RUN_MIGRATE_DEPLOY="${DEPLOY_RUN_MIGRATE_DEPLOY:-${DEPLOY_RUN_DB_PUSH:-false}}"
 DEPLOY_RUN_DB_PUSH="${DEPLOY_RUN_MIGRATE_DEPLOY}"
-CHORDV_PANEL_PASSWORD_MASTER_KEY="${CHORDV_PANEL_PASSWORD_MASTER_KEY:-}"
 SSH_OPTS="${SSH_OPTS:-}"
 
 if [ -x /usr/local/bin/node ]; then
@@ -64,7 +63,7 @@ require_env DEPLOY_USER
 require_env DEPLOY_PATH
 require_env DEPLOY_ADMIN_PATH
 
-# Preserve an existing server key; install the approved deployment secret only when no key exists.
+# Preserve an existing server key; generate a new key on the remote host only when no key exists.
 
 if [ "${DEPLOY_USER}" = "root" ] && [ "${DEPLOY_ALLOW_ROOT}" != "true" ]; then
   echo "Refusing root deploy user unless DEPLOY_ALLOW_ROOT=true is set explicitly."
@@ -92,18 +91,11 @@ require_command rsync
 require_command ssh
 
 configure_remote_panel_password_master_key() {
-  if [ -n "${CHORDV_PANEL_PASSWORD_MASTER_KEY}" ] &&
-    [[ ! "${CHORDV_PANEL_PASSWORD_MASTER_KEY}" =~ ^[[:xdigit:]]{64}$ ]]; then
-    echo "CHORDV_PANEL_PASSWORD_MASTER_KEY must be a 64-character hexadecimal key."
-    exit 1
-  fi
-
   {
-    printf '%s\n' "${CHORDV_PANEL_PASSWORD_MASTER_KEY}"
     printf '%s\n' "${DEPLOY_PATH}"
     cat scripts/install-panel-password-key.py
   } | ssh ${SSH_BASE_OPTS} "${REMOTE}" \
-    'IFS= read -r CHORDV_PANEL_PASSWORD_MASTER_KEY; IFS= read -r DEPLOY_PATH; export CHORDV_PANEL_PASSWORD_MASTER_KEY DEPLOY_PATH; python3 -'
+    'IFS= read -r DEPLOY_PATH; export DEPLOY_PATH; python3 -'
 }
 
 # Run before building or syncing payloads so a missing secret cannot cause a partial deployment.
