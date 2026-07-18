@@ -61,6 +61,7 @@ const buildStart = deployScript.search(/\r?\npnpm --filter @chordv\/shared build
 assert.ok(preflightCall >= 0, "deployment secret preflight call is missing");
 assert.ok(buildStart > preflightCall, "deployment secret preflight must run before builds and file sync");
 assert.match(deployScript, /cat scripts\/install-panel-password-key\.py/);
+assert.match(deployScript, /scripts\/prisma-migrate-with-baseline\.mjs/);
 assert.match(deployScript, /export DEPLOY_PATH; python3 -/);
 assert.doesNotMatch(deployScript, /ensure_panel_password_master_key/);
 assert.doesNotMatch(deployScript, /CHORDV_PANEL_PASSWORD_MASTER_KEY=.*secrets/);

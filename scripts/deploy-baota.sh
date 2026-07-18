@@ -113,11 +113,13 @@ wait "${api_build_pid}"
 wait "${admin_build_pid}"
 
 rm -rf "${STAGE_DIR}"
-mkdir -p "${API_STAGE}/apps/api" "${API_STAGE}/packages/shared" "${ADMIN_STAGE}"
+mkdir -p "${API_STAGE}/apps/api" "${API_STAGE}/packages/shared" "${API_STAGE}/scripts" "${ADMIN_STAGE}"
 
 rsync -a \
   package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json turbo.json \
   "${API_STAGE}/"
+
+rsync -a scripts/prisma-migrate-with-baseline.mjs "${API_STAGE}/scripts/"
 
 rsync -a \
   --exclude "node_modules/" \
