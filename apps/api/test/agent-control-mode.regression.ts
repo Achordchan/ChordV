@@ -1,9 +1,34 @@
 import assert from "node:assert/strict";
 import { ConflictException } from "@nestjs/common";
 import { AgentControlModeService, applyDirectCutoverUsage } from "../src/modules/agent/agent-control-mode.service";
+import { assertDirectDeletionWatermarksSettled } from "../src/modules/common/runtime-session.service";
 import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
 
 async function main() {
+  await assert.rejects(
+    () => assertDirectDeletionWatermarksSettled({ nodeUsageBatch: { findUnique: async () => null } }, {
+      id: "binding-deleted",
+      nodeId: "node-1",
+      directDisableWatermarks: null
+    }),
+    /水位尚未确认/
+  );
+  await assert.rejects(
+    () => assertDirectDeletionWatermarksSettled({ nodeUsageBatch: { findUnique: async () => ({ accountedAt: null }) } }, {
+      id: "binding-deleted",
+      nodeId: "node-1",
+      directDisableWatermarks: [{ bootId: "boot-a", sequenceThrough: "3" }]
+    }),
+    /批次尚未结清/
+  );
+  await assert.doesNotReject(() => assertDirectDeletionWatermarksSettled({
+    nodeUsageBatch: { findUnique: async () => ({ accountedAt: new Date() }) }
+  }, {
+    id: "binding-deleted",
+    nodeId: "node-1",
+    directDisableWatermarks: [{ bootId: "boot-a", sequenceThrough: "3" }]
+  }));
+
   await assert.rejects(
     () => serviceFor(node("direct_primary")).switchMode("node-1", { targetMode: "xui_primary", confirmRollback: true }),
     ConflictException,

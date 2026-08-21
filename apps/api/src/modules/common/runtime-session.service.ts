@@ -2577,6 +2577,9 @@ export class RuntimeSessionService {
     const resolvedPanelInboundId = panelInboundId ?? 0;
 
     if (existing) {
+      if (existing.status === "deleted" && usesAgentControl(input.node.controlMode)) {
+        await assertDirectDeletionWatermarksSettled(writer, existing);
+      }
       const refreshShadowConfig = usesAgentShadowMetering(input.node.controlMode) && (
         existing.status !== "active" ||
         existing.panelClientEmail !== panelClientEmail ||
@@ -3244,6 +3247,44 @@ export function buildDirectUserQuotaPayload(subscription: {
     quotaRemainingBytes: quotaRemainingBytes.toString(),
     offlineAllowanceBytes: DIRECT_OFFLINE_ALLOWANCE_BYTES.toString()
   };
+}
+
+export async function assertDirectDeletionWatermarksSettled(
+  writer: any,
+  binding: { id: string; nodeId: string; directDisableWatermarks: Prisma.JsonValue | null }
+) {
+  const watermarks = parseDirectDisableWatermarks(binding.directDisableWatermarks);
+  if (!watermarks) {
+    throw new ConflictException(`Direct 用户删除水位尚未确认：${binding.id}`);
+  }
+  for (const watermark of watermarks) {
+    const batch = await writer.nodeUsageBatch.findUnique({
+      where: {
+        nodeId_bootId_sequence: {
+          nodeId: binding.nodeId,
+          bootId: watermark.bootId,
+          sequence: watermark.sequenceThrough
+        }
+      },
+      select: { accountedAt: true }
+    });
+    if (!batch?.accountedAt) {
+      throw new ConflictException(`Direct 用户删除前流量批次尚未结清：${binding.id}`);
+    }
+  }
+}
+
+function parseDirectDisableWatermarks(value: Prisma.JsonValue | null) {
+  if (!Array.isArray(value)) return null;
+  const result: Array<{ bootId: string; sequenceThrough: bigint }> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const bootId = Reflect.get(item, "bootId");
+    const sequenceThrough = Reflect.get(item, "sequenceThrough");
+    if (typeof bootId !== "string" || typeof sequenceThrough !== "string" || !/^(0|[1-9]\d*)$/.test(sequenceThrough)) return null;
+    result.push({ bootId, sequenceThrough: BigInt(sequenceThrough) });
+  }
+  return result;
 }
 
 function buildXuiRuntimeFromLease(
