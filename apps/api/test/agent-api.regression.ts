@@ -210,6 +210,13 @@ async function main() {
   assert.equal((await rejectedService.ingestUsageBatch(capturedAfterDisable.agent as never, usageBatch("1", "100"))).ackThrough, "1", "停用后的终态样本必须丢弃并确认，不能卡死队列");
   assert.equal(capturedAfterDisable.subscription.usedTrafficBytes, 0n);
 
+  const capturedAfterDelete = createDirectFixture();
+  capturedAfterDelete.binding.status = "deleted";
+  capturedAfterDelete.binding.directDisableWatermarks = [{ bootId: "boot-a", sequenceThrough: "0" }];
+  const deletedService = new AgentService(capturedAfterDelete.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  assert.equal((await deletedService.ingestUsageBatch(capturedAfterDelete.agent as never, usageBatch("1", "100"))).ackThrough, "1", "删除后的终态样本必须丢弃并确认，不能卡死队列");
+  assert.equal(capturedAfterDelete.subscription.usedTrafficBytes, 0n);
+
   console.log("agent-api regression tests passed");
 }
 

@@ -46,7 +46,7 @@ export async function applyDirectBatch(
     if (!binding || binding.nodeId !== nodeId || binding.source !== "direct") {
       throw new ConflictException(`Direct 用户绑定无效：${sample.bindingId}`);
     }
-    if (binding.status === "disabled") {
+    if (binding.status === "disabled" || binding.status === "deleted") {
       const watermarks = parseDisableWatermarks(binding.directDisableWatermarks);
       if (watermarks && !watermarks.some((watermark) => watermark.bootId === bootId && sequence <= watermark.sequenceThrough)) {
         return [];
