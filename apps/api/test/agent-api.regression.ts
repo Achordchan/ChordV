@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { ConflictException } from "@nestjs/common";
+import { applyDirectBatch } from "../src/modules/agent/agent-direct-metering";
 import { AgentService, assertAgentTokenPepperReadyForProduction, hashAgentToken, isRetryableAgentTransactionError, parseDecimalBigInt } from "../src/modules/agent/agent.service";
 
 type StoredBatch = { id: string; nodeId: string; agentId: string; bootId: string; sequence: bigint; payloadHash: string };
@@ -92,23 +93,115 @@ async function main() {
   assert.equal(direct.queryCounts.snapshotBulkRefreshes, writesBeforeIdleBatch.snapshotBulkRefreshes + 1);
   assert.equal(direct.queryCounts.bindingBulkRefreshes, writesBeforeIdleBatch.bindingBulkRefreshes + 1);
 
+  const resetGeneration = await directService.ingestUsageBatch(direct.agent as never, usageBatch("4", "50", "1"));
+  assert.equal(resetGeneration.ackThrough, "4");
+  assert.equal(direct.subscription.usedTrafficBytes, 150n, "新 counterGeneration 的首个绝对样本必须计入套餐用量");
+
+  const multiNode = createMultiNodeExhaustionFixture();
+  const multiNodeResult = await applyDirectBatch(
+    multiNode.tx as never,
+    "agent-node-1",
+    "node-1",
+    new Date("2026-07-26T00:00:05.000Z"),
+    [{
+      bindingId: "binding-1",
+      counterGeneration: "0",
+      uplinkBytes: "120",
+      downlinkBytes: "0",
+      uplinkDeltaBytes: "30",
+      downlinkDeltaBytes: "0"
+    }]
+  );
+  assert.deepEqual(new Set(multiNodeResult.commandAgentIds), new Set(["agent-node-1", "agent-node-2"]));
+  assert.equal(multiNode.bindings.every((item) => item.status === "disabled"), true, "共享套餐耗尽必须停用所有 Direct 节点绑定");
+  assert.deepEqual(new Set(multiNode.commands.map((item) => item.nodeId)), new Set(["node-1", "node-2"]));
+  assert.deepEqual(new Set(multiNode.commands.map((item) => item.agentId)), new Set(["agent-node-1", "agent-node-2"]));
+
   console.log("agent-api regression tests passed");
 }
 
-function usageBatch(sequence: string, uplinkBytes: string) {
+function usageBatch(sequence: string, uplinkBytes: string, counterGeneration = "0") {
   return {
     bootId: "boot-a",
     sequence,
     sampledAt: `2026-07-26T00:00:0${sequence}.000Z`,
     samples: [{
       bindingId: "binding-1",
-      counterGeneration: "0",
+      counterGeneration,
       uplinkBytes,
       downlinkBytes: "0",
       uplinkDeltaBytes: "100",
       downlinkDeltaBytes: "0"
     }]
   };
+}
+
+function createMultiNodeExhaustionFixture() {
+  const subscription = {
+    id: "subscription-shared",
+    totalTrafficGb: 0,
+    usedTrafficGb: 0,
+    remainingTrafficGb: 0,
+    totalTrafficBytes: 100n,
+    usedTrafficBytes: 90n,
+    state: "active",
+    expireAt: new Date("2027-07-26T00:00:00.000Z")
+  };
+  const bindings = ["node-1", "node-2"].map((nodeId, index) => ({
+    id: `binding-${index + 1}`,
+    nodeId,
+    subscriptionId: subscription.id,
+    userId: `user-${index + 1}`,
+    teamId: null,
+    source: "direct",
+    status: "active",
+    directRevision: 1n,
+    panelClientEmail: `user-${index + 1}@example.invalid`,
+    panelClientId: `00000000-0000-4000-8000-00000000000${index + 1}`,
+    lastUplinkBytes: index === 0 ? 90n : 0n,
+    lastDownlinkBytes: 0n,
+    subscription
+  }));
+  const commands: Array<{ nodeId: string; agentId: string }> = [];
+  const revisions = new Map([["node-1", 1n], ["node-2", 5n]]);
+  const tx = {
+    panelClientBinding: {
+      findMany: async ({ where }: any) => where.id ? [bindings[0]] : bindings.filter((item) => where.subscriptionId.in.includes(item.subscriptionId) && item.status === "active"),
+      updateMany: async ({ where, data }: any) => {
+        for (const binding of bindings.filter((item) => where.id.in.includes(item.id))) Object.assign(binding, data);
+        return { count: where.id.in.length };
+      },
+      update: async ({ where, data }: any) => {
+        const binding = bindings.find((item) => item.id === where.id)!;
+        Object.assign(binding, data);
+        return binding;
+      }
+    },
+    trafficSnapshot: {
+      findMany: async () => [{ snapshotKey: "node-1:subscription-shared:user-1", uplinkBytes: 90n, downlinkBytes: 0n, counterGeneration: "0" }],
+      upsert: async () => undefined,
+      updateMany: async () => ({ count: 0 })
+    },
+    subscription: {
+      update: async ({ data }: any) => { Object.assign(subscription, data); return subscription; }
+    },
+    trafficLedger: { createMany: async () => ({ count: 0 }) },
+    node: {
+      update: async ({ where }: any) => {
+        const revision = (revisions.get(where.id) ?? 0n) + 1n;
+        revisions.set(where.id, revision);
+        return { agentConfigRevision: revision };
+      }
+    },
+    nodeAgent: {
+      findMany: async () => [{ id: "agent-node-2", nodeId: "node-2", revokedAt: null }]
+    },
+    nodeCommandJob: {
+      upsert: async ({ create }: any) => { commands.push({ nodeId: create.nodeId, agentId: create.agentId }); return create; }
+    },
+    leaseRevocationJob: { upsert: async () => undefined }
+  };
+  return { tx, bindings, commands };
 }
 
 function createDirectFixture() {

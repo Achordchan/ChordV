@@ -202,21 +202,29 @@ export class AgentService {
           ? await this.accountContiguousBatches(tx, agent.id, agent.nodeId, input.bootId, currentAgent.lastAckSequence)
           : {
               ackThrough: await this.advanceAck(tx, agent.id, agent.nodeId, input.bootId, currentAgent.lastAckSequence),
-              transitions: [] as SubscriptionTransition[]
+              transitions: [] as SubscriptionTransition[],
+              commandAgentIds: [] as string[]
             };
         const ackThrough = processed.ackThrough;
         await tx.nodeAgent.update({
           where: { id: agent.id },
           data: { bootId: input.bootId, lastSequence: sequence > currentAgent.lastSequence ? sequence : currentAgent.lastSequence, lastAckSequence: ackThrough, lastSeenAt: new Date(), status: "online" }
         });
-        return { ack: { accepted: true, duplicate: Boolean(existing), ackThrough: ackThrough.toString() }, transitions: processed.transitions };
+        return {
+          ack: { accepted: true, duplicate: Boolean(existing), ackThrough: ackThrough.toString() },
+          transitions: processed.transitions,
+          commandAgentIds: processed.commandAgentIds
+        };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
     );
     for (const transition of outcome.transitions) {
       await this.clientEvents.publishSubscriptionUpdated(transition).catch(() => undefined);
     }
-    const pending = await this.prisma.nodeCommandJob.findMany({ where: { agentId: agent.id, status: "pending" }, orderBy: { createdAt: "asc" }, take: 100 });
-    for (const job of pending) this.events.publish(agent.id, serializeCommand(job));
+    const commandAgentIds = Array.from(new Set([agent.id, ...outcome.commandAgentIds]));
+    const pending = await this.prisma.nodeCommandJob.findMany({ where: { agentId: { in: commandAgentIds }, status: "pending" }, orderBy: { createdAt: "asc" }, take: 100 });
+    for (const job of pending) {
+      if (job.agentId) this.events.publish(job.agentId, serializeCommand(job));
+    }
     return outcome.ack;
   }
 
@@ -295,17 +303,20 @@ export class AgentService {
       take: MAX_CONTIGUOUS_BATCHES_PER_TRANSACTION
     });
     const transitions: SubscriptionTransition[] = [];
+    const commandAgentIds = new Set<string>();
     let ackThrough = currentAck;
     for (const batch of batches) {
       if (batch.sequence !== ackThrough + 1n) break;
       if (!batch.accountedAt) {
         const payload = batch.payload as unknown as ReturnType<typeof canonicalBatchPayload>;
-        transitions.push(...await applyDirectBatch(tx, agentId, nodeId, batch.sampledAt, payload.samples));
+        const applied = await applyDirectBatch(tx, agentId, nodeId, batch.sampledAt, payload.samples);
+        transitions.push(...applied.transitions);
+        for (const commandAgentId of applied.commandAgentIds) commandAgentIds.add(commandAgentId);
         await tx.nodeUsageBatch.update({ where: { id: batch.id }, data: { accountedAt: new Date() } });
       }
       ackThrough = batch.sequence;
     }
-    return { ackThrough, transitions };
+    return { ackThrough, transitions, commandAgentIds: Array.from(commandAgentIds) };
   }
 
   private async withSerializableRetry<T>(operation: () => Promise<T>): Promise<T> {

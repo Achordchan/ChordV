@@ -54,6 +54,7 @@ import { canServeManagedClients, usesAgentControl, usesAgentShadowMetering, type
 import { createOrRefreshLeaseRevocationJob, createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
 import { createOrRefreshNodeCommandJob } from "./node-command-job.utils";
 import { decryptPanelPassword } from "./panel-password-crypto";
+import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { XuiService } from "../xui/xui.service";
 import { AgentEventsService } from "../agent/agent-events.service";
 
@@ -89,6 +90,7 @@ type ActiveRuntimeUsageContext = {
 
 const NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS = 300;
 const NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS = 300;
+const DIRECT_OFFLINE_ALLOWANCE_BYTES = 64n * 1024n * 1024n;
 const CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS = Number(process.env.CHORDV_CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS ?? 1500);
 
 type PanelBindingFilter = {
@@ -2668,13 +2670,21 @@ export class RuntimeSessionService {
     }
   ) {
     if (binding.source === "direct") {
+      const subscription = await writer.subscription.findUnique({
+        where: { id: binding.subscriptionId },
+        select: { totalTrafficBytes: true, usedTrafficBytes: true, remainingTrafficGb: true }
+      });
+      if (!subscription) {
+        throw new NotFoundException("Direct 用户绑定对应的订阅不存在");
+      }
       await this.queueDirectBindingCommand(writer, binding, "ENSURE_USER", {
         bindingId: binding.id,
         userKey: binding.panelClientEmail,
         email: binding.panelClientEmail,
         uuid: binding.panelClientId,
         flow: input.node.flow,
-        expiresAt: input.expireAt.toISOString()
+        expiresAt: input.expireAt.toISOString(),
+        ...buildDirectUserQuotaPayload(subscription)
       });
       return;
     }
@@ -3204,6 +3214,22 @@ export class RuntimeSessionService {
   private async resolveActiveUserFromToken(token?: string): Promise<UserProfileDto> {
     return this.authSessionService.authenticateAccessToken(token);
   }
+}
+
+export function buildDirectUserQuotaPayload(subscription: {
+  totalTrafficBytes: bigint;
+  usedTrafficBytes: bigint;
+  remainingTrafficGb: number;
+}) {
+  const quotaRemainingBytes = subscription.totalTrafficBytes > 0n
+    ? subscription.totalTrafficBytes > subscription.usedTrafficBytes
+      ? subscription.totalTrafficBytes - subscription.usedTrafficBytes
+      : 0n
+    : trafficGbNumberToBytes(subscription.remainingTrafficGb);
+  return {
+    quotaRemainingBytes: quotaRemainingBytes.toString(),
+    offlineAllowanceBytes: DIRECT_OFFLINE_ALLOWANCE_BYTES.toString()
+  };
 }
 
 function buildXuiRuntimeFromLease(

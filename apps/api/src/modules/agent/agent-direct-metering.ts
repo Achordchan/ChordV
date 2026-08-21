@@ -12,6 +12,11 @@ export type SubscriptionTransition = {
   state: "active" | "expired" | "exhausted" | "paused";
 };
 
+export type DirectBatchApplication = {
+  transitions: SubscriptionTransition[];
+  commandAgentIds: string[];
+};
+
 type DirectBinding = Prisma.PanelClientBindingGetPayload<{ include: { subscription: true } }>;
 
 export async function applyDirectBatch(
@@ -21,7 +26,7 @@ export async function applyDirectBatch(
   sampledAt: Date,
   samples: AgentUsageBatchDto["samples"]
 ) {
-  if (samples.length === 0) return [] as SubscriptionTransition[];
+  if (samples.length === 0) return { transitions: [], commandAgentIds: [] } as DirectBatchApplication;
   const bindingIds = samples.map((sample) => sample.bindingId);
   if (new Set(bindingIds).size !== bindingIds.length) {
     throw new ConflictException("同一批次不能包含重复的 Direct 用户绑定");
@@ -62,6 +67,8 @@ export async function applyDirectBatch(
         throw new ConflictException(`同一计数代发生回退：${entry.binding.panelClientEmail}`);
       }
       deltaBytes = entry.uplinkBytes - snapshot.uplinkBytes + (entry.downlinkBytes - snapshot.downlinkBytes);
+    } else if (snapshot) {
+      deltaBytes = entry.uplinkBytes + entry.downlinkBytes;
     }
     const snapshotUnchanged = snapshot
       && snapshot.counterGeneration === entry.sample.counterGeneration
@@ -138,6 +145,7 @@ export async function applyDirectBatch(
   }
 
   const transitions: SubscriptionTransition[] = [];
+  const commandAgentIds = new Set<string>();
   const disabledSubscriptions = new Map<string, { state: SubscriptionTransition["state"] }>();
   for (const [subscriptionId, usage] of deltasBySubscription) {
     const subscription = usage.binding.subscription;
@@ -179,31 +187,63 @@ export async function applyDirectBatch(
   if (ledgerRows.length > 0) await tx.trafficLedger.createMany({ data: ledgerRows });
 
   if (disabledSubscriptions.size > 0) {
-    const disabledBindings = bindings.filter((binding) => disabledSubscriptions.has(binding.subscriptionId));
-    const nodeRevision = await tx.node.update({
-      where: { id: nodeId },
-      data: { agentConfigRevision: { increment: 1n } },
-      select: { agentConfigRevision: true }
+    const disabledBindings = await tx.panelClientBinding.findMany({
+      where: {
+        subscriptionId: { in: Array.from(disabledSubscriptions.keys()) },
+        source: "direct",
+        status: "active"
+      }
     });
-    await tx.panelClientBinding.updateMany({
-      where: { id: { in: disabledBindings.map((binding) => binding.id) } },
-      data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision }
-    });
+    const bindingsByNode = new Map<string, typeof disabledBindings>();
     for (const binding of disabledBindings) {
-      const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
-      await tx.nodeCommandJob.upsert({
-        where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
-        update: {},
-        create: {
-          id: randomUUID(),
-          dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`,
-          nodeId,
-          agentId: agentRecordId,
-          commandType: "DISABLE_USER",
-          targetRevision: nodeRevision.agentConfigRevision,
-          payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` }
-        }
+      const group = bindingsByNode.get(binding.nodeId);
+      if (group) group.push(binding);
+      else bindingsByNode.set(binding.nodeId, [binding]);
+    }
+    const agentByNode = new Map<string, string>([[nodeId, agentRecordId]]);
+    const otherNodeIds = Array.from(bindingsByNode.keys()).filter((bindingNodeId) => bindingNodeId !== nodeId);
+    if (otherNodeIds.length > 0) {
+      const agents = await tx.nodeAgent.findMany({
+        where: { nodeId: { in: otherNodeIds }, revokedAt: null },
+        orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }]
       });
+      for (const agent of agents) {
+        if (!agentByNode.has(agent.nodeId)) agentByNode.set(agent.nodeId, agent.id);
+      }
+    }
+    for (const bindingNodeId of bindingsByNode.keys()) {
+      if (!agentByNode.has(bindingNodeId)) {
+        throw new ConflictException(`Direct 节点缺少有效 Agent：${bindingNodeId}`);
+      }
+    }
+    for (const [bindingNodeId, nodeBindings] of bindingsByNode) {
+      const targetAgentId = agentByNode.get(bindingNodeId)!;
+      const nodeRevision = await tx.node.update({
+        where: { id: bindingNodeId },
+        data: { agentConfigRevision: { increment: 1n } },
+        select: { agentConfigRevision: true }
+      });
+      await tx.panelClientBinding.updateMany({
+        where: { id: { in: nodeBindings.map((binding) => binding.id) } },
+        data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision }
+      });
+      for (const binding of nodeBindings) {
+        const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
+        await tx.nodeCommandJob.upsert({
+          where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
+          update: {},
+          create: {
+            id: randomUUID(),
+            dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`,
+            nodeId: bindingNodeId,
+            agentId: targetAgentId,
+            commandType: "DISABLE_USER",
+            targetRevision: nodeRevision.agentConfigRevision,
+            payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` }
+          }
+        });
+      }
+      commandAgentIds.add(targetAgentId);
     }
     for (const [subscriptionId, disabled] of disabledSubscriptions) {
       await tx.leaseRevocationJob.upsert({
@@ -219,7 +259,7 @@ export async function applyDirectBatch(
       });
     }
   }
-  return transitions;
+  return { transitions, commandAgentIds: Array.from(commandAgentIds) };
 }
 
 function parseUsageBigInt(value: string, field: string) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { buildDirectUserQuotaPayload } from "../src/modules/common/runtime-session.service";
 import {
   compareRestartAwareShadowUsage,
   compareShadowUsage,
@@ -207,5 +208,13 @@ assert.throws(
   ),
   /同一 counterGeneration 内计数回退/
 );
+
+const directEnsureQuota = buildDirectUserQuotaPayload({
+  totalTrafficBytes: 1024n,
+  usedTrafficBytes: 24n,
+  remainingTrafficGb: 0
+});
+assert.equal(directEnsureQuota.quotaRemainingBytes, "1000", "新建 Direct 用户必须携带当前剩余配额");
+assert.equal(directEnsureQuota.offlineAllowanceBytes, String(64n * 1024n * 1024n));
 
 console.log("direct-metering-migration.regression.ts passed");
