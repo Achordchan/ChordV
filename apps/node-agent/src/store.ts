@@ -297,8 +297,8 @@ export class AgentStore {
 
   listPendingBatches(limit = 100): UsageBatch[] {
     const rows = this.db.prepare(`SELECT sequence, payload FROM usage_batches_v2
-      ORDER BY CASE WHEN boot_id = ? THEN 0 ELSE 1 END, sampled_at, LENGTH(sequence), sequence LIMIT ?`)
-      .all(this.options.bootId, limit) as BatchRow[];
+      ORDER BY rowid LIMIT ?`)
+      .all(limit) as BatchRow[];
     return rows.map((row) => JSON.parse(row.payload) as UsageBatch);
   }
 

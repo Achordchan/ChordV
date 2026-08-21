@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { ConflictException } from "@nestjs/common";
-import { AgentControlModeService } from "../src/modules/agent/agent-control-mode.service";
+import { AgentControlModeService, applyDirectCutoverUsage } from "../src/modules/agent/agent-control-mode.service";
 import { UsageSyncService } from "../src/modules/usage/usage-sync.service";
 
 async function main() {
@@ -109,7 +109,9 @@ async function main() {
     /用户身份在切换期间发生变化/
   );
 
-  const rollbackNode = node("rollback_pending", [binding("binding-rollback", "rollback@example.com", "uuid-rollback")]);
+  const rollbackBinding = binding("binding-rollback", "rollback@example.com", "uuid-rollback");
+  rollbackBinding.subscription.totalTrafficBytes = 10_000n;
+  const rollbackNode = node("rollback_pending", [rollbackBinding]);
   const rollbackFixture = createFixture(rollbackNode, {}, [], [{
     xrayUserEmail: "rollback@example.com",
     xrayUserUuid: "uuid-rollback",
@@ -159,7 +161,75 @@ async function main() {
   await assertStaleXuiWorkIsDiscardedAfterDirectSwitch();
   await assertFinalXuiSettlementProducesCutoverBoundary();
 
+  const boundaryExhaustion = createBoundaryExhaustionFixture();
+  const boundaryResult = await applyDirectCutoverUsage(
+    boundaryExhaustion.tx as never,
+    "node-1",
+    "agent-node-1",
+    [{
+      subscriptionId: "subscription-shared",
+      userId: "user-1",
+      teamId: null,
+      deltaBytes: 20n,
+      sampledAt: new Date("2026-07-27T08:00:00.000Z"),
+      subscription: boundaryExhaustion.subscription
+    }]
+  );
+  assert.equal(boundaryExhaustion.bindings.every((item) => item.status === "disabled"), true, "切换窗口耗尽必须停用全部 Direct 节点绑定");
+  assert.deepEqual(new Set(boundaryResult.commandAgentIds), new Set(["agent-node-1", "agent-node-2"]));
+  assert.deepEqual(new Set(boundaryExhaustion.commands.map((item) => item.nodeId)), new Set(["node-1", "node-2"]));
+
   console.log("agent control-mode regression tests passed");
+}
+
+function createBoundaryExhaustionFixture() {
+  const subscription = {
+    state: "active" as const,
+    expireAt: new Date("2027-07-27T00:00:00.000Z"),
+    totalTrafficGb: 0,
+    usedTrafficGb: 0,
+    remainingTrafficGb: 0,
+    totalTrafficBytes: 100n,
+    usedTrafficBytes: 90n
+  };
+  const bindings = ["node-1", "node-2"].map((nodeId, index) => ({
+    id: `boundary-binding-${index + 1}`,
+    nodeId,
+    subscriptionId: "subscription-shared",
+    panelClientEmail: `boundary-${index + 1}@example.invalid`,
+    panelClientId: `boundary-uuid-${index + 1}`,
+    source: "direct",
+    status: "active"
+  }));
+  const commands: Array<{ nodeId: string; agentId: string }> = [];
+  const revisions = new Map([["node-1", 1n], ["node-2", 3n]]);
+  const tx = {
+    subscription: { update: async () => undefined },
+    trafficLedger: { createMany: async () => ({ count: 0 }) },
+    leaseRevocationJob: { upsert: async () => undefined },
+    panelClientBinding: {
+      findMany: async () => bindings.filter((item) => item.status === "active"),
+      updateMany: async ({ where, data }: any) => {
+        for (const item of bindings.filter((binding) => where.id.in.includes(binding.id))) Object.assign(item, data);
+        return { count: where.id.in.length };
+      }
+    },
+    nodeAgent: { findMany: async () => [{ id: "agent-node-2", nodeId: "node-2" }] },
+    node: {
+      update: async ({ where }: any) => {
+        const revision = (revisions.get(where.id) ?? 0n) + 1n;
+        revisions.set(where.id, revision);
+        return { agentConfigRevision: revision };
+      }
+    },
+    nodeCommandJob: {
+      upsert: async ({ create }: any) => {
+        commands.push({ nodeId: create.nodeId, agentId: create.agentId });
+        return create;
+      }
+    }
+  };
+  return { tx, subscription, bindings, commands };
 }
 
 async function assertFinalXuiSettlementProducesCutoverBoundary() {

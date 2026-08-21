@@ -117,6 +117,13 @@ test('过期用户命令不得对 Xray 产生副作用', async () => {
     assert.equal(staleEnable.status, 'completed');
     assert.equal(fixture.xray.users.has(disabled.email), false, '过期 ENSURE_USER 不得重新添加已停用用户');
     assert.equal(fixture.store.listDesiredUsers()[0]?.enabled, false);
+    await fixture.processor.execute(command('ENABLE_USER', {
+      bindingId: disabled.bindingId,
+      email: disabled.email,
+      uuid: disabled.uuid,
+      flow: disabled.flow,
+    }, 'equal-enable', '10'), true);
+    assert.equal(fixture.xray.users.has(disabled.email), false, '相同 revision 的启用命令不得绕过本地配额停用');
 
     const enabled = { ...disabled, revision: '20', enabled: true };
     fixture.store.replaceDesiredUsers([enabled], '20');

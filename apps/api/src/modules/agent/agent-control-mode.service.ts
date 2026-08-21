@@ -11,6 +11,7 @@ import { AgentEventsService } from "./agent-events.service";
 import { PrismaService } from "../common/prisma.service";
 import { XuiService } from "../xui/xui.service";
 import { UsageSyncService } from "../usage/usage-sync.service";
+import { disableDirectBindingsForSubscriptions, type DirectDisableState } from "./agent-direct-metering";
 
 const AGENT_FRESHNESS_MS = 90_000;
 const DIRECT_SWITCH_SAMPLE_FRESHNESS_MS = 15_000;
@@ -41,6 +42,7 @@ export class AgentControlModeService {
           : null;
       const outcome = await this.runSwitchTransaction(nodeId, input, xuiRollbackBaselines, null);
       if (outcome.command && outcome.agentRecordId) this.events.publish(outcome.agentRecordId, outcome.command);
+      await this.publishAdditionalCommands(outcome.commandAgentIds, outcome.agentRecordId);
       return outcome.result;
     });
   }
@@ -81,6 +83,7 @@ export class AgentControlModeService {
       return await runWithNodeUsageLock(nodeId, async () => {
         const outcome = await this.runSwitchTransaction(nodeId, input, null, directSwitchContext);
         if (outcome.command && outcome.agentRecordId) this.events.publish(outcome.agentRecordId, outcome.command);
+        await this.publishAdditionalCommands(outcome.commandAgentIds, outcome.agentRecordId);
         return outcome.result;
       });
     } catch (error) {
@@ -154,7 +157,7 @@ export class AgentControlModeService {
     if (!node) throw new NotFoundException("节点不存在");
     const previousMode = node.controlMode;
     if (previousMode === input.targetMode) {
-      return { result: toResult(nodeId, previousMode, previousMode, node.agentConfigRevision, false), command: null, agentRecordId: null };
+      return { result: toResult(nodeId, previousMode, previousMode, node.agentConfigRevision, false), command: null, agentRecordId: null, commandAgentIds: [] as string[] };
     }
     assertAllowedTransition(previousMode, input);
 
@@ -167,6 +170,7 @@ export class AgentControlModeService {
 
     const revision = node.agentConfigRevision + 1n;
     let boundarySubscriptions: Map<string, DirectCutoverSubscription> | null = null;
+    let boundaryCommandAgentIds: string[] = [];
     if (previousMode === "shadow_direct" && input.targetMode === "direct_primary") {
       if (node.controlStatus !== "direct_cutover_pending") throw new ConflictException("节点尚未完成 Direct 切换准备");
       if (!directSwitchContext) throw new ConflictException("Shadow 切换上下文缺失，请重试");
@@ -210,7 +214,9 @@ export class AgentControlModeService {
         });
         await tx.panelClientBinding.update({ where: { id: binding.id }, data: { source: "direct", directRevision: revision, lastUplinkBytes: sample.uplinkBytes, lastDownlinkBytes: sample.downlinkBytes, lastSyncedAt: sample.sampledAt } });
       }
-      boundarySubscriptions = await applyDirectCutoverUsage(tx, nodeId, cutoverUsage);
+      const applied = await applyDirectCutoverUsage(tx, nodeId, agent!.id, cutoverUsage);
+      boundarySubscriptions = applied.subscriptions;
+      boundaryCommandAgentIds = applied.commandAgentIds;
     } else if (previousMode === "rollback_pending" && input.targetMode === "xui_primary") {
       if (!xuiRollbackBaselines) throw new ConflictException("缺少3X-UI回退基线，禁止完成回退");
       const rollbackUsage: DirectCutoverUsageEntry[] = [];
@@ -269,7 +275,9 @@ export class AgentControlModeService {
           }
         });
       }
-      boundarySubscriptions = await applyDirectCutoverUsage(tx, nodeId, rollbackUsage);
+      const applied = await applyDirectCutoverUsage(tx, nodeId, agent!.id, rollbackUsage);
+      boundarySubscriptions = applied.subscriptions;
+      boundaryCommandAgentIds = applied.commandAgentIds;
     }
 
     await tx.node.update({
@@ -280,8 +288,29 @@ export class AgentControlModeService {
     return {
       result: toResult(nodeId, previousMode, input.targetMode, revision, true),
       command,
-      agentRecordId: agent?.id ?? null
+      agentRecordId: agent?.id ?? null,
+      commandAgentIds: boundaryCommandAgentIds
     };
+  }
+
+  private async publishAdditionalCommands(agentIds: string[], primaryAgentId: string | null) {
+    const additionalAgentIds = Array.from(new Set(agentIds.filter((agentId) => agentId !== primaryAgentId)));
+    if (additionalAgentIds.length === 0) return;
+    const jobs = await this.prisma.nodeCommandJob.findMany({
+      where: { agentId: { in: additionalAgentIds }, status: "pending" },
+      orderBy: { createdAt: "asc" },
+      take: 100
+    });
+    for (const job of jobs) {
+      if (!job.agentId) continue;
+      this.events.publish(job.agentId, {
+        commandId: job.id,
+        type: job.commandType,
+        targetRevision: job.targetRevision.toString(),
+        payload: job.payload as Record<string, unknown>,
+        createdAt: job.createdAt.toISOString()
+      });
+    }
   }
 
   private async findEffectiveAgent(tx: Prisma.TransactionClient, nodeId: string) {
@@ -481,9 +510,10 @@ type DirectCutoverUsageEntry = {
   };
 };
 
-async function applyDirectCutoverUsage(
+export async function applyDirectCutoverUsage(
   tx: Prisma.TransactionClient,
   nodeId: string,
+  agentRecordId: string,
   entries: DirectCutoverUsageEntry[]
 ) {
   const grouped = new Map<string, { entries: DirectCutoverUsageEntry[]; deltaBytes: bigint; sampledAt: Date }>();
@@ -498,6 +528,7 @@ async function applyDirectCutoverUsage(
     }
   }
   const updatedSubscriptions = new Map<string, DirectCutoverSubscription>();
+  const disabledSubscriptions = new Map<string, DirectDisableState>();
   const ledgerRows: Prisma.TrafficLedgerCreateManyInput[] = [];
   for (const [subscriptionId, usage] of grouped) {
     const subscription = usage.entries[0]!.subscription;
@@ -548,6 +579,7 @@ async function applyDirectCutoverUsage(
       }
     }
     if (subscription.state !== nextState && nextState !== "active") {
+      disabledSubscriptions.set(subscriptionId, { state: nextState });
       const dedupeKey = `direct-metering:${subscriptionId}:${nextState}`;
       const now = new Date();
       await createOrRefreshLeaseRevocationJob(tx, dedupeKey, {
@@ -575,7 +607,13 @@ async function applyDirectCutoverUsage(
     }
   }
   if (ledgerRows.length > 0) await tx.trafficLedger.createMany({ data: ledgerRows });
-  return updatedSubscriptions;
+  const commandAgentIds = await disableDirectBindingsForSubscriptions(
+    tx,
+    nodeId,
+    agentRecordId,
+    disabledSubscriptions
+  );
+  return { subscriptions: updatedSubscriptions, commandAgentIds };
 }
 
 type DirectSwitchContext = {

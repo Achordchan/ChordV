@@ -111,7 +111,7 @@ test('重启保留未确认批次、控制模式和绑定配置', () => {
   } finally { restarted.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('每个 boot 的批次序号从 1 开始，当前 boot 优先且旧 boot 可按确认值清理', () => {
+test('每个 boot 的批次序号从 1 开始，旧 boot 按写入顺序优先上传且可按确认值清理', () => {
   const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-boot-sequence-'));
   const first = createStore(directory, 'boot-1');
   first.replaceDesiredUsers([user()], '1');
@@ -129,9 +129,9 @@ test('每个 boot 的批次序号从 1 开始，当前 boot 优先且旧 boot �
     assert.equal(current.batch?.bootId, 'boot-2');
     assert.equal(current.batch?.sequence, '1');
     assert.deepEqual(restarted.listPendingBatches().map((batch) => `${batch.bootId}:${batch.sequence}`), [
-      'boot-2:1',
       'boot-1:1',
-      'boot-1:2'
+      'boot-1:2',
+      'boot-2:1'
     ]);
     assert.equal(restarted.ackThrough('boot-1', '2'), 2);
     assert.deepEqual(restarted.listPendingBatches().map((batch) => `${batch.bootId}:${batch.sequence}`), ['boot-2:1']);

@@ -18,6 +18,8 @@ export type DirectBatchApplication = {
   commandAgentIds: string[];
 };
 
+export type DirectDisableState = { state: SubscriptionTransition["state"] };
+
 type DirectBinding = Prisma.PanelClientBindingGetPayload<{ include: { subscription: true } }>;
 
 export async function applyDirectBatch(
@@ -188,62 +190,8 @@ export async function applyDirectBatch(
   if (ledgerRows.length > 0) await tx.trafficLedger.createMany({ data: ledgerRows });
 
   if (disabledSubscriptions.size > 0) {
-    const disabledBindings = await tx.panelClientBinding.findMany({
-      where: {
-        subscriptionId: { in: Array.from(disabledSubscriptions.keys()) },
-        source: "direct",
-        status: "active"
-      }
-    });
-    const bindingsByNode = new Map<string, typeof disabledBindings>();
-    for (const binding of disabledBindings) {
-      const group = bindingsByNode.get(binding.nodeId);
-      if (group) group.push(binding);
-      else bindingsByNode.set(binding.nodeId, [binding]);
-    }
-    const agentByNode = new Map<string, string>([[nodeId, agentRecordId]]);
-    const otherNodeIds = Array.from(bindingsByNode.keys()).filter((bindingNodeId) => bindingNodeId !== nodeId);
-    if (otherNodeIds.length > 0) {
-      const agents = await tx.nodeAgent.findMany({
-        where: { nodeId: { in: otherNodeIds }, revokedAt: null },
-        orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }]
-      });
-      for (const agent of agents) {
-        if (!agentByNode.has(agent.nodeId)) agentByNode.set(agent.nodeId, agent.id);
-      }
-    }
-    for (const [bindingNodeId, nodeBindings] of bindingsByNode) {
-      const targetAgentId = agentByNode.get(bindingNodeId) ?? null;
-      const nodeRevision = await tx.node.update({
-        where: { id: bindingNodeId },
-        data: {
-          agentConfigRevision: { increment: 1n },
-          ...(targetAgentId ? {} : { controlStatus: "degraded" })
-        },
-        select: { agentConfigRevision: true }
-      });
-      await tx.panelClientBinding.updateMany({
-        where: { id: { in: nodeBindings.map((binding) => binding.id) } },
-        data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision }
-      });
-      if (!targetAgentId) continue;
-      for (const binding of nodeBindings) {
-        const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
-        await tx.nodeCommandJob.upsert({
-          where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
-          update: {},
-          create: {
-            id: randomUUID(),
-            dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`,
-            nodeId: bindingNodeId,
-            agentId: targetAgentId,
-            commandType: "DISABLE_USER",
-            targetRevision: nodeRevision.agentConfigRevision,
-            payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` }
-          }
-        });
-      }
-      commandAgentIds.add(targetAgentId);
+    for (const commandAgentId of await disableDirectBindingsForSubscriptions(tx, nodeId, agentRecordId, disabledSubscriptions)) {
+      commandAgentIds.add(commandAgentId);
     }
     for (const [subscriptionId, disabled] of disabledSubscriptions) {
       const dedupeKey = `direct-metering:${subscriptionId}:${disabled.state}`;
@@ -273,6 +221,74 @@ export async function applyDirectBatch(
     }
   }
   return { transitions, commandAgentIds: Array.from(commandAgentIds) };
+}
+
+export async function disableDirectBindingsForSubscriptions(
+  tx: Prisma.TransactionClient,
+  currentNodeId: string,
+  currentAgentId: string,
+  disabledSubscriptions: Map<string, DirectDisableState>
+) {
+  if (disabledSubscriptions.size === 0) return [] as string[];
+  const disabledBindings = await tx.panelClientBinding.findMany({
+    where: {
+      subscriptionId: { in: Array.from(disabledSubscriptions.keys()) },
+      source: "direct",
+      status: "active"
+    }
+  });
+  const bindingsByNode = new Map<string, typeof disabledBindings>();
+  for (const binding of disabledBindings) {
+    const group = bindingsByNode.get(binding.nodeId);
+    if (group) group.push(binding);
+    else bindingsByNode.set(binding.nodeId, [binding]);
+  }
+  const agentByNode = new Map<string, string>([[currentNodeId, currentAgentId]]);
+  const otherNodeIds = Array.from(bindingsByNode.keys()).filter((bindingNodeId) => bindingNodeId !== currentNodeId);
+  if (otherNodeIds.length > 0) {
+    const agents = await tx.nodeAgent.findMany({
+      where: { nodeId: { in: otherNodeIds }, revokedAt: null },
+      orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }]
+    });
+    for (const agent of agents) {
+      if (!agentByNode.has(agent.nodeId)) agentByNode.set(agent.nodeId, agent.id);
+    }
+  }
+  const commandAgentIds = new Set<string>();
+  for (const [bindingNodeId, nodeBindings] of bindingsByNode) {
+    const targetAgentId = agentByNode.get(bindingNodeId) ?? null;
+    const nodeRevision = await tx.node.update({
+      where: { id: bindingNodeId },
+      data: {
+        agentConfigRevision: { increment: 1n },
+        ...(targetAgentId ? {} : { controlStatus: "degraded" })
+      },
+      select: { agentConfigRevision: true }
+    });
+    await tx.panelClientBinding.updateMany({
+      where: { id: { in: nodeBindings.map((binding) => binding.id) } },
+      data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision }
+    });
+    if (!targetAgentId) continue;
+    for (const binding of nodeBindings) {
+      const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
+      await tx.nodeCommandJob.upsert({
+        where: { dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}` },
+        update: {},
+        create: {
+          id: randomUUID(),
+          dedupeKey: `auto-disable:${binding.id}:${nodeRevision.agentConfigRevision.toString()}`,
+          nodeId: bindingNodeId,
+          agentId: targetAgentId,
+          commandType: "DISABLE_USER",
+          targetRevision: nodeRevision.agentConfigRevision,
+          payload: { bindingId: binding.id, email: binding.panelClientEmail, uuid: binding.panelClientId, reason: `subscription_${state}` }
+        }
+      });
+    }
+    commandAgentIds.add(targetAgentId);
+  }
+  return Array.from(commandAgentIds);
 }
 
 function parseUsageBigInt(value: string, field: string) {
