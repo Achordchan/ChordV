@@ -61,6 +61,7 @@ async function main() {
       displayName: "系统管理员",
       role: "admin",
       status: "active",
+      passwordHash: adminPasswordHash,
       maxConcurrentSessionsOverride: null,
       lastSeenAt: new Date()
     },
@@ -471,6 +472,19 @@ async function main() {
     }
   });
 
+  await prisma.release.deleteMany({
+    where: {
+      id: {
+        in: [
+          "release_macos_stable_001",
+          "release_windows_stable_001",
+          "release_android_stable_001",
+          "release_ios_stable_001"
+        ]
+      }
+    }
+  });
+
   for (const release of mockAdminReleases) {
     await prisma.release.upsert({
       where: {
@@ -510,6 +524,8 @@ async function main() {
           type: normalizeReleaseArtifactType(artifact.type),
           deliveryMode: artifact.deliveryMode,
           downloadUrl: artifact.downloadUrl,
+          defaultMirrorPrefix: artifact.defaultMirrorPrefix ?? null,
+          allowClientMirror: artifact.allowClientMirror ?? false,
           fileName: artifact.fileName,
           fileSizeBytes: artifact.fileSizeBytes ? BigInt(artifact.fileSizeBytes) : null,
           fileHash: artifact.fileHash,
@@ -522,6 +538,8 @@ async function main() {
           type: normalizeReleaseArtifactType(artifact.type),
           deliveryMode: artifact.deliveryMode,
           downloadUrl: artifact.downloadUrl,
+          defaultMirrorPrefix: artifact.defaultMirrorPrefix ?? null,
+          allowClientMirror: artifact.allowClientMirror ?? false,
           fileName: artifact.fileName,
           fileSizeBytes: artifact.fileSizeBytes ? BigInt(artifact.fileSizeBytes) : null,
           fileHash: artifact.fileHash,
@@ -530,6 +548,117 @@ async function main() {
         }
       });
     }
+  }
+
+  const runtimeComponentSeeds = [
+    {
+      id: "runtime_xray_windows_x64",
+      platform: "windows" as const,
+      architecture: "x64" as const,
+      kind: "xray" as const,
+      originUrl: "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip",
+      fileName: "Xray-windows-64.zip",
+      fileSizeBytes: 20913304n,
+      expectedHash: "d004c39288ce9ada487c6f398c7c545f7d749e44bdfdd59dbc9f865afba4e1ad",
+      archiveEntryName: "xray.exe"
+    },
+    {
+      id: "runtime_xray_windows_arm64",
+      platform: "windows" as const,
+      architecture: "arm64" as const,
+      kind: "xray" as const,
+      originUrl: "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-arm64-v8a.zip",
+      fileName: "Xray-windows-arm64-v8a.zip",
+      fileSizeBytes: 19316452n,
+      expectedHash: "35d4ed6ec21224fb22b07c2c3f672e2350cd536f2c74d309150175a76365ea88",
+      archiveEntryName: "xray.exe"
+    },
+    {
+      id: "runtime_xray_macos_x64",
+      platform: "macos" as const,
+      architecture: "x64" as const,
+      kind: "xray" as const,
+      originUrl: "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-macos-64.zip",
+      fileName: "Xray-macos-64.zip",
+      fileSizeBytes: 20755142n,
+      expectedHash: "f5b0471d3459eff1b82e48af0aeac186abcc3298210070afbbbd8437a4e8b203",
+      archiveEntryName: "xray"
+    },
+    {
+      id: "runtime_xray_macos_arm64",
+      platform: "macos" as const,
+      architecture: "arm64" as const,
+      kind: "xray" as const,
+      originUrl: "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-macos-arm64-v8a.zip",
+      fileName: "Xray-macos-arm64-v8a.zip",
+      fileSizeBytes: 19674387n,
+      expectedHash: "2e93a67e8aa1936ecefb307e120830fcbd4c643ab9b1c46a2d0838d5f8409eaf",
+      archiveEntryName: "xray"
+    },
+    {
+      id: "runtime_geoip_shared",
+      platform: "macos" as const,
+      architecture: "arm64" as const,
+      kind: "geoip" as const,
+      originUrl: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+      fileName: "geoip.dat",
+      fileSizeBytes: 17784192n,
+      expectedHash: "af332ab88eb4bb15e3cd10f03f5542e90655ee4bd5bf0e23949cfbd1e46bc20f",
+      archiveEntryName: null
+    },
+    {
+      id: "runtime_geosite_shared",
+      platform: "macos" as const,
+      architecture: "arm64" as const,
+      kind: "geosite" as const,
+      originUrl: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+      fileName: "geosite.dat",
+      fileSizeBytes: 10480351n,
+      expectedHash: "532300d005d3821ef5725014815afba710a4f7237db75a398dd07fdf1fa4566e",
+      archiveEntryName: null
+    }
+  ];
+
+  for (const component of runtimeComponentSeeds) {
+    await prisma.runtimeComponent.upsert({
+      where: {
+        platform_architecture_kind: {
+          platform: component.platform,
+          architecture: component.architecture,
+          kind: component.kind
+        }
+      },
+      update: {
+        source: "github_remote",
+        originUrl: component.originUrl,
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: component.fileName,
+        storedFilePath: null,
+        fileSizeBytes: component.fileSizeBytes,
+        fileHash: component.expectedHash,
+        archiveEntryName: component.archiveEntryName,
+        expectedHash: component.expectedHash,
+        enabled: true
+      },
+      create: {
+        id: component.id,
+        platform: component.platform,
+        architecture: component.architecture,
+        kind: component.kind,
+        source: "github_remote",
+        originUrl: component.originUrl,
+        defaultMirrorPrefix: null,
+        allowClientMirror: true,
+        fileName: component.fileName,
+        storedFilePath: null,
+        fileSizeBytes: component.fileSizeBytes,
+        fileHash: component.expectedHash,
+        archiveEntryName: component.archiveEntryName,
+        expectedHash: component.expectedHash,
+        enabled: true
+      }
+    });
   }
 
   await prisma.strategyGroup.deleteMany({

@@ -75,6 +75,9 @@ export function normalizeRuntimeAssetsDownloadedBytes(
   if (!Number.isFinite(nextDownloadedBytes) || nextDownloadedBytes < 0) {
     return currentDownloadedBytes;
   }
+  if (phase === "downloading" && nextDownloadedBytes === 0) {
+    return 0;
+  }
   return Math.max(currentDownloadedBytes, nextDownloadedBytes);
 }
 
@@ -141,7 +144,7 @@ export function normalizeRuntimeAssetsProgress(
     message: resolveRuntimeAssetsProgressMessage(progress, phase, downloadedBytes, totalBytes, current.message),
     errorCode: progress.phase === "failed" ? current.errorCode : null,
     errorMessage: progress.phase === "failed" ? progress.message ?? current.errorMessage : null,
-    blocking: phase !== "ready"
+    blocking: phase === "ready" ? false : current.blocking
   };
 }
 

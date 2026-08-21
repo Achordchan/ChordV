@@ -131,7 +131,7 @@ export function buildRemoteRuntimeComponentPayload(
     allowClientMirror: true,
     fileName: form.fileName.trim(),
     archiveEntryName: form.archiveEntryName.trim() || null,
-    expectedHash: form.expectedHash.trim().toLowerCase(),
+    expectedHash: /^[a-fA-F0-9]{64}$/.test(form.expectedHash.trim()) ? form.expectedHash.trim().toLowerCase() : null,
     enabled: form.enabled
   };
 }

@@ -1,31 +1,9 @@
-﻿import type {
-  RuntimeComponentDownloadCandidate,
-  RuntimeComponentDownloadItem
-} from "./runtimeComponents";
-import { applyUpdateMirrorPrefix, normalizeMirrorPrefix } from "./updateState";
+import type { RuntimeComponentDownloadItem } from "./runtimeComponents";
 
-export const GEO_UPSTREAM_REPO = "Loyalsoldier/v2ray-rules-dat";
 export const GEO_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 export const GEO_LAST_CHECK_STORAGE_KEY = "chordv.geo.lastCheckAt";
-export const GEO_INSTALLED_TAG_STORAGE_KEY = "chordv.geo.installedReleaseTag";
-
-export type GeoFileName = "geoip.dat" | "geosite.dat";
-export type GeoComponentKind = "geoip" | "geosite";
-
-export type GeoRemoteAsset = {
-  kind: GeoComponentKind;
-  fileName: GeoFileName;
-  releaseTag: string;
-  fileSizeBytes: number;
-  checksumSha256: string | null;
-  originUrl: string;
-};
-
-export type GeoRemotePlan = {
-  releaseTag: string;
-  publishedAt: string | null;
-  assets: GeoRemoteAsset[];
-};
+export const GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY = "chordv.geo.installedPlanRevision";
+export const LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY = "chordv.geo.installedReleaseTag";
 
 export type RuntimeComponentLocalInfo = {
   kind: "xray" | "geoip" | "geosite";
@@ -33,18 +11,7 @@ export type RuntimeComponentLocalInfo = {
   path: string | null;
   sizeBytes: number | null;
   checksumSha256: string | null;
-};
-
-type GitHubReleaseAsset = {
-  name?: string;
-  size?: number;
-  browser_download_url?: string;
-};
-
-type GitHubReleasePayload = {
-  tag_name?: string;
-  published_at?: string;
-  assets?: GitHubReleaseAsset[];
+  versionLabel: string | null;
 };
 
 export function shouldCheckGeoUpdate(lastCheckAtMs: number | null, nowMs = Date.now()) {
@@ -56,9 +23,7 @@ export function shouldCheckGeoUpdate(lastCheckAtMs: number | null, nowMs = Date.
 
 export function readStoredGeoLastCheckAt(storage: Storage = localStorage) {
   const raw = storage.getItem(GEO_LAST_CHECK_STORAGE_KEY);
-  if (!raw) {
-    return null;
-  }
+  if (!raw) return null;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : null;
 }
@@ -67,208 +32,89 @@ export function writeStoredGeoLastCheckAt(valueMs: number, storage: Storage = lo
   storage.setItem(GEO_LAST_CHECK_STORAGE_KEY, String(valueMs));
 }
 
-export function readStoredGeoInstalledTag(storage: Storage = localStorage) {
-  return storage.getItem(GEO_INSTALLED_TAG_STORAGE_KEY);
-}
-
-export function writeStoredGeoInstalledTag(tag: string, storage: Storage = localStorage) {
-  storage.setItem(GEO_INSTALLED_TAG_STORAGE_KEY, tag);
-}
-
-export function clearStoredGeoInstalledTag(storage: Storage = localStorage) {
-  storage.removeItem(GEO_INSTALLED_TAG_STORAGE_KEY);
-}
-
 export function clearStoredGeoLastCheckAt(storage: Storage = localStorage) {
   storage.removeItem(GEO_LAST_CHECK_STORAGE_KEY);
 }
 
-/** 仅标签一致不够；本地文件大小也必须与远端一致，才能判定已是最新。 */
-export function isGeoAssetInSync(
-  local: RuntimeComponentLocalInfo | null | undefined,
-  remoteSizeBytes: number | null | undefined,
-  _remoteChecksumSha256?: string | null
-) {
-  if (!local?.exists || !local.sizeBytes || !remoteSizeBytes || remoteSizeBytes <= 0) {
-    return false;
+export function readStoredGeoPlanRevision(storage: Storage = localStorage) {
+  return storage.getItem(GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY);
+}
+
+export function readStoredGeoVersionLabel(storage: Storage = localStorage) {
+  const planLabel = resolveStoredGeoPlanVersionLabel(readStoredGeoPlanRevision(storage));
+  const legacyLabel = String(storage.getItem(LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY) ?? "").trim();
+  return planLabel ?? (legacyLabel || null);
+}
+
+export function writeStoredGeoPlanRevision(revision: string, storage: Storage = localStorage) {
+  storage.setItem(GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY, revision);
+  storage.removeItem(LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY);
+}
+
+export function clearStoredGeoPlanRevision(storage: Storage = localStorage) {
+  storage.removeItem(GEO_INSTALLED_PLAN_REVISION_STORAGE_KEY);
+  storage.removeItem(LEGACY_GEO_INSTALLED_TAG_STORAGE_KEY);
+}
+
+function resolveOriginUrl(item: RuntimeComponentDownloadItem) {
+  return item.candidates.find((candidate) => candidate.source === "origin")?.url
+    ?? item.selectedUrl
+    ?? "";
+}
+
+function resolveReleaseTag(value: string) {
+  const match = value.match(/\/releases\/download\/([^/?#|]+)/i);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+export function resolveStoredGeoPlanVersionLabel(revision: string | null) {
+  if (!revision) {
+    return null;
   }
-  if (local.sizeBytes !== remoteSizeBytes) {
-    return false;
-  }
-  // 文件完整性不再使用 SHA256；版本同步只看 size（配合已安装 tag）。
-  return true;
-}
-
-export function buildGithubReleaseLatestApiUrl(repo = GEO_UPSTREAM_REPO) {
-  return `https://api.github.com/repos/${repo}/releases/latest`;
-}
-
-/** 本地已安装 GEO 标签与远端一致时，可跳过重复下载 */
-export function isInstalledGeoTagCurrent(installedTag: string | null | undefined, remoteTag: string | null | undefined) {
-  const local = String(installedTag ?? "").trim();
-  const remote = String(remoteTag ?? "").trim();
-  return Boolean(local) && Boolean(remote) && local === remote;
-}
-
-export function buildGeoOriginUrl(releaseTag: string, fileName: string) {
-  return `https://github.com/${GEO_UPSTREAM_REPO}/releases/download/${encodeURIComponent(releaseTag)}/${fileName}`;
-}
-
-export function buildGeoDownloadCandidates(
-  originUrl: string,
-  releaseTag: string,
-  fileName: string,
-  clientMirrorPrefix?: string | null,
-  serverMirrorPrefixes?: string[] | null
-): RuntimeComponentDownloadCandidate[] {
-  const candidates: RuntimeComponentDownloadCandidate[] = [];
-  const seen = new Set<string>();
-  const push = (
-    label: string,
-    url: string,
-    source: RuntimeComponentDownloadCandidate["source"]
-  ) => {
-    const normalized = url.trim();
-    if (!normalized || seen.has(normalized)) {
-      return;
-    }
-    seen.add(normalized);
-    candidates.push({ label, url: normalized, source });
-  };
-
-  // Client custom prefixes first.
-  const clientPrefixes = String(clientMirrorPrefix ?? "")
-    .split(/[\n,;]+/)
-    .map((item) => item.trim())
+  const labels = [...revision.matchAll(/\/releases\/download\/([^/?#|]+)/gi)]
+    .map((match) => decodeURIComponent(match[1]))
     .filter(Boolean);
-  for (const prefix of clientPrefixes) {
-    push("client_mirror", applyUpdateMirrorPrefix(originUrl, normalizeMirrorPrefix(prefix) ?? prefix), "client_override");
-  }
-
-  // Admin-configured mirrors next.
-  for (const prefix of serverMirrorPrefixes ?? []) {
-    const normalized = prefix.trim();
-    if (!normalized) continue;
-    push("server_mirror", applyUpdateMirrorPrefix(originUrl, normalized), "server_mirror");
-  }
-
-  // Built-in accelerators before official GitHub.
-  push(
-    "ghproxy",
-    `https://mirror.ghproxy.com/${originUrl}`,
-    "server_mirror"
-  );
-  push(
-    "ghfast",
-    `https://ghfast.top/${originUrl}`,
-    "server_mirror"
-  );
-  push(
-    "jsDelivr GitHub",
-    `https://cdn.jsdelivr.net/gh/${GEO_UPSTREAM_REPO}@${releaseTag}/${fileName}`,
-    "server_mirror"
-  );
-
-  // Official origin last.
-  push("GitHub", originUrl, "origin");
-
-  return candidates;
+  return labels.length > 0 && labels.every((label) => label === labels[0]) ? labels[0] : null;
 }
 
-export function buildGeoComponentItem(
-  asset: GeoRemoteAsset,
-  clientMirrorPrefix?: string | null,
-  serverMirrorPrefixes?: string[] | null
-): RuntimeComponentDownloadItem {
-  const candidates = buildGeoDownloadCandidates(
-    asset.originUrl,
-    asset.releaseTag,
-    asset.fileName,
-    clientMirrorPrefix,
-    serverMirrorPrefixes
-  );
-  return {
-    id: `geo_external_${asset.kind}_${asset.releaseTag}`,
-    component: asset.kind,
-    fileName: asset.fileName,
-    fileSizeBytes: asset.fileSizeBytes,
-    sourceFormat: "direct",
-    archiveEntryName: null,
-    checksumSha256: null,
-    candidates,
-    selectedUrl: candidates[0]?.url ?? asset.originUrl,
-    displayName: asset.kind === "geoip" ? "GeoIP 数据" : "GeoSite 数据"
-  };
+export function resolveGeoPlanVersionLabel(items: RuntimeComponentDownloadItem[]) {
+  const labels = items
+    .filter((item) => item.component === "geoip" || item.component === "geosite")
+    .map((item) => resolveReleaseTag(resolveOriginUrl(item)));
+  return labels.length === 2 && labels.every((label) => label && label === labels[0]) ? labels[0] : null;
 }
 
-export function parseGithubReleasePayload(
-  raw: string
-): { tag: string; publishedAt: string | null; assets: GitHubReleaseAsset[] } | null {
-  let payload: GitHubReleasePayload;
-  try {
-    payload = JSON.parse(raw) as GitHubReleasePayload;
-  } catch {
+export function buildGeoPlanRevision(items: RuntimeComponentDownloadItem[]) {
+  const geoItems = items
+    .filter((item) => item.component === "geoip" || item.component === "geosite")
+    .sort((left, right) => left.component.localeCompare(right.component));
+  if (geoItems.length !== 2 || geoItems[0].component === geoItems[1].component) {
     return null;
   }
-  const tag = payload.tag_name?.trim();
-  if (!tag) {
-    return null;
-  }
-  return {
-    tag,
-    publishedAt: payload.published_at ?? null,
-    assets: Array.isArray(payload.assets) ? payload.assets : []
-  };
+  return geoItems.map((item) => [
+    item.component,
+    item.id,
+    item.revision ?? "",
+    item.fileName,
+    item.fileSizeBytes ?? "",
+    item.checksumSha256 ?? "",
+    item.archiveEntryName ?? "",
+    resolveOriginUrl(item)
+  ].join("|")).join("||");
 }
 
-export function findReleaseAsset(assets: GitHubReleaseAsset[], fileName: string) {
-  return assets.find((asset) => asset.name === fileName) ?? null;
-}
-
-export function buildGeoRemoteAssetsFromRelease(
-  release: { tag: string; publishedAt: string | null; assets: GitHubReleaseAsset[] }
-): GeoRemotePlan | null {
-  const geoip = findReleaseAsset(release.assets, "geoip.dat");
-  const geosite = findReleaseAsset(release.assets, "geosite.dat");
-  if (!geoip?.browser_download_url || !geosite?.browser_download_url) {
-    return null;
-  }
-  if (!geoip.size || !geosite.size || geoip.size <= 0 || geosite.size <= 0) {
-    return null;
-  }
-
-  return {
-    releaseTag: release.tag,
-    publishedAt: release.publishedAt,
-    assets: [
-      {
-        kind: "geoip",
-        fileName: "geoip.dat",
-        releaseTag: release.tag,
-        fileSizeBytes: geoip.size,
-        checksumSha256: null,
-        originUrl: geoip.browser_download_url
-      },
-      {
-        kind: "geosite",
-        fileName: "geosite.dat",
-        releaseTag: release.tag,
-        fileSizeBytes: geosite.size,
-        checksumSha256: null,
-        originUrl: geosite.browser_download_url
-      }
-    ]
-  };
-}
-
-export function isLocalGeoCurrent(
-  local: RuntimeComponentLocalInfo | null | undefined,
-  remote: GeoRemoteAsset
+export function isGeoPlanCurrent(
+  localInfos: { geoip: RuntimeComponentLocalInfo | null; geosite: RuntimeComponentLocalInfo | null },
+  items: RuntimeComponentDownloadItem[],
+  installedRevision: string | null
 ) {
-  // 必须比对远端大小；仅“文件存在 + 本地有标签”不能算最新（bundle 回填的是旧包）。
-  return isGeoAssetInSync(local, remote.fileSizeBytes);
-}
-
-export function pickGeoCandidateUrls(item: RuntimeComponentDownloadItem) {
-  return item.candidates.map((candidate) => candidate.url).filter(Boolean);
+  const remoteRevision = buildGeoPlanRevision(items);
+  return Boolean(
+    remoteRevision
+    && installedRevision === remoteRevision
+    && localInfos.geoip?.exists
+    && (localInfos.geoip.sizeBytes ?? 0) > 0
+    && localInfos.geosite?.exists
+    && (localInfos.geosite.sizeBytes ?? 0) > 0
+  );
 }

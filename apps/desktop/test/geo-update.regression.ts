@@ -1,19 +1,38 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import {
-  buildGeoComponentItem,
-  buildGeoDownloadCandidates,
-  buildGeoRemoteAssetsFromRelease,
-  isGeoAssetInSync,
-  isInstalledGeoTagCurrent,
-  isLocalGeoCurrent,
-  parseGithubReleasePayload,
+  buildGeoPlanRevision,
+  isGeoPlanCurrent,
+  readStoredGeoVersionLabel,
+  resolveGeoPlanVersionLabel,
+  resolveStoredGeoPlanVersionLabel,
   shouldCheckGeoUpdate
 } from "../src/lib/geoUpdate.ts";
-import { applyUpdateMirrorPrefix, normalizeMirrorPrefix } from "../src/lib/updateState.ts";
+import type { RuntimeComponentDownloadItem } from "../src/lib/runtimeComponents.ts";
 
-// Keep side-effect free imports with explicit extensions for Node strip-types.
-void applyUpdateMirrorPrefix;
-void normalizeMirrorPrefix;
+function makeItem(
+  component: "geoip" | "geosite",
+  revision = "2026-07-22T10:00:00.000Z"
+): RuntimeComponentDownloadItem {
+  return {
+    id: `component_${component}`,
+    revision,
+    component,
+    fileName: `${component}.dat`,
+    fileSizeBytes: component === "geoip" ? 100 : 200,
+    sourceFormat: "direct",
+    archiveEntryName: null,
+    checksumSha256: null,
+    candidates: [
+      {
+        label: "origin",
+        url: `https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202607222256/${component}.dat`,
+        source: "origin"
+      }
+    ],
+    selectedUrl: `https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202607222256/${component}.dat`,
+    displayName: component === "geoip" ? "GeoIP 数据" : "GeoSite 数据"
+  };
+}
 
 function testShouldCheckGeoUpdate() {
   assert.equal(shouldCheckGeoUpdate(null), true);
@@ -21,155 +40,53 @@ function testShouldCheckGeoUpdate() {
   assert.equal(shouldCheckGeoUpdate(Date.now() - 60 * 60 * 1000), false);
 }
 
-function testParseGithubReleaseAndBuildPlan() {
-  const release = parseGithubReleasePayload(
-    JSON.stringify({
-      tag_name: "202607122240",
-      published_at: "2026-07-12T22:41:15Z",
-      assets: [
-        {
-          name: "geoip.dat",
-          size: 17872715,
-          browser_download_url:
-            "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202607122240/geoip.dat"
-        },
-        {
-          name: "geosite.dat",
-          size: 10413524,
-          browser_download_url:
-            "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202607122240/geosite.dat"
-        }
-      ]
-    })
+function testBackendPlanRevision() {
+  const items = [makeItem("geoip"), makeItem("geosite")];
+  const revision = buildGeoPlanRevision(items);
+  assert.ok(revision);
+  assert.equal(buildGeoPlanRevision([items[0]]), null, "GeoIP/GeoSite 必须同时由后台配置");
+  assert.notEqual(
+    buildGeoPlanRevision([makeItem("geoip", "2026-07-22T11:00:00.000Z"), items[1]]),
+    revision,
+    "后台修改任一 GEO 组件后必须形成新计划版本"
   );
-  assert.ok(release);
-  const plan = buildGeoRemoteAssetsFromRelease(release!);
-  assert.ok(plan);
-  assert.equal(plan!.releaseTag, "202607122240");
-  assert.equal(plan!.assets.length, 2);
-
-  const item = buildGeoComponentItem(plan!.assets[0], "https://mirror.example.com/fetch?url={url}");
-  assert.equal(item.component, "geoip");
-  assert.ok(item.candidates.some((candidate) => candidate.source === "client_override"));
-  assert.ok(item.candidates.some((candidate) => candidate.url.includes("jsdelivr")));
 }
 
-function testLocalGeoCurrent() {
-  const remote = {
-    kind: "geoip" as const,
-    fileName: "geoip.dat" as const,
-    releaseTag: "202607122240",
-    fileSizeBytes: 100,
-    checksumSha256: "A".repeat(64),
-    originUrl: "https://example.com/geoip.dat"
+function testGeoCurrentRequiresBackendRevisionAndLocalFiles() {
+  const items = [makeItem("geoip"), makeItem("geosite")];
+  const revision = buildGeoPlanRevision(items);
+  const local = {
+    geoip: { kind: "geoip" as const, exists: true, path: "C:/geoip.dat", sizeBytes: 100, checksumSha256: null, versionLabel: null },
+    geosite: { kind: "geosite" as const, exists: true, path: "C:/geosite.dat", sizeBytes: 200, checksumSha256: null, versionLabel: null }
   };
-  assert.equal(
-    isLocalGeoCurrent(
-      {
-        kind: "geoip",
-        exists: true,
-        path: "C:/tmp/geoip.dat",
-        sizeBytes: 100,
-        checksumSha256: "a".repeat(64)
-      },
-      remote
-    ),
-    true
-  );
-  assert.equal(
-    isLocalGeoCurrent(
-      {
-        kind: "geoip",
-        exists: true,
-        path: "C:/tmp/geoip.dat",
-        sizeBytes: 99,
-        checksumSha256: "a".repeat(64)
-      },
-      remote
-    ),
-    false
-  );
+  assert.equal(isGeoPlanCurrent(local, items, revision), true);
+  assert.equal(isGeoPlanCurrent(local, items, "旧后台版本"), false);
+  assert.equal(isGeoPlanCurrent({ ...local, geosite: null }, items, revision), false);
 }
 
-function testDownloadCandidatesOrder() {
-  const candidates = buildGeoDownloadCandidates(
-    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202607122240/geoip.dat",
-    "202607122240",
-    "geoip.dat",
+function testGeoVersionLabels() {
+  const items = [makeItem("geoip"), makeItem("geosite")];
+  const revision = buildGeoPlanRevision(items);
+  assert.equal(resolveGeoPlanVersionLabel(items), "202607222256");
+  assert.equal(resolveStoredGeoPlanVersionLabel(revision), "202607222256");
+  assert.equal(readStoredGeoVersionLabel({
+    getItem: (key: string) => key === "chordv.geo.installedReleaseTag" ? "202607212250" : null
+  } as Storage), "202607212250");
+  assert.equal(
+    resolveGeoPlanVersionLabel([
+      { ...items[0], candidates: [], selectedUrl: "https://components.example.com/geoip.dat" },
+      { ...items[1], candidates: [], selectedUrl: "https://components.example.com/geosite.dat" }
+    ]),
     null
-  );
-  assert.equal(candidates[candidates.length - 1].source, "origin");
-  assert.ok(candidates.some((item) => item.label === "ghproxy"));
-  assert.ok(candidates.some((item) => item.label === "ghfast"));
-  assert.ok(candidates.length >= 3);
-}
-
-
-function testInstalledGeoTagCurrent() {
-  assert.equal(isInstalledGeoTagCurrent("202607122240", "202607122240"), true);
-  assert.equal(isInstalledGeoTagCurrent("202607122240", "202607130101"), false);
-  assert.equal(isInstalledGeoTagCurrent(null, "202607122240"), false);
-}
-
-function testLocalGeoCurrentSizeOnly() {
-  const remote = {
-    kind: "geoip" as const,
-    fileName: "geoip.dat" as const,
-    releaseTag: "202607122240",
-    fileSizeBytes: 100,
-    checksumSha256: "A".repeat(64),
-    originUrl: "https://example.com/geoip.dat"
-  };
-  assert.equal(
-    isLocalGeoCurrent(
-      {
-        kind: "geoip",
-        exists: true,
-        path: "C:/tmp/geoip.dat",
-        sizeBytes: 100,
-        checksumSha256: null
-      },
-      remote
-    ),
-    true
-  );
-  // 大小不一致时不能判最新（例如 bundle 回填了 4 月旧包）
-  assert.equal(
-    isLocalGeoCurrent(
-      {
-        kind: "geoip",
-        exists: true,
-        path: "C:/tmp/geoip.dat",
-        sizeBytes: 20226649,
-        checksumSha256: null
-      },
-      remote
-    ),
-    false
-  );
-  assert.equal(
-    isGeoAssetInSync(
-      {
-        kind: "geoip",
-        exists: true,
-        path: "C:/tmp/geoip.dat",
-        sizeBytes: 20226649,
-        checksumSha256: null
-      },
-      17872715
-    ),
-    false
   );
 }
 
 function main() {
   testShouldCheckGeoUpdate();
-  testParseGithubReleaseAndBuildPlan();
-  testLocalGeoCurrent();
-  testLocalGeoCurrentSizeOnly();
-  testInstalledGeoTagCurrent();
-  testDownloadCandidatesOrder();
-  console.log("desktop geo update regression checks passed");
+  testBackendPlanRevision();
+  testGeoCurrentRequiresBackendRevisionAndLocalFiles();
+  testGeoVersionLabels();
+  console.log("desktop GEO backend-plan regression checks passed");
 }
 
 main();

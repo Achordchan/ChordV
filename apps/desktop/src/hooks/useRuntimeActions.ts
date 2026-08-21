@@ -11,7 +11,7 @@ import type {
   SubscriptionStatusDto
 } from "@chordv/shared";
 import type { ServerProbeState } from "./useClientEvents";
-import type { LoadTicketDetailOptions } from "./useSupportTickets";
+import type { LoadTicketDetailOptions, LoadTicketListOptions } from "./useSupportTickets";
 import {
   connectSession,
   disconnectSession,
@@ -128,7 +128,7 @@ type UseRuntimeActionsOptions = {
   notify: (notice: NoticeInput) => void;
   setServerProbe: Dispatch<SetStateAction<ServerProbeState>>;
   mergeSubscriptionState: (subscription: SubscriptionStatusDto) => void;
-  loadTicketList: (preferredTicketId?: string | null) => Promise<void>;
+  loadTicketList: (preferredTicketId?: string | null, options?: LoadTicketListOptions) => Promise<void>;
   loadTicketDetail: (ticketId: string, options?: LoadTicketDetailOptions) => Promise<void>;
   markTicketUnread: (ticketId: string) => void;
   recoverSessionAfterUnauthorized: () => Promise<AuthSessionDto | null> | AuthSessionDto | null;
@@ -628,12 +628,12 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           markSupportTicketBackgroundDetailRefresh(preferredTicketId);
           try {
             if (shouldMarkIncomingTicketRead) {
-              await options.loadTicketDetail(preferredTicketId, { markRead: true });
-              await options.loadTicketList(preferredTicketId);
+              await options.loadTicketDetail(preferredTicketId, { markRead: true, silent: true });
+              await options.loadTicketList(preferredTicketId, { silent: true });
             } else {
               await Promise.all([
-                options.loadTicketDetail(preferredTicketId, { markRead: false }),
-                options.loadTicketList(preferredTicketId)
+                options.loadTicketDetail(preferredTicketId, { markRead: false, silent: true }),
+                options.loadTicketList(preferredTicketId, { silent: true })
               ]);
             }
           } finally {
@@ -641,7 +641,7 @@ export function useRuntimeActions(options: UseRuntimeActionsOptions) {
           }
         } else if (options.ticketCenterOpenedRef.current || runtimeEvent.ticketId) {
           // 工单中心关闭时，仅在带 ticketId 的真实事件下刷新列表以更新未读角标。
-          await options.loadTicketList(preferredTicketId);
+          await options.loadTicketList(preferredTicketId, { silent: true });
         }
       }
 

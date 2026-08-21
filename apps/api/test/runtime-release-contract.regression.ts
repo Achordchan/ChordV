@@ -106,10 +106,7 @@ async function main() {
     "real DTO must reject zero-byte external artifacts"
   );
   const invalidHashDto = plainToInstance(CreateReleaseArtifactDto, { ...artifactPayload, fileHash: "not-a-sha256" });
-  assert.ok(
-    validateSync(invalidHashDto).some((error) => error.property === "fileHash"),
-    "real DTO must reject invalid external artifact hashes"
-  );
+  assert.deepEqual(validateSync(invalidHashDto), [], "invalid optional hashes must not block external artifacts");
   const overLimitDto = plainToInstance(CreateReleaseArtifactDto, {
     ...artifactPayload,
     fileSizeBytes: String(MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES + 1)
@@ -124,6 +121,19 @@ async function main() {
         ...artifactPayload,
         fileSizeBytes: BigInt(artifactPayload.fileSizeBytes!),
         fileHash: artifactPayload.fileHash!,
+        deliveryMode: artifactPayload.deliveryMode!,
+        type: artifactPayload.type,
+        downloadUrl: artifactPayload.downloadUrl
+      },
+      "windows"
+    )
+  );
+  assert.doesNotThrow(() =>
+    assertReleaseArtifactClientUsable(
+      {
+        ...artifactPayload,
+        fileSizeBytes: BigInt(artifactPayload.fileSizeBytes!),
+        fileHash: null,
         deliveryMode: artifactPayload.deliveryMode!,
         type: artifactPayload.type,
         downloadUrl: artifactPayload.downloadUrl

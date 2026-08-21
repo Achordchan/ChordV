@@ -352,8 +352,11 @@ export function App() {
   const runUpdateCheckForActions = async (input: import("./hooks/useAuthBootstrap").RunUpdateCheckInput) => {
     await runUpdateCheckAndFocus(input);
   };
-  const loadTicketListForActions = async (preferredTicketId?: string | null) => {
-    await loadTicketList(preferredTicketId);
+  const loadTicketListForActions = async (
+    preferredTicketId?: string | null,
+    options?: import("./hooks/useSupportTickets").LoadTicketListOptions
+  ) => {
+    await loadTicketList(preferredTicketId, options);
   };
   const loadTicketDetailForActions = async (ticketId: string, options?: import("./hooks/useSupportTickets").LoadTicketDetailOptions) => {
     await loadTicketDetail(ticketId, options);

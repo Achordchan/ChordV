@@ -47,10 +47,12 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
+import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { RuntimeSessionService } from "./runtime-session.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import { createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
+import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { isPrismaCodedError, toPrismaTransientHttpError } from "./prisma-error.utils";
 import {
   isEffectiveSubscription,
@@ -716,6 +718,8 @@ export class AdminSubscriptionService {
           totalTrafficGb,
           usedTrafficGb,
           remainingTrafficGb,
+          totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+          usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
           expireAt,
           state,
           renewable: plan.renewable,
@@ -787,6 +791,7 @@ export class AdminSubscriptionService {
               data: {
                 totalTrafficGb,
                 remainingTrafficGb,
+                totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
                 expireAt: nextExpireAt,
                 state,
                 sourceAction: "renewed",
@@ -866,6 +871,7 @@ export class AdminSubscriptionService {
               planId: plan.id,
               totalTrafficGb,
               remainingTrafficGb,
+              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
               expireAt,
               renewable: plan.renewable,
               state,
@@ -937,6 +943,8 @@ export class AdminSubscriptionService {
               totalTrafficGb,
               usedTrafficGb,
               remainingTrafficGb,
+              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+              usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
               expireAt,
               state,
               sourceAction: "adjusted",
@@ -1737,6 +1745,8 @@ export class AdminSubscriptionService {
           totalTrafficGb,
           usedTrafficGb,
           remainingTrafficGb,
+          totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+          usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
           expireAt,
           state,
           renewable: plan.renewable,
@@ -1840,11 +1850,11 @@ export class AdminSubscriptionService {
             }
           });
           clearedBindingCount = bindings.length;
-          panelResetBindings = bindings;
+          panelResetBindings = bindings.filter((binding: any) => binding.source !== "direct");
           const baselineSamples = bindings.map((binding: any) => ({
             binding,
-            uplinkBytes: 0n,
-            downlinkBytes: 0n,
+            uplinkBytes: binding.source === "direct" ? binding.lastUplinkBytes : 0n,
+            downlinkBytes: binding.source === "direct" ? binding.lastDownlinkBytes : 0n,
             sampledAt: resetSampledAt
           }));
 
@@ -1868,6 +1878,7 @@ export class AdminSubscriptionService {
               ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
               : options.expireAt ?? new Date(lockedSubscription.expireAt);
           let usedTrafficGb = 0;
+          let usedTrafficBytes = 0n;
 
           if (lockedSubscription.teamId) {
             await tx.trafficLedger.deleteMany({
@@ -1881,15 +1892,16 @@ export class AdminSubscriptionService {
             if (targetUserId) {
               const aggregate = await tx.trafficLedger.aggregate({
                 where: { subscriptionId: lockedSubscription.id },
-                _sum: { usedTrafficGb: true }
+                _sum: { usedTrafficGb: true, usedTrafficBytes: true }
               });
               usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+              usedTrafficBytes = aggregate._sum.usedTrafficBytes ?? 0n;
             }
           }
 
           panelResetQueuedAt = resetSampledAt;
           panelSync =
-            bindings.length > 0
+            panelResetBindings.length > 0
               ? {
                   ok: false,
                   errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
@@ -1903,6 +1915,8 @@ export class AdminSubscriptionService {
               totalTrafficGb,
               usedTrafficGb,
               remainingTrafficGb,
+              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+              usedTrafficBytes,
               expireAt,
               state: resolveSubscriptionState(
                 options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
@@ -2861,10 +2875,7 @@ export class AdminSubscriptionService {
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
-    const rows = await this.prisma.trafficLedger.findMany({
-      where: { teamId, userId, subscriptionId }
-    });
-    return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
+    return readMemberUsedTrafficGb(this.prisma, teamId, userId, subscriptionId);
   }
 
   private async ensureUserExists(userId: string) {

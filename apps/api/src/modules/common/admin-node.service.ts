@@ -75,6 +75,13 @@ export class AdminNodeService {
   async listAdminNodes(): Promise<AdminNodeRecordDto[]> {
     const rows = await runAdminNodeLocalOperation(
       () => this.prisma.node.findMany({
+        include: {
+          nodeAgents: {
+            where: { revokedAt: null },
+            orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }],
+            take: 1
+          }
+        },
         orderBy: [{ recommended: "desc" }, { latencyMs: "asc" }, { createdAt: "desc" }]
       }),
       "节点列表读取失败，请刷新后重试。"
@@ -761,7 +768,8 @@ export class AdminNodeService {
           panelApiBasePath: nextPanelApiBasePath,
           panelUsername: nextPanelUsername,
           panelPassword: nextPanelPassword,
-          panelInboundId: nextPanelInboundId
+          panelInboundId: nextPanelInboundId,
+          realityPublicKey: current.realityPublicKey
       });
       derived = runtime.derived;
       panelRuntimeError = runtime.errorMessage;
@@ -1010,6 +1018,7 @@ export class AdminNodeService {
     panelUsername: string | null;
     panelPassword: string | null;
     panelInboundId: number | null;
+    realityPublicKey: string;
   }): Promise<{
     derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
     errorMessage: string | null;
@@ -1024,6 +1033,7 @@ export class AdminNodeService {
         panelUsername: current.panelUsername,
         panelPassword: decryptPanelPassword(current.panelPassword),
         panelInboundId: current.panelInboundId,
+        realityPublicKey: current.realityPublicKey,
         panelRequestTimeoutMs: budgetMs,
         panelAbortSignal: AbortSignal.timeout(budgetMs)
       })
@@ -1150,6 +1160,7 @@ export class AdminNodeService {
     panelUsername: string | null;
     panelPassword: string | null;
     panelInboundId: number | null;
+    realityPublicKey?: string | null;
   }): Promise<{
     derived: Awaited<ReturnType<XuiService["getInboundRuntime"]>> | null;
     errorMessage: string | null;

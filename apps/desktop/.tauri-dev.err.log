@@ -1,466 +1,0 @@
-     Running BeforeDevCommand (`corepack pnpm dev -- --host 127.0.0.1`)
-     Running DevCommand (`cargo  run --no-default-features --color always --`)
-        Info Watching E:\test\chordV\apps\desktop\src-tauri for changes...
-[1m[96m    Cleaning[0m [                         ]   0.00%          [1m[96m    Cleaning[0m [                         ]   0.06%          [1m[96m    Cleaning[0m [                         ]   0.11%          [1m[96m    Cleaning[0m [                         ]   0.28%          [1m[96m    Cleaning[0m [                         ]   0.73%          [1m[96m    Cleaning[0m [                         ]   0.88%          [1m[96m    Cleaning[0m [                         ]   0.94%          [1m[96m    Cleaning[0m [                         ]   1.02%          [1m[96m    Cleaning[0m [                         ]   1.17%          [1m[96m    Cleaning[0m [                         ]   1.39%          [1m[96m    Cleaning[0m [                         ]   1.47%          [1m[96m    Cleaning[0m [                         ]   1.62%          [1m[96m    Cleaning[0m [                         ]   1.71%          [1m[96m    Cleaning[0m [                         ]   1.85%          [1m[96m    Cleaning[0m [                         ]   1.94%          [1m[96m    Cleaning[0m [                         ]   2.02%          [1m[96m    Cleaning[0m [                         ]   2.21%          [1m[96m    Cleaning[0m [                         ]   2.35%          [1m[96m    Cleaning[0m [                         ]   2.43%          [1m[96m    Cleaning[0m [                         ]   2.66%          [1m[96m    Cleaning[0m [                         ]   2.78%          [1m[96m    Cleaning[0m [                         ]   2.94%          [1m[96m    Cleaning[0m [                         ]   3.08%          [1m[96m    Cleaning[0m [                         ]   3.22%          [1m[96m    Cleaning[0m [                         ]   3.69%          [1m[96m    Cleaning[0m [                         ]   3.74%          [1m[96m    Cleaning[0m [                         ]   3.81%          [1m[96m    Cleaning[0m [>                        ]   4.42%          [1m[96m    Cleaning[0m [>                        ]   4.52%          [1m[96m    Cleaning[0m [>                        ]   4.60%          [1m[96m    Cleaning[0m [>                        ]   4.67%          [1m[96m    Cleaning[0m [>                        ]   4.78%          [1m[96m    Cleaning[0m [>                        ]   4.99%          [1m[96m    Cleaning[0m [>                        ]   5.11%          [1m[96m    Cleaning[0m [>                        ]   5.20%          [1m[96m    Cleaning[0m [>                        ]   5.27%          [1m[96m    Cleaning[0m [>                        ]   5.54%          [1m[96m    Cleaning[0m [>                        ]   5.62%          [1m[96m    Cleaning[0m [>                        ]   5.71%          [1m[96m    Cleaning[0m [>                        ]   7.94%          [1m[96m    Cleaning[0m [=>                       ]   8.08%          [1m[96m    Cleaning[0m [=>                       ]   8.18%          [1m[96m    Cleaning[0m [=>                       ]   8.29%          [1m[96m    Cleaning[0m [=>                       ]   8.36%          [1m[96m    Cleaning[0m [=>                       ]   8.44%          [1m[96m    Cleaning[0m [=>                       ]   8.73%          [1m[96m    Cleaning[0m [=>                       ]   9.00%          [1m[96m    Cleaning[0m [=>                       ]   9.23%          [1m[96m    Cleaning[0m [=>                       ]   9.35%          [1m[96m    Cleaning[0m [=>                       ]   9.58%          [1m[96m    Cleaning[0m [=>                       ]   9.79%          [1m[96m    Cleaning[0m [=>                       ]   9.90%          [1m[96m    Cleaning[0m [=>                       ]  10.02%          [1m[96m    Cleaning[0m [=>                       ]  10.11%          [1m[96m    Cleaning[0m [=>                       ]  10.35%          [1m[96m    Cleaning[0m [=>                       ]  10.95%          [1m[96m    Cleaning[0m [=>                       ]  11.09%          [1m[96m    Cleaning[0m [=>                       ]  11.23%          [1m[96m    Cleaning[0m [=>                       ]  11.32%          [1m[96m    Cleaning[0m [==>                      ]  12.80%          [1m[96m    Cleaning[0m [==>                      ]  13.16%          [1m[96m    Cleaning[0m [==>                      ]  13.25%          [1m[96m    Cleaning[0m [==>                      ]  13.34%          [1m[96m    Cleaning[0m [==>                      ]  13.47%          [1m[96m    Cleaning[0m [==>                      ]  13.57%          [1m[96m    Cleaning[0m [==>                      ]  14.26%          [1m[96m    Cleaning[0m [==>                      ]  14.70%          [1m[96m    Cleaning[0m [==>                      ]  14.76%          [1m[96m    Cleaning[0m [==>                      ]  15.18%          [1m[96m    Cleaning[0m [===>                     ]  17.04%          [1m[96m    Cleaning[0m [===>                     ]  17.18%          [1m[96m    Cleaning[0m [===>                     ]  17.33%          [1m[96m    Cleaning[0m [===>                     ]  17.58%          [1m[96m    Cleaning[0m [===>                     ]  17.93%          [1m[96m    Cleaning[0m [===>                     ]  18.25%          [1m[96m    Cleaning[0m [===>                     ]  18.54%          [1m[96m    Cleaning[0m [===>                     ]  18.79%          [1m[96m    Cleaning[0m [===>                     ]  18.88%          [1m[96m    Cleaning[0m [===>                     ]  18.99%          [1m[96m    Cleaning[0m [===>                     ]  19.04%          [1m[96m    Cleaning[0m [===>                     ]  19.30%          [1m[96m    Cleaning[0m [===>                     ]  19.40%          [1m[96m    Cleaning[0m [===>                     ]  19.44%          [1m[96m    Cleaning[0m [===>                     ]  19.57%          [1m[96m    Cleaning[0m [===>                     ]  19.62%          [1m[96m    Cleaning[0m [===>                     ]  19.68%          [1m[96m    Cleaning[0m [===>                     ]  19.76%          [1m[96m    Cleaning[0m [===>                     ]  19.82%          [1m[96m    Cleaning[0m [===>                     ]  19.97%          [1m[96m    Cleaning[0m [====>                    ]  20.03%          [1m[96m    Cleaning[0m [====>                    ]  20.28%          [1m[96m    Cleaning[0m [====>                    ]  20.54%          [1m[96m    Cleaning[0m [====>                    ]  20.78%          [1m[96m    Cleaning[0m [====>                    ]  20.88%          [1m[96m    Cleaning[0m [====>                    ]  20.95%          [1m[96m    Cleaning[0m [====>                    ]  21.01%          [1m[96m    Cleaning[0m [====>                    ]  22.76%          [1m[96m    Cleaning[0m [=====>                   ]  24.44%          [1m[96m    Cleaning[0m [=====>                   ]  26.08%          [1m[96m    Cleaning[0m [=====>                   ]  27.24%          [1m[96m    Cleaning[0m [=====>                   ]  27.43%          [1m[96m    Cleaning[0m [======>                  ]  29.21%          [1m[96m    Cleaning[0m [======>                  ]  29.32%          [1m[96m    Cleaning[0m [======>                  ]  29.39%          [1m[96m    Cleaning[0m [======>                  ]  29.47%          [1m[96m    Cleaning[0m [======>                  ]  29.51%          [1m[96m    Cleaning[0m [======>                  ]  30.59%          [1m[96m    Cleaning[0m [======>                  ]  30.80%          [1m[96m    Cleaning[0m [======>                  ]  30.86%          [1m[96m    Cleaning[0m [======>                  ]  30.92%          [1m[96m    Cleaning[0m [======>                  ]  31.44%          [1m[96m    Cleaning[0m [======>                  ]  31.54%          [1m[96m    Cleaning[0m [=======>                 ]  33.07%          [1m[96m    Cleaning[0m [=======>                 ]  33.36%          [1m[96m    Cleaning[0m [=======>                 ]  33.60%          [1m[96m    Cleaning[0m [=======>                 ]  33.67%          [1m[96m    Cleaning[0m [=======>                 ]  33.74%          [1m[96m    Cleaning[0m [=======>                 ]  33.97%          [1m[96m    Cleaning[0m [=======>                 ]  34.48%          [1m[96m    Cleaning[0m [=======>                 ]  34.58%          [1m[96m    Cleaning[0m [=======>                 ]  34.65%          [1m[96m    Cleaning[0m [=======>                 ]  34.90%          [1m[96m    Cleaning[0m [=======>                 ]  35.00%          [1m[96m    Cleaning[0m [=======>                 ]  35.10%          [1m[96m    Cleaning[0m [=======>                 ]  35.68%          [1m[96m    Cleaning[0m [=======>                 ]  35.95%          [1m[96m    Cleaning[0m [========>                ]  36.02%          [1m[96m    Cleaning[0m [========>                ]  36.07%          [1m[96m    Cleaning[0m [========>                ]  36.35%          [1m[96m    Cleaning[0m [========>                ]  36.94%          [1m[96m    Cleaning[0m [========>                ]  37.13%          [1m[96m    Cleaning[0m [========>                ]  37.21%          [1m[96m    Cleaning[0m [========>                ]  37.27%          [1m[96m    Cleaning[0m [========>                ]  37.71%          [1m[96m    Cleaning[0m [========>                ]  37.93%          [1m[96m    Cleaning[0m [========>                ]  37.98%          [1m[96m    Cleaning[0m [========>                ]  38.17%          [1m[96m    Cleaning[0m [========>                ]  38.27%          [1m[96m    Cleaning[0m [========>                ]  38.31%          [1m[96m    Cleaning[0m [========>                ]  38.37%          [1m[96m    Cleaning[0m [========>                ]  38.41%          [1m[96m    Cleaning[0m [========>                ]  38.62%          [1m[96m    Cleaning[0m [========>                ]  38.68%          [1m[96m    Cleaning[0m [========>                ]  39.11%          [1m[96m    Cleaning[0m [=========>               ]  41.28%          [1m[96m    Cleaning[0m [=========>               ]  41.35%          [1m[96m    Cleaning[0m [=========>               ]  41.43%          [1m[96m    Cleaning[0m [=========>               ]  41.64%          [1m[96m    Cleaning[0m [=========>               ]  41.71%          [1m[96m    Cleaning[0m [=========>               ]  41.85%          [1m[96m    Cleaning[0m [=========>               ]  41.93%          [1m[96m    Cleaning[0m [=========>               ]  41.99%          [1m[96m    Cleaning[0m [=========>               ]  42.36%          [1m[96m    Cleaning[0m [=========>               ]  42.59%          [1m[96m    Cleaning[0m [=========>               ]  42.73%          [1m[96m    Cleaning[0m [=========>               ]  42.87%          [1m[96m    Cleaning[0m [=========>               ]  42.91%          [1m[96m    Cleaning[0m [=========>               ]  42.97%          [1m[96m    Cleaning[0m [=========>               ]  43.33%          [1m[96m    Cleaning[0m [=========>               ]  43.46%          [1m[96m    Cleaning[0m [=========>               ]  43.67%          [1m[96m    Cleaning[0m [=========>               ]  43.72%          [1m[96m    Cleaning[0m [=========>               ]  43.81%          [1m[96m    Cleaning[0m [==========>              ]  44.03%          [1m[96m    Cleaning[0m [==========>              ]  44.10%          [1m[96m    Cleaning[0m [==========>              ]  44.19%          [1m[96m    Cleaning[0m [==========>              ]  44.50%          [1m[96m    Cleaning[0m [==========>              ]  44.89%          [1m[96m    Cleaning[0m [==========>              ]  44.95%          [1m[96m    Cleaning[0m [==========>              ]  45.10%          [1m[96m    Cleaning[0m [==========>              ]  45.14%          [1m[96m    Cleaning[0m [==========>              ]  45.19%          [1m[96m    Cleaning[0m [==========>              ]  45.32%          [1m[96m    Cleaning[0m [==========>              ]  45.51%          [1m[96m    Cleaning[0m [==========>              ]  45.60%          [1m[96m    Cleaning[0m [==========>              ]  45.67%          [1m[96m    Cleaning[0m [==========>              ]  45.96%          [1m[96m    Cleaning[0m [==========>              ]  46.02%          [1m[96m    Cleaning[0m [==========>              ]  46.08%          [1m[96m    Cleaning[0m [==========>              ]  46.16%          [1m[96m    Cleaning[0m [==========>              ]  46.31%          [1m[96m    Cleaning[0m [==========>              ]  46.36%          [1m[96m    Cleaning[0m [==========>              ]  46.53%          [1m[96m    Cleaning[0m [==========>              ]  46.61%          [1m[96m    Cleaning[0m [==========>              ]  46.73%          [1m[96m    Cleaning[0m [==========>              ]  46.96%          [1m[96m    Cleaning[0m [==========>              ]  47.34%          [1m[96m    Cleaning[0m [==========>              ]  47.50%          [1m[96m    Cleaning[0m [==========>              ]  47.59%          [1m[96m    Cleaning[0m [===========>             ]  49.34%          [1m[96m    Cleaning[0m [===========>             ]  50.95%          [1m[96m    Cleaning[0m [===========>             ]  51.46%          [1m[96m    Cleaning[0m [===========>             ]  51.52%          [1m[96m    Cleaning[0m [===========>             ]  51.59%          [1m[96m    Cleaning[0m [===========>             ]  51.65%          [1m[96m    Cleaning[0m [===========>             ]  51.75%          [1m[96m    Cleaning[0m [===========>             ]  51.82%          [1m[96m    Cleaning[0m [===========>             ]  51.87%          [1m[96m    Cleaning[0m [===========>             ]  51.96%          [1m[96m    Cleaning[0m [============>            ]  53.93%          [1m[96m    Cleaning[0m [============>            ]  54.72%          [1m[96m    Cleaning[0m [============>            ]  54.78%          [1m[96m    Cleaning[0m [============>            ]  54.83%          [1m[96m    Cleaning[0m [=============>           ]  56.32%          [1m[96m    Cleaning[0m [=============>           ]  56.37%          [1m[96m    Cleaning[0m [=============>           ]  58.43%          [1m[96m    Cleaning[0m [==============>          ]  60.42%          [1m[96m    Cleaning[0m [==============>          ]  60.79%          [1m[96m    Cleaning[0m [==============>          ]  60.82%          [1m[96m    Cleaning[0m [==============>          ]  61.44%          [1m[96m    Cleaning[0m [==============>          ]  61.50%          [1m[96m    Cleaning[0m [==============>          ]  61.69%          [1m[96m    Cleaning[0m [==============>          ]  61.87%          [1m[96m    Cleaning[0m [==============>          ]  62.00%          [1m[96m    Cleaning[0m [==============>          ]  62.08%          [1m[96m    Cleaning[0m [==============>          ]  62.66%          [1m[96m    Cleaning[0m [==============>          ]  62.73%          [1m[96m    Cleaning[0m [==============>          ]  62.82%          [1m[96m    Cleaning[0m [==============>          ]  62.87%          [1m[96m    Cleaning[0m [==============>          ]  62.94%          [1m[96m    Cleaning[0m [==============>          ]  63.02%          [1m[96m    Cleaning[0m [==============>          ]  63.07%          [1m[96m    Cleaning[0m [==============>          ]  63.21%          [1m[96m    Cleaning[0m [==============>          ]  63.27%          [1m[96m    Cleaning[0m [==============>          ]  63.44%          [1m[96m    Cleaning[0m [==============>          ]  63.54%          [1m[96m    Cleaning[0m [==============>          ]  63.84%          [1m[96m    Cleaning[0m [==============>          ]  63.93%          [1m[96m    Cleaning[0m [===============>         ]  64.00%          [1m[96m    Cleaning[0m [===============>         ]  64.34%          [1m[96m    Cleaning[0m [===============>         ]  64.39%          [1m[96m    Cleaning[0m [===============>         ]  64.71%          [1m[96m    Cleaning[0m [===============>         ]  64.78%          [1m[96m    Cleaning[0m [===============>         ]  64.83%          [1m[96m    Cleaning[0m [===============>         ]  64.91%          [1m[96m    Cleaning[0m [===============>         ]  65.01%          [1m[96m    Cleaning[0m [===============>         ]  65.06%          [1m[96m    Cleaning[0m [===============>         ]  65.10%          [1m[96m    Cleaning[0m [===============>         ]  65.28%          [1m[96m    Cleaning[0m [===============>         ]  66.92%          [1m[96m    Cleaning[0m [================>        ]  68.47%          [1m[96m    Cleaning[0m [================>        ]  69.91%          [1m[96m    Cleaning[0m [================>        ]  71.25%          [1m[96m    Cleaning[0m [================>        ]  71.39%          [1m[96m    Cleaning[0m [================>        ]  71.47%          [1m[96m    Cleaning[0m [================>        ]  71.67%          [1m[96m    Cleaning[0m [================>        ]  71.71%          [1m[96m    Cleaning[0m [=================>       ]  73.24%          [1m[96m    Cleaning[0m [=================>       ]  75.02%          [1m[96m    Cleaning[0m [==================>      ]  76.64%          [1m[96m    Cleaning[0m [==================>      ]  78.50%          [1m[96m    Cleaning[0m [==================>      ]  79.21%          [1m[96m    Cleaning[0m [==================>      ]  79.36%          [1m[96m    Cleaning[0m [==================>      ]  79.42%          [1m[96m    Cleaning[0m [==================>      ]  79.48%          [1m[96m    Cleaning[0m [===================>     ]  81.07%          [1m[96m    Cleaning[0m [===================>     ]  81.50%          [1m[96m    Cleaning[0m [===================>     ]  81.66%          [1m[96m    Cleaning[0m [===================>     ]  81.79%          [1m[96m    Cleaning[0m [===================>     ]  81.89%          [1m[96m    Cleaning[0m [===================>     ]  81.97%          [1m[96m    Cleaning[0m [===================>     ]  82.03%          [1m[96m    Cleaning[0m [===================>     ]  82.13%          [1m[96m    Cleaning[0m [===================>     ]  82.22%          [1m[96m    Cleaning[0m [===================>     ]  82.26%          [1m[96m    Cleaning[0m [===================>     ]  82.61%          [1m[96m    Cleaning[0m [===================>     ]  82.66%          [1m[96m    Cleaning[0m [===================>     ]  82.77%          [1m[96m    Cleaning[0m [===================>     ]  82.81%          [1m[96m    Cleaning[0m [===================>     ]  83.01%          [1m[96m    Cleaning[0m [===================>     ]  83.27%          [1m[96m    Cleaning[0m [===================>     ]  83.32%          [1m[96m    Cleaning[0m [===================>     ]  83.57%          [1m[96m    Cleaning[0m [===================>     ]  83.89%          [1m[96m    Cleaning[0m [====================>    ]  84.03%          [1m[96m    Cleaning[0m [====================>    ]  84.07%          [1m[96m    Cleaning[0m [====================>    ]  84.14%          [1m[96m    Cleaning[0m [====================>    ]  84.20%          [1m[96m    Cleaning[0m [====================>    ]  84.67%          [1m[96m    Cleaning[0m [====================>    ]  84.72%          [1m[96m    Cleaning[0m [====================>    ]  84.77%          [1m[96m    Cleaning[0m [====================>    ]  84.85%          [1m[96m    Cleaning[0m [====================>    ]  84.91%          [1m[96m    Cleaning[0m [====================>    ]  85.06%          [1m[96m    Cleaning[0m [====================>    ]  85.10%          [1m[96m    Cleaning[0m [====================>    ]  85.19%          [1m[96m    Cleaning[0m [====================>    ]  85.25%          [1m[96m    Cleaning[0m [====================>    ]  85.32%          [1m[96m    Cleaning[0m [====================>    ]  87.34%          [1m[96m    Cleaning[0m [====================>    ]  87.73%          [1m[96m    Cleaning[0m [====================>    ]  87.78%          [1m[96m    Cleaning[0m [====================>    ]  87.83%          [1m[96m    Cleaning[0m [====================>    ]  87.87%          [1m[96m    Cleaning[0m [====================>    ]  87.93%          [1m[96m    Cleaning[0m [=====================>   ]  88.17%          [1m[96m    Cleaning[0m [=====================>   ]  88.32%          [1m[96m    Cleaning[0m [=====================>   ]  88.38%          [1m[96m    Cleaning[0m [=====================>   ]  88.42%          [1m[96m    Cleaning[0m [=====================>   ]  88.51%          [1m[96m    Cleaning[0m [=====================>   ]  88.59%          [1m[96m    Cleaning[0m [=====================>   ]  90.38%          [1m[96m    Cleaning[0m [=====================>   ]  90.68%          [1m[96m    Cleaning[0m [=====================>   ]  91.02%          [1m[96m    Cleaning[0m [=====================>   ]  91.09%          [1m[96m    Cleaning[0m [======================>  ]  92.46%          [1m[96m    Cleaning[0m [======================>  ]  92.66%          [1m[96m    Cleaning[0m [======================>  ]  92.80%          [1m[96m    Cleaning[0m [======================>  ]  92.85%          [1m[96m    Cleaning[0m [======================>  ]  93.79%          [1m[96m    Cleaning[0m [======================>  ]  93.86%          [1m[96m    Cleaning[0m [======================>  ]  94.85%          [1m[96m    Cleaning[0m [======================>  ]  94.92%          [1m[96m    Cleaning[0m [======================>  ]  94.98%          [1m[96m    Cleaning[0m [======================>  ]  95.13%          [1m[96m    Cleaning[0m [======================>  ]  95.31%          [1m[96m    Cleaning[0m [======================>  ]  95.34%          [1m[96m    Cleaning[0m [======================>  ]  95.42%          [1m[96m    Cleaning[0m [======================>  ]  95.47%          [1m[96m    Cleaning[0m [======================>  ]  95.53%          [1m[96m    Cleaning[0m [======================>  ]  95.62%          [1m[96m    Cleaning[0m [======================>  ]  95.66%          [1m[96m    Cleaning[0m [======================>  ]  95.77%          [1m[96m    Cleaning[0m [======================>  ]  95.82%          [1m[96m    Cleaning[0m [======================>  ]  95.96%          [1m[96m    Cleaning[0m [=======================> ]  96.01%          [1m[96m    Cleaning[0m [=======================> ]  96.18%          [1m[96m    Cleaning[0m [=======================> ]  96.23%          [1m[96m    Cleaning[0m [=======================> ]  96.38%          [1m[96m    Cleaning[0m [=======================> ]  96.43%          [1m[96m    Cleaning[0m [=======================> ]  96.50%          [1m[96m    Cleaning[0m [=======================> ]  96.59%          [1m[96m    Cleaning[0m [=======================> ]  97.66%          [1m[96m    Cleaning[0m [=======================> ]  97.73%          [1m[96m    Cleaning[0m [=======================> ]  97.80%          [1m[96m    Cleaning[0m [=======================> ]  97.84%          [1m[96m    Cleaning[0m [=======================> ]  99.31%          [1m[96m    Cleaning[0m [=======================> ]  99.36%          [1m[96m    Cleaning[0m [=======================> ]  99.72%          [1m[96m    Cleaning[0m [=======================> ]  99.82%                                                                      [1m[93mwarning[0m: output filename collision at E:\test\chordV\apps\desktop\src-tauri\target\debug\deps\chordv_desktop.pdb
-  [1m[96m|[0m
-  [1m[96m= [0m[1m[97mnote[0m: the bin target `chordv-desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)` has the same output filename as the lib target `chordv_desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)`
-  [1m[96m= [0m[1m[97mnote[0m: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
-  [1m[96m= [0m[1m[97mnote[0m: cargo 1.92.0 (344c4567c 2025-10-21) running on `x86_64-pc-windows-msvc` target `x86_64-pc-windows-msvc`
-  [1m[96m= [0m[1m[97mnote[0m: first unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { name: "chordv-desktop", doc: true, ..: with_path("E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\main.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 16041831523681264162 }
-  [1m[96m= [0m[1m[97mnote[0m: second unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { ..: lib_target("chordv_desktop", ["staticlib", "cdylib", "rlib"], "E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\lib.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 7338781724386437113 }
-[1m[93mwarning[0m: output filename collision at E:\test\chordV\apps\desktop\src-tauri\target\debug\chordv_desktop.pdb
-  [1m[96m|[0m
-  [1m[96m= [0m[1m[97mnote[0m: the bin target `chordv-desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)` has the same output filename as the lib target `chordv_desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)`
-  [1m[96m= [0m[1m[97mnote[0m: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
-  [1m[96m= [0m[1m[97mnote[0m: cargo 1.92.0 (344c4567c 2025-10-21) running on `x86_64-pc-windows-msvc` target `x86_64-pc-windows-msvc`
-  [1m[96m= [0m[1m[97mnote[0m: first unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { name: "chordv-desktop", doc: true, ..: with_path("E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\main.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 16041831523681264162 }
-  [1m[96m= [0m[1m[97mnote[0m: second unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { ..: lib_target("chordv_desktop", ["staticlib", "cdylib", "rlib"], "E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\lib.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 7338781724386437113 }
-[1m[92m   Compiling[0m cfg-if v1.0.4
-[1m[92m   Compiling[0m windows-link v0.2.1
-[1m[92m   Compiling[0m itoa v1.0.18
-[1m[92m   Compiling[0m litemap v0.8.2
-[1m[92m   Compiling[0m writeable v0.6.3
-[1m[92m   Compiling[0m utf8_iter v1.0.4
-[1m[92m   Compiling[0m getrandom v0.2.17
-[1m[92m   Compiling[0m serde_core v1.0.228
-[1m[92m   Compiling[0m memchr v2.8.0
-[1m[92m   Compiling[0m siphasher v1.0.2
-[1m[92m   Compiling[0m zerofrom v0.1.7
-[1m[92m   Compiling[0m icu_properties_data v2.2.0
-[1m[92m   Compiling[0m bytes v1.11.1
-[1m[92m   Compiling[0m icu_normalizer_data v2.2.0
-[1m[96m    Building[0m [>                         ] 30/454: bytes, …                                                            [1m[92m   Compiling[0m rand_core v0.6.4
-[1m[92m   Compiling[0m phf_shared v0.11.3
-[1m[92m   Compiling[0m windows-sys v0.61.2
-[1m[92m   Compiling[0m yoke v0.8.2
-[1m[92m   Compiling[0m rand_chacha v0.3.1
-[1m[92m   Compiling[0m zmij v1.0.21
-[1m[92m   Compiling[0m thiserror v2.0.18
-[1m[92m   Compiling[0m log v0.4.29
-[1m[92m   Compiling[0m byteorder v1.5.0
-[1m[92m   Compiling[0m stable_deref_trait v1.2.1
-[1m[96m    Building[0m [==>                       ] 56/454: bytes, …                                                            [1m[92m   Compiling[0m zerovec v0.11.6
-[1m[96m    Building[0m [==>                       ] 57/454: bytes, …                                                            [1m[92m   Compiling[0m rand v0.8.5
-[1m[96m    Building[0m [==>                       ] 58/454: bytes, …                                                            [1m[92m   Compiling[0m http v1.4.0
-[1m[96m    Building[0m [==>                       ] 59/454: bytes, …[1m[96m    Building[0m [==>                       ] 60/454: bytes, …                                                            [1m[92m   Compiling[0m getrandom v0.1.16
-[1m[96m    Building[0m [==>                       ] 62/454: bytes, …                                                            [1m[92m   Compiling[0m rand_core v0.5.1
-[1m[92m   Compiling[0m winnow v1.0.1
-[1m[92m   Compiling[0m scopeguard v1.2.0
-[1m[92m   Compiling[0m lock_api v0.4.14
-[1m[92m   Compiling[0m zerotrie v0.2.4
-[1m[92m   Compiling[0m winnow v0.7.15
-[1m[92m   Compiling[0m phf_generator v0.11.3
-[1m[92m   Compiling[0m tinystr v0.8.3
-[1m[96m    Building[0m [===>                      ] 82/454: http, i…                                                            [1m[92m   Compiling[0m potential_utf v0.1.5
-[1m[96m    Building[0m [===>                      ] 83/454: potenti…                                                            [1m[92m   Compiling[0m toml_parser v1.1.2+spec-1.1.0
-[1m[96m    Building[0m [===>                      ] 84/454: potenti…                                                            [1m[92m   Compiling[0m toml_writer v1.1.1+spec-1.1.0
-[1m[96m    Building[0m [===>                      ] 85/454: potenti…                                                            [1m[92m   Compiling[0m icu_collections v2.2.0
-[1m[92m   Compiling[0m rand_chacha v0.2.2
-[1m[96m    Building[0m [====>                     ] 89/454: http, i…                                                            [1m[92m   Compiling[0m phf_macros v0.11.3
-[1m[96m    Building[0m [====>                     ] 90/454: phf_mac…                                                            [1m[92m   Compiling[0m icu_locale_core v2.2.0
-[1m[96m    Building[0m [====>                     ] 91/454: phf_mac…                                                            [1m[92m   Compiling[0m rand_pcg v0.2.1
-[1m[96m    Building[0m [====>                     ] 92/454: phf_mac…                                                            [1m[92m   Compiling[0m typeid v1.0.3
-[1m[96m    Building[0m [====>                     ] 95/454: phf_mac…                                                            [1m[92m   Compiling[0m aho-corasick v1.1.4
-[1m[96m    Building[0m [====>                     ] 97/454: phf_mac…                                                            [1m[92m   Compiling[0m regex-syntax v0.8.10
-[1m[96m    Building[0m [====>                    ] 100/454: regex-s…                                                            [1m[92m   Compiling[0m serde v1.0.228
-[1m[96m    Building[0m [====>                    ] 101/454: regex-s…                                                            [1m[92m   Compiling[0m unic-common v0.9.0
-[1m[96m    Building[0m [====>                    ] 103/454: regex-s…                                                            [1m[92m   Compiling[0m smallvec v1.15.1
-[1m[96m    Building[0m [====>                    ] 104/454: regex-s…                                                            [1m[92m   Compiling[0m fnv v1.0.7
-[1m[96m    Building[0m [====>                    ] 105/454: regex-s…                                                            [1m[92m   Compiling[0m unic-char-range v0.9.0
-[1m[92m   Compiling[0m unic-ucd-version v0.9.0
-[1m[96m    Building[0m [=====>                   ] 109/454: regex-s…                                                            [1m[92m   Compiling[0m rand v0.7.3
-[1m[96m    Building[0m [=====>                   ] 111/454: regex-s…                                                            [1m[92m   Compiling[0m icu_provider v2.2.0
-[1m[96m    Building[0m [=====>                   ] 112/454: regex-s…                                                            [1m[92m   Compiling[0m unic-char-property v0.9.0
-[1m[96m    Building[0m [=====>                   ] 113/454: regex-s…                                                            [1m[92m   Compiling[0m libc v0.2.184
-[1m[96m    Building[0m [=====>                   ] 115/454: regex-s…                                                            [1m[92m   Compiling[0m pin-project-lite v0.2.17
-[1m[92m   Compiling[0m windows-link v0.1.3
-[1m[92m   Compiling[0m alloc-no-stdlib v2.0.4
-[1m[92m   Compiling[0m icu_normalizer v2.2.0
-[1m[92m   Compiling[0m unic-ucd-ident v0.9.0
-[1m[96m    Building[0m [======>                  ] 128/454: regex-s…                                                            [1m[92m   Compiling[0m thiserror v1.0.69
-[1m[96m    Building[0m [======>                  ] 130/454: regex-s…                                                            [1m[92m   Compiling[0m phf_generator v0.10.0
-[1m[96m    Building[0m [======>                  ] 131/454: regex-s…                                                            [1m[92m   Compiling[0m icu_properties v2.2.0
-[1m[96m    Building[0m [======>                  ] 132/454: regex-s…[1m[96m    Building[0m [======>                  ] 135/454: regex-s…                                                            [1m[92m   Compiling[0m phf_codegen v0.11.3
-[1m[96m    Building[0m [======>                  ] 136/454: regex-s…                                                            [1m[92m   Compiling[0m string_cache_codegen v0.5.4
-[1m[96m    Building[0m [======>                  ] 137/454: regex-s…                                                            [1m[92m   Compiling[0m parking_lot_core v0.9.12
-[1m[96m    Building[0m [======>                  ] 138/454: regex-s…                                                            [1m[92m   Compiling[0m alloc-stdlib v0.2.2
-[1m[96m    Building[0m [======>                  ] 139/454: regex-s…[1m[96m    Building[0m [======>                  ] 140/454: regex-s…                                                            [1m[92m   Compiling[0m once_cell v1.21.4
-[1m[92m   Compiling[0m dunce v1.0.5
-[1m[96m    Building[0m [======>                  ] 145/454: regex-s…                                                            [1m[92m   Compiling[0m phf_generator v0.8.0
-[1m[96m    Building[0m [=======>                 ] 146/454: regex-s…                                                            [1m[92m   Compiling[0m brotli-decompressor v5.0.0
-[1m[96m    Building[0m [=======>                 ] 147/454: regex-s…                                                            [1m[92m   Compiling[0m parking_lot v0.12.5
-[1m[96m    Building[0m [=======>                 ] 148/454: regex-s…[1m[96m    Building[0m [=======>                 ] 151/454: regex-s…                                                            [1m[92m   Compiling[0m phf_codegen v0.8.0
-[1m[96m    Building[0m [=======>                 ] 152/454: regex-s…                                                            [1m[92m   Compiling[0m phf_macros v0.10.0
-[1m[96m    Building[0m [=======>                 ] 153/454: regex-s…                                                            [1m[92m   Compiling[0m serde_json v1.0.149
-[1m[96m    Building[0m [=======>                 ] 154/454: regex-s…                                                            [1m[92m   Compiling[0m regex-automata v0.4.14
-[1m[96m    Building[0m [=======>                 ] 155/454: regex-s…                                                            [1m[92m   Compiling[0m markup5ever v0.14.1
-[1m[96m    Building[0m [=======>                 ] 156/454: regex-s…                                                            [1m[92m   Compiling[0m idna_adapter v1.2.1
-[1m[96m    Building[0m [=======>                 ] 157/454: regex-s…                                                            [1m[92m   Compiling[0m windows_x86_64_msvc v0.52.6
-[1m[96m    Building[0m [=======>                 ] 158/454: regex-s…                                                            [1m[92m   Compiling[0m getrandom v0.4.2
-[1m[96m    Building[0m [=======>                 ] 159/454: regex-s…[1m[96m    Building[0m [=======>                 ] 162/454: regex-s…                                                            [1m[92m   Compiling[0m serde_spanned v1.1.1
-[1m[96m    Building[0m [=======>                 ] 163/454: regex-s…                                                            [1m[92m   Compiling[0m toml_datetime v0.7.5+spec-1.1.0
-[1m[96m    Building[0m [========>                ] 164/454: regex-s…[1m[96m    Building[0m [========>                ] 173/454: regex-s…[1m[96m    Building[0m [========>                ] 174/454: regex-s…                                                            [1m[92m   Compiling[0m uuid v1.23.0
-[1m[96m    Building[0m [========>                ] 175/454: regex-s…                                                            [1m[92m   Compiling[0m phf v0.10.1
-[1m[96m    Building[0m [========>                ] 177/454: regex-s…                                                            [1m[92m   Compiling[0m toml v0.9.12+spec-1.1.0
-[1m[96m    Building[0m [========>                ] 178/454: regex-s…                                                            [1m[92m   Compiling[0m brotli v8.0.2
-[1m[96m    Building[0m [========>                ] 179/454: regex-s…                                                            [1m[92m   Compiling[0m windows-targets v0.52.6
-[1m[96m    Building[0m [========>                ] 180/454: regex-s…[1m[96m    Building[0m [========>                ] 181/454: regex-s…                                                            [1m[92m   Compiling[0m idna v1.1.0
-[1m[96m    Building[0m [=========>               ] 182/454: regex-s…                                                            [1m[92m   Compiling[0m string_cache v0.8.9
-[1m[96m    Building[0m [=========>               ] 183/454: regex-s…                                                            [1m[92m   Compiling[0m selectors v0.24.0
-[1m[96m    Building[0m [=========>               ] 184/454: regex-s…                                                            [1m[92m   Compiling[0m anyhow v1.0.102
-[1m[96m    Building[0m [=========>               ] 185/454: regex-s…                                                            [1m[92m   Compiling[0m windows-result v0.3.4
-[1m[96m    Building[0m [=========>               ] 186/454: regex-s…                                                            [1m[92m   Compiling[0m windows-strings v0.4.2
-[1m[96m    Building[0m [=========>               ] 187/454: regex-s…                                                            [1m[92m   Compiling[0m phf v0.11.3
-[1m[96m    Building[0m [=========>               ] 188/454: regex-s…                                                            [1m[92m   Compiling[0m equivalent v1.0.2
-[1m[92m   Compiling[0m hashbrown v0.16.1
-[1m[92m   Compiling[0m percent-encoding v2.3.2
-[1m[92m   Compiling[0m glob v0.3.3
-[1m[96m    Building[0m [==========>              ] 200/454: regex-s…                                                            [1m[92m   Compiling[0m cssparser v0.29.6
-[1m[96m    Building[0m [==========>              ] 203/454: regex-s…                                                            [1m[92m   Compiling[0m windows-core v0.61.2
-[1m[96m    Building[0m [==========>              ] 206/454: regex-s…[1m[96m    Building[0m [==========>              ] 208/454: regex-s…[1m[96m    Building[0m [==========>              ] 209/454: regex-s…                                                            [1m[92m   Compiling[0m url v2.5.8
-[1m[96m    Building[0m [==========>              ] 210/454: regex-s…                                                            [1m[92m   Compiling[0m winapi-util v0.1.11
-[1m[96m    Building[0m [==========>              ] 211/454: winapi-…                                                            [1m[92m   Compiling[0m fxhash v0.2.1
-[1m[96m    Building[0m [==========>              ] 213/454: winapi-…                                                            [1m[92m   Compiling[0m indexmap v2.13.1
-[1m[92m   Compiling[0m mio v1.2.0
-[1m[92m   Compiling[0m socket2 v0.6.3
-[1m[92m   Compiling[0m same-file v1.0.6
-[1m[96m    Building[0m [===========>             ] 228/454: socket2…                                                            [1m[92m   Compiling[0m regex v1.12.3
-[1m[96m    Building[0m [===========>             ] 229/454: socket2…                                                            [1m[92m   Compiling[0m html5ever v0.29.1
-[1m[96m    Building[0m [===========>             ] 230/454: socket2…[1m[96m    Building[0m [===========>             ] 231/454: socket2…                                                            [1m[92m   Compiling[0m cfb v0.7.3
-[1m[96m    Building[0m [===========>             ] 233/454: socket2…[1m[96m    Building[0m [===========>             ] 234/454: mio, cf…[1m[96m    Building[0m [===========>             ] 235/454: mio, cf…                                                            [1m[92m   Compiling[0m jsonptr v0.6.3
-[1m[96m    Building[0m [===========>             ] 236/454: mio, cf…                                                            [1m[92m   Compiling[0m erased-serde v0.4.10
-[1m[96m    Building[0m [============>            ] 237/454: mio, cf…                                                            [1m[92m   Compiling[0m adler2 v2.0.1
-[1m[96m    Building[0m [============>            ] 240/454: mio, cf…                                                            [1m[92m   Compiling[0m futures-core v0.3.32
-[1m[96m    Building[0m [============>            ] 241/454: mio, cf…                                                            [1m[92m   Compiling[0m option-ext v0.2.0
-[1m[92m   Compiling[0m schemars v0.8.22
-[1m[92m   Compiling[0m serde-untagged v0.1.9
-[1m[92m   Compiling[0m json-patch v3.0.1
-[1m[92m   Compiling[0m tokio v1.51.1
-[1m[92m   Compiling[0m cargo_metadata v0.19.2
-[1m[92m   Compiling[0m kuchikiki v0.8.8-speedreader
-[1m[96m    Building[0m [============>            ] 254/454: idna_ad…                                                            [1m[92m   Compiling[0m infer v0.19.0
-[1m[96m    Building[0m [=============>           ] 255/454: idna_ad…                                                            [1m[92m   Compiling[0m urlpattern v0.3.0
-[1m[92m   Compiling[0m walkdir v2.5.0
-[1m[96m    Building[0m [=============>           ] 257/454: kuchiki…                                                            [1m[92m   Compiling[0m vswhom-sys v0.1.3
-[1m[96m    Building[0m [=============>           ] 258/454: kuchiki…                                                            [1m[92m   Compiling[0m crc32fast v1.5.0
-[1m[96m    Building[0m [=============>           ] 259/454: kuchiki…                                                            [1m[92m   Compiling[0m form_urlencoded v1.2.2
-[1m[96m    Building[0m [=============>           ] 260/454: tokio, …                                                            [1m[92m   Compiling[0m windows-sys v0.59.0
-[1m[92m   Compiling[0m serde_with v3.18.0
-[1m[96m    Building[0m [=============>           ] 262/454: windows…                                                            [1m[92m   Compiling[0m windows-threading v0.1.0
-[1m[96m    Building[0m [=============>           ] 263/454: windows…                                                            [1m[92m   Compiling[0m windows-future v0.2.1
-[1m[92m   Compiling[0m vswhom v0.1.0
-[1m[96m    Building[0m [=============>           ] 267/454: windows…[1m[96m    Building[0m [=============>           ] 268/454: windows…[1m[96m    Building[0m [=============>           ] 269/454: windows…                                                            [1m[92m   Compiling[0m typenum v1.19.0
-[1m[96m    Building[0m [=============>           ] 270/454: windows…                                                            [1m[92m   Compiling[0m windows-numerics v0.2.0
-[1m[96m    Building[0m [=============>           ] 271/454: windows…                                                            [1m[92m   Compiling[0m windows-collections v0.2.0
-[1m[92m   Compiling[0m bitflags v2.11.0
-[1m[96m    Building[0m [==============>          ] 274/454: windows…                                                            [1m[92m   Compiling[0m windows v0.61.3
-[1m[96m    Building[0m [==============>          ] 279/454: windows…                                                            [1m[92m   Compiling[0m tauri-utils v2.8.3
-[1m[96m    Building[0m [==============>          ] 280/454: windows…                                                            [1m[92m   Compiling[0m dirs-sys v0.5.0
-[1m[96m    Building[0m [==============>          ] 281/454: windows…                                                            [1m[92m   Compiling[0m generic-array v0.14.7
-[1m[96m    Building[0m [==============>          ] 282/454: windows…                                                            [1m[92m   Compiling[0m tracing-core v0.1.36
-[1m[96m    Building[0m [==============>          ] 283/454: windows…                                                            [1m[92m   Compiling[0m dpi v0.1.2
-[1m[92m   Compiling[0m webview2-com-sys v0.38.2
-[1m[96m    Building[0m [==============>          ] 285/454: windows…                                                            [1m[92m   Compiling[0m powerfmt v0.2.0
-[1m[96m    Building[0m [==============>          ] 288/454: windows…                                                            [1m[92m   Compiling[0m heck v0.5.0
-[1m[92m   Compiling[0m time-core v0.1.8
-[1m[92m   Compiling[0m raw-window-handle v0.6.2
-[1m[96m    Building[0m [===============>         ] 292/454: windows…                                                            [1m[92m   Compiling[0m num-conv v0.2.1
-[1m[96m    Building[0m [===============>         ] 293/454: windows…[1m[96m    Building[0m [===============>         ] 295/454: windows…                                                            [1m[92m   Compiling[0m tracing v0.1.44
-[1m[96m    Building[0m [===============>         ] 296/454: windows…                                                            [1m[92m   Compiling[0m winreg v0.55.0
-[1m[96m    Building[0m [===============>         ] 297/454: windows…                                                            [1m[92m   Compiling[0m deranged v0.5.8
-[1m[96m    Building[0m [===============>         ] 298/454: windows…                                                            [1m[92m   Compiling[0m time-macros v0.2.27
-[1m[96m    Building[0m [===============>         ] 299/454: windows…                                                            [1m[92m   Compiling[0m dirs v6.0.0
-[1m[96m    Building[0m [===============>         ] 301/454: windows…                                                            [1m[92m   Compiling[0m crossbeam-utils v0.8.21
-[1m[96m    Building[0m [===============>         ] 302/454: heck, t…                                                            [1m[92m   Compiling[0m embed-resource v3.0.8
-[1m[96m    Building[0m [===============>         ] 303/454: embed-r…                                                            [1m[92m   Compiling[0m miniz_oxide v0.8.9
-[1m[96m    Building[0m [===============>         ] 304/454: embed-r…[1m[96m    Building[0m [===============>         ] 305/454: embed-r…                                                            [1m[92m   Compiling[0m cargo_toml v0.22.3
-[1m[96m    Building[0m [===============>         ] 306/454: embed-r…                                                            [1m[92m   Compiling[0m tauri-winres v0.3.5
-[1m[96m    Building[0m [===============>         ] 307/454: time-ma…[1m[96m    Building[0m [===============>         ] 308/454: uuid, t…                                                            [1m[92m   Compiling[0m zeroize v1.8.2
-[1m[92m   Compiling[0m unicode-segmentation v1.13.2
-[1m[92m   Compiling[0m base64 v0.22.1
-[1m[96m    Building[0m [================>        ] 312/454: uuid, z…                                                            [1m[92m   Compiling[0m flate2 v1.1.9
-[1m[96m    Building[0m [================>        ] 313/454: uuid, z…[1m[96m    Building[0m [================>        ] 314/454: uuid, z…                                                            [1m[92m   Compiling[0m rustls-pki-types v1.14.0
-[1m[96m    Building[0m [================>        ] 315/454: uuid, r…                                                            [1m[92m   Compiling[0m crossbeam-channel v0.5.15
-[1m[96m    Building[0m [================>        ] 317/454: crossbe…[1m[96m    Building[0m [================>        ] 318/454: crossbe…                                                            [1m[92m   Compiling[0m windows_x86_64_msvc v0.53.1
-[1m[96m    Building[0m [================>        ] 319/454: crossbe…                                                            [1m[92m   Compiling[0m crypto-common v0.1.7
-[1m[96m    Building[0m [================>        ] 320/454: crossbe…                                                            [1m[92m   Compiling[0m block-buffer v0.10.4
-[1m[96m    Building[0m [================>        ] 321/454: crossbe…[1m[96m    Building[0m [================>        ] 323/454: crossbe…[1m[96m    Building[0m [================>        ] 324/454: crossbe…                                                            [1m[92m   Compiling[0m time v0.3.47
-[1m[96m    Building[0m [================>        ] 325/454: crossbe…[1m[96m    Building[0m [================>        ] 326/454: crossbe…[1m[96m    Building[0m [=================>       ] 327/454: crossbe…                                                            [1m[92m   Compiling[0m http-body v1.0.1
-[1m[96m    Building[0m [=================>       ] 328/454: crossbe…[1m[96m    Building[0m [=================>       ] 329/454: crossbe…[1m[96m    Building[0m [=================>       ] 331/454: getrand…                                                            [1m[92m   Compiling[0m windows-version v0.1.7
-[1m[96m    Building[0m [=================>       ] 332/454: getrand…                                                            [1m[92m   Compiling[0m untrusted v0.9.0
-[1m[96m    Building[0m [=================>       ] 333/454: getrand…                                                            [1m[92m   Compiling[0m futures-task v0.3.32
-[1m[96m    Building[0m [=================>       ] 334/454: futures…                                                            [1m[92m   Compiling[0m slab v0.4.12
-[1m[96m    Building[0m [=================>       ] 339/454: futures…[1m[96m    Building[0m [=================>       ] 340/454: futures…                                                            [1m[92m   Compiling[0m ring v0.17.14
-[1m[96m    Building[0m [=================>       ] 341/454: futures…[1m[96m    Building[0m [=================>       ] 342/454: futures…                                                            [1m[92m   Compiling[0m futures-util v0.3.32
-[1m[96m    Building[0m [=================>       ] 343/454: slab, t…                                                            [1m[92m   Compiling[0m digest v0.10.7
-[1m[96m    Building[0m [=================>       ] 344/454: toml, t…                                                            [1m[92m   Compiling[0m png v0.17.16
-[1m[96m    Building[0m [=================>       ] 345/454: toml, t…[1m[96m    Building[0m [==================>      ] 346/454: toml, t…[1m[96m    Building[0m [==================>      ] 347/454: toml, t…                                                            [1m[92m   Compiling[0m windows-targets v0.53.5
-[1m[96m    Building[0m [==================>      ] 348/454: toml, t…[1m[96m    Building[0m [==================>      ] 349/454: toml, t…[1m[96m    Building[0m [==================>      ] 350/454: toml, t…[1m[96m    Building[0m [==================>      ] 351/454: toml, t…                                                            [1m[92m   Compiling[0m semver v1.0.28
-[1m[96m    Building[0m [==================>      ] 352/454: toml, t…                                                            [1m[92m   Compiling[0m cpufeatures v0.2.17
-[1m[96m    Building[0m [==================>      ] 353/454: cpufeat…                                                            [1m[92m   Compiling[0m cookie v0.18.1
-[1m[96m    Building[0m [==================>      ] 354/454: cookie,…                                                            [1m[92m   Compiling[0m tower-service v0.3.3
-[1m[96m    Building[0m [==================>      ] 355/454: cookie,…                                                            [1m[92m   Compiling[0m try-lock v0.2.5
-[1m[96m    Building[0m [==================>      ] 356/454: cookie,…                                                            [1m[92m   Compiling[0m want v0.3.1
-[1m[92m   Compiling[0m sha2 v0.10.9
-[1m[92m   Compiling[0m ico v0.5.0
-[1m[96m    Building[0m [===================>     ] 367/454: sha2, t…                                                            [1m[92m   Compiling[0m windows-sys v0.60.2
-[1m[96m    Building[0m [===================>     ] 368/454: sha2, t…                                                            [1m[92m   Compiling[0m httparse v1.10.1
-[1m[96m    Building[0m [===================>     ] 369/454: sha2, t…                                                            [1m[92m   Compiling[0m keyboard-types v0.7.0
-[1m[96m    Building[0m [===================>     ] 370/454: keyboar…                                                            [1m[92m   Compiling[0m futures-channel v0.3.32
-[1m[96m    Building[0m [===================>     ] 371/454: keyboar…                                                            [1m[92m   Compiling[0m subtle v2.6.1
-[1m[96m    Building[0m [===================>     ] 372/454: keyboar…                                                            [1m[92m   Compiling[0m atomic-waker v1.1.2
-[1m[92m   Compiling[0m simd-adler32 v0.3.9
-[1m[96m    Building[0m [===================>     ] 375/454: keyboar…                                                            [1m[92m   Compiling[0m softbuffer v0.4.8
-[1m[92m   Compiling[0m hyper v1.9.0
-[1m[96m    Building[0m [===================>     ] 380/454: keyboar…[1m[96m    Building[0m [===================>     ] 381/454: keyboar…                                                            [1m[92m   Compiling[0m sync_wrapper v1.0.2
-[1m[96m    Building[0m [====================>    ] 382/454: keyboar…[1m[96m    Building[0m [====================>    ] 383/454: keyboar…                                                            [1m[92m   Compiling[0m tower-layer v0.3.3
-[1m[96m    Building[0m [====================>    ] 386/454: keyboar…                                                            [1m[92m   Compiling[0m ipnet v2.12.0
-[1m[96m    Building[0m [====================>    ] 387/454: keyboar…                                                            [1m[92m   Compiling[0m tower v0.5.3
-[1m[96m    Building[0m [====================>    ] 388/454: keyboar…                                                            [1m[92m   Compiling[0m serialize-to-javascript v0.1.2
-[1m[96m    Building[0m [====================>    ] 389/454: keyboar…                                                            [1m[92m   Compiling[0m tauri-build v2.5.6
-[1m[96m    Building[0m [====================>    ] 390/454: keyboar…                                                            [1m[92m   Compiling[0m tauri-codegen v2.5.5
-[1m[96m    Building[0m [====================>    ] 391/454: keyboar…                                                            [1m[92m   Compiling[0m window-vibrancy v0.6.0
-[1m[96m    Building[0m [====================>    ] 392/454: keyboar…                                                            [1m[92m   Compiling[0m hyper-util v0.1.20
-[1m[96m    Building[0m [====================>    ] 393/454: hyper, …                                                            [1m[92m   Compiling[0m rustls-webpki v0.103.10
-[1m[96m    Building[0m [====================>    ] 394/454: hyper, …[1m[96m    Building[0m [====================>    ] 395/454: hyper, …                                                            [1m[92m   Compiling[0m rustls v0.23.37
-[1m[96m    Building[0m [====================>    ] 396/454: tokio, …[1m[96m    Building[0m [====================>    ] 398/454: tokio, …                                                            [1m[92m   Compiling[0m getrandom v0.3.4
-[1m[96m    Building[0m [====================>    ] 399/454: getrand…                                                            [1m[92m   Compiling[0m webpki-roots v1.0.6
-[1m[96m    Building[0m [=====================>   ] 400/454: getrand…                                                            [1m[92m   Compiling[0m iri-string v0.7.12
-[1m[92m   Compiling[0m bumpalo v3.20.2
-[1m[96m    Building[0m [=====================>   ] 404/454: bumpalo…                                                            [1m[92m   Compiling[0m muda v0.17.2
-[1m[96m    Building[0m [=====================>   ] 405/454: tokio, …                                                            [1m[92m   Compiling[0m mime v0.3.17
-[1m[96m    Building[0m [=====================>   ] 406/454: tokio, …                                                            [1m[92m   Compiling[0m futures-sink v0.3.32
-[1m[96m    Building[0m [=====================>   ] 407/454: tokio, …                                                            [1m[92m   Compiling[0m ryu v1.0.23
-[1m[92m   Compiling[0m tokio-util v0.7.18
-[1m[96m    Building[0m [=====================>   ] 411/454: tokio-u…                                                            [1m[92m   Compiling[0m zopfli v0.8.3
-[1m[96m    Building[0m [=====================>   ] 412/454: tokio-u…                                                            [1m[92m   Compiling[0m tray-icon v0.21.3
-[1m[96m    Building[0m [=====================>   ] 413/454: tokio-u…                                                            [1m[92m   Compiling[0m serde_urlencoded v0.7.1
-[1m[96m    Building[0m [=====================>   ] 414/454: tokio-u…                                                            [1m[92m   Compiling[0m num-traits v0.2.19
-[1m[96m    Building[0m [=====================>   ] 416/454: tokio-u…[1m[96m    Building[0m [=====================>   ] 417/454: flate2,…                                                            [1m[92m   Compiling[0m http-body-util v0.1.3
-[1m[96m    Building[0m [======================>  ] 418/454: flate2,…                                                            [1m[92m   Compiling[0m tower-http v0.6.8
-[1m[96m    Building[0m [======================>  ] 419/454: flate2,…                                                            [1m[92m   Compiling[0m schannel v0.1.29
-[1m[96m    Building[0m [======================>  ] 420/454: flate2,…                                                            [1m[92m   Compiling[0m zip v2.4.2
-[1m[96m    Building[0m [======================>  ] 421/454: zip, sc…                                                            [1m[92m   Compiling[0m hex v0.4.3
-[1m[96m    Building[0m [======================>  ] 422/454: zip, sc…                                                            [1m[92m   Compiling[0m chrono v0.4.44
-[1m[96m    Building[0m [======================>  ] 423/454: zip, sc…                                                            [1m[92m   Compiling[0m native-tls v0.2.18
-[1m[96m    Building[0m [======================>  ] 424/454: zip, sc…[1m[96m    Building[0m [======================>  ] 425/454: zip, sc…[1m[96m    Building[0m [======================>  ] 426/454: zip, sc…[1m[96m    Building[0m [======================>  ] 427/454: zip, sc…[1m[96m    Building[0m [======================>  ] 428/454: zip, ch…[1m[96m    Building[0m [======================>  ] 429/454: zip, ch…[1m[96m    Building[0m [======================>  ] 430/454: zip, ch…[1m[96m    Building[0m [======================>  ] 431/454: chrono,…[1m[96m    Building[0m [======================>  ] 432/454: rustls,…                                                            [1m[92m   Compiling[0m tauri v2.10.3
-[1m[92m   Compiling[0m tauri-macros v2.5.5
-[1m[92m   Compiling[0m chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)
-[1m[96m    Building[0m [======================>  ] 433/454: tauri(b…[1m[96m    Building[0m [======================>  ] 434/454: tauri(b…[1m[96m    Building[0m [======================>  ] 435/454: tauri(b…                                                            [1m[92m   Compiling[0m tokio-rustls v0.26.4
-[1m[96m    Building[0m [======================>  ] 435/454: tauri(b…[1m[96m    Building[0m [=======================> ] 436/454: tauri(b…[1m[96m    Building[0m [=======================> ] 437/454: tauri(b…[1m[96m    Building[0m [=======================> ] 438/454: chordv-…                                                            [1m[92m   Compiling[0m hyper-rustls v0.27.7
-[1m[96m    Building[0m [=======================> ] 438/454: chordv-…[1m[96m    Building[0m [=======================> ] 439/454: chordv-…[1m[96m    Building[0m [=======================> ] 440/454: hyper-r…                                                            [1m[92m   Compiling[0m reqwest v0.12.28
-[1m[96m    Building[0m [=======================> ] 440/454: hyper-r…[1m[96m    Building[0m [=======================> ] 441/454: reqwest…[1m[96m    Building[0m [=======================> ] 442/454: reqwest…[1m[96m    Building[0m [=======================> ] 443/454: windows                                                             [1m[92m   Compiling[0m tao v0.34.8
-[1m[96m    Building[0m [=======================> ] 443/454: webview…                                                            [1m[92m   Compiling[0m webview2-com v0.38.2
-[1m[96m    Building[0m [=======================> ] 443/454: webview…[1m[96m    Building[0m [=======================> ] 444/454: webview…[1m[96m    Building[0m [=======================> ] 445/454: webview…[1m[96m    Building[0m [=======================> ] 446/454: webview…                                                            [1m[92m   Compiling[0m tauri-runtime v2.10.1
-[1m[92m   Compiling[0m wry v0.54.4
-[1m[96m    Building[0m [=======================> ] 446/454: tauri-r…[1m[96m    Building[0m [=======================> ] 447/454: wry, we…                                                            [1m[92m   Compiling[0m tauri-runtime-wry v2.10.1
-[1m[96m    Building[0m [=======================> ] 447/454: tauri-r…[1m[96m    Building[0m [=======================> ] 448/454: tauri-r…[1m[96m    Building[0m [=======================> ] 449/454: tauri-r…[1m[96m    Building[0m [=======================> ] 450/454: tauri                                                               [1m[92m   Compiling[0m tauri-plugin-single-instance v2.4.1
-[1m[96m    Building[0m [=======================> ] 450/454: tauri-p…[1m[96m    Building[0m [=======================> ] 451/454: tauri   [1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV4_ADDRESS` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:64:7
-   [1m[96m|[0m
-[1m[96m64[0m [1m[96m|[0m const ANDROID_TUN_IPV4_ADDRESS: &str = "172.19.0.2";
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
-   [1m[96m|[0m
-   [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV4_PREFIX` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:65:7
-   [1m[96m|[0m
-[1m[96m65[0m [1m[96m|[0m const ANDROID_TUN_IPV4_PREFIX: u8 = 30;
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV6_ADDRESS` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:66:7
-   [1m[96m|[0m
-[1m[96m66[0m [1m[96m|[0m const ANDROID_TUN_IPV6_ADDRESS: &str = "fd66:6f72:6463::2";
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV6_PREFIX` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:67:7
-   [1m[96m|[0m
-[1m[96m67[0m [1m[96m|[0m const ANDROID_TUN_IPV6_PREFIX: u8 = 126;
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: fields `status`, `evicted_reason`, and `detail_reason` are never read[0m
-   [1m[96m--> [0msrc\lib.rs:113:5
-    [1m[96m|[0m
-[1m[96m111[0m [1m[96m|[0m struct SessionLeaseStatusDto {
-    [1m[96m|[0m        [1m[96m---------------------[0m [1m[96mfields in this struct[0m
-[1m[96m112[0m [1m[96m|[0m     session_id: String,
-[1m[96m113[0m [1m[96m|[0m     status: String,
-    [1m[96m|[0m     [1m[93m^^^^^^[0m
-[1m[96m114[0m [1m[96m|[0m     lease_expires_at: String,
-[1m[96m115[0m [1m[96m|[0m     evicted_reason: Option<String>,
-    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^^[0m
-[1m[96m...[0m
-[1m[96m118[0m [1m[96m|[0m     detail_reason: Option<String>,
-    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^[0m
-    [1m[96m|[0m
-    [1m[96m= [0m[1m[97mnote[0m: `SessionLeaseStatusDto` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: function `matches_our_proxy` is never used[0m
-    [1m[96m--> [0msrc\lib.rs:5768:4
-     [1m[96m|[0m
-[1m[96m5768[0m [1m[96m|[0m fn matches_our_proxy(host: Option<&str>, port: Option<u16>, expected_port: u16) -> bool {
-     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^^[0m
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: function `toggle_main_window_internal` is never used[0m
-    [1m[96m--> [0msrc\lib.rs:6480:4
-     [1m[96m|[0m
-[1m[96m6480[0m [1m[96m|[0m fn toggle_main_window_internal(app: &AppHandle) -> Result<(), String> {
-     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m: `chordv-desktop` (lib) generated 7 warnings
-[1m[96m    Building[0m [=======================> ] 453/454: chordv-…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 3m 50s
-[1m[92m     Running[0m `target\debug\chordv-desktop.exe`
-        Info File src-tauri\src\lib.rs changed. Rebuilding application...
-     Running DevCommand (`cargo  run --no-default-features --color always --`)
-[1m[93mwarning[0m: output filename collision at E:\test\chordV\apps\desktop\src-tauri\target\debug\deps\chordv_desktop.pdb
-  [1m[96m|[0m
-  [1m[96m= [0m[1m[97mnote[0m: the bin target `chordv-desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)` has the same output filename as the lib target `chordv_desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)`
-  [1m[96m= [0m[1m[97mnote[0m: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
-  [1m[96m= [0m[1m[97mnote[0m: cargo 1.92.0 (344c4567c 2025-10-21) running on `x86_64-pc-windows-msvc` target `x86_64-pc-windows-msvc`
-  [1m[96m= [0m[1m[97mnote[0m: first unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { name: "chordv-desktop", doc: true, ..: with_path("E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\main.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 1083660012826775579 }
-  [1m[96m= [0m[1m[97mnote[0m: second unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { ..: lib_target("chordv_desktop", ["staticlib", "cdylib", "rlib"], "E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\lib.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 324352983536484858 }
-[1m[93mwarning[0m: output filename collision at E:\test\chordV\apps\desktop\src-tauri\target\debug\chordv_desktop.pdb
-  [1m[96m|[0m
-  [1m[96m= [0m[1m[97mnote[0m: the bin target `chordv-desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)` has the same output filename as the lib target `chordv_desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)`
-  [1m[96m= [0m[1m[97mnote[0m: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
-  [1m[96m= [0m[1m[97mnote[0m: cargo 1.92.0 (344c4567c 2025-10-21) running on `x86_64-pc-windows-msvc` target `x86_64-pc-windows-msvc`
-  [1m[96m= [0m[1m[97mnote[0m: first unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { name: "chordv-desktop", doc: true, ..: with_path("E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\main.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 1083660012826775579 }
-  [1m[96m= [0m[1m[97mnote[0m: second unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { ..: lib_target("chordv_desktop", ["staticlib", "cdylib", "rlib"], "E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\lib.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 324352983536484858 }
-[1m[92m   Compiling[0m chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV4_ADDRESS` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:64:7
-   [1m[96m|[0m
-[1m[96m64[0m [1m[96m|[0m const ANDROID_TUN_IPV4_ADDRESS: &str = "172.19.0.2";
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
-   [1m[96m|[0m
-   [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV4_PREFIX` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:65:7
-   [1m[96m|[0m
-[1m[96m65[0m [1m[96m|[0m const ANDROID_TUN_IPV4_PREFIX: u8 = 30;
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV6_ADDRESS` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:66:7
-   [1m[96m|[0m
-[1m[96m66[0m [1m[96m|[0m const ANDROID_TUN_IPV6_ADDRESS: &str = "fd66:6f72:6463::2";
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV6_PREFIX` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:67:7
-   [1m[96m|[0m
-[1m[96m67[0m [1m[96m|[0m const ANDROID_TUN_IPV6_PREFIX: u8 = 126;
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: fields `status`, `evicted_reason`, and `detail_reason` are never read[0m
-   [1m[96m--> [0msrc\lib.rs:113:5
-    [1m[96m|[0m
-[1m[96m111[0m [1m[96m|[0m struct SessionLeaseStatusDto {
-    [1m[96m|[0m        [1m[96m---------------------[0m [1m[96mfields in this struct[0m
-[1m[96m112[0m [1m[96m|[0m     session_id: String,
-[1m[96m113[0m [1m[96m|[0m     status: String,
-    [1m[96m|[0m     [1m[93m^^^^^^[0m
-[1m[96m114[0m [1m[96m|[0m     lease_expires_at: String,
-[1m[96m115[0m [1m[96m|[0m     evicted_reason: Option<String>,
-    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^^[0m
-[1m[96m...[0m
-[1m[96m118[0m [1m[96m|[0m     detail_reason: Option<String>,
-    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^[0m
-    [1m[96m|[0m
-    [1m[96m= [0m[1m[97mnote[0m: `SessionLeaseStatusDto` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: function `matches_our_proxy` is never used[0m
-    [1m[96m--> [0msrc\lib.rs:5875:4
-     [1m[96m|[0m
-[1m[96m5875[0m [1m[96m|[0m fn matches_our_proxy(host: Option<&str>, port: Option<u16>, expected_port: u16) -> bool {
-     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: function `toggle_main_window_internal` is never used[0m
-    [1m[96m--> [0msrc\lib.rs:6587:4
-     [1m[96m|[0m
-[1m[96m6587[0m [1m[96m|[0m fn toggle_main_window_internal(app: &AppHandle) -> Result<(), String> {
-     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m: `chordv-desktop` (lib) generated 7 warnings
-[1m[96m    Building[0m [=======================> ] 453/454: chordv-…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 33.91s
-[1m[92m     Running[0m `target\debug\chordv-desktop.exe`
-        Info File src-tauri\src\lib.rs changed. Rebuilding application...
-     Running DevCommand (`cargo  run --no-default-features --color always --`)
-[1m[93mwarning[0m: output filename collision at E:\test\chordV\apps\desktop\src-tauri\target\debug\deps\chordv_desktop.pdb
-  [1m[96m|[0m
-  [1m[96m= [0m[1m[97mnote[0m: the bin target `chordv-desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)` has the same output filename as the lib target `chordv_desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)`
-  [1m[96m= [0m[1m[97mnote[0m: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
-  [1m[96m= [0m[1m[97mnote[0m: cargo 1.92.0 (344c4567c 2025-10-21) running on `x86_64-pc-windows-msvc` target `x86_64-pc-windows-msvc`
-  [1m[96m= [0m[1m[97mnote[0m: first unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { name: "chordv-desktop", doc: true, ..: with_path("E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\main.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 9651987460994686435 }
-  [1m[96m= [0m[1m[97mnote[0m: second unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { ..: lib_target("chordv_desktop", ["staticlib", "cdylib", "rlib"], "E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\lib.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 6897454728147098479 }
-[1m[93mwarning[0m: output filename collision at E:\test\chordV\apps\desktop\src-tauri\target\debug\chordv_desktop.pdb
-  [1m[96m|[0m
-  [1m[96m= [0m[1m[97mnote[0m: the bin target `chordv-desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)` has the same output filename as the lib target `chordv_desktop` in package `chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)`
-  [1m[96m= [0m[1m[97mnote[0m: if this looks unexpected, it may be a bug in Cargo. Please file a bug report at https://github.com/rust-lang/cargo/issues/ with as much information as you can provide.
-  [1m[96m= [0m[1m[97mnote[0m: cargo 1.92.0 (344c4567c 2025-10-21) running on `x86_64-pc-windows-msvc` target `x86_64-pc-windows-msvc`
-  [1m[96m= [0m[1m[97mnote[0m: first unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { name: "chordv-desktop", doc: true, ..: with_path("E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\main.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 9651987460994686435 }
-  [1m[96m= [0m[1m[97mnote[0m: second unit: Unit { pkg: Package { id: PackageId { name: "chordv-desktop", version: "1.1.6", source: "E:\\test\\chordV\\apps\\desktop\\src-tauri" }, ..: ".." }, target: TargetInner { ..: lib_target("chordv_desktop", ["staticlib", "cdylib", "rlib"], "E:\\test\\chordV\\apps\\desktop\\src-tauri\\src\\lib.rs", Edition2021) }, profile: Profile { ..: default_dev() }, kind: Host, mode: Build, features: [], rustflags: [], rustdocflags: [], links_overrides: {}, artifact: false, artifact_target_for_features: None, is_std: false, dep_hash: 6897454728147098479 }
-[1m[92m   Compiling[0m chordv-desktop v1.1.6 (E:\test\chordV\apps\desktop\src-tauri)
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV4_ADDRESS` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:64:7
-   [1m[96m|[0m
-[1m[96m64[0m [1m[96m|[0m const ANDROID_TUN_IPV4_ADDRESS: &str = "172.19.0.2";
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
-   [1m[96m|[0m
-   [1m[96m= [0m[1m[97mnote[0m: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV4_PREFIX` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:65:7
-   [1m[96m|[0m
-[1m[96m65[0m [1m[96m|[0m const ANDROID_TUN_IPV4_PREFIX: u8 = 30;
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV6_ADDRESS` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:66:7
-   [1m[96m|[0m
-[1m[96m66[0m [1m[96m|[0m const ANDROID_TUN_IPV6_ADDRESS: &str = "fd66:6f72:6463::2";
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: constant `ANDROID_TUN_IPV6_PREFIX` is never used[0m
-  [1m[96m--> [0msrc\lib.rs:67:7
-   [1m[96m|[0m
-[1m[96m67[0m [1m[96m|[0m const ANDROID_TUN_IPV6_PREFIX: u8 = 126;
-   [1m[96m|[0m       [1m[93m^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: fields `status`, `evicted_reason`, and `detail_reason` are never read[0m
-   [1m[96m--> [0msrc\lib.rs:113:5
-    [1m[96m|[0m
-[1m[96m111[0m [1m[96m|[0m struct SessionLeaseStatusDto {
-    [1m[96m|[0m        [1m[96m---------------------[0m [1m[96mfields in this struct[0m
-[1m[96m112[0m [1m[96m|[0m     session_id: String,
-[1m[96m113[0m [1m[96m|[0m     status: String,
-    [1m[96m|[0m     [1m[93m^^^^^^[0m
-[1m[96m114[0m [1m[96m|[0m     lease_expires_at: String,
-[1m[96m115[0m [1m[96m|[0m     evicted_reason: Option<String>,
-    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^^[0m
-[1m[96m...[0m
-[1m[96m118[0m [1m[96m|[0m     detail_reason: Option<String>,
-    [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^[0m
-    [1m[96m|[0m
-    [1m[96m= [0m[1m[97mnote[0m: `SessionLeaseStatusDto` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
-
-[1m[93mwarning[0m[1m[97m: function `matches_our_proxy` is never used[0m
-    [1m[96m--> [0msrc\lib.rs:5875:4
-     [1m[96m|[0m
-[1m[96m5875[0m [1m[96m|[0m fn matches_our_proxy(host: Option<&str>, port: Option<u16>, expected_port: u16) -> bool {
-     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^^[0m
-
-[1m[93mwarning[0m[1m[97m: function `toggle_main_window_internal` is never used[0m
-    [1m[96m--> [0msrc\lib.rs:6587:4
-     [1m[96m|[0m
-[1m[96m6587[0m [1m[96m|[0m fn toggle_main_window_internal(app: &AppHandle) -> Result<(), String> {
-     [1m[96m|[0m    [1m[93m^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
-
-[1m[96m    Building[0m [=======================> ] 452/454: chordv-…                                                            [1m[93mwarning[0m: `chordv-desktop` (lib) generated 7 warnings
-[1m[96m    Building[0m [=======================> ] 453/454: chordv-…                                                            [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 14.17s
-[1m[92m     Running[0m `target\debug\chordv-desktop.exe`
-[0713/222513.203:ERROR:ui\gfx\win\window_impl.cc:172] Failed to unregister class Chrome_WidgetWin_0. Error = 1412

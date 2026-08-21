@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
-import type { AdminLeaseRevocationJobDto, AdminNodeRecordDto, AdminPanelSyncJobDto } from "@chordv/shared";
-import { IconBolt, IconListDetails, IconPencil, IconRefresh, IconTrash } from "@tabler/icons-react";
+import type { AdminLeaseRevocationJobDto, AdminNodeRecordDto, AdminPanelSyncJobDto, SwitchNodeControlModeInputDto } from "@chordv/shared";
+import { IconBolt, IconListDetails, IconPencil, IconRefresh, IconSettingsAutomation, IconTrash } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
 import { SectionCard } from "../features/shared/SectionCard";
 import { StatusBadge } from "../features/shared/StatusBadge";
+import { NodeControlCell, NodeControlDrawer } from "../features/nodes/NodeControlCenter";
 import { formatDateTime } from "../utils/admin-format";
 import { summarizeAdminDiagnosticMessage } from "../utils/admin-filters";
 import {
@@ -14,7 +16,10 @@ import {
   hasPanelSyncQueueFilter,
   type PanelSyncQueueFilter
 } from "../utils/admin-queue-filters";
-import { nodePanelColor, nodeProbeColor, translatePanelStatus, translateProbeStatus } from "../utils/admin-translate";
+import {
+  nodeProbeColor,
+  translateProbeStatus
+} from "../utils/admin-translate";
 
 type NodesPageProps = {
   searchValue: string;
@@ -28,6 +33,7 @@ type NodesPageProps = {
   probingNodeId: string | null;
   probingAll: boolean;
   refreshingNodeId: string | null;
+  controlModeBusyNodeId: string | null;
   onOpenPanelSyncQueue: (filter?: PanelSyncQueueFilter) => void;
   onClosePanelSyncQueue: () => void;
   onRetryPanelSyncJob: (jobId: string) => void;
@@ -36,12 +42,15 @@ type NodesPageProps = {
   onRetryNodeLeaseRevocationJobs: (nodeId: string) => void;
   onProbeNode: (nodeId: string) => void;
   onRefreshNode: (nodeId: string) => void;
+  onSwitchNodeControlMode: (node: AdminNodeRecordDto, input: SwitchNodeControlModeInputDto) => Promise<boolean>;
   onOpenNodeDrawer: (nodeId: string) => void;
   onDeleteNode: (node: AdminNodeRecordDto) => void;
 };
 
 export function NodesPage(props: NodesPageProps) {
   const queueCount = props.panelSyncJobs.length + props.leaseRevocationJobs.length;
+  const [controlNodeId, setControlNodeId] = useState<string | null>(null);
+  const controlNode = props.nodes.find((node) => node.id === controlNodeId) ?? null;
 
   return (
     <>
@@ -68,7 +77,7 @@ export function NodesPage(props: NodesPageProps) {
                 <Table.Th>节点</Table.Th>
                 <Table.Th>状态</Table.Th>
                 <Table.Th>地址</Table.Th>
-                <Table.Th>3x-ui</Table.Th>
+                <Table.Th>控制链路</Table.Th>
                 <Table.Th>同步任务</Table.Th>
                 <Table.Th>探测状态</Table.Th>
                 <Table.Th>延迟</Table.Th>
@@ -98,10 +107,7 @@ export function NodesPage(props: NodesPageProps) {
                   </Table.Td>
                   <Table.Td>{item.serverHost}:{item.serverPort}</Table.Td>
                   <Table.Td>
-                    <StatusBadge
-                      color={nodePanelColor(item.panelStatus, item.panelEnabled)}
-                      label={translatePanelStatus(item.panelStatus, item.panelEnabled)}
-                    />
+                    <NodeControlCell node={item} onOpen={() => setControlNodeId(item.id)} />
                   </Table.Td>
                   <Table.Td>
                     <NodeSyncQueueCell
@@ -150,6 +156,14 @@ export function NodesPage(props: NodesPageProps) {
                       >
                         <IconRefresh size={16} />
                       </ActionIcon>
+                      <ActionIcon
+                        variant="subtle"
+                        title="打开节点控制器"
+                        aria-label="打开节点控制器"
+                        onClick={() => setControlNodeId(item.id)}
+                      >
+                        <IconSettingsAutomation size={16} />
+                      </ActionIcon>
                       <ActionIcon variant="subtle" title="编辑本地节点配置" aria-label="编辑本地节点配置" onClick={() => props.onOpenNodeDrawer(item.id)}>
                         <IconPencil size={16} />
                       </ActionIcon>
@@ -164,6 +178,13 @@ export function NodesPage(props: NodesPageProps) {
           </DataTable>
         </Stack>
       </SectionCard>
+      <NodeControlDrawer
+        node={controlNode}
+        opened={Boolean(controlNode)}
+        busy={Boolean(controlNode && props.controlModeBusyNodeId === controlNode.id)}
+        onClose={() => setControlNodeId(null)}
+        onSwitchMode={props.onSwitchNodeControlMode}
+      />
     </>
   );
 }

@@ -136,11 +136,11 @@ export const mockAnnouncements: AnnouncementDto[] = [
 ];
 
 export const mockVersion: ClientVersionDto = {
-  currentVersion: "1.0.2",
+  currentVersion: "1.1.7",
   minimumVersion: "1.0.2",
   forceUpgrade: false,
-  changelog: ["发布中心已接入多端版本管理", "桌面端支持检查更新和完整包下载", "安卓端支持 APK 更新链路"],
-  downloadUrl: "https://v.baymaxgroup.com/downloads/chordv"
+  changelog: ["客户端运行组件改由后台统一管理", "修复 GEO 与 Xray 更新状态判断", "优化桌面客户端完整包更新流程"],
+  downloadUrl: "https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-full.zip"
 };
 
 export const mockBootstrap: ClientBootstrapDto = {
@@ -308,134 +308,85 @@ export const mockAdminPolicy: AdminPolicyRecordDto = {
 
 export const mockAdminReleases: AdminReleaseRecordDto[] = [
   {
-    id: "release_macos_stable_001",
+    id: "release_macos_stable_117",
     platform: "macos",
     channel: "stable",
-    version: "1.0.2",
-    displayTitle: "ChordV 1.0.2 · macOS",
+    version: "1.1.7",
+    displayTitle: "ChordV 1.1.7 · macOS",
     changelog: mockVersion.changelog,
     minimumVersion: "1.0.2",
     forceUpgrade: false,
     status: "published",
-    publishedAt: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    publishedAt: "2026-07-14T06:46:14.000Z",
+    createdAt: "2026-07-14T06:46:14.000Z",
+    updatedAt: "2026-07-14T06:46:14.000Z",
     artifacts: [
       {
-        id: "artifact_macos_dmg_001",
-        releaseId: "release_macos_stable_001",
+        id: "artifact_macos_dmg_117",
+        releaseId: "release_macos_stable_117",
         source: "external",
         type: "dmg",
         deliveryMode: "desktop_installer_download",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/macos/ChordV_1.0.2.dmg",
+        downloadUrl: "https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7.dmg",
         defaultMirrorPrefix: null,
         allowClientMirror: true,
-        fileName: "ChordV_1.0.2.dmg",
-        fileSizeBytes: "94371840",
-        fileHash: "mock-macos-dmg-sha256",
+        fileName: "ChordV_1.1.7.dmg",
+        fileSizeBytes: "52715565",
+        fileHash: "3fd21c5cdf6ffccd27b4470802a50d97edad5941f006667824b3946f46f4eadb",
         isPrimary: true,
         isFullPackage: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        createdAt: "2026-07-14T06:46:14.000Z",
+        updatedAt: "2026-07-14T06:46:14.000Z"
       }
     ]
   },
   {
-    id: "release_windows_stable_001",
+    id: "release_windows_stable_117",
     platform: "windows",
     channel: "stable",
-    version: "1.0.2",
-    displayTitle: "ChordV 1.0.2 · Windows",
+    version: "1.1.7",
+    displayTitle: "ChordV 1.1.7 · Windows",
     changelog: mockVersion.changelog,
     minimumVersion: "1.0.2",
     forceUpgrade: false,
-    status: "draft",
-    publishedAt: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    status: "published",
+    publishedAt: "2026-07-14T06:46:14.000Z",
+    createdAt: "2026-07-14T06:46:14.000Z",
+    updatedAt: "2026-07-14T06:46:14.000Z",
     artifacts: [
       {
-        id: "artifact_windows_setup_001",
-        releaseId: "release_windows_stable_001",
+        id: "artifact_windows_full_zip_117",
+        releaseId: "release_windows_stable_117",
         source: "external",
         type: "zip",
         deliveryMode: "desktop_full_replace",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/windows/ChordV_1.0.2_x64-full.zip",
+        downloadUrl: "https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-full.zip",
         defaultMirrorPrefix: null,
         allowClientMirror: true,
-        fileName: "ChordV_1.0.2_x64-full.zip",
-        fileSizeBytes: null,
-        fileHash: null,
+        fileName: "ChordV_1.1.7_x64-full.zip",
+        fileSizeBytes: "36123379",
+        fileHash: "8d082d9e2540cbede4aeff00ce8ec85fb2cccb4e7d1c343ebc561b5788ff83bc",
         isPrimary: true,
         isFullPackage: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }
-    ]
-  },
-  {
-    id: "release_android_stable_001",
-    platform: "android",
-    channel: "stable",
-    version: "1.0.0",
-    displayTitle: "ChordV 1.0.0 · Android",
-    changelog: mockVersion.changelog,
-    minimumVersion: "1.0.0",
-    forceUpgrade: false,
-    status: "published",
-    publishedAt: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    artifacts: [
+        createdAt: "2026-07-14T06:46:14.000Z",
+        updatedAt: "2026-07-14T06:46:14.000Z"
+      },
       {
-        id: "artifact_android_apk_001",
-        releaseId: "release_android_stable_001",
+        id: "artifact_windows_setup_117",
+        releaseId: "release_windows_stable_117",
         source: "external",
-        type: "apk",
-        deliveryMode: "apk_download",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/android/ChordV_1.0.0.apk",
+        type: "setup.exe",
+        deliveryMode: "desktop_installer_download",
+        downloadUrl: "https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-setup.exe",
         defaultMirrorPrefix: null,
         allowClientMirror: true,
-        fileName: "ChordV_1.0.0.apk",
-        fileSizeBytes: "59600000",
-        fileHash: "mock-android-apk-sha256",
-        isPrimary: true,
+        fileName: "ChordV_1.1.7_x64-setup.exe",
+        fileSizeBytes: "20013257",
+        fileHash: "c0f7a4c7914dcfdc600a20156d548230c369b205a77183e2ec390d73bacb8340",
+        isPrimary: false,
         isFullPackage: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }
-    ]
-  },
-  {
-    id: "release_ios_stable_001",
-    platform: "ios",
-    channel: "stable",
-    version: "1.0.0",
-    displayTitle: "ChordV 1.0.0 · iOS",
-    changelog: mockVersion.changelog,
-    minimumVersion: "1.0.0",
-    forceUpgrade: false,
-    status: "published",
-    publishedAt: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    artifacts: [
-      {
-        id: "artifact_ios_external_001",
-        releaseId: "release_ios_stable_001",
-        source: "external",
-        type: "external",
-        deliveryMode: "external_download",
-        downloadUrl: "https://v.baymaxgroup.com/downloads/chordv/ios",
-        defaultMirrorPrefix: null,
-        allowClientMirror: true,
-        fileName: "ChordV iOS 侧载说明",
-        fileSizeBytes: null,
-        fileHash: null,
-        isPrimary: true,
-        isFullPackage: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        createdAt: "2026-07-14T06:46:14.000Z",
+        updatedAt: "2026-07-14T06:46:14.000Z"
       }
     ]
   }

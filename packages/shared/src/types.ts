@@ -330,6 +330,8 @@ export interface ClientRuntimeComponentPlanItemDto {
   fileSizeBytes?: string | null;
   archiveEntryName?: string | null;
   expectedHash?: string | null;
+  versionLabel?: string | null;
+  updatedAt: string;
   allowClientMirror: boolean;
   originUrl: string;
   defaultMirrorPrefix?: string | null;
@@ -526,6 +528,11 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   panelStatus: XuiPanelStatus;
   panelLastSyncedAt: string | null;
   panelError: string | null;
+  controlMode?: NodeControlMode;
+  controlStatus?: string;
+  agentLastSeenAt?: string | null;
+  agentConfigRevision?: string;
+  agent?: AdminNodeAgentDto | null;
   serverName: string;
   serverHost: string;
   serverPort: number;
@@ -1206,7 +1213,7 @@ type CreateRuntimeComponentInputBase = {
   allowClientMirror?: boolean;
   fileName: string;
   archiveEntryName?: string | null;
-  expectedHash: string;
+  expectedHash?: string | null;
   enabled?: boolean;
 };
 
@@ -1280,4 +1287,113 @@ export interface UpdatePolicyInputDto {
   blockAds?: boolean;
   chinaDirect?: boolean;
   aiServicesProxy?: boolean;
+}
+
+export type NodeControlMode = "xui_primary" | "shadow_direct" | "direct_primary" | "rollback_pending";
+
+export interface SwitchNodeControlModeInputDto {
+  targetMode: NodeControlMode;
+  confirmDirect?: boolean;
+  confirmRollback?: boolean;
+  confirmXuiCalibrated?: boolean;
+}
+
+export interface SwitchNodeControlModeResultDto {
+  nodeId: string;
+  previousMode: NodeControlMode;
+  controlMode: NodeControlMode;
+  revision: string;
+  changed: boolean;
+}
+export type PanelClientSource = "xui" | "direct";
+export type NodeAgentCommandType =
+  | "ENSURE_USER"
+  | "ENABLE_USER"
+  | "DISABLE_USER"
+  | "REMOVE_USER"
+  | "RECONCILE_USERS"
+  | "REFRESH_QUOTA";
+export type NodeAgentJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+
+export interface AgentHeartbeatInputDto {
+  bootId: string;
+  version: string;
+  configRevision: string;
+  queueDepth: number;
+  xrayStatus: "unknown" | "healthy" | "degraded" | "offline";
+}
+
+export interface AgentUsageSampleDto {
+  bindingId: string;
+  counterGeneration: string;
+  uplinkBytes: string;
+  downlinkBytes: string;
+  uplinkDeltaBytes: string;
+  downlinkDeltaBytes: string;
+}
+
+export interface AgentUsageBatchInputDto {
+  bootId: string;
+  sequence: string;
+  sampledAt: string;
+  samples: AgentUsageSampleDto[];
+}
+
+export interface AgentUsageBatchAckDto {
+  accepted: boolean;
+  duplicate: boolean;
+  ackThrough: string;
+}
+
+export interface AgentDesiredUserDto {
+  bindingId: string;
+  revision: string;
+  email: string;
+  uuid: string;
+  flow: "xtls-rprx-vision" | "";
+  enabled: boolean;
+  quotaRemainingBytes: string;
+  offlineAllowanceBytes: string;
+}
+
+export interface AgentConfigDto {
+  nodeId: string;
+  controlMode: NodeControlMode;
+  revision: string;
+  users: AgentDesiredUserDto[];
+}
+
+export interface AgentCommandDto {
+  commandId: string;
+  type: NodeAgentCommandType;
+  targetRevision: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AgentCommandResultInputDto {
+  status: "completed" | "failed";
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface AdminNodeAgentDto {
+  id: string;
+  agentId: string;
+  nodeId: string;
+  tokenPrefix: string;
+  version: string | null;
+  status: string;
+  xrayStatus: string;
+  bootId: string | null;
+  configRevision: string;
+  lastSequence: string;
+  lastAckSequence: string;
+  queueDepth: number;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface AdminCreateNodeAgentCredentialResultDto extends AdminNodeAgentDto {
+  token: string;
 }

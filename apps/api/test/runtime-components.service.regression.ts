@@ -4,6 +4,10 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RuntimeComponentsService } from "../src/modules/common/runtime-components.service";
+import {
+  clearGithubLatestReleaseCacheForTest,
+  resolveGithubLatestReleaseAsset
+} from "../src/modules/common/github-latest-release";
 
 function createRuntimeComponentsService(overrides: Record<string, unknown>) {
   return Object.assign(
@@ -192,9 +196,9 @@ async function testAdminRuntimeComponentMarksUnverifiedRemoteAsDeliverable() {
 
   const [result] = await service.listAdminRuntimeComponents();
 
-  assert.equal(result.clientDeliverable, false);
-  assert.equal(result.clientDeliveryStatus, "missing_file");
-  assert.match(result.clientDeliveryMessage, /SHA-256|校验|不会下发/);
+  assert.equal(result.clientDeliverable, true);
+  assert.equal(result.clientDeliveryStatus, "ready");
+  assert.match(result.clientDeliveryMessage, /可下发|地址有效/);
 }
 
 async function testAdminRuntimeComponentMarksMissingUploadedFileAsNotDeliverable() {
@@ -329,15 +333,20 @@ async function testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingF
 }
 
 
-async function testRemoteCreateRequiresValidExpectedHash() {
+async function testRemoteCreateAllowsMissingOrInvalidExpectedHash() {
+  const created: Array<Record<string, any>> = [];
   const service = createRuntimeComponentsService({
     prisma: {
       runtimeComponent: {
-        create: async () => {
-          throw new Error("create should not run for invalid expectedHash");
+        create: async (payload: Record<string, any>) => {
+          created.push(payload);
+          return makeRemoteComponent(payload.data);
         }
       }
-    }
+    },
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task(),
+    findSharedRulesetRecord: async () => null,
+    publishRuntimeComponentUpdatedBestEffort: () => undefined
   });
   const input = {
     platform: "windows" as const,
@@ -348,32 +357,37 @@ async function testRemoteCreateRequiresValidExpectedHash() {
     fileName: "xray.exe"
   };
 
-  await assert.rejects(
-    () => service.createAdminRuntimeComponent(input),
-    /64 位 SHA-256/
-  );
-  await assert.rejects(
-    () => service.createAdminRuntimeComponent({ ...input, expectedHash: "invalid" }),
-    /64 位 SHA-256/
-  );
+  const missing = await service.createAdminRuntimeComponent(input);
+  const invalid = await service.createAdminRuntimeComponent({ ...input, expectedHash: "invalid" });
+
+  assert.equal(created.length, 2);
+  assert.equal(missing.expectedHash, null);
+  assert.equal(invalid.expectedHash, null);
 }
 
-async function testRemoteUpdateRejectsInvalidExpectedHash() {
+async function testRemoteUpdateAllowsInvalidExpectedHashAsMissing() {
+  const updates: Array<Record<string, any>> = [];
+  const current = makeRemoteComponent({ expectedHash: "a".repeat(64) });
   const service = createRuntimeComponentsService({
-    ensureRuntimeComponentExists: async () => makeRemoteComponent({ expectedHash: "a".repeat(64) }),
+    ensureRuntimeComponentExists: async () => current,
     prisma: {
       runtimeComponent: {
-        update: async () => {
-          throw new Error("update should not run for invalid expectedHash");
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { ...current, ...payload.data };
         }
       }
-    }
+    },
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task(),
+    startSharedRulesetDuplicatesCleanup: () => undefined,
+    startRuntimeComponentStoredFileCleanupBestEffort: () => undefined,
+    publishRuntimeComponentUpdatedBestEffort: () => undefined
   });
 
-  await assert.rejects(
-    () => service.updateAdminRuntimeComponent("component_1", { expectedHash: "invalid" }),
-    /64 位 SHA-256/
-  );
+  const result = await service.updateAdminRuntimeComponent("component_1", { expectedHash: "invalid" });
+
+  assert.equal(updates[0].data.expectedHash, null);
+  assert.equal(result.expectedHash, null);
 }
 
 async function testLegacyRemoteWithoutHashAllowsUnrelatedPatch() {
@@ -408,31 +422,36 @@ async function testLegacyRemoteWithoutHashAllowsUnrelatedPatch() {
   assert.equal(result.expectedHash, null);
   assert.equal(result.fileName, "xray-renamed.exe");
 }
-async function testRemoteOriginUrlChangeRequiresExpectedHash() {
+async function testRemoteOriginUrlChangeClearsHashWithoutBlocking() {
+  const updates: Array<Record<string, any>> = [];
+  const current = makeRemoteComponent({
+    id: "component_1",
+    originUrl: "https://cdn.example.com/xray.exe",
+    expectedHash: "a".repeat(64)
+  });
   const service = createRuntimeComponentsService({
     prisma: {
       runtimeComponent: {
-        update: async () => {
-          throw new Error("update should not be called when expectedHash is missing");
+        update: async (payload: Record<string, any>) => {
+          updates.push(payload);
+          return { ...current, ...payload.data };
         }
       }
     },
-    ensureRuntimeComponentExists: async () =>
-      makeRemoteComponent({
-        id: "component_1",
-        originUrl: "https://cdn.example.com/xray.exe",
-        expectedHash: "a".repeat(64)
-      }),
-    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task()
+    ensureRuntimeComponentExists: async () => current,
+    withRuntimeComponentIdentityConflictGuard: async (task: () => Promise<unknown>) => task(),
+    startSharedRulesetDuplicatesCleanup: () => undefined,
+    startRuntimeComponentStoredFileCleanupBestEffort: () => undefined,
+    publishRuntimeComponentUpdatedBestEffort: () => undefined
   });
 
-  await assert.rejects(
-    () =>
-      service.updateAdminRuntimeComponent("component_1", {
-        originUrl: "https://cdn.example.com/xray-new.exe"
-      }),
-    /expectedHash/
-  );
+  const result = await service.updateAdminRuntimeComponent("component_1", {
+    originUrl: "https://cdn.example.com/xray-new.exe"
+  });
+
+  assert.equal(updates[0].data.expectedHash, null);
+  assert.equal(result.expectedHash, null);
+  assert.equal(result.originUrl, "https://cdn.example.com/xray-new.exe");
 }
 
 async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
@@ -478,6 +497,115 @@ async function testRuntimeComponentMutationsPublishAdminRefreshEvent() {
   assert.equal(publishedCount, 3, "runtime component create, update, and delete should notify admin pages");
 }
 
+async function testClientPlanResolvesGithubLatestForCustomRemoteSource() {
+  clearGithubLatestReleaseCacheForTest();
+  const latestUrl = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip";
+  const geoLatestUrl = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat";
+  const releasePayload = JSON.stringify({
+    tag_name: "v26.3.27",
+    published_at: "2026-03-27T17:51:11Z",
+    assets: [{
+      name: "Xray-windows-64.zip",
+      size: 20_913_304,
+      digest: `sha256:${"d".repeat(64)}`,
+      updated_at: "2026-03-27T17:55:33Z",
+      browser_download_url: "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip"
+    }]
+  });
+  await resolveGithubLatestReleaseAsset(
+    latestUrl,
+    (async () => ({
+      response: new Response(releasePayload, { status: 200 }),
+      resolvedUrl: "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+    })) as never
+  );
+  await resolveGithubLatestReleaseAsset(
+    geoLatestUrl,
+    (async () => ({
+      response: new Response(JSON.stringify({
+        tag_name: "202607290012",
+        published_at: "2026-07-29T00:12:00Z",
+        assets: [{
+          name: "geoip.dat",
+          size: 12_345_678,
+          digest: `sha256:${"e".repeat(64)}`,
+          updated_at: "2026-07-29T00:13:00Z",
+          browser_download_url: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202607290012/geoip.dat"
+        }]
+      }), { status: 200 }),
+      resolvedUrl: "https://api.github.com/repos/Loyalsoldier/v2ray-rules-dat/releases/latest"
+    })) as never
+  );
+
+  try {
+    const xray = makeRemoteComponent({
+      id: "runtime_xray_windows_x64",
+      source: "custom_remote",
+      kind: "xray",
+      originUrl: latestUrl,
+      fileName: "Xray-windows-64.zip",
+      expectedHash: null
+    });
+    const geoip = makeRemoteComponent({
+      id: "runtime_geoip_shared",
+      platform: "shared",
+      architecture: "universal",
+      kind: "geoip",
+      originUrl: geoLatestUrl,
+      fileName: "geoip.dat",
+      expectedHash: null
+    });
+    const service = createRuntimeComponentsService({
+      prisma: {
+        runtimeComponent: {
+          findMany: async (input: Record<string, any>) => input.where?.kind === "xray" ? [xray] : [geoip]
+        }
+      }
+    });
+
+    const plan = await service.getClientRuntimeComponentsPlan({
+      platform: "windows",
+      architecture: "x64"
+    });
+
+    const xrayPlan = plan.components.find((component) => component.kind === "xray");
+    const geoipPlan = plan.components.find((component) => component.kind === "geoip");
+    assert.equal(xrayPlan?.versionLabel, "26.3.27");
+    assert.equal(xrayPlan?.fileSizeBytes, "20913304");
+    assert.equal(xrayPlan?.expectedHash, null, "Xray ZIP hash must not be used to validate the extracted executable");
+    assert.match(xrayPlan?.originUrl ?? "", /\/releases\/download\/v26\.3\.27\//);
+    assert.equal(geoipPlan?.expectedHash, "e".repeat(64), "GEO assets must retain their downloadable-file hash");
+  } finally {
+    clearGithubLatestReleaseCacheForTest();
+  }
+}
+
+async function testClientPlanReturnsPartialComponentsWithoutHash() {
+  const xray = makeRemoteComponent({
+    id: "xray_without_hash",
+    kind: "xray",
+    expectedHash: null,
+    fileHash: null,
+    updatedAt: new Date("2026-07-22T10:00:00.000Z")
+  });
+  const service = createRuntimeComponentsService({
+    prisma: {
+      runtimeComponent: {
+        findMany: async (input: Record<string, any>) => input.where?.kind === "xray" ? [xray] : []
+      }
+    }
+  });
+
+  const plan = await service.getClientRuntimeComponentsPlan({
+    platform: "windows",
+    architecture: "x64"
+  });
+
+  assert.equal(plan.components.length, 1, "后台部分配置不能被整套清空");
+  assert.equal(plan.components[0].kind, "xray");
+  assert.equal(plan.components[0].expectedHash, null, "无哈希组件仍应下发");
+  assert.equal(plan.components[0].updatedAt, "2026-07-22T10:00:00.000Z");
+}
 async function main() {
   await testUploadedRuntimeComponentPatchIgnoresExpectedHash();
   await testUploadedRuntimeComponentUploadIgnoresExpectedHash();
@@ -489,11 +617,13 @@ async function main() {
   await testAdminRuntimeComponentIgnoresBackgroundValidationFailureForDelivery();
   await testAdminRuntimeComponentIgnoresStaleBackgroundValidationFailure();
   await testRemoteRuntimeComponentValidationReturnsPendingWithoutWaitingForHashDownload();
-  await testRemoteCreateRequiresValidExpectedHash();
-  await testRemoteUpdateRejectsInvalidExpectedHash();
+  await testRemoteCreateAllowsMissingOrInvalidExpectedHash();
+  await testRemoteUpdateAllowsInvalidExpectedHashAsMissing();
   await testLegacyRemoteWithoutHashAllowsUnrelatedPatch();
-  await testRemoteOriginUrlChangeRequiresExpectedHash();
+  await testRemoteOriginUrlChangeClearsHashWithoutBlocking();
   await testRuntimeComponentMutationsPublishAdminRefreshEvent();
+  await testClientPlanResolvesGithubLatestForCustomRemoteSource();
+  await testClientPlanReturnsPartialComponentsWithoutHash();
   console.log("runtime component service regression checks passed");
 }
 

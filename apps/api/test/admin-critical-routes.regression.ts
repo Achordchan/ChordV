@@ -623,6 +623,17 @@ async function main() {
       201
     );
     assert.equal(
+      (await requestJson(baseUrl, "/api/admin/nodes/import", {
+        body: {
+          subscriptionUrl: "vless://11111111-1111-4111-8111-111111111111@node.example.com:443?security=reality&pbk=public-key&sid=abcd&sni=node.example.com#UAT",
+          name: "UAT Direct VLESS Node",
+          countryCode: "US"
+        }
+      })).status,
+      201,
+      "节点导入必须允许直接使用 vless:// 链接"
+    );
+    assert.equal(
       (await requestJson(baseUrl, "/api/admin/nodes/panel-inbounds", {
         body: { panelBaseUrl: "https://panel.example.com", panelUsername: "admin", panelPassword: "password" }
       })).status,
@@ -915,6 +926,15 @@ async function main() {
           route: "node-import",
           value: "new",
           body: { subscriptionUrl: "https://node.example.com/sub", name: "UAT Node", countryCode: "US" }
+        },
+        {
+          route: "node-import",
+          value: "new",
+          body: {
+            subscriptionUrl: "vless://11111111-1111-4111-8111-111111111111@node.example.com:443?security=reality&pbk=public-key&sid=abcd&sni=node.example.com#UAT",
+            name: "UAT Direct VLESS Node",
+            countryCode: "US"
+          }
         },
         {
           route: "node-panel-inbounds",

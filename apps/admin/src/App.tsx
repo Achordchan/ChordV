@@ -47,6 +47,7 @@ import type {
   DashboardSnapshotDto,
   PlanScope,
   RenewSubscriptionInputDto,
+  SwitchNodeControlModeInputDto,
   UpdateAnnouncementInputDto,
   UpdatePlanInputDto,
   UpdatePolicyInputDto,
@@ -119,6 +120,7 @@ import {
   retryAdminPanelSyncJob,
   retryAdminPanelSyncJobsForNode,
   subscribeAdminRuntimeEvents,
+  switchNodeControlMode,
   updateAnnouncement,
   updateNode,
   updatePlan,
@@ -2456,6 +2458,28 @@ export function App() {
     }
   }
 
+  async function handleSwitchNodeControlMode(node: AdminNodeRecordDto, input: SwitchNodeControlModeInputDto) {
+    const actionKey = `node-control:${node.id}`;
+    if (entityActionBusyRef.current) return false;
+    entityActionBusyRef.current = actionKey;
+    setEntityActionBusyKey(actionKey);
+    try {
+      return await runAction(
+        () => switchNodeControlMode(node.id, input),
+        "节点控制模式已更新",
+        {
+          successTitle: "控制链路已更新",
+          failureTitle: "控制链路切换失败",
+          failureFallback: "后台未能完成节点控制模式切换；现有控制链路保持不变。",
+          uncertainMessage: (message) => `${message} 请刷新节点控制器确认最终模式，期间不要重复切换。`
+        }
+      );
+    } finally {
+      entityActionBusyRef.current = null;
+      setEntityActionBusyKey(null);
+    }
+  }
+
   async function handleDeleteAnnouncement(announcementId: string) {
     const actionKey = `announcement-delete:${announcementId}`;
     if (entityActionBusyRef.current) {
@@ -3083,6 +3107,7 @@ export function App() {
 
   const backgroundSyncQueueCount = snapshot.panelSyncJobs.length + snapshot.leaseRevocationJobs.length;
   const waitingAdminTicketCount = snapshot.dashboard.waitingAdminTickets;
+  const agentControlledNodeCount = snapshot.nodes.filter((item) => (item.controlMode ?? "xui_primary") !== "xui_primary").length;
 
   return (
     <>
@@ -3132,10 +3157,12 @@ export function App() {
                   当前接入
                 </Text>
                 <Text size="xl" fw={700}>
-                  3x-ui 直连
+                  {agentControlledNodeCount > 0 ? "混合节点控制" : "3X-UI 直连"}
                 </Text>
                 <Text size="sm" c="dimmed">
-                  默认模式 {snapshot.policy.defaultMode === "rule" ? "规则模式" : snapshot.policy.defaultMode === "global" ? "全局代理" : "直连模式"}
+                  {agentControlledNodeCount > 0
+                    ? `${agentControlledNodeCount} 个 Agent 节点 · ${snapshot.nodes.length - agentControlledNodeCount} 个 3X-UI 节点`
+                    : `默认模式 ${snapshot.policy.defaultMode === "rule" ? "规则模式" : snapshot.policy.defaultMode === "global" ? "全局代理" : "直连模式"}`}
                 </Text>
               </Stack>
             </Paper>
@@ -3399,6 +3426,7 @@ export function App() {
                 probingNodeId={probingNodeId}
                 probingAll={probingAll}
                 refreshingNodeId={refreshingNodeId}
+                controlModeBusyNodeId={entityActionBusyKey?.startsWith("node-control:") ? entityActionBusyKey.slice("node-control:".length) : null}
                 onOpenPanelSyncQueue={openPanelSyncQueue}
                 onClosePanelSyncQueue={closePanelSyncQueue}
                 onRetryPanelSyncJob={(jobId) => void handleRetryPanelSyncJob(jobId)}
@@ -3407,6 +3435,7 @@ export function App() {
                 onRetryNodeLeaseRevocationJobs={(nodeId) => void handleRetryNodeLeaseRevocationJobs(nodeId)}
                 onProbeNode={(nodeId) => void handleProbeNode(nodeId)}
                 onRefreshNode={(nodeId) => void handleRefreshNode(nodeId)}
+                onSwitchNodeControlMode={handleSwitchNodeControlMode}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
                 onDeleteNode={setDeleteNodeTarget}
               />

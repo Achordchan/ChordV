@@ -12,6 +12,8 @@ export type RuntimeComponentDownloadCandidate = {
 
 export type RuntimeComponentDownloadItem = {
   id: string;
+  revision: string | null;
+  versionLabel?: string | null;
   component: RuntimeComponentKind;
   fileName: string;
   fileSizeBytes: number | null;
@@ -116,6 +118,12 @@ export function resolveRuntimeAssetsTone(
 }
 
 export function formatRuntimeAssetsTitle(state: RuntimeAssetsUiState) {
+  if (!state.blocking) {
+    if (state.phase === "checking") return "正在检查组件更新";
+    if (state.phase === "downloading") return "正在更新组件";
+    if (state.phase === "failed") return "组件更新未完成";
+    if (state.phase === "completed") return "组件更新完成";
+  }
   if (state.phase === "checking") {
     return "正在检查必要内核组件";
   }

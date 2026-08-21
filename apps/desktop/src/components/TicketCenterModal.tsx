@@ -43,7 +43,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
   const [statusFilter, setStatusFilter] = useState<TicketStatusFilter>("all");
   const [previewAttachment, setPreviewAttachment] = useState<TicketAttachmentPreview | null>(null);
   const [previewOpenError, setPreviewOpenError] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const replyingDisabled =
     props.submitting ||
     props.replyAttachmentUpload.phase === "uploading" ||
@@ -87,10 +87,13 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ block: "end" });
+      const scrollContainer = messagesScrollRef.current;
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [props.opened, props.createMode, props.ticketDetail, latestMessageId]);
+  }, [props.opened, props.createMode, props.ticketDetail?.id, latestMessageId]);
 
   useEffect(() => {
     if (!props.opened) {
@@ -320,7 +323,10 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                   </Group>
                 </div>
 
-                <div className="ticket-center__messages">
+                <div
+                  ref={messagesScrollRef}
+                  className="ticket-center__messages"
+                >
                   <Stack gap="sm" className="ticket-center__messages-stack">
                     {orderedMessages.map((message) => (
                       <div
@@ -365,7 +371,7 @@ export function TicketCenterModal(props: TicketCenterModalProps) {
                         </div>
                       </div>
                     ))}
-                    <div ref={messagesEndRef} className="ticket-center__messages-end" />
+                    <div className="ticket-center__messages-end" />
                   </Stack>
                 </div>
 

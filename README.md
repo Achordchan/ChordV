@@ -28,9 +28,9 @@ ChordV 是一套面向团队订阅、节点接入、客户端分发与流量计�
 
 ### 环境要求
 
-- Node.js 20.19.0
+- Node.js 20.19.x（Windows Git Bash 下会自动使用 NVM 中已安装的兼容版本）
 - pnpm 9.15.3
-- PostgreSQL
+- PostgreSQL（未配置时由 `start.sh` 在项目目录自动准备）
 - Rust 与 Tauri 构建依赖
 - macOS 打包需 Xcode Command Line Tools
 
@@ -40,22 +40,31 @@ ChordV 是一套面向团队订阅、节点接入、客户端分发与流量计�
 pnpm setup:mac
 ```
 
-该命令会安装依赖、启动本地 PostgreSQL、生成 Prisma Client、同步数据库结构并写入基础数据。初始化完成后即可启动 API、运营后台和桌面客户端。
+该命令会安装依赖、启动本地 PostgreSQL、生成 Prisma Client、同步数据库结构并写入基础数据。初始化完成后即可启动 API 和桌面客户端。
 
 如果你当前使用的是远端数据库和现成后台，不要执行这个命令。只需要把根目录 `.env` 里的 `DATABASE_URL` 指向远端 PostgreSQL，然后直接启动桌面端即可。
 
-### 启动运营后台与 API
-
-仅当你需要本地跑 API 和后台时再执行：
+### 启动完整本地测试环境
 
 ```bash
-pnpm dev:ops
+./start.sh
 ```
 
-默认启动：
+脚本会自动选择 NVM 中已安装的 Node.js 20.19.x，不修改系统全局 Node。首次运行时会安装缺失的 pnpm 依赖；未配置 `DATABASE_URL` 时，会把官方 PostgreSQL 16 解压到 `.data/local-runtime/`，初始化本地数据库、执行迁移并仅在首次写入开发数据，然后以前台方式启动：
 
 - API 服务：`http://localhost:3000`
-- 运营后台：Vite 本地开发服务
+- 运营后台：`http://127.0.0.1:5174`
+- Tauri 桌面客户端（开发页面端口：`http://localhost:5173`）
+
+使用自定义 API 端口：
+
+```bash
+./start.sh 3100
+```
+
+本地 Direct/Shadow 联调默认关闭。只有在 `.env` 显式设置 `CHORDV_LOCAL_AGENT_ENABLED=true`，并提供 `CHORDV_AGENT_ID`、`CHORDV_NODE_ID`、`CHORDV_AGENT_TOKEN`、`CHORDV_LOCAL_XRAY_BINARY`、`CHORDV_LOCAL_XRAY_CONFIG` 时，`start.sh` 才会额外以前台方式启动隔离 Xray 与 Node Agent；`XRAY_API_ADDRESS` 必须绑定 `127.0.0.1` 或 `localhost`。按 `Ctrl+C` 会随其余本地服务一并退出，不需要额外关闭脚本。
+
+位置参数优先于 `.env` 中的 `CHORDV_API_PORT`。首次准备 PostgreSQL 需要下载约 311 MiB；后续会直接复用项目本地运行时和数据。API 就绪后，脚本会准备 Xray 运行组件并打开 Tauri 客户端；运营后台可用于添加节点和维护本地测试数据。日志显示在当前终端，按 `Ctrl+C` 会同时停止运营后台、桌面客户端、API 和本次启动的项目本地 PostgreSQL，因此不需要关闭脚本。显式配置外部 `DATABASE_URL` 时，脚本只检查连接，不会迁移、Seed 或替换外部数据库。
 
 ### 启动桌面客户端
 
@@ -77,6 +86,7 @@ PATH=/opt/homebrew/bin:/usr/local/bin:$PATH VITE_API_BASE_URL=https://v.baymaxgr
 | --- | --- |
 | `CHORDV_API_PORT` | API 服务端口，默认 `3000` |
 | `CHORDV_API_BASE_URL` | 前端和客户端访问 API 的基础地址 |
+| `CHORDV_RUNTIME_COMPONENT_API_BASE_URL` | 本地 API 未配置 Xray 组件时使用的组件服务，默认 `https://v.baymaxgroup.com` |
 | `CHORDV_PUBLIC_BASE_URL` | 对外公开域名，用于生成下载地址 |
 | `DATABASE_URL` | PostgreSQL 连接串 |
 | `CHORDV_JWT_SECRET` | JWT 签名密钥，生产环境必须单独配置 |

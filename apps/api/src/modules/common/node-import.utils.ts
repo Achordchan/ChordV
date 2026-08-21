@@ -148,11 +148,15 @@ export function toNodeId(host: string, port: number) {
 }
 
 export async function fetchSubscriptionNode(subscriptionUrl: string) {
+  const normalizedUrl = subscriptionUrl.trim();
+  if (normalizedUrl.startsWith("vless://")) {
+    return parseVlessLink(normalizedUrl);
+  }
   const timeoutMs = Number(process.env.CHORDV_SUBSCRIPTION_TIMEOUT_MS ?? 15000);
   const allowInsecureTls = (process.env.CHORDV_SUBSCRIPTION_ALLOW_INSECURE_TLS ?? "false").toLowerCase() === "true";
   let response: Awaited<ReturnType<typeof undiciFetch>>;
   try {
-    response = await undiciFetch(subscriptionUrl, {
+    response = await undiciFetch(normalizedUrl, {
       signal: AbortSignal.timeout(timeoutMs),
       dispatcher: createDispatcher(timeoutMs, allowInsecureTls)
     });
@@ -253,12 +257,33 @@ export function toAdminNodeRecord(row: {
   panelStatus: "online" | "offline" | "degraded";
   panelLastSyncedAt: Date | null;
   panelError: string | null;
+  controlMode?: "xui_primary" | "shadow_direct" | "direct_primary" | "rollback_pending";
+  controlStatus?: string;
+  agentLastSeenAt?: Date | null;
+  agentConfigRevision?: bigint;
+  nodeAgents?: Array<{
+    id: string;
+    agentId: string;
+    nodeId: string;
+    tokenPrefix: string;
+    version: string | null;
+    status: string;
+    xrayStatus: string;
+    bootId: string | null;
+    configRevision: bigint;
+    lastSequence: bigint;
+    lastAckSequence: bigint;
+    queueDepth: number;
+    lastSeenAt: Date | null;
+    revokedAt: Date | null;
+  }>;
   probeStatus: NodeProbeStatus;
   probeCheckedAt: Date | null;
   probeError: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): AdminNodeRecordDto {
+  const agent = row.nodeAgents?.[0] ?? null;
   return {
     ...toNodeSummary(row),
     subscriptionUrl: row.subscriptionUrl,
@@ -272,6 +297,26 @@ export function toAdminNodeRecord(row: {
     panelStatus: row.panelStatus,
     panelLastSyncedAt: row.panelLastSyncedAt?.toISOString() ?? null,
     panelError: row.panelError,
+    controlMode: row.controlMode ?? "xui_primary",
+    controlStatus: row.controlStatus ?? "unknown",
+    agentLastSeenAt: row.agentLastSeenAt?.toISOString() ?? null,
+    agentConfigRevision: row.agentConfigRevision?.toString() ?? "0",
+    agent: agent ? {
+      id: agent.id,
+      agentId: agent.agentId,
+      nodeId: agent.nodeId,
+      tokenPrefix: agent.tokenPrefix,
+      version: agent.version,
+      status: agent.status,
+      xrayStatus: agent.xrayStatus,
+      bootId: agent.bootId,
+      configRevision: agent.configRevision.toString(),
+      lastSequence: agent.lastSequence.toString(),
+      lastAckSequence: agent.lastAckSequence.toString(),
+      queueDepth: agent.queueDepth,
+      lastSeenAt: agent.lastSeenAt?.toISOString() ?? null,
+      revokedAt: agent.revokedAt?.toISOString() ?? null
+    } : null,
     serverName: row.serverName,
     serverHost: row.serverHost,
     serverPort: row.serverPort,

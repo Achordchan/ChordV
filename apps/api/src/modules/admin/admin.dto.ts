@@ -480,7 +480,9 @@ export class CreateTeamSubscriptionDto {
 export class ImportNodeDto {
   @IsOptional()
   @IsUrl({
-    require_tld: false
+    require_tld: false,
+    protocols: ["http", "https", "vless"],
+    require_protocol: true
   })
   subscriptionUrl?: string;
 
@@ -894,7 +896,6 @@ export class CreateReleaseArtifactDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^[a-fA-F0-9]{64}$/)
   fileHash?: string | null;
 }
 
@@ -947,7 +948,6 @@ export class UpdateReleaseArtifactDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^[a-fA-F0-9]{64}$/)
   fileHash?: string | null;
 }
 
@@ -1039,9 +1039,9 @@ export class CreateRuntimeComponentDto {
   @IsString()
   archiveEntryName?: string | null;
 
+  @IsOptional()
   @IsString()
-  @Matches(/^[a-fA-F0-9]{64}$/)
-  expectedHash!: string;
+  expectedHash?: string | null;
 
   @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))
@@ -1082,10 +1082,9 @@ export class UpdateRuntimeComponentDto {
   @IsString()
   archiveEntryName?: string | null;
 
-  @ValidateIf((_object, value) => value !== undefined)
+  @IsOptional()
   @IsString()
-  @Matches(/^[a-fA-F0-9]{64}$/)
-  expectedHash?: string;
+  expectedHash?: string | null;
 
   @ValidateIf((_object, value) => value !== undefined)
   @Transform(({ value }) => transformOptionalBoolean(value))

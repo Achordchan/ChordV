@@ -12,7 +12,7 @@ type WindowsExternalDeliveryMode = ReleaseEditorFormState["externalDeliveryMode"
 
 export const DESKTOP_UPDATE_DOWNLOAD_LIMIT_LABEL = `1 GiB（${MAX_DESKTOP_UPDATE_DOWNLOAD_BYTES} 字节）`;
 
-export function validateExternalArtifactMetadata(fileSizeBytes: string, fileHash: string) {
+export function validateExternalArtifactMetadata(fileSizeBytes: string, _fileHash: string) {
   const normalizedSize = fileSizeBytes.trim();
   if (!/^[1-9]\d*$/.test(normalizedSize)) {
     return "文件大小必须是正整数字节数。";
@@ -23,9 +23,6 @@ export function validateExternalArtifactMetadata(fileSizeBytes: string, fileHash
     (normalizedSize.length === maxSizeText.length && normalizedSize > maxSizeText)
   ) {
     return `文件大小不能超过 ${DESKTOP_UPDATE_DOWNLOAD_LIMIT_LABEL}。`;
-  }
-  if (!/^[a-fA-F0-9]{64}$/.test(fileHash.trim())) {
-    return "请填写有效的 64 位 SHA-256 校验值。";
   }
   return null;
 }
@@ -61,7 +58,7 @@ export function buildExternalArtifactPayload(
     downloadUrl: downloadUrl.trim(),
     fileName: inferFileNameFromUrl(downloadUrl),
     fileSizeBytes: fileSizeBytes.trim(),
-    fileHash: fileHash.trim().toLowerCase(),
+    fileHash: /^[a-fA-F0-9]{64}$/.test(fileHash.trim()) ? fileHash.trim().toLowerCase() : null,
     isPrimary
   };
 }

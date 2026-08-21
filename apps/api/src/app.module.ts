@@ -8,6 +8,7 @@ import { DevDataModule } from "./modules/common/dev-data.module";
 import { PrismaModule } from "./modules/common/prisma.module";
 import { UsageModule } from "./modules/usage/usage.module";
 import { XuiModule } from "./modules/xui/xui.module";
+import { AgentModule } from "./modules/agent/agent.module";
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { XuiModule } from "./modules/xui/xui.module";
     AnnouncementsModule,
     AdminModule,
     UsageModule,
+    AgentModule,
     XuiModule
   ]
 })
