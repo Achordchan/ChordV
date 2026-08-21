@@ -2577,8 +2577,8 @@ export class RuntimeSessionService {
     const resolvedPanelInboundId = panelInboundId ?? 0;
 
     if (existing) {
-      if (existing.status === "deleted" && usesAgentControl(input.node.controlMode)) {
-        await assertDirectDeletionWatermarksSettled(writer, existing);
+      if ((existing.status === "deleted" || existing.status === "disabled") && usesAgentControl(input.node.controlMode)) {
+        await assertDirectTerminalWatermarksSettled(writer, existing);
       }
       const refreshShadowConfig = usesAgentShadowMetering(input.node.controlMode) && (
         existing.status !== "active" ||
@@ -3249,13 +3249,13 @@ export function buildDirectUserQuotaPayload(subscription: {
   };
 }
 
-export async function assertDirectDeletionWatermarksSettled(
+export async function assertDirectTerminalWatermarksSettled(
   writer: any,
   binding: { id: string; nodeId: string; directDisableWatermarks: Prisma.JsonValue | null }
 ) {
   const watermarks = parseDirectDisableWatermarks(binding.directDisableWatermarks);
   if (!watermarks) {
-    throw new ConflictException(`Direct 用户删除水位尚未确认：${binding.id}`);
+    throw new ConflictException(`Direct 用户停用水位尚未确认：${binding.id}`);
   }
   for (const watermark of watermarks) {
     const batch = await writer.nodeUsageBatch.findUnique({
@@ -3269,7 +3269,7 @@ export async function assertDirectDeletionWatermarksSettled(
       select: { accountedAt: true }
     });
     if (!batch?.accountedAt) {
-      throw new ConflictException(`Direct 用户删除前流量批次尚未结清：${binding.id}`);
+      throw new ConflictException(`Direct 用户停用前流量批次尚未结清：${binding.id}`);
     }
   }
 }
