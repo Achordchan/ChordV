@@ -66,7 +66,7 @@ export class AgentRunner {
       const current = this.store.getConfigSnapshot();
       if (BigInt(snapshot.revision) < BigInt(current.revision)) return current;
       if (snapshot.controlMode === 'direct_primary') {
-        const preserveLocalDisables = this.store.hasOfflineDisabledUsers();
+        const preserveLocalDisables = this.store.pendingBatchCount() > 0 && this.store.hasUsageDisabledUsers();
         const localUsers = new Map(this.store.listDesiredUsers().map((user) => [user.bindingId, user]));
         const reconcileUsers = preserveLocalDisables
           ? snapshot.users.map((user) => localUsers.get(user.bindingId)?.enabled === false ? { ...user, enabled: false } : user)
@@ -83,7 +83,7 @@ export class AgentRunner {
 
   private async recoverBackendConfirmedUsers(snapshot: AgentConfigSnapshot): Promise<void> {
     await this.withStateMutation(async () => {
-      if (this.store.pendingBatchCount() !== 0 || !this.store.hasOfflineDisabledUsers()) return;
+      if (this.store.pendingBatchCount() !== 0 || !this.store.hasUsageDisabledUsers()) return;
       this.store.restoreBackendConfirmedUsers(snapshot.users);
       this.currentConfig = this.store.getConfigSnapshot();
       if (this.currentConfig.controlMode === 'direct_primary') {
@@ -129,7 +129,7 @@ export class AgentRunner {
         throw error;
       }
     }
-    if (batches.length > 0 && this.store.pendingBatchCount() === 0 && this.store.hasOfflineDisabledUsers()) {
+    if (batches.length > 0 && this.store.pendingBatchCount() === 0 && this.store.hasUsageDisabledUsers()) {
       const snapshot = await this.refreshConfig();
       await this.recoverBackendConfirmedUsers(snapshot);
     }

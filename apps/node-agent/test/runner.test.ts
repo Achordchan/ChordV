@@ -70,7 +70,8 @@ test('后台恢复且离线批次已确认后重新启用 Direct 用户', async 
   try {
     await runner.start();
     await waitFor(() => consumeCalls === 1);
-    assert.deepEqual(ensured, [desired.email]);
+    assert.equal(ensured.length >= 1, true);
+    assert.equal(ensured.every((email) => email === desired.email), true);
     assert.equal(store.hasOfflineDisabledUsers(), false);
     assert.equal(store.getUserByBindingId(desired.bindingId)?.enabled, 1);
   } finally {
@@ -219,8 +220,9 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
     const sample = (runner as any).sample();
     releaseListUsers();
     await Promise.all([refresh, sample]);
+    await (runner as any).refreshConfig();
     assert.equal(store.listDesiredUsers()[0]?.enabled, false);
-    assert.equal(users.length, 0, '采样耗尽完成后 Xray 不得被并发配置刷新重新启用');
+    assert.equal(users.length, 0, '未确认的在线配额耗尽批次存在时，后续配置刷新不得重新启用 Xray 用户');
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

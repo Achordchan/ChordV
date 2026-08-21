@@ -221,6 +221,14 @@ export class AgentStore {
     return rows.some((row) => BigInt(row.offline_used) >= BigInt(row.offline_allowance));
   }
 
+  hasUsageDisabledUsers(): boolean {
+    const rows = this.db.prepare(`SELECT quota_remaining, offline_used, offline_allowance FROM desired_users_v2
+      WHERE enabled = 0`).all() as Array<{ quota_remaining: string; offline_used: string; offline_allowance: string }>;
+    return rows.some((row) =>
+      BigInt(row.quota_remaining) === 0n
+      || (BigInt(row.offline_used) > 0n && BigInt(row.offline_used) >= BigInt(row.offline_allowance)));
+  }
+
   restoreBackendConfirmedUsers(users: DesiredUser[]): void {
     this.db.transaction(() => {
       const update = this.db.prepare(`UPDATE desired_users_v2 SET enabled = ?, quota_remaining = ?,

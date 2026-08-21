@@ -147,6 +147,15 @@ test('拒绝加载其他节点的配置快照', () => withStore((store) => {
   }), /nodeId/);
 }));
 
+test('在线配额耗尽也被识别为本地用量停用', () => withStore((store) => {
+  store.replaceDesiredUsers([user({ quotaRemainingBytes: '50' })], '1');
+  store.recordSample([{ email: user().email, uplinkBytes: '0', downlinkBytes: '0' }], new Date(), true);
+  store.recordSample([{ email: user().email, uplinkBytes: '50', downlinkBytes: '0' }], new Date(), true);
+  assert.equal(store.listDesiredUsers()[0]?.enabled, false);
+  assert.equal(store.hasOfflineDisabledUsers(), false);
+  assert.equal(store.hasUsageDisabledUsers(), true);
+}));
+
 test('拒绝用旧 revision 配置快照覆盖较新的本地状态', () => withStore((store) => {
   store.applyConfigSnapshot({ nodeId: 'node-1', revision: '10', controlMode: 'direct_primary', users: [user({ revision: '10' })] });
   const applied = store.applyConfigSnapshot({ nodeId: 'node-1', revision: '9', controlMode: 'shadow_direct', users: [] });
