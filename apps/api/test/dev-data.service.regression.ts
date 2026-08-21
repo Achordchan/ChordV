@@ -11944,6 +11944,36 @@ async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
   assert.equal(bindingUpdates.length, 0);
 }
 
+async function testQueueDirectDeleteKeepsSnapshotUntilWatermarkBatchesSettle() {
+  let snapshotDeletes = 0;
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({ logger: { warn: () => undefined } });
+  (service as any).queueDirectBindingCommand = async () => undefined;
+  await service.queuePanelDeleteJobsForSubscriptionTx({
+    panelClientBinding: {
+      findMany: async () => [{
+        id: "binding_direct_delete",
+        subscriptionId: "sub_direct_delete",
+        userId: "user_direct_delete",
+        teamId: null,
+        nodeId: "node_direct_delete",
+        panelClientEmail: "direct-delete@example.invalid",
+        panelClientId: "direct-delete-uuid",
+        panelInboundId: 0,
+        source: "direct",
+        node: { controlMode: "direct_primary" }
+      }],
+      updateMany: async (payload: Record<string, any>) => { bindingUpdates.push(payload); return { count: 1 }; }
+    },
+    trafficSnapshot: {
+      deleteMany: async () => { snapshotDeletes += 1; return { count: 1 }; }
+    }
+  }, "sub_direct_delete");
+  assert.equal(snapshotDeletes, 0, "Direct 删除必须保留快照，直到删除水位内的历史批次完成入账");
+  assert.equal(bindingUpdates[0].data.status, "deleted");
+  assert.notEqual(bindingUpdates[0].data.directDisableWatermarks, undefined);
+}
+
 async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
   const updates: Array<Record<string, any>> = [];
   const createManyCalls: Array<Record<string, any>> = [];
@@ -34861,6 +34891,7 @@ async function main() {
   await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
   await testPanelSyncJobBusinessRequeueSkipsCreateWhenDedupeAlreadyExists();
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
+  await testQueueDirectDeleteKeepsSnapshotUntilWatermarkBatchesSettle();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();

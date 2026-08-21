@@ -925,11 +925,6 @@ export class RuntimeSessionService {
           uuid: binding.panelClientId
         });
         queuedCount += 1;
-        await writer.trafficSnapshot.deleteMany({
-          where: {
-            snapshotKey: buildSnapshotKey(binding.nodeId, binding.subscriptionId, binding.userId)
-          }
-        });
         continue;
       }
       const dedupeKey = `delete:${binding.id}`;
@@ -988,7 +983,9 @@ export class RuntimeSessionService {
         status: { in: ["active", "disabled"] }
       },
       data: {
-        status: "deleted"
+        status: "deleted",
+        directDisabledAt: now,
+        directDisableWatermarks: Prisma.DbNull
       }
     });
     await this.bumpShadowAgentConfigRevision(
