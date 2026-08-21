@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { buildSnapshotKey } from "../common/runtime-session.utils";
+import { createOrRefreshLeaseRevocationJob } from "../common/panel-sync-job.utils";
 import { trafficBytesToGbNumber, trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { AgentUsageBatchDto } from "./agent.dto";
 
@@ -211,22 +212,21 @@ export async function applyDirectBatch(
         if (!agentByNode.has(agent.nodeId)) agentByNode.set(agent.nodeId, agent.id);
       }
     }
-    for (const bindingNodeId of bindingsByNode.keys()) {
-      if (!agentByNode.has(bindingNodeId)) {
-        throw new ConflictException(`Direct 节点缺少有效 Agent：${bindingNodeId}`);
-      }
-    }
     for (const [bindingNodeId, nodeBindings] of bindingsByNode) {
-      const targetAgentId = agentByNode.get(bindingNodeId)!;
+      const targetAgentId = agentByNode.get(bindingNodeId) ?? null;
       const nodeRevision = await tx.node.update({
         where: { id: bindingNodeId },
-        data: { agentConfigRevision: { increment: 1n } },
+        data: {
+          agentConfigRevision: { increment: 1n },
+          ...(targetAgentId ? {} : { controlStatus: "degraded" })
+        },
         select: { agentConfigRevision: true }
       });
       await tx.panelClientBinding.updateMany({
         where: { id: { in: nodeBindings.map((binding) => binding.id) } },
         data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision }
       });
+      if (!targetAgentId) continue;
       for (const binding of nodeBindings) {
         const state = disabledSubscriptions.get(binding.subscriptionId)!.state;
         await tx.nodeCommandJob.upsert({
@@ -246,15 +246,28 @@ export async function applyDirectBatch(
       commandAgentIds.add(targetAgentId);
     }
     for (const [subscriptionId, disabled] of disabledSubscriptions) {
-      await tx.leaseRevocationJob.upsert({
-        where: { dedupeKey: `direct-metering:${subscriptionId}:${disabled.state}` },
-        update: {},
+      const dedupeKey = `direct-metering:${subscriptionId}:${disabled.state}`;
+      const now = new Date();
+      await createOrRefreshLeaseRevocationJob(tx, dedupeKey, {
         create: {
           id: randomUUID(),
-          dedupeKey: `direct-metering:${subscriptionId}:${disabled.state}`,
+          dedupeKey,
           reason: `subscription_${disabled.state}`,
           subscriptionId,
-          nodeId
+          nodeId,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          reason: `subscription_${disabled.state}`,
+          subscriptionId,
+          nodeId,
+          status: "pending",
+          attempts: 0,
+          nextRunAt: now,
+          lockedAt: null,
+          lastError: null,
+          completedAt: null
         }
       });
     }

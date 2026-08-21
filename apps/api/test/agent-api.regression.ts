@@ -116,6 +116,29 @@ async function main() {
   assert.equal(multiNode.bindings.every((item) => item.status === "disabled"), true, "共享套餐耗尽必须停用所有 Direct 节点绑定");
   assert.deepEqual(new Set(multiNode.commands.map((item) => item.nodeId)), new Set(["node-1", "node-2"]));
   assert.deepEqual(new Set(multiNode.commands.map((item) => item.agentId)), new Set(["agent-node-1", "agent-node-2"]));
+  assert.equal(multiNode.revocations[0]?.update.status, "pending", "再次耗尽必须把既有租约撤销任务重新排队");
+  assert.equal(multiNode.revocations[0]?.update.attempts, 0);
+  assert.equal(multiNode.revocations[0]?.update.completedAt, null);
+
+  const missingAgent = createMultiNodeExhaustionFixture(false);
+  const missingAgentResult = await applyDirectBatch(
+    missingAgent.tx as never,
+    "agent-node-1",
+    "node-1",
+    new Date("2026-07-26T00:00:05.000Z"),
+    [{
+      bindingId: "binding-1",
+      counterGeneration: "0",
+      uplinkBytes: "120",
+      downlinkBytes: "0",
+      uplinkDeltaBytes: "30",
+      downlinkDeltaBytes: "0"
+    }]
+  );
+  assert.equal(missingAgent.subscription.state, "exhausted", "缺失 Agent 不得回滚套餐耗尽状态");
+  assert.equal(missingAgent.bindings.every((item) => item.status === "disabled"), true);
+  assert.deepEqual(missingAgentResult.commandAgentIds, ["agent-node-1"]);
+  assert.equal(missingAgent.nodeUpdates.get("node-2")?.controlStatus, "degraded", "缺失 Agent 的节点必须标记为异常");
 
   console.log("agent-api regression tests passed");
 }
@@ -136,7 +159,7 @@ function usageBatch(sequence: string, uplinkBytes: string, counterGeneration = "
   };
 }
 
-function createMultiNodeExhaustionFixture() {
+function createMultiNodeExhaustionFixture(hasSecondAgent = true) {
   const subscription = {
     id: "subscription-shared",
     totalTrafficGb: 0,
@@ -163,6 +186,8 @@ function createMultiNodeExhaustionFixture() {
     subscription
   }));
   const commands: Array<{ nodeId: string; agentId: string }> = [];
+  const revocations: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
+  const nodeUpdates = new Map<string, Record<string, unknown>>();
   const revisions = new Map([["node-1", 1n], ["node-2", 5n]]);
   const tx = {
     panelClientBinding: {
@@ -187,21 +212,24 @@ function createMultiNodeExhaustionFixture() {
     },
     trafficLedger: { createMany: async () => ({ count: 0 }) },
     node: {
-      update: async ({ where }: any) => {
+      update: async ({ where, data }: any) => {
+        nodeUpdates.set(where.id, data);
         const revision = (revisions.get(where.id) ?? 0n) + 1n;
         revisions.set(where.id, revision);
         return { agentConfigRevision: revision };
       }
     },
     nodeAgent: {
-      findMany: async () => [{ id: "agent-node-2", nodeId: "node-2", revokedAt: null }]
+      findMany: async () => hasSecondAgent ? [{ id: "agent-node-2", nodeId: "node-2", revokedAt: null }] : []
     },
     nodeCommandJob: {
       upsert: async ({ create }: any) => { commands.push({ nodeId: create.nodeId, agentId: create.agentId }); return create; }
     },
-    leaseRevocationJob: { upsert: async () => undefined }
+    leaseRevocationJob: {
+      upsert: async ({ create, update }: any) => { revocations.push({ create, update }); return create; }
+    }
   };
-  return { tx, bindings, commands };
+  return { tx, bindings, commands, subscription, revocations, nodeUpdates };
 }
 
 function createDirectFixture() {

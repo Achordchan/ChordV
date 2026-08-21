@@ -3,7 +3,8 @@ import type { AgentCommandDto, SwitchNodeControlModeResultDto } from "@chordv/sh
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { buildSnapshotKey } from "../common/runtime-session.utils";
-import { trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
+import { createOrRefreshLeaseRevocationJob } from "../common/panel-sync-job.utils";
+import { trafficBytesToGbNumber, trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 import { runWithNodeUsageLock } from "../common/usage-lock.utils";
 import { SwitchNodeControlModeDto } from "./agent.dto";
 import { AgentEventsService } from "./agent-events.service";
@@ -165,6 +166,7 @@ export class AgentControlModeService {
     }
 
     const revision = node.agentConfigRevision + 1n;
+    let directCutoverSubscriptions: Map<string, DirectCutoverSubscription> | null = null;
     if (previousMode === "shadow_direct" && input.targetMode === "direct_primary") {
       if (node.controlStatus !== "direct_cutover_pending") throw new ConflictException("节点尚未完成 Direct 切换准备");
       if (!directSwitchContext) throw new ConflictException("Shadow 切换上下文缺失，请重试");
@@ -179,12 +181,28 @@ export class AgentControlModeService {
       const missing = node.panelClientBindings.filter((binding) => !samples.has(binding.id));
       if (missing.length > 0) throw new ConflictException(`Shadow 样本缺失：${missing.map((item) => item.id).join(",")}`);
       assertDirectSamplesFresh(samples);
+      const cutoverUsage: DirectCutoverUsageEntry[] = [];
       for (const binding of node.panelClientBindings) {
         const sample = samples.get(binding.id)!;
         const snapshotKey = buildSnapshotKey(nodeId, binding.subscriptionId, binding.userId);
         const xuiSnapshot = await tx.trafficSnapshot.findUnique({ where: { snapshotKey } });
         if (!xuiSnapshot || xuiSnapshot.source !== "xui") throw new ConflictException(`最终 XUI 快照缺失：${binding.id}`);
         if (xuiSnapshot.sampledAt > sample.sampledAt) throw new ConflictException(`Direct 基线早于最终 XUI 快照：${binding.id}`);
+        if (sample.uplinkBytes < xuiSnapshot.uplinkBytes || sample.downlinkBytes < xuiSnapshot.downlinkBytes) {
+          throw new ConflictException(`切换窗口累计计数发生回退，请重新结清 XUI：${binding.id}`);
+        }
+        const cutoverDeltaBytes = sample.uplinkBytes - xuiSnapshot.uplinkBytes
+          + (sample.downlinkBytes - xuiSnapshot.downlinkBytes);
+        if (cutoverDeltaBytes > 0n) {
+          cutoverUsage.push({
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            deltaBytes: cutoverDeltaBytes,
+            sampledAt: sample.sampledAt,
+            subscription: binding.subscription
+          });
+        }
         await tx.trafficSnapshot.upsert({
           where: { snapshotKey },
           update: { uplinkBytes: sample.uplinkBytes, downlinkBytes: sample.downlinkBytes, totalBytes: sample.uplinkBytes + sample.downlinkBytes, sampledAt: sample.sampledAt, source: "direct", counterGeneration: sample.counterGeneration },
@@ -192,6 +210,7 @@ export class AgentControlModeService {
         });
         await tx.panelClientBinding.update({ where: { id: binding.id }, data: { source: "direct", directRevision: revision, lastUplinkBytes: sample.uplinkBytes, lastDownlinkBytes: sample.downlinkBytes, lastSyncedAt: sample.sampledAt } });
       }
+      directCutoverSubscriptions = await applyDirectCutoverUsage(tx, nodeId, cutoverUsage);
     } else if (previousMode === "rollback_pending" && input.targetMode === "xui_primary") {
       if (!xuiRollbackBaselines) throw new ConflictException("缺少3X-UI回退基线，禁止完成回退");
       for (const binding of node.panelClientBindings) {
@@ -240,7 +259,7 @@ export class AgentControlModeService {
       where: { id: nodeId },
       data: { controlMode: input.targetMode, agentConfigRevision: revision, controlStatus: input.targetMode === "rollback_pending" ? "rollback_pending" : "online" }
     });
-    const command = agent ? await this.createModeCommand(tx, node, agent.id, input.targetMode, revision) : null;
+    const command = agent ? await this.createModeCommand(tx, node, agent.id, input.targetMode, revision, directCutoverSubscriptions) : null;
     return {
       result: toResult(nodeId, previousMode, input.targetMode, revision, true),
       command,
@@ -386,17 +405,27 @@ export class AgentControlModeService {
     return samples;
   }
 
-  private async createModeCommand(tx: Prisma.TransactionClient, node: Awaited<ReturnType<typeof this.loadNodeShape>>, agentRecordId: string, controlMode: string, revision: bigint): Promise<AgentCommandDto> {
-    const users = node.panelClientBindings.map((binding) => ({
-      bindingId: binding.id,
-      revision: revision.toString(),
-      email: binding.panelClientEmail,
-      uuid: binding.panelClientId,
-      flow: node.flow === "xtls-rprx-vision" ? "xtls-rprx-vision" : "",
-      enabled: binding.status === "active" && binding.subscription.state === "active",
-      quotaRemainingBytes: remainingBytes(binding.subscription).toString(),
-      offlineAllowanceBytes: OFFLINE_ALLOWANCE_BYTES.toString()
-    }));
+  private async createModeCommand(
+    tx: Prisma.TransactionClient,
+    node: Awaited<ReturnType<typeof this.loadNodeShape>>,
+    agentRecordId: string,
+    controlMode: string,
+    revision: bigint,
+    subscriptionOverrides: Map<string, DirectCutoverSubscription> | null = null
+  ): Promise<AgentCommandDto> {
+    const users = node.panelClientBindings.map((binding) => {
+      const subscription = subscriptionOverrides?.get(binding.subscriptionId) ?? binding.subscription;
+      return {
+        bindingId: binding.id,
+        revision: revision.toString(),
+        email: binding.panelClientEmail,
+        uuid: binding.panelClientId,
+        flow: node.flow === "xtls-rprx-vision" ? "xtls-rprx-vision" : "",
+        enabled: binding.status === "active" && subscription.state === "active",
+        quotaRemainingBytes: remainingBytes(subscription).toString(),
+        offlineAllowanceBytes: OFFLINE_ALLOWANCE_BYTES.toString()
+      };
+    });
     const payload = { controlMode, users };
     const id = randomUUID();
     await tx.nodeCommandJob.create({ data: { id, dedupeKey: `control-mode:${node.id}:${revision.toString()}`, nodeId: node.id, agentId: agentRecordId, commandType: "RECONCILE_USERS", targetRevision: revision, payload } });
@@ -414,6 +443,123 @@ type XuiRollbackBaseline = {
   downlinkBytes: bigint;
   sampledAt: Date;
 };
+
+type DirectCutoverSubscription = {
+  state: "active" | "expired" | "exhausted" | "paused";
+  totalTrafficBytes: bigint;
+  usedTrafficBytes: bigint;
+  remainingTrafficGb: number;
+};
+
+type DirectCutoverUsageEntry = {
+  subscriptionId: string;
+  userId: string | null;
+  teamId: string | null;
+  deltaBytes: bigint;
+  sampledAt: Date;
+  subscription: DirectCutoverSubscription & {
+    totalTrafficGb: number;
+    usedTrafficGb: number;
+    expireAt: Date;
+  };
+};
+
+async function applyDirectCutoverUsage(
+  tx: Prisma.TransactionClient,
+  nodeId: string,
+  entries: DirectCutoverUsageEntry[]
+) {
+  const grouped = new Map<string, { entries: DirectCutoverUsageEntry[]; deltaBytes: bigint; sampledAt: Date }>();
+  for (const entry of entries) {
+    const current = grouped.get(entry.subscriptionId);
+    if (current) {
+      current.entries.push(entry);
+      current.deltaBytes += entry.deltaBytes;
+      if (entry.sampledAt > current.sampledAt) current.sampledAt = entry.sampledAt;
+    } else {
+      grouped.set(entry.subscriptionId, { entries: [entry], deltaBytes: entry.deltaBytes, sampledAt: entry.sampledAt });
+    }
+  }
+  const updatedSubscriptions = new Map<string, DirectCutoverSubscription>();
+  const ledgerRows: Prisma.TrafficLedgerCreateManyInput[] = [];
+  for (const [subscriptionId, usage] of grouped) {
+    const subscription = usage.entries[0]!.subscription;
+    const totalTrafficBytes = subscription.totalTrafficBytes > 0n
+      ? subscription.totalTrafficBytes
+      : trafficGbNumberToBytes(subscription.totalTrafficGb);
+    const usedTrafficBytes = subscription.usedTrafficBytes > 0n
+      ? subscription.usedTrafficBytes
+      : trafficGbNumberToBytes(subscription.usedTrafficGb);
+    const nextUsedTrafficBytes = usedTrafficBytes + usage.deltaBytes;
+    const remainingTrafficBytes = totalTrafficBytes > nextUsedTrafficBytes
+      ? totalTrafficBytes - nextUsedTrafficBytes
+      : 0n;
+    const nextState = subscription.state !== "active"
+      ? subscription.state
+      : subscription.expireAt.getTime() <= usage.sampledAt.getTime()
+        ? "expired"
+        : remainingTrafficBytes === 0n ? "exhausted" : "active";
+    await tx.subscription.update({
+      where: { id: subscriptionId },
+      data: {
+        totalTrafficBytes,
+        usedTrafficBytes: nextUsedTrafficBytes,
+        usedTrafficGb: trafficBytesToGbNumber(nextUsedTrafficBytes),
+        remainingTrafficGb: trafficBytesToGbNumber(remainingTrafficBytes),
+        state: nextState,
+        lastSyncedAt: usage.sampledAt
+      }
+    });
+    updatedSubscriptions.set(subscriptionId, {
+      state: nextState,
+      totalTrafficBytes,
+      usedTrafficBytes: nextUsedTrafficBytes,
+      remainingTrafficGb: trafficBytesToGbNumber(remainingTrafficBytes)
+    });
+    for (const entry of usage.entries) {
+      if (entry.teamId && entry.userId) {
+        ledgerRows.push({
+          id: randomUUID(),
+          teamId: entry.teamId,
+          userId: entry.userId,
+          subscriptionId,
+          nodeId,
+          usedTrafficBytes: entry.deltaBytes,
+          usedTrafficGb: trafficBytesToGbNumber(entry.deltaBytes),
+          recordedAt: entry.sampledAt
+        });
+      }
+    }
+    if (subscription.state !== nextState && nextState !== "active") {
+      const dedupeKey = `direct-metering:${subscriptionId}:${nextState}`;
+      const now = new Date();
+      await createOrRefreshLeaseRevocationJob(tx, dedupeKey, {
+        create: {
+          id: randomUUID(),
+          dedupeKey,
+          reason: `subscription_${nextState}`,
+          subscriptionId,
+          nodeId,
+          status: "pending",
+          nextRunAt: now
+        },
+        update: {
+          reason: `subscription_${nextState}`,
+          subscriptionId,
+          nodeId,
+          status: "pending",
+          attempts: 0,
+          nextRunAt: now,
+          lockedAt: null,
+          lastError: null,
+          completedAt: null
+        }
+      });
+    }
+  }
+  if (ledgerRows.length > 0) await tx.trafficLedger.createMany({ data: ledgerRows });
+  return updatedSubscriptions;
+}
 
 type DirectSwitchContext = {
   agentRecordId: string;

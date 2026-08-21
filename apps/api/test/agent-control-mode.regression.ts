@@ -43,6 +43,7 @@ async function main() {
   assert.equal(result.revision, "1");
   assert.equal(fixture.snapshotCreates.length, 1);
   assert.equal(fixture.snapshotCreates[0].uplinkBytes, 100n);
+  assert.equal(fixture.subscriptionUpdates[0].usedTrafficBytes, 300n, "XUI 结清后到 Direct 基线之间的正向差值必须入账");
   assert.equal(fixture.bindingUpdates[0].source, "direct");
   assert.equal(fixture.commands[0].commandType, "RECONCILE_USERS");
   assert.equal(fixture.published.length, 1);
@@ -251,10 +252,12 @@ function createFixture(
     transactionAgentOverride?: Record<string, unknown>;
     transactionNode?: ReturnType<typeof node>;
     settledAt?: Date;
+    xuiSnapshot?: { uplinkBytes: bigint; downlinkBytes: bigint };
   } = {}
 ) {
   const snapshotCreates: Array<Record<string, any>> = [];
   const bindingUpdates: Array<Record<string, any>> = [];
+  const subscriptionUpdates: Array<Record<string, any>> = [];
   const commands: Array<Record<string, any>> = [];
   const published: unknown[] = [];
   const agent = {
@@ -292,10 +295,20 @@ function createFixture(
       }
     },
     trafficSnapshot: {
-      findUnique: async () => ({ source: "xui", sampledAt: settledAt }),
+      findUnique: async () => ({
+        source: "xui",
+        sampledAt: settledAt,
+        uplinkBytes: options.xuiSnapshot?.uplinkBytes ?? 0n,
+        downlinkBytes: options.xuiSnapshot?.downlinkBytes ?? 0n
+      }),
       upsert: async ({ update, create }: any) => { snapshotCreates.push(update ?? create); return create; },
       updateMany: async () => ({ count: 1 })
     },
+    subscription: {
+      update: async ({ data }: any) => { subscriptionUpdates.push(data); return data; }
+    },
+    trafficLedger: { createMany: async () => ({ count: 0 }) },
+    leaseRevocationJob: { upsert: async () => undefined },
     panelClientBinding: {
       update: async ({ data }: any) => { bindingUpdates.push(data); return data; },
       updateMany: async () => ({ count: 1 })
@@ -338,7 +351,7 @@ function createFixture(
     { listNodeUsage: async () => xuiSamples } as never,
     { settleNodeForDirectCutover: async () => settledAt } as never
   );
-  return { service, snapshotCreates, bindingUpdates, commands, published, getTransactionAttempts: () => transactionAttempts };
+  return { service, snapshotCreates, bindingUpdates, subscriptionUpdates, commands, published, getTransactionAttempts: () => transactionAttempts };
 }
 
 function node(controlMode: string, panelClientBindings: Array<ReturnType<typeof binding>> = []) {
@@ -370,6 +383,9 @@ function binding(id: string, email: string, uuid: string) {
     status: "active",
     subscription: {
       state: "active",
+      expireAt: new Date("2027-07-26T00:00:00.000Z"),
+      totalTrafficGb: 1,
+      usedTrafficGb: 0,
       totalTrafficBytes: 1024n,
       usedTrafficBytes: 0n,
       remainingTrafficGb: 1
