@@ -24,7 +24,8 @@ ALTER TABLE "Node"
 ALTER TABLE "PanelClientBinding"
   ADD COLUMN "source" "PanelClientSource" NOT NULL DEFAULT 'xui',
   ADD COLUMN "directRevision" BIGINT NOT NULL DEFAULT 0,
-  ADD COLUMN "directDisabledAt" TIMESTAMP(3);
+  ADD COLUMN "directDisabledAt" TIMESTAMP(3),
+  ADD COLUMN "directDisableWatermarks" JSONB;
 
 -- AlterTable
 ALTER TABLE "TrafficSnapshot"

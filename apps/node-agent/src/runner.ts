@@ -188,6 +188,12 @@ export class AgentRunner {
               };
             }
             const commandResult = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');
+            if (commandResult.status === 'completed' && (command.type === 'DISABLE_USER' || command.type === 'REMOVE_USER')) {
+              commandResult.result = {
+                ...commandResult.result,
+                disableWatermarks: this.store.pendingBatchWatermarks(),
+              };
+            }
             this.currentConfig = this.store.getConfigSnapshot();
             return commandResult;
           });

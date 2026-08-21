@@ -38,14 +38,21 @@ export class AgentService {
     if (!node) throw new NotFoundException("节点不存在");
     const token = `chordv_agent_${randomBytes(32).toString("base64url")}`;
     const agentId = requestedAgentId?.trim() || `${nodeId}-${randomBytes(6).toString("hex")}`;
-    const agent = await this.prisma.nodeAgent.create({
-      data: {
-        id: randomUUID(),
-        agentId,
-        nodeId,
-        tokenHash: hashAgentToken(token),
-        tokenPrefix: token.slice(0, 20)
-      }
+    const agent = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      await tx.nodeAgent.updateMany({
+        where: { nodeId, revokedAt: null },
+        data: { revokedAt: now, status: "revoked" }
+      });
+      return tx.nodeAgent.create({
+        data: {
+          id: randomUUID(),
+          agentId,
+          nodeId,
+          tokenHash: hashAgentToken(token),
+          tokenPrefix: token.slice(0, 20)
+        }
+      });
     });
     return { ...serializeAgent(agent), token };
   }
@@ -229,17 +236,36 @@ export class AgentService {
   }
 
   async completeCommand(agent: NodeAgent, commandId: string, input: AgentCommandResultDto) {
-    const result = await this.prisma.nodeCommandJob.updateMany({
-      where: { id: commandId, nodeId: agent.nodeId, agentId: agent.id, status: { in: ["pending", "running", "failed"] } },
-      data: {
-        status: input.status,
-        result: (input.result ?? {}) as Prisma.InputJsonValue,
-        lastError: input.status === "completed" ? null : input.error ?? "Agent 执行失败",
-        completedAt: input.status === "completed" ? new Date() : null,
-        nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000)
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const job = await tx.nodeCommandJob.findFirst({
+        where: { id: commandId, nodeId: agent.nodeId, agentId: agent.id, status: { in: ["pending", "running", "failed"] } },
+        select: { id: true, commandType: true, payload: true }
+      });
+      if (!job) return false;
+      await tx.nodeCommandJob.update({
+        where: { id: job.id },
+        data: {
+          status: input.status,
+          result: (input.result ?? {}) as Prisma.InputJsonValue,
+          lastError: input.status === "completed" ? null : input.error ?? "Agent 执行失败",
+          completedAt: input.status === "completed" ? new Date() : null,
+          nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000)
+        }
+      });
+      if (input.status === "completed" && (job.commandType === "DISABLE_USER" || job.commandType === "REMOVE_USER")) {
+        const payload = job.payload as Record<string, unknown>;
+        const bindingId = typeof payload.bindingId === "string" ? payload.bindingId : null;
+        const watermarks = parseDisableWatermarksInput(input.result?.disableWatermarks);
+        if (bindingId && watermarks) {
+          await tx.panelClientBinding.updateMany({
+            where: { id: bindingId, nodeId: agent.nodeId, source: "direct" },
+            data: { directDisableWatermarks: watermarks as Prisma.InputJsonValue }
+          });
+        }
       }
+      return true;
     });
-    if (result.count === 0) throw new NotFoundException("命令不存在、已结束或不属于当前 Agent");
+    if (!updated) throw new NotFoundException("命令不存在、已结束或不属于当前 Agent");
     return { accepted: true };
   }
 
@@ -309,7 +335,7 @@ export class AgentService {
       if (batch.sequence !== ackThrough + 1n) break;
       if (!batch.accountedAt) {
         const payload = batch.payload as unknown as ReturnType<typeof canonicalBatchPayload>;
-        const applied = await applyDirectBatch(tx, agentId, nodeId, batch.sampledAt, payload.samples);
+        const applied = await applyDirectBatch(tx, agentId, nodeId, batch.sampledAt, bootId, batch.sequence, payload.samples);
         transitions.push(...applied.transitions);
         for (const commandAgentId of applied.commandAgentIds) commandAgentIds.add(commandAgentId);
         await tx.nodeUsageBatch.update({ where: { id: batch.id }, data: { accountedAt: new Date() } });
@@ -328,6 +354,19 @@ export class AgentService {
       }
     }
   }
+}
+
+function parseDisableWatermarksInput(value: unknown): Array<{ bootId: string; sequenceThrough: string }> | null {
+  if (!Array.isArray(value)) return null;
+  const result: Array<{ bootId: string; sequenceThrough: string }> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const bootId = Reflect.get(item, "bootId");
+    const sequenceThrough = Reflect.get(item, "sequenceThrough");
+    if (typeof bootId !== "string" || typeof sequenceThrough !== "string" || !/^(0|[1-9]\d*)$/.test(sequenceThrough)) return null;
+    result.push({ bootId, sequenceThrough });
+  }
+  return result;
 }
 
 export function isRetryableAgentTransactionError(error: unknown) {

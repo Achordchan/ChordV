@@ -544,6 +544,7 @@ model PanelClientBinding {
   source           PanelClientSource @default(xui)
   directRevision   BigInt       @default(0)
   directDisabledAt DateTime?
+  directDisableWatermarks Json?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)

@@ -27,6 +27,8 @@ export async function applyDirectBatch(
   agentRecordId: string,
   nodeId: string,
   sampledAt: Date,
+  bootId: string,
+  sequence: bigint,
   samples: AgentUsageBatchDto["samples"]
 ) {
   if (samples.length === 0) return { transitions: [], commandAgentIds: [] } as DirectBatchApplication;
@@ -39,21 +41,26 @@ export async function applyDirectBatch(
     include: { subscription: true }
   });
   const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
-  const prepared = samples.map((sample) => {
+  const prepared = samples.flatMap((sample) => {
     const binding = bindingById.get(sample.bindingId);
-    const capturedBeforeDisable = binding?.status === "disabled"
-      && binding.directDisabledAt !== null
-      && sampledAt <= binding.directDisabledAt;
-    if (!binding || binding.nodeId !== nodeId || binding.source !== "direct" || (binding.status !== "active" && !capturedBeforeDisable)) {
+    if (!binding || binding.nodeId !== nodeId || binding.source !== "direct") {
       throw new ConflictException(`Direct 用户绑定无效：${sample.bindingId}`);
     }
-    return {
+    if (binding.status === "disabled") {
+      const watermarks = parseDisableWatermarks(binding.directDisableWatermarks);
+      if (watermarks && !watermarks.some((watermark) => watermark.bootId === bootId && sequence <= watermark.sequenceThrough)) {
+        return [];
+      }
+    } else if (binding.status !== "active") {
+      throw new ConflictException(`Direct 用户绑定无效：${sample.bindingId}`);
+    }
+    return [{
       sample,
       binding,
       snapshotKey: buildSnapshotKey(nodeId, binding.subscriptionId, binding.userId),
       uplinkBytes: parseUsageBigInt(sample.uplinkBytes, "uplinkBytes"),
       downlinkBytes: parseUsageBigInt(sample.downlinkBytes, "downlinkBytes")
-    };
+    }];
   });
   const snapshots = await tx.trafficSnapshot.findMany({
     where: { snapshotKey: { in: prepared.map((entry) => entry.snapshotKey) } }
@@ -271,7 +278,12 @@ export async function disableDirectBindingsForSubscriptions(
     });
     await tx.panelClientBinding.updateMany({
       where: { id: { in: nodeBindings.map((binding) => binding.id) } },
-      data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision, directDisabledAt: disabledAt }
+      data: {
+        status: "disabled",
+        directRevision: nodeRevision.agentConfigRevision,
+        directDisabledAt: disabledAt,
+        directDisableWatermarks: Prisma.DbNull
+      }
     });
     if (!targetAgentId) continue;
     for (const binding of nodeBindings) {
@@ -293,6 +305,19 @@ export async function disableDirectBindingsForSubscriptions(
     commandAgentIds.add(targetAgentId);
   }
   return Array.from(commandAgentIds);
+}
+
+function parseDisableWatermarks(value: Prisma.JsonValue | null): Array<{ bootId: string; sequenceThrough: bigint }> | null {
+  if (!Array.isArray(value)) return null;
+  const parsed: Array<{ bootId: string; sequenceThrough: bigint }> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const bootId = Reflect.get(item, "bootId");
+    const sequenceThrough = Reflect.get(item, "sequenceThrough");
+    if (typeof bootId !== "string" || typeof sequenceThrough !== "string" || !/^(0|[1-9]\d*)$/.test(sequenceThrough)) return null;
+    parsed.push({ bootId, sequenceThrough: BigInt(sequenceThrough) });
+  }
+  return parsed;
 }
 
 function parseUsageBigInt(value: string, field: string) {

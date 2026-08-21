@@ -14,6 +14,57 @@ async function main() {
   assert.equal(isRetryableAgentTransactionError(new Error("Transaction failed due to a write conflict or a deadlock")), true);
   assert.equal(isRetryableAgentTransactionError(new Error("Direct 用户绑定无效")), false);
 
+  let revokedCredentials = 0;
+  const credentialAgent = {
+    id: "agent-new",
+    agentId: "agent-public-new",
+    nodeId: "node-1",
+    tokenHash: "hash",
+    tokenPrefix: "prefix",
+    version: null,
+    status: "offline",
+    bootId: null,
+    lastSequence: 0n,
+    lastAckSequence: 0n,
+    configRevision: 0n,
+    queueDepth: 0,
+    xrayStatus: "unknown",
+    lastSeenAt: null,
+    revokedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+  const credentialService = new AgentService({
+    node: { findUnique: async () => ({ id: "node-1" }) },
+    $transaction: async (operation: (tx: any) => Promise<unknown>) => operation({
+      nodeAgent: {
+        updateMany: async () => { revokedCredentials += 1; return { count: 1 }; },
+        create: async () => credentialAgent
+      }
+    })
+  } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  await credentialService.createCredential("node-1", "agent-public-new");
+  assert.equal(revokedCredentials, 1, "创建替换凭据时必须原子撤销同节点旧凭据");
+
+  let storedWatermarks: unknown = null;
+  const completionService = new AgentService({
+    $transaction: async (operation: (tx: any) => Promise<unknown>) => operation({
+      nodeCommandJob: {
+        findFirst: async () => ({ id: "command-disable", commandType: "DISABLE_USER", payload: { bindingId: "binding-1" } }),
+        update: async () => undefined
+      },
+      panelClientBinding: {
+        updateMany: async ({ data }: any) => { storedWatermarks = data.directDisableWatermarks; return { count: 1 }; }
+      }
+    })
+  } as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
+  await completionService.completeCommand(
+    { id: "agent-record-1", nodeId: "node-1" } as never,
+    "command-disable",
+    { status: "completed", result: { disableWatermarks: [{ bootId: "boot-a", sequenceThrough: "7" }] } }
+  );
+  assert.deepEqual(storedWatermarks, [{ bootId: "boot-a", sequenceThrough: "7" }]);
+
   const previousNodeEnv = process.env.NODE_ENV;
   const previousPepper = process.env.CHORDV_AGENT_TOKEN_PEPPER;
   try {
@@ -103,6 +154,8 @@ async function main() {
     "agent-node-1",
     "node-1",
     new Date("2026-07-26T00:00:05.000Z"),
+    "boot-a",
+    1n,
     [{
       bindingId: "binding-1",
       counterGeneration: "0",
@@ -126,6 +179,8 @@ async function main() {
     "agent-node-1",
     "node-1",
     new Date("2026-07-26T00:00:05.000Z"),
+    "boot-a",
+    1n,
     [{
       bindingId: "binding-1",
       counterGeneration: "0",
@@ -143,18 +198,17 @@ async function main() {
   const capturedBeforeDisable = createDirectFixture();
   capturedBeforeDisable.binding.status = "disabled";
   capturedBeforeDisable.binding.directDisabledAt = new Date("2026-07-26T00:00:02.000Z");
+  capturedBeforeDisable.binding.directDisableWatermarks = [{ bootId: "boot-a", sequenceThrough: "1" }];
   const capturedService = new AgentService(capturedBeforeDisable.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
   assert.equal((await capturedService.ingestUsageBatch(capturedBeforeDisable.agent as never, usageBatch("1", "100"))).ackThrough, "1", "停用前已采集的批次必须可以继续入账并确认");
 
   const capturedAfterDisable = createDirectFixture();
   capturedAfterDisable.binding.status = "disabled";
   capturedAfterDisable.binding.directDisabledAt = new Date("2026-07-26T00:00:00.000Z");
+  capturedAfterDisable.binding.directDisableWatermarks = [{ bootId: "boot-a", sequenceThrough: "0" }];
   const rejectedService = new AgentService(capturedAfterDisable.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
-  await assert.rejects(
-    () => rejectedService.ingestUsageBatch(capturedAfterDisable.agent as never, usageBatch("1", "100")),
-    /Direct 用户绑定无效/,
-    "停用后才采集的批次必须拒绝"
-  );
+  assert.equal((await rejectedService.ingestUsageBatch(capturedAfterDisable.agent as never, usageBatch("1", "100"))).ackThrough, "1", "停用后的终态样本必须丢弃并确认，不能卡死队列");
+  assert.equal(capturedAfterDisable.subscription.usedTrafficBytes, 0n);
 
   console.log("agent-api regression tests passed");
 }
@@ -284,6 +338,7 @@ function createDirectFixture() {
     lastDownlinkBytes: 0n,
     updatedAt: new Date("2026-07-26T00:00:00.000Z"),
     directDisabledAt: null as Date | null,
+    directDisableWatermarks: null as Array<{ bootId: string; sequenceThrough: string }> | null,
     subscription
   };
   const tx = {

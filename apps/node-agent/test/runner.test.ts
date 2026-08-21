@@ -238,6 +238,53 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   }
 });
 
+test('停用命令结果携带本机待上传批次序列水位', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-disable-watermark-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  store.recordSample([{ email: desired.email, uplinkBytes: '0', downlinkBytes: '0' }], new Date(), true);
+  let reported: Record<string, unknown> | undefined;
+  const api = {
+    getConfig: async () => snapshot,
+    uploadBatch: async () => ({ ackThrough: '0' }),
+    heartbeat: async () => ({ ackThrough: '0' }),
+    reportCommandResult: async (result: { result?: Record<string, unknown> }) => { reported = result.result; },
+    consumeEvents: async (handler: (command: any) => Promise<void>, signal: AbortSignal) => {
+      await handler({
+        commandId: 'disable-1', type: 'DISABLE_USER', targetRevision: '2',
+        payload: { bindingId: desired.bindingId }, createdAt: new Date().toISOString(),
+      });
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  let users = [{ email: desired.email, uuid: desired.uuid }];
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => users,
+    ensureUser: async () => undefined,
+    removeUser: async (email) => { users = users.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+  try {
+    await runner.start();
+    await waitFor(() => reported !== undefined);
+    assert.deepEqual(reported?.disableWatermarks, [{ bootId: 'boot-1', sequenceThrough: '1' }]);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function user(): DesiredUser {
   return {
     bindingId: 'binding-1',

@@ -133,6 +133,10 @@ test('每个 boot 的批次序号从 1 开始，旧 boot 按写入顺序优先�
       'boot-1:2',
       'boot-2:1'
     ]);
+    assert.deepEqual(restarted.pendingBatchWatermarks(), [
+      { bootId: 'boot-1', sequenceThrough: '2' },
+      { bootId: 'boot-2', sequenceThrough: '1' },
+    ]);
     assert.equal(restarted.ackThrough('boot-1', '2'), 2);
     assert.deepEqual(restarted.listPendingBatches().map((batch) => `${batch.bootId}:${batch.sequence}`), ['boot-2:1']);
   } finally {

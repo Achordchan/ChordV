@@ -328,6 +328,18 @@ export class AgentStore {
     return (this.db.prepare('SELECT COUNT(*) count FROM usage_batches_v2').get() as { count: number }).count;
   }
 
+  pendingBatchWatermarks(): Array<{ bootId: string; sequenceThrough: string }> {
+    const rows = this.db.prepare('SELECT boot_id, sequence FROM usage_batches_v2 ORDER BY rowid')
+      .all() as Array<{ boot_id: string; sequence: string }>;
+    const watermarks = new Map<string, bigint>();
+    for (const row of rows) {
+      const sequence = BigInt(row.sequence);
+      const current = watermarks.get(row.boot_id);
+      if (current === undefined || sequence > current) watermarks.set(row.boot_id, sequence);
+    }
+    return Array.from(watermarks, ([bootId, sequenceThrough]) => ({ bootId, sequenceThrough: sequenceThrough.toString() }));
+  }
+
   oldestPendingSampledAt(): string | null {
     return (this.db.prepare('SELECT MIN(sampled_at) value FROM usage_batches_v2').get() as { value: string | null }).value;
   }

@@ -10,6 +10,7 @@ import {
   ServiceUnavailableException
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
+import { Prisma } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { Client as PgClient } from "pg";
 import type {
@@ -1651,13 +1652,14 @@ export class RuntimeSessionService {
           where: { id: job.bindingId },
           data:
             job.action === "disable_client"
-              ? { status: "disabled", directDisabledAt: new Date() }
+              ? { status: "disabled", directDisabledAt: new Date(), directDisableWatermarks: Prisma.DbNull }
               : job.action === "delete_client"
                 ? { status: "deleted" }
                 : job.action === "ensure_client"
                   ? {
                       status: "active",
                       directDisabledAt: null,
+                      directDisableWatermarks: Prisma.DbNull,
                       panelClientId: ensuredPanelClientId ?? job.panelClientId,
                       panelInboundId: ensuredPanelInboundId ?? job.panelInboundId ?? 0,
                       lastSyncedAt: new Date()
@@ -2592,6 +2594,7 @@ export class RuntimeSessionService {
           panelInboundId: existing.status === "deleted" ? resolvedPanelInboundId : panelInboundId ?? existing.panelInboundId,
           status: "active",
           directDisabledAt: null,
+          directDisableWatermarks: Prisma.DbNull,
           teamId: input.teamId,
           source: usesAgentControl(input.node.controlMode) ? "direct" : "xui"
         }
@@ -3560,7 +3563,8 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
       },
       data: {
         status: "disabled",
-        directDisabledAt: disabledAt
+        directDisabledAt: disabledAt,
+        directDisableWatermarks: Prisma.DbNull
       }
     });
     return;
@@ -3570,7 +3574,7 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
       bindingIds.map((id) =>
         writer.panelClientBinding.update({
           where: { id },
-          data: { status: "disabled", directDisabledAt: disabledAt }
+          data: { status: "disabled", directDisabledAt: disabledAt, directDisableWatermarks: Prisma.DbNull }
         })
       )
     );
