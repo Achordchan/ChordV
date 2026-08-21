@@ -12,6 +12,7 @@ export class AgentRunner {
   private currentConfig: AgentConfigSnapshot;
   private readonly commands: CommandProcessor;
   private readonly timers = new Set<NodeJS.Timeout>();
+  private stateMutationTail: Promise<void> = Promise.resolve();
   private eventsController?: AbortController;
 
   constructor(
@@ -61,10 +62,23 @@ export class AgentRunner {
 
   private async refreshConfig(): Promise<AgentConfigSnapshot> {
     const snapshot = await this.api.getConfig();
-    this.store.applyConfigSnapshot(snapshot);
-    this.currentConfig = this.store.getConfigSnapshot();
+    const appliedSnapshot = await this.withStateMutation(async () => {
+      const current = this.store.getConfigSnapshot();
+      if (BigInt(snapshot.revision) < BigInt(current.revision)) return current;
+      if (snapshot.controlMode === 'direct_primary') {
+        const preserveLocalDisables = this.store.hasOfflineDisabledUsers();
+        const localUsers = new Map(this.store.listDesiredUsers().map((user) => [user.bindingId, user]));
+        const reconcileUsers = preserveLocalDisables
+          ? snapshot.users.map((user) => localUsers.get(user.bindingId)?.enabled === false ? { ...user, enabled: false } : user)
+          : snapshot.users;
+        await this.commands.reconcile(reconcileUsers);
+      }
+      this.store.applyConfigSnapshot(snapshot);
+      this.currentConfig = this.store.getConfigSnapshot();
+      return snapshot;
+    });
     this.backendOnline = true;
-    return snapshot;
+    return appliedSnapshot;
   }
 
   private async recoverBackendConfirmedUsers(snapshot: AgentConfigSnapshot): Promise<void> {
@@ -150,21 +164,24 @@ export class AgentRunner {
         await this.recoverBackendConfirmedUsers(snapshot);
         await this.api.consumeEvents(async (command) => {
           this.backendOnline = true;
-          if (
-            command.type === 'RECONCILE_USERS' &&
-            isNodeControlMode(command.payload.controlMode) &&
-            /^\d+$/.test(command.targetRevision) &&
-            BigInt(command.targetRevision) >= BigInt(this.currentConfig.revision)
-          ) {
-            // 模式必须在命令执行前切换，保证只有 direct_primary 会获得 Xray 写权限。
-            this.currentConfig = {
-              ...this.currentConfig,
-              controlMode: command.payload.controlMode,
-              revision: command.targetRevision,
-            };
-          }
-          const result = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');
-          this.currentConfig = this.store.getConfigSnapshot();
+          const result = await this.withStateMutation(async () => {
+            if (
+              command.type === 'RECONCILE_USERS' &&
+              isNodeControlMode(command.payload.controlMode) &&
+              /^\d+$/.test(command.targetRevision) &&
+              BigInt(command.targetRevision) >= BigInt(this.currentConfig.revision)
+            ) {
+              // 模式必须在命令执行前切换，保证只有 direct_primary 会获得 Xray 写权限。
+              this.currentConfig = {
+                ...this.currentConfig,
+                controlMode: command.payload.controlMode,
+                revision: command.targetRevision,
+              };
+            }
+            const commandResult = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');
+            this.currentConfig = this.store.getConfigSnapshot();
+            return commandResult;
+          });
           await this.api.reportCommandResult(result);
         }, this.eventsController.signal);
       } catch (error) {
@@ -179,6 +196,18 @@ export class AgentRunner {
 
   private logError(error: unknown): void {
     console.error(`[node-agent] ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  private async withStateMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.stateMutationTail;
+    let release!: () => void;
+    this.stateMutationTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }
 

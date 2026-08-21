@@ -490,6 +490,13 @@ export class RuntimeSessionService {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId);
   }
 
+  async queueDirectSubscriptionAccessSync(subscriptionId: string) {
+    return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+      ensureOnly: true,
+      directOnly: true
+    });
+  }
+
   async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
       writer,
@@ -502,10 +509,12 @@ export class RuntimeSessionService {
     options?: {
       writer?: any;
       ensureOnly?: boolean;
+      directOnly?: boolean;
     }
   ) {
     const writer = options?.writer ?? this.prisma;
     const ensureOnly = options?.ensureOnly ?? false;
+    const directOnly = options?.directOnly ?? false;
     const subscription = await writer.subscription.findUnique({
       where: { id: subscriptionId },
       include: {
@@ -622,6 +631,9 @@ export class RuntimeSessionService {
 
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
+        if (directOnly && access.node.controlMode !== "direct_primary") {
+          continue;
+        }
         if (!access.node.isActive || !canServeManagedClients(access.node.controlMode, access.node.panelEnabled)) {
           continue;
         }

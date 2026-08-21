@@ -146,3 +146,12 @@ test('拒绝加载其他节点的配置快照', () => withStore((store) => {
     nodeId: 'other-node', revision: '1', controlMode: 'shadow_direct', users: [],
   }), /nodeId/);
 }));
+
+test('拒绝用旧 revision 配置快照覆盖较新的本地状态', () => withStore((store) => {
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '10', controlMode: 'direct_primary', users: [user({ revision: '10' })] });
+  const applied = store.applyConfigSnapshot({ nodeId: 'node-1', revision: '9', controlMode: 'shadow_direct', users: [] });
+  assert.equal(applied, false);
+  assert.equal(store.getConfigRevision(), '10');
+  assert.equal(store.getConfigSnapshot().controlMode, 'direct_primary');
+  assert.equal(store.listDesiredUsers().length, 1);
+}));

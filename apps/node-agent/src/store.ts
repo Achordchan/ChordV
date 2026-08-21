@@ -136,13 +136,16 @@ export class AgentStore {
     };
   }
 
-  applyConfigSnapshot(snapshot: AgentConfigSnapshot): void {
+  applyConfigSnapshot(snapshot: AgentConfigSnapshot): boolean {
     if (snapshot.nodeId !== this.options.nodeId) throw new Error('Agent 配置 nodeId 与本机凭据不一致');
+    const revision = decimal(snapshot.revision);
+    if (BigInt(revision) < BigInt(this.getConfigRevision())) return false;
     this.db.transaction(() => {
-      this.replaceDesiredUsers(snapshot.users, snapshot.revision);
+      this.replaceDesiredUsers(snapshot.users, revision);
       this.setMeta('control_mode', snapshot.controlMode);
-      this.setMeta('config_revision', decimal(snapshot.revision));
+      this.setMeta('config_revision', revision);
     })();
+    return true;
   }
 
   replaceDesiredUsers(users: DesiredUser[], revision: string): void {

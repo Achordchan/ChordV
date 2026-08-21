@@ -1105,6 +1105,7 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
     runtimeSessionService: {
       queueActiveLeaseSyncForSubscription: async () => 0,
       queueSubscriptionPanelAccessSync: async () => 0,
+      queueDirectSubscriptionAccessSync: async () => 0,
       queueLeaseRevocationJobsForSubscription: async () => 0,
       queueLeaseRevocationJobsForSubscriptionTx: async () => 0,
       ...runtimeSessionOverride
@@ -9347,6 +9348,7 @@ async function testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAft
 async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall() {
   const panelJobUpserts: Array<Record<string, any>> = [];
   const subscriptionUpdates: Array<Record<string, any>> = [];
+  let directSyncCalls = 0;
   const lockedSubscription = {
     id: "sub_1",
     userId: "user_1",
@@ -9383,6 +9385,13 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z"
     }),
+    runtimeSessionService: {
+      queueDirectSubscriptionAccessSync: async (subscriptionId: string) => {
+        directSyncCalls += 1;
+        assert.equal(subscriptionId, "sub_1");
+        return 1;
+      }
+    },
     prisma: {
       panelSyncJob: {
         upsert: async (payload: Record<string, any>) => {
@@ -9419,6 +9428,7 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
                 lastUplinkBytes: 8n,
                 lastDownlinkBytes: 0n,
                 lastSyncedAt: new Date(),
+                source: "xui",
                 node: {
                   id: "node_1",
                   panelBaseUrl: "https://offline-panel.example.com",
@@ -9426,6 +9436,24 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
                   panelUsername: "admin",
       panelPassword: "password"
     }
+              },
+              {
+                id: "binding_direct",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_direct",
+                panelClientEmail: "user-direct@example.com",
+                panelClientId: "client_direct",
+                panelInboundId: 0,
+                lastUplinkBytes: 80n,
+                lastDownlinkBytes: 20n,
+                lastSyncedAt: new Date(),
+                source: "direct",
+                node: {
+                  id: "node_direct",
+                  controlMode: "direct_primary"
+                }
               }
             ],
             update: async () => ({})
@@ -9451,6 +9479,7 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
   assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
   assert.equal(panelJobUpserts.length, 1, "traffic reset must create a reset_client_traffic retry job");
   assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
+  assert.equal(directSyncCalls, 1, "standalone traffic reset must refresh Direct bindings and Agent quota");
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued/);

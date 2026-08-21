@@ -417,6 +417,10 @@ export class AdminSubscriptionService {
       requestedUserId: typeof input.userId === "string" ? input.userId : undefined,
       allowTeamWideReset: false
     });
+    reset.panelSync = mergePanelSyncResults(
+      reset.panelSync,
+      await this.syncDirectSubscriptionAccessBestEffort(reset.subscription.id)
+    );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: reset.subscription.id,
       userId: reset.subscription.userId,
@@ -2778,6 +2782,29 @@ export class AdminSubscriptionService {
         errorMessage: readErrorMessage(error, "3x-ui panel sync failed")
       };
     }
+      }
+    );
+  }
+
+  private async syncDirectSubscriptionAccessBestEffort(subscriptionId: string) {
+    return this.withSubscriptionFollowUpBudget(
+      `Direct subscription access sync for ${subscriptionId}`,
+      {
+        ok: false as const,
+        errorMessage: "Direct Agent 配额刷新仍在后台执行"
+      },
+      async () => {
+        try {
+          const queuedCount = await this.runtimeSessionService.queueDirectSubscriptionAccessSync(subscriptionId);
+          return queuedCount > 0
+            ? { ok: false as const, errorMessage: "Direct Agent 用户恢复命令已进入队列" }
+            : { ok: true as const };
+        } catch (error) {
+          return {
+            ok: false as const,
+            errorMessage: readErrorMessage(error, "Direct Agent 配额刷新失败")
+          };
+        }
       }
     );
   }

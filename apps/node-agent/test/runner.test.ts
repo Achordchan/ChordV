@@ -130,6 +130,58 @@ test('Shadow 心跳发现更高 revision 后刷新完整用户快照且不写 Xr
   }
 });
 
+test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快照', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-direct-reconcile-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const kept = user();
+  const removed = { ...user(), bindingId: 'binding-2', email: 'removed@example.com', uuid: '22222222-2222-4222-8222-222222222222' };
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [kept, removed] });
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '2', controlMode: 'direct_primary', users: [{ ...kept, revision: '2' }] };
+  let users = [
+    { email: kept.email, uuid: kept.uuid },
+    { email: removed.email, uuid: removed.uuid },
+  ];
+  let consumeCalls = 0;
+  const api = {
+    getConfig: async () => snapshot,
+    uploadBatch: async () => ({ ackThrough: '0' }),
+    heartbeat: async () => ({ ackThrough: '0' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      consumeCalls += 1;
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => users,
+    ensureUser: async (input) => {
+      if (!users.some((item) => item.email === input.email)) users.push({ email: input.email, uuid: input.uuid });
+    },
+    removeUser: async (email) => { users = users.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => consumeCalls === 1);
+    assert.deepEqual(users.map((item) => item.email), [kept.email]);
+    assert.deepEqual(store.listDesiredUsers().map((item) => item.email), [kept.email]);
+    assert.equal(store.getConfigRevision(), '2');
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function user(): DesiredUser {
   return {
     bindingId: 'binding-1',
