@@ -48,7 +48,7 @@ import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
 import { readMemberUsedTrafficGb } from "./member-traffic-usage";
-import { RuntimeSessionService } from "./runtime-session.service";
+import { RuntimeSessionService, assertDirectTerminalWatermarksSettled } from "./runtime-session.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import { createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
@@ -1854,6 +1854,11 @@ export class AdminSubscriptionService {
             }
           });
           clearedBindingCount = bindings.length;
+          for (const binding of bindings) {
+            if (binding.source === "direct" && binding.status === "disabled") {
+              await assertDirectTerminalWatermarksSettled(tx, binding);
+            }
+          }
           panelResetBindings = bindings.filter((binding: any) => binding.source !== "direct");
           const baselineSamples = bindings.map((binding: any) => ({
             binding,

@@ -9349,6 +9349,7 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
   const panelJobUpserts: Array<Record<string, any>> = [];
   const subscriptionUpdates: Array<Record<string, any>> = [];
   let directSyncCalls = 0;
+  let terminalBatchReads = 0;
   const lockedSubscription = {
     id: "sub_1",
     userId: "user_1",
@@ -9450,6 +9451,8 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
                 lastDownlinkBytes: 20n,
                 lastSyncedAt: new Date(),
                 source: "direct",
+                status: "disabled",
+                directDisableWatermarks: [{ bootId: "boot-direct", sequenceThrough: "4" }],
                 node: {
                   id: "node_direct",
                   controlMode: "direct_primary"
@@ -9461,6 +9464,14 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
           trafficLedger: {
             deleteMany: async () => ({}),
             aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
+          },
+          nodeUsageBatch: {
+            findUnique: async ({ where }: Record<string, any>) => {
+              terminalBatchReads += 1;
+              assert.equal(where.nodeId_bootId_sequence.bootId, "boot-direct");
+              assert.equal(where.nodeId_bootId_sequence.sequence, 4n);
+              return { accountedAt: new Date() };
+            }
           },
           panelSyncJob: {
             upsert: async (payload: Record<string, any>) => {
@@ -9480,6 +9491,7 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
   assert.equal(panelJobUpserts.length, 1, "traffic reset must create a reset_client_traffic retry job");
   assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
   assert.equal(directSyncCalls, 1, "standalone traffic reset must refresh Direct bindings and Agent quota");
+  assert.equal(terminalBatchReads, 1, "traffic reset must settle disabled Direct watermark batches before clearing usage");
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued/);
