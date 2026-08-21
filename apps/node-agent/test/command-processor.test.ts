@@ -38,8 +38,8 @@ function desired(email = 'user@example.com'): DesiredUser {
     quotaRemainingBytes: '1000000', offlineAllowanceBytes: '67108864' };
 }
 
-function command(type: AgentCommand['type'], payload: Record<string, unknown>, id = 'command-1'): AgentCommand {
-  return { commandId: id, type, targetRevision: '900719925474099312345', payload, createdAt: '2026-07-26T00:00:00Z' };
+function command(type: AgentCommand['type'], payload: Record<string, unknown>, id = 'command-1', targetRevision = '900719925474099312345'): AgentCommand {
+  return { commandId: id, type, targetRevision, payload, createdAt: '2026-07-26T00:00:00Z' };
 }
 
 function setup(): { directory: string; store: AgentStore; xray: FakeXray; processor: CommandProcessor } {
@@ -101,6 +101,31 @@ test('失败命令使用相同 commandId 重投后会重新执行，完成命令
     store.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('过期用户命令不得对 Xray 产生副作用', async () => {
+  const fixture = setup();
+  const disabled = { ...desired(), revision: '10', enabled: false };
+  fixture.store.replaceDesiredUsers([disabled], '10');
+  try {
+    const staleEnable = await fixture.processor.execute(command('ENSURE_USER', {
+      bindingId: disabled.bindingId,
+      email: disabled.email,
+      uuid: disabled.uuid,
+      flow: disabled.flow,
+    }, 'stale-enable', '9'), true);
+    assert.equal(staleEnable.status, 'completed');
+    assert.equal(fixture.xray.users.has(disabled.email), false, '过期 ENSURE_USER 不得重新添加已停用用户');
+    assert.equal(fixture.store.listDesiredUsers()[0]?.enabled, false);
+
+    const enabled = { ...disabled, revision: '20', enabled: true };
+    fixture.store.replaceDesiredUsers([enabled], '20');
+    fixture.xray.users.set(enabled.email, enabled.uuid);
+    await fixture.processor.execute(command('DISABLE_USER', { bindingId: enabled.bindingId }, 'stale-disable', '19'), true);
+    await fixture.processor.execute(command('REMOVE_USER', { bindingId: enabled.bindingId }, 'stale-remove', '18'), true);
+    assert.equal(fixture.xray.users.has(enabled.email), true, '过期停用或删除命令不得移除较新 revision 的用户');
+    assert.equal(fixture.store.listDesiredUsers()[0]?.enabled, true);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
 
 test('RECONCILE_USERS 清除未知用户', async () => {

@@ -166,7 +166,7 @@ export class AgentControlModeService {
     }
 
     const revision = node.agentConfigRevision + 1n;
-    let directCutoverSubscriptions: Map<string, DirectCutoverSubscription> | null = null;
+    let boundarySubscriptions: Map<string, DirectCutoverSubscription> | null = null;
     if (previousMode === "shadow_direct" && input.targetMode === "direct_primary") {
       if (node.controlStatus !== "direct_cutover_pending") throw new ConflictException("节点尚未完成 Direct 切换准备");
       if (!directSwitchContext) throw new ConflictException("Shadow 切换上下文缺失，请重试");
@@ -210,13 +210,29 @@ export class AgentControlModeService {
         });
         await tx.panelClientBinding.update({ where: { id: binding.id }, data: { source: "direct", directRevision: revision, lastUplinkBytes: sample.uplinkBytes, lastDownlinkBytes: sample.downlinkBytes, lastSyncedAt: sample.sampledAt } });
       }
-      directCutoverSubscriptions = await applyDirectCutoverUsage(tx, nodeId, cutoverUsage);
+      boundarySubscriptions = await applyDirectCutoverUsage(tx, nodeId, cutoverUsage);
     } else if (previousMode === "rollback_pending" && input.targetMode === "xui_primary") {
       if (!xuiRollbackBaselines) throw new ConflictException("缺少3X-UI回退基线，禁止完成回退");
+      const rollbackUsage: DirectCutoverUsageEntry[] = [];
       for (const binding of node.panelClientBindings) {
         const baseline = xuiRollbackBaselines.get(binding.id);
         if (!baseline) throw new ConflictException(`缺少3X-UI回退基线：${binding.id}`);
         const snapshotKey = buildSnapshotKey(nodeId, binding.subscriptionId, binding.userId);
+        const directSnapshot = await tx.trafficSnapshot.findUnique({ where: { snapshotKey } });
+        if (!directSnapshot || directSnapshot.source !== "direct") throw new ConflictException(`最终 Direct 快照缺失：${binding.id}`);
+        const rollbackDeltaBytes = baseline.uplinkBytes < directSnapshot.uplinkBytes || baseline.downlinkBytes < directSnapshot.downlinkBytes
+          ? baseline.uplinkBytes + baseline.downlinkBytes
+          : baseline.uplinkBytes - directSnapshot.uplinkBytes + (baseline.downlinkBytes - directSnapshot.downlinkBytes);
+        if (rollbackDeltaBytes > 0n) {
+          rollbackUsage.push({
+            subscriptionId: binding.subscriptionId,
+            userId: binding.userId,
+            teamId: binding.teamId,
+            deltaBytes: rollbackDeltaBytes,
+            sampledAt: baseline.sampledAt,
+            subscription: binding.subscription
+          });
+        }
         await tx.panelClientBinding.update({
           where: { id: binding.id },
           data: {
@@ -253,13 +269,14 @@ export class AgentControlModeService {
           }
         });
       }
+      boundarySubscriptions = await applyDirectCutoverUsage(tx, nodeId, rollbackUsage);
     }
 
     await tx.node.update({
       where: { id: nodeId },
       data: { controlMode: input.targetMode, agentConfigRevision: revision, controlStatus: input.targetMode === "rollback_pending" ? "rollback_pending" : "online" }
     });
-    const command = agent ? await this.createModeCommand(tx, node, agent.id, input.targetMode, revision, directCutoverSubscriptions) : null;
+    const command = agent ? await this.createModeCommand(tx, node, agent.id, input.targetMode, revision, boundarySubscriptions) : null;
     return {
       result: toResult(nodeId, previousMode, input.targetMode, revision, true),
       command,

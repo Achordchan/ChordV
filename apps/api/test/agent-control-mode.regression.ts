@@ -128,6 +128,7 @@ async function main() {
   assert.equal(rollbackFixture.bindingUpdates[0].lastDownlinkBytes, 1200n);
   assert.equal(rollbackFixture.snapshotCreates[0].source, "xui");
   assert.equal(rollbackFixture.snapshotCreates[0].totalBytes, 2100n);
+  assert.equal(rollbackFixture.subscriptionUpdates[0].usedTrafficBytes, 2100n, "回退窗口的正向流量差值必须在替换 XUI 基线前入账");
 
   const missingRollbackFixture = createFixture(rollbackNode, {}, [], []);
   await assert.rejects(
@@ -296,7 +297,7 @@ function createFixture(
     },
     trafficSnapshot: {
       findUnique: async () => ({
-        source: "xui",
+        source: nodeValue.controlMode === "rollback_pending" ? "direct" : "xui",
         sampledAt: settledAt,
         uplinkBytes: options.xuiSnapshot?.uplinkBytes ?? 0n,
         downlinkBytes: options.xuiSnapshot?.downlinkBytes ?? 0n

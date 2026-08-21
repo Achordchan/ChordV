@@ -35,6 +35,8 @@ export class CommandProcessor {
     switch (command.type) {
       case 'ENSURE_USER':
       case 'ENABLE_USER': {
+        const stored = this.findStored(command.payload);
+        if (stored && isOlderRevision(command.targetRevision, stored.revision)) return;
         const user = this.resolveUser(command);
         const enabled = { ...user, enabled: true, revision: command.targetRevision };
         this.store.upsertDesiredUser(enabled);
@@ -43,12 +45,14 @@ export class CommandProcessor {
       }
       case 'DISABLE_USER': {
         const user = this.resolveStoredUser(command.payload);
+        if (isOlderRevision(command.targetRevision, user.revision)) return;
         await this.xray.removeUser(user.email);
         this.store.setUserEnabled(user.bindingId, false, command.targetRevision);
         return;
       }
       case 'REMOVE_USER': {
         const user = this.resolveStoredUser(command.payload);
+        if (isOlderRevision(command.targetRevision, user.revision)) return;
         await this.xray.removeUser(user.email);
         this.store.deleteUser(user.bindingId);
         return;
@@ -118,6 +122,10 @@ export class CommandProcessor {
     }
     for (const user of actual) if (!desiredByEmail.has(user.email)) await this.xray.removeUser(user.email);
   }
+}
+
+function isOlderRevision(candidate: string, current: string): boolean {
+  return BigInt(candidate) < BigInt(current);
 }
 
 function parseDesiredUser(value: unknown, revision: string): DesiredUser {
