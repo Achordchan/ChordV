@@ -82,12 +82,14 @@ export class AgentRunner {
   }
 
   private async recoverBackendConfirmedUsers(snapshot: AgentConfigSnapshot): Promise<void> {
-    if (this.store.pendingBatchCount() !== 0 || !this.store.hasOfflineDisabledUsers()) return;
-    this.store.restoreBackendConfirmedUsers(snapshot.users);
-    this.currentConfig = this.store.getConfigSnapshot();
-    if (this.currentConfig.controlMode === 'direct_primary') {
-      await this.commands.reconcile(this.store.listDesiredUsers());
-    }
+    await this.withStateMutation(async () => {
+      if (this.store.pendingBatchCount() !== 0 || !this.store.hasOfflineDisabledUsers()) return;
+      this.store.restoreBackendConfirmedUsers(snapshot.users);
+      this.currentConfig = this.store.getConfigSnapshot();
+      if (this.currentConfig.controlMode === 'direct_primary') {
+        await this.commands.reconcile(this.store.listDesiredUsers());
+      }
+    });
   }
 
   private async checkXrayAndRecover(): Promise<void> {
@@ -100,17 +102,19 @@ export class AgentRunner {
   }
 
   private async sample(): Promise<void> {
-    try {
-      await this.checkXrayAndRecover();
-      const counters = await this.xray.readAbsoluteCounters();
-      const result = this.store.recordSample(counters, new Date(), this.backendOnline);
-      if (this.currentConfig.controlMode === 'direct_primary') {
-        for (const email of result.disableEmails) await this.xray.removeUser(email);
+    await this.withStateMutation(async () => {
+      try {
+        await this.checkXrayAndRecover();
+        const counters = await this.xray.readAbsoluteCounters();
+        const result = this.store.recordSample(counters, new Date(), this.backendOnline);
+        if (this.currentConfig.controlMode === 'direct_primary') {
+          for (const email of result.disableEmails) await this.xray.removeUser(email);
+        }
+      } catch (error) {
+        this.xrayHealthy = false;
+        throw error;
       }
-    } catch (error) {
-      this.xrayHealthy = false;
-      throw error;
-    }
+    });
   }
 
   private async flushBatches(): Promise<void> {

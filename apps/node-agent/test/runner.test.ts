@@ -182,6 +182,51 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   }
 });
 
+test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-sample-refresh-race-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = { ...user(), quotaRemainingBytes: '50' };
+  const snapshot: AgentConfigSnapshot = { nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] };
+  store.applyConfigSnapshot(snapshot);
+  store.recordSample([{ email: desired.email, uplinkBytes: '0', downlinkBytes: '0' }], new Date(), true);
+  let releaseListUsers!: () => void;
+  const listUsersBlocked = new Promise<void>((resolve) => { releaseListUsers = resolve; });
+  let listUsersStarted = false;
+  let users: Array<{ email: string; uuid?: string }> = [];
+  const api = { getConfig: async () => snapshot } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
+    listUsers: async () => {
+      listUsersStarted = true;
+      await listUsersBlocked;
+      return users;
+    },
+    ensureUser: async (input) => { users = [{ email: input.email, uuid: input.uuid }]; },
+    removeUser: async (email) => { users = users.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    const refresh = (runner as any).refreshConfig();
+    await waitFor(() => listUsersStarted);
+    const sample = (runner as any).sample();
+    releaseListUsers();
+    await Promise.all([refresh, sample]);
+    assert.equal(store.listDesiredUsers()[0]?.enabled, false);
+    assert.equal(users.length, 0, '采样耗尽完成后 Xray 不得被并发配置刷新重新启用');
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function user(): DesiredUser {
   return {
     bindingId: 'binding-1',

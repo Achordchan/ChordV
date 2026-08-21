@@ -36,10 +36,13 @@ export class CommandProcessor {
       case 'ENSURE_USER':
       case 'ENABLE_USER': {
         const stored = this.findStored(command.payload);
-        if (stored && (
+        if (
+          isOlderRevision(command.targetRevision, this.store.getConfigRevision())
+          || (stored && (
           isOlderRevision(command.targetRevision, stored.revision)
           || (command.targetRevision === stored.revision && !stored.enabled)
-        )) return;
+          ))
+        ) return;
         const user = this.resolveUser(command);
         const enabled = { ...user, enabled: true, revision: command.targetRevision };
         this.store.upsertDesiredUser(enabled);

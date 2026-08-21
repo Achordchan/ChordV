@@ -135,6 +135,24 @@ test('过期用户命令不得对 Xray 产生副作用', async () => {
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
 
+test('用户已被新配置删除后旧启用命令仍不得重新创建', async () => {
+  const fixture = setup();
+  fixture.store.applyConfigSnapshot({ nodeId: 'node', revision: '10', controlMode: 'direct_primary', users: [] });
+  try {
+    const staleEnable = await fixture.processor.execute(command('ENABLE_USER', {
+      bindingId: desired().bindingId,
+      email: desired().email,
+      uuid: desired().uuid,
+      flow: desired().flow,
+      quotaRemainingBytes: desired().quotaRemainingBytes,
+      offlineAllowanceBytes: desired().offlineAllowanceBytes,
+    }, 'removed-stale-enable', '9'), true);
+    assert.equal(staleEnable.status, 'completed');
+    assert.equal(fixture.store.listDesiredUsers().length, 0);
+    assert.equal(fixture.xray.users.size, 0);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
 test('RECONCILE_USERS 清除未知用户', async () => {
   const fixture = setup(); fixture.xray.users.set('unknown@example.com', 'unknown');
   try {
