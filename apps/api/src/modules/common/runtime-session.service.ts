@@ -1651,12 +1651,13 @@ export class RuntimeSessionService {
           where: { id: job.bindingId },
           data:
             job.action === "disable_client"
-              ? { status: "disabled" }
+              ? { status: "disabled", directDisabledAt: new Date() }
               : job.action === "delete_client"
                 ? { status: "deleted" }
                 : job.action === "ensure_client"
                   ? {
                       status: "active",
+                      directDisabledAt: null,
                       panelClientId: ensuredPanelClientId ?? job.panelClientId,
                       panelInboundId: ensuredPanelInboundId ?? job.panelInboundId ?? 0,
                       lastSyncedAt: new Date()
@@ -2590,6 +2591,7 @@ export class RuntimeSessionService {
           panelClientId,
           panelInboundId: existing.status === "deleted" ? resolvedPanelInboundId : panelInboundId ?? existing.panelInboundId,
           status: "active",
+          directDisabledAt: null,
           teamId: input.teamId,
           source: usesAgentControl(input.node.controlMode) ? "direct" : "xui"
         }
@@ -3549,6 +3551,7 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
   if (bindingIds.length === 0) {
     return;
   }
+  const disabledAt = new Date();
   if (typeof writer.panelClientBinding.updateMany === "function") {
     await writer.panelClientBinding.updateMany({
       where: {
@@ -3556,7 +3559,8 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
         status: "active"
       },
       data: {
-        status: "disabled"
+        status: "disabled",
+        directDisabledAt: disabledAt
       }
     });
     return;
@@ -3566,7 +3570,7 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
       bindingIds.map((id) =>
         writer.panelClientBinding.update({
           where: { id },
-          data: { status: "disabled" }
+          data: { status: "disabled", directDisabledAt: disabledAt }
         })
       )
     );

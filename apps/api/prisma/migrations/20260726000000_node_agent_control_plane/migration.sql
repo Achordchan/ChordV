@@ -23,7 +23,8 @@ ALTER TABLE "Node"
 -- AlterTable
 ALTER TABLE "PanelClientBinding"
   ADD COLUMN "source" "PanelClientSource" NOT NULL DEFAULT 'xui',
-  ADD COLUMN "directRevision" BIGINT NOT NULL DEFAULT 0;
+  ADD COLUMN "directRevision" BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN "directDisabledAt" TIMESTAMP(3);
 
 -- AlterTable
 ALTER TABLE "TrafficSnapshot"

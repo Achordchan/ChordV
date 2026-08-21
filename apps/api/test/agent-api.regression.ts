@@ -142,13 +142,13 @@ async function main() {
 
   const capturedBeforeDisable = createDirectFixture();
   capturedBeforeDisable.binding.status = "disabled";
-  capturedBeforeDisable.binding.updatedAt = new Date("2026-07-26T00:00:02.000Z");
+  capturedBeforeDisable.binding.directDisabledAt = new Date("2026-07-26T00:00:02.000Z");
   const capturedService = new AgentService(capturedBeforeDisable.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
   assert.equal((await capturedService.ingestUsageBatch(capturedBeforeDisable.agent as never, usageBatch("1", "100"))).ackThrough, "1", "停用前已采集的批次必须可以继续入账并确认");
 
   const capturedAfterDisable = createDirectFixture();
   capturedAfterDisable.binding.status = "disabled";
-  capturedAfterDisable.binding.updatedAt = new Date("2026-07-26T00:00:00.000Z");
+  capturedAfterDisable.binding.directDisabledAt = new Date("2026-07-26T00:00:00.000Z");
   const rejectedService = new AgentService(capturedAfterDisable.prisma as never, { publish() {} } as never, { publishSubscriptionUpdated: async () => undefined } as never);
   await assert.rejects(
     () => rejectedService.ingestUsageBatch(capturedAfterDisable.agent as never, usageBatch("1", "100")),
@@ -283,6 +283,7 @@ function createDirectFixture() {
     lastUplinkBytes: 0n,
     lastDownlinkBytes: 0n,
     updatedAt: new Date("2026-07-26T00:00:00.000Z"),
+    directDisabledAt: null as Date | null,
     subscription
   };
   const tx = {

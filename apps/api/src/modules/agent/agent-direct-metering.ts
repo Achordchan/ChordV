@@ -41,7 +41,9 @@ export async function applyDirectBatch(
   const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
   const prepared = samples.map((sample) => {
     const binding = bindingById.get(sample.bindingId);
-    const capturedBeforeDisable = binding?.status === "disabled" && sampledAt <= binding.updatedAt;
+    const capturedBeforeDisable = binding?.status === "disabled"
+      && binding.directDisabledAt !== null
+      && sampledAt <= binding.directDisabledAt;
     if (!binding || binding.nodeId !== nodeId || binding.source !== "direct" || (binding.status !== "active" && !capturedBeforeDisable)) {
       throw new ConflictException(`Direct 用户绑定无效：${sample.bindingId}`);
     }
@@ -256,6 +258,7 @@ export async function disableDirectBindingsForSubscriptions(
     }
   }
   const commandAgentIds = new Set<string>();
+  const disabledAt = new Date();
   for (const [bindingNodeId, nodeBindings] of bindingsByNode) {
     const targetAgentId = agentByNode.get(bindingNodeId) ?? null;
     const nodeRevision = await tx.node.update({
@@ -268,7 +271,7 @@ export async function disableDirectBindingsForSubscriptions(
     });
     await tx.panelClientBinding.updateMany({
       where: { id: { in: nodeBindings.map((binding) => binding.id) } },
-      data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision }
+      data: { status: "disabled", directRevision: nodeRevision.agentConfigRevision, directDisabledAt: disabledAt }
     });
     if (!targetAgentId) continue;
     for (const binding of nodeBindings) {
