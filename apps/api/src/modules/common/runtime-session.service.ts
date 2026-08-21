@@ -498,6 +498,30 @@ export class RuntimeSessionService {
     });
   }
 
+  async quiesceDirectBindingsForTrafficReset(subscriptionId: string, userId?: string | null) {
+    return this.prisma.$transaction(async (writer) => {
+      const bindings = await writer.panelClientBinding.findMany({
+        where: {
+          subscriptionId,
+          source: "direct",
+          status: "active",
+          ...(userId ? { userId } : {})
+        }
+      });
+      for (const binding of bindings) {
+        await this.queueDirectBindingCommand(writer, binding, "DISABLE_USER", {
+          bindingId: binding.id,
+          userKey: binding.panelClientEmail,
+          email: binding.panelClientEmail,
+          uuid: binding.panelClientId,
+          reason: "traffic_reset_boundary"
+        });
+      }
+      await markPanelBindingsDisabledLocally(writer, bindings.map((binding) => binding.id));
+      return bindings.map((binding) => binding.id);
+    });
+  }
+
   async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
       writer,

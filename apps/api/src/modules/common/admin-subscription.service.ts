@@ -71,6 +71,8 @@ import {
 const SUBSCRIPTION_FOLLOW_UP_BUDGET_MS = 300;
 const SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS = 50;
 const PANEL_SYNC_RECENT_ERROR_LIMIT = 1_000;
+const DIRECT_RESET_BOUNDARY_TIMEOUT_MS = 30_000;
+const DIRECT_RESET_BOUNDARY_POLL_MS = 250;
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
@@ -1832,6 +1834,8 @@ export class AdminSubscriptionService {
       targetUserId = subscription.userId;
     }
 
+    await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
+
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
@@ -2812,6 +2816,32 @@ export class AdminSubscriptionService {
         }
       }
     );
+  }
+
+  private async quiesceAndSettleDirectTrafficReset(subscriptionId: string, userId: string | null) {
+    const bindingIds = await this.runtimeSessionService.quiesceDirectBindingsForTrafficReset(subscriptionId, userId);
+    if (bindingIds.length === 0) return;
+    const deadline = Date.now() + DIRECT_RESET_BOUNDARY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const bindings = await this.prisma.panelClientBinding.findMany({
+        where: { id: { in: bindingIds }, source: "direct" }
+      });
+      if (bindings.length !== bindingIds.length) {
+        throw new ConflictException("Direct 流量重置边界绑定发生变化，请重试");
+      }
+      let settled = true;
+      for (const binding of bindings) {
+        try {
+          await assertDirectTerminalWatermarksSettled(this.prisma, binding);
+        } catch {
+          settled = false;
+          break;
+        }
+      }
+      if (settled) return;
+      await new Promise((resolve) => setTimeout(resolve, DIRECT_RESET_BOUNDARY_POLL_MS));
+    }
+    throw new ServiceUnavailableException("等待 Direct 流量重置边界结清超时，请稍后重试");
   }
 
   private async findCurrentPersonalSubscription(userId: string) {
