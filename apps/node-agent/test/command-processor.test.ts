@@ -153,6 +153,23 @@ test('用户已被新配置删除后旧启用命令仍不得重新创建', async
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
 
+test('本地用户已被缩减配置删除后移除命令仍可幂等执行', async () => {
+  const fixture = setup();
+  fixture.store.applyConfigSnapshot({ nodeId: 'node', revision: '10', controlMode: 'direct_primary', users: [] });
+  fixture.xray.users.set(desired().email, desired().uuid);
+  try {
+    const result = await fixture.processor.execute(command('REMOVE_USER', {
+      bindingId: desired().bindingId,
+      userKey: desired().email,
+      email: desired().email,
+      uuid: desired().uuid,
+    }, 'remove-after-config', '10'), true);
+    assert.equal(result.status, 'completed');
+    assert.equal(fixture.xray.users.size, 0);
+    assert.equal(fixture.store.listDesiredUsers().length, 0);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
 test('RECONCILE_USERS 清除未知用户', async () => {
   const fixture = setup(); fixture.xray.users.set('unknown@example.com', 'unknown');
   try {

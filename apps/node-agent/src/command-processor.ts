@@ -50,17 +50,19 @@ export class CommandProcessor {
         return;
       }
       case 'DISABLE_USER': {
-        const user = this.resolveStoredUser(command.payload);
-        if (isOlderRevision(command.targetRevision, user.revision)) return;
-        await this.xray.removeUser(user.email);
-        this.store.setUserEnabled(user.bindingId, false, command.targetRevision);
+        const stored = this.findStored(command.payload);
+        if (stored && isOlderRevision(command.targetRevision, stored.revision)) return;
+        const target = stored ?? this.resolveTerminalTarget(command.payload);
+        await this.xray.removeUser(target.email);
+        if (stored) this.store.setUserEnabled(stored.bindingId, false, command.targetRevision);
         return;
       }
       case 'REMOVE_USER': {
-        const user = this.resolveStoredUser(command.payload);
-        if (isOlderRevision(command.targetRevision, user.revision)) return;
-        await this.xray.removeUser(user.email);
-        this.store.deleteUser(user.bindingId);
+        const stored = this.findStored(command.payload);
+        if (stored && isOlderRevision(command.targetRevision, stored.revision)) return;
+        const target = stored ?? this.resolveTerminalTarget(command.payload);
+        await this.xray.removeUser(target.email);
+        if (stored) this.store.deleteUser(stored.bindingId);
         return;
       }
       case 'RECONCILE_USERS': {
@@ -105,10 +107,11 @@ export class CommandProcessor {
     return parseDesiredUser(command.payload, command.targetRevision);
   }
 
-  private resolveStoredUser(payload: Record<string, unknown>): DesiredUser {
-    const user = this.findStored(payload);
-    if (!user) throw new Error('命令引用的 bindingId/email 不存在于本地配置');
-    return user;
+  private resolveTerminalTarget(payload: Record<string, unknown>): { bindingId: string; email: string } {
+    return {
+      bindingId: stringField(payload, 'bindingId'),
+      email: optionalString(payload.email) || stringField(payload, 'userKey'),
+    };
   }
 
   private findStored(payload: Record<string, unknown>): DesiredUser | undefined {
