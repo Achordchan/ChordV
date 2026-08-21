@@ -195,8 +195,15 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   let releaseListUsers!: () => void;
   const listUsersBlocked = new Promise<void>((resolve) => { releaseListUsers = resolve; });
   let listUsersStarted = false;
+  let responseRevision = '1';
   let users: Array<{ email: string; uuid?: string }> = [];
-  const api = { getConfig: async () => snapshot } as unknown as AgentApiClient;
+  const api = {
+    getConfig: async () => ({
+      ...snapshot,
+      revision: responseRevision,
+      users: snapshot.users.map((item) => ({ ...item, revision: responseRevision }))
+    })
+  } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
     readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
@@ -220,8 +227,10 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
     const sample = (runner as any).sample();
     releaseListUsers();
     await Promise.all([refresh, sample]);
+    responseRevision = '2';
     await (runner as any).refreshConfig();
     assert.equal(store.listDesiredUsers()[0]?.enabled, false);
+    assert.equal(store.getConfigRevision(), '2');
     assert.equal(users.length, 0, '未确认的在线配额耗尽批次存在时，后续配置刷新不得重新启用 Xray 用户');
   } finally {
     store.close();

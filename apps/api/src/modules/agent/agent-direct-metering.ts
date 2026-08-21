@@ -41,7 +41,8 @@ export async function applyDirectBatch(
   const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
   const prepared = samples.map((sample) => {
     const binding = bindingById.get(sample.bindingId);
-    if (!binding || binding.nodeId !== nodeId || binding.source !== "direct" || binding.status !== "active") {
+    const capturedBeforeDisable = binding?.status === "disabled" && sampledAt <= binding.updatedAt;
+    if (!binding || binding.nodeId !== nodeId || binding.source !== "direct" || (binding.status !== "active" && !capturedBeforeDisable)) {
       throw new ConflictException(`Direct 用户绑定无效：${sample.bindingId}`);
     }
     return {

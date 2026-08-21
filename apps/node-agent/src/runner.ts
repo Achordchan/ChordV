@@ -72,6 +72,11 @@ export class AgentRunner {
           ? snapshot.users.map((user) => localUsers.get(user.bindingId)?.enabled === false ? { ...user, enabled: false } : user)
           : snapshot.users;
         await this.commands.reconcile(reconcileUsers);
+        if (preserveLocalDisables) {
+          this.store.applyConfigSnapshot({ ...snapshot, users: reconcileUsers });
+          this.currentConfig = this.store.getConfigSnapshot();
+          return snapshot;
+        }
       }
       this.store.applyConfigSnapshot(snapshot);
       this.currentConfig = this.store.getConfigSnapshot();
