@@ -157,7 +157,10 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
-    readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
+    readAbsoluteCounters: async () => [
+      { email: kept.email, uplinkBytes: '100', downlinkBytes: '0' },
+      { email: removed.email, uplinkBytes: '75', downlinkBytes: '0' },
+    ],
     listUsers: async () => users,
     ensureUser: async (input) => {
       if (!users.some((item) => item.email === input.email)) users.push({ email: input.email, uuid: input.uuid });
@@ -176,6 +179,7 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
     assert.deepEqual(users.map((item) => item.email), [kept.email]);
     assert.deepEqual(store.listDesiredUsers().map((item) => item.email), [kept.email]);
     assert.equal(store.getConfigRevision(), '2');
+    assert.deepEqual(store.pendingBatchWatermarks(), [{ bootId: 'boot-1', sequenceThrough: '1' }]);
   } finally {
     await runner.stop();
     store.close();

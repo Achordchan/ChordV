@@ -66,6 +66,10 @@ export class AgentRunner {
       const current = this.store.getConfigSnapshot();
       if (BigInt(snapshot.revision) < BigInt(current.revision)) return current;
       if (snapshot.controlMode === 'direct_primary') {
+        const snapshotUsers = new Map(snapshot.users.map((user) => [user.bindingId, user]));
+        const removesEnabledUser = this.store.listDesiredUsers().some((user) =>
+          user.enabled && snapshotUsers.get(user.bindingId)?.enabled !== true);
+        if (removesEnabledUser) await this.sampleWithinStateMutation();
         const preserveLocalDisables = this.store.pendingBatchCount() > 0 && this.store.hasUsageDisabledUsers();
         const localUsers = new Map(this.store.listDesiredUsers().map((user) => [user.bindingId, user]));
         const reconcileUsers = preserveLocalDisables
