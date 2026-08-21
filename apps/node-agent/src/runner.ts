@@ -108,18 +108,22 @@ export class AgentRunner {
 
   private async sample(): Promise<void> {
     await this.withStateMutation(async () => {
-      try {
-        await this.checkXrayAndRecover();
-        const counters = await this.xray.readAbsoluteCounters();
-        const result = this.store.recordSample(counters, new Date(), this.backendOnline);
-        if (this.currentConfig.controlMode === 'direct_primary') {
-          for (const email of result.disableEmails) await this.xray.removeUser(email);
-        }
-      } catch (error) {
-        this.xrayHealthy = false;
-        throw error;
-      }
+      await this.sampleWithinStateMutation();
     });
+  }
+
+  private async sampleWithinStateMutation(): Promise<void> {
+    try {
+      await this.checkXrayAndRecover();
+      const counters = await this.xray.readAbsoluteCounters();
+      const result = this.store.recordSample(counters, new Date(), this.backendOnline);
+      if (this.currentConfig.controlMode === 'direct_primary') {
+        for (const email of result.disableEmails) await this.xray.removeUser(email);
+      }
+    } catch (error) {
+      this.xrayHealthy = false;
+      throw error;
+    }
   }
 
   private async flushBatches(): Promise<void> {
@@ -186,6 +190,12 @@ export class AgentRunner {
                 controlMode: command.payload.controlMode,
                 revision: command.targetRevision,
               };
+            }
+            if (
+              this.currentConfig.controlMode === 'direct_primary'
+              && (command.type === 'DISABLE_USER' || command.type === 'REMOVE_USER')
+            ) {
+              await this.sampleWithinStateMutation();
             }
             const commandResult = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');
             if (commandResult.status === 'completed' && (command.type === 'DISABLE_USER' || command.type === 'REMOVE_USER')) {

@@ -14,6 +14,7 @@ import { Prisma } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { Client as PgClient } from "pg";
 import type {
+  AgentCommandDto,
   ConnectRequestDto,
   GeneratedRuntimeConfigDto,
   TeamMemberRole,
@@ -499,7 +500,7 @@ export class RuntimeSessionService {
   }
 
   async quiesceDirectBindingsForTrafficReset(subscriptionId: string, userId?: string | null) {
-    return this.prisma.$transaction(async (writer) => {
+    const outcome = await this.prisma.$transaction(async (writer) => {
       const bindings = await writer.panelClientBinding.findMany({
         where: {
           subscriptionId,
@@ -508,18 +509,22 @@ export class RuntimeSessionService {
           ...(userId ? { userId } : {})
         }
       });
+      const commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
       for (const binding of bindings) {
-        await this.queueDirectBindingCommand(writer, binding, "DISABLE_USER", {
+        const queued = await this.queueDirectBindingCommand(writer, binding, "DISABLE_USER", {
           bindingId: binding.id,
           userKey: binding.panelClientEmail,
           email: binding.panelClientEmail,
           uuid: binding.panelClientId,
           reason: "traffic_reset_boundary"
-        });
+        }, { publish: false });
+        commands.push(queued);
       }
       await markPanelBindingsDisabledLocally(writer, bindings.map((binding) => binding.id));
-      return bindings.map((binding) => binding.id);
+      return { bindingIds: bindings.map((binding) => binding.id), commands };
     });
+    for (const queued of outcome.commands) this.agentEventsService.publish(queued.agentId, queued.command);
+    return outcome.bindingIds;
   }
 
   async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
@@ -2789,7 +2794,8 @@ export class RuntimeSessionService {
       panelClientId: string;
     },
     commandType: "ENSURE_USER" | "ENABLE_USER" | "DISABLE_USER" | "REMOVE_USER" | "RECONCILE_USERS" | "REFRESH_QUOTA",
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    options: { publish?: boolean } = {}
   ) {
     const nodeRevision = await writer.node.update({
       where: { id: binding.nodeId },
@@ -2838,17 +2844,19 @@ export class RuntimeSessionService {
         result: null
       }
     });
-    this.agentEventsService.publish(agent.id, {
+    const command = {
       commandId: job.id,
       type: job.commandType,
       targetRevision: job.targetRevision.toString(),
       payload: job.payload as Record<string, unknown>,
       createdAt: job.createdAt.toISOString()
-    });
+    } satisfies AgentCommandDto;
+    if (options.publish !== false) this.agentEventsService.publish(agent.id, command);
     this.publishSyncQueueUpdatedBestEffort({
       nodeId: binding.nodeId,
       subscriptionId: binding.subscriptionId
     });
+    return { agentId: agent.id, command };
   }
 
   private async createPanelClientBindingOrRecover(writer: any, data: {

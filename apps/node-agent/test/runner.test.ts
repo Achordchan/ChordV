@@ -157,7 +157,7 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   } as unknown as AgentApiClient;
   const xray: XrayAdapter = {
     health: async () => undefined,
-    readAbsoluteCounters: async () => [],
+    readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
     listUsers: async () => users,
     ensureUser: async (input) => {
       if (!users.some((item) => item.email === input.email)) users.push({ email: input.email, uuid: input.uuid });
@@ -264,7 +264,7 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   let users = [{ email: desired.email, uuid: desired.uuid }];
   const xray: XrayAdapter = {
     health: async () => undefined,
-    readAbsoluteCounters: async () => [],
+    readAbsoluteCounters: async () => [{ email: desired.email, uplinkBytes: '100', downlinkBytes: '0' }],
     listUsers: async () => users,
     ensureUser: async () => undefined,
     removeUser: async (email) => { users = users.filter((item) => item.email !== email); },
@@ -277,7 +277,7 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   try {
     await runner.start();
     await waitFor(() => reported !== undefined);
-    assert.deepEqual(reported?.disableWatermarks, [{ bootId: 'boot-1', sequenceThrough: '1' }]);
+    assert.deepEqual(reported?.disableWatermarks, [{ bootId: 'boot-1', sequenceThrough: '2' }]);
   } finally {
     await runner.stop();
     store.close();
