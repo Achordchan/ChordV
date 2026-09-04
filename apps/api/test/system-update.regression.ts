@@ -1,0 +1,122 @@
+import "reflect-metadata";
+import assert from "node:assert/strict";
+import { BadRequestException } from "@nestjs/common";
+import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
+import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
+import { HealthController } from "../src/modules/system/health.controller";
+import { SystemUpdateController } from "../src/modules/system/system-update.controller";
+import { SystemUpdateService } from "../src/modules/common/system-update.service";
+import type { PrismaService } from "../src/modules/common/prisma.service";
+import type { DownloadMirrorService } from "../src/modules/common/download-mirror.service";
+
+const SYSTEM_ENV_KEYS = [
+  "CHORDV_SYSTEM_VERSION",
+  "CHORDV_SYSTEM_UPDATE_ENABLED",
+  "CHORDV_SYSTEM_RELEASES_DIR",
+  "CHORDV_SYSTEM_STATE_DIR",
+  "CHORDV_SYSTEM_UPDATE_MANIFEST_URL",
+  "CHORDV_SYSTEM_CURRENT_LINK"
+];
+
+function withSystemEnv<T>(overrides: Record<string, string | undefined>, run: () => T): T {
+  const previous = new Map<string, string | undefined>();
+  for (const key of SYSTEM_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return run();
+  } finally {
+    for (const key of SYSTEM_ENV_KEYS) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function buildService() {
+  const prisma = {} as unknown as PrismaService;
+  const downloadMirror = {
+    getEffectiveConfig: async () => ({ defaultMirrorPrefix: null, allowClientMirror: true, updatedAt: null })
+  } as unknown as DownloadMirrorService;
+  return new SystemUpdateService(prisma, downloadMirror);
+}
+
+function routeMetadata(controller: object, method: string) {
+  const handler = (controller as { prototype: Record<string, unknown> }).prototype[method];
+  return {
+    path: Reflect.getMetadata(PATH_METADATA, handler as object) as string,
+    method: Reflect.getMetadata(METHOD_METADATA, handler as object) as number
+  };
+}
+
+// 1) SystemUpdateController is guarded by AdminAuthGuard and exposes the expected routes.
+{
+  const guards = (Reflect.getMetadata(GUARDS_METADATA, SystemUpdateController) ?? []) as unknown[];
+  assert.ok(guards.includes(AdminAuthGuard), "SystemUpdateController must be protected by AdminAuthGuard");
+
+  const controllerPath = Reflect.getMetadata(PATH_METADATA, SystemUpdateController) as string;
+  assert.equal(controllerPath, "admin/system", "system routes must live under admin/system");
+
+  const version = routeMetadata(SystemUpdateController, "getVersion");
+  assert.equal(version.path, "version");
+  assert.equal(version.method, 0, "getVersion must be GET");
+
+  const update = routeMetadata(SystemUpdateController, "update");
+  assert.equal(update.path, "update");
+  assert.equal(update.method, 1, "update must be POST");
+
+  const rollback = routeMetadata(SystemUpdateController, "rollback");
+  assert.equal(rollback.method, 1, "rollback must be POST");
+
+  const restart = routeMetadata(SystemUpdateController, "restart");
+  assert.equal(restart.method, 1, "restart must be POST");
+}
+
+// 2) HealthController is public (no guard) and returns liveness without touching the DB.
+{
+  const guards = (Reflect.getMetadata(GUARDS_METADATA, HealthController) ?? []) as unknown[];
+  assert.equal(guards.length, 0, "health endpoint must remain public for the supervisor");
+  const controllerPath = Reflect.getMetadata(PATH_METADATA, HealthController) as string;
+  assert.equal(controllerPath, "health");
+}
+
+async function main() {
+  // 3) Disabled environment (no releases/state dir) refuses mutating operations.
+  await withSystemEnv({ CHORDV_SYSTEM_VERSION: "0.0.1" }, async () => {
+    const service = buildService();
+    assert.equal(service.getCurrentVersion(), "0.0.1");
+    assert.equal(service.getRuntimeStatus().enabled, false);
+    await assert.rejects(() => service.startUpdate(null, null), BadRequestException);
+    await assert.rejects(() => service.startRollback(null, null), BadRequestException);
+    await assert.rejects(() => service.startRestart(null, null), BadRequestException);
+  });
+
+  // 4) check-update without a configured manifest returns a warning and no update.
+  await withSystemEnv(
+    { CHORDV_SYSTEM_VERSION: "0.0.1", CHORDV_SYSTEM_RELEASES_DIR: "/tmp/x", CHORDV_SYSTEM_STATE_DIR: "/tmp/y" },
+    async () => {
+      const service = buildService();
+      assert.equal(service.getRuntimeStatus().enabled, true, "releases+state dirs should enable self-update");
+      const result = await service.checkUpdate(false);
+      assert.equal(result.hasUpdate, false);
+      assert.equal(result.currentVersion, "0.0.1");
+      assert.ok(result.warning && result.warning.includes("清单"), "missing manifest should surface a warning");
+    }
+  );
+
+  // 5) 'v'-prefixed CHORDV_SYSTEM_VERSION is normalized.
+  await withSystemEnv({ CHORDV_SYSTEM_VERSION: "v1.2.3" }, () => {
+    const service = buildService();
+    assert.equal(service.getCurrentVersion(), "1.2.3");
+  });
+}
+
+void main().then(() => {
+  console.log("system-update.regression.ts passed");
+});

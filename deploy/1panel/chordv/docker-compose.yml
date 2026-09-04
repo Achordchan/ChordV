@@ -1,26 +1,66 @@
+# ChordV backend Docker deployment (1Panel), with in-place self-update.
+#
+# Build context is the repo root so the Dockerfiles can see the whole workspace;
+# run this from the repo root, e.g.:
+#   docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
+#
+# The api/admin code lives in the `*-releases` volumes (not baked read-only into
+# the image), so a self-update writes a new release dir and flips a symlink; the
+# `*-state` volumes persist which version is current + rollback bookkeeping across
+# container recreation. `restart: unless-stopped` is the safety net if the
+# in-container supervisor itself dies (normal self-updates never exit the container).
 services:
   postgres:
     image: postgres:16
     container_name: chordv-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: chordv
-      POSTGRES_USER: chordv
-      POSTGRES_PASSWORD: chordv
+      POSTGRES_DB: ${POSTGRES_DB:-chordv}
+      POSTGRES_USER: ${POSTGRES_USER:-chordv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chordv}
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chordv} -d ${POSTGRES_DB:-chordv}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      context: ../../..
+      dockerfile: deploy/1panel/chordv/Dockerfile.api
+    image: chordv-api:latest
     container_name: chordv-api
     restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
-      - ./releases:/data/releases
+      - ./api-releases:/app/releases
+      - ./api-state:/app/state
+
+  admin:
+    build:
+      context: ../../..
+      dockerfile: deploy/1panel/chordv/Dockerfile.admin
+    image: chordv-admin:latest
+    container_name: chordv-admin
+    restart: unless-stopped
+    environment:
+      # Baked into the static bundle at build time via VITE_API_BASE_URL if needed;
+      # runtime nginx just serves files and proxies /api to the api service.
+      CHORDV_API_UPSTREAM: ${CHORDV_API_UPSTREAM:-http://api:3000}
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3002:80"
+    volumes:
+      # Share the api's release + state volumes (read-only): admin serves the
+      # current version's apps/admin/dist and follows the api on self-update.
+      - ./api-releases:/usr/share/nginx/releases:ro
+      - ./api-state:/usr/share/nginx/state:ro

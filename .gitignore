@@ -27,3 +27,10 @@ _deploy/
 
 .tmp-*
 *.tgz
+
+# 1Panel Docker deployment runtime data (created by docker compose bind mounts)
+deploy/1panel/chordv/api-releases/
+deploy/1panel/chordv/api-state/
+deploy/1panel/chordv/admin-releases/
+deploy/1panel/chordv/admin-state/
+deploy/1panel/chordv/postgres-data/

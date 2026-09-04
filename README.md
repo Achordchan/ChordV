@@ -205,6 +205,22 @@ pnpm --filter @chordv/desktop check
 
 ## 部署说明
 
-生产部署以宝塔 Node 项目为主，代码目录、环境变量、启动命令和域名绑定应在面板中可见。安装包存储目录由 `CHORDV_RELEASE_STORAGE_ROOT` 指定，建议放在代码目录之外，并纳入服务器备份策略。
+后台系统（`apps/api` + `apps/admin`）作为一个整体发布单元，运行在 1Panel 管理的 Docker 容器上，支持在运营后台内“一键更新 / 失败自动回滚”，上线后除极少数异常场景外不再需要 SSH 到服务器操作。详见 [`docs/prd/backend-self-update.md`](docs/prd/backend-self-update.md)。
 
-推送 `main` 后如触发自动部署，应同时确认 GitHub Actions、服务器同步、宝塔项目重启与线上健康检查，不能只以 Git 推送成功作为上线完成依据。
+### 容器部署（`deploy/1panel/chordv/`）
+
+```bash
+# 在仓库根目录执行（compose 的 build.context 指向仓库根）
+docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
+```
+
+- `chordv-api`：入口是监督者脚本 `entrypoint.sh`，代码运行在可写的 `api-releases` 卷中，按版本目录存放并用 `current` 软链接指向当前版本；自更新时应用只“下载→校验→（如需）迁移→写 pending 标记→退出”，由监督者提升新版本、健康门控、失败自动回滚。`restart: unless-stopped` 是监督者自身异常时的兜底。
+- `chordv-admin`：nginx 只读挂载共享的 `api-releases` / `api-state` 卷，网页根指向当前版本的 `apps/admin/dist`，随 api 自更新自动跟随，无需单独更新逻辑；同时把 `/api` 反代到 `chordv-api`。
+- 前置 openresty（TLS 终止）将域名反代到 `chordv-admin`；生产强制 HTTPS，内部健康探活带 `X-Forwarded-Proto: https`。
+- 数据库快照（迁移前 `pg_dump`）与回滚版本目录分别落在 `api-state/backups`、`api-releases`，需纳入磁盘监控与备份策略。安装包存储目录仍由 `CHORDV_RELEASE_STORAGE_ROOT` 指定，与代码目录分离。
+
+### 后台系统版本发布
+
+后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新；SHA-256 校验值始终以直连清单为准，不采信代理返回内容。
+
+> 桌面客户端发布（`release-desktop.yml`）不受影响，维持原流程。宝塔 pm2 流水线（`deploy-baota.yml` / `scripts/deploy-baota.sh`）已停用自动触发，仅保留手动 `workflow_dispatch` 作为迁移期兜底，确认容器部署稳定后可整体删除。

@@ -1,0 +1,289 @@
+# PRD：ChordV 后台系统一键更新
+
+状态：**草稿 v0.3，待确认事项已全部拍板** ｜ 创建日期：2026-09-04 ｜ 负责人：待定
+
+> v0.2 变更：根据反馈简化架构——去掉独立的 `chordv-updater` 组件和 docker-socket-proxy，改为"容器内原子文件替换 + 进程自退出 + Docker 原生重启策略接管"，不再需要额外的镜像仓库。第 14 节的待确认事项 1/2/3/5 已确认。
+>
+> v0.3 变更：确认服务器为国内节点，用加速镜像访问 GitHub（如 `https://ghfast.top/`）。发现仓库里已有现成的全局加速镜像机制（`DownloadMirrorService`，与发布中心、运行时组件共用），直接复用即可，不新增任何下载基础设施，见 4.4 节。第 14 节待确认事项全部解决。
+>
+> v0.4 变更（实现阶段）：见下方「实现说明」——在 4.1「应用自己切软链接后退出」之外，落地时增加了一个**容器内进程外监督者**（`deploy/1panel/chordv/entrypoint.sh`），由它负责“提升新版本 → 健康门控 → 失败自动回滚”，这样 6.3 的“健康检查不过自动回滚”才真正有一个活着的角色去执行（应用自己退出后无法给自己做健康门控）。检查更新的数据源也从 `api.github.com` 调整为 raw manifest（ghfast 可代理，`api.github.com` 不可）。
+
+---
+
+## 0. 实现说明（v0.4，随开发更新）
+
+落地时相对 4.1/6.2/6.3 的调整，均已本地验证：
+
+1. **进程外监督者（entrypoint.sh）**：应用不再自己切软链接，而是“下载→校验→解压→（如需）迁移→写 `state/pending.json` 标记→`exit(0)`”。容器入口 `entrypoint.sh` 是一个常驻监督循环（扮演 sub2api 里 systemd 的角色）：读 pending 标记 → 原子切 `current` 软链接 → 启动应用 → **健康门控**（HTTP 探活，带 `X-Forwarded-Proto: https` 以通过生产 HTTPS 强制）→ 通过则记 `last-good-version`；不过则**自动回滚**到 last-good 并重启，落 `state/operation-result.json`。Docker 的 `restart: unless-stopped` 退化为“监督者自身挂掉”时的兜底。
+2. **成功不写结果标记，应用自证晋级**：一次更新成功后由重新起来、正在服务的应用在启动时把自己那条运行中的操作记为 succeeded（`reconcileOperationsOnBoot`：`toVersion == 当前运行版本` ⇒ succeeded），监督者只在**失败/回滚**路径写 `operation-result.json`（失败的应用没法给自己收尾）。这避免了“新应用启动时机 vs 监督者健康门控完成时机”的竞态。
+3. **检查更新数据源 = raw manifest**：`api.github.com` 加速镜像不可达（实测 ghfast 对它返回 403），改为拉一个发布在 raw 上的 `manifest.json`（版本号 + 产物 URL + SHA-256 + changelog），加速镜像可代理；校验用的 SHA-256 以 manifest 记录为准（详见 11 节安全边界，仍不采信代理返回内容）。
+4. **发布单元 = api + admin 同一个 release**：release 压缩包内含 `apps/api/dist` 与 `apps/admin/dist`；admin 容器（nginx）只读挂载共享的 releases/state 卷，网页根指向“当前版本”的 `apps/admin/dist`，api 自更新切版本后 admin 随之跟随（`admin-entrypoint.sh` 轮询 desired-version 重指向 + reload），admin 侧无需任何更新逻辑。
+5. **打包/运行踩坑（实构建实跑修正）**：(a) 构建阶段需装 `openssl` 且 Prisma 需显式 `binaryTargets`（`debian-openssl-3.0.x` / `linux-arm64-openssl-3.0.x`），否则生成的引擎与 bookworm 运行时（openssl 3.0.x）不匹配；(b) 运行镜像需 `postgresql-client-16`（迁移前 `pg_dump` 快照，须匹配 PG16）+ `curl/tar/gzip`；(c) 生产 HTTPS 强制中间件会拦截内部 HTTP 健康探活，探活须带 `X-Forwarded-Proto: https`。
+
+---
+
+## 1. 背景
+
+当前后台（`apps/api` + `apps/admin`）的上线方式：push `main` → GitHub Actions（`.github/workflows/deploy-baota.yml`）→ SSH 到服务器 → rsync 构建产物 → 通过宝塔面板 Python API 停止/启动一个 pm2 式 Node 进程，`apps/admin` 编译产物另外 rsync 到 openresty 静态目录。整条链路都需要工程师在 GitHub 侧操作，出问题还需要 SSH 上服务器确认。
+
+仓库里已经存在一套面向 1Panel 的 Docker 化部署骨架（`deploy/1panel/chordv/`：`Dockerfile.api` + `docker-compose.yml` + openresty 反代配置），但目前不是自动化流水线的一部分。
+
+**本次要做的事**：桌面客户端的打包发布（`release-desktop.yml`）保持不变；后台（api + admin，以下统称"**后台系统**"）改为跑在 1Panel 管理的 Docker 容器上，并在运营后台左上角提供版本管理入口——查看当前版本、检查新版本、一键更新、失败自动回滚——上线后除了极少数异常情况，不再需要 SSH 到服务器操作。宝塔 pm2 那条流水线（`deploy-baota.yml` / `deploy-baota.sh`）随之退役。
+
+## 2. 范围
+
+### 2.1 包含
+
+- `apps/api` + `apps/admin` 作为一个整体发布单元（"后台系统"）的版本管理与一键更新
+- 新的"后台系统版本号"体系，从 `0.0.1` 开始独立计数（区别于各 `package.json` 里的包版本号）
+- 数据库 migration 作为更新流程的一部分自动执行，并有失败安全网
+- 更新失败 / 健康检查不过时的自动回滚
+- 权限控制（仅 `admin` 角色可见可操作，见第 7 节）、操作审计
+- `apps/admin` 容器化（已确认，见第 3 项确认）
+- 退役 `deploy-baota.yml` / `deploy-baota.sh`，替换为新的 CI 发布流程；README 部署章节同步更新
+
+### 2.2 明确不包含
+
+- 桌面端（macOS / Windows / Android）打包发布：继续用 `release-desktop.yml`，本 PRD 不涉及
+- 多环境 / 多服务器管理：目前只服务 `v.baymaxgroup.com` 一套生产环境；允许未来换服务器或换域名，但不做"环境切换"这种通用能力
+- 数据库层面真正的 schema 反向迁移（`down` migration）：用"迁移前自动快照"兜底，不是"一键撤销已执行的 DDL"（已确认接受，见第 6.3 节）
+- Node.js 运行时版本 / 系统级依赖变化的自动化：这类改动仍走人工触发一次镜像重建，不追求自动化（保持方案简单，按反馈调整）
+
+## 3. 参考调研：sub2api 是怎么做的
+
+按建议查看了 [`Wei-Shaw/sub2api`](https://github.com/Wei-Shaw/sub2api)（Go + Vue + Postgres + Redis + Docker，AI 订阅中转平台，后台同样带"检查更新 / 一键更新 / 回滚"入口）的具体实现（源码而非文档，README 本身没写细节）。
+
+**核心机制**：它并不是"重新构建/拉取整个部署单元"，而是——
+
+1. 从 GitHub Release 下载预编译好的二进制压缩包（下载来源限定在 `github.com` / `objects.githubusercontent.com`，防 SSRF）；
+2. 校验 release 附带的 `checksums.txt`（SHA-256）；
+3. 新文件落到同目录临时文件夹，`os.Rename` 两次做原子替换（当前 → `.backup`，新文件 → 当前），失败自动还原；
+4. 进程 `os.Exit(0)` 主动退出，交给 **systemd 的 `Restart=always`** 在外部把它重新拉起来——重启这件事完全不在进程自己手里处理；
+5. 回滚 = 同样的"下载校验替换"流程换成旧版本，或者直接把 `.backup` 文件换回来，本地秒回滚；
+6. 更新前抢一把全局"系统操作锁"防并发；更新可能耗时几分钟，特意把 HTTP handler 的 `context` 与请求生命周期解耦，避免浏览器/nginx 在 30-60s 超时把下载中断（他们为此专门修过一次线上问题）；
+7. 左上角版本徽标 + 下拉面板：当前版本 / 检查更新 / 更新按钮 / 更新中动画 / 完成后"立即重启（带倒计时）"/ 失败提示+重试 / 回滚面板。
+
+**重要的是**：翻它的 Docker 部署文档会发现，**它自己的 Docker 场景并不会自动更新**，UI 对应的只是一段"复制这条 `docker compose pull && up -d` 命令自己去执行"的手动指引，不是一键按钮——它真正做到"全自动"的前提是"单文件二进制 + systemd"，新版本已经落盘好了，"重启"只是把同一个可执行文件重新拉起来，根本没有"重新构建镜像"这一步。
+
+**这给了我们一个更简单的方向**：不需要再造一个独立组件去操作 Docker（比如之前设想的 `chordv-updater` + socket-proxy），因为 **Docker 自己的 `restart: unless-stopped` 策略，就是现成的"进程外部监督者"**，跟 sub2api 依赖的 systemd 是同一个角色。把"文件原子替换 + 自我退出"这套原样搬过来，让 Docker 的重启策略接管"重新拉起来"这一步，就能做到跟 sub2api 同样简单、同样可靠，而且不需要碰 Docker socket、不需要镜像仓库、不需要任何新增常驻组件。第 4 节就是这个设计。
+
+## 4. 总体方案
+
+### 4.1 核心机制：文件级原子替换 + 自我退出 + Docker 重启策略接管
+
+1. `apps/api` 的运行代码不再是"焊死在镜像里改不了"的东西，而是放在容器内一个可写目录下，按版本分文件夹存放（`/app/releases/0.0.2/`、`/app/releases/0.0.3/`……），容器实际的启动入口指向一个"当前版本"软链接：`/app/current -> /app/releases/0.0.3`。
+2. **检查更新**：`chordv-api` 查 GitHub Release，看有没有更新的、专门给"后台系统"发布的版本（发布记录同时写入发布中心，见 4.2）。
+3. **执行更新**（全部在 `chordv-api` 进程内完成，不依赖任何外部组件）：
+   - 下载该 Release 的产物压缩包（编译后的 `apps/api/dist` + `packages/shared/dist` + 运行所需依赖）；
+   - 校验 SHA-256；
+   - 解压到 `/app/releases/<新版本>/`；
+   - 如检测到数据库 schema 变更：先做一次快照，再执行 `prisma migrate deploy`；
+   - 原子切换 `/app/current` 软链接指向新目录；
+   - 调用 `process.exit(0)` 自行退出。
+4. **重启接管**：容器的 `restart: unless-stopped`（Docker 原生策略，`deploy/1panel/chordv/docker-compose.yml` 现在 `api` 服务已经是这个配置，不用改）检测到进程退出后自动把同一个容器重新拉起来，入口脚本走的还是 `/app/current`，此时已指向新版本，新代码生效。全程没有"重建容器""重新拉镜像"这类更重的操作。
+
+   > 注意 Docker restart policy 的一个常见误区：`on-failure` 只在退出码非 0 时才重启，我们这里是主动 `exit(0)` 正常退出，必须用 `unless-stopped` 或 `always`（现状已经是 `unless-stopped`，符合预期）。
+5. **admin 更简单**：纯静态文件，同样走"新版本目录 + 当前版本软链接"，更新 = 下载解压 + 切软链接，**连重启都不需要**，nginx/openresty 下一个请求就是新内容。
+6. **不覆盖的场景**：Node.js 运行时版本、系统级依赖（`apt-get` 装的包）、Prisma 原生绑定这类需要改"镜像本身"的变更——这种情况保留人工触发一次现有构建流程，不纳入自动化范围（低频场景，符合"别做复杂"的要求）。
+
+```mermaid
+flowchart LR
+    subgraph GH["GitHub"]
+        CI["GitHub Actions\n(编译产物,不需要构建镜像)"]
+        Rel["GitHub Release\n(dist 压缩包 + checksums.txt)"]
+        CI --> Rel
+    end
+
+    subgraph Server["生产服务器 (1Panel / Docker)"]
+        subgraph ApiC["chordv-api 容器\nrestart: unless-stopped"]
+            Cur["/app/current -> releases/0.0.3"]
+            Old["releases/0.0.2 (保留,供回滚)"]
+            New["releases/0.0.3"]
+        end
+        AdminC["chordv-admin 容器\n(nginx,静态文件同样原子切换)"]
+        Openresty["openresty 反代"]
+        PG[(PostgreSQL)]
+
+        Openresty --> AdminC
+        Openresty -->|"/api/"| ApiC
+        ApiC --> PG
+    end
+
+    Rel -.下载 + 校验 SHA-256.-> ApiC
+    Rel -.下载 + 校验 SHA-256.-> AdminC
+```
+
+### 4.2 版本记录：复用发布中心，不新增制品类型
+
+仓库里已有一套很完整的"发布中心"（`apps/api/src/modules/common/release-center.service.ts` / `release-center.utils.ts`，对应 `apps/admin/src/pages/ReleasesPage.tsx`），本来给桌面端用，版本号管理、SHA-256 校验、changelog、发布状态这些能力和这次要做的事几乎是同一件事：
+
+- `ReleasePlatform` 枚举（`apps/api/prisma/schema.prisma:91`，当前 `macos | windows | android | ios`）新增一个值 `backend`。
+- **不需要新的制品类型**——现在的"制品"就是一个压缩包 + SHA-256，跟桌面端现有的"文件 + 哈希"模型完全一样，直接复用即可（这是相比 v0.1 方案的简化点：不再需要 Docker 镜像 digest 这种新概念）。
+- CI 发布新版本时，调用一个新的内部接口（机器身份认证），把版本号、产物下载地址、SHA-256、changelog 写进 `Release` + `ReleaseArtifact` 表，状态直接是 `published`。
+- 运行中的 `chordv-api` 判断"有没有新版本"，就是拿自己当前版本号去查 `platform=backend` 且状态 `published` 的最新记录，比较版本号（复用已有的 `compareSemver` / `parseSemver`，`release-center.utils.ts:190`）。
+
+### 4.3 关于镜像仓库
+
+**结论：不需要。** 之前 v0.1 方案设想过用 GHCR（GitHub Container Registry，GitHub 自带的镜像托管服务，跟阿里云 ACR / 腾讯云 TCR 是同类东西）来回拉取整个 Docker 镜像；简化后的方案里，日常更新下载的是一个编译产物压缩包而不是镜像，直接挂在 GitHub Release 上即可，跟桌面端现有发布方式、还有 sub2api 的真实做法一致，零新增基础设施。只有 4.1 第 6 点提到的"低频镜像重建"场景需要用到 Docker 镜像，但那部分保留人工操作，不需要专门搭一套镜像仓库。
+
+### 4.4 服务器网络可达性：直接复用现成的"全局加速镜像"，不新增机制
+
+服务器是国内节点，已确认用加速代理（如 `https://ghfast.top/`）访问 GitHub。**这件事不需要新增任何机制**——仓库里已经有一套现成的、专门干这个的基础设施：
+
+- `apps/api/src/modules/common/download-mirror.service.ts` 的 `DownloadMirrorService`：把"加速镜像前缀"存成一条全局系统设置（`SystemSetting` 表，`key = "download-mirror"`），支持配置**多条前缀**（换行或逗号分隔，`normalizeMirrorPrefixList`），逐条尝试、失败自动 fallback 回源地址。
+- `apps/admin/src/features/runtime-components/RuntimeComponentsPanel.tsx` 里已经有对应的配置入口（"全局加速镜像"），UI 上明确写着"**加速镜像在上方全局配置，并与发布中心共用**"——也就是说这套东西从设计上就是给多个下载场景共享的，不是 Runtime Components 专属。
+- 拼接逻辑 `joinMirrorPrefix`（`release-center.utils.ts:709`）：前缀不含 `{url}` 时直接做字符串拼接 `${前缀}${原始URL}`。实测验证过：
+
+  ```
+  前缀:   https://ghfast.top/
+  原始:   https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-full.zip
+  拼接后: https://ghfast.top/https://github.com/Achordchan/ChordV/releases/download/v1.1.7/ChordV_1.1.7_x64-full.zip
+  ```
+
+  实际 `curl` 测试这条拼接后的地址，返回 `HTTP 200`，正确下载到 36MB 的真实 release 资产（走的是 GitHub 背后 Azure Blob 的内容，代理在内部处理了跳转）。**注意前缀要带结尾的 `/`**，不然拼出来的地址会缺一个分隔符。
+
+  这个测试只能证明"代理本身工作正常、拼接语法没问题"——我这边的网络环境不在国内，测不出"国内直连 GitHub 到底有多差、代理到底能提升多少"，这部分需要你们在真实服务器上验证一次实际效果，多条镜像前缀可以都填上，现成的 fallback 逻辑会自动依次尝试。
+
+**结论**：后台系统更新下载产物时，直接复用 `DownloadMirrorService.getEffectiveConfig()` 读到的 `defaultMirrorPrefix`，走跟发布中心/运行时组件一模一样的下载路径（`fetchExternalReleaseArtifactMetadata` / `downloadExternalReleaseArtifactFile` 那一套，`release-center.utils.ts:720-742`），不需要新写下载逻辑，只要确认运营后台里"全局加速镜像"那一项已经填上 `https://ghfast.top/`（或者你们之前用的那个值）即可。
+
+**安全边界需要保持**：加速镜像前缀是管理员在后台配置的可信值，不需要做 host allowlist；但被拼接的"原始 URL"必须始终来自 ChordV 自己发布中心里记录的、由 CI 直接写入的地址（不经过任何代理），且下载完成后**期望的 SHA-256 值也必须来自这条直连记录，绝不能来自代理返回的内容本身**——这样即使加速镜像哪天被污染或返回了错误内容，校验也会失败并拒绝应用更新，代理只影响"下载是否顺畅"，不影响"内容是否可信"。
+
+## 5. 版本号方案
+
+- 新增一个仓库根目录文件 **`SYSTEM_VERSION`**（纯文本，如 `0.0.1`），作为"后台系统版本号"的唯一真相来源，语义版本号，从 `0.0.1` 开始。
+- 这是一个**新的独立版本轨道**，故意和 `apps/api/package.json`（当前 `1.0.2`）、`apps/admin/package.json`（`1.0.2`）、桌面端的 `1.1.7` 不是一回事——那几个 `package.json` 版本号已经在 `1.x`，直接复用会出现"新功能上线第一个版本却显示成 1.0.3"这种和"从 0.0.1 开始"的诉求矛盾的情况，独立一条全新版本线更干净。
+- 构建产物压缩包时把这个版本号写入产物内的一个元信息文件（比如 `RELEASE_META.json`），`chordv-api` 启动时读出来，暴露在 `GET /api/admin/system/version`。
+- GitHub Release 的 tag 用 `backend-v0.0.1` 这种带前缀的命名，跟桌面端现有的裸 `v1.1.7` 区分开，避免同一个仓库两条 release 序列互相打架。
+- 每次发布前手动（或用一个小校验脚本）把 `SYSTEM_VERSION` 加一，CI 里做一致性检查（参考桌面端已有的 `apps/desktop/scripts/check-version-consistency.mjs` 思路）。
+
+## 6. 详细流程
+
+### 6.1 检查更新
+
+```mermaid
+sequenceDiagram
+    participant U as 管理员浏览器
+    participant Api as chordv-api
+    participant RC as 发布中心(DB)
+    U->>Api: GET /admin/system/check-update
+    Api->>RC: 查 platform=backend 最新 published 记录
+    RC-->>Api: 版本号 + changelog + 下载地址 + SHA256
+    Api-->>U: {current, latest, hasUpdate, changelog}
+```
+
+结果做短时缓存（5-10 分钟 TTL），避免用户反复点"检查更新"造成压力；提供 `force=true` 手动强制刷新（参考 sub2api）。
+
+### 6.2 执行更新
+
+1. 管理员点击"立即更新"，简单确认弹窗（"将更新至 vX.Y.Z 并重启服务，确认继续？"），不做复杂二次验证（已确认）。
+2. `chordv-api` 校验角色为 `admin`（现状即最高权限，见第 7 节）→ 用 Postgres advisory lock 抢一把"系统更新锁"（复用仓库已有惯例，参考 `apps/api/src/modules/common/usage-lock.utils.ts` 的写法，新增一个专属 lock key），抢不到直接返回"有更新正在进行"。
+3. 下载 Release 压缩包（复用 `DownloadMirrorService` 读取全局加速镜像前缀，跟发布中心/运行时组件同一套下载路径，见 4.4）→ 校验 SHA-256（期望值来自发布中心记录，不经过镜像）→ 解压到 `/app/releases/<新版本>/`。这一步耗时可能数十秒到几分钟，处理方式借鉴 sub2api：把这部分逻辑的超时设置得比前端请求超时更宽松，避免被浏览器/nginx 提前掐断。
+4. 检测本次是否包含 schema 变更（对比新版本产物里的 Prisma migration 清单 vs 数据库当前基线，复用现有 `scripts/prisma-migrate-with-baseline.mjs` 的判断逻辑）；如有：
+   - 先做一次数据库快照（`pg_dump`，落盘到独立备份目录，保留最近 N 份）；
+   - 再执行 `prisma migrate deploy`；
+   - 快照或迁移失败 → 整个流程中止，不切换版本、不重启，旧版本继续对外服务，返回具体失败原因。
+5. 迁移成功（或本次无需迁移）→ 原子切换 `/app/current` 软链接 → 给前端返回"即将重启"→ 调用 `process.exit(0)`。
+6. Docker 按 `restart: unless-stopped` 重新拉起容器，新代码生效。
+7. 前端在容器重启的几秒到几十秒窗口内，请求会连接失败——这是预期状态，不当错误处理，按退避策略重试，直到 `/api/client/version`（现有健康检查端点）恢复，再提示"更新完成"（参考 sub2api `checkServiceAndReload` 的处理方式）。
+
+### 6.3 失败与自动回滚
+
+- **下载失败 / 校验 SHA-256 不一致**：不动现有版本目录，直接报错，未产生任何影响。
+- **迁移前快照失败**：整个流程中止，不执行迁移，不切换版本。
+- **迁移执行失败**：中止流程，`/app/current` 仍指向旧版本，进程不重启，继续对外服务，报错并提示需要人工介入。
+- **重建后健康检查不过**（新代码本身有问题）：自动把 `/app/current` 切回上一个版本目录，再次 `exit(0)` 让 Docker 重启一次，即"自动回滚"（已确认需要这个能力）。保留最近 2-3 个版本目录用于快速回滚，更早的定期清理。
+- **例外（已确认接受此边界）**：如果这次更新包含了 schema 迁移且迁移已经成功执行，自动回滚**只回滚代码**，**不会**自动撤销已经跑掉的 DDL——Prisma 没有自动反向迁移能力。这种情况下系统会明确提示"代码已回滚，数据库结构未回退，请人工确认是否需要用迁移前快照恢复"。
+
+### 6.4 手动重启
+
+保留一个不涉及版本变化的"重启服务"按钮，用于版本没问题但进程状态异常这类场景，直接触发 `exit(0)` 让 Docker 重启策略接管。
+
+### 6.5 并发控制
+
+同一时间只允许一个更新/回滚/重启在执行，用 Postgres advisory lock 实现（同 6.2）。
+
+## 7. 权限与审计
+
+- **已确认**：沿用现有 `UserRole` 枚举里的 `admin` 角色（`apps/api/prisma/schema.prisma:10`），所有能登录运营后台的 `admin` 账号都能看到、操作系统更新入口，不新增更细的角色分层。
+- **审计**：新增一张操作记录表（谁、什么时间、从哪个版本更新/回滚到哪个版本、结果成功/失败、耗时），在"系统更新"面板里展示历史记录列表，呼应 README 里"由 ChordV 负责账户、套餐、授权、发布与审计"这条产品定位。
+- **不做**：复杂的二次确认（输入确认字样、多人审批），一次点击确认即可（已确认）。
+
+## 8. 前端交互设计（左上角版本入口）
+
+位置：`apps/admin/src/App.tsx` 里 `AppShell.Navbar` 顶部"运营后台"标题旁（现状见 `apps/admin/src/App.tsx:3099-3102`），常驻展示当前版本号；有新版本时加一个醒目的角标。
+
+状态机（点击展开一个下拉面板）：
+
+| 状态 | 展示内容 |
+|---|---|
+| 检查中 | 骨架屏 / loading 动画 |
+| 已是最新 | 绿色勾选 + 当前版本号 + "查看更新日志"（GitHub Release 链接）+ 折叠的"回滚到历史版本"入口 |
+| 有新版本 | 橙色角标 + 新版本号 + changelog 摘要 + "立即更新"主按钮 |
+| 确认中 | 点击"立即更新"后的简单确认弹窗（"将更新至 vX.Y.Z 并重启服务，预计耗时 N 分钟，确认继续？"），一次点击即可，非复杂二次验证 |
+| 更新中 | 分阶段进度提示（下载 → 校验 → 数据库迁移 → 切换版本 → 重启），带预计耗时；明确提示"服务即将短暂重启，请勿关闭页面" |
+| 断线重连中 | 容器重启期间接口请求失败是预期行为，展示"服务重启中，正在重新连接…"而不是当错误弹出来，退避轮询直到恢复或超时 |
+| 成功 | Toast + 面板自动刷新为"已是最新"状态 + 写入操作历史 |
+| 失败（已自动回滚） | 明确说明"更新失败，已自动回滚到 vX.Y.Z，服务未受影响"，给出失败原因摘要 |
+| 失败（迁移已执行，代码已回滚但库结构未回退） | 单独的醒目警示状态，说明当前代码版本、数据库所处状态，引导人工确认 |
+| 历史版本回滚 | 列出最近几个已发布的历史版本，选中后二次确认，执行逻辑同 6.3 |
+
+视觉和交互细节直接复用 Mantine 现有组件库和后台既有的 `notifications` 用法，保持和其余页面风格一致，不引入新的 UI 依赖。
+
+## 9. 数据模型变更
+
+- `apps/api/prisma/schema.prisma`
+  - `enum ReleasePlatform` 新增 `backend`
+  - 新增 `SystemUpdateOperation` 表（命名待定）：`id`、`operationId`、`actorUserId`、`kind`（update/rollback/restart）、`fromVersion`、`toVersion`、`status`（pending/running/succeeded/failed/rolled_back）、`failureReason`、`startedAt`、`finishedAt`——支撑第 7 节的审计列表和第 8 节的状态展示。
+- 新增根目录 `SYSTEM_VERSION` 文件（非数据库变更，纯文本版本号源）。
+- 无需新的制品类型（复用现有"文件 + SHA-256"模型，见 4.2）。
+
+## 10. 关键 API（`chordv-api`，均要求 `admin` 角色鉴权）
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/api/admin/system/version` | 当前后台系统版本号 |
+| GET | `/api/admin/system/check-update?force=` | 查询发布中心是否有更新的 `backend` 记录 |
+| POST | `/api/admin/system/update` | 触发更新（下载→校验→迁移→切换→重启，全部在这次请求处理过程中完成，最后一步会主动断开） |
+| GET | `/api/admin/system/rollback-versions` | 本机磁盘上保留的可回滚版本列表 |
+| POST | `/api/admin/system/rollback` | 回滚到指定版本（或不传参回滚上一次） |
+| POST | `/api/admin/system/restart` | 仅重启，不涉及版本变化 |
+| GET | `/api/admin/system/operations` | 操作历史（审计列表） |
+
+## 11. 安全设计要点
+
+- 下载经由全局加速镜像（管理员配置的可信值，见 4.4），不对镜像前缀做 host allowlist；但被拼接的原始 URL 必须始终来自发布中心里 CI 直接写入的记录，不接受任意外部传入的地址。
+- 强制 SHA-256 校验，且期望哈希值必须来自发布中心直连记录（不经过镜像），校验不过直接丢弃、不切换版本——这一条保证即使加速镜像被污染，也不会把污染内容当成合法更新应用上去。
+- 软链接原子切换（`ln -sfn` 到临时名再 `rename`），保证任何时刻 `/app/current` 要么是旧版本要么是新版本，不会出现"半新半旧"的中间态。
+- 保留最近 2-3 个版本目录用于快速回滚，定期清理更早版本释放磁盘空间。
+- Postgres advisory lock 防止并发更新/回滚。
+- 数据库迁移前自动快照，是"迁移不可自动回滚"这个硬限制下的兜底手段，快照需要独立的保留策略和磁盘空间监控。
+- 全程不涉及 Docker socket、不新增常驻组件，权限面比 v0.1 方案小很多——这是这版方案相对最初设计的主要优势。
+
+## 12. 分期交付计划
+
+- **Phase 1（打基础）**：`deploy/1panel/chordv` 补全为可用的生产 Docker 部署（含 admin 容器化），CI 改造为"编译产物 + 发布到 GitHub Release + 写发布中心记录"，退役 `deploy-baota.yml`。此阶段版本切换仍是**手动**执行一次脚本（SSH 跑一条命令下载解压切换），但已经具备"软链接切版本 + Docker 重启策略"的基础结构。
+- **Phase 2（核心能力）**：`chordv-api` / `chordv-admin` 内置检查更新、一键更新、失败自动回滚、前端版本徽标，覆盖第 6-8 节主流程。相比 v0.1 方案，这一期不再需要开发独立的 `chordv-updater` 组件，工作量明显更小。
+- **Phase 3（收尾加固）**：迁移前自动快照、操作审计历史列表、回滚到任意历史版本的完整 UI。
+
+## 13. 验收标准（针对 Phase 2，核心场景）
+
+- 无 schema 变更的纯代码更新：从点击"更新"到新版本上线可用 ≤ 1 分钟，期间管理端不可用时间 ≤ 15 秒（容器重启通常比重建镜像快很多）。
+- 人为制造一次"新版本健康检查必挂"的场景，验证自动回滚后旧版本能在 1 分钟内恢复对外服务。
+- 更新过程中管理员关闭浏览器标签重新打开，能看到正确的最新状态。
+- 非 `admin` 角色登录后台，看不到、也无法调用系统更新相关入口和接口。
+- 两个管理员同时点击更新，第二个请求收到明确的"已有更新在执行"提示，而不是两边同时跑。
+
+## 14. 待确认事项清单
+
+| # | 事项 | 状态 |
+|---|---|---|
+| 1 | 权限分层：沿用现有 `admin` 角色，不新增更高一档 | ✅ 已确认 |
+| 2 | 迁移回滚边界：代码可自动回滚，数据库 schema 不自动回退，走人工快照恢复 | ✅ 已确认接受 |
+| 3 | admin 容器化 | ✅ 已确认可以 |
+| 4 | 镜像仓库选型 | ✅ 已撤销——简化方案下不需要镜像仓库 |
+| 5 | 是否接受引入 `chordv-updater` 新组件 | ✅ 已按反馈简化，不再需要这个组件 |
+| 6 | 服务器网络可达性：国内节点，用加速镜像访问 GitHub | ✅ 已确认——直接复用现有 `DownloadMirrorService`（与发布中心/运行时组件共用），实测 `https://ghfast.top/` 前缀拼接可正常下载 GitHub Release 资产，见 4.4 |
+
+---
+
+*待确认事项已全部拍板，可以进入 Phase 1 的详细技术设计（Dockerfile / docker-compose 改造、CI 流水线改造的具体 diff）。*

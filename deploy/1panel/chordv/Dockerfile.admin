@@ -1,0 +1,27 @@
+# ChordV admin (static) image.
+#
+# Ships NO application bundle: it serves apps/admin/dist out of the shared release
+# volume that the api container populates, and follows the active version on
+# self-update (see admin-entrypoint.sh). Build context is the repo root, but only
+# the deploy scripts are needed here.
+FROM nginx:1.27-bookworm
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# `${CHORDV_API_UPSTREAM}` in the template is substituted at container start.
+COPY deploy/1panel/chordv/admin.nginx.conf /etc/nginx/templates/default.conf.template
+COPY deploy/1panel/chordv/admin-entrypoint.sh /usr/local/bin/admin-entrypoint.sh
+RUN chmod +x /usr/local/bin/admin-entrypoint.sh
+
+ENV CHORDV_API_UPSTREAM=http://api:3000
+ENV CHORDV_ADMIN_RELEASES_DIR=/usr/share/nginx/releases
+ENV CHORDV_ADMIN_STATE_DIR=/usr/share/nginx/state
+
+EXPOSE 80
+
+# Our entrypoint renders the nginx conf (envsubst) itself, then starts nginx once
+# a release is available and follows the active version. We bypass the stock nginx
+# entrypoint because it only runs its template init when the command is "nginx".
+ENTRYPOINT ["/usr/local/bin/admin-entrypoint.sh"]

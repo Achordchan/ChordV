@@ -1,0 +1,174 @@
+name: Release Backend System
+
+# Builds the "backend system" (apps/api + apps/admin as one unit), publishes a
+# relocatable release tarball to a `backend-v*` GitHub Release, and updates the
+# manifest that running instances read to detect + self-apply updates.
+#
+# This REPLACES the retired Deploy Baota pipeline. It does NOT touch the server:
+# instances pull the release themselves via the in-app "检查更新 / 一键更新" flow
+# (see docs/prd/backend-self-update.md). The desktop release flow is unaffected.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "后台系统版本号（必须与仓库根 SYSTEM_VERSION 一致），不带 v，例如 0.0.2"
+        required: true
+        type: string
+      changelog:
+        description: "更新日志（每行一条），可留空"
+        required: false
+        type: string
+      prerelease:
+        description: "标记为预发布（不更新 latest 清单）"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: chordv-backend-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish backend release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve & verify version
+        id: version
+        env:
+          RAW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          version="${RAW_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: ${RAW_VERSION}" >&2; exit 1
+          fi
+          file_version="$(tr -d ' \t\r\n' < SYSTEM_VERSION)"
+          if [[ "$version" != "$file_version" ]]; then
+            echo "Version input ($version) does not match SYSTEM_VERSION ($file_version). Bump SYSTEM_VERSION first." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=backend-v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --filter @chordv/api... --filter @chordv/admin... --frozen-lockfile
+
+      - name: Run API regression tests
+        run: pnpm test:api
+
+      - name: Build backend system (shared + api + admin)
+        run: |
+          pnpm --filter @chordv/shared build
+          pnpm --filter @chordv/api db:generate
+          pnpm --filter @chordv/api build
+          pnpm --filter @chordv/admin build
+
+      - name: Assemble relocatable release tree
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Same runtime subset the Docker seed ships; drop source + admin's
+          # build-only node_modules (apps/admin/dist is static).
+          rm -rf apps/admin/node_modules apps/admin/src apps/api/src packages/shared/src
+          mkdir -p dist-release
+          # Include the per-package node_modules too: pnpm's isolated layout resolves
+          # each package's deps through its OWN node_modules (relative symlinks into
+          # the root .pnpm store), so omitting them breaks resolution at runtime.
+          tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" \
+            SYSTEM_VERSION \
+            package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json \
+            scripts/prisma-migrate-with-baseline.mjs \
+            node_modules \
+            packages/shared/package.json packages/shared/dist packages/shared/node_modules \
+            apps/api/package.json apps/api/dist apps/api/prisma apps/api/node_modules \
+            apps/admin/dist
+          cd dist-release
+          sha256sum "chordv-backend-${VERSION}.tar.gz" > checksums.txt
+          echo "SHA256:"; cat checksums.txt
+
+      - name: Generate manifest.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+          CHANGELOG: ${{ github.event.inputs.changelog }}
+        run: |
+          set -euo pipefail
+          cd dist-release
+          artifact="chordv-backend-${VERSION}.tar.gz"
+          SHA="$(cut -d' ' -f1 checksums.txt)" \
+          SIZE="$(stat -c%s "$artifact")" \
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${artifact}" \
+          PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          node -e '
+            const changelog = (process.env.CHANGELOG || "")
+              .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+            const manifest = {
+              version: process.env.VERSION,
+              tag: process.env.TAG,
+              publishedAt: process.env.PUBLISHED_AT,
+              htmlUrl: `https://github.com/${process.env.REPO}/releases/tag/${process.env.TAG}`,
+              changelog,
+              artifact: { url: process.env.URL, sha256: process.env.SHA, sizeBytes: Number(process.env.SIZE) }
+            };
+            require("fs").writeFileSync("manifest.json", JSON.stringify(manifest, null, 2));
+          '
+          echo "manifest.json:"; cat manifest.json
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ChordV Backend ${{ steps.version.outputs.tag }}
+          prerelease: ${{ github.event.inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            dist-release/chordv-backend-${{ steps.version.outputs.version }}.tar.gz
+            dist-release/checksums.txt
+            dist-release/manifest.json
+
+      - name: Publish manifest to stable raw branch
+        if: ${{ github.event.inputs.prerelease != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A dedicated orphan-ish branch serves a stable raw URL that instances
+          # poll: https://raw.githubusercontent.com/<repo>/backend-manifest/latest.json
+          # (kept separate from main history; ghfast-proxyable). Only 'latest.json'
+          # lives here — one file, force-updated each release.
+          tmp="$(mktemp -d)"
+          cp dist-release/manifest.json "$tmp/latest.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cd "$tmp"
+          git init -q
+          git checkout -q -b backend-manifest
+          git add latest.json
+          git commit -q -m "backend manifest ${TAG}"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" backend-manifest
+          echo "Manifest published to backend-manifest branch."

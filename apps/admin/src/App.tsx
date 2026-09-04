@@ -140,6 +140,7 @@ import { ADMIN_SESSION_EXPIRED_EVENT, isAdminSessionExpiredMessage } from "./api
 import { AdminLoginPanel } from "./components/AdminLoginPanel";
 import { AdminDrawerForm, type DrawerType } from "./features/editors/AdminDrawerForm";
 import { DeleteNodeModal, KickMemberModal, NodeAccessEditorModal, TeamUsageDetailModal } from "./features/modals/AdminModals";
+import { SystemUpdateBadge } from "./features/system-update/SystemUpdateBadge";
 import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { CustomerSubscriptionsPage } from "./pages/CustomerSubscriptionsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
@@ -3096,9 +3097,12 @@ export function App() {
           <Stack justify="space-between" className="admin-nav-shell">
             <Stack gap="xs" className="admin-nav-menu">
               <div className="admin-brand">
-                <Text size="xs" fw={700} c="blue" tt="uppercase">
-                  ChordV
-                </Text>
+                <Group justify="space-between" align="flex-start" wrap="nowrap">
+                  <Text size="xs" fw={700} c="blue" tt="uppercase">
+                    ChordV
+                  </Text>
+                  <SystemUpdateBadge />
+                </Group>
                 <Title order={3}>运营后台</Title>
               </div>
               {sectionGroups.map((group) => (
