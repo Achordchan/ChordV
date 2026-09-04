@@ -155,7 +155,11 @@ export function SystemUpdateBadge() {
       setActiveOp(op);
       setPhase("done");
       setBusy(null);
-      await loadRuntime();
+      // Reload runtime FIRST: for a rollback, op.toVersion is deliberately the
+      // release that FAILED (preserved for audit), so the actual landing version
+      // is the refreshed running version, not op.toVersion.
+      const status = await loadRuntime();
+      const landingVersion = status?.currentVersion ?? null;
       await runCheck(true);
       await loadAux();
       if (!op) {
@@ -163,12 +167,12 @@ export function SystemUpdateBadge() {
         return;
       }
       if (op.status === "succeeded") {
-        notifications.show({ color: "teal", title: "操作成功", message: `已完成${kindLabel(op.kind)}，当前版本 v${op.toVersion ?? ""}。` });
+        notifications.show({ color: "teal", title: "操作成功", message: `已完成${kindLabel(op.kind)}，当前版本 v${landingVersion ?? op.toVersion ?? ""}。` });
       } else if (op.status === "rolled_back") {
         notifications.show({
           color: "orange",
           title: "已自动回滚",
-          message: `${kindLabel(op.kind)}未通过健康检查，已自动回滚到 v${op.toVersion ?? ""}，服务未受影响。${op.migrationApplied ? "注意：本次已执行数据库迁移，代码已回滚但库结构未回退，请人工确认。" : ""}`
+          message: `${kindLabel(op.kind)} v${op.toVersion ?? "?"} 未通过健康检查，已自动回滚到 v${landingVersion ?? "上一版本"}，服务未受影响。${op.migrationApplied ? "注意：本次已执行数据库迁移，代码已回滚但库结构未回退，请人工确认。" : ""}`
         });
       } else if (op.status === "failed") {
         notifications.show({ color: "red", title: "操作失败", message: op.failureReason ?? "未知原因" });

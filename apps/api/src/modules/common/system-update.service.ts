@@ -264,10 +264,22 @@ export class SystemUpdateService implements OnModuleInit {
       fromVersion,
       toVersion: fromVersion
     });
-    // No pending marker: the supervisor simply restarts the current version.
+    // Route restart through the SAME durable, health-gated marker path as a
+    // promotion (kind=restart, same version): the supervisor promotes the current
+    // version, health-gates + stabilizes it, and writes a success/failure result
+    // marker. Otherwise a restart that opens the port then crashes would still be
+    // audited as succeeded, and one that never boots would stay running forever.
+    try {
+      await this.writePendingMarker({ version: fromVersion, operationId, kind: "restart", migrationApplied: false });
+    } catch (error) {
+      await this.finishOperation(operationId, "failed", { failureReason: this.describeError(error) }).catch(
+        () => undefined
+      );
+      await lock.release().catch(() => undefined);
+      throw new ServiceUnavailableException(`无法写入重启标记：${this.describeError(error)}`);
+    }
     // Lock stays held until process exit (see scheduleProcessExit) so no second
     // operation can slip in during the exit-flush window.
-    void lock;
     this.scheduleProcessExit(`restart requested (operation ${operationId})`);
     return { operationId, accepted: true, message: "服务正在重启。" };
   }
@@ -297,53 +309,54 @@ export class SystemUpdateService implements OnModuleInit {
       await this.markRunning(operationId, release.version);
 
       const releaseDir = await this.downloadAndExtractRelease(release);
-      let migrationApplied = false;
-      try {
-        migrationApplied = await this.applyPendingMigrations(releaseDir, release.version);
-      } catch (error) {
-        // Migration failed. applyPendingMigrations distinguishes a clean failure
-        // (nothing committed → safe to abort) from a partial one (some migrations
-        // committed → its error message flags the intermediate DB state and points
-        // at the pre-migration snapshot for manual recovery). Either way we discard
-        // the new release and surface the (possibly critical) reason via the catch.
-        await this.removeDirSafe(releaseDir);
-        throw error;
+      const pendingMigrations = await this.detectPendingMigrations(releaseDir);
+      const willMigrate = pendingMigrations.length > 0;
+
+      // Persist the promotion INTENT before touching the database. If the process
+      // dies after migrate deploy commits but before this marker exists, the
+      // supervisor would otherwise start the OLD code on the NEW schema. With the
+      // marker written first, the supervisor promotes the new version, and the
+      // entrypoint's own `migrate deploy` completes any migration a crash interrupted.
+      await this.writePendingMarker({
+        version: release.version,
+        operationId,
+        kind: "update",
+        migrationApplied: willMigrate
+      });
+
+      if (willMigrate) {
+        this.logger.warn(
+          `Update ${release.version} carries ${pendingMigrations.length} pending migration(s): ${pendingMigrations.join(", ")}`
+        );
+        try {
+          if (this.config.snapshotBeforeMigrate) {
+            await this.snapshotDatabase(release.version);
+          }
+          await this.runPrismaMigrateDeploy(releaseDir);
+        } catch (error) {
+          // Migration failed → withdraw the promotion intent so we do not activate a
+          // release whose migrations did not fully apply, and discard the release.
+          const stillPending = await this.detectPendingMigrations(releaseDir).catch(() => pendingMigrations);
+          await this.clearPendingMarker().catch(() => undefined);
+          await this.removeDirSafe(releaseDir);
+          if (stillPending.length < pendingMigrations.length) {
+            const applied = pendingMigrations.length - stillPending.length;
+            throw new ServiceUnavailableException(
+              `数据库迁移失败，且已有 ${applied}/${pendingMigrations.length} 个迁移被提交，数据库处于中间状态。` +
+                `请人工检查并用迁移前快照恢复（快照目录见 CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。原始错误：${this.describeError(error)}`
+            );
+          }
+          throw error;
+        }
       }
 
-      // ---- point of no return ----
-      // If a migration ran, the database is now on the NEW schema and only the new
-      // code matches it. Non-critical bookkeeping (prune, audit flag) must NOT
-      // abort the promotion — otherwise the old code keeps serving a migrated DB.
-      // So best-effort those, and treat only writePendingMarker (which activates
-      // the new code) as the load-bearing step.
+      // Best-effort bookkeeping AFTER the intent is durable and any migration ran.
       await this.pruneOldReleases(release.version, fromVersion).catch((error) =>
         this.logger.warn(`Prune old releases failed (non-fatal): ${this.describeError(error)}`)
       );
-      await this.updateOperation(operationId, { migrationApplied }).catch((error) =>
+      await this.updateOperation(operationId, { migrationApplied: willMigrate }).catch((error) =>
         this.logger.warn(`Audit update failed (non-fatal): ${this.describeError(error)}`)
       );
-
-      try {
-        await this.writePendingMarker({ version: release.version, operationId, kind: "update", migrationApplied });
-      } catch (error) {
-        if (migrationApplied) {
-          // Worst case: DB migrated but the new code cannot be staged. Do NOT quietly
-          // mark "failed" and keep running old code on the new schema — surface it so
-          // an operator can promote manually or restore the pre-migration snapshot.
-          const reason = this.describeError(error);
-          this.logger.error(
-            `CRITICAL: migration for ${release.version} applied but staging failed: ${reason}. ` +
-              `Old code is running against the new schema — manual promotion or snapshot restore required.`
-          );
-          await this.finishOperation(operationId, "failed", {
-            toVersion: release.version,
-            failureReason: `迁移已执行但暂存新版本失败：${reason}。旧代码正运行在新库结构上，需人工介入（手动切换或用迁移前快照恢复）。`
-          }).catch(() => undefined);
-          await lock.release().catch(() => undefined);
-          return;
-        }
-        throw error; // no migration ran → normal abort is safe
-      }
 
       // Keep the advisory lock until the process actually exits (see
       // scheduleProcessExit): the DB session closing on exit releases it, which
@@ -396,44 +409,21 @@ export class SystemUpdateService implements OnModuleInit {
       const stagingDir = path.join(releasesDir, `.staging-${release.version}-${Date.now()}`);
       await this.removeDirSafe(stagingDir);
       await fs.mkdir(stagingDir, { recursive: true });
-      await this.extractTarball(downloaded.absolutePath, stagingDir);
-      await this.removeDirSafe(finalDir);
-      await fs.rename(stagingDir, finalDir);
+      try {
+        await this.extractTarball(downloaded.absolutePath, stagingDir);
+        await this.removeDirSafe(finalDir);
+        await fs.rename(stagingDir, finalDir);
+      } catch (error) {
+        // A malformed archive / full disk / I/O error must not leave the timestamped
+        // staging dir behind — otherwise every retry accretes partial dirs and
+        // eventually fills the releases volume.
+        await this.removeDirSafe(stagingDir);
+        throw error;
+      }
       return finalDir;
     } finally {
       await downloaded.cleanup().catch(() => undefined);
     }
-  }
-
-  private async applyPendingMigrations(releaseDir: string, version: string): Promise<boolean> {
-    const pending = await this.detectPendingMigrations(releaseDir);
-    if (pending.length === 0) {
-      return false;
-    }
-    this.logger.warn(
-      `Update ${version} carries ${pending.length} pending migration(s): ${pending.join(", ")}`
-    );
-    if (this.config.snapshotBeforeMigrate) {
-      await this.snapshotDatabase(version);
-    }
-    try {
-      await this.runPrismaMigrateDeploy(releaseDir);
-    } catch (error) {
-      // `prisma migrate deploy` applies migrations one-by-one; a mid-batch failure
-      // can leave EARLIER migrations committed, so the DB is NOT guaranteed
-      // unchanged. Detect that so the caller does not treat this as a safe abort.
-      const stillPending = await this.detectPendingMigrations(releaseDir).catch(() => pending);
-      const partiallyApplied = stillPending.length < pending.length;
-      if (partiallyApplied) {
-        const appliedCount = pending.length - stillPending.length;
-        throw new ServiceUnavailableException(
-          `数据库迁移失败，且已有 ${appliedCount}/${pending.length} 个迁移被提交，数据库处于中间状态。` +
-            `请人工检查并用迁移前快照恢复（快照目录见 CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。原始错误：${this.describeError(error)}`
-        );
-      }
-      throw error;
-    }
-    return true;
   }
 
   private async detectPendingMigrations(releaseDir: string): Promise<string[]> {
@@ -1044,22 +1034,22 @@ export class SystemUpdateService implements OnModuleInit {
     await this.consumeResultMarker();
 
     // Operations still "running"/"pending" with no result marker:
-    //   - restart ops that come back are successful by definition;
-    //   - an update/rollback whose promotion is still being stabilized by the
-    //     supervisor (promoting marker matches) is left running — its success is
-    //     NOT confirmed just because the port opened; the supervisor's result
-    //     marker (written only after stabilization) will finalize it;
+    //   - one whose promotion is still being stabilized by the supervisor
+    //     (promoting marker matches, incl. a health-gated restart) is left running:
+    //     success is NOT confirmed just because the port opened; the supervisor's
+    //     result marker (written only after stabilization) finalizes it;
+    //   - a restart with no in-flight promotion came back → succeeded;
     //   - anything else was interrupted before completing → failed.
     const promoting = await this.readPromotingMarker();
     const stale = await this.prisma.systemUpdateOperation.findMany({
       where: { status: { in: ["pending", "running"] } }
     });
     for (const op of stale) {
-      if (op.kind === "restart") {
-        await this.finishOperation(op.operationId, "succeeded", {}).catch(() => undefined);
-      } else if (promoting?.operationId && promoting.operationId === op.operationId) {
+      if (promoting?.operationId && promoting.operationId === op.operationId) {
         // still in flight — leave it running for the supervisor to finalize
         continue;
+      } else if (op.kind === "restart") {
+        await this.finishOperation(op.operationId, "succeeded", {}).catch(() => undefined);
       } else {
         await this.finishOperation(op.operationId, "failed", {
           failureReason: "任务在服务重启期间中断，未确认完成。"

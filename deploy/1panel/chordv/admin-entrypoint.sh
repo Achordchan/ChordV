@@ -20,10 +20,12 @@ log() { printf '%s [admin] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 # Render the nginx server config ourselves: the stock nginx entrypoint only runs
 # its envsubst/template init when the command is "nginx", which it isn't here.
+: "${CHORDV_ADMIN_RESOLVER:=127.0.0.11}" # Docker's embedded DNS by default
+export CHORDV_ADMIN_RESOLVER
 TEMPLATE="/etc/nginx/templates/default.conf.template"
 if [ -f "$TEMPLATE" ]; then
-  envsubst '${CHORDV_API_UPSTREAM}' < "$TEMPLATE" > /etc/nginx/conf.d/default.conf
-  log "rendered nginx conf (upstream ${CHORDV_API_UPSTREAM:-unset})"
+  envsubst '${CHORDV_API_UPSTREAM} ${CHORDV_ADMIN_RESOLVER}' < "$TEMPLATE" > /etc/nginx/conf.d/default.conf
+  log "rendered nginx conf (upstream ${CHORDV_API_UPSTREAM:-unset}, resolver ${CHORDV_ADMIN_RESOLVER})"
 fi
 
 resolve_dist() {

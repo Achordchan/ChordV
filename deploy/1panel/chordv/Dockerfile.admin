@@ -16,6 +16,7 @@ COPY deploy/1panel/chordv/admin-entrypoint.sh /usr/local/bin/admin-entrypoint.sh
 RUN chmod +x /usr/local/bin/admin-entrypoint.sh
 
 ENV CHORDV_API_UPSTREAM=http://api:3000
+ENV CHORDV_ADMIN_RESOLVER=127.0.0.11
 ENV CHORDV_ADMIN_RELEASES_DIR=/usr/share/nginx/releases
 ENV CHORDV_ADMIN_STATE_DIR=/usr/share/nginx/state
 

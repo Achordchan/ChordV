@@ -111,10 +111,25 @@ resolve_start_version() {
   if [ -z "$seed_version" ]; then
     log "FATAL: no desired version, no current symlink, and no seed at $SEED_DIR"; exit 1
   fi
-  if [ ! -d "$RELEASES_DIR/$seed_version" ]; then
+  # Consider the seed already bootstrapped only if the entry actually exists — a
+  # previous interrupted/disk-full cp can leave a partial dir that would otherwise
+  # be launched (and crash-loop) forever.
+  if [ ! -f "$RELEASES_DIR/$seed_version/$APP_ENTRY" ]; then
     log "bootstrapping releases/$seed_version from seed"
     mkdir -p "$RELEASES_DIR"
-    cp -a "$SEED_DIR" "$RELEASES_DIR/$seed_version"
+    # Copy into a temp dir, validate, then rename atomically so a crash mid-copy
+    # never leaves a half-populated release/<version> in place.
+    local stage="$RELEASES_DIR/.seed-stage.$$"
+    rm -rf "$stage"
+    if ! cp -a "$SEED_DIR" "$stage"; then
+      rm -rf "$stage"; log "FATAL: seed copy failed"; exit 1
+    fi
+    if [ ! -f "$stage/$APP_ENTRY" ]; then
+      rm -rf "$stage"; log "FATAL: seed is missing $APP_ENTRY"; exit 1
+    fi
+    rm -rf "$RELEASES_DIR/$seed_version"
+    mv -f "$stage" "$RELEASES_DIR/$seed_version"
+    sync 2>/dev/null || true
   fi
   printf '%s' "$seed_version"
 }
@@ -253,7 +268,15 @@ while true; do
   atomic_promote "$GEN_VERSION"
   RELEASE_DIR="$RELEASES_DIR/$GEN_VERSION"
   if [ ! -f "$RELEASE_DIR/$APP_ENTRY" ]; then
-    log "FATAL: entry $APP_ENTRY missing in $RELEASE_DIR"; exit 1
+    if [ "$GEN_PROMOTION" = "1" ]; then
+      # A corrupt/incomplete promoted release: roll back instead of exiting, which
+      # (with desired/promoting already persisted) would restart into the same
+      # broken version forever.
+      log "entry $APP_ENTRY missing in $RELEASE_DIR; rolling back"
+      handle_failed_promotion "新版本缺少启动入口（下载/解压不完整），已自动回滚"
+      continue
+    fi
+    log "FATAL: entry $APP_ENTRY missing in $RELEASE_DIR (no promotion to roll back)"; exit 1
   fi
 
   if ! run_migrate "$RELEASE_DIR"; then
