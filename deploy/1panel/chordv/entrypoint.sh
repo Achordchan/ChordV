@@ -64,21 +64,25 @@ atomic_promote() {
 }
 
 write_result() {
-  # write_result <operationId> <status:success|failed|rolledback> <version> <reason>
+  # write_result <operationId> <status:success|failed|rolledback> <version> <reason> [migrationApplied]
   mkdir -p "$STATE_DIR"
+  local migrated="${5:-false}"
   cat > "$RESULT_FILE" <<EOF
-{"operationId":"$1","status":"$2","version":"$3","reason":"$4"}
+{"operationId":"$1","status":"$2","version":"$3","reason":"$4","migrationApplied":$migrated}
 EOF
 }
 
 write_promoting() {
-  # write_promoting <version> <operationId> <kind> — returns non-zero if the marker
-  # could not be durably written (e.g. full state volume). Callers MUST NOT delete
-  # pending.json or promote unless this succeeds, or a mid-gate restart would treat
-  # the target as an ordinary trusted start and skip the automatic rollback.
+  # write_promoting <version> <operationId> <kind> [migrationApplied] — returns
+  # non-zero if the marker could not be durably written (e.g. full state volume).
+  # Callers MUST NOT delete pending.json or promote unless this succeeds, or a
+  # mid-gate restart would treat the target as an ordinary trusted start and skip
+  # the automatic rollback. migrationApplied is carried so a later rollback can
+  # report whether the schema was migrated.
   mkdir -p "$STATE_DIR" || return 1
+  local migrated="${4:-false}"
   local tmp="$PROMOTING_FILE.tmp.$$"
-  if ! printf '{"version":"%s","operationId":"%s","kind":"%s"}\n' "$1" "$2" "$3" > "$tmp"; then
+  if ! printf '{"version":"%s","operationId":"%s","kind":"%s","migrationApplied":%s}\n' "$1" "$2" "$3" "$migrated" > "$tmp"; then
     rm -f "$tmp" 2>/dev/null; return 1
   fi
   [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
@@ -173,18 +177,21 @@ handle_failed_promotion() {
   # Roll back to last-good when we can; otherwise record failure and retry. Always
   # clears the promotion marker so a later restart does not resume a dead promotion.
   # Mutates the GEN_* globals for the next loop iteration. $1 is a reason string.
-  local reason="$1" LG=""
+  local reason="$1" LG="" MIG
+  # Whether the failed promotion had migrated the schema — carried so the app can
+  # warn "code rolled back but schema not". Read from the durable promoting marker.
+  MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$MIG" = "true" ] || MIG="false"
   if [ "$GEN_PROMOTION" = "1" ]; then
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
       log "auto-rolling back $GEN_VERSION -> $LG (op ${GEN_OP:-none}): $reason"
-      [ -n "$GEN_OP" ] && write_result "$GEN_OP" "rolledback" "$LG" "$reason"
+      [ -n "$GEN_OP" ] && write_result "$GEN_OP" "rolledback" "$LG" "$reason" "$MIG"
       discard_failed_release "$GEN_VERSION" "$GEN_KIND"
       clear_promoting
       GEN_VERSION="$LG"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
       return 0
     fi
-    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "failed" "$GEN_VERSION" "$reason（无可回滚版本）"
+    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "failed" "$GEN_VERSION" "$reason（无可回滚版本）" "$MIG"
     clear_promoting
   fi
   log "no known-good version to fall back to; retrying $GEN_VERSION in 3s"
@@ -218,6 +225,26 @@ if [ -f "$PROMOTING_FILE" ]; then
     clear_promoting
     GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
   fi
+elif [ -f "$PENDING_FILE" ]; then
+  # The app staged an update (wrote pending.json) but the host/supervisor restarted
+  # before we processed its exit. Convert the pending marker into a promotion now
+  # so the target is health-gated + rollback-capable — otherwise the old version
+  # would just start, and the stale pending marker could later promote a supposedly
+  # failed update on an unrelated exit.
+  PV="$(json_get "$PENDING_FILE" version)"
+  POP="$(json_get "$PENDING_FILE" operationId)"
+  PKIND="$(json_get "$PENDING_FILE" kind)"
+  PMIG="$(json_get "$PENDING_FILE" migrationApplied)"; [ "$PMIG" = "true" ] || PMIG="false"
+  if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ] && write_promoting "$PV" "$POP" "$PKIND" "$PMIG"; then
+    rm -f "$PENDING_FILE"
+    log "resuming staged $PKIND from pending marker -> $PV (op $POP)"
+    GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1
+  else
+    log "unusable/undurable pending marker (version '$PV'); discarding"
+    rm -f "$PENDING_FILE"
+    [ -n "$POP" ] && write_result "$POP" "failed" "$PV" "暂存的更新在重启期间中断，未能提升"
+    GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+  fi
 else
   GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
 fi
@@ -245,7 +272,8 @@ while true; do
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
-    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "success" "$GEN_VERSION" ""
+    SUCC_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$SUCC_MIG" = "true" ] || SUCC_MIG="false"
+    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "success" "$GEN_VERSION" "" "$SUCC_MIG"
     clear_promoting
     log "$GEN_VERSION healthy + stable (last-good)"
     GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
@@ -257,11 +285,12 @@ while true; do
       PV="$(json_get "$PENDING_FILE" version)"
       POP="$(json_get "$PENDING_FILE" operationId)"
       PKIND="$(json_get "$PENDING_FILE" kind)"
+      PMIG="$(json_get "$PENDING_FILE" migrationApplied)"; [ "$PMIG" = "true" ] || PMIG="false"
       if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ]; then
         # Persist the promotion BEFORE deleting pending / flipping desired-version, so
         # a crash in the gap is resumed as a health-gated promotion, not a bare start.
         # Only proceed if the marker was durably written.
-        if write_promoting "$PV" "$POP" "$PKIND"; then
+        if write_promoting "$PV" "$POP" "$PKIND" "$PMIG"; then
           rm -f "$PENDING_FILE"
           log "pending $PKIND -> $PV (op $POP)"
           GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1

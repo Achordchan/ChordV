@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, Query, Req, UseGuards } from "@nestjs/common";
-import { IsIn, IsOptional, IsString } from "class-validator";
+import { IsIn, IsOptional, IsString, Matches } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { SystemUpdateService } from "../common/system-update.service";
 
@@ -10,8 +10,10 @@ class RollbackBodyDto {
 }
 
 class OperationsQueryDto {
+  // A bare digit string only — rejects `?limit=abc` with a 400 rather than letting
+  // NaN reach Prisma's `take` and surface as an internal server error.
   @IsOptional()
-  @IsString()
+  @Matches(/^\d{1,4}$/, { message: "limit 必须是 1-4 位数字。" })
   limit?: string;
 }
 

@@ -200,9 +200,10 @@ export class SystemUpdateService implements OnModuleInit {
     // Pick up a just-completed supervisor outcome so the audit list reflects it
     // even on an app instance that stayed up through the whole promotion.
     await this.consumeResultMarker().catch(() => undefined);
+    const take = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 100) : 20;
     const rows = await this.prisma.systemUpdateOperation.findMany({
       orderBy: { startedAt: "desc" },
-      take: Math.min(Math.max(limit, 1), 100)
+      take
     });
     return rows.map((row) => this.toOperationDto(row));
   }
@@ -300,8 +301,11 @@ export class SystemUpdateService implements OnModuleInit {
       try {
         migrationApplied = await this.applyPendingMigrations(releaseDir, release.version);
       } catch (error) {
-        // Migration failed → DB is unchanged (or the failed migration is recorded
-        // by prisma); safe to abort without promoting.
+        // Migration failed. applyPendingMigrations distinguishes a clean failure
+        // (nothing committed → safe to abort) from a partial one (some migrations
+        // committed → its error message flags the intermediate DB state and points
+        // at the pre-migration snapshot for manual recovery). Either way we discard
+        // the new release and surface the (possibly critical) reason via the catch.
         await this.removeDirSafe(releaseDir);
         throw error;
       }
@@ -320,7 +324,7 @@ export class SystemUpdateService implements OnModuleInit {
       );
 
       try {
-        await this.writePendingMarker({ version: release.version, operationId, kind: "update" });
+        await this.writePendingMarker({ version: release.version, operationId, kind: "update", migrationApplied });
       } catch (error) {
         if (migrationApplied) {
           // Worst case: DB migrated but the new code cannot be staged. Do NOT quietly
@@ -412,7 +416,23 @@ export class SystemUpdateService implements OnModuleInit {
     if (this.config.snapshotBeforeMigrate) {
       await this.snapshotDatabase(version);
     }
-    await this.runPrismaMigrateDeploy(releaseDir);
+    try {
+      await this.runPrismaMigrateDeploy(releaseDir);
+    } catch (error) {
+      // `prisma migrate deploy` applies migrations one-by-one; a mid-batch failure
+      // can leave EARLIER migrations committed, so the DB is NOT guaranteed
+      // unchanged. Detect that so the caller does not treat this as a safe abort.
+      const stillPending = await this.detectPendingMigrations(releaseDir).catch(() => pending);
+      const partiallyApplied = stillPending.length < pending.length;
+      if (partiallyApplied) {
+        const appliedCount = pending.length - stillPending.length;
+        throw new ServiceUnavailableException(
+          `数据库迁移失败，且已有 ${appliedCount}/${pending.length} 个迁移被提交，数据库处于中间状态。` +
+            `请人工检查并用迁移前快照恢复（快照目录见 CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。原始错误：${this.describeError(error)}`
+        );
+      }
+      throw error;
+    }
     return true;
   }
 
@@ -530,11 +550,26 @@ export class SystemUpdateService implements OnModuleInit {
     cwd?: string
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { env, cwd, stdio: ["ignore", "pipe", "pipe"] });
+      // detached:true puts the child in its OWN process group so we can signal the
+      // WHOLE tree (prisma shim → engine, pg_dump | gzip) on timeout — killing only
+      // the direct child would leave descendants mutating the DB after we gave up.
+      const child = spawn(command, args, { env, cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       let stderr = "";
+      let timedOut = false;
+      const killGroup = (signal: NodeJS.Signals) => {
+        if (typeof child.pid === "number") {
+          try {
+            process.kill(-child.pid, signal); // negative pid == the process group
+          } catch {
+            child.kill(signal); // fall back to the direct child
+          }
+        }
+      };
       const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new ServiceUnavailableException(`${label}超时（${timeoutMs}ms）。`));
+        timedOut = true;
+        killGroup("SIGKILL");
+        // Reject only after the group has actually gone (close fires below), so the
+        // caller does not race ahead while descendants are still being torn down.
       }, timeoutMs);
       timer.unref?.();
       child.stdout?.on("data", () => undefined);
@@ -548,7 +583,9 @@ export class SystemUpdateService implements OnModuleInit {
       });
       child.on("close", (code) => {
         clearTimeout(timer);
-        if (code === 0) {
+        if (timedOut) {
+          reject(new ServiceUnavailableException(`${label}超时（${timeoutMs}ms），已终止整个进程组。`));
+        } else if (code === 0) {
           resolve();
         } else {
           reject(new ServiceUnavailableException(`${label}失败（退出码 ${code}）：${stderr.trim().slice(-500)}`));
@@ -611,12 +648,16 @@ export class SystemUpdateService implements OnModuleInit {
           "未配置清单签名公钥时，更新清单地址必须使用 HTTPS（或改用签名清单）。"
         );
       }
-      manifestText = await this.fetchManifestText(manifestUrl, null);
+      // requireHttps across the whole redirect chain: with no signature, transport
+      // security is the only integrity guarantee, so an https→http downgrade hop
+      // (where an on-path attacker could swap the manifest + artifact hash) must be
+      // rejected, not followed.
+      manifestText = await this.fetchManifestText(manifestUrl, null, true);
     }
     return this.normalizeManifest(JSON.parse(manifestText) as RawManifest);
   }
 
-  private async fetchManifestText(manifestUrl: string, mirror: string | null): Promise<string> {
+  private async fetchManifestText(manifestUrl: string, mirror: string | null, requireHttps = false): Promise<string> {
     // mirror === null means direct-only; otherwise try the mirror then fall back
     // to direct (for availability only — authenticity is enforced by the caller).
     const candidates: string[] = [];
@@ -635,7 +676,7 @@ export class SystemUpdateService implements OnModuleInit {
         const { response } = await fetchPublicHttpUrl(
           candidate,
           { method: "GET", signal: controller.signal, headers: { "user-agent": "ChordV-Admin/1.0" } },
-          { errorPrefix: "System update manifest URL" }
+          { errorPrefix: "System update manifest URL", requireHttps }
         );
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
@@ -914,13 +955,20 @@ export class SystemUpdateService implements OnModuleInit {
     });
   }
 
-  private async writePendingMarker(marker: { version: string; operationId: string; kind: SystemUpdateOperationKind }) {
+  private async writePendingMarker(marker: {
+    version: string;
+    operationId: string;
+    kind: SystemUpdateOperationKind;
+    migrationApplied?: boolean;
+  }) {
     if (!this.config.stateDir) {
       throw new ServiceUnavailableException("未配置状态目录（CHORDV_SYSTEM_STATE_DIR）。");
     }
     await fs.mkdir(this.config.stateDir, { recursive: true });
     const file = path.join(this.config.stateDir, SYSTEM_UPDATE_PENDING_FILE);
-    await fs.writeFile(file, JSON.stringify(marker), "utf8");
+    // migrationApplied travels through the markers so the "code rolled back but
+    // schema was not" warning survives even if the best-effort DB write failed.
+    await fs.writeFile(file, JSON.stringify({ migrationApplied: false, ...marker }), "utf8");
   }
 
   private async clearPendingMarker() {
@@ -944,7 +992,13 @@ export class SystemUpdateService implements OnModuleInit {
     } catch {
       return; // no marker
     }
-    let marker: { operationId?: string; status?: string; version?: string; reason?: string };
+    let marker: {
+      operationId?: string;
+      status?: string;
+      version?: string;
+      reason?: string;
+      migrationApplied?: boolean;
+    };
     try {
       marker = JSON.parse(raw);
     } catch {
@@ -958,14 +1012,24 @@ export class SystemUpdateService implements OnModuleInit {
     }
     const status =
       marker.status === "success" ? "succeeded" : marker.status === "rolledback" ? "rolled_back" : "failed";
+    // For a rollback, marker.version is the version we rolled BACK to (last-good),
+    // NOT the update target — so keep the operation's original toVersion (the
+    // attempted release) intact and record the landing version in the reason
+    // instead, or the audit would read "1.0.1 -> 1.0.1" and lose which release failed.
+    const setToVersion = status !== "rolled_back" && Boolean(marker.version);
+    const reason =
+      status === "rolled_back" && marker.version
+        ? `${marker.reason ?? "已自动回滚"}（当前运行 v${marker.version}）`
+        : marker.reason;
     try {
       await this.prisma.systemUpdateOperation.update({
         where: { operationId: marker.operationId },
         data: {
           status,
           finishedAt: new Date(),
-          ...(marker.version ? { toVersion: marker.version } : {}),
-          ...(marker.reason ? { failureReason: marker.reason } : {})
+          ...(setToVersion ? { toVersion: marker.version } : {}),
+          ...(reason ? { failureReason: reason } : {}),
+          ...(typeof marker.migrationApplied === "boolean" ? { migrationApplied: marker.migrationApplied } : {})
         }
       });
       // Delete ONLY after the outcome is persisted; a transient DB error must keep

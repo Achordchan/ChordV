@@ -404,7 +404,7 @@ export function SystemUpdateBadge() {
               </Stack>
             ) : null}
 
-            {enabled && !inProgress && !hasUpdate && !check?.warning ? (
+            {enabled && !inProgress && !checking && check && !check.hasUpdate && !check.warning ? (
               <Text size="xs" c="teal">
                 ✓ 已是最新版本
               </Text>

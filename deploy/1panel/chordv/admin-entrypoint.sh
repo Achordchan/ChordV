@@ -57,11 +57,29 @@ point_webroot "$DIST"
 CURRENT_DIST="$DIST"
 log "serving $DIST"
 
-nginx -g 'daemon on;'
+# Validate config, then start the master as a daemon. If nginx fails to start
+# (bad config), abort so Docker's restart policy can react instead of leaving a
+# "running" container serving nothing.
+if ! nginx -t; then
+  log "FATAL: nginx config test failed"; exit 1
+fi
+if ! nginx -g 'daemon on;'; then
+  log "FATAL: nginx failed to start"; exit 1
+fi
 
-# Follow the active version: when the api self-updates, re-point + reload.
+PID_FILE="${CHORDV_ADMIN_NGINX_PID:-/var/run/nginx.pid}"
+
+# Follow the active version AND supervise the nginx master: exit (non-zero) if the
+# master dies, so PID 1 does not keep the container "up" with no web server.
 while true; do
   sleep "$POLL_SECONDS"
+
+  NGINX_PID="$( [ -f "$PID_FILE" ] && tr -d ' \t\r\n' < "$PID_FILE" )"
+  if [ -z "$NGINX_PID" ] || ! kill -0 "$NGINX_PID" 2>/dev/null; then
+    log "FATAL: nginx master is not running; exiting so the container restarts"
+    exit 1
+  fi
+
   NEW_DIST="$(resolve_dist || true)"
   if [ -n "$NEW_DIST" ] && [ "$NEW_DIST" != "$CURRENT_DIST" ]; then
     log "version change: $CURRENT_DIST -> $NEW_DIST"

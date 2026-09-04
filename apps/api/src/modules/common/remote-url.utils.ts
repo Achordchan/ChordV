@@ -20,6 +20,12 @@ type FetchPublicHttpUrlSettings = {
   errorPrefix?: string;
   dnsLookupTimeoutMs?: number;
   dnsLookup?: DnsLookup;
+  /**
+   * When true, EVERY hop (the initial URL and every redirect target) must be
+   * https. Used where transport security is the only integrity guarantee, so an
+   * https→http redirect downgrade must be rejected rather than followed.
+   */
+  requireHttps?: boolean;
 };
 
 const publicHttpDispatcher = new Agent({
@@ -45,7 +51,7 @@ export async function fetchPublicHttpUrl(
   options: FetchOptions = {},
   settings: FetchPublicHttpUrlSettings = {}
 ) {
-  let currentUrl = parseHttpUrl(rawUrl, settings.errorPrefix);
+  let currentUrl = parseHttpUrl(rawUrl, settings.errorPrefix, settings.requireHttps);
   const maxRedirects = settings.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
@@ -64,7 +70,7 @@ export async function fetchPublicHttpUrl(
     if (!location) {
       throw new BadRequestException(`${settings.errorPrefix ?? "Remote URL"} redirected without a Location header.`);
     }
-    currentUrl = parseHttpUrl(new URL(location, currentUrl).toString(), settings.errorPrefix);
+    currentUrl = parseHttpUrl(new URL(location, currentUrl).toString(), settings.errorPrefix, settings.requireHttps);
   }
 
   throw new BadRequestException(`${settings.errorPrefix ?? "Remote URL"} redirected too many times.`);
@@ -122,12 +128,18 @@ export async function assertPublicHttpUrl(
   await assertPublicHostname(url.hostname, errorPrefix, settings);
 }
 
-function parseHttpUrl(rawUrl: string, errorPrefix = "Remote URL") {
+function parseHttpUrl(rawUrl: string, errorPrefix = "Remote URL", requireHttps = false) {
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
     throw new BadRequestException(`${errorPrefix} must be a valid HTTP(S) URL.`);
+  }
+  if (requireHttps) {
+    if (url.protocol !== "https:") {
+      throw new BadRequestException(`${errorPrefix} must use HTTPS (no downgrade allowed).`);
+    }
+    return url;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new BadRequestException(`${errorPrefix} must use HTTP or HTTPS.`);
