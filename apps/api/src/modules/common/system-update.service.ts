@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException
 } from "@nestjs/common";
 import { spawn } from "node:child_process";
+import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { Client as PgClient } from "pg";
@@ -69,6 +70,30 @@ type SystemUpdateCacheEntry = {
 type OperationLock = {
   release: () => Promise<void>;
 };
+
+/**
+ * Verify a detached ed25519 signature over the exact manifest bytes.
+ * @param manifestBytes raw bytes of the manifest as served
+ * @param signatureBase64 base64 of the detached signature (manifest.json.sig)
+ * @param publicKeyBase64 base64 of the DER (SPKI) ed25519 public key (pinned in config)
+ * Returns false on any malformed input rather than throwing, so a bad key/sig is
+ * treated as "not verified" (fail closed) at the call site.
+ */
+export function verifyManifestSignature(
+  manifestBytes: Buffer,
+  signatureBase64: string,
+  publicKeyBase64: string
+): boolean {
+  try {
+    const der = Buffer.from(publicKeyBase64.trim(), "base64");
+    const publicKey = createPublicKey({ key: der, format: "der", type: "spki" });
+    const signature = Buffer.from(signatureBase64.trim(), "base64");
+    if (signature.length === 0) return false;
+    return cryptoVerify(null, manifestBytes, publicKey, signature);
+  } catch {
+    return false;
+  }
+}
 
 @Injectable()
 export class SystemUpdateService implements OnModuleInit {
@@ -188,7 +213,7 @@ export class SystemUpdateService implements OnModuleInit {
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
     const fromVersion = this.config.currentVersion;
-    await this.createOperation({ operationId, kind: "update", actorLabel, actorUserId, fromVersion, toVersion: null });
+    await this.createOperationGuarded(lock, { operationId, kind: "update", actorLabel, actorUserId, fromVersion, toVersion: null });
     void this.runUpdateInBackground(operationId, fromVersion, lock);
     return { operationId, accepted: true, message: "更新任务已开始，服务将在完成后自动重启。" };
   }
@@ -203,7 +228,7 @@ export class SystemUpdateService implements OnModuleInit {
     const target = await this.resolveRollbackTarget(targetVersion, fromVersion);
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
-    await this.createOperation({
+    await this.createOperationGuarded(lock, {
       operationId,
       kind: "rollback",
       actorLabel,
@@ -220,7 +245,7 @@ export class SystemUpdateService implements OnModuleInit {
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
     const fromVersion = this.config.currentVersion;
-    await this.createOperation({
+    await this.createOperationGuarded(lock, {
       operationId,
       kind: "restart",
       actorLabel,
@@ -258,9 +283,14 @@ export class SystemUpdateService implements OnModuleInit {
         throw error;
       }
 
-      await this.writePendingMarker({ version: release.version, operationId, kind: "update" });
+      // Bookkeeping BEFORE the pending marker: the marker is what makes the
+      // supervisor promote this release on the next boot, so it must be the very
+      // last, non-failing step. If it were written first, a transient failure in
+      // updateOperation/prune would take the catch path (record failed) yet leave
+      // pending.json behind — promoting a release we just marked failed.
       await this.updateOperation(operationId, { migrationApplied });
       await this.pruneOldReleases(release.version, fromVersion);
+      await this.writePendingMarker({ version: release.version, operationId, kind: "update" });
 
       this.scheduleProcessExit(
         `staged update ${fromVersion} -> ${release.version} (operation ${operationId})`,
@@ -271,6 +301,7 @@ export class SystemUpdateService implements OnModuleInit {
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System update failed (operation ${operationId}): ${reason}`);
+      await this.clearPendingMarker().catch(() => undefined);
       await this.finishOperation(operationId, "failed", { failureReason: reason }).catch(() => undefined);
       await lock.release().catch(() => undefined);
     }
@@ -294,6 +325,7 @@ export class SystemUpdateService implements OnModuleInit {
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System rollback failed (operation ${operationId}): ${reason}`);
+      await this.clearPendingMarker().catch(() => undefined);
       await this.finishOperation(operationId, "failed", { failureReason: reason }).catch(() => undefined);
       await lock.release().catch(() => undefined);
     }
@@ -376,8 +408,10 @@ export class SystemUpdateService implements OnModuleInit {
     await fs.mkdir(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const target = path.join(backupDir, `pre-migrate-${version}-${stamp}.sql.gz`);
+    // Use bash (present in the bookworm runtime image): `set -o pipefail` is a
+    // bashism — under dash (Debian's /bin/sh) it aborts before pg_dump runs.
     await this.runShell(
-      "sh",
+      "bash",
       ["-c", 'set -o pipefail; pg_dump "$DATABASE_URL" | gzip > "$SNAPSHOT_TARGET"'],
       { ...process.env, DATABASE_URL: databaseUrl, SNAPSHOT_TARGET: target },
       "数据库快照",
@@ -469,15 +503,40 @@ export class SystemUpdateService implements OnModuleInit {
   }
 
   private async fetchManifestRelease(manifestUrl: string): Promise<NormalizedRelease> {
-    const mirror = await this.resolveMirrorPrefix();
-    const raw = await this.fetchManifestJson(manifestUrl, mirror);
-    return this.normalizeManifest(raw);
+    // The manifest carries the SHA-256 that is the ENTIRE trust anchor for the
+    // downloaded archive, so it must never be trusted from the (third-party)
+    // download mirror on its own — a malicious mirror could serve its own archive
+    // plus a matching hash and get it executed inside the container.
+    //
+    //   - With a pinned ed25519 key (CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY):
+    //     the mirror may serve the manifest (availability), but a detached
+    //     signature is verified against the pinned key before it is trusted.
+    //   - Without a pinned key: the manifest is fetched DIRECT ONLY (never the
+    //     mirror). The mirror is still used for the large artifact download,
+    //     whose integrity the trusted SHA-256 then guarantees.
+    const publicKey = this.config.manifestPublicKey;
+    let manifestText: string;
+    if (publicKey) {
+      const mirror = await this.resolveMirrorPrefix();
+      manifestText = await this.fetchManifestText(manifestUrl, mirror);
+      const signature = await this.fetchManifestText(`${manifestUrl}.sig`, mirror);
+      if (!verifyManifestSignature(Buffer.from(manifestText, "utf8"), signature, publicKey)) {
+        throw new BadRequestException("更新清单签名校验失败（清单可能被篡改或加速镜像返回了非法内容）。");
+      }
+    } else {
+      manifestText = await this.fetchManifestText(manifestUrl, null);
+    }
+    return this.normalizeManifest(JSON.parse(manifestText) as RawManifest);
   }
 
-  private async fetchManifestJson(manifestUrl: string, mirror: string | null): Promise<RawManifest> {
+  private async fetchManifestText(manifestUrl: string, mirror: string | null): Promise<string> {
+    // mirror === null means direct-only; otherwise try the mirror then fall back
+    // to direct (for availability only — authenticity is enforced by the caller).
     const candidates: string[] = [];
-    const proxied = buildExternalReleaseArtifactProbeUrl(manifestUrl, mirror);
-    if (proxied !== manifestUrl) candidates.push(proxied);
+    if (mirror) {
+      const proxied = buildExternalReleaseArtifactProbeUrl(manifestUrl, mirror);
+      if (proxied !== manifestUrl) candidates.push(proxied);
+    }
     candidates.push(manifestUrl);
 
     let lastError: unknown = null;
@@ -494,8 +553,7 @@ export class SystemUpdateService implements OnModuleInit {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
-        const text = await this.readCappedText(response);
-        return JSON.parse(text) as RawManifest;
+        return await this.readCappedText(response);
       } catch (error) {
         lastError = error;
       } finally {
@@ -636,6 +694,28 @@ export class SystemUpdateService implements OnModuleInit {
     };
   }
 
+  private async createOperationGuarded(
+    lock: OperationLock,
+    input: {
+      operationId: string;
+      kind: SystemUpdateOperationKind;
+      actorLabel: string | null;
+      actorUserId: string | null;
+      fromVersion: string | null;
+      toVersion: string | null;
+    }
+  ) {
+    // The advisory lock is held on a dedicated PG session; if the audit insert
+    // fails we must release it here, or that session keeps the lock forever and
+    // blocks every later update/rollback/restart until the process restarts.
+    try {
+      await this.createOperation(input);
+    } catch (error) {
+      await lock.release().catch(() => undefined);
+      throw new ServiceUnavailableException(`创建系统操作记录失败：${this.describeError(error)}`);
+    }
+  }
+
   private async createOperation(input: {
     operationId: string;
     kind: SystemUpdateOperationKind;
@@ -694,39 +774,60 @@ export class SystemUpdateService implements OnModuleInit {
     await fs.writeFile(file, JSON.stringify(marker), "utf8");
   }
 
+  private async clearPendingMarker() {
+    if (!this.config.stateDir) return;
+    await fs.rm(path.join(this.config.stateDir, SYSTEM_UPDATE_PENDING_FILE), { force: true });
+  }
+
   private async reconcileOperationsOnBoot() {
     if (this.config.stateDir) {
       const resultFile = path.join(this.config.stateDir, SYSTEM_UPDATE_RESULT_FILE);
+      let marker: { operationId?: string; status?: string; version?: string; reason?: string } | null = null;
+      let markerPresent = false;
       try {
         const raw = await fs.readFile(resultFile, "utf8");
-        const parsed = JSON.parse(raw) as {
-          operationId?: string;
-          status?: string;
-          version?: string;
-          reason?: string;
-        };
-        if (parsed.operationId && parsed.status) {
-          const status =
-            parsed.status === "success"
-              ? "succeeded"
-              : parsed.status === "rolledback"
-                ? "rolled_back"
-                : "failed";
-          await this.prisma.systemUpdateOperation
-            .update({
-              where: { operationId: parsed.operationId },
-              data: {
-                status,
-                finishedAt: new Date(),
-                ...(parsed.version ? { toVersion: parsed.version } : {}),
-                ...(parsed.reason ? { failureReason: parsed.reason } : {})
-              }
-            })
-            .catch(() => undefined);
+        markerPresent = true;
+        try {
+          marker = JSON.parse(raw);
+        } catch {
+          // Malformed marker is a permanent error — drop it so we don't loop.
+          this.logger.warn("Discarding unparseable operation-result marker.");
+          await fs.rm(resultFile, { force: true });
+          markerPresent = false;
         }
-        await fs.rm(resultFile, { force: true });
       } catch {
         // no result marker; fall through to stale sweep
+      }
+
+      if (markerPresent && marker?.operationId && marker.status) {
+        const status =
+          marker.status === "success"
+            ? "succeeded"
+            : marker.status === "rolledback"
+              ? "rolled_back"
+              : "failed";
+        try {
+          await this.prisma.systemUpdateOperation.update({
+            where: { operationId: marker.operationId },
+            data: {
+              status,
+              finishedAt: new Date(),
+              ...(marker.version ? { toVersion: marker.version } : {}),
+              ...(marker.reason ? { failureReason: marker.reason } : {})
+            }
+          });
+          // Delete ONLY after the outcome is persisted; a transient DB error must
+          // keep the marker so a later boot can still record the real outcome
+          // (e.g. an automatic rollback's reason) instead of losing it.
+          await fs.rm(resultFile, { force: true });
+        } catch (error) {
+          this.logger.warn(
+            `Failed to persist operation-result marker (will retry next boot): ${this.describeError(error)}`
+          );
+        }
+      } else if (markerPresent) {
+        // Present but missing required fields — drop it to avoid a permanent loop.
+        await fs.rm(resultFile, { force: true }).catch(() => undefined);
       }
     }
 

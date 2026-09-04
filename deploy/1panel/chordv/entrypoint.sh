@@ -114,6 +114,17 @@ run_migrate() {
   ( cd "$release" && "$NODE_BIN" "$MIGRATE_SCRIPT" )
 }
 
+discard_failed_release() {
+  # Delete a freshly-DOWNLOADED release that failed to come up, so it is never
+  # offered as a rollback target (listRollbackVersions scans the releases dir).
+  # Only for 'update' promotions — never delete a user-chosen historical version.
+  local version="$1" kind="$2"
+  if [ "$kind" = "update" ] && [ -n "$version" ] && [ -d "$RELEASES_DIR/$version" ]; then
+    log "discarding failed release $version"
+    rm -rf "${RELEASES_DIR:?}/${version:?}"
+  fi
+}
+
 APP_PID=""
 forward_signal() {
   [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
@@ -138,6 +149,7 @@ while true; do
       LG="$(read_file_trim "$LAST_GOOD_FILE")"
       if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
         [ -n "$GEN_OP" ] && write_result "$GEN_OP" "rolledback" "$LG" "迁移失败，已回滚代码（数据库结构未回退）"
+        discard_failed_release "$GEN_VERSION" "$GEN_KIND"
         GEN_VERSION="$LG"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; continue
       fi
     fi
@@ -185,6 +197,7 @@ while true; do
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
       log "auto-rolling back $GEN_VERSION -> $LG (op $GEN_OP)"
       [ -n "$GEN_OP" ] && write_result "$GEN_OP" "rolledback" "$LG" "新版本健康检查未通过，已自动回滚"
+      discard_failed_release "$GEN_VERSION" "$GEN_KIND"
       GEN_VERSION="$LG"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; continue
     fi
     [ -n "$GEN_OP" ] && write_result "$GEN_OP" "failed" "$GEN_VERSION" "新版本健康检查未通过且无可回滚版本"

@@ -1,11 +1,12 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { BadRequestException } from "@nestjs/common";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
 import { HealthController } from "../src/modules/system/health.controller";
 import { SystemUpdateController } from "../src/modules/system/system-update.controller";
-import { SystemUpdateService } from "../src/modules/common/system-update.service";
+import { SystemUpdateService, verifyManifestSignature } from "../src/modules/common/system-update.service";
 import type { PrismaService } from "../src/modules/common/prisma.service";
 import type { DownloadMirrorService } from "../src/modules/common/download-mirror.service";
 
@@ -76,6 +77,28 @@ function routeMetadata(controller: object, method: string) {
 
   const restart = routeMetadata(SystemUpdateController, "restart");
   assert.equal(restart.method, 1, "restart must be POST");
+}
+
+// 1b) Manifest signature verification (the update supply-chain trust anchor):
+//     a valid ed25519 detached signature verifies; any tampering fails closed.
+{
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const pubB64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  const manifest = Buffer.from('{"version":"0.0.2","artifact":{"sha256":"deadbeef"}}', "utf8");
+  const sig = edSign(null, manifest, privateKey).toString("base64");
+
+  assert.equal(verifyManifestSignature(manifest, sig, pubB64), true, "valid signature must verify");
+  assert.equal(
+    verifyManifestSignature(Buffer.from(manifest.toString("utf8") + " ", "utf8"), sig, pubB64),
+    false,
+    "tampered manifest must fail"
+  );
+  assert.equal(verifyManifestSignature(manifest, "", pubB64), false, "empty signature must fail");
+  assert.equal(verifyManifestSignature(manifest, "bm90LWEtc2ln", pubB64), false, "garbage signature must fail");
+
+  const other = generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }).toString("base64");
+  assert.equal(verifyManifestSignature(manifest, sig, other), false, "wrong key must fail");
+  assert.equal(verifyManifestSignature(manifest, sig, "not-base64!!"), false, "malformed key must fail");
 }
 
 // 2) HealthController is public (no guard) and returns liveness without touching the DB.

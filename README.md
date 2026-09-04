@@ -221,6 +221,22 @@ docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
 
 ### 后台系统版本发布
 
-后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新；SHA-256 校验值始终以直连清单为准，不采信代理返回内容。
+后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新。
+
+**更新包的信任边界（重要）**：清单里的 SHA-256 是整个更新的信任锚，因此**清单本身不能只经加速镜像获取**（被拼接的镜像是第三方服务，若被污染可返回“自己的压缩包 + 匹配哈希”导致容器内执行任意代码）。两种模式：
+
+- **配置了签名公钥**（`CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`，base64 的 DER/SPKI ed25519 公钥）：清单可走加速镜像（保证可用性），但会用该公钥校验随清单发布的分离签名 `manifest.json.sig`，校验不过直接拒绝。**国内 + 镜像部署请用这种模式。**
+- **未配置公钥**：清单只走**直连**拉取（不经镜像），镜像仅用于体积较大的产物下载，其完整性由可信 SHA-256 保证。
+
+启用签名：本地生成一次密钥对，私钥填到仓库 secret `CHORDV_MANIFEST_SIGNING_KEY`（CI 用它签名），公钥填到实例环境变量 `CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`：
+
+```bash
+openssl genpkey -algorithm ed25519 -out manifest_ed25519.pem            # 私钥 -> GitHub secret
+openssl pkey -in manifest_ed25519.pem -pubout -outform DER | base64 -w0 # 公钥(base64 DER) -> 实例 env
+```
+
+### 首次从宝塔切到容器部署的一次性基线
+
+线上库若原先由 `prisma db push` 维护（无迁移历史），首次用容器部署时它既不匹配最终 schema 也不匹配 init 快照，严格基线助手会拒绝自动执行。需先做一次**受控基线**（见 `.env.example` 中 `CHORDV_PRISMA_FORCE_BASELINE` / `CHORDV_SKIP_MIGRATION_BASELINE_CHECK` 与 `scripts/prisma-migrate-with-baseline.mjs` 说明），确认基线正确后再切流量；此后 `release-backend.yml` 产出的迁移即可正常增量应用。
 
 > 桌面客户端发布（`release-desktop.yml`）不受影响，维持原流程。宝塔 pm2 流水线（`deploy-baota.yml` / `scripts/deploy-baota.sh`）已停用自动触发，仅保留手动 `workflow_dispatch` 作为迁移期兜底，确认容器部署稳定后可整体删除。

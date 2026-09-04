@@ -137,6 +137,29 @@ jobs:
           '
           echo "manifest.json:"; cat manifest.json
 
+      - name: Sign manifest (ed25519, if signing key configured)
+        env:
+          SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          cd dist-release
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "No CHORDV_MANIFEST_SIGNING_KEY secret; skipping signature."
+            echo "Instances without a pinned public key will fetch the manifest DIRECT-ONLY"
+            echo "(no accelerate mirror). For China/mirror deployments, configure signing."
+            exit 0
+          fi
+          printf '%s' "$SIGNING_KEY" > /tmp/manifest_key.pem
+          # Detached ed25519 signature over the EXACT manifest.json bytes.
+          node -e '
+            const crypto = require("crypto"), fs = require("fs");
+            const key = crypto.createPrivateKey(fs.readFileSync("/tmp/manifest_key.pem"));
+            const sig = crypto.sign(null, fs.readFileSync("manifest.json"), key);
+            fs.writeFileSync("manifest.json.sig", sig.toString("base64"));
+          '
+          rm -f /tmp/manifest_key.pem
+          echo "Signed manifest.json -> manifest.json.sig"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -149,6 +172,7 @@ jobs:
             dist-release/chordv-backend-${{ steps.version.outputs.version }}.tar.gz
             dist-release/checksums.txt
             dist-release/manifest.json
+            dist-release/manifest.json.sig
 
       - name: Publish manifest to stable raw branch
         if: ${{ github.event.inputs.prerelease != 'true' }}
@@ -163,12 +187,13 @@ jobs:
           # lives here — one file, force-updated each release.
           tmp="$(mktemp -d)"
           cp dist-release/manifest.json "$tmp/latest.json"
+          [ -f dist-release/manifest.json.sig ] && cp dist-release/manifest.json.sig "$tmp/latest.json.sig"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           cd "$tmp"
           git init -q
           git checkout -q -b backend-manifest
-          git add latest.json
+          git add -A
           git commit -q -m "backend manifest ${TAG}"
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" backend-manifest
           echo "Manifest published to backend-manifest branch."

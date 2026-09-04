@@ -33,6 +33,7 @@ export type SystemUpdateRuntimeConfig = {
   healthTimeoutSeconds: number;
   cacheTtlMs: number;
   githubReleaseBaseUrl: string | null;
+  manifestPublicKey: string | null;
 };
 
 function readEnv(name: string): string | null {
@@ -104,6 +105,10 @@ export function resolveSystemUpdateRuntimeConfig(): SystemUpdateRuntimeConfig {
     snapshotBeforeMigrate: readBooleanEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT", true),
     healthTimeoutSeconds: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS", 90),
     cacheTtlMs: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_CACHE_TTL_MS", 10 * 60 * 1000),
-    githubReleaseBaseUrl: readEnv("CHORDV_SYSTEM_UPDATE_GITHUB_RELEASE_BASE_URL")
+    githubReleaseBaseUrl: readEnv("CHORDV_SYSTEM_UPDATE_GITHUB_RELEASE_BASE_URL"),
+    // Base64 DER (SPKI) ed25519 public key. When set, the update manifest may be
+    // fetched via the accelerate mirror but its detached signature is verified
+    // against this key; when unset, the manifest is fetched direct-only.
+    manifestPublicKey: readEnv("CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY")
   };
 }
