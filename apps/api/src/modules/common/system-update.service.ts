@@ -34,6 +34,7 @@ import {
   SYSTEM_UPDATE_DESIRED_VERSION_FILE,
   SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE,
   SYSTEM_UPDATE_PENDING_FILE,
+  SYSTEM_UPDATE_PROMOTING_FILE,
   SYSTEM_UPDATE_RESULT_FILE,
   type SystemUpdateRuntimeConfig
 } from "./system-update.constants";
@@ -196,6 +197,9 @@ export class SystemUpdateService implements OnModuleInit {
   }
 
   async listOperations(limit = 20): Promise<SystemUpdateOperationDto[]> {
+    // Pick up a just-completed supervisor outcome so the audit list reflects it
+    // even on an app instance that stayed up through the whole promotion.
+    await this.consumeResultMarker().catch(() => undefined);
     const rows = await this.prisma.systemUpdateOperation.findMany({
       orderBy: { startedAt: "desc" },
       take: Math.min(Math.max(limit, 1), 100)
@@ -204,12 +208,16 @@ export class SystemUpdateService implements OnModuleInit {
   }
 
   async getOperation(operationId: string): Promise<SystemUpdateOperationDto | null> {
+    // The UI polls this during an update; consuming the marker here finalizes the
+    // operation the moment the supervisor reports stabilization done/rolled-back.
+    await this.consumeResultMarker().catch(() => undefined);
     const row = await this.prisma.systemUpdateOperation.findUnique({ where: { operationId } });
     return row ? this.toOperationDto(row) : null;
   }
 
   async startUpdate(actorLabel: string | null, actorUserId: string | null): Promise<SystemUpdateStartResultDto> {
     this.assertOperational();
+    await this.assertNoPromotionInFlight();
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
     const fromVersion = this.config.currentVersion;
@@ -224,6 +232,7 @@ export class SystemUpdateService implements OnModuleInit {
     targetVersion?: string | null
   ): Promise<SystemUpdateStartResultDto> {
     this.assertOperational();
+    await this.assertNoPromotionInFlight();
     const fromVersion = this.config.currentVersion;
     const target = await this.resolveRollbackTarget(targetVersion, fromVersion);
     const operationId = createId("sysop");
@@ -242,6 +251,7 @@ export class SystemUpdateService implements OnModuleInit {
 
   async startRestart(actorLabel: string | null, actorUserId: string | null): Promise<SystemUpdateStartResultDto> {
     this.assertOperational();
+    await this.assertNoPromotionInFlight();
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
     const fromVersion = this.config.currentVersion;
@@ -420,14 +430,48 @@ export class SystemUpdateService implements OnModuleInit {
     const target = path.join(backupDir, `pre-migrate-${version}-${stamp}.sql.gz`);
     // Use bash (present in the bookworm runtime image): `set -o pipefail` is a
     // bashism — under dash (Debian's /bin/sh) it aborts before pg_dump runs.
-    await this.runShell(
-      "bash",
-      ["-c", 'set -o pipefail; pg_dump "$DATABASE_URL" | gzip > "$SNAPSHOT_TARGET"'],
-      { ...process.env, DATABASE_URL: databaseUrl, SNAPSHOT_TARGET: target },
-      "数据库快照",
-      10 * 60 * 1000
-    );
+    try {
+      await this.runShell(
+        "bash",
+        ["-c", 'set -o pipefail; pg_dump "$DATABASE_URL" | gzip > "$SNAPSHOT_TARGET"'],
+        { ...process.env, DATABASE_URL: databaseUrl, SNAPSHOT_TARGET: target },
+        "数据库快照",
+        10 * 60 * 1000
+      );
+    } catch (error) {
+      // A failed pg_dump/gzip leaves a truncated .sql.gz behind — remove it so a
+      // later restore can't pick up a corrupt snapshot and it doesn't waste space.
+      await fs.rm(target, { force: true }).catch(() => undefined);
+      throw error;
+    }
     this.logger.log(`Database snapshot created before migration: ${target}`);
+    await this.pruneSnapshots(backupDir);
+  }
+
+  private async pruneSnapshots(backupDir: string): Promise<void> {
+    // Unbounded pg_dump snapshots would fill the state volume and then break
+    // future snapshots, pending markers, and audit writes. Keep the newest N.
+    const keep = this.config.snapshotKeep;
+    try {
+      const entries = await fs.readdir(backupDir);
+      const names = entries.filter((name) => /^pre-migrate-.*\.sql\.gz$/.test(name));
+      const withTime = await Promise.all(
+        names.map(async (name) => {
+          const stat = await fs.stat(path.join(backupDir, name)).catch(() => null);
+          return { name, mtime: stat ? stat.mtimeMs : 0 };
+        })
+      );
+      // Newest first, then drop everything beyond the keep count.
+      const removable = withTime.sort((a, b) => b.mtime - a.mtime).slice(keep);
+      for (const { name } of removable) {
+        await fs.rm(path.join(backupDir, name), { force: true }).catch(() => undefined);
+      }
+      if (removable.length > 0) {
+        this.logger.log(`Pruned ${removable.length} old database snapshot(s), keeping ${keep}.`);
+      }
+    } catch (error) {
+      this.logger.warn(`Snapshot pruning failed: ${this.describeError(error)}`);
+    }
   }
 
   private async runPrismaMigrateDeploy(releaseDir: string): Promise<void> {
@@ -712,6 +756,32 @@ export class SystemUpdateService implements OnModuleInit {
     }
   }
 
+  private promotingMarkerPath(): string | null {
+    return this.config.stateDir ? path.join(this.config.stateDir, SYSTEM_UPDATE_PROMOTING_FILE) : null;
+  }
+
+  private async readPromotingMarker(): Promise<{ version?: string; operationId?: string; kind?: string } | null> {
+    const file = this.promotingMarkerPath();
+    if (!file) return null;
+    try {
+      return JSON.parse(await fs.readFile(file, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  private async assertNoPromotionInFlight() {
+    // The advisory lock is a per-session lock and cannot survive the process exit
+    // that self-update requires, so it does not cover the supervisor's promote +
+    // stabilize window. The persisted promoting marker does: while it exists, a
+    // second admin (talking to the freshly-started, not-yet-stable API) must not
+    // be able to start a competing operation.
+    const marker = await this.readPromotingMarker();
+    if (marker) {
+      throw new ConflictException("已有系统更新正在提升/健康检查中，请稍后重试。");
+    }
+  }
+
   private async acquireLock(): Promise<OperationLock> {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
@@ -834,76 +904,74 @@ export class SystemUpdateService implements OnModuleInit {
     await fs.rm(path.join(this.config.stateDir, SYSTEM_UPDATE_PENDING_FILE), { force: true });
   }
 
-  private async reconcileOperationsOnBoot() {
-    if (this.config.stateDir) {
-      const resultFile = path.join(this.config.stateDir, SYSTEM_UPDATE_RESULT_FILE);
-      let marker: { operationId?: string; status?: string; version?: string; reason?: string } | null = null;
-      let markerPresent = false;
-      try {
-        const raw = await fs.readFile(resultFile, "utf8");
-        markerPresent = true;
-        try {
-          marker = JSON.parse(raw);
-        } catch {
-          // Malformed marker is a permanent error — drop it so we don't loop.
-          this.logger.warn("Discarding unparseable operation-result marker.");
-          await fs.rm(resultFile, { force: true });
-          markerPresent = false;
-        }
-      } catch {
-        // no result marker; fall through to stale sweep
-      }
-
-      if (markerPresent && marker?.operationId && marker.status) {
-        const status =
-          marker.status === "success"
-            ? "succeeded"
-            : marker.status === "rolledback"
-              ? "rolled_back"
-              : "failed";
-        try {
-          await this.prisma.systemUpdateOperation.update({
-            where: { operationId: marker.operationId },
-            data: {
-              status,
-              finishedAt: new Date(),
-              ...(marker.version ? { toVersion: marker.version } : {}),
-              ...(marker.reason ? { failureReason: marker.reason } : {})
-            }
-          });
-          // Delete ONLY after the outcome is persisted; a transient DB error must
-          // keep the marker so a later boot can still record the real outcome
-          // (e.g. an automatic rollback's reason) instead of losing it.
-          await fs.rm(resultFile, { force: true });
-        } catch (error) {
-          this.logger.warn(
-            `Failed to persist operation-result marker (will retry next boot): ${this.describeError(error)}`
-          );
-        }
-      } else if (markerPresent) {
-        // Present but missing required fields — drop it to avoid a permanent loop.
-        await fs.rm(resultFile, { force: true }).catch(() => undefined);
-      }
+  /**
+   * Apply the supervisor's operation-result marker (if any) to the DB. The
+   * supervisor writes it AFTER the health gate + stabilization window resolves
+   * (success, rollback, or failure), so this — not "the app booted" — is the
+   * authoritative signal that finalizes an update/rollback. Called on boot and on
+   * every status poll, so a still-running app picks up the outcome without a reboot.
+   */
+  private async consumeResultMarker(): Promise<void> {
+    if (!this.config.stateDir) return;
+    const resultFile = path.join(this.config.stateDir, SYSTEM_UPDATE_RESULT_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(resultFile, "utf8");
+    } catch {
+      return; // no marker
     }
+    let marker: { operationId?: string; status?: string; version?: string; reason?: string };
+    try {
+      marker = JSON.parse(raw);
+    } catch {
+      this.logger.warn("Discarding unparseable operation-result marker.");
+      await fs.rm(resultFile, { force: true }).catch(() => undefined);
+      return;
+    }
+    if (!marker.operationId || !marker.status) {
+      await fs.rm(resultFile, { force: true }).catch(() => undefined);
+      return;
+    }
+    const status =
+      marker.status === "success" ? "succeeded" : marker.status === "rolledback" ? "rolled_back" : "failed";
+    try {
+      await this.prisma.systemUpdateOperation.update({
+        where: { operationId: marker.operationId },
+        data: {
+          status,
+          finishedAt: new Date(),
+          ...(marker.version ? { toVersion: marker.version } : {}),
+          ...(marker.reason ? { failureReason: marker.reason } : {})
+        }
+      });
+      // Delete ONLY after the outcome is persisted; a transient DB error must keep
+      // the marker so a later poll/boot can still record the real outcome.
+      await fs.rm(resultFile, { force: true }).catch(() => undefined);
+    } catch (error) {
+      this.logger.warn(`Failed to persist operation-result marker (will retry): ${this.describeError(error)}`);
+    }
+  }
 
-    // Any operation still "running"/"pending" that we cannot account for from a
-    // supervisor result marker is resolved by observing the version we actually
-    // came back on. The running app IS the proof of a successful promotion:
+  private async reconcileOperationsOnBoot() {
+    await this.consumeResultMarker();
+
+    // Operations still "running"/"pending" with no result marker:
     //   - restart ops that come back are successful by definition;
-    //   - an update/rollback whose target == the version now running promoted
-    //     cleanly and is serving traffic → succeeded (the supervisor only writes
-    //     a result marker for the failure/rollback path, so success has none);
-    //   - anything else (target != current, no marker) was interrupted before
-    //     the new version took effect → failed.
-    const current = this.config.currentVersion;
+    //   - an update/rollback whose promotion is still being stabilized by the
+    //     supervisor (promoting marker matches) is left running — its success is
+    //     NOT confirmed just because the port opened; the supervisor's result
+    //     marker (written only after stabilization) will finalize it;
+    //   - anything else was interrupted before completing → failed.
+    const promoting = await this.readPromotingMarker();
     const stale = await this.prisma.systemUpdateOperation.findMany({
       where: { status: { in: ["pending", "running"] } }
     });
     for (const op of stale) {
       if (op.kind === "restart") {
         await this.finishOperation(op.operationId, "succeeded", {}).catch(() => undefined);
-      } else if (op.toVersion && op.toVersion === current) {
-        await this.finishOperation(op.operationId, "succeeded", { toVersion: current }).catch(() => undefined);
+      } else if (promoting?.operationId && promoting.operationId === op.operationId) {
+        // still in flight — leave it running for the supervisor to finalize
+        continue;
       } else {
         await this.finishOperation(op.operationId, "failed", {
           failureReason: "任务在服务重启期间中断，未确认完成。"

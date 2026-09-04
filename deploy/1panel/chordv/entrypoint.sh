@@ -234,8 +234,11 @@ while true; do
 
   if wait_healthy "$APP_PID" && confirm_stable "$APP_PID"; then
     printf '%s' "$GEN_VERSION" > "$LAST_GOOD_FILE"
+    # Finalize the operation ONLY now — after health + stabilization. The app does
+    # not self-confirm on boot (a version can open the port then fail during delayed
+    # init); it consumes this marker to mark the op succeeded.
+    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "success" "$GEN_VERSION" ""
     clear_promoting
-    # Success writes no result marker: the app confirms its own promotion on boot.
     log "$GEN_VERSION healthy + stable (last-good)"
     GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
     wait "$APP_PID"; EXIT_CODE=$?

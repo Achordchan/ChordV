@@ -49,10 +49,12 @@ jobs:
           RAW_VERSION: ${{ github.event.inputs.version }}
         run: |
           version="${RAW_VERSION#v}"
-          # Match the backend's strict SemVer (normalizeVersion / STRICT_SEMVER_PATTERN):
-          # no leading zeros, optional -prerelease and +build. Rejects e.g. 1.2.3.foo,
-          # which would otherwise force-publish a manifest the running app can't parse.
-          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          # Match the backend's STRICT_SEMVER_PATTERN exactly (normalizeVersion):
+          # no leading zeros; prerelease/build are non-empty dot-separated identifiers
+          # (so 1.2.3.foo, 01.2.3, and 1.2.3-beta..1 are all rejected here too, rather
+          # than force-publishing a manifest every running instance would reject).
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?(\+([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?$'
+          if [[ ! "$version" =~ $semver ]]; then
             echo "Invalid version (must be strict SemVer): ${RAW_VERSION}" >&2; exit 1
           fi
           file_version="$(tr -d ' \t\r\n' < SYSTEM_VERSION)"

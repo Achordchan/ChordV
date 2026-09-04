@@ -18,6 +18,10 @@ import * as path from "node:path";
 
 export const SYSTEM_UPDATE_PENDING_FILE = "pending.json";
 export const SYSTEM_UPDATE_RESULT_FILE = "operation-result.json";
+// Written by the supervisor while a promotion is being health-gated/stabilized;
+// present == "a promotion is in flight" even across the process restart (when the
+// advisory lock cannot be held). Cleared once stabilization succeeds or rolls back.
+export const SYSTEM_UPDATE_PROMOTING_FILE = "promoting.json";
 export const SYSTEM_UPDATE_DESIRED_VERSION_FILE = "desired-version";
 export const SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE = "last-good-version";
 
@@ -29,6 +33,7 @@ export type SystemUpdateRuntimeConfig = {
   backupDir: string | null;
   manifestUrl: string | null;
   keepReleases: number;
+  snapshotKeep: number;
   snapshotBeforeMigrate: boolean;
   healthTimeoutSeconds: number;
   cacheTtlMs: number;
@@ -102,6 +107,7 @@ export function resolveSystemUpdateRuntimeConfig(): SystemUpdateRuntimeConfig {
     backupDir: readEnv("CHORDV_SYSTEM_UPDATE_BACKUP_DIR"),
     manifestUrl: readEnv("CHORDV_SYSTEM_UPDATE_MANIFEST_URL"),
     keepReleases: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_KEEP_RELEASES", 3),
+    snapshotKeep: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP", 5),
     snapshotBeforeMigrate: readBooleanEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT", true),
     healthTimeoutSeconds: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS", 90),
     cacheTtlMs: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_CACHE_TTL_MS", 10 * 60 * 1000),

@@ -49,7 +49,10 @@ services:
     volumes:
       - ./api-releases:/app/releases
       - ./api-state:/app/state
-      - ./release-storage:/data/releases
+      # Keep the SAME host source (./releases) AND container path (/data/releases)
+      # the previous compose used, so existing release-center artifacts and the
+      # /data/releases/... paths stored in the DB remain valid after the switch.
+      - ./releases:/data/releases
 
   admin:
     build:
