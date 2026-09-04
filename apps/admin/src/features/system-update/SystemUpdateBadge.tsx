@@ -36,7 +36,10 @@ type BusyKind = "update" | "rollback" | "restart";
 type Phase = "idle" | "running" | "reconnecting" | "done";
 
 const POLL_INTERVAL_MS = 3000;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+// Must exceed the backend's worst case: a pre-migration pg_dump snapshot and a
+// prisma migrate deploy can each run up to ~10 min, plus download + restart.
+// A shorter UI timeout would wrongly declare failure while the update is still live.
+const POLL_TIMEOUT_MS = 30 * 60 * 1000;
 
 function parseErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -99,6 +102,7 @@ export function SystemUpdateBadge() {
   const [confirm, setConfirm] = useState<{ kind: BusyKind; version?: string; title: string; body: string } | null>(null);
 
   const pollTimer = useRef<number | null>(null);
+  const polledOpId = useRef<string | null>(null);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -145,20 +149,9 @@ export function SystemUpdateBadge() {
     }
   }, []);
 
-  // Initial load: current version + a cached update check.
-  useEffect(() => {
-    void (async () => {
-      const status = await loadRuntime();
-      if (status?.enabled) void runCheck(false);
-    })();
-  }, [loadRuntime, runCheck]);
-
-  useEffect(() => {
-    if (opened) void loadAux();
-  }, [opened, loadAux]);
-
   const finishPolling = useCallback(
     async (op: SystemUpdateOperationDto | null) => {
+      polledOpId.current = null;
       setActiveOp(op);
       setPhase("done");
       setBusy(null);
@@ -189,6 +182,7 @@ export function SystemUpdateBadge() {
       const tick = async () => {
         if (!mounted.current) return;
         if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+          polledOpId.current = null;
           setPhase("done");
           setBusy(null);
           notifications.show({
@@ -232,6 +226,7 @@ export function SystemUpdateBadge() {
               ? await startSystemRollback(version)
               : await startSystemRestart();
         notifications.show({ color: "blue", title: "任务已开始", message: result.message });
+        polledOpId.current = result.operationId;
         pollOperation(result.operationId, Date.now());
       } catch (error) {
         setBusy(null);
@@ -241,6 +236,44 @@ export function SystemUpdateBadge() {
     },
     [pollOperation]
   );
+
+  // Resume following an operation that is already running on the backend (page
+  // reload, panel reopened mid-update, or one started by another admin) instead
+  // of showing normal enabled controls while the task is still live.
+  const resumeActiveOperation = useCallback(async () => {
+    if (polledOpId.current) return;
+    try {
+      const ops = await fetchSystemOperations(5);
+      const active = ops.find((op) => op.status === "running" || op.status === "pending");
+      if (active && !polledOpId.current && mounted.current) {
+        polledOpId.current = active.operationId;
+        setActiveOp(active);
+        setBusy(active.kind);
+        setPhase("running");
+        pollOperation(active.operationId, Date.now());
+      }
+    } catch {
+      // best-effort
+    }
+  }, [pollOperation]);
+
+  // Initial load: current version + a cached update check + resume any live op.
+  useEffect(() => {
+    void (async () => {
+      const status = await loadRuntime();
+      if (status?.enabled) {
+        void runCheck(false);
+        void resumeActiveOperation();
+      }
+    })();
+  }, [loadRuntime, runCheck, resumeActiveOperation]);
+
+  useEffect(() => {
+    if (opened) {
+      void loadAux();
+      void resumeActiveOperation();
+    }
+  }, [opened, loadAux, resumeActiveOperation]);
 
   const requestConfirm = (next: { kind: BusyKind; version?: string; title: string; body: string }) => {
     setConfirm(next);

@@ -263,6 +263,16 @@ export class SystemUpdateService implements OnModuleInit {
   private async runUpdateInBackground(operationId: string, fromVersion: string, lock: OperationLock) {
     try {
       const check = await this.checkUpdate(true);
+      // Only act on a manifest we just re-fetched cleanly. A forced refresh that
+      // fell back to a stale cache (warning set / cached=true) could otherwise let
+      // an admin install a package that was already withdrawn upstream.
+      if (check.warning || check.cached) {
+        await this.finishOperation(operationId, "failed", {
+          failureReason: `无法确认最新版本（清单刷新失败）：${check.warning ?? "已回退到过期缓存"}。已取消更新。`
+        });
+        await lock.release().catch(() => undefined);
+        return;
+      }
       const release = this.cache?.release ?? null;
       if (!check.hasUpdate || !release) {
         await this.finishOperation(operationId, "succeeded", {
@@ -524,6 +534,15 @@ export class SystemUpdateService implements OnModuleInit {
         throw new BadRequestException("更新清单签名校验失败（清单可能被篡改或加速镜像返回了非法内容）。");
       }
     } else {
+      // No signature to authenticate the manifest, so the ONLY thing standing
+      // between an on-path attacker and arbitrary-code execution is transport
+      // security. A plain-HTTP manifest could be rewritten in transit (hash +
+      // artifact URL together), so refuse it outright when unsigned.
+      if (!/^https:\/\//i.test(manifestUrl.trim())) {
+        throw new BadRequestException(
+          "未配置清单签名公钥时，更新清单地址必须使用 HTTPS（或改用签名清单）。"
+        );
+      }
       manifestText = await this.fetchManifestText(manifestUrl, null);
     }
     return this.normalizeManifest(JSON.parse(manifestText) as RawManifest);
@@ -563,12 +582,48 @@ export class SystemUpdateService implements OnModuleInit {
     throw lastError instanceof Error ? lastError : new Error("清单下载失败");
   }
 
-  private async readCappedText(response: { text: () => Promise<string> }): Promise<string> {
-    const text = await response.text();
-    if (text.length > MAX_MANIFEST_BYTES) {
-      throw new Error("更新清单超过大小上限。");
+  private async readCappedText(response: { body?: unknown; text: () => Promise<string> }): Promise<string> {
+    // Stream-read with an incremental byte cap: a malicious/broken mirror could
+    // otherwise return an arbitrarily large body and exhaust memory before any
+    // post-hoc length check (response.text() buffers the whole thing first).
+    // `body` is typed loosely to bridge the DOM vs node:stream/web ReadableStream
+    // typings; we only touch the small reader surface we actually use.
+    const body = response.body as
+      | {
+          getReader?: () => {
+            read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+            cancel: () => Promise<unknown>;
+          };
+        }
+      | null
+      | undefined;
+    if (!body || typeof body.getReader !== "function") {
+      // No stream available (shouldn't happen with undici) — fall back but still cap.
+      const text = await response.text();
+      if (Buffer.byteLength(text, "utf8") > MAX_MANIFEST_BYTES) {
+        throw new Error("更新清单超过大小上限。");
+      }
+      return text;
     }
-    return text;
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          total += value.byteLength;
+          if (total > MAX_MANIFEST_BYTES) {
+            throw new Error("更新清单超过大小上限。");
+          }
+          chunks.push(value);
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
   }
 
   private normalizeManifest(raw: RawManifest): NormalizedRelease {

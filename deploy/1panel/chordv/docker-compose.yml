@@ -41,13 +41,15 @@ services:
     environment:
       # Release-center artifacts (desktop installers uploaded via 发布中心) must live
       # on a persistent mount, not the container layer, or they vanish on recreate.
-      CHORDV_RELEASE_STORAGE_ROOT: /app/release-storage
+      # Keep the SAME container path (/data/releases) the previous compose used, so
+      # existing DB records that store /data/releases/... paths stay resolvable.
+      CHORDV_RELEASE_STORAGE_ROOT: /data/releases
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
       - ./api-releases:/app/releases
       - ./api-state:/app/state
-      - ./release-storage:/app/release-storage
+      - ./release-storage:/data/releases
 
   admin:
     build:
