@@ -264,9 +264,10 @@ export class SystemUpdateService implements OnModuleInit {
       toVersion: fromVersion
     });
     // No pending marker: the supervisor simply restarts the current version.
-    this.scheduleProcessExit(`restart requested (operation ${operationId})`, async () => {
-      await lock.release().catch(() => undefined);
-    });
+    // Lock stays held until process exit (see scheduleProcessExit) so no second
+    // operation can slip in during the exit-flush window.
+    void lock;
+    this.scheduleProcessExit(`restart requested (operation ${operationId})`);
     return { operationId, accepted: true, message: "服务正在重启。" };
   }
 
@@ -299,25 +300,52 @@ export class SystemUpdateService implements OnModuleInit {
       try {
         migrationApplied = await this.applyPendingMigrations(releaseDir, release.version);
       } catch (error) {
+        // Migration failed → DB is unchanged (or the failed migration is recorded
+        // by prisma); safe to abort without promoting.
         await this.removeDirSafe(releaseDir);
         throw error;
       }
 
-      // Bookkeeping BEFORE the pending marker: the marker is what makes the
-      // supervisor promote this release on the next boot, so it must be the very
-      // last, non-failing step. If it were written first, a transient failure in
-      // updateOperation/prune would take the catch path (record failed) yet leave
-      // pending.json behind — promoting a release we just marked failed.
-      await this.updateOperation(operationId, { migrationApplied });
-      await this.pruneOldReleases(release.version, fromVersion);
-      await this.writePendingMarker({ version: release.version, operationId, kind: "update" });
-
-      this.scheduleProcessExit(
-        `staged update ${fromVersion} -> ${release.version} (operation ${operationId})`,
-        async () => {
-          await lock.release().catch(() => undefined);
-        }
+      // ---- point of no return ----
+      // If a migration ran, the database is now on the NEW schema and only the new
+      // code matches it. Non-critical bookkeeping (prune, audit flag) must NOT
+      // abort the promotion — otherwise the old code keeps serving a migrated DB.
+      // So best-effort those, and treat only writePendingMarker (which activates
+      // the new code) as the load-bearing step.
+      await this.pruneOldReleases(release.version, fromVersion).catch((error) =>
+        this.logger.warn(`Prune old releases failed (non-fatal): ${this.describeError(error)}`)
       );
+      await this.updateOperation(operationId, { migrationApplied }).catch((error) =>
+        this.logger.warn(`Audit update failed (non-fatal): ${this.describeError(error)}`)
+      );
+
+      try {
+        await this.writePendingMarker({ version: release.version, operationId, kind: "update" });
+      } catch (error) {
+        if (migrationApplied) {
+          // Worst case: DB migrated but the new code cannot be staged. Do NOT quietly
+          // mark "failed" and keep running old code on the new schema — surface it so
+          // an operator can promote manually or restore the pre-migration snapshot.
+          const reason = this.describeError(error);
+          this.logger.error(
+            `CRITICAL: migration for ${release.version} applied but staging failed: ${reason}. ` +
+              `Old code is running against the new schema — manual promotion or snapshot restore required.`
+          );
+          await this.finishOperation(operationId, "failed", {
+            toVersion: release.version,
+            failureReason: `迁移已执行但暂存新版本失败：${reason}。旧代码正运行在新库结构上，需人工介入（手动切换或用迁移前快照恢复）。`
+          }).catch(() => undefined);
+          await lock.release().catch(() => undefined);
+          return;
+        }
+        throw error; // no migration ran → normal abort is safe
+      }
+
+      // Keep the advisory lock until the process actually exits (see
+      // scheduleProcessExit): the DB session closing on exit releases it, which
+      // closes the window where a second request could grab the lock before the
+      // supervisor writes promoting.json.
+      this.scheduleProcessExit(`staged update ${fromVersion} -> ${release.version} (operation ${operationId})`);
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System update failed (operation ${operationId}): ${reason}`);
@@ -336,12 +364,8 @@ export class SystemUpdateService implements OnModuleInit {
     try {
       await this.markRunning(operationId, target);
       await this.writePendingMarker({ version: target, operationId, kind: "rollback" });
-      this.scheduleProcessExit(
-        `staged rollback ${fromVersion} -> ${target} (operation ${operationId})`,
-        async () => {
-          await lock.release().catch(() => undefined);
-        }
-      );
+      // Lock stays held until process exit (see scheduleProcessExit).
+      this.scheduleProcessExit(`staged rollback ${fromVersion} -> ${target} (operation ${operationId})`);
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System rollback failed (operation ${operationId}): ${reason}`);
@@ -1003,11 +1027,16 @@ export class SystemUpdateService implements OnModuleInit {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  private scheduleProcessExit(reason: string, beforeExit: () => Promise<void>) {
+  private scheduleProcessExit(reason: string, beforeExit?: () => Promise<void>) {
+    // NOTE: callers deliberately do NOT release the advisory lock here. The lock is
+    // held on the operation's dedicated PG session; letting process.exit close that
+    // session is what releases it, so the lock stays held across the whole
+    // exit-flush window. Releasing it earlier would open a gap where a second
+    // request could acquire the lock before the supervisor writes promoting.json.
     this.logger.warn(`Scheduling process exit for self-update: ${reason}`);
     setTimeout(() => {
       void (async () => {
-        await beforeExit().catch(() => undefined);
+        if (beforeExit) await beforeExit().catch(() => undefined);
         this.logger.warn("Exiting process; supervisor will bring the service back up.");
         process.exit(0);
       })();

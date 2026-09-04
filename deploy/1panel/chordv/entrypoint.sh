@@ -72,11 +72,19 @@ EOF
 }
 
 write_promoting() {
-  # write_promoting <version> <operationId> <kind>
-  mkdir -p "$STATE_DIR"
-  cat > "$PROMOTING_FILE" <<EOF
-{"version":"$1","operationId":"$2","kind":"$3"}
-EOF
+  # write_promoting <version> <operationId> <kind> — returns non-zero if the marker
+  # could not be durably written (e.g. full state volume). Callers MUST NOT delete
+  # pending.json or promote unless this succeeds, or a mid-gate restart would treat
+  # the target as an ordinary trusted start and skip the automatic rollback.
+  mkdir -p "$STATE_DIR" || return 1
+  local tmp="$PROMOTING_FILE.tmp.$$"
+  if ! printf '{"version":"%s","operationId":"%s","kind":"%s"}\n' "$1" "$2" "$3" > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null; return 1
+  fi
+  [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$PROMOTING_FILE" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  sync 2>/dev/null || true
+  return 0
 }
 
 clear_promoting() { rm -f "$PROMOTING_FILE"; }
@@ -250,12 +258,22 @@ while true; do
       POP="$(json_get "$PENDING_FILE" operationId)"
       PKIND="$(json_get "$PENDING_FILE" kind)"
       if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ]; then
-        # Persist the promotion BEFORE the next iteration flips desired-version, so
+        # Persist the promotion BEFORE deleting pending / flipping desired-version, so
         # a crash in the gap is resumed as a health-gated promotion, not a bare start.
-        write_promoting "$PV" "$POP" "$PKIND"
-        rm -f "$PENDING_FILE"
-        log "pending $PKIND -> $PV (op $POP)"
-        GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1
+        # Only proceed if the marker was durably written.
+        if write_promoting "$PV" "$POP" "$PKIND"; then
+          rm -f "$PENDING_FILE"
+          log "pending $PKIND -> $PV (op $POP)"
+          GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1
+        else
+          # Could not persist the promotion marker (state volume full?). Do NOT
+          # promote without it — keep serving the current version and surface it.
+          # pending.json is dropped so a later app exit doesn't silently promote
+          # without a durable marker; the op is recorded failed for the operator.
+          log "FATAL: cannot persist promoting marker; NOT promoting $PV, keeping $GEN_VERSION"
+          rm -f "$PENDING_FILE"
+          [ -n "$POP" ] && write_result "$POP" "failed" "$PV" "无法持久化提升标记（状态卷可能已满），未切换版本"
+        fi
       else
         rm -f "$PENDING_FILE"
         log "pending marker names unusable version '$PV'; restarting $GEN_VERSION"
