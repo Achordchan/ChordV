@@ -107,6 +107,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   // so a graceful shutdown mid-migration terminates the whole tree instead of
   // leaving it changing the DB after the app has gone (see onModuleDestroy).
   private readonly activeChildGroups = new Set<number>();
+  // Monotonic suffix so concurrent durable writes never collide on a shared tmp path.
+  private tmpSeq = 0;
+  // Serializes the signed manifest-floor compare-and-write so concurrent update checks
+  // cannot interleave and move the anti-replay floor backward (it must only advance).
+  private manifestFloorLock: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -666,6 +671,17 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async enforceSignedManifestFloor(version: string): Promise<void> {
+    // Serialize the read-compare-write: two concurrent signed checks (e.g. a UI poll
+    // and a background check during a release transition) must not interleave, or one
+    // accepting an OLDER version could persist its floor after one accepting a newer
+    // version and move the floor backward. Chain on the lock; a rejected downgrade
+    // propagates to THIS caller but must not poison the chain for later callers.
+    const run = this.manifestFloorLock.then(() => this.enforceSignedManifestFloorLocked(version));
+    this.manifestFloorLock = run.catch(() => undefined);
+    return run;
+  }
+
+  private async enforceSignedManifestFloorLocked(version: string): Promise<void> {
     if (!this.config.stateDir) return;
     const floorFile = path.join(this.config.stateDir, SYSTEM_UPDATE_MANIFEST_FLOOR_FILE);
     let floor: string | null = null;
@@ -1024,15 +1040,23 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async writeFileDurable(file: string, contents: string) {
-    const tmp = `${file}.tmp`;
-    const handle = await fs.open(tmp, "w");
+    // Per-write UNIQUE temp path (pid + monotonic seq): two concurrent durable writes
+    // must never share the same tmp inode, or one could overwrite/rename the other's
+    // half-written bytes (e.g. concurrent signed manifest-floor updates).
+    const tmp = `${file}.tmp.${process.pid}.${(this.tmpSeq += 1)}`;
     try {
-      await handle.writeFile(contents, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+      const handle = await fs.open(tmp, "w");
+      try {
+        await handle.writeFile(contents, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(tmp, file);
+    } catch (error) {
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+      throw error;
     }
-    await fs.rename(tmp, file);
     await this.fsyncDir(path.dirname(file));
   }
 

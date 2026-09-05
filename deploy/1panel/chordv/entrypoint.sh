@@ -388,9 +388,18 @@ handle_failed_promotion() {
 
 APP_PID=""
 forward_signal() {
-  [ -n "$APP_PID" ] && kill -TERM "$APP_PID" 2>/dev/null
+  # On docker stop/recreate, forward SIGTERM to the app AND wait for it to exit before
+  # we (PID 1) leave — otherwise the container teardown that follows PID 1's exit can
+  # SIGKILL Node mid-shutdown, defeating enableShutdownHooks (graceful DB disconnect,
+  # in-flight request drain). Docker's own SIGKILL grace period backstops a hung app,
+  # so no hard timeout is needed here.
+  if [ -n "$APP_PID" ]; then
+    kill -TERM "$APP_PID" 2>/dev/null
+    wait "$APP_PID" 2>/dev/null
+  fi
+  exit 143
 }
-trap 'forward_signal; exit 143' TERM INT
+trap forward_signal TERM INT
 
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 
@@ -527,15 +536,18 @@ while true; do
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
     SUCC_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$SUCC_MIG" = "true" ] || SUCC_MIG="false"
-    # A rollback LANDING (kind=rollback) finalizes as 'rolledback' — but only now that
-    # last-good has itself passed readiness + stabilization, so we never report a
-    # rollback that failed to restore service. migrationApplied carries the FAILED
-    # update's value (whether the schema was migrated) so the app can still warn.
-    if [ "$GEN_KIND" = "rollback" ]; then
+    # 'rolledback' is reserved for an AUTOMATIC rollback LANDING — identified by a
+    # non-empty rollbackFrom (the failed version handle_failed_promotion recorded) —
+    # and written only now that last-good has itself passed readiness + stabilization,
+    # so we never claim a rollback that failed to restore service. An OPERATOR-requested
+    # rollback (kind=rollback but NO rollbackFrom) that comes up healthy is a normal
+    # 'success': the target is exactly what the admin asked for, and reporting it as
+    # "auto-rolled-back after a failed health check" would be wrong. migrationApplied
+    # carries the failed update's value so the app can still warn about the schema.
+    RB_FROM="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
+    if [ -n "$RB_FROM" ]; then
       RES_STATUS="rolledback"
-      RB_FROM="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
-      RES_REASON="${GEN_ROLLBACK_REASON:-新版本未通过验证，已自动回滚}"
-      [ -n "$RB_FROM" ] && RES_REASON="${RES_REASON}（原版本 ${RB_FROM}）"
+      RES_REASON="${GEN_ROLLBACK_REASON:-新版本未通过验证，已自动回滚}（原版本 ${RB_FROM}）"
     else
       RES_STATUS="success"; RES_REASON=""
     fi

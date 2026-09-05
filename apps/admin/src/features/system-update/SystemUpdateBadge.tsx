@@ -297,11 +297,19 @@ export function SystemUpdateBadge() {
   }, [loadRuntime, runCheck, resumeActiveOperation]);
 
   useEffect(() => {
-    if (opened) {
+    if (!opened) return;
+    void (async () => {
+      // Reload runtime status on every open, not just on mount: if the initial mount
+      // load failed during a brief API restart / network blip, `runtime` stays null
+      // and every control is disabled until a full page reload. Reopening the popover
+      // now re-fetches it and, once enabled, refreshes the update check too — so the
+      // panel self-heals instead of stranding the admin on stale disabled controls.
+      const status = await loadRuntime();
+      if (status?.enabled) void runCheck(false);
       void loadAux();
       void resumeActiveOperation();
-    }
-  }, [opened, loadAux, resumeActiveOperation]);
+    })();
+  }, [opened, loadRuntime, runCheck, loadAux, resumeActiveOperation]);
 
   const requestConfirm = (next: { kind: BusyKind; version?: string; title: string; body: string }) => {
     setConfirm(next);
