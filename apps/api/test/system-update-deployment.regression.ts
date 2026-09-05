@@ -49,6 +49,10 @@ assert.match(read(`${deploy}/Dockerfile.admin`), /^ENV CHORDV_ADMIN_STATE_DIR=\/
 assert.match(read(`${deploy}/admin-entrypoint.sh`), /CHORDV_ADMIN_STATE_DIR:-\/usr\/share\/nginx\/public-state/);
 assert.doesNotMatch(admin, /^      - .*api-(?:state|backups)(?::|\/)/m);
 
+for (const proxy of ["admin.nginx.conf", "openresty.v.baymaxgroup.com.conf"]) {
+  assert.match(read(`${deploy}/${proxy}`), /^        proxy_buffering off;$/m, `${proxy} must stream SSE without buffering`);
+}
+
 const supervisor = read(`${deploy}/entrypoint.sh`);
 assert.match(supervisor, /^BACKUP_DIR="\$\{CHORDV_SYSTEM_UPDATE_BACKUP_DIR:-\/app\/backups\}"$/m);
 assert.match(supervisor, /^PUBLIC_STATE_DIR="\$\{CHORDV_SYSTEM_PUBLIC_STATE_DIR:-\/app\/public-state\}"$/m);

@@ -544,6 +544,11 @@ handle_failed_promotion() {
     MIG="$GEN_MIG"
   fi
   if [ "$GEN_PROMOTION" = "1" ]; then
+    # Restart promises to keep the selected version; an unhealthy restart must not
+    # silently become a downgrade merely because a predecessor is available.
+    if [ "$GEN_KIND" = "restart" ]; then
+      persist_failed_promotion "$GEN_VERSION" "${reason}（重启失败，未切换版本，请人工恢复）" "$MIG"
+    fi
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
     if [ "$LG" = "$GEN_VERSION" ]; then
       LG="$(read_file_trim "$LAST_GOOD_FILE.previous")"

@@ -159,12 +159,35 @@ async function interruptedHandoff(conflict: boolean) {
   } finally { await f.cleanup(); }
 }
 
+async function restartKeepsVersion() {
+  const f = fixture();
+  try {
+    f.release("0.0.1"); f.release("0.0.2");
+    writeFileSync(path.join(f.root, "releases/0.0.2/apps/api/dist/apps/api/src/main.js"), "process.exit(1);");
+    writeFileSync(path.join(f.state, "last-good-version"), "0.0.2");
+    writeFileSync(path.join(f.state, "last-good-version.previous"), "0.0.1");
+    writeFileSync(path.join(f.state, "desired-version"), "0.0.2");
+    writeFileSync(path.join(f.state, "pending.json"), JSON.stringify({ version: "0.0.2", operationId: "sysop-restart", kind: "restart", migrationApplied: false }));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const run = f.start();
+      await until(() => run.child.exitCode !== null, run.logs);
+      const result = JSON.parse(readFileSync(path.join(f.state, "operation-result.sysop-restart.json"), "utf8"));
+      assert.equal(result.status, "failed"); assert.equal(result.version, "0.0.2");
+      assert.match(result.reason, /重启失败，未切换版本/);
+      assert.equal(readFileSync(path.join(f.state, "desired-version"), "utf8"), "0.0.2");
+      assert.equal(existsSync(f.launches), false, "restart failure must not launch the healthy predecessor");
+      assert.ok(existsSync(path.join(f.state, "promoting.json")), "retain restart recovery interlock");
+    }
+  } finally { await f.cleanup(); }
+}
+
 async function main() {
   await pendingRetry(false);
   await pendingRetry(true);
   for (const migrated of [false, true]) for (const rollback of [false, true]) await missingRelease(migrated, rollback);
   await interruptedHandoff(false);
   await interruptedHandoff(true);
-  console.log("system-update-journal-recovery.regression.ts passed (8 recovery scenarios)");
+  await restartKeepsVersion();
+  console.log("system-update-journal-recovery.regression.ts passed (9 recovery scenarios)");
 }
 void main();
