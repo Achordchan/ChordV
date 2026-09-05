@@ -760,7 +760,20 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     return run;
   }
 
+  private assertCanonicalManifestVersion(version: string): void {
+    if (normalizeVersion(version) !== version) {
+      throw new BadRequestException("签名清单版本必须使用规范 SemVer 格式。");
+    }
+    const prerelease = /^[^-]+-(.*)/.exec(version.split("+")[0])?.[1];
+    if (prerelease?.split(".").some(identifier => /^0\d+$/.test(identifier))) {
+      throw new BadRequestException("签名清单的数字预发布标识不能包含前导零。");
+    }
+  }
+
   private async enforceSignedManifestFloorLocked(version: string): Promise<void> {
+    // Validate before the first write as well as every later advance. An accepted
+    // version must remain a valid floor when the next check reads it back.
+    this.assertCanonicalManifestVersion(version);
     if (!this.config.stateDir) return;
     const floorFile = path.join(this.config.stateDir, SYSTEM_UPDATE_MANIFEST_FLOOR_FILE);
     let floor: string | null = null;
@@ -775,11 +788,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     let comparison = 1;
     if (floor !== null) {
       try {
-        if (normalizeVersion(floor) !== floor) throw new Error("Noncanonical manifest floor");
-        const prerelease = /^[^-]+-(.*)/.exec(floor.split("+")[0])?.[1];
-        if (prerelease?.split(".").some(identifier => /^0\d+$/.test(identifier))) {
-          throw new Error("Invalid numeric prerelease identifier in manifest floor");
-        }
+        this.assertCanonicalManifestVersion(floor);
         comparison = compareSemver(version, floor);
       } catch (error) {
         this.logger.warn(`Invalid manifest floor: ${this.describeError(error)}`);

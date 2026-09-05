@@ -401,9 +401,21 @@ async function main() {
           const service = buildService();
           const svc = service as unknown as { enforceSignedManifestFloor: (v: string) => Promise<void> };
           const floorFile = path.join(stateDir, "manifest-floor-version");
-
+          const invalidIncoming = ["1.2.3-01", "1.2.3-rc.01", "v1.2.3", "1.2.3 "];
+          for (const version of invalidIncoming) {
+            await assert.rejects(() => svc.enforceSignedManifestFloor(version), BadRequestException);
+            await assert.rejects(fsPromises.access(floorFile), { code: "ENOENT" }, "invalid first version cannot create a floor");
+          }
+          for (const version of ["1.2.0-0", "1.2.0-rc.0", "1.2.0-rc.0+build.01"]) {
+            await svc.enforceSignedManifestFloor(version);
+            await svc.enforceSignedManifestFloor(version);
+          }
           await svc.enforceSignedManifestFloor("1.2.0");
           assert.equal(readFileSync(floorFile, "utf8").trim(), "1.2.0", "first accepted version sets the floor");
+          for (const version of invalidIncoming) {
+            await assert.rejects(() => svc.enforceSignedManifestFloor(version), BadRequestException);
+            assert.equal(readFileSync(floorFile, "utf8"), "1.2.0", "invalid advancement must retain the valid floor");
+          }
 
           await svc.enforceSignedManifestFloor("1.3.0");
           assert.equal(readFileSync(floorFile, "utf8").trim(), "1.3.0", "a newer version raises the floor");
