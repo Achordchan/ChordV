@@ -21,6 +21,7 @@ set -u
 
 RELEASES_DIR="${CHORDV_SYSTEM_RELEASES_DIR:-/app/releases}"
 STATE_DIR="${CHORDV_SYSTEM_STATE_DIR:-/app/state}"
+PUBLIC_STATE_DIR="${CHORDV_SYSTEM_PUBLIC_STATE_DIR:-/app/public-state}"
 CURRENT_LINK="${CHORDV_SYSTEM_CURRENT_LINK:-/app/current}"
 SEED_DIR="${CHORDV_SYSTEM_SEED_DIR:-/app/seed}"
 APP_ENTRY="${CHORDV_SYSTEM_APP_ENTRY:-apps/api/dist/apps/api/src/main.js}"
@@ -38,7 +39,7 @@ MIGRATE_TIMEOUT="${CHORDV_SYSTEM_MIGRATE_TIMEOUT:-900}"
 # can never be orphaned by an app SIGKILL. Only taken when the staged update actually
 # migrates (promoting.json migrationApplied=true). pg_dump ships in the runtime image.
 SNAPSHOT_ENABLED="${CHORDV_SYSTEM_UPDATE_SNAPSHOT:-true}"
-BACKUP_DIR="${CHORDV_SYSTEM_UPDATE_BACKUP_DIR:-$STATE_DIR/backups}"
+BACKUP_DIR="${CHORDV_SYSTEM_UPDATE_BACKUP_DIR:-/app/backups}"
 SNAPSHOT_KEEP="${CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP:-5}"
 SNAPSHOT_TIMEOUT="${CHORDV_SYSTEM_UPDATE_SNAPSHOT_TIMEOUT:-600}"
 API_PORT="${CHORDV_API_PORT:-3000}"
@@ -71,10 +72,56 @@ log() { printf '%s [supervisor] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2;
 
 read_file_trim() { [ -f "$1" ] && tr -d ' \t\r\n' < "$1" || true; }
 
-json_get() {
-  # json_get <file> <key> — minimal string/scalar extractor, no jq dependency.
-  [ -f "$1" ] || return 0
-  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$1" | head -n1
+parse_journal() {
+  "$NODE_BIN" - "$1" "$2" <<'NODE'
+try {
+  const fs = require("node:fs");
+  const file = process.argv[2], source = process.argv[3];
+  if (!fs.statSync(file).isFile()) throw new Error();
+  const journal = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!journal || typeof journal !== "object" || Array.isArray(journal)) throw new Error();
+  const version = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+  const safeVersion = value => typeof value === "string" && value.trim() === value && version.test(value);
+  if (!safeVersion(journal.version) || typeof journal.operationId !== "string" ||
+      journal.operationId.trim() !== journal.operationId || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(journal.operationId) ||
+      !["update", "rollback", "restart"].includes(journal.kind) ||
+      typeof journal.migrationApplied !== "boolean") throw new Error();
+  for (const key of ["rollbackFrom", "failureVersion", "failureReason"]) {
+    if (Object.hasOwn(journal, key) && typeof journal[key] !== "string") throw new Error();
+  }
+  const rollback = journal.rollbackFrom || "", failure = journal.failureVersion || "", reason = journal.failureReason || "";
+  if (rollback && (!safeVersion(rollback) || journal.kind !== "rollback" || rollback === journal.version)) throw new Error();
+  if (failure && (!safeVersion(failure) || failure !== (rollback || journal.version))) throw new Error();
+  // Reasons must be representable by supervisor JSON writers and single-line
+  // transport. Recovery metadata belongs only to promoting.json, never pending.json.
+  if (!!failure !== !!reason || /["\\\x00-\x1f\x7f]/.test(reason) ||
+      (source === "pending" && (rollback || failure || reason))) throw new Error();
+  process.stdout.write([journal.version, journal.operationId, journal.kind,
+    String(journal.migrationApplied), rollback, failure, reason, "."].join("\n"));
+} catch {
+  process.exitCode = 1;
+}
+NODE
+}
+
+load_journal() {
+  # Parse ONCE and carry validated fields in memory. Never let a truncated marker,
+  # missing boolean, or read failure silently turn a promotion into a normal start.
+  # Newline-separated output is data (never eval); safe fields cannot contain LF.
+  local fields
+  if ! fields="$(parse_journal "$1" "$2")"; then
+    log "FATAL: invalid/unreadable $2 journal at $1; retaining marker and blocking recovery (repair offline)"
+    exit 1
+  fi
+  {
+    IFS= read -r JOURNAL_VERSION
+    IFS= read -r JOURNAL_OP
+    IFS= read -r JOURNAL_KIND
+    IFS= read -r JOURNAL_MIG
+    IFS= read -r JOURNAL_ROLLBACK
+    IFS= read -r JOURNAL_FAILURE
+    IFS= read -r JOURNAL_REASON
+  } <<< "$fields"
 }
 
 atomic_promote() {
@@ -238,9 +285,19 @@ write_last_good() {
   # could not be committed: the caller must NOT finalize a promotion without it, or a
   # later failed update would have no valid rollback target and could strand the
   # service on a broken release.
-  local version="$1" tmp="$LAST_GOOD_FILE.tmp.$$"
-  if ! printf '%s' "$version" > "$tmp" || ! mv -f "$tmp" "$LAST_GOOD_FILE"; then
+  local version="$1" tmp="$LAST_GOOD_FILE.tmp.$$" public_tmp="$PUBLIC_STATE_DIR/.last-good-version.tmp.$$"
+  if [ -d "$LAST_GOOD_FILE" ] || ! printf '%s' "$version" > "$tmp" || ! mv -f "$tmp" "$LAST_GOOD_FILE"; then
     rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
+  sync 2>/dev/null || true
+  # Publish only the health-approved marker, AFTER the private rollback target.
+  # Admin never mounts private state (which may still contain legacy DB snapshots).
+  # A failed public write leaves the previous approved marker intact; callers retry
+  # finalization, never expose desired-version or copy private state as a fallback.
+  if [ -d "$PUBLIC_STATE_DIR/last-good-version" ] || ! mkdir -p "$PUBLIC_STATE_DIR" ||
+     ! printf '%s' "$version" > "$public_tmp" || ! mv -f "$public_tmp" "$PUBLIC_STATE_DIR/last-good-version"; then
+    rm -f "$public_tmp" 2>/dev/null
     return 1
   fi
   sync 2>/dev/null || true
@@ -379,7 +436,7 @@ persist_failed_promotion() {
   # If the whole volume is unwritable, keep the decision/context in memory and do
   # not launch anything until the journal and result can both be persisted.
   until write_promoting "$GEN_VERSION" "$GEN_OP" "$GEN_KIND" "$migrated" \
-      "${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}" "$attempted" "$reason"; do
+      "${GEN_ROLLBACK_FROM:-}" "$attempted" "$reason"; do
     log "WARN: cannot persist terminal failure decision; retrying in 2s"
     sleep 2
   done
@@ -415,7 +472,7 @@ handle_failed_promotion() {
   if [ -n "$mig_override" ]; then
     MIG="$mig_override"
   else
-    MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$MIG" = "true" ] || MIG="false"
+    MIG="$GEN_MIG"
   fi
   if [ "$GEN_PROMOTION" = "1" ]; then
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
@@ -448,7 +505,7 @@ handle_failed_promotion() {
       # restart resumes the rollback to LG correctly.
       atomic_promote "$LG" || log "WARN: could not persist promotion to $LG; retrying in loop"
       discard_failed_release "$GEN_VERSION" "$GEN_KIND"
-      GEN_VERSION="$LG"; GEN_KIND="rollback"; GEN_PROMOTION=1
+      GEN_VERSION="$LG"; GEN_KIND="rollback"; GEN_PROMOTION=1; GEN_MIG="$MIG"
       return 0
     fi
     # No fallback: persist a terminal failure AND retain the launch interlock.
@@ -459,13 +516,13 @@ handle_failed_promotion() {
     # but the operation's real target was the candidate that started the failure
     # (GEN_ROLLBACK_FROM) — writing last-good here would collapse the audit's toVersion
     # and lose which candidate actually failed.
-    local attempted="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
+    local attempted="${GEN_ROLLBACK_FROM:-}"
     attempted="${attempted:-$GEN_VERSION}"
     persist_failed_promotion "$attempted" "${reason}（无可回滚版本）" "$MIG"
   fi
   log "no known-good version to fall back to; retrying $GEN_VERSION in 3s"
   sleep 3
-  GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+  GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
   return 0
 }
 
@@ -490,16 +547,16 @@ mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 # switched but before the health gate finished, treat it as a promotion again so
 # it is health-gated and can still roll back (instead of retrying forever / being
 # reconciled as a success it never earned).
-if [ -f "$PROMOTING_FILE" ]; then
-  RESUME_V="$(json_get "$PROMOTING_FILE" version)"
-  RESUME_OP="$(json_get "$PROMOTING_FILE" operationId)"
-  RESUME_KIND="$(json_get "$PROMOTING_FILE" kind)"
-  RESUME_FAILURE="$(json_get "$PROMOTING_FILE" failureVersion)"
+GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+if [ -e "$PROMOTING_FILE" ] || [ -L "$PROMOTING_FILE" ]; then
+  load_journal "$PROMOTING_FILE" promoting
+  RESUME_V="$JOURNAL_VERSION"; RESUME_OP="$JOURNAL_OP"; RESUME_KIND="$JOURNAL_KIND"
+  RESUME_FAILURE="$JOURNAL_FAILURE"
+  GEN_MIG="$JOURNAL_MIG"; GEN_ROLLBACK_FROM="$JOURNAL_ROLLBACK"
   if [ -n "$RESUME_FAILURE" ]; then
     log "resuming terminal failure persistence (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
-    RESUME_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$RESUME_MIG" = "true" ] || RESUME_MIG="false"
-    persist_failed_promotion "$RESUME_FAILURE" "$(json_get "$PROMOTING_FILE" failureReason)" "$RESUME_MIG"
+    persist_failed_promotion "$RESUME_FAILURE" "$JOURNAL_REASON" "$GEN_MIG"
   elif [ -n "$RESUME_V" ] && [ -d "$RELEASES_DIR/$RESUME_V" ]; then
     log "resuming interrupted promotion -> $RESUME_V (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
@@ -507,22 +564,21 @@ if [ -f "$PROMOTING_FILE" ]; then
     log "stale promoting marker (version '$RESUME_V' unusable); discarding"
     [ -n "$RESUME_OP" ] && write_result "$RESUME_OP" "failed" "$RESUME_V" "提升过程中断且目标版本缺失"
     clear_promoting
+    GEN_MIG="false"; GEN_ROLLBACK_FROM=""
     GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
   fi
-elif [ -f "$PENDING_FILE" ]; then
+elif [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
   # The app staged an update (wrote pending.json) but the host/supervisor restarted
   # before we processed its exit. Convert the pending marker into a promotion now
   # so the target is health-gated + rollback-capable — otherwise the old version
   # would just start, and the stale pending marker could later promote a supposedly
   # failed update on an unrelated exit.
-  PV="$(json_get "$PENDING_FILE" version)"
-  POP="$(json_get "$PENDING_FILE" operationId)"
-  PKIND="$(json_get "$PENDING_FILE" kind)"
-  PMIG="$(json_get "$PENDING_FILE" migrationApplied)"; [ "$PMIG" = "true" ] || PMIG="false"
+  load_journal "$PENDING_FILE" pending
+  PV="$JOURNAL_VERSION"; POP="$JOURNAL_OP"; PKIND="$JOURNAL_KIND"; PMIG="$JOURNAL_MIG"
   if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ] && write_promoting "$PV" "$POP" "$PKIND" "$PMIG"; then
     rm -f "$PENDING_FILE"
     log "resuming staged $PKIND from pending marker -> $PV (op $POP)"
-    GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1
+    GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1; GEN_MIG="$PMIG"
   else
     log "unusable/undurable pending marker (version '$PV'); discarding"
     rm -f "$PENDING_FILE"
@@ -532,10 +588,8 @@ elif [ -f "$PENDING_FILE" ]; then
 else
   GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
 fi
-# Context for a rollback LANDING carried across loop iterations (set by
-# handle_failed_promotion, consumed by the success path). On a mid-gate restart these
-# are empty and both terminal paths recover rollbackFrom from the promoting marker.
-GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+# Validated migration/rollback context is retained across loop iterations and
+# recovered from the journal above, never reread through a permissive extractor.
 
 while true; do
   if ! atomic_promote "$GEN_VERSION"; then
@@ -576,8 +630,8 @@ while true; do
   # Pre-migration snapshot: only for a forward promotion that will migrate. A rollback
   # (kind=rollback) deliberately skips migrate deploy, including when unfinished
   # forward migrations remain; taking another snapshot would only delay recovery.
-  # migrationApplied is read from the promoting marker the app staged.
-  PROMO_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$PROMO_MIG" = "true" ] || PROMO_MIG="false"
+  # migrationApplied was validated with the complete journal before promotion.
+  PROMO_MIG="$GEN_MIG"
   if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
     if ! run_snapshot "$GEN_VERSION" "$GEN_OP"; then
       log "pre-migration snapshot failed for $GEN_VERSION"
@@ -606,7 +660,7 @@ while true; do
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
-    SUCC_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$SUCC_MIG" = "true" ] || SUCC_MIG="false"
+    SUCC_MIG="$GEN_MIG"
     # 'rolledback' is reserved for an AUTOMATIC rollback LANDING — identified by a
     # non-empty rollbackFrom (the failed version handle_failed_promotion recorded) —
     # and written only now that last-good has itself passed readiness + stabilization,
@@ -615,7 +669,7 @@ while true; do
     # 'success': the target is exactly what the admin asked for, and reporting it as
     # "auto-rolled-back after a failed health check" would be wrong. migrationApplied
     # carries the failed update's value so the app can still warn about the schema.
-    RB_FROM="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
+    RB_FROM="${GEN_ROLLBACK_FROM:-}"
     if [ -n "$RB_FROM" ]; then
       RES_STATUS="rolledback"
       RES_REASON="${GEN_ROLLBACK_REASON:-新版本未通过验证，已自动回滚}（原版本 ${RB_FROM}）"
@@ -652,16 +706,14 @@ while true; do
       continue
     fi
     log "$GEN_VERSION healthy + stable (last-good)"
-    GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+    GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
     wait "$APP_PID"; EXIT_CODE=$?
     APP_PID=""
     log "app for $GEN_VERSION exited (code $EXIT_CODE)"
 
-    if [ -f "$PENDING_FILE" ]; then
-      PV="$(json_get "$PENDING_FILE" version)"
-      POP="$(json_get "$PENDING_FILE" operationId)"
-      PKIND="$(json_get "$PENDING_FILE" kind)"
-      PMIG="$(json_get "$PENDING_FILE" migrationApplied)"; [ "$PMIG" = "true" ] || PMIG="false"
+    if [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
+      load_journal "$PENDING_FILE" pending
+      PV="$JOURNAL_VERSION"; POP="$JOURNAL_OP"; PKIND="$JOURNAL_KIND"; PMIG="$JOURNAL_MIG"
       if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ]; then
         # Persist the promotion BEFORE deleting pending / flipping desired-version, so
         # a crash in the gap is resumed as a health-gated promotion, not a bare start.
@@ -669,7 +721,7 @@ while true; do
         if write_promoting "$PV" "$POP" "$PKIND" "$PMIG"; then
           rm -f "$PENDING_FILE"
           log "pending $PKIND -> $PV (op $POP)"
-          GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1
+          GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1; GEN_MIG="$PMIG"
         else
           # Could not persist the promotion marker (state volume full?). Do NOT
           # promote without it — keep serving the current version and surface it.

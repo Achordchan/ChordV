@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,7 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
     ...process.env,
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
     CHORDV_SYSTEM_STATE_DIR: stateDir,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
@@ -211,6 +212,7 @@ async function runManualRollbackScenario(migrateFails = false) {
     ...process.env,
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
     CHORDV_SYSTEM_STATE_DIR: stateDir,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
@@ -265,6 +267,7 @@ async function runSnapshotFailureScenario() {
     ...process.env,
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
     CHORDV_SYSTEM_STATE_DIR: stateDir,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
@@ -348,6 +351,7 @@ exec /bin/mv "$@"
     CHORDV_SYSTEM_NODE_BIN: process.execPath,
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
     CHORDV_SYSTEM_STATE_DIR: stateDir,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
@@ -379,6 +383,7 @@ exec /bin/mv "$@"
     assert.equal(result.migrationApplied, resumeLanding, "retry must retain migration context");
     await waitUntil(() => !existsSync(markerFile), 5_000, () => `finalized marker was not cleared.\n${stderr}`);
     assert.equal(readFileSync(path.join(stateDir, "last-good-version"), "utf8"), version);
+    assert.equal(readFileSync(path.join(root, "public-state", "last-good-version"), "utf8"), version, "admin marker must publish only the approved version");
     assert.equal(readFileSync(launchFile, "utf8"), launches, "recovery must use the same app process");
     process.kill(Number(launches.trim()), 0);
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/health/ready`)).status, 200);
@@ -421,6 +426,7 @@ exec /bin/mv "$@"
     CHORDV_TEST_RESULT: resultFile, CHORDV_TEST_BLOCK: blocker, CHORDV_TEST_ATTEMPTS: attempts,
     CHORDV_SYSTEM_NODE_BIN: process.execPath,
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "false", CHORDV_SYSTEM_UPDATE_SNAPSHOT: "false",
     CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
@@ -510,6 +516,7 @@ async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" |
     ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
     CHORDV_TEST_DUMP_BLOCK: dumpBlock, CHORDV_SYSTEM_NODE_BIN: process.execPath,
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "true", CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true",
     CHORDV_SYSTEM_UPDATE_BACKUP_DIR: backups, CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://stub/db",
@@ -567,6 +574,169 @@ async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" |
     }
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+/** Invalid recovery state is a launch interlock, including when read/stat fails. */
+async function testInvalidJournals() {
+  const valid = { version: "0.0.2", operationId: "sysop_012345abcdef", kind: "update", migrationApplied: true };
+  const invalid: Array<[string, string | "directory" | "dangling" | "read-error"]> = [
+    ["malformed", '{"version":"0.0.2",oops}'],
+    ["truncated", JSON.stringify(valid).slice(0, -1)],
+    ["version-only", '{"version":"0.0.2"}'],
+    ["null", "null"], ["array", JSON.stringify([valid])],
+    ...["version", "operationId", "kind", "migrationApplied"].map(key => {
+      const marker = { ...valid } as Record<string, unknown>; delete marker[key];
+      return [`missing-${key}`, JSON.stringify(marker)] as [string, string];
+    }),
+    ...Object.entries({ version: 2, operationId: {}, kind: [], migrationApplied: "true" }).map(([key, value]) =>
+      [`type-${key}`, JSON.stringify({ ...valid, [key]: value })] as [string, string]),
+    ["null-boolean", JSON.stringify({ ...valid, migrationApplied: null })],
+    ["number-boolean", JSON.stringify({ ...valid, migrationApplied: 1 })],
+    ["string-false", JSON.stringify({ ...valid, migrationApplied: "false" })],
+    ["unknown-kind", JSON.stringify({ ...valid, kind: "promote" })],
+    ["unsafe-version", JSON.stringify({ ...valid, version: "../0.0.2" })],
+    ["unsafe-operation", JSON.stringify({ ...valid, operationId: "../escape" })],
+    ["newline-operation", JSON.stringify({ ...valid, operationId: "sysop_safe\n" })],
+    ["invalid-rollback", JSON.stringify({ ...valid, rollbackFrom: "0.0.1" })],
+    ["same-rollback", JSON.stringify({ ...valid, kind: "rollback", rollbackFrom: "0.0.2" })],
+    ["null-rollback", JSON.stringify({ ...valid, rollbackFrom: null })],
+    ["unsafe-rollback", JSON.stringify({ ...valid, kind: "rollback", rollbackFrom: "../0.0.1" })],
+    ["wrong-failure", JSON.stringify({ ...valid, failureVersion: "0.0.1", failureReason: "failed" })],
+    ["missing-reason", JSON.stringify({ ...valid, failureVersion: "0.0.2" })],
+    ["reason-only", JSON.stringify({ ...valid, failureReason: "failed" })],
+    ["invalid-reason", JSON.stringify({ ...valid, failureVersion: "0.0.2", failureReason: {} })],
+    ["unsafe-reason", JSON.stringify({ ...valid, failureVersion: "0.0.2", failureReason: 'bad "reason"\n' })],
+    ["directory", "directory"], ["dangling", "dangling"], ["read-error", "read-error"]
+  ];
+  for (const source of ["promoting", "pending"] as const) {
+    const cases = [...invalid];
+    if (source === "pending") {
+      cases.push(["terminal-pending", JSON.stringify({ ...valid, failureVersion: "0.0.2", failureReason: "failed" })]);
+      cases.push(["auto-rollback-pending", JSON.stringify({ ...valid, kind: "rollback", rollbackFrom: "0.0.1" })]);
+    }
+    for (const [name, contents] of cases) {
+      const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-invalid-"));
+      const state = path.join(root, "state"); mkdirSync(state);
+      const port = await freePort();
+      for (const version of ["0.0.1", "0.0.2"]) writeRelease(root, version, "good", port);
+      const migrateEnv = failingMigrationEnv(root, ["0.0.1", "0.0.2"]);
+      const launches = path.join(root, "launches");
+      for (const version of ["0.0.1", "0.0.2"]) {
+        writeFileSync(path.join(root, "releases", version, APP_ENTRY), `require('fs').writeFileSync(${JSON.stringify(launches)},'launched');process.exit(1);`);
+      }
+      writeFileSync(path.join(state, "desired-version"), "0.0.2");
+      writeFileSync(path.join(state, "last-good-version"), "0.0.1");
+      const current = path.join(root, "current"); symlinkSync(path.join(root, "releases", "0.0.1"), current);
+      const marker = path.join(state, `${source}.json`);
+      if (contents === "directory") mkdirSync(marker);
+      else if (contents === "dangling") symlinkSync(path.join(root, "missing-journal"), marker);
+      else writeFileSync(marker, contents === "read-error" ? JSON.stringify(valid) : contents);
+      // A deterministic EIO on a regular file works even when CI runs as root.
+      const fault = path.join(root, "read-fault.cjs");
+      writeFileSync(fault, `const fs=require('node:fs'),read=fs.readFileSync;fs.readFileSync=function(file,...args){if(file===${JSON.stringify(marker)})throw Object.assign(new Error('read error'),{code:'EIO'});return read.call(this,file,...args);};`);
+      const env = {
+        ...process.env, ...migrateEnv,
+        NODE_OPTIONS: contents === "read-error" ? `--require=${fault}` : "",
+        CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
+        CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"), CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
+        CHORDV_SYSTEM_CURRENT_LINK: current, CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
+        CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "2", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "0"
+      };
+      try {
+        // Same damaged journal across a container restart must remain blocked.
+        for (let restart = 0; restart < 2; restart++) {
+          const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+          let stderr = ""; child.stderr?.on("data", chunk => { stderr += String(chunk); });
+          try {
+            await waitUntil(() => child.exitCode !== null, 8_000, () => `${source}/${name} did not fail closed.\n${stderr}`);
+            assert.equal(child.exitCode, 1, `${source}/${name}: ${stderr}`);
+            assert.match(stderr, /invalid\/unreadable .* journal/);
+            assert.equal(existsSync(path.join(root, "migrations")), false, "must not migrate on any restart");
+            assert.equal(existsSync(launches), false, "must not launch/re-gate with invalid journal");
+            assert.equal(readFileSync(path.join(state, "desired-version"), "utf8"), "0.0.2");
+            assert.equal(path.basename(readlinkSync(current)), "0.0.1", "must not promote");
+            for (const version of ["0.0.1", "0.0.2"]) assert.ok(existsSync(path.join(root, "releases", version)), "must not discard releases");
+            assert.equal(readdirSync(state).some(file => file.startsWith("operation-result")), false, "must not invent a result from corrupt state");
+            if (contents === "directory") assert.ok(lstatSync(marker).isDirectory());
+            else if (contents === "dangling") assert.ok(lstatSync(marker).isSymbolicLink());
+            else assert.equal(readFileSync(marker, "utf8"), contents === "read-error" ? JSON.stringify(valid) : contents, "must retain original journal bytes");
+          } finally {
+            try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
+          }
+        }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  }
+}
+
+async function testInvalidPendingAfterAppExit() {
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-pending-exit-"));
+  const state = path.join(root, "state"); mkdirSync(state);
+  const port = await freePort();
+  const release = writeRelease(root, "0.0.1", "good", port);
+  writeRelease(root, "0.0.2", "good", port);
+  writeFileSync(path.join(state, "desired-version"), "0.0.1");
+  const exitTrigger = path.join(root, "exit-trigger");
+  const app = path.join(release, APP_ENTRY);
+  writeFileSync(app, readFileSync(app, "utf8") + `setInterval(()=>{if(require('fs').existsSync(${JSON.stringify(exitTrigger)}))process.exit(0);},50);`);
+  const migrateEnv = failingMigrationEnv(root, ["0.0.2"]);
+  const marker = path.join(state, "pending.json");
+  const contents = '{"version":"0.0.2","operationId":"sysop_exit","kind":"update"}';
+  const env = {
+    ...process.env, ...migrateEnv,
+    CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"), CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
+    CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
+    CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "0"
+  };
+  let stderr = "";
+  const start = () => {
+    const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    child.stderr?.on("data", chunk => { stderr += String(chunk); });
+    return child;
+  };
+  let child = start();
+  try {
+    await waitUntil(() => stderr.includes("0.0.1 healthy + stable"), 10_000, () => `initial app did not stabilize.\n${stderr}`);
+    writeFileSync(marker, contents); writeFileSync(exitTrigger, "");
+    for (let restart = 0; restart < 2; restart++) {
+      if (restart) child = start();
+      await waitUntil(() => child.exitCode !== null, 8_000, () => `invalid runtime pending marker did not stop supervisor.\n${stderr}`);
+      assert.equal(child.exitCode, 1, stderr);
+      assert.match(stderr, /invalid\/unreadable pending journal/);
+      assert.equal(readFileSync(marker, "utf8"), contents);
+      assert.equal(existsSync(path.join(root, "migrations")), false, "invalid runtime pending must never migrate, including restart");
+      assert.equal(readFileSync(path.join(state, "desired-version"), "utf8"), "0.0.1");
+      assert.equal(path.basename(readlinkSync(path.join(root, "current"))), "0.0.1");
+      assert.ok(existsSync(path.join(root, "releases", "0.0.2")));
+      assert.equal(existsSync(path.join(state, "promoting.json")), false);
+    }
+  } finally {
+    try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function testJournalFieldExtraction() {
+  const script = readFileSync(entrypoint, "utf8");
+  const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-journal-fields-"));
+  const marker = path.join(root, "journal.json");
+  try {
+    for (const kind of ["update", "rollback", "restart"]) {
+      // JSON escapes, formatting, and nested lookalike keys must not confuse the
+      // validated top-level fields. Restart and manual rollback remain supported.
+      writeFileSync(marker, JSON.stringify({
+        version: "1.2.3-beta.1+build.7", operationId: "sysop_012345abcdef", kind, migrationApplied: false,
+        ignored: { version: "9.9.9", operationId: "wrong", kind: "wrong", migrationApplied: true }
+      }, null, 2).replace('"1.2.3', '"\\u0031.2.3'));
+      const parsed = spawnSync("bash", ["-c", `${definitions}\nload_journal "$CHORDV_TEST_MARKER" pending\nprintf '%s|%s|%s|%s' "$JOURNAL_VERSION" "$JOURNAL_OP" "$JOURNAL_KIND" "$JOURNAL_MIG"`], {
+        encoding: "utf8", env: { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath, CHORDV_TEST_MARKER: marker }
+      });
+      assert.equal(parsed.status, 0, parsed.stderr);
+      assert.equal(parsed.stdout, `1.2.3-beta.1+build.7|sysop_012345abcdef|${kind}|false`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
 function testSnapshotDatabaseUrl() {
@@ -716,6 +886,9 @@ async function main() {
   await runTerminalFailureRetryScenario(false);
   await runTerminalFailureRetryScenario(true);
   for (const lastGood of ["missing", "same", "unusable"] as const) await runBlockedSnapshotRecoveryScenario(lastGood);
+  await testInvalidJournals();
+  await testInvalidPendingAfterAppExit();
+  testJournalFieldExtraction();
   testSnapshotDatabaseUrl();
 }
 

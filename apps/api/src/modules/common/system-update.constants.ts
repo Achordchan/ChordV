@@ -9,7 +9,9 @@ import * as path from "node:path";
  *
  *   /app/releases/<version>/   one self-contained build (dist + node_modules + prisma)
  *   /app/current -> releases/<version>
- *   /app/state/                supervisor <-> app coordination markers
+ *   /app/state/                private supervisor <-> app coordination markers
+ *   /app/public-state/         health-approved last-good-version only (admin read-only)
+ *   /app/backups/              database snapshots (API-only persistent volume)
  *
  * The app never flips the symlink itself: it stages a new version and writes a
  * `pending` marker, then exits. The entrypoint promotes + health-gates + rolls
@@ -114,7 +116,7 @@ export function resolveSystemUpdateRuntimeConfig(): SystemUpdateRuntimeConfig {
     enabled,
     releasesDir,
     stateDir,
-    backupDir: readEnv("CHORDV_SYSTEM_UPDATE_BACKUP_DIR"),
+    backupDir: readEnv("CHORDV_SYSTEM_UPDATE_BACKUP_DIR") ?? "/app/backups",
     manifestUrl: readEnv("CHORDV_SYSTEM_UPDATE_MANIFEST_URL"),
     keepReleases: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_KEEP_RELEASES", 3),
     snapshotKeep: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP", 5),

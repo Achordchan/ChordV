@@ -3,13 +3,15 @@
 #
 # The admin bundle is NOT baked into this image. api + admin ship as one release
 # unit: the api container writes each release into the shared releases volume and
-# records the active version in the shared state volume. This container just serves
+# publishes only the health-approved last-good-version in the public marker volume.
+# Private state (including legacy backups) is never mounted here. This container serves
 # apps/admin/dist out of whatever version is current, and re-points when the api
 # self-updates — so admin follows the backend with no updater of its own.
 set -u
 
 RELEASES_DIR="${CHORDV_ADMIN_RELEASES_DIR:-/usr/share/nginx/releases}"
-STATE_DIR="${CHORDV_ADMIN_STATE_DIR:-/usr/share/nginx/state}"
+# This must be the dedicated public marker mount, NEVER the API's private state.
+STATE_DIR="${CHORDV_ADMIN_STATE_DIR:-/usr/share/nginx/public-state}"
 WEBROOT_LINK="${CHORDV_ADMIN_WEBROOT_LINK:-/usr/share/nginx/current}"
 ADMIN_SUBPATH="${CHORDV_ADMIN_SUBPATH:-apps/admin/dist}"
 # Follow the HEALTH-APPROVED version (last-good-version), NOT desired-version. The

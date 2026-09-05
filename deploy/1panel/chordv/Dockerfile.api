@@ -76,7 +76,10 @@ ENV CHORDV_SYSTEM_RELEASES_DIR=/app/releases
 ENV CHORDV_SYSTEM_STATE_DIR=/app/state
 ENV CHORDV_SYSTEM_CURRENT_LINK=/app/current
 ENV CHORDV_SYSTEM_SEED_DIR=/app/seed
-ENV CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/state/backups
+# Direct docker run deployments must bind these to distinct persistent directories;
+# never place snapshots/private state in admin-readable releases or public-state.
+ENV CHORDV_SYSTEM_PUBLIC_STATE_DIR=/app/public-state
+ENV CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/backups
 # Production must also provide CHORDV_PANEL_PASSWORD_MASTER_KEY + secrets at runtime (env_file).
 
 EXPOSE 3000

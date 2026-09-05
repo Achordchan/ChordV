@@ -14,6 +14,10 @@
 
 落地时相对 4.1/6.2/6.3 的调整（以下早期说明需以代码和最新评审补充为准）：
 
+**第22轮补充：交接日志必须完整有效。** 启动恢复及应用退出后的 `pending.json` / `promoting.json` 通过真正 JSON 解析并一次性校验：安全的 SemVer、非空安全 operationId、明确的 update/rollback/restart 类型及显式布尔 `migrationApplied`；缺失字段不再兼容解释为 false。可选 rollbackFrom/failureVersion/failureReason 必须类型正确且恢复语义一致。损坏、截断、非普通文件、悬空链接或不可读日志原样保留，监督者退出非零，在迁移、提升、启动、丢弃版本或编造操作结果之前停止；有效字段持于内存，不再以宽松文本提取反复读取。遇到阻断应停机、归档原日志、核对实际数据库及操作历史后人工修复，不能通过删标记或补一个猜测的 migrationApplied 绕过快照和恢复门控。
+
+**第22轮补充：备份与 admin 文件系统隔离。** 数据库快照改为 API 独占的 `./api-backups:/app/backups`；compose 固定 `CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/backups`（覆盖旧 `.env`），镜像、监督者及运行时配置默认保持一致。admin 不再挂载私有 `api-state`，改为只读挂载独立 `api-public-state` 到 `/usr/share/nginx/public-state`；API 在 `/app/public-state` 中仅原子发布通过健康门控的 `last-good-version`，且须先提交私有 last-good，公开写入失败阻止终态确认并重试。既有 `api-state/backups` 因整卷不再给 admin 而立即被隔离，不自动移动/删除；迁移应停机、保留原件、管理员专用归档、校验压缩完整性/SHA-256并验证恢复，勿将旧备份复制至公开标记或 releases。三个目录必须真实独立；直接 docker run/自定义覆盖文件需自行维持该边界。本次为 compose/镜像修复，必须重建 api/admin 容器，应用内更新或单纯 restart 不生效；保留现有 `.env` 和密钥。具体命令、保留策略和检查项见 README 的「旧部署升级与快照迁移」。此边界防止 nginx 读取新旧数据库快照，不隔离 API、Docker 管理员或宿主机权限。
+
 **第18轮补充：迁移失败后的恢复边界。** 自动/手动回滚落地跳过 `migrate deploy`，但仍须通过 readiness 与稳定期；部分 DDL 可能使旧代码也无法健康上线，代码回滚不等于数据库恢复。回滚终态确认后，普通应用/容器重启仍会按启动流程运行迁移；未处理的 Prisma 失败迁移记录可能再次触发 P3009。管理员应在再次重启或更新前检查失败迁移并按迁移前快照恢复/人工修复，不能把代码回滚视为迁移历史已修复。快照默认从 DATABASE_URL 移除 Prisma 专属参数；使用连接池或需独立直连时可配置 `CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL`（应指向同一数据库）。
 
 **第20轮补充：真实结构探测。** readiness 除连接和迁移历史外，通过当前发布生成的 Prisma DMMF 对全部模型的 scalar/enum 列执行映射感知、只读 `SELECT … LIMIT 0`，即使空表也会拒绝被新版迁移删除/改名的旧版所需表列。探测不读取业务记录，错误对外统一为503。第21轮进一步为完整 readiness 校验（连接、迁移、结构）添加进程内 singleflight 和完成后5秒的成功/失败缓存；并发及错误请求不会各自触发查询，过期后等待新检查而不返回旧成功。新启动/回滚进程不复用旧进程缓存。健康恶化或恢复的可见性最多受剩余5秒缓存窗口影响；liveness仍不访问数据库。此探测只证明表/列可选择，不证明类型、写约束、枚举值或全部业务语义兼容，破坏性迁移仍需人工恢复方案。
@@ -25,7 +29,7 @@
 1. **进程外监督者（entrypoint.sh）**：应用执行“下载→校验→解压→检查待迁移项→停止接单并排空工作→Nest 关闭→写 `state/pending.json`→退出”。监督者在旧应用退出后接管提升、按操作隔离的迁移前快照、迁移和启动；回滚落地跳过迁移。readiness 探测与稳定期通过后才更新 `last-good-version`。Docker 的 `restart: unless-stopped` 是监督者自身退出后的兜底。
 2. **监督者确认终态**：成功、失败和自动回滚均由监督者写 `state/operation-result.<operationId>.json`；应用启动及状态轮询时消费落库。新应用仅启动并不自证成功，自动回滚必须等 fallback 自身健康后才写 rolledback；结果落盘失败保留上下文重试。
 3. **检查更新数据源 = raw manifest**：`api.github.com` 加速镜像不可达（实测 ghfast 对它返回 403），改为拉一个发布在 raw 上的 `manifest.json`（版本号 + 产物 URL + SHA-256 + changelog），加速镜像可代理；校验用的 SHA-256 以 manifest 记录为准（详见 11 节安全边界，仍不采信代理返回内容）。
-4. **发布单元 = api + admin 同一个 release**：release 压缩包内含 `apps/api/dist` 与 `apps/admin/dist`；admin 容器（nginx）只读挂载共享的 releases/state 卷，网页根指向“当前版本”的 `apps/admin/dist`，api 自更新切版本后 admin 随之跟随（`admin-entrypoint.sh` 仅跟随通过健康门控的 last-good-version 重指向 + reload），admin 侧无需任何更新逻辑。
+4. **发布单元 = api + admin 同一个 release**：release 压缩包内含 `apps/api/dist` 与 `apps/admin/dist`；admin 容器（nginx）只读挂载共享的 releases/public-state 卷（绝不挂载私有 state/backups），网页根指向“当前版本”的 `apps/admin/dist`，api 自更新切版本后 admin 随之跟随（`admin-entrypoint.sh` 仅跟随通过健康门控的 last-good-version 重指向 + reload），admin 侧无需任何更新逻辑。
 5. **打包/运行踩坑（实构建实跑修正）**：(a) 构建阶段需装 `openssl` 且 Prisma 需显式 `binaryTargets`（`debian-openssl-3.0.x` / `linux-arm64-openssl-3.0.x`），否则生成的引擎与 bookworm 运行时（openssl 3.0.x）不匹配；(b) 运行镜像需 `postgresql-client-16`（迁移前 `pg_dump` 快照，须匹配 PG16）+ `curl/tar/gzip`；(c) 生产 HTTPS 强制中间件会拦截内部 HTTP 健康探活，探活须带 `X-Forwarded-Proto: https`。
 
 ---
