@@ -66,6 +66,13 @@ function readBooleanEnv(name: string, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
+function readSnapshotEnabled(): boolean {
+  const value = readEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT")?.toLowerCase();
+  if (value == null || ["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  throw new Error("CHORDV_SYSTEM_UPDATE_SNAPSHOT 必须为 true/false、1/0、yes/no 或 on/off。");
+}
+
 function readPositiveIntEnv(name: string, fallback: number): number {
   const value = Number.parseInt(readEnv(name) ?? "", 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -120,7 +127,7 @@ export function resolveSystemUpdateRuntimeConfig(): SystemUpdateRuntimeConfig {
     manifestUrl: readEnv("CHORDV_SYSTEM_UPDATE_MANIFEST_URL"),
     keepReleases: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_KEEP_RELEASES", 3),
     snapshotKeep: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP", 5),
-    snapshotBeforeMigrate: readBooleanEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT", true),
+    snapshotBeforeMigrate: readSnapshotEnabled(),
     healthTimeoutSeconds: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS", 90),
     cacheTtlMs: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_CACHE_TTL_MS", 10 * 60 * 1000),
     githubReleaseBaseUrl: readEnv("CHORDV_SYSTEM_UPDATE_GITHUB_RELEASE_BASE_URL"),

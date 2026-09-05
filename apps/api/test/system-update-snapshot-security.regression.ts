@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, chmodSync, rmSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { resolveSystemUpdateRuntimeConfig } from "../src/modules/common/system-update.constants";
 const root = mkdtempSync(path.join(tmpdir(), "chordv-snapshot-security-"));
 const script = readFileSync(path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh"), "utf8");
 const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
@@ -28,6 +29,39 @@ function run(op: string, keep = "1", extra: Record<string, string> = {}) {
   });
 }
 try {
+  const previous = process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT;
+  try {
+    for (const [value, expected] of [
+      ["true", true], ["TRUE", true], ["1", true], ["yes", true], [" ON ", true], ["", true], [" ", true],
+      ["false", false], ["FALSE", false], ["0", false], ["no", false], [" OFF ", false]
+    ] as const) {
+      process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT = value;
+      assert.equal(resolveSystemUpdateRuntimeConfig().snapshotBeforeMigrate, expected);
+      const normalized = spawnSync("bash", ["-c", `${definitions}\nnormalize_snapshot_setting`], {
+        encoding: "utf8", env: { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath }
+      });
+      assert.equal(normalized.status, 0, normalized.stderr); assert.equal(normalized.stdout, String(expected));
+      const result = run("aliases", "1", { CHORDV_SYSTEM_UPDATE_SNAPSHOT: value });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(calls), expected, `snapshot pipeline must honor ${JSON.stringify(value)}`);
+      if (existsSync(calls)) rmSync(calls);
+      for (const file of readdirSync(backup)) rmSync(path.join(backup, file));
+    }
+    for (const value of ["tru", "2", "disabled", "true false"]) {
+      process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT = value;
+      assert.throws(() => resolveSystemUpdateRuntimeConfig(), /SNAPSHOT/);
+      const result = run("invalid-setting", "1", { CHORDV_SYSTEM_UPDATE_SNAPSHOT: value });
+      assert.notEqual(result.status, 0); assert.equal(existsSync(calls), false);
+      const state = path.join(root, "invalid-state");
+      const startup = spawnSync("bash", [path.resolve(__dirname, "../../../deploy/1panel/chordv/entrypoint.sh")], {
+        encoding: "utf8", env: { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath, CHORDV_SYSTEM_STATE_DIR: state }
+      });
+      assert.equal(startup.status, 1); assert.equal(existsSync(state), false, "reject before startup mutates state");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT;
+    else process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT = previous;
+  }
   for (const keep of ["0", "-1", "abc", "1.5", "01", "1000000"]) {
     const invalid = run("invalid", keep);
     assert.notEqual(invalid.status, 0, keep);

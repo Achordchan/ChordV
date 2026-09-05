@@ -396,11 +396,21 @@ try {
 NODE
 }
 
+normalize_snapshot_setting() {
+  "$NODE_BIN" - "$SNAPSHOT_ENABLED" <<'NODE'
+const value = process.argv[2].trim().toLowerCase();
+if (!value || ["1", "true", "yes", "on"].includes(value)) process.stdout.write("true");
+else if (["0", "false", "no", "off"].includes(value)) process.stdout.write("false");
+else { console.error("Invalid CHORDV_SYSTEM_UPDATE_SNAPSHOT; expected true/false, 1/0, yes/no or on/off"); process.exitCode = 1; }
+NODE
+}
+
 run_snapshot() {
   # run_snapshot <version> <operationId> — pre-migration DB snapshot. Returns non-zero
   # if a snapshot was required but could not be durably created; the caller then rolls
   # back instead of migrating (never migrate without a trustworthy recovery point).
   local version="$1" op="$2"
+  SNAPSHOT_ENABLED="$(normalize_snapshot_setting)" || return 1
   [ "$SNAPSHOT_ENABLED" = "true" ] || return 0
   if [ -z "${CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL:-${DATABASE_URL:-}}" ]; then
     log "ERROR: snapshot database URL not set; cannot snapshot before migrate"
@@ -650,6 +660,7 @@ forward_signal() {
 }
 trap forward_signal TERM INT
 
+SNAPSHOT_ENABLED="$(normalize_snapshot_setting)" || exit 1
 validate_stabilization || exit 1
 validate_health_timeout || exit 1
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"

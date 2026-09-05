@@ -36,20 +36,9 @@ type BusyKind = "update" | "rollback" | "restart";
 type Phase = "idle" | "running" | "reconnecting" | "done";
 
 const POLL_INTERVAL_MS = 3000;
-// We do NOT cap polling by wall-clock while the operation is still reachable: as long
-// as the backend answers with a non-terminal status, the operation is demonstrably
-// live and we keep waiting. We only give up after the API has been CONTINUOUSLY
-// unreachable longer than the supervisor's worst-case DARK window (app exited → back
-// serving), which must cover EVERY supervisor-side step done while the port is closed:
-//   pre-migration snapshot (CHORDV_SYSTEM_UPDATE_SNAPSHOT_TIMEOUT, default 600s)
-// + migration              (CHORDV_SYSTEM_MIGRATE_TIMEOUT,          default 900s)
-// + health gate            (~90s) + stabilization (~10s) + restart overhead
-//   ≈ 27 min. 40 min leaves margin above the full configured dark window so a valid,
-// still-applying operation is never declared timed-out and its controls re-enabled.
-// The absolute backstop (counted from start, including the app-side download/extract
-// phase while still reachable) guards a backend bug that wedges an op "running".
-const MAX_UNREACHABLE_MS = 40 * 60 * 1000;
-const ABSOLUTE_MAX_MS = 90 * 60 * 1000;
+// Operation durations are configurable on the supervisor. Only an observed terminal
+// status may unlock controls; transport failures back off while the panel is mounted.
+const MAX_RECONNECT_INTERVAL_MS = 30_000;
 
 function parseErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -162,7 +151,7 @@ export function SystemUpdateBadge() {
   }, []);
 
   const finishPolling = useCallback(
-    async (op: SystemUpdateOperationDto | null) => {
+    async (op: SystemUpdateOperationDto) => {
       polledOpId.current = null;
       setActiveOp(op);
       setPhase("done");
@@ -174,10 +163,6 @@ export function SystemUpdateBadge() {
       const landingVersion = status?.currentVersion ?? null;
       await runCheck(true);
       await loadAux();
-      if (!op) {
-        notifications.show({ color: "teal", title: "服务已恢复", message: "服务已重新上线。" });
-        return;
-      }
       if (op.status === "succeeded") {
         notifications.show({ color: "teal", title: "操作成功", message: `已完成${kindLabel(op.kind)}，当前版本 v${landingVersion ?? op.toVersion ?? ""}。` });
       } else if (op.status === "rolled_back") {
@@ -194,48 +179,31 @@ export function SystemUpdateBadge() {
   );
 
   const pollOperation = useCallback(
-    (operationId: string, startedAt: number) => {
-      // lastContactAt advances on every successful poll (op reachable, even while
-      // running). We only time out when the API has been unreachable for longer than
-      // MAX_UNREACHABLE_MS — never while the operation is still answering — so a slow
-      // snapshot/migration can't make the UI wrongly declare failure and re-enable
-      // controls mid-update. See the constant comments for the worst-case derivation.
-      let lastContactAt = startedAt;
-      const giveUp = (message: string) => {
-        polledOpId.current = null;
-        setPhase("done");
-        setBusy(null);
-        notifications.show({ color: "yellow", title: "状态确认超时", message });
-      };
+    (operationId: string) => {
+      let interval = POLL_INTERVAL_MS;
       const tick = async () => {
-        if (!mounted.current) return;
-        if (Date.now() - startedAt > ABSOLUTE_MAX_MS) {
-          giveUp("操作已超过最长跟踪时间仍未确认到最终状态，请稍后手动刷新查看结果。");
-          return;
-        }
+        if (!mounted.current || polledOpId.current !== operationId) return;
         try {
           const op = await fetchSystemOperation(operationId);
-          if (!mounted.current) return;
-          lastContactAt = Date.now();
+          if (!mounted.current || polledOpId.current !== operationId) return;
           if (op && (op.status === "succeeded" || op.status === "failed" || op.status === "rolled_back")) {
             await finishPolling(op);
             return;
           }
-          // Still running and reachable — keep waiting, no matter how long.
-          if (op) setActiveOp(op);
-          setPhase("running");
-        } catch {
-          if (!mounted.current) return;
-          // Unreachable = the container is restarting / migrating on the new (or
-          // rolled-back) version. Only give up if this has persisted past the
-          // supervisor's worst-case dark window.
-          if (Date.now() - lastContactAt > MAX_UNREACHABLE_MS) {
-            giveUp("服务长时间未恢复，请稍后手动刷新查看结果。");
-            return;
+          if (op) {
+            interval = POLL_INTERVAL_MS;
+            setActiveOp(op);
+            setPhase("running");
+          } else {
+            interval = Math.min(interval * 2, MAX_RECONNECT_INTERVAL_MS);
+            setPhase("reconnecting");
           }
+        } catch {
+          if (!mounted.current || polledOpId.current !== operationId) return;
+          interval = Math.min(interval * 2, MAX_RECONNECT_INTERVAL_MS);
           setPhase("reconnecting");
         }
-        pollTimer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
+        pollTimer.current = window.setTimeout(() => void tick(), interval);
       };
       pollTimer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
     },
@@ -256,7 +224,7 @@ export function SystemUpdateBadge() {
               : await startSystemRestart();
         notifications.show({ color: "blue", title: "任务已开始", message: result.message });
         polledOpId.current = result.operationId;
-        pollOperation(result.operationId, Date.now());
+        pollOperation(result.operationId);
       } catch (error) {
         setBusy(null);
         setPhase("idle");
@@ -279,7 +247,7 @@ export function SystemUpdateBadge() {
         setActiveOp(active);
         setBusy(active.kind);
         setPhase("running");
-        pollOperation(active.operationId, Date.now());
+        pollOperation(active.operationId);
       }
     } catch {
       // best-effort
