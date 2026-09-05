@@ -2,11 +2,14 @@ import "reflect-metadata";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
+import { mock } from "node:test";
 import { ServiceUnavailableException } from "@nestjs/common";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { Client } from "pg";
 import { assertPrismaSchemaCompatible, buildPrismaSchemaProbes } from "../src/modules/common/prisma-schema-probe";
 import { SystemUpdateService } from "../src/modules/common/system-update.service";
+import { HealthController } from "../src/modules/system/health.controller";
 
 const quote = (value: string) => `"${value.replace(/"/g, '""')}"`;
 const models = Prisma.dmmf.datamodel.models;
@@ -70,6 +73,108 @@ async function unitTests() {
   console.log("prisma-schema-probe unit regressions passed");
 }
 
+async function readinessCacheTests() {
+  let now = 10_000;
+  const clock = mock.method(performance, "now", () => now);
+  try {
+    for (const failure of [null, "connectivity", "migration-error", "pending", "schema"] as const) {
+      let broken = failure !== null;
+      let connections = 0;
+      let migrations = 0;
+      let schemaQueries = 0;
+      let warnings = 0;
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const { service, internals } = serviceWith({
+        $queryRawUnsafe: async (query: string) => {
+          assert.equal(query, "SELECT 1");
+          connections++;
+          entered();
+          await gate;
+          if (broken && failure === "connectivity") throw new Error("secret database address");
+          return [];
+        },
+        $queryRaw: async () => {
+          schemaQueries++;
+          // Fail at the END of the sweep to exercise worst-case request amplification.
+          if (broken && failure === "schema" && schemaQueries % models.length === 0) {
+            throw new Error('column "secretColumn" does not exist');
+          }
+          return [];
+        }
+      });
+      internals.logger = { warn: () => { warnings++; } };
+      internals.detectPendingMigrations = async () => {
+        migrations++;
+        if (broken && failure === "migration-error") throw new Error("secret migration history error");
+        return broken && failure === "pending" ? ["secret_migration"] : [];
+      };
+      const request = () => broken ? genericUnavailable(() => service.assertReady()) : service.assertReady();
+      const flood = () => Promise.all(Array.from({ length: 100 }, request));
+      const firstWave = flood();
+      await started;
+      assert.equal(connections, 1, "concurrent requests share connectivity work");
+      now += 6_000;
+      const slowWave = flood();
+      await Promise.resolve();
+      assert.equal(connections, 1, "an in-flight sweep must not expire, even after 5 seconds");
+      release();
+      await Promise.all([firstWave, slowWave]);
+      const firstCounts = {
+        connections: 1,
+        migrations: failure === "connectivity" ? 0 : 1,
+        schemaQueries: failure === null || failure === "schema" ? models.length : 0,
+        warnings: failure === null ? 0 : 1
+      };
+      const counts = () => ({ connections, migrations, schemaQueries, warnings });
+      assert.deepEqual(counts(), firstCounts, `${failure}: exactly one full check or failing prefix`);
+      for (let repeat = 0; repeat < 3; repeat++) await flood();
+      now += 4_999;
+      await flood();
+      assert.deepEqual(counts(), firstCounts, "both success and failure cache for 5s AFTER completion");
+      // A cached result does not suppress revalidation forever. Failure recovers and
+      // successful readiness still reruns connectivity, migrations and every table.
+      broken = false;
+      now += 1;
+      await flood();
+      assert.deepEqual(counts(), {
+        connections: firstCounts.connections + 1,
+        migrations: firstCounts.migrations + 1,
+        schemaQueries: firstCounts.schemaQueries + models.length,
+        warnings: firstCounts.warnings
+      }, "expiry shares exactly one fresh complete check and can recover");
+      const healthyCounts = counts();
+      const health = new HealthController(service);
+      for (let repeat = 0; repeat < 100; repeat++) assert.equal(health.health().status, "ok");
+      assert.deepEqual(counts(), healthyCounts, "liveness never queries the database");
+      if (failure === "schema") {
+        broken = true;
+        now += 5_000;
+        await flood();
+        assert.equal(schemaQueries, healthyCounts.schemaQueries + models.length);
+        assert.equal(warnings, healthyCounts.warnings + 1, "schema drift is noticed after cached success expires");
+        await flood();
+        assert.equal(connections, healthyCounts.connections + 1, "new failure is cached too");
+      }
+    }
+    // A different process/release has no inherited success, even before TTL expiry.
+    const healthy = serviceWith({ $queryRawUnsafe: async () => [], $queryRaw: async () => [] });
+    await healthy.service.assertReady();
+    let fallbackQueries = 0;
+    const fallback = serviceWith({
+      $queryRawUnsafe: async () => [],
+      $queryRaw: async () => { fallbackQueries++; throw new Error('column "oldColumn" does not exist'); }
+    });
+    await genericUnavailable(() => fallback.service.assertReady());
+    assert.equal(fallbackQueries, 1, "fresh fallback checks actual schema despite complete migration history");
+    console.log("readiness cache regressions passed (5s TTL; singleflight; cached failures; recovery; fresh fallback; cheap liveness)");
+  } finally {
+    clock.mock.restore();
+  }
+}
+
 async function postgresTests() {
   // Explicit opt-in only: never borrow the application's DATABASE_URL. Every DDL
   // statement targets a new random schema, which is removed in finally.
@@ -88,9 +193,16 @@ async function postgresTests() {
   try {
     await pg.query(`CREATE SCHEMA ${quote(schema)}`);
     created = true;
-    const { service, internals } = serviceWith(prisma);
+    const { internals } = serviceWith(prisma);
+    // Each DDL scenario models a fresh boot/cache; TTL behaviour is covered above
+    // with stubs rather than issuing repeated requests against a live database.
+    const freshReady = () => {
+      const fresh = serviceWith(prisma);
+      fresh.internals.detectPendingMigrations = internals.detectPendingMigrations;
+      return fresh.service.assertReady();
+    };
     // No tables at all fails, even with old migration history declared complete.
-    await genericUnavailable(() => service.assertReady());
+    await genericUnavailable(freshReady);
     // Deliberately schema-only fixtures. TEXT columns are sufficient for this
     // structural gate; this does not assert real scalar types/business validity.
     for (const model of models) {
@@ -99,7 +211,7 @@ async function postgresTests() {
         .map((field) => `${quote(field.dbName ?? field.name)} TEXT`).join(", ");
       await pg.query(`CREATE TABLE ${quote(schema)}.${quote(model.dbName ?? model.name)} (${columns})`);
     }
-    await service.assertReady();
+    await freshReady();
     // Use the REAL migration-history code too, with all of this release's bundled
     // migrations finished. A subsequent rename must still veto readiness.
     const { readdir } = await import("node:fs/promises");
@@ -111,16 +223,16 @@ async function postgresTests() {
     const real = new SystemUpdateService(prisma as never, {} as never);
     internals.detectPendingMigrations = () => (real as unknown as { detectPendingMigrations(dir: string): Promise<string[]> })
       .detectPendingMigrations(path.resolve(__dirname, "../../.."));
-    await service.assertReady();
+    await freshReady();
     await pg.query(`ALTER TABLE ${quote(schema)}."User" RENAME COLUMN "passwordHash" TO "renamedPasswordHash"`);
-    await genericUnavailable(() => service.assertReady());
+    await genericUnavailable(freshReady);
     await pg.query(`ALTER TABLE ${quote(schema)}."User" RENAME COLUMN "renamedPasswordHash" TO "passwordHash"`);
-    await service.assertReady();
+    await freshReady();
     await pg.query(`ALTER TABLE ${quote(schema)}."Node" DROP COLUMN "panelPassword"`);
-    await genericUnavailable(() => service.assertReady());
+    await genericUnavailable(freshReady);
     await pg.query(`ALTER TABLE ${quote(schema)}."Node" ADD COLUMN "panelPassword" TEXT`);
     await pg.query(`DROP TABLE ${quote(schema)}."RefreshToken"`);
-    await genericUnavailable(() => service.assertReady());
+    await genericUnavailable(freshReady);
     await pg.query(`CREATE TABLE ${quote(schema)}."RefreshToken" (${models.find((model) => model.name === "RefreshToken")!.fields
       .filter((field) => field.kind === "scalar" || field.kind === "enum").map((field) => `${quote(field.dbName ?? field.name)} TEXT`).join(", ")})`);
     await pg.query(`INSERT INTO ${quote(schema)}."User" ("passwordHash") VALUES ('sensitive-fixture-never-returned')`);
@@ -140,5 +252,5 @@ async function postgresTests() {
   }
 }
 
-async function main() { await unitTests(); await postgresTests(); }
+async function main() { await unitTests(); await readinessCacheTests(); await postgresTests(); }
 void main().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -10,7 +10,9 @@ import { SystemUpdateService } from "../common/system-update.service";
  *   supervisor gates a freshly promoted version on readiness, so a release that
  *   opens its port but has a broken Prisma runtime / missing migration is rolled
  *   back instead of silently becoming last-good. assertReady throws a GENERIC 503
- *   (details only in server logs) — this endpoint is unauthenticated.
+ *   (details only in server logs) — this endpoint is unauthenticated. Concurrent
+ *   probes share one sweep; success and failure are cached for 5s after completion,
+ *   so public traffic cannot multiply schema queries per request.
  */
 @Controller("health")
 export class HealthController {

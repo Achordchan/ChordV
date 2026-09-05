@@ -12,6 +12,7 @@ import { workLifecycle } from "../../work-lifecycle";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
+import { performance } from "node:perf_hooks";
 import { Client as PgClient } from "pg";
 import type {
   SystemUpdateCheckDto,
@@ -47,6 +48,7 @@ const SYSTEM_UPDATE_LOCK_KEY_1 = 420_800;
 const SYSTEM_UPDATE_LOCK_KEY_2 = 1;
 const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
 const MAX_MANIFEST_BYTES = 256 * 1024;
+const READINESS_CACHE_TTL_MS = 5_000;
 
 type RawManifest = {
   version?: unknown;
@@ -105,6 +107,8 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SystemUpdateService.name);
   private config: SystemUpdateRuntimeConfig = resolveSystemUpdateRuntimeConfig();
   private cache: SystemUpdateCacheEntry | null = null;
+  // Per-process only: a new/fallback release must check its own schema before success.
+  private readinessCache: { expiresAt: number; result: Promise<boolean> } | null = null;
   // pids of long-running detached child process GROUPS (migrate/snapshot). Tracked
   // so a graceful shutdown mid-migration terminates the whole tree instead of
   // leaving it changing the DB after the app has gone (see onModuleDestroy).
@@ -180,6 +184,24 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
    * unauthenticated and must not leak internal specifics.
    */
   async assertReady(): Promise<void> {
+    let entry = this.readinessCache;
+    if (!entry || performance.now() >= entry.expiresAt) {
+      // Infinity holds the singleflight until completion, even for a slow DB. Cache
+      // BOTH outcomes for 5s after completion to bound unauthenticated request load
+      // (including failure logs). No stale-while-revalidate success at expiry.
+      const next = {
+        expiresAt: Infinity,
+        result: Promise.resolve().then(() => this.checkReadiness()).then(
+          () => { next.expiresAt = performance.now() + READINESS_CACHE_TTL_MS; return true; },
+          () => { next.expiresAt = performance.now() + READINESS_CACHE_TTL_MS; return false; }
+        )
+      };
+      this.readinessCache = entry = next;
+    }
+    if (!await entry.result) throw new ServiceUnavailableException("service not ready");
+  }
+
+  private async checkReadiness(): Promise<void> {
     try {
       await this.prisma.$queryRawUnsafe("SELECT 1");
     } catch (error) {

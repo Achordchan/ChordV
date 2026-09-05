@@ -192,7 +192,7 @@ export function compareSemver(left: string, right: string) {
   const rightParts = parseSemver(right);
   for (let index = 0; index < 3; index += 1) {
     if (leftParts.core[index] !== rightParts.core[index]) {
-      return leftParts.core[index] - rightParts.core[index];
+      return leftParts.core[index] > rightParts.core[index] ? 1 : -1;
     }
   }
   if (leftParts.prerelease === rightParts.prerelease) {
@@ -204,7 +204,27 @@ export function compareSemver(left: string, right: string) {
   if (!rightParts.prerelease) {
     return -1;
   }
-  return leftParts.prerelease.localeCompare(rightParts.prerelease, undefined, { numeric: true });
+  const leftIdentifiers = leftParts.prerelease.split(".");
+  const rightIdentifiers = rightParts.prerelease.split(".");
+  for (let index = 0; index < Math.max(leftIdentifiers.length, rightIdentifiers.length); index += 1) {
+    const leftIdentifier = leftIdentifiers[index];
+    const rightIdentifier = rightIdentifiers[index];
+    if (leftIdentifier === undefined || rightIdentifier === undefined) {
+      return leftIdentifier === undefined ? -1 : 1;
+    }
+    const leftNumeric = /^\d+$/.test(leftIdentifier);
+    const rightNumeric = /^\d+$/.test(rightIdentifier);
+    if (leftNumeric !== rightNumeric) {
+      return leftNumeric ? -1 : 1;
+    }
+    // Numeric identifiers are unbounded integers; other identifiers use ASCII order, not locale collation.
+    const leftValue = leftNumeric ? BigInt(leftIdentifier) : leftIdentifier;
+    const rightValue = rightNumeric ? BigInt(rightIdentifier) : rightIdentifier;
+    if (leftValue !== rightValue) {
+      return leftValue > rightValue ? 1 : -1;
+    }
+  }
+  return 0;
 }
 
 export function parseSemver(value: string) {
@@ -214,7 +234,7 @@ export function parseSemver(value: string) {
     throw new BadRequestException("版本号必须使用 SemVer 格式，例如 1.2.3 或 1.2.3-beta.1。");
   }
   return {
-    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
     prerelease: match[4] ?? ""
   };
 }
