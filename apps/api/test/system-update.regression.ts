@@ -264,18 +264,8 @@ async function assertLockConnectionLoss() {
     assert.deepEqual(outcomes, ["failed", "failed"]);
     assert.equal(stagingClient.ended, 1);
 
-    // Also fence the exit-flush delay after a pending marker has been written.
-    const exitClient = new ClientStub();
-    const exitLock = await svc.acquireLock(() => exitClient as unknown as PgClient);
-    let cleared = 0;
-    svc.clearPendingMarker = async () => { cleared += 1; };
-    exitClient.emit("end");
-    svc.scheduleProcessExit("test lost lock", exitLock, "sysop-exit-lost");
-    const deadline = Date.now() + 3000;
-    while (!exitClient.ended && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(exitClient.ended, 1, "cancel instead of exiting after loss during flush delay");
-    assert.equal(cleared, 1);
-    assert.deepEqual(outcomes, ["failed", "failed", "failed"]);
+    // Lock loss across drain/hooks/final publication is exercised with real HTTP
+    // and durable markers in system-update-shutdown.regression.ts.
   } finally {
     if (previousUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = previousUrl;

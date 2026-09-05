@@ -383,16 +383,27 @@ persist_failed_promotion() {
     log "WARN: cannot persist terminal failure decision; retrying in 2s"
     sleep 2
   done
-  until write_result "$GEN_OP" "failed" "$attempted" "$reason" "$migrated"; do
-    log "WARN: could not persist failure result; keeping full promotion context, retrying in 2s"
-    sleep 2
-  done
-  clear_promoting
+  if [ -n "$GEN_OP" ]; then
+    until write_result "$GEN_OP" "failed" "$attempted" "$reason" "$migrated"; do
+      log "WARN: could not persist failure result; keeping full promotion context, retrying in 2s"
+      sleep 2
+    done
+  fi
+  # The terminal journal is ALSO a durable launch interlock. Clearing it would turn
+  # this candidate into an ordinary startup on the next loop/container restart,
+  # bypassing its snapshot gate (migrationApplied=false describes the failed attempt,
+  # not permission to run migrations without a snapshot). Never re-gate this operation
+  # into success, even if the app or snapshot dependency has since recovered.
+  # Offline recovery: stop the container, repair the cause, stage pending.json with a
+  # NEW operationId and the appropriate migrationApplied/kind, then remove this
+  # promoting.json interlock and restart. Keep the original failed result for audit.
+  log "FATAL: promotion recovery blocked by $PROMOTING_FILE; stop container, repair cause, stage a NEW operation in pending.json, then remove promoting.json and restart (keep failed result)"
+  exit 1
 }
 
 handle_failed_promotion() {
   # A promoted release failed to come up (migration / health gate / stabilization).
-  # Roll back to last-good when we can; otherwise record failure and retry.
+  # Roll back to last-good when we can; otherwise persist failure and block launch.
   # Mutates the GEN_* globals for the next loop iteration. $1 is a reason string.
   local reason="$1" mig_override="${2:-}" LG="" MIG
   # Whether the failed promotion may have CHANGED the schema — carried so the app can
@@ -440,8 +451,8 @@ handle_failed_promotion() {
       GEN_VERSION="$LG"; GEN_KIND="rollback"; GEN_PROMOTION=1
       return 0
     fi
-    # No fallback: keep retrying the SAME version. Only clear the promoting guard
-    # once the failure is durably recorded, so the outcome is not lost.
+    # No fallback: persist a terminal failure AND retain the launch interlock.
+    # Retrying as an ordinary startup could bypass a failed pre-migration snapshot.
     #
     # Record the ORIGINALLY ATTEMPTED version, not the version we happen to be sitting
     # on. If this is a rollback LANDING that ALSO failed, GEN_VERSION is now last-good
@@ -450,11 +461,7 @@ handle_failed_promotion() {
     # and lose which candidate actually failed.
     local attempted="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
     attempted="${attempted:-$GEN_VERSION}"
-    if [ -n "$GEN_OP" ]; then
-      persist_failed_promotion "$attempted" "${reason}（无可回滚版本）" "$MIG"
-    else
-      clear_promoting
-    fi
+    persist_failed_promotion "$attempted" "${reason}（无可回滚版本）" "$MIG"
   fi
   log "no known-good version to fall back to; retrying $GEN_VERSION in 3s"
   sleep 3
@@ -488,12 +495,11 @@ if [ -f "$PROMOTING_FILE" ]; then
   RESUME_OP="$(json_get "$PROMOTING_FILE" operationId)"
   RESUME_KIND="$(json_get "$PROMOTING_FILE" kind)"
   RESUME_FAILURE="$(json_get "$PROMOTING_FILE" failureVersion)"
-  if [ -n "$RESUME_FAILURE" ] && [ -n "$RESUME_OP" ]; then
+  if [ -n "$RESUME_FAILURE" ]; then
     log "resuming terminal failure persistence (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
     RESUME_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$RESUME_MIG" = "true" ] || RESUME_MIG="false"
     persist_failed_promotion "$RESUME_FAILURE" "$(json_get "$PROMOTING_FILE" failureReason)" "$RESUME_MIG"
-    GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
   elif [ -n "$RESUME_V" ] && [ -d "$RELEASES_DIR/$RESUME_V" ]; then
     log "resuming interrupted promotion -> $RESUME_V (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1

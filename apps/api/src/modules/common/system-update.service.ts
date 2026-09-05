@@ -8,6 +8,7 @@ import {
   ServiceUnavailableException
 } from "@nestjs/common";
 import { spawn } from "node:child_process";
+import { workLifecycle } from "../../work-lifecycle";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -43,7 +44,6 @@ import {
 
 const SYSTEM_UPDATE_LOCK_KEY_1 = 420_800;
 const SYSTEM_UPDATE_LOCK_KEY_2 = 1;
-const EXIT_FLUSH_DELAY_MS = 600;
 const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
 const MAX_MANIFEST_BYTES = 256 * 1024;
 
@@ -117,6 +117,16 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   // process fenced until cancelled staging has unwound, even if PostgreSQL already
   // dropped its advisory lock. This is not a multi-replica filesystem fencing token.
   private operationInFlight = false;
+  private shutdownFailed = false;
+  private shutdownApplication?: () => Promise<void>;
+  private fenceShutdown?: (error: Error) => void;
+  private assertShutdownHealthy?: () => void;
+
+  configureShutdown(shutdown: () => Promise<void>, fence: (error: Error) => void, assertHealthy: () => void) {
+    this.shutdownApplication = shutdown;
+    this.fenceShutdown = fence;
+    this.assertShutdownHealthy = assertHealthy;
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -293,7 +303,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
     await this.createOperationGuarded(lock, { operationId, kind: "update", actorLabel, actorUserId, fromVersion, toVersion: expected });
-    void this.runUpdateInBackground(operationId, fromVersion, lock, expected);
+    void workLifecycle.track(this.runUpdateInBackground(operationId, fromVersion, lock, expected));
     return { operationId, accepted: true, message: "更新任务已开始，服务将在完成后自动重启。" };
   }
 
@@ -316,7 +326,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       fromVersion,
       toVersion: target
     });
-    void this.runRollbackInBackground(operationId, fromVersion, target, lock);
+    void workLifecycle.track(this.runRollbackInBackground(operationId, fromVersion, target, lock));
     return { operationId, accepted: true, message: `正在回滚到 v${target}，服务将自动重启。` };
   }
 
@@ -334,24 +344,10 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       fromVersion,
       toVersion: fromVersion
     });
-    // Route restart through the SAME durable, health-gated marker path as a
-    // promotion (kind=restart, same version): the supervisor promotes the current
-    // version, health-gates + stabilizes it, and writes a success/failure result
-    // marker. Otherwise a restart that opens the port then crashes would still be
-    // audited as succeeded, and one that never boots would stay running forever.
-    try {
-      await lock.assertHeld();
-      await this.writePendingMarker({ version: fromVersion, operationId, kind: "restart", migrationApplied: false });
-    } catch (error) {
-      await this.finishOperation(operationId, "failed", { failureReason: this.describeError(error) }).catch(
-        () => undefined
-      );
-      await lock.release().catch(() => undefined);
-      throw new ServiceUnavailableException(`无法写入重启标记：${this.describeError(error)}`);
-    }
-    // Lock stays held until process exit (see scheduleProcessExit) so no second
-    // operation can slip in during the exit-flush window.
-    this.scheduleProcessExit(`restart requested (operation ${operationId})`, lock, operationId);
+    // Return the accepted response before waiting for HTTP drain (including this request).
+    this.scheduleProcessExit(`restart requested (operation ${operationId})`, lock, operationId, {
+      version: fromVersion, operationId, kind: "restart", migrationApplied: false
+    });
     return { operationId, accepted: true, message: "服务正在重启。" };
   }
 
@@ -410,7 +406,9 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      // Persist the promotion INTENT, then exit. The pre-migration SNAPSHOT and the
+      // After work drain and Nest shutdown, persist promotion INTENT and exit.
+      // Until then there is deliberately NO supervisor-consumable pending marker.
+      // The pre-migration SNAPSHOT and the
       // MIGRATION itself are performed by the supervisor AFTER this process has exited
       // (see entrypoint.sh: run_snapshot + run_migrate before launch). This is
       // deliberate on two counts:
@@ -424,26 +422,19 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       // migrationApplied travels in the marker so a later rollback can still warn that
       // the schema was changed; the supervisor takes the snapshot only when it is set.
       await lock.assertHeld();
-      await this.writePendingMarker({
-        version: release.version,
-        operationId,
-        kind: "update",
-        migrationApplied: willMigrate
-      });
 
-      // Best-effort bookkeeping AFTER the promotion intent is durable.
+      // Bookkeeping uses Prisma BEFORE draining/closing Nest. No supervisor intent yet.
       await this.pruneOldReleases(release.version, fromVersion).catch((error) =>
         this.logger.warn(`Prune old releases failed (non-fatal): ${this.describeError(error)}`)
-      );
-      await this.updateOperation(operationId, { migrationApplied: willMigrate }).catch((error) =>
-        this.logger.warn(`Audit update failed (non-fatal): ${this.describeError(error)}`)
       );
 
       // Keep the advisory lock until the process actually exits (see
       // scheduleProcessExit): the DB session closing on exit releases it, which
       // closes the window where a second request could grab the lock before the
       // supervisor writes promoting.json.
-      this.scheduleProcessExit(`staged update ${fromVersion} -> ${release.version} (operation ${operationId})`, lock, operationId);
+      this.scheduleProcessExit(`staged update ${fromVersion} -> ${release.version} (operation ${operationId})`, lock, operationId, {
+        version: release.version, operationId, kind: "update", migrationApplied: willMigrate
+      });
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System update failed (operation ${operationId}): ${reason}`);
@@ -463,9 +454,9 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       await lock.assertHeld();
       await this.markRunning(operationId, target);
       await lock.assertHeld();
-      await this.writePendingMarker({ version: target, operationId, kind: "rollback" });
-      // Lock stays held until process exit (see scheduleProcessExit).
-      this.scheduleProcessExit(`staged rollback ${fromVersion} -> ${target} (operation ${operationId})`, lock, operationId);
+      this.scheduleProcessExit(`staged rollback ${fromVersion} -> ${target} (operation ${operationId})`, lock, operationId, {
+        version: target, operationId, kind: "rollback"
+      });
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System rollback failed (operation ${operationId}): ${reason}`);
@@ -939,6 +930,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private assertOperational() {
+    if (this.shutdownFailed || workLifecycle.isDraining) throw new ServiceUnavailableException("系统停机未完成，已停止接收新工作，请人工恢复。");
     if (!this.config.enabled) {
       throw new BadRequestException("当前环境未启用系统自更新（仅生产容器部署可用）。");
     }
@@ -978,6 +970,9 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   })): Promise<OperationLock> {
     if (!process.env.DATABASE_URL) {
       throw new ServiceUnavailableException("缺少 DATABASE_URL，无法获取系统更新锁。");
+    }
+    if (this.shutdownFailed || workLifecycle.isDraining) {
+      throw new ServiceUnavailableException("系统正在停机，不能开始新操作。");
     }
     if (this.operationInFlight) {
       throw new ConflictException("已有系统操作正在执行或取消中，请稍后重试。");
@@ -1303,28 +1298,62 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  private scheduleProcessExit(reason: string, lock: OperationLock, operationId: string) {
-    // NOTE: callers deliberately do NOT release the advisory lock here. The lock is
-    // held on the operation's dedicated PG session; letting process.exit close that
-    // session is what releases it, so the lock stays held across the whole
-    // exit-flush window. Releasing it earlier would open a gap where a second
-    // request could acquire the lock before the supervisor writes promoting.json.
-    this.logger.warn(`Scheduling process exit for self-update: ${reason}`);
-    setTimeout(() => {
-      void (async () => {
+  private scheduleProcessExit(reason: string, lock: OperationLock, operationId: string, marker: {
+    version: string; operationId: string; kind: SystemUpdateOperationKind; migrationApplied?: boolean;
+  }) {
+    this.logger.warn(`Draining process for self-update: ${reason}`);
+    // No delay-based exit. This async task must not be included in the work it drains.
+    void this.drainAndExit(lock, operationId, marker);
+  }
+
+  private async drainAndExit(lock: OperationLock, operationId: string, marker: {
+    version: string; operationId: string; kind: SystemUpdateOperationKind; migrationApplied?: boolean;
+  }) {
+    try {
+      await lock.assertHeld();
+      if (!this.shutdownApplication) throw new Error("Graceful shutdown is not configured; refusing promotion");
+      await this.shutdownApplication();
+      // Dedicated PG connection is independent of Prisma and survives Nest app.close().
+      await lock.assertHeld();
+      this.assertShutdownHealthy?.();
+      await this.writePendingMarker(marker);
+      await lock.assertHeld();
+      this.assertShutdownHealthy?.();
+      this.logger.warn("Work drained and Nest closed; exiting for supervisor promotion.");
+      process.exit(0);
+    } catch (error) {
+      this.shutdownFailed = true;
+      const reason = `Graceful shutdown failed; promotion cancelled: ${this.describeError(error)}`;
+      this.logger.error(reason);
+      this.fenceShutdown?.(new Error(reason));
+      // If the final write/check failed, revoke any partially published intent before
+      // releasing the lock. If removal fails, keep the fence and do NOT exit.
+      try {
+        await this.clearPendingMarker();
+      } catch (cleanupError) {
+        this.logger.error(`Unable to revoke pending intent; lock retained, manual recovery required: ${this.describeError(cleanupError)}`);
+        return;
+      }
+      // Prisma may already be closed. Persist using the existing boot/poll consumer;
+      // never overwrite an existing terminal result or claim a migration happened.
+      try {
+        if (!this.config.stateDir) throw new Error("No state directory for shutdown failure");
+        await fs.mkdir(this.config.stateDir, { recursive: true });
+        const result = path.join(this.config.stateDir, `${SYSTEM_UPDATE_RESULT_PREFIX}.${operationId}.json`);
+        const tmp = `${result}.tmp.${process.pid}.${++this.tmpSeq}`;
         try {
-          await lock.assertHeld();
-        } catch (error) {
-          await this.clearPendingMarker().catch(() => undefined);
-          await this.finishOperation(operationId, "failed", { failureReason: this.describeError(error) }).catch(() => undefined);
-          await lock.release();
-          this.logger.warn("Cancelled system operation after losing its lock; keeping the API running.");
-          return;
-        }
-        this.logger.warn("Exiting process; supervisor will bring the service back up.");
-        process.exit(0);
-      })();
-    }, EXIT_FLUSH_DELAY_MS);
+          await this.writeFileDurable(tmp, JSON.stringify({ operationId, status: "failed", reason, migrationApplied: false }));
+          // Hard-link publishes complete bytes exclusively; EEXIST preserves the winner.
+          await fs.link(tmp, result);
+          await this.fsyncDir(this.config.stateDir);
+        } finally { await fs.rm(tmp, { force: true }).catch(() => undefined); }
+      } catch (auditError) {
+        this.logger.error(`Shutdown failure result could not be persisted: ${this.describeError(auditError)}`);
+      }
+      await lock.release().catch((releaseError) => this.logger.error(`Lock cleanup failed: ${this.describeError(releaseError)}`));
+      // No automatic exit or resumption: timeout does not cancel underlying work, and
+      // failed Nest hooks can leave services half-closed. Operator recovery is required.
+    }
   }
 
   private toOperationDto(row: {

@@ -433,6 +433,7 @@ exec /bin/mv "$@"
   };
   let child = start();
   const stop = async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
     const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { return; }
     await exited;
@@ -460,11 +461,111 @@ exec /bin/mv "$@"
     rmSync(blocker);
     const result = await waitForResult(resultFile, 10_000);
     assert.deepEqual(result, { operationId: op, status: "failed", version: "0.0.2", reason: journal.failureReason, migrationApplied: true });
-    await waitUntil(() => existsSync(launch) && !existsSync(marker), 15_000, () => `failed result did not permit normal restart.\n${stderr}`);
-    await waitUntil(() => stderr.includes("healthy + stable"), 10_000, () => `recovered app did not stabilize.\n${stderr}`);
+    // Terminal failures now deliberately require offline recovery, rather than an
+    // ordinary restart that would erase snapshot/rollback migration safety gates.
+    await waitUntil(() => child.exitCode !== null, 10_000, () => `failed promotion did not stop.\n${stderr}`);
+    assert.equal(child.exitCode, 1);
+    assert.equal(existsSync(launch), false, "persisting a failure must not authorize a normal relaunch");
+    assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), journal, "terminal journal must remain a durable launch interlock");
+    child = start();
+    await waitUntil(() => child.exitCode !== null, 10_000, () => `restart did not stay blocked.\n${stderr}`);
+    assert.equal(child.exitCode, 1);
+    assert.equal(existsSync(launch), false, "repairing the app alone must not unblock the failed operation");
     assert.equal(JSON.parse(readFileSync(resultFile, "utf8")).status, "failed", "later recovery must not overwrite the terminal failure");
   } finally {
     await stop(); rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** A failed required snapshot must never fall through to ordinary-start migrations. */
+async function runBlockedSnapshotRecoveryScenario(lastGood: "missing" | "same" | "unusable") {
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-blocked-"));
+  const state = path.join(root, "state");
+  const bin = path.join(root, "bin");
+  const backups = path.join(state, "backups");
+  mkdirSync(state); mkdirSync(bin);
+  const port = await freePort();
+  const version = "0.0.2";
+  const op = `sysop-snapshot-blocked-${lastGood}`;
+  const recoveryOp = `${op}-recovery`;
+  const release = writeRelease(root, version, "good", port);
+  const marker = path.join(state, "promoting.json");
+  const resultFile = path.join(state, `operation-result.${op}.json`);
+  const migrations = path.join(root, "migrations");
+  const launches = path.join(root, "launches");
+  const dumpBlock = path.join(root, "dump-block");
+  writeFileSync(dumpBlock, "");
+  writeFileSync(path.join(state, "desired-version"), version);
+  if (lastGood !== "missing") writeFileSync(path.join(state, "last-good-version"), lastGood === "same" ? version : "0.0.1");
+  writeFileSync(marker, JSON.stringify({ version, operationId: op, kind: "update", migrationApplied: true }));
+  const appFile = path.join(release, APP_ENTRY);
+  writeFileSync(appFile, `require('fs').appendFileSync(${JSON.stringify(launches)},'launch\\n');` + readFileSync(appFile, "utf8"));
+  mkdirSync(path.join(release, "scripts"));
+  writeFileSync(path.join(release, "scripts/prisma-migrate-with-baseline.mjs"),
+    `import fs from 'node:fs';fs.appendFileSync(${JSON.stringify(migrations)},'migrate\\n');` +
+    `if(!fs.readdirSync(${JSON.stringify(backups)}).some(n=>n.startsWith(${JSON.stringify(`pre-migrate-${version}-${recoveryOp}-`)})&&n.endsWith('.sql.gz')))process.exit(1);`);
+  writeFileSync(path.join(bin, "timeout"), '#!/usr/bin/env bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
+  writeFileSync(path.join(bin, "pg_dump"), '#!/usr/bin/env bash\n[ -f "$CHORDV_TEST_DUMP_BLOCK" ] && exit 1\nprintf "snapshot\\n"\n', { mode: 0o755 });
+  const env = {
+    ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    CHORDV_TEST_DUMP_BLOCK: dumpBlock, CHORDV_SYSTEM_NODE_BIN: process.execPath,
+    CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
+    CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
+    CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "true", CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true",
+    CHORDV_SYSTEM_UPDATE_BACKUP_DIR: backups, CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://stub/db",
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+  };
+  let stderr = "";
+  const start = () => {
+    const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    child.stderr?.on("data", chunk => { stderr += String(chunk); });
+    return child;
+  };
+  let child = start();
+  const assertBlocked = async () => {
+    await waitUntil(() => child.exitCode !== null, 15_000, () => `snapshot failure did not block launch (${lastGood}).\n${stderr}`);
+    assert.equal(child.exitCode, 1);
+    assert.equal(existsSync(migrations), false, "migration stub must never run, including the next supervisor loop");
+    assert.equal(existsSync(launches), false, "unvalidated candidate must not launch");
+    assert.match(stderr, /promotion recovery blocked/);
+  };
+  try {
+    await assertBlocked();
+    const result = await waitForResult(resultFile, 1_000);
+    assert.equal(result?.status, "failed");
+    assert.equal(result.version, version);
+    assert.equal(result.migrationApplied, false);
+    assert.match(result.reason!, /快照失败/);
+    const journal = JSON.parse(readFileSync(marker, "utf8"));
+    assert.equal(journal.failureVersion, version);
+    assert.equal(journal.migrationApplied, false, "false is an audit fact, not permission to skip the snapshot");
+    // Same durable state on container restart, with snapshot still broken.
+    child = start();
+    await assertBlocked();
+    // Fixing pg_dump is insufficient: this original operation is terminal.
+    rmSync(dumpBlock);
+    child = start();
+    await assertBlocked();
+    assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), journal);
+    assert.deepEqual(JSON.parse(readFileSync(resultFile, "utf8")), result);
+    // Explicit offline recovery from the logged instructions: NEW operation, with
+    // its own required snapshot gate; only then remove the interlock and restart.
+    writeFileSync(path.join(state, "pending.json"), JSON.stringify({ version, operationId: recoveryOp, kind: "update", migrationApplied: true }));
+    rmSync(marker);
+    child = start();
+    const recovered = await waitForResult(path.join(state, `operation-result.${recoveryOp}.json`), 15_000);
+    assert.equal(recovered?.status, "success", stderr);
+    assert.equal(recovered.operationId, recoveryOp);
+    assert.equal(readFileSync(migrations, "utf8"), "migrate\n", "exactly one migration, after the new operation's snapshot succeeded");
+    assert.equal(readFileSync(launches, "utf8"), "launch\n");
+    assert.deepEqual(JSON.parse(readFileSync(resultFile, "utf8")), result, "recovery must not change the original terminal audit");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+      if (child.pid) process.kill(-child.pid, "SIGKILL");
+      await exited;
+    }
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -614,6 +715,7 @@ async function main() {
   assert.equal(manual.stderr.includes("P3009"), false, "manual rollback must skip migrate deploy");
   await runTerminalFailureRetryScenario(false);
   await runTerminalFailureRetryScenario(true);
+  for (const lastGood of ["missing", "same", "unusable"] as const) await runBlockedSnapshotRecoveryScenario(lastGood);
   testSnapshotDatabaseUrl();
 }
 

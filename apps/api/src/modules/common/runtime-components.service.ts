@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
   AdminRuntimeComponentFailureReportDto,
@@ -67,7 +68,7 @@ export class RuntimeComponentsService {
       });
       const dedupedRows = dedupeSharedRulesets(rows);
       const latestValidationFailures = await this.listLatestAdminValidationFailures(dedupedRows.map((row) => row.id));
-      return await Promise.all(
+      return await workLifecycle.all(
         dedupedRows.map((row) => toAdminRuntimeComponentRecord(row, latestValidationFailures.get(row.id) ?? null))
       );
     } catch (error) {
@@ -755,7 +756,7 @@ export class RuntimeComponentsService {
     });
 
     try {
-      await Promise.race([cleanupTask, timeoutTask]);
+      await Promise.race([workLifecycle.track(cleanupTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(
         `Runtime component ${keepId} saved, but shared ruleset cleanup failed: ${readErrorMessage(error)}`
@@ -768,8 +769,8 @@ export class RuntimeComponentsService {
   }
 
   private startSharedRulesetDuplicatesCleanup(kind: RuntimeComponentKind, keepId: string) {
-    const timer = setTimeout(() => {
-      void this.cleanupSharedRulesetDuplicatesBestEffort(kind, keepId).catch((error) => {
+    const timer = workLifecycle.defer(() => {
+      return this.cleanupSharedRulesetDuplicatesBestEffort(kind, keepId).catch((error) => {
         this.logger.warn(`Runtime component ${keepId} saved, but background shared ruleset cleanup failed: ${readErrorMessage(error)}`);
       });
     }, 0);
@@ -808,7 +809,7 @@ export class RuntimeComponentsService {
     });
 
     try {
-      await Promise.race([cleanupTask, timeoutTask]);
+      await Promise.race([workLifecycle.track(cleanupTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(`Runtime component saved, but ${label} cleanup failed: ${readErrorMessage(error)}`);
     } finally {
@@ -822,8 +823,8 @@ export class RuntimeComponentsService {
     if (!absolutePath) {
       return;
     }
-    const timer = setTimeout(() => {
-      void this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
+    const timer = workLifecycle.defer(() => {
+      return this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
         this.logger.warn(`Runtime component saved, but background ${label} cleanup failed: ${readErrorMessage(error)}`);
       });
     }, 0);
@@ -834,7 +835,7 @@ export class RuntimeComponentsService {
     if (!storedFilePath) {
       return;
     }
-    const timer = setTimeout(() => {
+    const timer = workLifecycle.defer(() => {
       let absolutePath: string;
       try {
         absolutePath = resolveRuntimeComponentAbsolutePath(storedFilePath);
@@ -842,7 +843,7 @@ export class RuntimeComponentsService {
         this.logger.warn(`Runtime component saved, but ${label} cleanup path is invalid: ${readErrorMessage(error)}`);
         return;
       }
-      void this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
+      return this.removeRuntimeComponentFileBestEffort(absolutePath, label).catch((error) => {
         this.logger.warn(`Runtime component saved, but background ${label} cleanup failed: ${readErrorMessage(error)}`);
       });
     }, 0);

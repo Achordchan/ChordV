@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import type { ClientRuntimeEventDto } from "@chordv/shared";
 import { randomUUID } from "node:crypto";
@@ -59,6 +60,7 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
 
   stream(options?: { validate?: () => Promise<void> | void; lastEventId?: string | null }): Observable<MessageEvent> {
     return new Observable<MessageEvent>((subscriber) => {
+      if (workLifecycle.isDraining) { subscriber.complete(); return; }
       let deliveryQueue = Promise.resolve();
       const deliver = (event: MessageEvent) => {
         if (!options?.validate) {
@@ -66,13 +68,14 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
           return;
         }
         deliveryQueue = deliveryQueue
-          .then(() => options.validate?.())
+          .then(() => subscriber.closed ? undefined : options.validate?.())
           .then(() => {
             subscriber.next(event);
           })
           .catch((error) => {
             subscriber.error(error);
           });
+        workLifecycle.track(deliveryQueue);
       };
       const sink: EventSink = (event) => deliver(event);
       this.subscribers.add(sink);
@@ -94,7 +97,9 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
         );
       }, 15000);
 
+      const removeDrainListener = workLifecycle.onDrain(() => subscriber.complete());
       return () => {
+        removeDrainListener();
         clearInterval(timer);
         this.subscribers.delete(sink);
       };
@@ -105,7 +110,7 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
     const message = this.toReplayableMessageEvent(event, this.nextEventId());
     this.recordReplayEvent(message);
     this.dispatchMessage(message);
-    void this.broadcastToCluster(message.id ?? "", event);
+    void workLifecycle.track(this.broadcastToCluster(message.id ?? "", event));
   }
 
   publishTicketUpdated(input: { ticketId: string; ticketStatus?: AdminRuntimeEventDto["ticketStatus"] | null }) {
@@ -242,7 +247,7 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async startListener() {
-    if (this.destroyed || this.listener) {
+    if (workLifecycle.isDraining || this.destroyed || this.listener) {
       return;
     }
 
@@ -268,28 +273,28 @@ export class AdminRuntimeEventsService implements OnModuleInit, OnModuleDestroy 
       });
       listener.on("error", (error) => {
         this.logger.error(`Admin SSE listener disconnected: ${error.message}`);
-        void this.scheduleListenerReconnect();
+        void workLifecycle.track(this.scheduleListenerReconnect());
       });
       listener.on("end", () => {
-        void this.scheduleListenerReconnect();
+        void workLifecycle.track(this.scheduleListenerReconnect());
       });
       this.listener = listener;
     } catch (error) {
       this.logger.warn(`Admin SSE listener failed to start: ${error instanceof Error ? error.message : String(error)}`);
       await listener.end().catch(() => undefined);
-      void this.scheduleListenerReconnect();
+      void workLifecycle.track(this.scheduleListenerReconnect());
     }
   }
 
   private async scheduleListenerReconnect() {
-    if (this.destroyed || this.reconnectTimer) {
+    if (workLifecycle.isDraining || this.destroyed || this.reconnectTimer) {
       return;
     }
     const current = this.listener;
     this.listener = null;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      void this.startListener();
+      void workLifecycle.track(this.startListener());
     }, 5000);
     this.reconnectTimer.unref?.();
     await current?.end().catch(() => undefined);

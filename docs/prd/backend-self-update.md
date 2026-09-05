@@ -16,7 +16,11 @@
 
 **第18轮补充：迁移失败后的恢复边界。** 自动/手动回滚落地跳过 `migrate deploy`，但仍须通过 readiness 与稳定期；部分 DDL 可能使旧代码也无法健康上线，代码回滚不等于数据库恢复。回滚终态确认后，普通应用/容器重启仍会按启动流程运行迁移；未处理的 Prisma 失败迁移记录可能再次触发 P3009。管理员应在再次重启或更新前检查失败迁移并按迁移前快照恢复/人工修复，不能把代码回滚视为迁移历史已修复。快照默认从 DATABASE_URL 移除 Prisma 专属参数；使用连接池或需独立直连时可配置 `CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL`（应指向同一数据库）。
 
-1. **进程外监督者（entrypoint.sh）**：应用执行“下载→校验→解压→检查待迁移项→写 `state/pending.json`→退出”。监督者在旧应用退出后接管提升、按操作隔离的迁移前快照、迁移和启动；回滚落地跳过迁移。readiness 探测与稳定期通过后才更新 `last-good-version`。Docker 的 `restart: unless-stopped` 是监督者自身退出后的兜底。
+**第19轮补充：无可用回滚版本时停止推进。** 提升失败且 last-good 缺失、不可用或与候选相同，监督者保留带 `failureVersion` 的 `promoting.json` 作为持久启动禁令，记录失败后退出非零。容器重启仍会遵守禁令，不把失败候选当普通启动、也不绕过快照门控。修复快照依赖本身不会自动重新执行原失败操作。此异常需离线恢复：停止容器，检查/修复数据库和快照原因，按修复后的版本及迁移要求准备带新 operationId 的 pending 操作，再移除旧 promoting 禁令后启动；保留旧失败结果供审计。不得仅删除禁令便直接启动原候选。
+
+**第19轮补充：排空后再交接。** 自更新/回滚/重启不再固定等待 600ms 直接退出，而是停止新 HTTP/定时工作、完成只读 SSE、等待请求体和实际处理器及已登记后台任务结束，再执行 Nest 关闭钩子。排空默认 12 分钟，可用 `CHORDV_API_DRAIN_TIMEOUT_MS` 配置，最高 30 分钟；关闭钩子另限 30 秒。pending 标记仅在上述步骤成功且专属 PG 锁仍有效后写入。超时、信号取消、钩子失败或锁丢失不强制退出、不自动恢复接单，失败结果通过独立持久化标记记录（写入失败单独记录错误），需人工检查。此机制为单进程显式工作登记；后续新增脱离请求的工作必须接入 work-lifecycle，不能防护外部 SIGKILL/OOM。
+
+1. **进程外监督者（entrypoint.sh）**：应用执行“下载→校验→解压→检查待迁移项→停止接单并排空工作→Nest 关闭→写 `state/pending.json`→退出”。监督者在旧应用退出后接管提升、按操作隔离的迁移前快照、迁移和启动；回滚落地跳过迁移。readiness 探测与稳定期通过后才更新 `last-good-version`。Docker 的 `restart: unless-stopped` 是监督者自身退出后的兜底。
 2. **监督者确认终态**：成功、失败和自动回滚均由监督者写 `state/operation-result.<operationId>.json`；应用启动及状态轮询时消费落库。新应用仅启动并不自证成功，自动回滚必须等 fallback 自身健康后才写 rolledback；结果落盘失败保留上下文重试。
 3. **检查更新数据源 = raw manifest**：`api.github.com` 加速镜像不可达（实测 ghfast 对它返回 403），改为拉一个发布在 raw 上的 `manifest.json`（版本号 + 产物 URL + SHA-256 + changelog），加速镜像可代理；校验用的 SHA-256 以 manifest 记录为准（详见 11 节安全边界，仍不采信代理返回内容）。
 4. **发布单元 = api + admin 同一个 release**：release 压缩包内含 `apps/api/dist` 与 `apps/admin/dist`；admin 容器（nginx）只读挂载共享的 releases/state 卷，网页根指向“当前版本”的 `apps/admin/dist`，api 自更新切版本后 admin 随之跟随（`admin-entrypoint.sh` 仅跟随通过健康门控的 last-good-version 重指向 + reload），admin 侧无需任何更新逻辑。

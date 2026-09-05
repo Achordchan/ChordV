@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { BadGatewayException, BadRequestException, Injectable, Logger, ServiceUnavailableException } from "@nestjs/common";
 import * as fs from "node:fs/promises";
 import type {
@@ -725,7 +726,7 @@ function withTimeout<T>(task: Promise<T>, timeoutMs: number, timeoutMessage: str
   const timeoutTask = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
   });
-  return Promise.race([task, timeoutTask]).finally(() => {
+  return Promise.race([workLifecycle.track(task), timeoutTask]).finally(() => {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
     }

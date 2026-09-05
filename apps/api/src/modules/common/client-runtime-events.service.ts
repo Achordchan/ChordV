@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import type { ClientRuntimeEventDto } from "@chordv/shared";
 import { Client as PgClient } from "pg";
@@ -48,6 +49,7 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
     options?: { validate?: () => Promise<void> | void; lastEventId?: string | null }
   ): Observable<MessageEvent> {
     return new Observable<MessageEvent>((subscriber) => {
+      if (workLifecycle.isDraining) { subscriber.complete(); return; }
       let deliveryQueue = Promise.resolve();
       const deliver = (event: MessageEvent) => {
         if (!options?.validate) {
@@ -55,13 +57,14 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
           return;
         }
         deliveryQueue = deliveryQueue
-          .then(() => options.validate?.())
+          .then(() => subscriber.closed ? undefined : options.validate?.())
           .then(() => {
             subscriber.next(event);
           })
           .catch((error) => {
             subscriber.error(error);
           });
+        workLifecycle.track(deliveryQueue);
       };
       const sink: EventSink = (event) => deliver(event);
       const current = this.subscribers.get(userId) ?? new Set<EventSink>();
@@ -85,7 +88,9 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
         );
       }, 15000);
 
+      const removeDrainListener = workLifecycle.onDrain(() => subscriber.complete());
       return () => {
+        removeDrainListener();
         clearInterval(timer);
         const active = this.subscribers.get(userId);
         if (!active) {
@@ -103,7 +108,7 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
     const message = this.toReplayableMessageEvent(event, this.nextEventId());
     this.recordReplayEvent(userId, message);
     this.dispatchMessageToUser(userId, message);
-    void this.broadcastToCluster(userId, message.id ?? "", event);
+    void workLifecycle.track(this.broadcastToCluster(userId, message.id ?? "", event));
   }
 
   publishToUsers(userIds: Iterable<string>, event: ClientRuntimeEventDto) {
@@ -196,7 +201,7 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
   }
 
   private async startListener() {
-    if (this.destroyed || this.listener) {
+    if (workLifecycle.isDraining || this.destroyed || this.listener) {
       return;
     }
 
@@ -225,28 +230,28 @@ export class ClientRuntimeEventsService implements OnModuleInit, OnModuleDestroy
       });
       listener.on("error", (error) => {
         this.logger.error(`SSE 广播监听已断开：${error.message}`);
-        void this.scheduleListenerReconnect();
+        void workLifecycle.track(this.scheduleListenerReconnect());
       });
       listener.on("end", () => {
-        void this.scheduleListenerReconnect();
+        void workLifecycle.track(this.scheduleListenerReconnect());
       });
       this.listener = listener;
     } catch (error) {
       this.logger.warn(`SSE 广播监听启动失败：${error instanceof Error ? error.message : String(error)}`);
       await listener.end().catch(() => undefined);
-      void this.scheduleListenerReconnect();
+      void workLifecycle.track(this.scheduleListenerReconnect());
     }
   }
 
   private async scheduleListenerReconnect() {
-    if (this.destroyed || this.reconnectTimer) {
+    if (workLifecycle.isDraining || this.destroyed || this.reconnectTimer) {
       return;
     }
     const current = this.listener;
     this.listener = null;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      void this.startListener();
+      void workLifecycle.track(this.startListener());
     }, 5000);
     this.reconnectTimer.unref?.();
     await current?.end().catch(() => undefined);
