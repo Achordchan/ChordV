@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Client as PgClient } from "pg";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, promises as fsPromises } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { BadRequestException } from "@nestjs/common";
@@ -373,6 +373,26 @@ async function main() {
           // Re-serving the current highest version is allowed (== floor, no downgrade).
           await svc.enforceSignedManifestFloor("1.3.0");
           assert.equal(readFileSync(floorFile, "utf8").trim(), "1.3.0");
+          for (const damaged of ["", "\n", "garbage", "01.2.3", "1.2.3-01", "v1.3.0"]) {
+            writeFileSync(floorFile, damaged);
+            await assert.rejects(() => svc.enforceSignedManifestFloor("1.2.0"), /阈值损坏/);
+            assert.equal(readFileSync(floorFile, "utf8"), damaged, "reject without overwriting damaged state");
+          }
+          writeFileSync(floorFile, "1.3.0");
+          const originalRead = fsPromises.readFile;
+          try {
+            for (const code of ["EIO", "EACCES", "EISDIR"]) {
+              fsPromises.readFile = (async (file: unknown, ...args: unknown[]) => {
+                if (file === floorFile) throw Object.assign(new Error("injected read failure"), { code });
+                return Reflect.apply(originalRead, fsPromises, [file, ...args]);
+              }) as typeof fsPromises.readFile;
+              await assert.rejects(() => svc.enforceSignedManifestFloor("1.2.0"), /无法读取/);
+              assert.equal(readFileSync(floorFile, "utf8"), "1.3.0");
+            }
+          } finally { fsPromises.readFile = originalRead; }
+          await assert.rejects(() => svc.enforceSignedManifestFloor("1.2.0"), /低于/);
+          await svc.enforceSignedManifestFloor("1.4.0");
+          assert.equal(readFileSync(floorFile, "utf8"), "1.4.0", "repaired state resumes the serialized ratchet");
         }
       );
     } finally {

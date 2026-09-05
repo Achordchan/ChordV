@@ -33,6 +33,8 @@ services:
     image: chordv-api:latest
     container_name: chordv-api
     restart: unless-stopped
+    # Maximum configured drain (30m) + Nest hooks (30s) + supervisor margin.
+    stop_grace_period: 32m
     depends_on:
       postgres:
         condition: service_healthy

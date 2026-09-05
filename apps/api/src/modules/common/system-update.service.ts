@@ -751,35 +751,33 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     const floorFile = path.join(this.config.stateDir, SYSTEM_UPDATE_MANIFEST_FLOOR_FILE);
     let floor: string | null = null;
     try {
-      floor = (await fs.readFile(floorFile, "utf8")).trim() || null;
-    } catch {
-      floor = null; // no floor yet (first accepted manifest)
-    }
-    if (floor) {
-      let cmp = 0;
-      try {
-        cmp = compareSemver(version, floor);
-      } catch {
-        cmp = 0; // unparseable floor — don't block on it
+      floor = (await fs.readFile(floorFile, "utf8")).trim();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.logger.warn(`Cannot read manifest floor: ${this.describeError(error)}`);
+        throw new ServiceUnavailableException("无法读取更新清单版本阈值，已拒绝检查，请修复状态文件。");
       }
-      if (cmp < 0) {
-        // A correctly-signed but OLDER manifest than one we already accepted: reject
-        // it as a replay/downgrade (a stale/malicious mirror trying to hide a newer
-        // release). checkUpdate turns this into a surfaced warning + "no update".
+    }
+    let comparison = 1;
+    if (floor !== null) {
+      try {
+        if (normalizeVersion(floor) !== floor) throw new Error("Noncanonical manifest floor");
+        const prerelease = /^[^-]+-(.*)/.exec(floor.split("+")[0])?.[1];
+        if (prerelease?.split(".").some(identifier => /^0\d+$/.test(identifier))) {
+          throw new Error("Invalid numeric prerelease identifier in manifest floor");
+        }
+        comparison = compareSemver(version, floor);
+      } catch (error) {
+        this.logger.warn(`Invalid manifest floor: ${this.describeError(error)}`);
+        throw new ServiceUnavailableException("更新清单版本阈值损坏，已拒绝检查，请修复状态文件。");
+      }
+      if (comparison < 0) {
         throw new BadRequestException(
           `更新清单版本 v${version} 低于已接受的最新版本 v${floor}，疑似回放/降级（加速镜像可能返回了过期清单），已拒绝。`
         );
       }
     }
-    // Raise the floor when this signed manifest advertises a strictly newer version.
-    let higher = !floor;
-    if (floor) {
-      try {
-        higher = compareSemver(version, floor) > 0;
-      } catch {
-        higher = false;
-      }
-    }
+    const higher = comparison > 0;
     if (higher) {
       // FAIL CLOSED: if the floor cannot be durably advanced, do NOT accept the
       // manifest. Accepting-and-caching without ratcheting would leave a window where a

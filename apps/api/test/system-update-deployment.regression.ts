@@ -12,6 +12,7 @@ const compose = read(`${deploy}/docker-compose.yml`);
 const api = compose.match(/^  api:\n([\s\S]*?)(?=^  admin:)/m)?.[1];
 const admin = compose.match(/^  admin:\n([\s\S]*)/m)?.[1];
 assert.ok(api && admin, "compose API/admin service scopes must be discoverable");
+assert.match(api, /^    stop_grace_period: 32m$/m, "container grace must exceed 30m drain plus 30s hooks");
 const binds = (service: string) => [...service.matchAll(/^      - (\.\/[^\s:]+):([^\s:]+)(:ro)?$/gm)]
   .map(([, source, target, readOnly]) => ({ source, target, readOnly: Boolean(readOnly) }));
 const apiBinds = binds(api);

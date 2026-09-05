@@ -141,6 +141,7 @@ export function SystemUpdateBadge() {
       if (mounted.current) setCheck(result);
     } catch (error) {
       if (mounted.current) {
+        setCheck(null);
         notifications.show({ color: "red", title: "检查更新失败", message: parseErrorMessage(error) });
       }
     } finally {
@@ -311,7 +312,11 @@ export function SystemUpdateBadge() {
     })();
   }, [opened, loadRuntime, runCheck, loadAux, resumeActiveOperation]);
 
+  const canUpdate = Boolean(runtime?.enabled && check?.hasUpdate && check.release &&
+    !check.cached && !check.warning && !checking && (busy === null || phase === "done"));
+
   const requestConfirm = (next: { kind: BusyKind; version?: string; title: string; body: string }) => {
+    if (next.kind === "update" && !canUpdate) return;
     setConfirm(next);
   };
 
@@ -320,7 +325,7 @@ export function SystemUpdateBadge() {
   // UI showing normal controls while an update is actually running. `submitting`
   // (plus the button's disabled/loading state) makes the confirm one-shot.
   const confirmProceed = async () => {
-    if (!confirm || submitting) return;
+    if (!confirm || submitting || (confirm.kind === "update" && !canUpdate)) return;
     const { kind, version } = confirm;
     setSubmitting(true);
     try {
@@ -436,6 +441,7 @@ export function SystemUpdateBadge() {
                 <Button
                   size="xs"
                   color="orange"
+                  disabled={!canUpdate}
                   onClick={() =>
                     requestConfirm({
                       kind: "update",
@@ -583,6 +589,7 @@ export function SystemUpdateBadge() {
               size="xs"
               color={confirm?.kind === "rollback" ? "orange" : confirm?.kind === "restart" ? "gray" : "blue"}
               loading={submitting}
+              disabled={confirm?.kind === "update" && !canUpdate}
               onClick={() => void confirmProceed()}
             >
               确认
