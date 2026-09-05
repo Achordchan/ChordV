@@ -38,15 +38,18 @@ type Phase = "idle" | "running" | "reconnecting" | "done";
 const POLL_INTERVAL_MS = 3000;
 // We do NOT cap polling by wall-clock while the operation is still reachable: as long
 // as the backend answers with a non-terminal status, the operation is demonstrably
-// live and we keep waiting (a pre-migration pg_dump and a prisma migrate can each run
-// ~10 min with the app still serving). We only give up after the API has been
-// CONTINUOUSLY unreachable longer than the supervisor's worst-case dark window:
-// supervisor migration (CHORDV_SYSTEM_MIGRATE_TIMEOUT, default 900s) + health gate
-// (~90s) + stabilization (~10s) + restart overhead. 25 min leaves comfortable margin;
-// a still-reachable long op never trips it. The absolute backstop guards a backend
-// bug that leaves an op wedged "running" forever so the UI does not spin indefinitely.
-const MAX_UNREACHABLE_MS = 25 * 60 * 1000;
-const ABSOLUTE_MAX_MS = 60 * 60 * 1000;
+// live and we keep waiting. We only give up after the API has been CONTINUOUSLY
+// unreachable longer than the supervisor's worst-case DARK window (app exited → back
+// serving), which must cover EVERY supervisor-side step done while the port is closed:
+//   pre-migration snapshot (CHORDV_SYSTEM_UPDATE_SNAPSHOT_TIMEOUT, default 600s)
+// + migration              (CHORDV_SYSTEM_MIGRATE_TIMEOUT,          default 900s)
+// + health gate            (~90s) + stabilization (~10s) + restart overhead
+//   ≈ 27 min. 40 min leaves margin above the full configured dark window so a valid,
+// still-applying operation is never declared timed-out and its controls re-enabled.
+// The absolute backstop (counted from start, including the app-side download/extract
+// phase while still reachable) guards a backend bug that wedges an op "running".
+const MAX_UNREACHABLE_MS = 40 * 60 * 1000;
+const ABSOLUTE_MAX_MS = 90 * 60 * 1000;
 
 function parseErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);

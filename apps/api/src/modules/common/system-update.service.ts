@@ -617,11 +617,27 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     let manifestText: string;
     if (publicKey) {
       const mirror = await this.resolveMirrorPrefix();
-      manifestText = await this.fetchManifestText(manifestUrl, mirror);
-      const signature = await this.fetchManifestText(`${manifestUrl}.sig`, mirror);
-      if (!verifyManifestSignature(Buffer.from(manifestText, "utf8"), signature, publicKey)) {
+      // Fetch the manifest + its detached signature together and verify as a PAIR.
+      const fetchPair = async (useMirror: boolean) => {
+        const prefix = useMirror ? mirror : null;
+        const text = await this.fetchManifestText(manifestUrl, prefix);
+        const signature = await this.fetchManifestText(`${manifestUrl}.sig`, prefix);
+        return { text, ok: verifyManifestSignature(Buffer.from(text, "utf8"), signature, publicKey) };
+      };
+      let pair = await fetchPair(Boolean(mirror));
+      if (!pair.ok && mirror) {
+        // The manifest and .sig are fetched independently, so during a mirror cache
+        // transition it can serve a stale manifest with a fresh signature (or vice
+        // versa) — the pair fails to verify even though the direct origin is
+        // consistent. Retry the PAIR direct-only before giving up, so a converging
+        // mirror does not knock out update checks entirely.
+        this.logger.warn("Signed manifest verification failed via mirror; retrying manifest+signature direct-only.");
+        pair = await fetchPair(false);
+      }
+      if (!pair.ok) {
         throw new BadRequestException("更新清单签名校验失败（清单可能被篡改或加速镜像返回了非法内容）。");
       }
+      manifestText = pair.text;
     } else {
       // No signature to authenticate the manifest, so the ONLY thing standing
       // between an on-path attacker and arbitrary-code execution is transport

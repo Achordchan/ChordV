@@ -271,6 +271,14 @@ run_snapshot() {
     return 1
   fi
   mkdir -p "$BACKUP_DIR" || { log "ERROR: cannot create backup dir $BACKUP_DIR"; return 1; }
+  # Idempotent across resumes/retries: if a pre-migrate snapshot for THIS version
+  # already exists (a previous attempt took it before crashing/being re-gated), reuse
+  # it as the recovery point. Taking a second dump now would run AFTER migrations and
+  # be a misleading "pre-migrate" image of the already-migrated database.
+  if ls "$BACKUP_DIR"/pre-migrate-"$version"-*.sql.gz >/dev/null 2>&1; then
+    log "pre-migrate snapshot for $version already exists; reusing it"
+    return 0
+  fi
   local stamp target
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   target="$BACKUP_DIR/pre-migrate-${version}-${stamp}.sql.gz"
@@ -340,8 +348,21 @@ handle_failed_promotion() {
       # marker (carrying the FAILED version's migrationApplied) BEFORE flipping the
       # symlink so a crash in the gap resumes the rollback landing, not the broken one.
       GEN_ROLLBACK_FROM="$GEN_VERSION"; GEN_ROLLBACK_REASON="$reason"
-      write_promoting "$LG" "$GEN_OP" "rollback" "$MIG" "$GEN_VERSION" \
-        || log "WARN: could not persist rollback promoting marker; reconcile will finalize op ${GEN_OP:-none}"
+      # Persist the rollback marker FIRST and DO NOT switch or discard anything unless
+      # it is durable. If the state volume is full/read-only, flipping the symlink and
+      # deleting the failed release while the on-disk marker still points at that (now
+      # gone) version would make a restart unable to resume the health-gated rollback —
+      # it would record a wrong "failed" audit and could desync admin/API versions.
+      # Keep everything as-is (GEN_* unchanged → the loop retries the failed version,
+      # rolls back again) until the marker can be written.
+      if ! write_promoting "$LG" "$GEN_OP" "rollback" "$MIG" "$GEN_VERSION"; then
+        log "ERROR: cannot persist rollback marker (state volume full/read-only?); not switching/discarding, retrying in 3s"
+        sleep 3
+        return 0
+      fi
+      # Marker durable: now safe to flip to last-good and discard the failed release.
+      # If the symlink/desired write fails here, the durable marker still names LG, so a
+      # restart resumes the rollback to LG correctly.
       atomic_promote "$LG" || log "WARN: could not persist promotion to $LG; retrying in loop"
       discard_failed_release "$GEN_VERSION" "$GEN_KIND"
       GEN_VERSION="$LG"; GEN_KIND="rollback"; GEN_PROMOTION=1
@@ -482,14 +503,24 @@ while true; do
     # Record last-good DURABLY before finalizing. If it can't be committed (read-only/
     # full/corrupt state volume) we must NOT clear the promoting marker or write a
     # success result: a later failed update would then have no valid rollback target.
-    # Keep serving this (healthy) version; a supervisor restart re-gates via the
-    # promoting marker and retries finalization once the volume is writable again.
-    if ! write_last_good "$GEN_VERSION"; then
-      log "WARN: could not persist last-good for $GEN_VERSION; deferring finalization (promoting marker kept)"
-      GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+    # Retry inline to ride out a transient I/O error.
+    LG_OK=0
+    for _lg_try in 1 2 3 4 5; do
+      if write_last_good "$GEN_VERSION"; then LG_OK=1; break; fi
+      log "WARN: last-good write for $GEN_VERSION failed (attempt ${_lg_try}); retrying"
+      sleep 2
+    done
+    if [ "$LG_OK" != "1" ]; then
+      # Still failing: DEFER finalization but PRESERVE the full promotion context
+      # (GEN_OP/GEN_KIND/GEN_PROMOTION + promoting.json) so it is finalized WITH a
+      # result later — either when this app exits and the loop re-gates (snapshot is
+      # skipped since one already exists; migrate is idempotent), or after a supervisor
+      # restart resumes from promoting.json. NEVER clear promoting without writing the
+      # operation's result. Keep serving the healthy version meanwhile.
+      log "WARN: could not persist last-good for $GEN_VERSION after retries; keeping full promotion context, deferring finalization"
       wait "$APP_PID"; EXIT_CODE=$?
       APP_PID=""
-      log "app for $GEN_VERSION exited (code $EXIT_CODE); restarting"
+      log "app for $GEN_VERSION exited (code $EXIT_CODE); re-gating to retry finalization (op ${GEN_OP:-none})"
       continue
     fi
     # Finalize the operation ONLY now — after health + stabilization. The app does
