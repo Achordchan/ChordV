@@ -65,6 +65,27 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=backend-v${version}" >> "$GITHUB_OUTPUT"
 
+      - name: Reject if this version was already published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A published backend version is IMMUTABLE. Re-running this workflow from a
+          # different commit without bumping SYSTEM_VERSION would republish the same tag
+          # and overwrite same-named assets — splitting the fleet across different bytes
+          # under one SemVer: instances already on it never update (equal SemVer), older
+          # ones install the replacement. Fail closed if the tag OR the release exists.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists — bump SYSTEM_VERSION to publish a new version." >&2
+            exit 1
+          fi
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — bump SYSTEM_VERSION to publish a new version." >&2
+            exit 1
+          fi
+          echo "Version ${TAG} is not yet published — proceeding."
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:

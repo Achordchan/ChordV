@@ -261,37 +261,53 @@ prune_snapshots() {
 }
 
 run_snapshot() {
-  # run_snapshot <version> — pre-migration DB snapshot. Returns non-zero if a snapshot
-  # was required but could not be durably created; the caller then rolls back instead
-  # of migrating (never migrate without a trustworthy recovery point).
-  local version="$1"
+  # run_snapshot <version> <operationId> — pre-migration DB snapshot. Returns non-zero
+  # if a snapshot was required but could not be durably created; the caller then rolls
+  # back instead of migrating (never migrate without a trustworthy recovery point).
+  local version="$1" op="$2"
   [ "$SNAPSHOT_ENABLED" = "true" ] || return 0
   if [ -z "${DATABASE_URL:-}" ]; then
     log "ERROR: DATABASE_URL not set; cannot snapshot before migrate"
     return 1
   fi
   mkdir -p "$BACKUP_DIR" || { log "ERROR: cannot create backup dir $BACKUP_DIR"; return 1; }
-  # Idempotent across resumes/retries: if a pre-migrate snapshot for THIS version
-  # already exists (a previous attempt took it before crashing/being re-gated), reuse
-  # it as the recovery point. Taking a second dump now would run AFTER migrations and
-  # be a misleading "pre-migrate" image of the already-migrated database.
-  if ls "$BACKUP_DIR"/pre-migrate-"$version"-*.sql.gz >/dev/null 2>&1; then
-    log "pre-migrate snapshot for $version already exists; reusing it"
+  # Reuse a snapshot ONLY when it belongs to THIS SAME operation (keyed by opId), i.e.
+  # we are resuming the very same promotion after a crash/re-gate. A later retry of the
+  # same VERSION is a different operation (new opId) and MUST take a fresh snapshot, or
+  # a restore would silently discard all writes that happened since the first attempt.
+  # Only a fully-finalized snapshot (final name) counts as reusable — a crash mid-dump
+  # leaves a distinct .partial file (below) that never matches this glob, so the resume
+  # takes a fresh dump instead of trusting a truncated one.
+  local base="pre-migrate-${version}-${op}"
+  if ls "$BACKUP_DIR/$base"-*.sql.gz >/dev/null 2>&1; then
+    log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
   fi
-  local stamp target
+  local stamp target tmp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  target="$BACKUP_DIR/pre-migrate-${version}-${stamp}.sql.gz"
+  target="$BACKUP_DIR/${base}-${stamp}.sql.gz"
+  # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
+  # is only renamed to the final name after gzip integrity is verified and flushed —
+  # so a truncated dump from a crash can never be mistaken for a valid recovery point.
+  tmp="$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.$$"
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  if ! ( set -o pipefail; timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$DATABASE_URL" | gzip > "$target" ); then
+  if ! ( set -o pipefail; timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$DATABASE_URL" | gzip > "$tmp" ); then
     log "ERROR: database snapshot failed"
-    rm -f "$target" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
     return 1
   fi
-  [ -s "$target" ] || { log "ERROR: database snapshot is empty"; rm -f "$target" 2>/dev/null; return 1; }
-  sync 2>/dev/null || true
+  [ -s "$tmp" ] || { log "ERROR: database snapshot is empty"; rm -f "$tmp" 2>/dev/null; return 1; }
+  # Verify the gzip archive is COMPLETE before trusting/renaming it.
+  if ! gzip -t "$tmp" 2>/dev/null; then
+    log "ERROR: snapshot archive is corrupt/incomplete"; rm -f "$tmp" 2>/dev/null; return 1
+  fi
+  sync 2>/dev/null || true # flush contents before publishing the reusable name
+  if ! mv -f "$tmp" "$target"; then
+    log "ERROR: cannot finalize snapshot"; rm -f "$tmp" 2>/dev/null; return 1
+  fi
+  sync 2>/dev/null || true # flush the directory entry (the rename)
   prune_snapshots
   return 0
 }
@@ -378,8 +394,15 @@ handle_failed_promotion() {
     fi
     # No fallback: keep retrying the SAME version. Only clear the promoting guard
     # once the failure is durably recorded, so the outcome is not lost.
+    #
+    # Record the ORIGINALLY ATTEMPTED version, not the version we happen to be sitting
+    # on. If this is a rollback LANDING that ALSO failed, GEN_VERSION is now last-good
+    # but the operation's real target was the candidate that started the failure
+    # (GEN_ROLLBACK_FROM) — writing last-good here would collapse the audit's toVersion
+    # and lose which candidate actually failed.
+    local attempted="${GEN_ROLLBACK_FROM:-$GEN_VERSION}"
     if [ -n "$GEN_OP" ]; then
-      if write_result "$GEN_OP" "failed" "$GEN_VERSION" "${reason}（无可回滚版本）" "$MIG"; then
+      if write_result "$GEN_OP" "failed" "$attempted" "${reason}（无可回滚版本）" "$MIG"; then
         clear_promoting
       else
         log "WARN: could not persist failure result; keeping promoting marker for retry"
@@ -498,7 +521,7 @@ while true; do
   # recovery. migrationApplied is read from the promoting marker the app staged.
   PROMO_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$PROMO_MIG" = "true" ] || PROMO_MIG="false"
   if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
-    if ! run_snapshot "$GEN_VERSION"; then
+    if ! run_snapshot "$GEN_VERSION" "$GEN_OP"; then
       log "pre-migration snapshot failed for $GEN_VERSION"
       handle_failed_promotion "迁移前数据库快照失败，未执行迁移，已自动回滚" "false"
       continue

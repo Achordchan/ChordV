@@ -300,6 +300,13 @@ async function main() {
       "failed",
       `a rollback whose fallback also failed must be 'failed', not 'rolledback' (got '${s.result.status}').\nsupervisor stderr:\n${s.stderr}`
     );
+    // The audit must preserve the ORIGINALLY ATTEMPTED candidate (0.0.2), not collapse
+    // to the last-good fallback (0.0.1) it ended up sitting on.
+    assert.equal(
+      s.result.version,
+      "0.0.2",
+      `failed result must record the attempted candidate, not the fallback (got '${s.result.version}').\nsupervisor stderr:\n${s.stderr}`
+    );
   }
 
   // Scenario C: an operator-requested (manual) rollback to a healthy target must
