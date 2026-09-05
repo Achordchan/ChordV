@@ -44,6 +44,18 @@ try {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(mode(backup), 0o700); assert.equal(mode(first), 0o600);
   assert.equal(readFileSync(calls, "utf8"), "dump\n", "same operation reuses secured snapshot");
+  const intact = readFileSync(first);
+  for (const damaged of [Buffer.alloc(0), Buffer.from("corrupt archive"), intact.subarray(0, intact.length - 4)]) {
+    writeFileSync(first, damaged);
+    result = run("first");
+    assert.notEqual(result.status, 0, "resumed snapshot must pass gzip integrity check");
+    assert.match(result.stderr, /corrupt or cannot be verified/);
+    assert.deepEqual(readFileSync(first), damaged, "do not overwrite the damaged recovery point");
+    assert.equal(readFileSync(calls, "utf8"), "dump\n", "do not silently replace with a post-migration dump");
+  }
+  writeFileSync(first, intact);
+  result = run("first");
+  assert.equal(result.status, 0, result.stderr);
   utimesSync(first, new Date(0), new Date(0));
   result = run("second");
   assert.equal(result.status, 0, result.stderr);

@@ -280,6 +280,15 @@ wait_healthy() {
   log "health gate timed out after ${HEALTH_TIMEOUT}s"; return 1
 }
 
+validate_stabilization() {
+  # Reject typos before promotion/migration. Zero would disable the stability gate;
+  # bound the decimal range to avoid shell overflow and indefinite misconfiguration.
+  if ! [[ "$STABILIZE_SECONDS" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$STABILIZE_SECONDS" -gt 86400 ]; then
+    log "FATAL: stabilization duration must be an integer between 1 and 86400 seconds"
+    return 1
+  fi
+}
+
 confirm_stable() {
   # confirm_stable <pid> — after the first healthy probe, require the app to stay
   # alive AND healthy for STABILIZE_SECONDS so a version that crashes right after
@@ -392,6 +401,13 @@ run_snapshot() {
     [ -e "$existing" ] || continue
     if [ -L "$existing" ] || [ ! -f "$existing" ] || ! chmod 600 "$existing"; then
       log "ERROR: cannot secure existing snapshot"; return 1
+    fi
+    # The finalized name proves a previous write completed, not that its bytes
+    # survived later corruption. Do not replace a damaged pre-migration recovery
+    # point with a fresh dump of a possibly already-migrated database.
+    if [ ! -s "$existing" ] || ! timeout -k 30 "$SNAPSHOT_TIMEOUT" gzip -t "$existing" 2>/dev/null; then
+      log "ERROR: existing snapshot is corrupt or cannot be verified; refusing migration"
+      return 1
     fi
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
@@ -599,6 +615,7 @@ forward_signal() {
 }
 trap forward_signal TERM INT
 
+validate_stabilization || exit 1
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 
 # Resume an interrupted promotion: if we restarted after desired-version was

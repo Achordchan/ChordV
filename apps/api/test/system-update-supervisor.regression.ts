@@ -643,7 +643,7 @@ async function testInvalidJournals() {
         CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
         CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"), CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
         CHORDV_SYSTEM_CURRENT_LINK: current, CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
-        CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "2", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "0"
+        CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "2", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
       };
       try {
         // Same damaged journal across a container restart must remain blocked.
@@ -690,7 +690,7 @@ async function testInvalidPendingAfterAppExit() {
     CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
     CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public-state"), CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
     CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
-    CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "0"
+    CHORDV_API_PORT: String(port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   let stderr = "";
   const start = () => {
@@ -780,6 +780,39 @@ printf 'test snapshot\\n'
       assert.equal(readFileSync(capture, "utf8"), expected);
       assert.equal(readFileSync(argc, "utf8"), "0", "credentials must not be command-line arguments");
       assert.equal(dump.stderr.includes("p%3Ass"), false, "pg_dump errors must not disclose credentials");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+function testStabilizationConfig() {
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-stabilization-config-"));
+  const state = path.join(root, "state");
+  mkdirSync(state);
+  const marker = path.join(state, "promoting.json");
+  const journal = JSON.stringify({ version: "0.0.2", operationId: "sysop-stability", kind: "update", migrationApplied: true });
+  writeFileSync(marker, journal);
+  const env = { ...process.env, CHORDV_SYSTEM_STATE_DIR: state,
+    CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
+    CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
+    CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public"), CHORDV_SYSTEM_NODE_BIN: process.execPath };
+  try {
+    for (const duration of ["abc", "0", "-1", "1.5", "01", " 10", "86401", "999999999999999999999"]) {
+      const result = spawnSync("bash", [entrypoint], { encoding: "utf8", env: {
+        ...env, CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: duration
+      } });
+      assert.equal(result.status, 1, duration);
+      assert.match(result.stderr, /stabilization duration must be an integer/);
+      assert.equal(readFileSync(marker, "utf8"), journal);
+      assert.equal(existsSync(path.join(root, "releases")), false, "invalid config must stop before any release/state transition");
+      assert.equal(existsSync(path.join(root, "current")), false);
+    }
+    const source = readFileSync(entrypoint, "utf8");
+    const definitions = source.slice(0, source.indexOf('\nAPP_PID=""'));
+    for (const duration of ["1", "10", "86400"]) {
+      const result = spawnSync("bash", ["-c", `${definitions}\nvalidate_stabilization`], {
+        encoding: "utf8", env: { ...env, CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: duration }
+      });
+      assert.equal(result.status, 0, result.stderr);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
@@ -897,6 +930,7 @@ async function main() {
   await testInvalidPendingAfterAppExit();
   testJournalFieldExtraction();
   testSnapshotDatabaseUrl();
+  testStabilizationConfig();
 }
 
 void main().then(() => {

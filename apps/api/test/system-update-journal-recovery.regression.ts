@@ -46,7 +46,7 @@ setInterval(()=>{if(fs.existsSync(${JSON.stringify(path.join(root, "exit-app"))}
       CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
       CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public"), CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
       CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"), CHORDV_SUPERVISOR_MIGRATE: "false",
-      CHORDV_SYSTEM_UPDATE_SNAPSHOT: "false", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "0"
+      CHORDV_SYSTEM_UPDATE_SNAPSHOT: "false", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
     } });
     children.push(child);
     let log = "";
