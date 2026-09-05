@@ -32,6 +32,9 @@ APP_ENTRY="${CHORDV_SYSTEM_APP_ENTRY:-apps/api/dist/apps/api/src/main.js}"
 ADMIN_ENTRY="${CHORDV_SYSTEM_ADMIN_ENTRY:-apps/admin/dist/index.html}"
 MIGRATE_SCRIPT="${CHORDV_SYSTEM_MIGRATE_SCRIPT:-scripts/prisma-migrate-with-baseline.mjs}"
 RUN_MIGRATE="${CHORDV_SUPERVISOR_MIGRATE:-true}"
+# Upper bound for a supervisor-run migration (seconds) so a hung migrate can't
+# wedge the container after the old process has exited. Covers a large migrate.
+MIGRATE_TIMEOUT="${CHORDV_SYSTEM_MIGRATE_TIMEOUT:-900}"
 API_PORT="${CHORDV_API_PORT:-3000}"
 # Gate promotions on READINESS (exercises the DB), not bare liveness: a version
 # that opens its port but has a broken Prisma runtime/schema must fail the gate
@@ -195,8 +198,12 @@ run_migrate() {
   local release="$1"
   [ "$RUN_MIGRATE" = "true" ] || return 0
   [ -f "$release/$MIGRATE_SCRIPT" ] || { log "no migrate script in $release, skipping"; return 0; }
-  log "running migrations for $(basename "$release")"
-  ( cd "$release" && "$NODE_BIN" "$MIGRATE_SCRIPT" )
+  log "running migrations for $(basename "$release") (timeout ${MIGRATE_TIMEOUT}s)"
+  # Bound the migration: a hang on the DB connection / advisory lock would otherwise
+  # block forever after the old process has exited, never reaching the readiness gate
+  # or rollback. `timeout -k` also SIGKILLs if it ignores SIGTERM. Non-zero (incl.
+  # 124 on timeout) is routed through handle_failed_promotion by the caller.
+  ( cd "$release" && timeout -k 30 "$MIGRATE_TIMEOUT" "$NODE_BIN" "$MIGRATE_SCRIPT" )
 }
 
 discard_failed_release() {

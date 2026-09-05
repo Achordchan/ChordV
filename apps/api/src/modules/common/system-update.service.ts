@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  OnModuleDestroy,
   OnModuleInit,
   ServiceUnavailableException
 } from "@nestjs/common";
@@ -97,10 +98,14 @@ export function verifyManifestSignature(
 }
 
 @Injectable()
-export class SystemUpdateService implements OnModuleInit {
+export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SystemUpdateService.name);
   private config: SystemUpdateRuntimeConfig = resolveSystemUpdateRuntimeConfig();
   private cache: SystemUpdateCacheEntry | null = null;
+  // pids of long-running detached child process GROUPS (migrate/snapshot). Tracked
+  // so a graceful shutdown mid-migration terminates the whole tree instead of
+  // leaving it changing the DB after the app has gone (see onModuleDestroy).
+  private readonly activeChildGroups = new Set<number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -117,6 +122,20 @@ export class SystemUpdateService implements OnModuleInit {
     } catch (error) {
       this.logger.warn(`System update boot reconciliation failed: ${this.describeError(error)}`);
     }
+  }
+
+  onModuleDestroy() {
+    // Graceful shutdown (docker stop → SIGTERM, enableShutdownHooks is on): kill any
+    // still-running detached migration/snapshot process group so it does not keep
+    // mutating the database after the app has exited and the supervisor moves on.
+    for (const pid of this.activeChildGroups) {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    this.activeChildGroups.clear();
   }
 
   getCurrentVersion(): string {
@@ -468,8 +487,14 @@ export class SystemUpdateService implements OnModuleInit {
     try {
       const entries = await fs.readdir(migrationsDir, { withFileTypes: true });
       names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-    } catch {
-      return [];
+    } catch (error) {
+      // A production release ALWAYS ships this directory. If it is missing or
+      // unreadable, that is a packaging error — fail closed rather than fail open
+      // ("no pending migrations"), which would skip the snapshot+migration and let
+      // a release whose code expects a schema get promoted anyway.
+      throw new ServiceUnavailableException(
+        `无法读取发布内的迁移目录（${migrationsDir}），发布包可能不完整：${this.describeError(error)}`
+      );
     }
     let applied = new Set<string>();
     try {
@@ -514,6 +539,12 @@ export class SystemUpdateService implements OnModuleInit {
       await fs.rm(target, { force: true }).catch(() => undefined);
       throw error;
     }
+    // Force the archive AND the directory entry to stable storage before we go on to
+    // (durably) commit a migration — otherwise a host crash right after pg_dump could
+    // leave the snapshot missing/corrupt while the destructive migration survives,
+    // defeating the recovery point.
+    await this.fsyncPath(target);
+    await this.fsyncDir(backupDir);
     this.logger.log(`Database snapshot created before migration: ${target}`);
     await this.pruneSnapshots(backupDir);
   }
@@ -582,6 +613,11 @@ export class SystemUpdateService implements OnModuleInit {
       const child = spawn(command, args, { env, cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       let stderr = "";
       let timedOut = false;
+      // Track this group so a shutdown mid-run (onModuleDestroy) can terminate it.
+      if (typeof child.pid === "number") this.activeChildGroups.add(child.pid);
+      const untrack = () => {
+        if (typeof child.pid === "number") this.activeChildGroups.delete(child.pid);
+      };
       const killGroup = (signal: NodeJS.Signals) => {
         if (typeof child.pid === "number") {
           try {
@@ -605,10 +641,12 @@ export class SystemUpdateService implements OnModuleInit {
       });
       child.on("error", (error) => {
         clearTimeout(timer);
+        untrack();
         reject(new ServiceUnavailableException(`${label}启动失败：${error.message}`));
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        untrack();
         if (timedOut) {
           reject(new ServiceUnavailableException(`${label}超时（${timeoutMs}ms），已终止整个进程组。`));
         } else if (code === 0) {
@@ -994,12 +1032,47 @@ export class SystemUpdateService implements OnModuleInit {
     const file = path.join(this.config.stateDir, SYSTEM_UPDATE_PENDING_FILE);
     // migrationApplied travels through the markers so the "code rolled back but
     // schema was not" warning survives even if the best-effort DB write failed.
-    await fs.writeFile(file, JSON.stringify({ migrationApplied: false, ...marker }), "utf8");
+    // Write durably (tmp → fsync → rename → fsync dir): the very next step commits
+    // a migration, so a power loss that lost this marker would strand old code on a
+    // new schema. fs.writeFile alone only closes the fd, it does not fsync.
+    await this.writeFileDurable(file, JSON.stringify({ migrationApplied: false, ...marker }));
+  }
+
+  private async writeFileDurable(file: string, contents: string) {
+    const tmp = `${file}.tmp`;
+    const handle = await fs.open(tmp, "w");
+    try {
+      await handle.writeFile(contents, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(tmp, file);
+    await this.fsyncDir(path.dirname(file));
+  }
+
+  private async fsyncPath(target: string) {
+    // Best-effort fsync of a file or directory; some platforms disallow dir fsync.
+    try {
+      const handle = await fs.open(target, "r");
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      this.logger.warn(`fsync ${target} failed (non-fatal): ${this.describeError(error)}`);
+    }
+  }
+
+  private async fsyncDir(dir: string) {
+    await this.fsyncPath(dir);
   }
 
   private async clearPendingMarker() {
     if (!this.config.stateDir) return;
     await fs.rm(path.join(this.config.stateDir, SYSTEM_UPDATE_PENDING_FILE), { force: true });
+    await this.fsyncDir(this.config.stateDir).catch(() => undefined);
   }
 
   /**

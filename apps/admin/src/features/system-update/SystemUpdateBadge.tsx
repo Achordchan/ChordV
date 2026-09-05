@@ -100,6 +100,7 @@ export function SystemUpdateBadge() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [activeOp, setActiveOp] = useState<SystemUpdateOperationDto | null>(null);
   const [confirm, setConfirm] = useState<{ kind: BusyKind; version?: string; title: string; body: string } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const pollTimer = useRef<number | null>(null);
   const polledOpId = useRef<string | null>(null);
@@ -283,11 +284,20 @@ export function SystemUpdateBadge() {
     setConfirm(next);
   };
 
+  // Guard against a rapid double-click submitting the operation twice: the second
+  // send would 409 (an op is already in flight) and reset busy/phase, leaving the
+  // UI showing normal controls while an update is actually running. `submitting`
+  // (plus the button's disabled/loading state) makes the confirm one-shot.
   const confirmProceed = async () => {
-    if (!confirm) return;
+    if (!confirm || submitting) return;
     const { kind, version } = confirm;
-    setConfirm(null);
-    await beginOperation(kind, version);
+    setSubmitting(true);
+    try {
+      await beginOperation(kind, version);
+    } finally {
+      setSubmitting(false);
+      setConfirm(null);
+    }
   };
 
   const currentVersion = runtime?.currentVersion ?? check?.currentVersion ?? "—";
@@ -522,7 +532,9 @@ export function SystemUpdateBadge() {
 
       <Modal
         opened={confirm !== null}
-        onClose={() => setConfirm(null)}
+        onClose={() => {
+          if (!submitting) setConfirm(null);
+        }}
         title={confirm?.title ?? ""}
         centered
         size="sm"
@@ -530,12 +542,13 @@ export function SystemUpdateBadge() {
         <Stack gap="md">
           <Text size="sm">{confirm?.body}</Text>
           <Group justify="flex-end">
-            <Button variant="default" size="xs" onClick={() => setConfirm(null)}>
+            <Button variant="default" size="xs" disabled={submitting} onClick={() => setConfirm(null)}>
               取消
             </Button>
             <Button
               size="xs"
               color={confirm?.kind === "rollback" ? "orange" : confirm?.kind === "restart" ? "gray" : "blue"}
+              loading={submitting}
               onClick={() => void confirmProceed()}
             >
               确认
