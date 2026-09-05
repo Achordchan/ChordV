@@ -14,6 +14,8 @@
 
 落地时相对 4.1/6.2/6.3 的调整（以下早期说明需以代码和最新评审补充为准）：
 
+**第23轮恢复补充：** `pending.json` 向 `promoting.json` 交接写盘失败时，监督者保留原始暂存日志，每 2 秒重试，期间不启动应用；修复存储后继续同一操作，TERM/INT 可停止重试，监督者重启仍从日志恢复。若交接已完成但暂存日志未删除，重启只清理字段完全匹配的重复日志；不匹配则保留两份日志并停止，需离线检查。已开始提升的目标目录丢失时，保留原操作目标与迁移风险标记，持久化失败决定及结果并保留启动禁令；不能把旧代码自动启动在可能变化的数据库上。恢复按第19轮补充中的离线恢复步骤进行，代码目录恢复本身不解除禁令。
+
 **第22轮补充：交接日志必须完整有效。** 启动恢复及应用退出后的 `pending.json` / `promoting.json` 通过真正 JSON 解析并一次性校验：安全的 SemVer、非空安全 operationId、明确的 update/rollback/restart 类型及显式布尔 `migrationApplied`；缺失字段不再兼容解释为 false。可选 rollbackFrom/failureVersion/failureReason 必须类型正确且恢复语义一致。损坏、截断、非普通文件、悬空链接或不可读日志原样保留，监督者退出非零，在迁移、提升、启动、丢弃版本或编造操作结果之前停止；有效字段持于内存，不再以宽松文本提取反复读取。遇到阻断应停机、归档原日志、核对实际数据库及操作历史后人工修复，不能通过删标记或补一个猜测的 migrationApplied 绕过快照和恢复门控。
 
 **第22轮补充：备份与 admin 文件系统隔离。** 数据库快照改为 API 独占的 `./api-backups:/app/backups`；compose 固定 `CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/backups`（覆盖旧 `.env`），镜像、监督者及运行时配置默认保持一致。admin 不再挂载私有 `api-state`，改为只读挂载独立 `api-public-state` 到 `/usr/share/nginx/public-state`；API 在 `/app/public-state` 中仅原子发布通过健康门控的 `last-good-version`，且须先提交私有 last-good，公开写入失败阻止终态确认并重试。既有 `api-state/backups` 因整卷不再给 admin 而立即被隔离，不自动移动/删除；迁移应停机、保留原件、管理员专用归档、校验压缩完整性/SHA-256并验证恢复，勿将旧备份复制至公开标记或 releases。三个目录必须真实独立；直接 docker run/自定义覆盖文件需自行维持该边界。本次为 compose/镜像修复，必须重建 api/admin 容器，应用内更新或单纯 restart 不生效；保留现有 `.env` 和密钥。具体命令、保留策略和检查项见 README 的「旧部署升级与快照迁移」。此边界防止 nginx 读取新旧数据库快照，不隔离 API、Docker 管理员或宿主机权限。

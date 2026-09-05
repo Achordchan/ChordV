@@ -30,6 +30,13 @@ for (const [directory, target, envName] of [
   assert.match(api, new RegExp(`^      ${envName}: ${target}$`, "m"));
   assert.match(read(`${deploy}/Dockerfile.api`), new RegExp(`^ENV ${envName}=${target}$`, "m"));
   assert.ok(read(".gitignore").split("\n").includes(`${deploy}/${directory}/`));
+  const ignored = spawnSync("git", ["check-ignore", "--no-index", `${deploy}/${directory}/private-sentinel`], {
+    cwd: root, encoding: "utf8"
+  });
+  assert.equal(ignored.status, 0, `${directory} runtime files must actually be ignored by Git`);
+  const tracked = spawnSync("git", ["ls-files", "--", `${deploy}/${directory}/`], { cwd: root, encoding: "utf8" });
+  assert.equal(tracked.status, 0, tracked.stderr);
+  assert.equal(tracked.stdout.trim(), "", `${directory} must not already contain tracked private data`);
 }
 for (const left of apiBinds) for (const right of apiBinds) {
   if (left === right) continue;

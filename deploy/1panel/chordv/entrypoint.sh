@@ -197,6 +197,22 @@ write_promoting() {
 
 clear_promoting() { rm -f "$PROMOTING_FILE"; }
 
+consume_pending() {
+  # Keep the only recovery journal until its complete promotion context is durable.
+  # Storage failures leave the operation pending, with bounded retry frequency; a
+  # supervisor restart resumes from the same journal. Never launch during this gap.
+  load_journal "$PENDING_FILE" pending
+  GEN_VERSION="$JOURNAL_VERSION"; GEN_OP="$JOURNAL_OP"; GEN_KIND="$JOURNAL_KIND"
+  GEN_PROMOTION=1; GEN_MIG="$JOURNAL_MIG"
+  until write_promoting "$GEN_VERSION" "$GEN_OP" "$GEN_KIND" "$GEN_MIG"; do
+    log "WARN: cannot persist promoting marker; retaining pending journal, retrying in 2s"
+    sleep 2
+  done
+  # If removal fails, stop instead of leaving a stale request for a later app exit.
+  rm -f "$PENDING_FILE" || { log "FATAL: cannot remove transferred pending journal"; exit 1; }
+  log "pending $GEN_KIND -> $GEN_VERSION (op $GEN_OP)"
+}
+
 resolve_start_version() {
   local desired current lastgood
   desired="$(read_file_trim "$DESIRED_FILE")"
@@ -551,40 +567,34 @@ GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
 if [ -e "$PROMOTING_FILE" ] || [ -L "$PROMOTING_FILE" ]; then
   load_journal "$PROMOTING_FILE" promoting
   RESUME_V="$JOURNAL_VERSION"; RESUME_OP="$JOURNAL_OP"; RESUME_KIND="$JOURNAL_KIND"
-  RESUME_FAILURE="$JOURNAL_FAILURE"
+  RESUME_FAILURE="$JOURNAL_FAILURE"; RESUME_REASON="$JOURNAL_REASON"
   GEN_MIG="$JOURNAL_MIG"; GEN_ROLLBACK_FROM="$JOURNAL_ROLLBACK"
+  if [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
+    # Crash after promoting was committed but before pending was removed: finish
+    # only that exact handoff. Conflicting journals need offline recovery, not replay.
+    load_journal "$PENDING_FILE" pending
+    if [ "$JOURNAL_VERSION" != "$RESUME_V" ] || [ "$JOURNAL_OP" != "$RESUME_OP" ] ||
+       [ "$JOURNAL_KIND" != "$RESUME_KIND" ] || [ "$JOURNAL_MIG" != "$GEN_MIG" ]; then
+      log "FATAL: conflicting pending/promoting journals; retaining both for offline recovery"
+      exit 1
+    fi
+    rm -f "$PENDING_FILE" || { log "FATAL: cannot remove transferred pending journal"; exit 1; }
+  fi
   if [ -n "$RESUME_FAILURE" ]; then
     log "resuming terminal failure persistence (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
-    persist_failed_promotion "$RESUME_FAILURE" "$JOURNAL_REASON" "$GEN_MIG"
+    persist_failed_promotion "$RESUME_FAILURE" "$RESUME_REASON" "$GEN_MIG"
   elif [ -n "$RESUME_V" ] && [ -d "$RELEASES_DIR/$RESUME_V" ]; then
     log "resuming interrupted promotion -> $RESUME_V (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
   else
-    log "stale promoting marker (version '$RESUME_V' unusable); discarding"
-    [ -n "$RESUME_OP" ] && write_result "$RESUME_OP" "failed" "$RESUME_V" "提升过程中断且目标版本缺失"
-    clear_promoting
-    GEN_MIG="false"; GEN_ROLLBACK_FROM=""
-    GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+    # A previously started migration may have committed before the release was
+    # lost. Preserve that risk and the original target, and block unverified starts.
+    GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
+    persist_failed_promotion "${GEN_ROLLBACK_FROM:-$RESUME_V}" "提升过程中断且目标版本缺失，请检查数据库并人工恢复" "$GEN_MIG"
   fi
 elif [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
-  # The app staged an update (wrote pending.json) but the host/supervisor restarted
-  # before we processed its exit. Convert the pending marker into a promotion now
-  # so the target is health-gated + rollback-capable — otherwise the old version
-  # would just start, and the stale pending marker could later promote a supposedly
-  # failed update on an unrelated exit.
-  load_journal "$PENDING_FILE" pending
-  PV="$JOURNAL_VERSION"; POP="$JOURNAL_OP"; PKIND="$JOURNAL_KIND"; PMIG="$JOURNAL_MIG"
-  if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ] && write_promoting "$PV" "$POP" "$PKIND" "$PMIG"; then
-    rm -f "$PENDING_FILE"
-    log "resuming staged $PKIND from pending marker -> $PV (op $POP)"
-    GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1; GEN_MIG="$PMIG"
-  else
-    log "unusable/undurable pending marker (version '$PV'); discarding"
-    rm -f "$PENDING_FILE"
-    [ -n "$POP" ] && write_result "$POP" "failed" "$PV" "暂存的更新在重启期间中断，未能提升"
-    GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
-  fi
+  consume_pending
 else
   GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
 fi
@@ -712,30 +722,7 @@ while true; do
     log "app for $GEN_VERSION exited (code $EXIT_CODE)"
 
     if [ -e "$PENDING_FILE" ] || [ -L "$PENDING_FILE" ]; then
-      load_journal "$PENDING_FILE" pending
-      PV="$JOURNAL_VERSION"; POP="$JOURNAL_OP"; PKIND="$JOURNAL_KIND"; PMIG="$JOURNAL_MIG"
-      if [ -n "$PV" ] && [ -d "$RELEASES_DIR/$PV" ]; then
-        # Persist the promotion BEFORE deleting pending / flipping desired-version, so
-        # a crash in the gap is resumed as a health-gated promotion, not a bare start.
-        # Only proceed if the marker was durably written.
-        if write_promoting "$PV" "$POP" "$PKIND" "$PMIG"; then
-          rm -f "$PENDING_FILE"
-          log "pending $PKIND -> $PV (op $POP)"
-          GEN_VERSION="$PV"; GEN_OP="$POP"; GEN_KIND="$PKIND"; GEN_PROMOTION=1; GEN_MIG="$PMIG"
-        else
-          # Could not persist the promotion marker (state volume full?). Do NOT
-          # promote without it — keep serving the current version and surface it.
-          # pending.json is dropped so a later app exit doesn't silently promote
-          # without a durable marker; the op is recorded failed for the operator.
-          log "FATAL: cannot persist promoting marker; NOT promoting $PV, keeping $GEN_VERSION"
-          rm -f "$PENDING_FILE"
-          [ -n "$POP" ] && write_result "$POP" "failed" "$PV" "无法持久化提升标记（状态卷可能已满），未切换版本"
-        fi
-      else
-        rm -f "$PENDING_FILE"
-        log "pending marker names unusable version '$PV'; restarting $GEN_VERSION"
-        [ -n "$POP" ] && write_result "$POP" "failed" "$GEN_VERSION" "目标版本目录缺失"
-      fi
+      consume_pending
     else
       log "no pending marker; restarting $GEN_VERSION"
     fi
