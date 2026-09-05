@@ -10,11 +10,9 @@
 #   4. records the outcome in `operation-result.json`, which the app consumes on
 #      its next boot to close out the audit record.
 #
-# A successful promotion writes NO result marker: the app that comes back up and
-# serves traffic IS the proof of success, and confirms its own operation record
-# on boot (see SystemUpdateService.reconcileOperationsOnBoot). The supervisor
-# only needs to speak up for the failure/rollback path, which the failed app
-# cannot record for itself.
+# The supervisor writes the result only after readiness + stabilization (including
+# rollback landings), or after a terminal failure decision. The app consumes these
+# markers to reconcile its operation records; merely booting is not proof of success.
 #
 # Docker's `restart: unless-stopped` is a secondary safety net: it only matters
 # if this supervisor process itself dies. Normal self-updates never exit the
@@ -128,7 +126,7 @@ write_result() {
 }
 
 write_promoting() {
-  # write_promoting <version> <operationId> <kind> [migrationApplied] [rollbackFrom]
+  # write_promoting <version> <operationId> <kind> [migrationApplied] [rollbackFrom] [failureVersion] [failureReason]
   # Returns non-zero if the marker could not be durably written (e.g. full state
   # volume). Callers MUST NOT delete pending.json or promote unless this succeeds, or
   # a mid-gate restart would treat the target as an ordinary trusted start and skip
@@ -140,8 +138,8 @@ write_promoting() {
   local migrated="${4:-false}"
   local rollback_from="${5:-}"
   local tmp="$PROMOTING_FILE.tmp.$$"
-  if ! printf '{"version":"%s","operationId":"%s","kind":"%s","migrationApplied":%s,"rollbackFrom":"%s"}\n' \
-      "$1" "$2" "$3" "$migrated" "$rollback_from" > "$tmp"; then
+  if ! printf '{"version":"%s","operationId":"%s","kind":"%s","migrationApplied":%s,"rollbackFrom":"%s","failureVersion":"%s","failureReason":"%s"}\n' \
+      "$1" "$2" "$3" "$migrated" "$rollback_from" "${6:-}" "${7:-}" > "$tmp"; then
     rm -f "$tmp" 2>/dev/null; return 1
   fi
   [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
@@ -260,14 +258,44 @@ prune_snapshots() {
   return 0
 }
 
+snapshot_database_url() {
+  # Prisma accepts query options libpq/pg_dump rejects. Filter only its known
+  # extras, preserving the raw authority/path and remaining query bytes (including
+  # percent-encoded credentials/options). Never put credentials on the command line
+  # or print parser/pg_dump errors, which may echo the full connection string.
+  # A dedicated direct connection can bypass a Prisma/pooler URL when necessary.
+  "$NODE_BIN" - <<'NODE'
+try {
+  const raw = process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL || process.env.DATABASE_URL;
+  const url = new URL(raw);
+  if (!["postgres:", "postgresql:"].includes(url.protocol) || url.hash) throw new Error();
+  const prismaOnly = new Set([
+    "schema", "connection_limit", "pool_timeout", "socket_timeout", "pgbouncer",
+    "statement_cache_size", "sslaccept", "sslidentity"
+  ]);
+  const index = raw.indexOf("?");
+  if (index < 0) process.stdout.write(raw);
+  else {
+    const query = raw.slice(index + 1).split("&").filter((part) => {
+      const key = decodeURIComponent(part.split("=", 1)[0].replace(/\+/g, " "));
+      return part && !prismaOnly.has(key);
+    }).join("&");
+    process.stdout.write(raw.slice(0, index) + (query ? "?" + query : ""));
+  }
+} catch {
+  process.exitCode = 1;
+}
+NODE
+}
+
 run_snapshot() {
   # run_snapshot <version> <operationId> — pre-migration DB snapshot. Returns non-zero
   # if a snapshot was required but could not be durably created; the caller then rolls
   # back instead of migrating (never migrate without a trustworthy recovery point).
   local version="$1" op="$2"
   [ "$SNAPSHOT_ENABLED" = "true" ] || return 0
-  if [ -z "${DATABASE_URL:-}" ]; then
-    log "ERROR: DATABASE_URL not set; cannot snapshot before migrate"
+  if [ -z "${CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL:-${DATABASE_URL:-}}" ]; then
+    log "ERROR: snapshot database URL not set; cannot snapshot before migrate"
     return 1
   fi
   mkdir -p "$BACKUP_DIR" || { log "ERROR: cannot create backup dir $BACKUP_DIR"; return 1; }
@@ -283,7 +311,11 @@ run_snapshot() {
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
   fi
-  local stamp target tmp
+  local stamp target tmp snapshot_url
+  if ! snapshot_url="$(snapshot_database_url)"; then
+    log "ERROR: invalid snapshot database URL; cannot snapshot before migrate"
+    return 1
+  fi
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   target="$BACKUP_DIR/${base}-${stamp}.sql.gz"
   # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
@@ -293,7 +325,7 @@ run_snapshot() {
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  if ! ( set -o pipefail; timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$DATABASE_URL" | gzip > "$tmp" ); then
+  if ! ( set -o pipefail; PGDATABASE="$snapshot_url" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump 2>/dev/null | gzip > "$tmp" ); then
     log "ERROR: database snapshot failed"
     rm -f "$tmp" 2>/dev/null
     return 1
@@ -314,6 +346,11 @@ run_snapshot() {
 
 run_migrate() {
   local release="$1"
+  # Both automatic and operator-requested rollbacks must launch the old code even
+  # after a partially failed forward migration: Prisma migrate deploy would reject
+  # the unfinished history with P3009, including from the older release. Readiness
+  # and stabilization still verify the fallback actually works against this DB.
+  [ "$GEN_KIND" != "rollback" ] || { log "skipping migrations for rollback $(basename "$release")"; return 0; }
   [ "$RUN_MIGRATE" = "true" ] || return 0
   [ -f "$release/$MIGRATE_SCRIPT" ] || { log "no migrate script in $release, skipping"; return 0; }
   log "running migrations for $(basename "$release") (timeout ${MIGRATE_TIMEOUT}s)"
@@ -335,17 +372,28 @@ discard_failed_release() {
   fi
 }
 
+persist_failed_promotion() {
+  local attempted="$1" reason="$2" migrated="$3"
+  # Journal the terminal decision before publishing it. A crash after this write
+  # resumes the SAME failure, never re-gates a recovered app into a false success.
+  # If the whole volume is unwritable, keep the decision/context in memory and do
+  # not launch anything until the journal and result can both be persisted.
+  until write_promoting "$GEN_VERSION" "$GEN_OP" "$GEN_KIND" "$migrated" \
+      "${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}" "$attempted" "$reason"; do
+    log "WARN: cannot persist terminal failure decision; retrying in 2s"
+    sleep 2
+  done
+  until write_result "$GEN_OP" "failed" "$attempted" "$reason" "$migrated"; do
+    log "WARN: could not persist failure result; keeping full promotion context, retrying in 2s"
+    sleep 2
+  done
+  clear_promoting
+}
+
 handle_failed_promotion() {
   # A promoted release failed to come up (migration / health gate / stabilization).
   # Roll back to last-good when we can; otherwise record failure and retry.
   # Mutates the GEN_* globals for the next loop iteration. $1 is a reason string.
-  #
-  # write_result is atomic (tmp+mv) so a concurrent poll never reads a truncated
-  # outcome. In the rollback branch we must move off the broken version (clear the
-  # promoting guard so new ops are not blocked and a restart does not re-promote a
-  # discarded version); if the atomic result write nonetheless fails (e.g. full
-  # volume), the app's boot reconcile stale-sweep still marks the orphaned op
-  # terminal, so it is never left running forever.
   local reason="$1" mig_override="${2:-}" LG="" MIG
   # Whether the failed promotion may have CHANGED the schema — carried so the app can
   # warn "code rolled back but schema not". Callers that fail BEFORE migration runs
@@ -403,11 +451,7 @@ handle_failed_promotion() {
     local attempted="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
     attempted="${attempted:-$GEN_VERSION}"
     if [ -n "$GEN_OP" ]; then
-      if write_result "$GEN_OP" "failed" "$attempted" "${reason}（无可回滚版本）" "$MIG"; then
-        clear_promoting
-      else
-        log "WARN: could not persist failure result; keeping promoting marker for retry"
-      fi
+      persist_failed_promotion "$attempted" "${reason}（无可回滚版本）" "$MIG"
     else
       clear_promoting
     fi
@@ -443,7 +487,14 @@ if [ -f "$PROMOTING_FILE" ]; then
   RESUME_V="$(json_get "$PROMOTING_FILE" version)"
   RESUME_OP="$(json_get "$PROMOTING_FILE" operationId)"
   RESUME_KIND="$(json_get "$PROMOTING_FILE" kind)"
-  if [ -n "$RESUME_V" ] && [ -d "$RELEASES_DIR/$RESUME_V" ]; then
+  RESUME_FAILURE="$(json_get "$PROMOTING_FILE" failureVersion)"
+  if [ -n "$RESUME_FAILURE" ] && [ -n "$RESUME_OP" ]; then
+    log "resuming terminal failure persistence (op $RESUME_OP)"
+    GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
+    RESUME_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$RESUME_MIG" = "true" ] || RESUME_MIG="false"
+    persist_failed_promotion "$RESUME_FAILURE" "$(json_get "$PROMOTING_FILE" failureReason)" "$RESUME_MIG"
+    GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+  elif [ -n "$RESUME_V" ] && [ -d "$RELEASES_DIR/$RESUME_V" ]; then
     log "resuming interrupted promotion -> $RESUME_V (op $RESUME_OP)"
     GEN_VERSION="$RESUME_V"; GEN_OP="$RESUME_OP"; GEN_KIND="$RESUME_KIND"; GEN_PROMOTION=1
   else
@@ -517,9 +568,9 @@ while true; do
   fi
 
   # Pre-migration snapshot: only for a forward promotion that will migrate. A rollback
-  # LANDING (kind=rollback) goes to an OLDER release whose migrations are already
-  # applied, so `migrate deploy` is a no-op there — snapshotting again would only delay
-  # recovery. migrationApplied is read from the promoting marker the app staged.
+  # (kind=rollback) deliberately skips migrate deploy, including when unfinished
+  # forward migrations remain; taking another snapshot would only delay recovery.
+  # migrationApplied is read from the promoting marker the app staged.
   PROMO_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$PROMO_MIG" = "true" ] || PROMO_MIG="false"
   if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
     if ! run_snapshot "$GEN_VERSION" "$GEN_OP"; then

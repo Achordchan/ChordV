@@ -71,6 +71,7 @@ type SystemUpdateCacheEntry = {
 };
 
 type OperationLock = {
+  assertHeld: () => Promise<void>;
   release: () => Promise<void>;
 };
 
@@ -112,6 +113,10 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   // Serializes the signed manifest-floor compare-and-write so concurrent update checks
   // cannot interleave and move the anti-replay floor backward (it must only advance).
   private manifestFloorLock: Promise<unknown> = Promise.resolve();
+  // The supported deployment has one API process under one supervisor. Keep that
+  // process fenced until cancelled staging has unwound, even if PostgreSQL already
+  // dropped its advisory lock. This is not a multi-replica filesystem fencing token.
+  private operationInFlight = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -335,6 +340,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     // marker. Otherwise a restart that opens the port then crashes would still be
     // audited as succeeded, and one that never boots would stay running forever.
     try {
+      await lock.assertHeld();
       await this.writePendingMarker({ version: fromVersion, operationId, kind: "restart", migrationApplied: false });
     } catch (error) {
       await this.finishOperation(operationId, "failed", { failureReason: this.describeError(error) }).catch(
@@ -345,7 +351,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
     // Lock stays held until process exit (see scheduleProcessExit) so no second
     // operation can slip in during the exit-flush window.
-    this.scheduleProcessExit(`restart requested (operation ${operationId})`);
+    this.scheduleProcessExit(`restart requested (operation ${operationId})`, lock, operationId);
     return { operationId, accepted: true, message: "服务正在重启。" };
   }
 
@@ -357,6 +363,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   ) {
     try {
       const check = await this.checkUpdate(true);
+      await lock.assertHeld();
       // Only act on a manifest we just re-fetched cleanly. A forced refresh that
       // fell back to a stale cache (warning set / cached=true) could otherwise let
       // an admin install a package that was already withdrawn upstream.
@@ -393,7 +400,8 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       }
       const releaseDir = await this.downloadAndExtractRelease({
         ...release, downloadUrl: release.downloadUrl, sha256: release.sha256
-      });
+      }, lock);
+      await lock.assertHeld();
       const pendingMigrations = await this.detectPendingMigrations(releaseDir);
       const willMigrate = pendingMigrations.length > 0;
       if (willMigrate) {
@@ -415,6 +423,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       //      DB while the supervisor promotes or rolls back. Both are supervisor-owned.
       // migrationApplied travels in the marker so a later rollback can still warn that
       // the schema was changed; the supervisor takes the snapshot only when it is set.
+      await lock.assertHeld();
       await this.writePendingMarker({
         version: release.version,
         operationId,
@@ -434,7 +443,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       // scheduleProcessExit): the DB session closing on exit releases it, which
       // closes the window where a second request could grab the lock before the
       // supervisor writes promoting.json.
-      this.scheduleProcessExit(`staged update ${fromVersion} -> ${release.version} (operation ${operationId})`);
+      this.scheduleProcessExit(`staged update ${fromVersion} -> ${release.version} (operation ${operationId})`, lock, operationId);
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System update failed (operation ${operationId}): ${reason}`);
@@ -451,10 +460,12 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     lock: OperationLock
   ) {
     try {
+      await lock.assertHeld();
       await this.markRunning(operationId, target);
+      await lock.assertHeld();
       await this.writePendingMarker({ version: target, operationId, kind: "rollback" });
       // Lock stays held until process exit (see scheduleProcessExit).
-      this.scheduleProcessExit(`staged rollback ${fromVersion} -> ${target} (operation ${operationId})`);
+      this.scheduleProcessExit(`staged rollback ${fromVersion} -> ${target} (operation ${operationId})`, lock, operationId);
     } catch (error) {
       const reason = this.describeError(error);
       this.logger.error(`System rollback failed (operation ${operationId}): ${reason}`);
@@ -464,7 +475,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async downloadAndExtractRelease(release: NormalizedRelease): Promise<string> {
+  private async downloadAndExtractRelease(release: NormalizedRelease, lock: OperationLock): Promise<string> {
     const releasesDir = this.config.releasesDir;
     if (!releasesDir) {
       throw new ServiceUnavailableException("未配置发布目录（CHORDV_SYSTEM_RELEASES_DIR）。");
@@ -472,6 +483,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     const mirror = await this.resolveMirrorPrefix();
     const downloaded = await downloadExternalReleaseArtifactFile(release.downloadUrl, mirror);
     try {
+      await lock.assertHeld();
       if (downloaded.fileHash.toLowerCase() !== release.sha256.toLowerCase()) {
         throw new BadRequestException(
           `更新包 SHA-256 校验不匹配（期望 ${release.sha256}，实际 ${downloaded.fileHash}）。`
@@ -483,6 +495,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       await fs.mkdir(stagingDir, { recursive: true });
       try {
         await this.extractTarball(downloaded.absolutePath, stagingDir);
+        await lock.assertHeld();
         await this.removeDirSafe(finalDir);
         await fs.rename(stagingDir, finalDir);
       } catch (error) {
@@ -960,41 +973,61 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async acquireLock(): Promise<OperationLock> {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
+  private async acquireLock(createClient = () => new PgClient({
+    connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10_000, query_timeout: 10_000
+  })): Promise<OperationLock> {
+    if (!process.env.DATABASE_URL) {
       throw new ServiceUnavailableException("缺少 DATABASE_URL，无法获取系统更新锁。");
     }
-    const client = new PgClient({ connectionString });
-    await client.connect();
-    let acquired = false;
+    if (this.operationInFlight) {
+      throw new ConflictException("已有系统操作正在执行或取消中，请稍后重试。");
+    }
+    const client = createClient();
+    this.operationInFlight = true;
+    let lost = false;
+    let released = false;
+    // Register before connect: pg emits errors on idle clients outside query promises.
+    // Never reconnect this session: a new connection would not own the original lock.
+    const markLost = () => { lost = true; };
+    client.on("error", markLost);
+    client.on("end", markLost);
+    const assertHeld = async () => {
+      if (lost || released) throw new ServiceUnavailableException("系统更新锁连接已断开，操作已取消。");
+      try {
+        await client.query("SELECT 1");
+      } catch {
+        lost = true;
+      }
+      if (lost) throw new ServiceUnavailableException("系统更新锁连接已断开，操作已取消。");
+    };
+    const release = async () => {
+      if (released) return;
+      released = true;
+      try {
+        if (!lost) await client.query("select pg_advisory_unlock($1, $2)", [
+          SYSTEM_UPDATE_LOCK_KEY_1, SYSTEM_UPDATE_LOCK_KEY_2
+        ]);
+      } catch {
+        // A dropped session already released its advisory lock.
+      } finally {
+        await client.end().catch(() => undefined);
+        this.operationInFlight = false;
+      }
+    };
     try {
+      await client.connect();
       const result = await client.query<{ locked: boolean }>(
         "select pg_try_advisory_lock($1, $2) as locked",
         [SYSTEM_UPDATE_LOCK_KEY_1, SYSTEM_UPDATE_LOCK_KEY_2]
       );
-      acquired = Boolean(result.rows[0]?.locked);
+      if (!result.rows[0]?.locked) throw new ConflictException("已有系统更新/回滚/重启任务正在执行，请稍后重试。");
+      await assertHeld();
+      return { assertHeld, release };
     } catch (error) {
-      await client.end().catch(() => undefined);
+      await release();
+      if (error instanceof ConflictException) throw error;
       throw new ServiceUnavailableException(`获取系统更新锁失败：${this.describeError(error)}`);
     }
-    if (!acquired) {
-      await client.end().catch(() => undefined);
-      throw new ConflictException("已有系统更新/回滚/重启任务正在执行，请稍后重试。");
-    }
-    return {
-      release: async () => {
-        try {
-          await client.query("select pg_advisory_unlock($1, $2)", [
-            SYSTEM_UPDATE_LOCK_KEY_1,
-            SYSTEM_UPDATE_LOCK_KEY_2
-          ]);
-        } catch {
-          // ignore
-        }
-        await client.end().catch(() => undefined);
-      }
-    };
   }
 
   private async createOperationGuarded(
@@ -1012,8 +1045,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     // fails we must release it here, or that session keeps the lock forever and
     // blocks every later update/rollback/restart until the process restarts.
     try {
+      await lock.assertHeld();
       await this.createOperation(input);
+      await lock.assertHeld();
     } catch (error) {
+      await this.finishOperation(input.operationId, "failed", { failureReason: this.describeError(error) }).catch(() => undefined);
       await lock.release().catch(() => undefined);
       throw new ServiceUnavailableException(`创建系统操作记录失败：${this.describeError(error)}`);
     }
@@ -1267,7 +1303,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  private scheduleProcessExit(reason: string, beforeExit?: () => Promise<void>) {
+  private scheduleProcessExit(reason: string, lock: OperationLock, operationId: string) {
     // NOTE: callers deliberately do NOT release the advisory lock here. The lock is
     // held on the operation's dedicated PG session; letting process.exit close that
     // session is what releases it, so the lock stays held across the whole
@@ -1276,7 +1312,15 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     this.logger.warn(`Scheduling process exit for self-update: ${reason}`);
     setTimeout(() => {
       void (async () => {
-        if (beforeExit) await beforeExit().catch(() => undefined);
+        try {
+          await lock.assertHeld();
+        } catch (error) {
+          await this.clearPendingMarker().catch(() => undefined);
+          await this.finishOperation(operationId, "failed", { failureReason: this.describeError(error) }).catch(() => undefined);
+          await lock.release();
+          this.logger.warn("Cancelled system operation after losing its lock; keeping the API running.");
+          return;
+        }
         this.logger.warn("Exiting process; supervisor will bring the service back up.");
         process.exit(0);
       })();

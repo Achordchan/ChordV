@@ -12,12 +12,14 @@
 
 ## 0. 实现说明（v0.4，随开发更新）
 
-落地时相对 4.1/6.2/6.3 的调整，均已本地验证：
+落地时相对 4.1/6.2/6.3 的调整（以下早期说明需以代码和最新评审补充为准）：
 
-1. **进程外监督者（entrypoint.sh）**：应用不再自己切软链接，而是“下载→校验→解压→（如需）迁移→写 `state/pending.json` 标记→`exit(0)`”。容器入口 `entrypoint.sh` 是一个常驻监督循环（扮演 sub2api 里 systemd 的角色）：读 pending 标记 → 原子切 `current` 软链接 → 启动应用 → **健康门控**（HTTP 探活，带 `X-Forwarded-Proto: https` 以通过生产 HTTPS 强制）→ 通过则记 `last-good-version`；不过则**自动回滚**到 last-good 并重启，落 `state/operation-result.json`。Docker 的 `restart: unless-stopped` 退化为“监督者自身挂掉”时的兜底。
-2. **成功不写结果标记，应用自证晋级**：一次更新成功后由重新起来、正在服务的应用在启动时把自己那条运行中的操作记为 succeeded（`reconcileOperationsOnBoot`：`toVersion == 当前运行版本` ⇒ succeeded），监督者只在**失败/回滚**路径写 `operation-result.json`（失败的应用没法给自己收尾）。这避免了“新应用启动时机 vs 监督者健康门控完成时机”的竞态。
+**第18轮补充：迁移失败后的恢复边界。** 自动/手动回滚落地跳过 `migrate deploy`，但仍须通过 readiness 与稳定期；部分 DDL 可能使旧代码也无法健康上线，代码回滚不等于数据库恢复。回滚终态确认后，普通应用/容器重启仍会按启动流程运行迁移；未处理的 Prisma 失败迁移记录可能再次触发 P3009。管理员应在再次重启或更新前检查失败迁移并按迁移前快照恢复/人工修复，不能把代码回滚视为迁移历史已修复。快照默认从 DATABASE_URL 移除 Prisma 专属参数；使用连接池或需独立直连时可配置 `CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL`（应指向同一数据库）。
+
+1. **进程外监督者（entrypoint.sh）**：应用执行“下载→校验→解压→检查待迁移项→写 `state/pending.json`→退出”。监督者在旧应用退出后接管提升、按操作隔离的迁移前快照、迁移和启动；回滚落地跳过迁移。readiness 探测与稳定期通过后才更新 `last-good-version`。Docker 的 `restart: unless-stopped` 是监督者自身退出后的兜底。
+2. **监督者确认终态**：成功、失败和自动回滚均由监督者写 `state/operation-result.<operationId>.json`；应用启动及状态轮询时消费落库。新应用仅启动并不自证成功，自动回滚必须等 fallback 自身健康后才写 rolledback；结果落盘失败保留上下文重试。
 3. **检查更新数据源 = raw manifest**：`api.github.com` 加速镜像不可达（实测 ghfast 对它返回 403），改为拉一个发布在 raw 上的 `manifest.json`（版本号 + 产物 URL + SHA-256 + changelog），加速镜像可代理；校验用的 SHA-256 以 manifest 记录为准（详见 11 节安全边界，仍不采信代理返回内容）。
-4. **发布单元 = api + admin 同一个 release**：release 压缩包内含 `apps/api/dist` 与 `apps/admin/dist`；admin 容器（nginx）只读挂载共享的 releases/state 卷，网页根指向“当前版本”的 `apps/admin/dist`，api 自更新切版本后 admin 随之跟随（`admin-entrypoint.sh` 轮询 desired-version 重指向 + reload），admin 侧无需任何更新逻辑。
+4. **发布单元 = api + admin 同一个 release**：release 压缩包内含 `apps/api/dist` 与 `apps/admin/dist`；admin 容器（nginx）只读挂载共享的 releases/state 卷，网页根指向“当前版本”的 `apps/admin/dist`，api 自更新切版本后 admin 随之跟随（`admin-entrypoint.sh` 仅跟随通过健康门控的 last-good-version 重指向 + reload），admin 侧无需任何更新逻辑。
 5. **打包/运行踩坑（实构建实跑修正）**：(a) 构建阶段需装 `openssl` 且 Prisma 需显式 `binaryTargets`（`debian-openssl-3.0.x` / `linux-arm64-openssl-3.0.x`），否则生成的引擎与 bookworm 运行时（openssl 3.0.x）不匹配；(b) 运行镜像需 `postgresql-client-16`（迁移前 `pg_dump` 快照，须匹配 PG16）+ `curl/tar/gzip`；(c) 生产 HTTPS 强制中间件会拦截内部 HTTP 健康探活，探活须带 `X-Forwarded-Proto: https`。
 
 ---
@@ -155,6 +157,14 @@ flowchart LR
 - 构建产物压缩包时把这个版本号写入产物内的一个元信息文件（比如 `RELEASE_META.json`），`chordv-api` 启动时读出来，暴露在 `GET /api/admin/system/version`。
 - GitHub Release 的 tag 用 `backend-v0.0.1` 这种带前缀的命名，跟桌面端现有的裸 `v1.1.7` 区分开，避免同一个仓库两条 release 序列互相打架。
 - 每次发布前手动（或用一个小校验脚本）把 `SYSTEM_VERSION` 加一，CI 里做一致性检查（参考桌面端已有的 `apps/desktop/scripts/check-version-consistency.mjs` 思路）。
+
+### 5.1 发布失败后的显式恢复边界
+
+使用 `.github/workflows/release-backend.yml` 发布后台版本。正常新版本保持 `resume_existing=false`；如果 GitHub Release 已完整发布，但 `backend-manifest` 稳定清单发布失败，可重新手动触发，选择**原发布提交**（`github.sha` 必须与 `backend-v<version>` 标签最终指向的提交完全相同），填写相同 `version`、相同 `prerelease`，并设置 `resume_existing=true`。默认输入为 false 的失败任务直接 Re-run 不会自动开启恢复。
+
+- 恢复只下载并校验现有不可变资产，不重建、不覆盖、不重新生成清单或签名；恢复输入中的 `changelog` 不替换已发布日志。签名版本必须保留与原签名匹配的 `CHORDV_MANIFEST_SIGNING_KEY`。资产缺失、半成品/draft Release、标签提交不符、校验失败或 GitHub HTTP/网络错误均拒绝恢复，不能借恢复修补或替换同版本资产。
+- 稳定清单按完整 SemVer 优先级单调前进（含预发布标识；build metadata 不参与优先级）。已有更高版本时拒绝旧版恢复；相同优先级只接受 manifest 和可选签名**逐字节相同**，作为无操作成功。不同 build metadata 不能用来覆盖同优先级版本。预发布选项为 true 时不更新稳定清单。
+- 发布前直连 GitHub API 读取 `backend-manifest` 的固定提交内容，再以该提交作为 `--force-with-lease` 条件推送；检查后分支若被其他发布者修改，推送失败，需重试并重新校验。分支已存在但清单缺失/损坏也会拒绝发布，不能当作首次发布绕过。工作流并发组保持串行，不允许通过旧版恢复降低全局更新源版本。
 
 ## 6. 详细流程
 

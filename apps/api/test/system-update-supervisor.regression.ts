@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,7 +61,26 @@ async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-type ResultMarker = { operationId?: string; status?: string; version?: string; migrationApplied?: boolean };
+type ResultMarker = { operationId?: string; status?: string; version?: string; reason?: string; migrationApplied?: boolean };
+
+function failingMigrationEnv(root: string, versions: string[]) {
+  const bin = path.join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+  // macOS has no timeout; deterministic stubs exit immediately, so no timer needed.
+  writeFileSync(path.join(bin, "timeout"), '#!/usr/bin/env bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
+  for (const version of versions) {
+    const dir = path.join(root, "releases", version, "scripts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "prisma-migrate-with-baseline.mjs"),
+      `import fs from 'node:fs';fs.appendFileSync(${JSON.stringify(path.join(root, "migrations"))},${JSON.stringify(version + "\n")});console.error('P3009 unfinished migration');process.exit(1);`);
+  }
+  return {
+    PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    CHORDV_SYSTEM_NODE_BIN: process.execPath,
+    CHORDV_SUPERVISOR_MIGRATE: "true",
+    CHORDV_SYSTEM_UPDATE_SNAPSHOT: "false"
+  };
+}
 
 async function waitForResult(file: string, timeoutMs: number): Promise<ResultMarker | null> {
   const deadline = Date.now() + timeoutMs;
@@ -83,7 +102,7 @@ async function waitForResult(file: string, timeoutMs: number): Promise<ResultMar
  * (0.0.2) over a last-good release (0.0.1) whose health is parameterized, and
  * return the terminal result the supervisor records for the operation.
  */
-async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding = false) {
+async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding = false, migrateFails = false) {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-"));
   const stateDir = path.join(root, "state");
@@ -110,6 +129,7 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
     CHORDV_SUPERVISOR_MIGRATE: "false",
+    ...(migrateFails ? failingMigrationEnv(root, ["0.0.1", "0.0.2"]) : {}),
     // Keep the bad releases' health gate short so the (fast) crash path dominates and
     // the "last-good also fails" scenario doesn't sit out a long timeout per attempt.
     CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
@@ -148,6 +168,9 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
       : "";
     const badDiscarded = !existsSync(path.join(root, "releases", "0.0.2"));
     const lastGoodExists = existsSync(path.join(root, "releases", "0.0.1"));
+    if (migrateFails) {
+      assert.equal(readFileSync(path.join(root, "migrations"), "utf8"), "0.0.2\n", "only the forward candidate may run migrate deploy; fallback must bypass P3009");
+    }
     return { result, desired, served, currentTarget, badDiscarded, lastGoodExists, opId, stderr };
   } finally {
     // Kill the whole supervisor process group (supervisor + any relaunched app that
@@ -167,7 +190,7 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
  * result. A manual rollback that comes up healthy must finalize as 'success', never
  * 'rolledback' (which is reserved for an automatic post-failure rollback landing).
  */
-async function runManualRollbackScenario() {
+async function runManualRollbackScenario(migrateFails = false) {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-"));
   const stateDir = path.join(root, "state");
@@ -192,6 +215,7 @@ async function runManualRollbackScenario() {
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
     CHORDV_SUPERVISOR_MIGRATE: "false",
+    ...(migrateFails ? failingMigrationEnv(root, ["0.0.1", "0.0.2"]) : {}),
     CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
@@ -251,6 +275,7 @@ async function runSnapshotFailureScenario() {
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
   delete env.DATABASE_URL; // force run_snapshot to fail before any migration runs
+  delete env.CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL;
 
   const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
@@ -367,6 +392,124 @@ exec /bin/mv "$@"
   }
 }
 
+async function runTerminalFailureRetryScenario(resume: boolean) {
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-failed-"));
+  const state = path.join(root, "state");
+  const bin = path.join(root, "bin");
+  mkdirSync(state); mkdirSync(bin);
+  const port = await freePort();
+  const version = resume ? "0.0.1" : "0.0.2";
+  const op = "sysop-terminal-failure";
+  const release = writeRelease(root, version, "bad", port);
+  const marker = path.join(state, "promoting.json");
+  const resultFile = path.join(state, `operation-result.${op}.json`);
+  const attempts = path.join(root, "attempts");
+  const blocker = path.join(root, "block");
+  writeFileSync(blocker, "");
+  writeFileSync(path.join(state, "desired-version"), version);
+  writeFileSync(path.join(state, "last-good-version"), version);
+  writeFileSync(marker, JSON.stringify({ version, operationId: op, kind: resume ? "rollback" : "update", rollbackFrom: resume ? "0.0.2" : "", migrationApplied: true }));
+  writeFileSync(path.join(bin, "mv"), `#!/usr/bin/env bash
+if [ "\${!#}" = "$CHORDV_TEST_RESULT" ] && [ -f "$CHORDV_TEST_BLOCK" ]; then
+  printf 'failed\\n' >> "$CHORDV_TEST_ATTEMPTS"
+  exit 1
+fi
+exec /bin/mv "$@"
+`, { mode: 0o755 });
+  const env = {
+    ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    CHORDV_TEST_RESULT: resultFile, CHORDV_TEST_BLOCK: blocker, CHORDV_TEST_ATTEMPTS: attempts,
+    CHORDV_SYSTEM_NODE_BIN: process.execPath,
+    CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
+    CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"), CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
+    CHORDV_API_PORT: String(port), CHORDV_SUPERVISOR_MIGRATE: "false", CHORDV_SYSTEM_UPDATE_SNAPSHOT: "false",
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "5", CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+  };
+  let stderr = "";
+  const start = () => {
+    const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    child.stderr?.on("data", chunk => { stderr += String(chunk); });
+    return child;
+  };
+  let child = start();
+  const stop = async () => {
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+    try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { return; }
+    await exited;
+  };
+  try {
+    const count = () => existsSync(attempts) ? readFileSync(attempts, "utf8").trim().split("\n").length : 0;
+    await waitUntil(() => count() >= 2, 15_000, () => `terminal failure did not retry.\n${stderr}`);
+    const journal = JSON.parse(readFileSync(marker, "utf8"));
+    assert.equal(journal.failureVersion, "0.0.2");
+    assert.equal(journal.migrationApplied, true);
+    assert.match(journal.failureReason, /健康检查/);
+    // Fix the app while result writes remain blocked. It must not be relaunched
+    // and finalize this already-failed operation as success/rolledback.
+    writeRelease(root, version, "good", port);
+    const launch = path.join(root, "recovered-launch");
+    const appFile = path.join(release, APP_ENTRY);
+    writeFileSync(appFile, `require('fs').writeFileSync(${JSON.stringify(launch)},'yes');` + readFileSync(appFile, "utf8"));
+    if (resume) {
+      await stop(); child = start();
+    }
+    const before = count();
+    await waitUntil(() => count() > before, 10_000, () => `failure retry stopped.\n${stderr}`);
+    assert.equal(existsSync(resultFile), false);
+    assert.equal(existsSync(launch), false, "terminal failure must persist before relaunch/re-gate");
+    rmSync(blocker);
+    const result = await waitForResult(resultFile, 10_000);
+    assert.deepEqual(result, { operationId: op, status: "failed", version: "0.0.2", reason: journal.failureReason, migrationApplied: true });
+    await waitUntil(() => existsSync(launch) && !existsSync(marker), 15_000, () => `failed result did not permit normal restart.\n${stderr}`);
+    await waitUntil(() => stderr.includes("healthy + stable"), 10_000, () => `recovered app did not stabilize.\n${stderr}`);
+    assert.equal(JSON.parse(readFileSync(resultFile, "utf8")).status, "failed", "later recovery must not overwrite the terminal failure");
+  } finally {
+    await stop(); rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function testSnapshotDatabaseUrl() {
+  const script = readFileSync(entrypoint, "utf8");
+  const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-url-"));
+  const raw = "postgresql://us%40er:p%3Ass%2F%25%3F%23@db.example:5432/chordv?schema=public&sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&connection_limit=4&pool_timeout=10&socket_timeout=9&pgbouncer=true&statement_cache_size=0&sslaccept=strict&sslidentity=client.p12&%73chema=other&sslrootcert=%2Fcerts%2Froot.pem";
+  const expected = "postgresql://us%40er:p%3Ass%2F%25%3F%23@db.example:5432/chordv?sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&sslrootcert=%2Fcerts%2Froot.pem";
+  const env = { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath, DATABASE_URL: raw, CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "" };
+  const convert = (overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", ["-c", `${definitions}\nsnapshot_database_url`], { env: { ...env, ...overrides }, encoding: "utf8" });
+  try {
+    let result = convert();
+    assert.equal(result.status, 0); assert.equal(result.stdout, expected); assert.equal(result.stderr, "");
+    const direct = "postgresql://a%40b:p%3Aq@direct/db?sslmode=verify-full";
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: direct });
+    assert.equal(result.status, 0); assert.equal(result.stdout, direct);
+    result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
+    // Exercise the real snapshot pipeline too: pg_dump gets only an environment
+    // connection string, and even errors echoing credentials never reach logs.
+    writeFileSync(path.join(root, "timeout"), '#!/usr/bin/env bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
+    writeFileSync(path.join(root, "pg_dump"), `#!/usr/bin/env bash
+printf '%s' "$PGDATABASE" > "$CHORDV_TEST_CAPTURE"
+printf '%s' "$#" > "$CHORDV_TEST_ARGC"
+printf '%s' "$PGDATABASE" >&2
+[ "$CHORDV_TEST_DUMP_FAIL" = "true" ] && exit 1
+printf 'test snapshot\\n'
+`, { mode: 0o755 });
+    for (const fail of [false, true]) {
+      const capture = path.join(root, "capture");
+      const argc = path.join(root, "argc");
+      const dump = spawnSync("bash", ["-c", `${definitions}\nrun_snapshot 0.0.2 op-${fail}`], {
+        encoding: "utf8", env: { ...env, PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
+          CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true", CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
+          CHORDV_TEST_CAPTURE: capture, CHORDV_TEST_ARGC: argc, CHORDV_TEST_DUMP_FAIL: String(fail) }
+      });
+      assert.equal(dump.status, fail ? 1 : 0, dump.stderr);
+      assert.equal(readFileSync(capture, "utf8"), expected);
+      assert.equal(readFileSync(argc, "utf8"), "0", "credentials must not be command-line arguments");
+      assert.equal(dump.stderr.includes("p%3Ass"), false, "pg_dump errors must not disclose credentials");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 async function main() {
   // Scenario A: last-good is healthy → the promotion of the broken release is
   // auto-rolled-back, and the terminal 'rolledback' result is recorded ONLY after
@@ -458,6 +601,20 @@ async function main() {
 
   // Scenario G: last-good persistence must recover even after the old retry budget.
   await runFinalizationRetryScenario("last-good");
+
+  const automatic = await runRollbackScenario("good", false, true);
+  assert.equal(automatic.result?.status, "rolledback", automatic.stderr);
+  assert.equal(automatic.result.migrationApplied, true);
+  assert.equal(automatic.served, true, "fallback must pass readiness despite P3009");
+  const unhealthy = await runRollbackScenario("bad", false, true);
+  assert.equal(unhealthy.result?.status, "failed", "skipping migrate must not bypass fallback readiness");
+  const manual = await runManualRollbackScenario(true);
+  assert.equal(manual.result?.status, "success", manual.stderr);
+  assert.equal(manual.result.version, "0.0.1");
+  assert.equal(manual.stderr.includes("P3009"), false, "manual rollback must skip migrate deploy");
+  await runTerminalFailureRetryScenario(false);
+  await runTerminalFailureRetryScenario(true);
+  testSnapshotDatabaseUrl();
 }
 
 void main().then(() => {

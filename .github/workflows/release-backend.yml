@@ -19,6 +19,11 @@ on:
         description: "更新日志（每行一条），可留空"
         required: false
         type: string
+      resume_existing:
+        description: "显式恢复已发布版本：校验相同提交及全部原始资产，仅补发稳定清单，不重建或覆盖资产"
+        required: false
+        default: false
+        type: boolean
       prerelease:
         description: "标记为预发布（不更新 latest 清单）"
         required: false
@@ -30,12 +35,17 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     name: Build & publish backend release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Create a release and push backend-manifest; no other scopes.
+    env:
+      PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
+      RESUME_EXISTING: ${{ github.event.inputs.resume_existing || 'false' }}
     defaults:
       run:
         shell: bash
@@ -65,45 +75,44 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=backend-v${version}" >> "$GITHUB_OUTPUT"
 
-      - name: Reject if this version was already published
+      - name: Setup release tooling
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Select fresh build or explicit immutable resume
+        id: publication
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          # A published backend version is IMMUTABLE. Re-running this workflow from a
-          # different commit without bumping SYSTEM_VERSION would republish the same tag
-          # and overwrite same-named assets — splitting the fleet across different bytes
-          # under one SemVer: instances already on it never update (equal SemVer), older
-          # ones install the replacement. Fail closed if the tag OR the release exists.
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists — bump SYSTEM_VERSION to publish a new version." >&2
-            exit 1
-          fi
-          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists — bump SYSTEM_VERSION to publish a new version." >&2
-            exit 1
-          fi
-          echo "Version ${TAG} is not yet published — proceeding."
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/backend-release-resume.mjs prepare
+
+      - name: Test release resume guard
+        run: node --test scripts/backend-release-resume.test.mjs
 
       - name: Setup pnpm
+        if: steps.publication.outputs.mode == 'build'
         uses: pnpm/action-setup@v4
         with:
           version: 9.15.3
 
       - name: Setup Node
+        if: steps.publication.outputs.mode == 'build'
         uses: actions/setup-node@v4
         with:
           node-version-file: ".nvmrc"
           cache: pnpm
 
       - name: Install dependencies
+        if: steps.publication.outputs.mode == 'build'
         run: pnpm install --filter @chordv/api... --filter @chordv/admin... --frozen-lockfile
 
       - name: Run API regression tests
+        if: steps.publication.outputs.mode == 'build'
         run: pnpm test:api
 
       - name: Build backend system (shared + api + admin)
+        if: steps.publication.outputs.mode == 'build'
         run: |
           pnpm --filter @chordv/shared build
           pnpm --filter @chordv/api db:generate
@@ -111,6 +120,7 @@ jobs:
           pnpm --filter @chordv/admin build
 
       - name: Assemble relocatable release tree
+        if: steps.publication.outputs.mode == 'build'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -135,6 +145,7 @@ jobs:
           echo "SHA256:"; cat checksums.txt
 
       - name: Generate manifest.json
+        if: steps.publication.outputs.mode == 'build'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -164,6 +175,7 @@ jobs:
           echo "manifest.json:"; cat manifest.json
 
       - name: Sign manifest (ed25519, if signing key configured)
+        if: steps.publication.outputs.mode == 'build'
         env:
           SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
         run: |
@@ -186,40 +198,68 @@ jobs:
           rm -f /tmp/manifest_key.pem
           echo "Signed manifest.json -> manifest.json.sig"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ChordV Backend ${{ steps.version.outputs.tag }}
-          prerelease: ${{ github.event.inputs.prerelease }}
-          generate_release_notes: true
-          files: |
-            dist-release/chordv-backend-${{ steps.version.outputs.version }}.tar.gz
-            dist-release/checksums.txt
-            dist-release/manifest.json
-            dist-release/manifest.json.sig
+      - name: Create GitHub Release (never update or clobber existing assets)
+        if: steps.publication.outputs.mode == 'build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RESUME_EXISTING: 'false'
+        run: |
+          set -euo pipefail
+          # Recheck after the build. gh release create fails on a concurrent release
+          # creation; unlike an upsert action it never deletes/replaces old assets.
+          node scripts/backend-release-resume.mjs prepare
+          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+            --title "ChordV Backend ${TAG}" --generate-notes)
+          if [[ "$PRERELEASE" == 'true' ]]; then args+=(--prerelease); fi
+          assets=("dist-release/chordv-backend-${VERSION}.tar.gz"
+            dist-release/checksums.txt dist-release/manifest.json)
+          if [[ -f dist-release/manifest.json.sig ]]; then assets+=(dist-release/manifest.json.sig); fi
+          gh release create "$TAG" "${assets[@]}" "${args[@]}"
 
-      - name: Publish manifest to stable raw branch
+      - name: Download and verify immutable published bytes (fresh or resume)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
+        run: node scripts/backend-release-resume.mjs verify
+
+      - name: Guard stable feed monotonicity
+        id: stable
         if: ${{ github.event.inputs.prerelease != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/backend-release-resume.mjs stable
+
+      - name: Publish manifest to stable raw branch
+        if: ${{ github.event.inputs.prerelease != 'true' && steps.stable.outputs.mode == 'publish' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          STABLE_SHA: ${{ steps.stable.outputs.sha }}
         run: |
           set -euo pipefail
           # A dedicated orphan-ish branch serves a stable raw URL that instances
           # poll: https://raw.githubusercontent.com/<repo>/backend-manifest/latest.json
-          # (kept separate from main history; ghfast-proxyable). Only 'latest.json'
-          # lives here — one file, force-updated each release.
+          # (kept separate from main history; ghfast-proxyable). The manifest and
+          # optional signature always use verified Release bytes, including on retry.
+          # Workflow-wide concurrency serializes fresh releases and explicit resumes.
           tmp="$(mktemp -d)"
-          cp dist-release/manifest.json "$tmp/latest.json"
-          [ -f dist-release/manifest.json.sig ] && cp dist-release/manifest.json.sig "$tmp/latest.json.sig"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          cp published-release/manifest.json "$tmp/latest.json"
+          if [[ -f published-release/manifest.json.sig ]]; then
+            cp published-release/manifest.json.sig "$tmp/latest.json.sig"
+          fi
           cd "$tmp"
           git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -q -b backend-manifest
           git add -A
           git commit -q -m "backend manifest ${TAG}"
-          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" backend-manifest
+          # Empty expected SHA means the branch must still be absent. Any external
+          # writer since the monotonicity check makes this push fail, never overwrite.
+          git push -q --force-with-lease="refs/heads/backend-manifest:${STABLE_SHA}" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" backend-manifest
           echo "Manifest published to backend-manifest branch."

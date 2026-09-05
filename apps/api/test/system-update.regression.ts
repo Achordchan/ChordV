@@ -1,6 +1,8 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
+import { EventEmitter } from "node:events";
+import type { Client as PgClient } from "pg";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -119,9 +121,9 @@ async function assertUpdateRequestSafety() {
   const svc = service as unknown as {
     assertOperational(): void;
     assertNoPromotionInFlight(): Promise<void>;
-    acquireLock(): Promise<{ release(): Promise<void> }>;
+    acquireLock(): Promise<{ assertHeld(): Promise<void>; release(): Promise<void> }>;
     createOperationGuarded(): Promise<void>;
-    runUpdateInBackground(op: string, from: string, lock: { release(): Promise<void> }, expected?: string): Promise<void>;
+    runUpdateInBackground(op: string, from: string, lock: { assertHeld(): Promise<void>; release(): Promise<void> }, expected?: string): Promise<void>;
     finishOperation(op: string, status: string, data: { failureReason?: string; toVersion?: string }): Promise<void>;
     downloadAndExtractRelease(): Promise<string>;
     cache: unknown;
@@ -129,7 +131,7 @@ async function assertUpdateRequestSafety() {
   svc.assertOperational = () => undefined;
   svc.assertNoPromotionInFlight = async () => undefined;
   let acquired = 0;
-  svc.acquireLock = async () => { acquired += 1; return { release: async () => undefined }; };
+  svc.acquireLock = async () => { acquired += 1; return { assertHeld: async () => undefined, release: async () => undefined }; };
   svc.createOperationGuarded = async () => undefined;
 
   await assert.rejects(() => service.startUpdate(null, null, "not-a-version"), BadRequestException);
@@ -154,6 +156,7 @@ async function assertUpdateRequestSafety() {
     let released = 0;
     svc.downloadAndExtractRelease = async () => { assert.fail("changed target must not be downloaded"); };
     await svc.runUpdateInBackground("sysop-confirmed", "1.0.0", {
+      assertHeld: async () => undefined,
       release: async () => { released += 1; }
     }, "1.2.0");
     assert.equal(outcomes.length, 1);
@@ -183,7 +186,104 @@ async function assertRejectedManifestBodyCleanup() {
   assert.ok(signals.every((signal) => signal.aborted), "abort error streams before releasing their timeout");
 }
 
+async function assertLockConnectionLoss() {
+  class ClientStub extends EventEmitter {
+    ended = 0;
+    connectFailure = false;
+    async connect() { if (this.connectFailure) throw new Error("connect failed"); }
+    async query() { return { rows: [{ locked: true }] }; }
+    async end() { this.ended += 1; this.emit("end"); }
+  }
+  const previousUrl = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = "postgresql://test:secret@example.test/test";
+  try {
+    const service = buildService();
+    type Lock = { assertHeld(): Promise<void>; release(): Promise<void> };
+    const svc = service as unknown as {
+      acquireLock(factory: () => PgClient): Promise<Lock>;
+      runUpdateInBackground(op: string, from: string, lock: Lock, expected: string): Promise<void>;
+      clearPendingMarker(): Promise<void>;
+      finishOperation(op: string, status: string, data: { failureReason: string }): Promise<void>;
+      downloadAndExtractRelease(): Promise<string>;
+      operationInFlight: boolean;
+      markRunning(): Promise<void>;
+      writePendingMarker(): Promise<void>;
+      scheduleProcessExit(reason: string, lock: Lock, op: string): void;
+    };
+    for (const event of ["error", "end"]) {
+      const client = new ClientStub();
+      const lock = await svc.acquireLock(() => client as unknown as PgClient);
+      await lock.assertHeld();
+      // An idle pg error must be handled, not thrown by EventEmitter into the process.
+      client.emit(event, new Error("server connection lost"));
+      await assert.rejects(() => lock.assertHeld(), /锁连接已断开/);
+      await assert.rejects(() => svc.acquireLock(() => new ClientStub() as unknown as PgClient), /取消中/);
+      await lock.release();
+      await lock.release();
+      assert.equal(client.ended, 1, "release is idempotent");
+      assert.equal(svc.operationInFlight, false);
+    }
+    const failed = new ClientStub();
+    failed.connectFailure = true;
+    await assert.rejects(() => svc.acquireLock(() => failed as unknown as PgClient), /connect failed/);
+    assert.equal(failed.ended, 1);
+    assert.equal(svc.operationInFlight, false, "connect failure must release local fence");
+
+    const client = new ClientStub();
+    const lock = await svc.acquireLock(() => client as unknown as PgClient);
+    const outcomes: string[] = [];
+    svc.finishOperation = async (_id, status, data) => { outcomes.push(status); assert.match(data.failureReason, /锁连接已断开/); };
+    svc.clearPendingMarker = async () => undefined;
+    svc.downloadAndExtractRelease = async () => { assert.fail("lost lock must not stage a release"); };
+    service.checkUpdate = async () => {
+      client.emit("error", new Error("database restart during manifest fetch"));
+      return { currentVersion: "1.0.0", latestVersion: "1.2.0", hasUpdate: true, cached: false,
+        checkedAt: new Date().toISOString(), release: null, warning: null };
+    };
+    await svc.runUpdateInBackground("sysop-lost", "1.0.0", lock, "1.2.0");
+    assert.deepEqual(outcomes, ["failed"]);
+    assert.equal(client.ended, 1);
+    assert.equal(svc.operationInFlight, false);
+
+    // Loss during staging must not write promotion intent after the download finishes.
+    const stagingClient = new ClientStub();
+    const stagingLock = await svc.acquireLock(() => stagingClient as unknown as PgClient);
+    svc.markRunning = async () => undefined;
+    svc.writePendingMarker = async () => { assert.fail("cancelled stage cannot write pending intent"); };
+    service.checkUpdate = async () => ({
+      currentVersion: "1.0.0", latestVersion: "1.2.0", hasUpdate: true, cached: false,
+      checkedAt: new Date().toISOString(), warning: null,
+      release: { version: "1.2.0", tag: null, publishedAt: null, changelog: [], notes: null,
+        htmlUrl: null, downloadUrl: "https://example.com/release.tar.gz", fileSizeBytes: null, sha256: "a".repeat(64) }
+    });
+    svc.downloadAndExtractRelease = async () => {
+      stagingClient.emit("error", new Error("connection lost while extracting"));
+      return "/unused/stage";
+    };
+    await svc.runUpdateInBackground("sysop-stage-lost", "1.0.0", stagingLock, "1.2.0");
+    assert.deepEqual(outcomes, ["failed", "failed"]);
+    assert.equal(stagingClient.ended, 1);
+
+    // Also fence the exit-flush delay after a pending marker has been written.
+    const exitClient = new ClientStub();
+    const exitLock = await svc.acquireLock(() => exitClient as unknown as PgClient);
+    let cleared = 0;
+    svc.clearPendingMarker = async () => { cleared += 1; };
+    exitClient.emit("end");
+    svc.scheduleProcessExit("test lost lock", exitLock, "sysop-exit-lost");
+    const deadline = Date.now() + 3000;
+    while (!exitClient.ended && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(exitClient.ended, 1, "cancel instead of exiting after loss during flush delay");
+    assert.equal(cleared, 1);
+    assert.deepEqual(outcomes, ["failed", "failed", "failed"]);
+  } finally {
+    if (previousUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousUrl;
+  }
+}
+
 async function main() {
+  await assertLockConnectionLoss();
   await assertUpdateRequestSafety();
   await assertRejectedManifestBodyCleanup();
   // 3) Disabled environment (no releases/state dir) refuses mutating operations.
