@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Client as PgClient } from "pg";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { BadRequestException } from "@nestjs/common";
@@ -272,7 +272,41 @@ async function assertLockConnectionLoss() {
   }
 }
 
+async function assertPromotionMarkerFailClosed() {
+  const dir = mkdtempSync(path.join(tmpdir(), "chordv-marker-"));
+  try {
+    const service = withSystemEnv({
+      CHORDV_SYSTEM_STATE_DIR: dir, CHORDV_SYSTEM_RELEASES_DIR: path.join(dir, "releases"),
+      CHORDV_SYSTEM_VERSION: "1.0.0"
+    }, buildService);
+    const svc = service as unknown as {
+      readPromotingMarker(): Promise<unknown>;
+      acquireLock(): Promise<never>;
+    };
+    let acquired = 0;
+    svc.acquireLock = async () => { acquired += 1; throw new Error("unexpected lock acquisition"); };
+    const file = path.join(dir, "promoting.json");
+    assert.equal(await svc.readPromotingMarker(), null, "only missing marker is no promotion");
+    for (const raw of ["{", "null", "false", "[]", "{}", '{"version":"1.2.0"}']) {
+      writeFileSync(file, raw);
+      await assert.rejects(() => service.startUpdate(null, null, "1.2.0"), /提升状态损坏/);
+      await assert.rejects(() => service.startRollback(null, null, "0.9.0"), /提升状态损坏/);
+      await assert.rejects(() => service.startRestart(null, null), /提升状态损坏/);
+    }
+    rmSync(file);
+    mkdirSync(file); // deterministic EISDIR even when test runs as root
+    await assert.rejects(() => service.startRestart(null, null), /无法读取系统提升状态/);
+    rmSync(file, { recursive: true });
+    writeFileSync(file, JSON.stringify({ version: "1.2.0", operationId: "sysop-valid", kind: "update" }));
+    await assert.rejects(() => service.startRestart(null, null), /已有系统更新正在提升/);
+    assert.equal(acquired, 0, "unreadable or malformed state never reaches advisory-lock acquisition");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
+  await assertPromotionMarkerFailClosed();
   await assertLockConnectionLoss();
   await assertUpdateRequestSafety();
   await assertRejectedManifestBodyCleanup();

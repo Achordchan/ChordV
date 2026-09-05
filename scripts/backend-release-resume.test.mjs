@@ -9,7 +9,7 @@ import { compareSemver, guardStableBytes, inspectStable, downloadVerifiedRelease
 
 const options = {
   repository: 'example/chordv', version: '1.2.3', tag: 'backend-v1.2.3',
-  sha: 'a'.repeat(40), prerelease: false, resume: true, signingKey: '',
+  sha: 'a'.repeat(40), prerelease: false, resume: true, signingKey: '', signingExpected: false,
 };
 const base = '/repos/example/chordv';
 const releasePath = `${base}/releases/tags/backend-v1.2.3`;
@@ -41,6 +41,7 @@ function fixture(signed = false) {
   const assets = [...files].map(([name, bytes], index) => ({ id: index + 1, name, state: 'uploaded', size: bytes.length }));
   const routes = new Map([
     [releasePath, release], [refPath, ref], [`${base}/releases/42/assets?per_page=100`, assets],
+    [`${base}/git/ref/heads/backend-manifest`, null],
     ...assets.map((asset) => [`${base}/releases/assets/${asset.id}`, files.get(asset.name)]),
   ]);
   const calls = [];
@@ -186,7 +187,7 @@ test('validate dispatch input and encode semver tag API paths', async () => {
   }
   const calls = [];
   await planRelease({ ...options, tag: 'backend-v1.2.3+build.1', resume: false }, async (path) => { calls.push(path); return null; });
-  assert.ok(calls.every((path) => path.endsWith('backend-v1.2.3%2Bbuild.1')));
+  assert.ok(calls.slice(0, 2).every((path) => path.endsWith('backend-v1.2.3%2Bbuild.1')));
 });
 
 test('full SemVer precedence includes prereleases, metadata and arbitrary-length integers', () => {
@@ -228,11 +229,88 @@ test('stable guard permits upgrades and exact retry only; never lowers or change
   assert.throws(() => guardStableBytes(options, incoming, changed), /identical/);
   const signed = atVersion('1.2.3', true);
   assert.equal(guardStableBytes(options, signed, new Map(signed)), 'unchanged');
-  assert.throws(() => guardStableBytes(options, incoming, signed), /identical/);
+  assert.throws(() => guardStableBytes(options, incoming, signed), /refusing unsigned/);
   assert.throws(() => guardStableBytes(options, signed, incoming), /identical/);
   const malformed = new Map([['manifest.json', Buffer.from('{"version":"0.0.1"}')]]);
   assert.throws(() => guardStableBytes(options, incoming, malformed));
   assert.throws(() => guardStableBytes(options, incoming, atVersion('1.2.3-01')));
+});
+
+function withStable(f, files) {
+  const sha = 'd'.repeat(40);
+  f.routes.set(`${base}/git/ref/heads/backend-manifest`, { ref: 'refs/heads/backend-manifest', object: { type: 'commit', sha } });
+  for (const [name, path] of [['manifest.json', 'latest.json'], ['manifest.json.sig', 'latest.json.sig']]) {
+    const bytes = files.get(name);
+    f.routes.set(`${base}/contents/${path}?ref=${sha}`, bytes ? { type: 'file', encoding: 'base64', size: bytes.length, content: bytes.toString('base64') } : null);
+  }
+  return f;
+}
+
+test('prepare rejects removed signing secret before build or creation, including resume/prerelease', async () => {
+  const f = withStable(fixture(), atVersion('1.2.2', true));
+  f.routes.set(releasePath, null);
+  f.routes.set(refPath, null);
+  const fresh = { ...options, resume: false };
+  await assert.rejects(planRelease(fresh, f.api), /refusing unsigned/);
+  await assert.rejects(planRelease({ ...fresh, prerelease: true }, f.api), /refusing unsigned/);
+  assert.equal(await planRelease({ ...fresh, signingExpected: true }, f.api), 'build');
+  // The second prepare call just before gh release create must reject removal too.
+  await assert.rejects(planRelease(fresh, f.api), /refusing unsigned/);
+  f.routes.set(releasePath, f.release);
+  f.routes.set(refPath, f.ref);
+  await assert.rejects(planRelease(options, f.api), /refusing unsigned/);
+  assert.equal(await planRelease({ ...options, signingExpected: true }, f.api), 'resume');
+});
+
+test('unsigned first release and unsigned-to-signed progression remain allowed', async () => {
+  const f = fixture();
+  f.routes.set(releasePath, null);
+  f.routes.set(refPath, null);
+  assert.equal(await planRelease({ ...options, resume: false }, f.api), 'build');
+  assert.deepEqual(await inspectStable(options, atVersion('1.2.3'), f.api), { mode: 'publish', sha: '' });
+  withStable(f, atVersion('1.2.2'));
+  assert.equal(await planRelease({ ...options, resume: false }, f.api), 'build');
+  assert.equal((await inspectStable(options, atVersion('1.2.3', true), f.api)).mode, 'publish');
+});
+
+test('stable recheck rejects a signed-to-unsigned upgrade even after prepare passed', async () => {
+  const f = withStable(fixture(), atVersion('1.2.2'));
+  f.routes.set(releasePath, null);
+  f.routes.set(refPath, null);
+  assert.equal(await planRelease({ ...options, resume: false }, f.api), 'build');
+  withStable(f, atVersion('1.2.2', true));
+  await assert.rejects(inspectStable(options, atVersion('1.2.3'), f.api), /refusing unsigned/);
+  assert.equal((await inspectStable(options, atVersion('1.2.3', true), f.api)).mode, 'publish');
+});
+
+test('prepare signing-policy lookup fails closed on signature HTTP errors and corrupt feed', async () => {
+  const f = withStable(fixture(), atVersion('1.2.2', true));
+  f.routes.set(releasePath, null);
+  f.routes.set(refPath, null);
+  for (const status of [401, 403, 429, 500]) {
+    const api = githubClient('fixture', async (url) => {
+      const path = new URL(url).pathname + new URL(url).search;
+      if (path.includes('/contents/latest.json.sig')) return new Response(null, { status });
+      const result = await f.api(path);
+      return result === null ? new Response(null, { status: 404 }) : new Response(JSON.stringify(result));
+    });
+    await assert.rejects(planRelease({ ...options, resume: false }, api), /HTTP/);
+  }
+  withStable(f, new Map([['manifest.json', Buffer.from('{"version":"1.2.2"}')]]));
+  await assert.rejects(planRelease({ ...options, resume: false }, f.api));
+});
+
+test('workflow passes only signing presence and checks it before immutable creation', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/release-backend.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /SIGNING_EXPECTED: \$\{\{ secrets.CHORDV_MANIFEST_SIGNING_KEY != '' \}\}/);
+  const creation = workflow.split('      - name: Create GitHub Release')[1].split('      - name: Download')[0];
+  assert.ok(creation.indexOf('backend-release-resume.mjs prepare') < creation.indexOf('gh release create "$TAG"'));
+  assert.doesNotMatch(creation, /SIGNING_KEY:/);
+  const preparation = workflow.split('      - name: Select fresh build')[1].split('      - name: Test release')[0];
+  assert.doesNotMatch(preparation, /SIGNING_KEY:/);
+  const parsed = releaseOptions({ VERSION: '1.2.3', GITHUB_SHA: options.sha, GITHUB_REPOSITORY: options.repository, PRERELEASE: 'false', RESUME_EXISTING: 'false', SIGNING_EXPECTED: 'true' });
+  assert.equal(parsed.signingExpected, true);
+  assert.equal(parsed.signingKey, '');
 });
 
 test('stable API reads an immutable commit and rejects absent/corrupt content and all server errors', async () => {
@@ -276,9 +354,9 @@ test('stable branch publication retries exact bytes without inherited Git identi
     const git = (...args) => execFileSync('git', args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     git('init', '--bare', '-q', remote);
     const localScript = script.replace('"https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"', '"$TEST_REMOTE"');
-    // Two signed attempts model failure after push; an unsigned new version also
-    // proves the orphan publication cannot retain a stale signature.
-    for (const signed of [true, true, false]) {
+    // Exercise an unsigned first publication, then signed publications/retries.
+    // The signing-continuity guard forbids returning to unsigned after this.
+    for (const signed of [false, true, true]) {
       const f = fixture(signed);
       const cwd = await mkdtemp(join(root, 'attempt-'));
       await mkdir(join(cwd, 'published-release'));

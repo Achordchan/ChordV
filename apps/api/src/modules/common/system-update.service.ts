@@ -22,6 +22,7 @@ import type {
   SystemUpdateStartResultDto
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
+import { assertPrismaSchemaCompatible } from "./prisma-schema-probe";
 import { DownloadMirrorService } from "./download-mirror.service";
 import {
   buildExternalReleaseArtifactProbeUrl,
@@ -172,11 +173,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Promotion readiness gate. Proves not just DB connectivity but that the schema
-   * the RUNNING release expects is actually present — a release that boots HTTP but
-   * is missing a migration (new table/column) must fail this so the supervisor rolls
-   * it back instead of marking it last-good. Throws a GENERIC error (details only in
-   * logs) since this endpoint is unauthenticated and must not leak internal specifics.
+   * Promotion readiness gate: connectivity, bundled migration history, and the
+   * RUNNING release's mapped tables/scalar columns must all be readable. This is a
+   * structural gate, not a proof of data types, writes, or business semantics.
+   * Throws a GENERIC error (details only in logs) since this endpoint is
+   * unauthenticated and must not leak internal specifics.
    */
   async assertReady(): Promise<void> {
     try {
@@ -197,6 +198,14 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
     if (pending.length > 0) {
       this.logger.warn(`Readiness: ${pending.length} unapplied migration(s): ${pending.join(", ")}`);
+      throw new ServiceUnavailableException("service not ready");
+    }
+    // Migration history alone cannot prove fallback compatibility: a newer release
+    // may have renamed/dropped a column expected by this release's generated client.
+    try {
+      await assertPrismaSchemaCompatible(this.prisma);
+    } catch (error) {
+      this.logger.warn(`Readiness: Prisma schema probe failed: ${this.describeError(error)}`);
       throw new ServiceUnavailableException("service not ready");
     }
   }
@@ -946,10 +955,27 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private async readPromotingMarker(): Promise<{ version?: string; operationId?: string; kind?: string } | null> {
     const file = this.promotingMarkerPath();
     if (!file) return null;
+    let raw: string;
     try {
-      return JSON.parse(await fs.readFile(file, "utf8"));
-    } catch {
-      return null;
+      raw = await fs.readFile(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      this.logger.warn(`Cannot read promotion marker: ${this.describeError(error)}`);
+      throw new ServiceUnavailableException("无法读取系统提升状态，已拒绝新操作，请检查状态卷。");
+    }
+    try {
+      const marker: unknown = JSON.parse(raw);
+      if (!marker || typeof marker !== "object" || Array.isArray(marker)) throw new Error("Invalid marker object");
+      const record = marker as Record<string, unknown>;
+      if (typeof record.version !== "string" || !record.version.trim() ||
+          typeof record.operationId !== "string" || !record.operationId.trim() ||
+          !["update", "rollback", "restart"].includes(String(record.kind))) {
+        throw new Error("Incomplete promotion marker");
+      }
+      return { version: record.version, operationId: record.operationId, kind: String(record.kind) };
+    } catch (error) {
+      this.logger.warn(`Invalid promotion marker: ${this.describeError(error)}`);
+      throw new ServiceUnavailableException("系统提升状态损坏，已拒绝新操作，请检查状态卷。");
     }
   }
 

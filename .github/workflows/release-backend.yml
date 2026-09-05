@@ -46,6 +46,8 @@ jobs:
     env:
       PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
       RESUME_EXISTING: ${{ github.event.inputs.resume_existing || 'false' }}
+      # Guard before building/creating without exposing the private key to those steps.
+      SIGNING_EXPECTED: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY != '' }}
     defaults:
       run:
         shell: bash

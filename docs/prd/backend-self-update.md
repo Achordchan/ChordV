@@ -16,6 +16,8 @@
 
 **第18轮补充：迁移失败后的恢复边界。** 自动/手动回滚落地跳过 `migrate deploy`，但仍须通过 readiness 与稳定期；部分 DDL 可能使旧代码也无法健康上线，代码回滚不等于数据库恢复。回滚终态确认后，普通应用/容器重启仍会按启动流程运行迁移；未处理的 Prisma 失败迁移记录可能再次触发 P3009。管理员应在再次重启或更新前检查失败迁移并按迁移前快照恢复/人工修复，不能把代码回滚视为迁移历史已修复。快照默认从 DATABASE_URL 移除 Prisma 专属参数；使用连接池或需独立直连时可配置 `CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL`（应指向同一数据库）。
 
+**第20轮补充：真实结构探测。** readiness 除连接和迁移历史外，通过当前发布生成的 Prisma DMMF 对全部模型的 scalar/enum 列执行映射感知、只读 `SELECT … LIMIT 0`，即使空表也会拒绝被新版迁移删除/改名的旧版所需表列。探测不读取业务记录，错误对外统一为503。此探测只证明表/列可选择，不证明类型、写约束、枚举值或全部业务语义兼容，破坏性迁移仍需人工恢复方案。
+
 **第19轮补充：无可用回滚版本时停止推进。** 提升失败且 last-good 缺失、不可用或与候选相同，监督者保留带 `failureVersion` 的 `promoting.json` 作为持久启动禁令，记录失败后退出非零。容器重启仍会遵守禁令，不把失败候选当普通启动、也不绕过快照门控。修复快照依赖本身不会自动重新执行原失败操作。此异常需离线恢复：停止容器，检查/修复数据库和快照原因，按修复后的版本及迁移要求准备带新 operationId 的 pending 操作，再移除旧 promoting 禁令后启动；保留旧失败结果供审计。不得仅删除禁令便直接启动原候选。
 
 **第19轮补充：排空后再交接。** 自更新/回滚/重启不再固定等待 600ms 直接退出，而是停止新 HTTP/定时工作、完成只读 SSE、等待请求体和实际处理器及已登记后台任务结束，再执行 Nest 关闭钩子。排空默认 12 分钟，可用 `CHORDV_API_DRAIN_TIMEOUT_MS` 配置，最高 30 分钟；关闭钩子另限 30 秒。pending 标记仅在上述步骤成功且专属 PG 锁仍有效后写入。超时、信号取消、钩子失败或锁丢失不强制退出、不自动恢复接单，失败结果通过独立持久化标记记录（写入失败单独记录错误），需人工检查。此机制为单进程显式工作登记；后续新增脱离请求的工作必须接入 work-lifecycle，不能防护外部 SIGKILL/OOM。
@@ -163,6 +165,8 @@ flowchart LR
 - 每次发布前手动（或用一个小校验脚本）把 `SYSTEM_VERSION` 加一，CI 里做一致性检查（参考桌面端已有的 `apps/desktop/scripts/check-version-consistency.mjs` 思路）。
 
 ### 5.1 发布失败后的显式恢复边界
+
+签名连续性：已有稳定源包含 `latest.json.sig` 后，缺少 `CHORDV_MANIFEST_SIGNING_KEY` 的新发布（含预发布）会在构建前及不可变 Release 创建前拒绝；稳定清单发布时再次按实际签名文件检查，禁止已签名源退回无签名。首次发布且此前无签名源时仍允许无签名直连模式。
 
 使用 `.github/workflows/release-backend.yml` 发布后台版本。正常新版本保持 `resume_existing=false`；如果 GitHub Release 已完整发布，但 `backend-manifest` 稳定清单发布失败，可重新手动触发，选择**原发布提交**（`github.sha` 必须与 `backend-v<version>` 标签最终指向的提交完全相同），填写相同 `version`、相同 `prerelease`，并设置 `resume_existing=true`。默认输入为 false 的失败任务直接 Re-run 不会自动开启恢复。
 

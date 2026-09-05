@@ -14,6 +14,7 @@ export function releaseOptions(env = process.env) {
   assert.match(env.GITHUB_REPOSITORY ?? '', /^[\w.-]+\/[\w.-]+$/, 'Invalid repository');
   assert.ok(['true', 'false'].includes(env.PRERELEASE), 'Invalid PRERELEASE');
   assert.ok(['true', 'false'].includes(env.RESUME_EXISTING), 'Invalid RESUME_EXISTING');
+  assert.ok(env.SIGNING_EXPECTED === undefined || ['true', 'false'].includes(env.SIGNING_EXPECTED), 'Invalid SIGNING_EXPECTED');
   return {
     version: env.VERSION,
     tag: `backend-v${env.VERSION}`,
@@ -22,6 +23,7 @@ export function releaseOptions(env = process.env) {
     prerelease: env.PRERELEASE === 'true',
     resume: env.RESUME_EXISTING === 'true',
     signingKey: env.SIGNING_KEY || '',
+    signingExpected: env.SIGNING_EXPECTED === 'true',
   };
 }
 
@@ -75,6 +77,10 @@ export async function inspectRelease(options, api) {
 
 export async function planRelease(options, api) {
   const release = await inspectRelease(options, api);
+  const { current } = await readStable(options, api);
+  // Runs both before the build and immediately before immutable release creation.
+  // Only key presence enters prepare; never hand the private key to build steps.
+  guardSigningContinuity(Boolean(options.signingExpected), current);
   if (!release) {
     assert.ok(!options.resume, 'No release exists to resume; disable resume_existing for a fresh build');
     return 'build';
@@ -173,7 +179,12 @@ export function compareSemver(left, right) {
   return 0; // Build metadata has no SemVer precedence.
 }
 
+export function guardSigningContinuity(willSign, current) {
+  assert.ok(!current?.has('manifest.json.sig') || willSign, 'Stable feed is signed; refusing unsigned release/publication. Restore the signing secret.');
+}
+
 export function guardStableBytes(options, incoming, current) {
+  guardSigningContinuity(incoming.has('manifest.json.sig'), current);
   const next = JSON.parse(incoming.get('manifest.json').toString('utf8'));
   assert.equal(next.version, options.version, 'Incoming stable version mismatch');
   compareSemver(next.version, next.version);
@@ -198,10 +209,10 @@ export function guardStableBytes(options, incoming, current) {
   return 'publish';
 }
 
-export async function inspectStable(options, incoming, api) {
+export async function readStable(options, api) {
   const base = `/repos/${options.repository}`;
   const ref = await api(`${base}/git/ref/heads/backend-manifest`, { optional: true });
-  if (ref === null) return { mode: guardStableBytes(options, incoming, null), sha: '' };
+  if (ref === null) return { current: null, sha: '' };
   assert.equal(ref.ref, 'refs/heads/backend-manifest', 'Invalid stable ref');
   assert.equal(ref.object?.type, 'commit', 'Invalid stable ref type');
   assert.match(ref.object.sha ?? '', shaPattern, 'Invalid stable commit SHA');
@@ -220,6 +231,14 @@ export async function inspectStable(options, incoming, api) {
     assert.ok(bytes.length > 0 && bytes.length === file.size, 'Stable content size mismatch');
     current.set(name, bytes);
   }
+  // Reuse structural/SemVer validation even when called before any build exists.
+  const version = JSON.parse(current.get('manifest.json').toString('utf8')).version;
+  guardStableBytes({ ...options, version }, current, current);
+  return { current, sha };
+}
+
+export async function inspectStable(options, incoming, api) {
+  const { current, sha } = await readStable(options, api);
   return { mode: guardStableBytes(options, incoming, current), sha };
 }
 
