@@ -69,6 +69,12 @@ jobs:
           if [[ ! "$version" =~ $semver ]]; then
             echo "Invalid version (must be strict SemVer): ${RAW_VERSION}" >&2; exit 1
           fi
+          # Match MAX_VERSION_LENGTH in apps/api/src/modules/common/release-center.utils.ts:
+          # the version is embedded verbatim in artifact filenames and release-directory
+          # names, so anything longer can exceed the 255-byte filename limit downstream.
+          if (( ${#version} > 64 )); then
+            echo "Invalid version (longer than 64 characters): ${RAW_VERSION}" >&2; exit 1
+          fi
           file_version="$(tr -d ' \t\r\n' < SYSTEM_VERSION)"
           if [[ "$version" != "$file_version" ]]; then
             echo "Version input ($version) does not match SYSTEM_VERSION ($file_version). Bump SYSTEM_VERSION first." >&2

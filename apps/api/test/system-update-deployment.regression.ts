@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveSystemUpdateRuntimeConfig } from "../src/modules/common/system-update.constants";
+import { MAX_VERSION_LENGTH } from "../src/modules/common/release-center.utils";
 
 const root = path.resolve(__dirname, "../../..");
 const deploy = "deploy/1panel/chordv";
@@ -55,6 +56,23 @@ assert.doesNotMatch(admin, /^      - .*api-(?:state|backups)(?::|\/)/m);
 
 for (const proxy of ["admin.nginx.conf", "openresty.v.baymaxgroup.com.conf"]) {
   assert.match(read(`${deploy}/${proxy}`), /^        proxy_buffering off;$/m, `${proxy} must stream SSE without buffering`);
+}
+
+// The version-length bound must stay identical across the updater, the release
+// workflow and the resume script: the version is embedded verbatim in artifact
+// filenames and release-directory names, so any drift reintroduces the
+// ENAMETOOLONG window on one of the paths.
+{
+  const workflow = read(".github/workflows/release-backend.yml");
+  const workflowLimit = workflow.match(/\(\( \$\{#version\} > (\d+) \)\)/)?.[1];
+  assert.ok(workflowLimit, "release workflow must bound the dispatched version length");
+  assert.equal(Number(workflowLimit), MAX_VERSION_LENGTH, "workflow version limit must match the updater bound");
+  assert.ok(workflow.includes("MAX_VERSION_LENGTH"), "workflow length check must cite the updater constant");
+  const resume = read("scripts/backend-release-resume.mjs");
+  const resumeLimit = resume.match(/^const maxVersionLength = (\d+);$/m)?.[1];
+  assert.ok(resumeLimit, "release resume script must bound the version length");
+  assert.equal(Number(resumeLimit), MAX_VERSION_LENGTH, "resume script version limit must match the updater bound");
+  assert.ok(resume.includes("MAX_VERSION_LENGTH"), "resume script length bound must cite the updater constant");
 }
 
 const supervisor = read(`${deploy}/entrypoint.sh`);

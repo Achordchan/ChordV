@@ -22,6 +22,12 @@ import { RELEASE_ARTIFACT_MAX_UPLOAD_BYTES } from "./upload-limits";
 const RELEASE_ARTIFACT_DOWNLOAD_PREFIX = "/api/downloads/releases";
 const STRICT_SEMVER_PATTERN =
   /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+// SemVer itself has no length limit, but accepted versions are embedded verbatim in
+// filesystem names (releases/<version>, .staging-<version>-<ts>, pre-migrate-<version>-<op>…),
+// so an over-long numeric segment would push a path component past Linux's 255-byte
+// NAME_MAX and fail the update with ENAMETOOLONG. Keep in sync with the identical
+// bound in .github/workflows/release-backend.yml and scripts/backend-release-resume.mjs.
+export const MAX_VERSION_LENGTH = 64;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
 const DEFAULT_MAX_WINDOWS_FULL_UPDATE_ZIP_ENTRY_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAX_ZIP_VALIDATION_ENTRIES = 10_000;
@@ -103,6 +109,22 @@ export function normalizeVersion(value: string) {
   }
   if (!STRICT_SEMVER_PATTERN.test(normalized)) {
     throw new BadRequestException("版本号必须使用 SemVer 格式，例如 1.2.3 或 1.2.3-beta.1。");
+  }
+  return normalized;
+}
+
+// Acceptance boundary for versions that get embedded verbatim in filesystem names
+// (releases/<version>, .staging-<version>-<ts>, pre-migrate-<version>-<op> snapshots,
+// chordv-backend-<version>.tar.gz). The pure comparator keeps accepting
+// arbitrary-length numeric segments (in-memory BigInt math is safe); this bound is
+// what stops an over-long version before it can exceed the 255-byte NAME_MAX and
+// fail release assembly or a mid-update rename with ENAMETOOLONG. Keep in sync with
+// the identical bound in .github/workflows/release-backend.yml and
+// scripts/backend-release-resume.mjs.
+export function normalizeAcceptedVersion(value: string) {
+  const normalized = normalizeVersion(value);
+  if (normalized.length > MAX_VERSION_LENGTH) {
+    throw new BadRequestException(`版本号长度不能超过 ${MAX_VERSION_LENGTH} 个字符。`);
   }
   return normalized;
 }

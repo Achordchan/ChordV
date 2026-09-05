@@ -30,7 +30,7 @@ import {
   compareSemver,
   createId,
   downloadExternalReleaseArtifactFile,
-  normalizeVersion
+  normalizeAcceptedVersion
 } from "./release-center.utils";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
 import {
@@ -329,7 +329,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     // re-fetch inside the background task could otherwise pick up a NEWER release
     // published between the UI check and the confirm, silently installing unreviewed
     // changes. Normalized so "v1.2.0" and "1.2.0" compare equal.
-    const expected = expectedVersion && expectedVersion.trim() ? normalizeVersion(expectedVersion) : null;
+    const expected = expectedVersion && expectedVersion.trim() ? normalizeAcceptedVersion(expectedVersion) : null;
     // Validation must finish before acquiring the dedicated advisory-lock connection.
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
@@ -650,7 +650,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException("没有可回滚的历史版本。");
     }
     if (targetVersion && targetVersion.trim()) {
-      const normalized = normalizeVersion(targetVersion);
+      const normalized = normalizeAcceptedVersion(targetVersion);
       const match = available.find((item) => item.version === normalized);
       if (!match) {
         throw new BadRequestException(`版本 v${normalized} 不在可回滚列表中。`);
@@ -761,7 +761,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private assertCanonicalManifestVersion(version: string): void {
-    if (normalizeVersion(version) !== version) {
+    if (normalizeAcceptedVersion(version) !== version) {
       throw new BadRequestException("签名清单版本必须使用规范 SemVer 格式。");
     }
     const prerelease = /^[^-]+-(.*)/.exec(version.split("+")[0])?.[1];
@@ -906,7 +906,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeManifest(raw: RawManifest): NormalizedRelease {
-    const version = typeof raw.version === "string" ? normalizeVersion(raw.version) : "";
+    const version = typeof raw.version === "string" ? normalizeAcceptedVersion(raw.version) : "";
     if (!version) {
       throw new BadRequestException("更新清单缺少有效的 version 字段。");
     }

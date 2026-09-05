@@ -6,9 +6,14 @@ import { pathToFileURL } from 'node:url';
 
 const shaPattern = /^[a-f0-9]{40}$/;
 const semverPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?(\+([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?$/;
+// Keep in sync with MAX_VERSION_LENGTH in apps/api/src/modules/common/release-center.utils.ts:
+// the version lands verbatim in artifact filenames and release-directory names, so an
+// over-long segment can exceed the 255-byte filename limit during release assembly.
+const maxVersionLength = 64;
 
 export function releaseOptions(env = process.env) {
   assert.match(env.VERSION ?? '', semverPattern, 'Invalid VERSION');
+  assert.ok(env.VERSION.length <= maxVersionLength, `Invalid VERSION (longer than ${maxVersionLength} characters)`);
   compareSemver(env.VERSION, env.VERSION); // Enforce numeric prerelease rules before creating any release.
   assert.match(env.GITHUB_SHA ?? '', shaPattern, 'Invalid GITHUB_SHA');
   assert.match(env.GITHUB_REPOSITORY ?? '', /^[\w.-]+\/[\w.-]+$/, 'Invalid repository');
@@ -189,6 +194,7 @@ function validateStableManifest(options, manifest) {
   // for monotonic upgrade checks, but newly published incoming bytes require it.
   assert.ok(manifest.channel === undefined || manifest.channel === 'stable', 'Invalid stable channel');
   // Fail closed on malformed existing feed, not just an unreadable version.
+  assert.ok(typeof manifest.version === 'string' && manifest.version.length <= maxVersionLength, 'Invalid stable version length');
   assert.equal(manifest.tag, `backend-v${manifest.version}`, 'Invalid stable tag');
   assert.equal(manifest.htmlUrl, `https://github.com/${options.repository}/releases/tag/${manifest.tag}`, 'Invalid stable release URL');
   assert.equal(manifest.artifact?.url, `https://github.com/${options.repository}/releases/download/${manifest.tag}/chordv-backend-${manifest.version}.tar.gz`, 'Invalid stable artifact URL');

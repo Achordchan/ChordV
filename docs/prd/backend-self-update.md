@@ -195,6 +195,7 @@ flowchart LR
 - 构建产物压缩包时把这个版本号写入产物内的一个元信息文件（比如 `RELEASE_META.json`），`chordv-api` 启动时读出来，暴露在 `GET /api/admin/system/version`。
 - GitHub Release 的 tag 用 `backend-v0.0.1` 这种带前缀的命名，跟桌面端现有的裸 `v1.1.7` 区分开，避免同一个仓库两条 release 序列互相打架。
 - 每次发布前手动（或用一个小校验脚本）把 `SYSTEM_VERSION` 加一，CI 里做一致性检查（参考桌面端已有的 `apps/desktop/scripts/check-version-consistency.mjs` 思路）。
+- 版本号在规范 SemVer 之上强制文件系统安全长度上限 **64 字符**（`MAX_VERSION_LENGTH`）：版本号会原样进入 `releases/<version>` 目录、`.staging-<version>-<时间戳>` 暂存目录、`pre-migrate-<version>-<操作ID>` 快照文件及 `chordv-backend-<version>.tar.gz` 产物名，超长数字段会越过 Linux 255 字节文件名上限、让发布装配或更新中途以 `ENAMETOOLONG` 失败。发布工作流（dispatch 输入）、`backend-release-resume.mjs`（dispatch 环境变量与既有稳定清单）与更新器准入函数 `normalizeAcceptedVersion`（清单版本、阈值写入与回读、确认版本、回滚目标）三处执行同一上限；部署回归测试断言三处数值一致，防止漂移。纯比较器 `normalizeVersion` / `parseSemver` / `compareSemver` 保持无长度上限——任意长数字段的内存 BigInt 比较是安全的既有契约，桌面发布版本（仅存数据库、不进入文件路径）亦不受影响。既有稳定清单若携带超长版本（仅可能来自加上限前的旧发布），恢复/发布按失败关闭处理，需人工修复更新源。
 
 ### 5.1 发布失败后的显式恢复边界
 

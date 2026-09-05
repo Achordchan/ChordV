@@ -401,12 +401,23 @@ async function main() {
           const service = buildService();
           const svc = service as unknown as { enforceSignedManifestFloor: (v: string) => Promise<void> };
           const floorFile = path.join(stateDir, "manifest-floor-version");
-          const invalidIncoming = ["1.2.3-01", "1.2.3-rc.01", "v1.2.3", "1.2.3 "];
+          // Filesystem-safe length bound: pattern-valid SemVer whose total length exceeds
+          // MAX_VERSION_LENGTH must be refused — the version is embedded verbatim in
+          // releases/<version> and snapshot filenames, so an over-long one would fail
+          // mid-update with ENAMETOOLONG instead of being rejected at the boundary.
+          const overlongVersions = [
+            `1.2.3-${"a".repeat(62)}`,
+            `1.${"2".repeat(64)}.3`,
+            `1.2.3+${"b".repeat(64)}`
+          ];
+          const invalidIncoming = ["1.2.3-01", "1.2.3-rc.01", "v1.2.3", "1.2.3 ", ...overlongVersions];
           for (const version of invalidIncoming) {
             await assert.rejects(() => svc.enforceSignedManifestFloor(version), BadRequestException);
             await assert.rejects(fsPromises.access(floorFile), { code: "ENOENT" }, "invalid first version cannot create a floor");
           }
-          for (const version of ["1.2.0-0", "1.2.0-rc.0", "1.2.0-rc.0+build.01"]) {
+          // A version of exactly MAX_VERSION_LENGTH (64) characters stays acceptable —
+          // the bound must not over-reject, and 1.1.9-prerelease still precedes 1.2.0.
+          for (const version of [`1.1.9-${"a".repeat(58)}`, "1.2.0-0", "1.2.0-rc.0", "1.2.0-rc.0+build.01"]) {
             await svc.enforceSignedManifestFloor(version);
             await svc.enforceSignedManifestFloor(version);
           }
@@ -430,7 +441,7 @@ async function main() {
           // Re-serving the current highest version is allowed (== floor, no downgrade).
           await svc.enforceSignedManifestFloor("1.3.0");
           assert.equal(readFileSync(floorFile, "utf8").trim(), "1.3.0");
-          for (const damaged of ["", "\n", "garbage", "01.2.3", "1.2.3-01", "v1.3.0"]) {
+          for (const damaged of ["", "\n", "garbage", "01.2.3", "1.2.3-01", "v1.3.0", ...overlongVersions]) {
             writeFileSync(floorFile, damaged);
             await assert.rejects(() => svc.enforceSignedManifestFloor("1.2.0"), /阈值损坏/);
             assert.equal(readFileSync(floorFile, "utf8"), damaged, "reject without overwriting damaged state");

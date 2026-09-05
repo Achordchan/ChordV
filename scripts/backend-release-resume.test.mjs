@@ -182,7 +182,18 @@ test('reject missing, duplicate, unexpected, pending and truncated downloads', a
 test('validate dispatch input and encode semver tag API paths', async () => {
   const env = { VERSION: '1.2.3', GITHUB_SHA: options.sha, GITHUB_REPOSITORY: options.repository, PRERELEASE: 'false', RESUME_EXISTING: 'true' };
   assert.deepEqual(releaseOptions(env), options);
-  for (const change of [{ VERSION: '../evil' }, { VERSION: '1.2.3-01' }, { GITHUB_SHA: 'main' }, { RESUME_EXISTING: '' }, { PRERELEASE: 'yes' }]) {
+  for (const change of [
+    { VERSION: '../evil' },
+    { VERSION: '1.2.3-01' },
+    // Filesystem-safe length bound (maxVersionLength): the version lands verbatim in
+    // artifact filenames and release-directory names, so over-long pattern-valid
+    // SemVer must be refused at dispatch instead of failing assembly with ENAMETOOLONG.
+    { VERSION: `1.2.3-${'a'.repeat(62)}` },
+    { VERSION: `1.${'2'.repeat(64)}.3` },
+    { GITHUB_SHA: 'main' },
+    { RESUME_EXISTING: '' },
+    { PRERELEASE: 'yes' }
+  ]) {
     assert.throws(() => releaseOptions({ ...env, ...change }));
   }
   const calls = [];
@@ -234,6 +245,10 @@ test('stable guard permits upgrades and exact retry only; never lowers or change
   const malformed = new Map([['manifest.json', Buffer.from('{"version":"0.0.1"}')]]);
   assert.throws(() => guardStableBytes(options, incoming, malformed));
   assert.throws(() => guardStableBytes(options, incoming, atVersion('1.2.3-01')));
+  // An existing stable feed carrying an over-long version (only publishable by a
+  // pre-bound workflow run) must fail closed rather than feed the updater a version
+  // that cannot exist as a filesystem name downstream.
+  assert.throws(() => guardStableBytes(options, incoming, atVersion(`1.2.2-${'a'.repeat(62)}`)), /Invalid stable version length/);
 });
 
 function withStable(f, files) {
