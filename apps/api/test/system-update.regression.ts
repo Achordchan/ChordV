@@ -305,8 +305,53 @@ async function assertPromotionMarkerFailClosed() {
   }
 }
 
+async function assertMirrorFallbacks() {
+  const svc = buildService() as unknown as {
+    fetchManifestText(url: string, mirror: string | null, requireHttps: boolean, fetchUrl: typeof fetchPublicHttpUrl): Promise<string>;
+  };
+  const origin = "https://example.com/latest.json";
+  for (const direct of [false, true]) {
+    const calls: string[] = [];
+    const fetcher = (async (url: string) => {
+      calls.push(url);
+      const healthy = direct ? url === origin : url.startsWith("https://second.example/");
+      if (!healthy) throw new Error("unreachable");
+      return { response: new Response("verified-by-caller"), resolvedUrl: url };
+    }) as unknown as typeof fetchPublicHttpUrl;
+    const mirrors = "https://first.example/\nhttps://second.example/ , https://first.example/";
+    assert.equal(await svc.fetchManifestText(origin, mirrors, false, fetcher), "verified-by-caller");
+    assert.deepEqual(calls, ["https://first.example/" + origin, "https://second.example/" + origin, ...(direct ? [origin] : [])]);
+  }
+  const calls: string[] = [];
+  await svc.fetchManifestText(origin, null, true, (async (url: string, _init: unknown, options: { requireHttps: boolean }) => {
+    calls.push(url); assert.equal(options.requireHttps, true);
+    return { response: new Response("direct"), resolvedUrl: url };
+  }) as unknown as typeof fetchPublicHttpUrl);
+  assert.deepEqual(calls, [origin], "unsigned mode keeps direct-only transport");
+}
+
+async function assertReadinessWorkingDirectories() {
+  const previous = process.cwd();
+  const root = path.resolve(__dirname, "../../..");
+  const isolated = mkdtempSync(path.join(tmpdir(), "chordv-readiness-cwd-"));
+  try {
+    const names = await fsPromises.readdir(path.join(root, "apps/api/prisma/migrations"), { withFileTypes: true });
+    const applied = names.filter(entry => entry.isDirectory()).map(entry => ({ migration_name: entry.name }));
+    for (const cwd of [root, path.join(root, "apps/api"), isolated]) {
+      process.chdir(cwd);
+      const prisma = { $queryRawUnsafe: async () => applied, $queryRaw: async () => [] };
+      const service = new SystemUpdateService(prisma as never, {} as never);
+      const internal = service as unknown as { resolveRunningReleaseDir(): Promise<string>; checkReadiness(): Promise<void> };
+      assert.equal(await internal.resolveRunningReleaseDir(), root);
+      await internal.checkReadiness();
+    }
+  } finally { process.chdir(previous); rmSync(isolated, { recursive: true, force: true }); }
+}
+
 async function main() {
   await assertPromotionMarkerFailClosed();
+  await assertMirrorFallbacks();
+  await assertReadinessWorkingDirectories();
   await assertLockConnectionLoss();
   await assertUpdateRequestSafety();
   await assertRejectedManifestBodyCleanup();

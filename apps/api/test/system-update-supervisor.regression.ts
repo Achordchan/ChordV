@@ -310,7 +310,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number, message: (
 }
 
 /** Fail actual atomic renames until the test releases them, without restarting the app. */
-async function runFinalizationRetryScenario(fault: "result" | "last-good" | "remove", resumeLanding = false) {
+async function runFinalizationRetryScenario(fault: "result" | "last-good" | "remove" | "public", resumeLanding = false, crashAfterPublicFailure = false) {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-retry-"));
   const stateDir = path.join(root, "state");
@@ -319,6 +319,7 @@ async function runFinalizationRetryScenario(fault: "result" | "last-good" | "rem
   mkdirSync(binDir);
   const version = resumeLanding ? "0.0.1" : "0.0.2";
   const release = writeRelease(root, version, "good", port);
+  if (fault === "public") writeRelease(root, "0.0.1", "good", port);
   const launchFile = path.join(root, "launches");
   const appFile = path.join(release, APP_ENTRY);
   writeFileSync(appFile,
@@ -355,7 +356,7 @@ exec /bin/rm "$@"
   const env = {
     ...process.env,
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-    CHORDV_TEST_FAULT_TARGET: fault === "remove" ? markerFile : fault === "result" ? resultFile : path.join(stateDir, "last-good-version"),
+    CHORDV_TEST_FAULT_TARGET: fault === "public" ? path.join(root, "public-state", "last-good-version") : fault === "remove" ? markerFile : fault === "result" ? resultFile : path.join(stateDir, "last-good-version"),
     CHORDV_TEST_BLOCKER: blocker,
     CHORDV_TEST_ATTEMPTS: attemptsFile,
     CHORDV_SYSTEM_NODE_BIN: process.execPath,
@@ -369,7 +370,7 @@ exec /bin/rm "$@"
     CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
-  const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+  let child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
   try {
@@ -384,7 +385,22 @@ exec /bin/rm "$@"
     const launches = readFileSync(launchFile, "utf8");
     assert.equal(launches.trim().split("\n").length, 1, "persistence retries must not restart the app");
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/health/ready`)).status, 200, "app must serve during retries");
+    if (fault === "public") {
+      assert.equal(readFileSync(path.join(stateDir, "last-good-version.previous"), "utf8"), "0.0.1");
+    }
     rmSync(blocker);
+    if (crashAfterPublicFailure) {
+      process.kill(-child.pid!, "SIGKILL");
+      await new Promise(resolve => child.once("exit", resolve));
+      writeFileSync(appFile, "process.exit(1);");
+      child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+      child.stderr?.on("data", chunk => { stderr += chunk; });
+      const recovered = await waitForResult(resultFile, 15_000);
+      assert.equal(recovered?.status, "rolledback", stderr);
+      assert.equal(recovered.version, "0.0.1", "restart must retain actual previous good target");
+      assert.equal(readFileSync(path.join(root, "public-state", "last-good-version"), "utf8"), "0.0.1");
+      return;
+    }
     const result = await waitForResult(resultFile, 15_000);
     assert.ok(result, `${fault} persistence did not recover without an app restart.\n${stderr}`);
     assert.equal(result.operationId, opId, "retry must finalize the original operation");
@@ -948,6 +964,8 @@ async function main() {
   await runFinalizationRetryScenario("last-good");
   await runFinalizationRetryScenario("remove");
   await runFinalizationRetryScenario("remove", true);
+  await runFinalizationRetryScenario("public");
+  await runFinalizationRetryScenario("public", false, true);
 
   const automatic = await runRollbackScenario("good", false, true);
   assert.equal(automatic.result?.status, "rolledback", automatic.stderr);

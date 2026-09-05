@@ -326,6 +326,17 @@ write_last_good() {
   # later failed update would have no valid rollback target and could strand the
   # service on a broken release.
   local version="$1" tmp="$LAST_GOOD_FILE.tmp.$$" public_tmp="$PUBLIC_STATE_DIR/.last-good-version.tmp.$$"
+  # Preserve the previous private target DURABLY before changing it. Public marker
+  # publication is a separate filesystem operation and may fail across a restart.
+  # Repeated attempts for the same candidate must not overwrite this predecessor.
+  local previous previous_tmp="$LAST_GOOD_FILE.previous.tmp.$$"
+  previous="$( [ -f "$LAST_GOOD_FILE" ] && tr -d ' \t\r\n' < "$LAST_GOOD_FILE" )"
+  if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
+    if [ -d "$LAST_GOOD_FILE.previous" ] || ! printf '%s' "$previous" > "$previous_tmp" || ! mv -f "$previous_tmp" "$LAST_GOOD_FILE.previous"; then
+      rm -f "$previous_tmp" 2>/dev/null; return 1
+    fi
+    sync || return 1
+  fi
   if [ -d "$LAST_GOOD_FILE" ] || ! printf '%s' "$version" > "$tmp" || ! mv -f "$tmp" "$LAST_GOOD_FILE"; then
     rm -f "$tmp" 2>/dev/null
     return 1
@@ -534,6 +545,11 @@ handle_failed_promotion() {
   fi
   if [ "$GEN_PROMOTION" = "1" ]; then
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
+    if [ "$LG" = "$GEN_VERSION" ]; then
+      LG="$(read_file_trim "$LAST_GOOD_FILE.previous")"
+    fi
+    # A failed rollback landing must never bounce back to the original bad candidate.
+    [ "$LG" != "${GEN_ROLLBACK_FROM:-}" ] || LG=""
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
       log "auto-rolling back $GEN_VERSION -> $LG (op ${GEN_OP:-none}): $reason"
       # Do NOT write the terminal 'rolledback' result here: last-good has not been

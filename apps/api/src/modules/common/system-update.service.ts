@@ -24,7 +24,7 @@ import type {
 } from "@chordv/shared";
 import { PrismaService } from "./prisma.service";
 import { assertPrismaSchemaCompatible } from "./prisma-schema-probe";
-import { DownloadMirrorService } from "./download-mirror.service";
+import { DownloadMirrorService, normalizeMirrorPrefixList } from "./download-mirror.service";
 import {
   buildExternalReleaseArtifactProbeUrl,
   compareSemver,
@@ -208,12 +208,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Readiness: database connectivity failed: ${this.describeError(error)}`);
       throw new ServiceUnavailableException("service not ready");
     }
-    // Schema compatibility: every migration bundled with the running release must be
-    // applied. The app runs with cwd = the release dir, so its own migrations live
-    // under cwd/apps/api/prisma/migrations (same relative path in local dev).
+    // Resolve this running module's API package, independent of the launch cwd.
+    // Do not fall back to another release's migration tree when metadata is missing.
     let pending: string[];
     try {
-      pending = await this.detectPendingMigrations(process.cwd());
+      pending = await this.detectPendingMigrations(await this.resolveRunningReleaseDir());
     } catch (error) {
       this.logger.warn(`Readiness: schema check failed: ${this.describeError(error)}`);
       throw new ServiceUnavailableException("service not ready");
@@ -533,6 +532,21 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async resolveRunningReleaseDir(): Promise<string> {
+    let directory = __dirname;
+    while (true) {
+      try {
+        const manifest = JSON.parse(await fs.readFile(path.join(directory, "package.json"), "utf8"));
+        if (manifest.name === "@chordv/api") return path.resolve(directory, "../..");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) throw new ServiceUnavailableException("无法定位当前 API 发布目录。");
+      directory = parent;
+    }
+  }
+
   private async detectPendingMigrations(releaseDir: string): Promise<string[]> {
     const migrationsDir = path.join(releaseDir, "apps/api/prisma/migrations");
     let names: string[];
@@ -800,14 +814,12 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     requireHttps = false,
     fetchUrl = fetchPublicHttpUrl
   ): Promise<string> {
-    // mirror === null means direct-only; otherwise try the mirror then fall back
-    // to direct (for availability only — authenticity is enforced by the caller).
-    const candidates: string[] = [];
-    if (mirror) {
-      const proxied = buildExternalReleaseArtifactProbeUrl(manifestUrl, mirror);
-      if (proxied !== manifestUrl) candidates.push(proxied);
-    }
-    candidates.push(manifestUrl);
+    // Preserve configured order, try every mirror once, then the direct origin.
+    // Unsigned callers pass null and remain HTTPS/direct-only.
+    const prefixes = normalizeMirrorPrefixList(mirror)?.split("\n") ?? [];
+    const candidates = [...new Set([
+      ...prefixes.map(prefix => buildExternalReleaseArtifactProbeUrl(manifestUrl, prefix)), manifestUrl
+    ])];
 
     let lastError: unknown = null;
     for (const candidate of candidates) {

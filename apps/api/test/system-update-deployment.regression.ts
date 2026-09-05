@@ -89,12 +89,21 @@ try {
   assert.notEqual(publish(path.join(temp, "missing-parent", "last-good-version")).status, 0);
   assert.equal(existsSync(publicState), false, "private commit failure must not publish a version");
   writeFileSync(publicState, "blocked mountpoint");
+  writeFileSync(lastGood, "1.2.2");
   assert.notEqual(publish().status, 0, "public mkdir failure must block finalization");
+  assert.equal(readFileSync(`${lastGood}.previous`, "utf8"), "1.2.2", "retain rollback target before replacing private pointer");
+  assert.notEqual(publish().status, 0);
+  assert.equal(readFileSync(`${lastGood}.previous`, "utf8"), "1.2.2", "publication retries must not replace predecessor with candidate");
   rmSync(publicState);
   // mv without a directory guard would silently move the marker inside the target.
   mkdirSync(path.join(publicState, "last-good-version", "nonempty"), { recursive: true });
   const blockedRename = publish();
   assert.notEqual(blockedRename.status, 0, "public marker must not report success for a directory destination");
+  rmSync(`${lastGood}.previous`);
+  mkdirSync(`${lastGood}.previous`);
+  writeFileSync(lastGood, "1.2.2");
+  assert.notEqual(publish().status, 0, "predecessor persistence failure must stop before replacing the old pointer");
+  assert.equal(readFileSync(lastGood, "utf8"), "1.2.2");
 
   // Package actual allowlisted build inputs in an isolated workspace. Runtime sentinel
   // directories and a private .env must not enter the bundle; never inspect live data.
