@@ -61,20 +61,39 @@ async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
-async function main() {
+type ResultMarker = { operationId?: string; status?: string; version?: string; migrationApplied?: boolean };
+
+async function waitForResult(file: string, timeoutMs: number): Promise<ResultMarker | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(file)) {
+      try {
+        return JSON.parse(readFileSync(file, "utf8")) as ResultMarker;
+      } catch {
+        // mid-write; retry
+      }
+    }
+    await sleep(250);
+  }
+  return null;
+}
+
+/**
+ * Boot the supervisor with an in-flight promotion of a crash-on-start release
+ * (0.0.2) over a last-good release (0.0.1) whose health is parameterized, and
+ * return the terminal result the supervisor records for the operation.
+ */
+async function runRollbackScenario(lastGoodKind: "good" | "bad") {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-"));
   const stateDir = path.join(root, "state");
   mkdirSync(stateDir, { recursive: true });
 
-  // last-good = 0.0.1 (healthy). A promotion of 0.0.2 (crashes on start) is in
-  // flight: promoting.json makes the supervisor resume it as a health-gated
-  // promotion that can roll back, exactly as after a mid-promotion restart.
-  writeRelease(root, "0.0.1", "good", port);
+  writeRelease(root, "0.0.1", lastGoodKind, port);
   writeRelease(root, "0.0.2", "bad", port);
   writeFileSync(path.join(stateDir, "last-good-version"), "0.0.1");
   writeFileSync(path.join(stateDir, "desired-version"), "0.0.2");
-  const opId = "sysop-rollback-test";
+  const opId = `sysop-rollback-${lastGoodKind}`;
   writeFileSync(
     path.join(stateDir, "promoting.json"),
     JSON.stringify({ version: "0.0.2", operationId: opId, kind: "update", migrationApplied: false })
@@ -88,7 +107,9 @@ async function main() {
     CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
     CHORDV_API_PORT: String(port),
     CHORDV_SUPERVISOR_MIGRATE: "false",
-    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "20",
+    // Keep the bad releases' health gate short so the (fast) crash path dominates and
+    // the "last-good also fails" scenario doesn't sit out a long timeout per attempt.
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
 
@@ -98,68 +119,35 @@ async function main() {
     stderr += String(chunk);
   });
 
-  const resultFile = path.join(stateDir, `operation-result.${opId}.json`);
-  const deadline = Date.now() + 45_000;
-  let resultRaw: string | null = null;
   try {
-    while (Date.now() < deadline) {
-      if (existsSync(resultFile)) {
-        resultRaw = readFileSync(resultFile, "utf8");
-        break;
-      }
-      await sleep(250);
-    }
-
-    assert.ok(resultRaw, `supervisor did not record a rollback result within timeout.\nsupervisor stderr:\n${stderr}`);
-    const result = JSON.parse(resultRaw) as {
-      operationId?: string;
-      status?: string;
-      version?: string;
-      migrationApplied?: boolean;
-    };
-    assert.equal(result.operationId, opId, "result must be keyed to the failed operation");
-    assert.equal(result.status, "rolledback", "a health-gate failure must be recorded as a rollback");
-    assert.equal(result.version, "0.0.1", "rollback must land on the last-good version");
-    assert.equal(result.migrationApplied, false, "migrationApplied must be carried from the promoting marker");
-
-    // desired-version + current symlink must point at the last-good version, not
-    // the broken release — otherwise a restart would relaunch the crash-looper.
-    const settleDeadline = Date.now() + 15_000;
-    let desired = "";
-    while (Date.now() < settleDeadline) {
-      desired = readFileSync(path.join(stateDir, "desired-version"), "utf8").trim();
-      if (desired === "0.0.1") break;
-      await sleep(200);
-    }
-    assert.equal(desired, "0.0.1", "desired-version must be rolled back to last-good");
-
-    const currentTarget = path.basename(readlinkSync(path.join(root, "current")));
-    assert.equal(currentTarget, "0.0.1", "current symlink must point at the last-good release");
-
-    // The failed 'update' release is discarded so it is never offered as a rollback
-    // target; the last-good release must survive.
-    assert.equal(existsSync(path.join(root, "releases", "0.0.2")), false, "failed update release must be discarded");
-    assert.ok(existsSync(path.join(root, "releases", "0.0.1")), "last-good release must survive");
-
-    // The rolled-back good version must actually be serving (the supervisor relaunched
-    // it and it passed the readiness gate) — proof the rollback restored service.
+    const result = await waitForResult(path.join(stateDir, `operation-result.${opId}.json`), 60_000);
+    const desired = existsSync(path.join(stateDir, "desired-version"))
+      ? readFileSync(path.join(stateDir, "desired-version"), "utf8").trim()
+      : "";
     let served = false;
-    const serveDeadline = Date.now() + 15_000;
-    while (Date.now() < serveDeadline) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/health/ready`);
-        if (res.status === 200) {
-          served = true;
-          break;
+    if (lastGoodKind === "good") {
+      const serveDeadline = Date.now() + 15_000;
+      while (Date.now() < serveDeadline) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/api/health/ready`);
+          if (res.status === 200) {
+            served = true;
+            break;
+          }
+        } catch {
+          // not up yet
         }
-      } catch {
-        // not up yet
+        await sleep(300);
       }
-      await sleep(300);
     }
-    assert.ok(served, `rolled-back good version must be serving.\nsupervisor stderr:\n${stderr}`);
+    const currentTarget = existsSync(path.join(root, "current"))
+      ? path.basename(readlinkSync(path.join(root, "current")))
+      : "";
+    const badDiscarded = !existsSync(path.join(root, "releases", "0.0.2"));
+    const lastGoodExists = existsSync(path.join(root, "releases", "0.0.1"));
+    return { result, desired, served, currentTarget, badDiscarded, lastGoodExists, opId, stderr };
   } finally {
-    // Kill the whole supervisor process group (supervisor + relaunched app that
+    // Kill the whole supervisor process group (supervisor + any relaunched app that
     // holds the port) so the test frees the port and leaves nothing behind.
     try {
       if (typeof child.pid === "number") process.kill(-child.pid, "SIGKILL");
@@ -167,6 +155,42 @@ async function main() {
       // already gone
     }
     rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function main() {
+  // Scenario A: last-good is healthy → the promotion of the broken release is
+  // auto-rolled-back, and the terminal 'rolledback' result is recorded ONLY after
+  // last-good itself is serving (deferred finalization). This is the feature's
+  // central failure mode; a regression here would leave the audit or the running
+  // symlink on the broken release.
+  {
+    const s = await runRollbackScenario("good");
+    assert.ok(s.result, `supervisor did not record a result within timeout.\nsupervisor stderr:\n${s.stderr}`);
+    assert.equal(s.result.operationId, s.opId, "result must be keyed to the failed operation");
+    assert.equal(s.result.status, "rolledback", "a health-gate failure must be recorded as a rollback");
+    assert.equal(s.result.version, "0.0.1", "rollback must land on the last-good version");
+    assert.equal(s.result.migrationApplied, false, "migrationApplied must be carried from the promoting marker");
+    assert.equal(s.desired, "0.0.1", "desired-version must be rolled back to last-good");
+    assert.equal(s.currentTarget, "0.0.1", "current symlink must point at the last-good release");
+    assert.equal(s.badDiscarded, true, "failed update release must be discarded");
+    assert.equal(s.lastGoodExists, true, "last-good release must survive");
+    assert.ok(s.served, `rolled-back good version must actually be serving.\nsupervisor stderr:\n${s.stderr}`);
+  }
+
+  // Scenario B: last-good ALSO fails to come up. The rollback did NOT restore service,
+  // so the outcome must be 'failed' — NEVER 'rolledback'. This is the exact defect the
+  // deferred-finalization fix addresses: a premature 'rolledback' written before the
+  // fallback was health-checked would wrongly claim success.
+  {
+    const s = await runRollbackScenario("bad");
+    assert.ok(s.result, `supervisor did not record a result within timeout.\nsupervisor stderr:\n${s.stderr}`);
+    assert.equal(s.result.operationId, s.opId, "result must be keyed to the operation");
+    assert.equal(
+      s.result.status,
+      "failed",
+      `a rollback whose fallback also failed must be 'failed', not 'rolledback' (got '${s.result.status}').\nsupervisor stderr:\n${s.stderr}`
+    );
   }
 }
 

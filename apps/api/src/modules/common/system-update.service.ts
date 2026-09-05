@@ -678,11 +678,25 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       }
       return normalized;
     }
-    const previous = available.find((item) => !item.isCurrent);
-    if (!previous) {
-      throw new BadRequestException("没有可回滚的历史版本。");
+    // No explicit target: a rollback must go to an OLDER release. The list is sorted
+    // descending, so the first entry strictly below the current version is the newest
+    // release beneath it. Never default to a higher retained version — that is the one
+    // we most likely just rolled FORWARD from, so "rolling back" to it would re-apply
+    // the release the operator is trying to escape. A non-semver dir name can't be
+    // proven older, so it is excluded from the implicit default (still selectable by
+    // explicit version).
+    const older = available.filter((item) => {
+      if (item.isCurrent) return false;
+      try {
+        return compareSemver(item.version, currentVersion) < 0;
+      } catch {
+        return false;
+      }
+    });
+    if (older.length === 0) {
+      throw new BadRequestException("没有比当前版本更旧的可回滚版本，请指定明确的目标版本。");
     }
-    return previous.version;
+    return older[0].version;
   }
 
   private async fetchManifestRelease(manifestUrl: string): Promise<NormalizedRelease> {

@@ -72,10 +72,28 @@ json_get() {
 }
 
 atomic_promote() {
-  # Flip CURRENT_LINK to releases/<version> atomically and persist desired-version.
+  # Flip CURRENT_LINK to releases/<version> and DURABLY persist desired-version.
+  # Returns non-zero if EITHER the symlink flip or the desired-version write fails
+  # (read-only / full state volume, I/O error). Callers MUST NOT launch/approve a
+  # version whose promotion state could not be recorded: otherwise the admin
+  # container (which follows the same symlink) could keep serving the old bundle
+  # while the API is approved as new, or a later restart could relaunch an
+  # inconsistent target. `ln -sfn` replaces the existing link in place (‑n so it does
+  # not dereference the old symlink-to-dir); desired-version is written tmp+mv+sync so
+  # a crash mid-write can't leave it empty/half-written (which boots to the seed).
   local version="$1"
-  ln -sfn "$RELEASES_DIR/$version" "$CURRENT_LINK"
-  printf '%s' "$version" > "$DESIRED_FILE"
+  if ! ln -sfn "$RELEASES_DIR/$version" "$CURRENT_LINK"; then
+    log "ERROR: cannot flip current symlink to $version (state volume read-only/full?)"
+    return 1
+  fi
+  local dtmp="$DESIRED_FILE.tmp.$$"
+  if ! printf '%s' "$version" > "$dtmp" || ! mv -f "$dtmp" "$DESIRED_FILE"; then
+    rm -f "$dtmp" 2>/dev/null
+    log "ERROR: cannot persist desired-version for $version (state volume read-only/full?)"
+    return 1
+  fi
+  sync 2>/dev/null || true
+  return 0
 }
 
 write_result() {
@@ -102,16 +120,20 @@ write_result() {
 }
 
 write_promoting() {
-  # write_promoting <version> <operationId> <kind> [migrationApplied] — returns
-  # non-zero if the marker could not be durably written (e.g. full state volume).
-  # Callers MUST NOT delete pending.json or promote unless this succeeds, or a
-  # mid-gate restart would treat the target as an ordinary trusted start and skip
-  # the automatic rollback. migrationApplied is carried so a later rollback can
-  # report whether the schema was migrated.
+  # write_promoting <version> <operationId> <kind> [migrationApplied] [rollbackFrom]
+  # Returns non-zero if the marker could not be durably written (e.g. full state
+  # volume). Callers MUST NOT delete pending.json or promote unless this succeeds, or
+  # a mid-gate restart would treat the target as an ordinary trusted start and skip
+  # the automatic rollback. migrationApplied is carried so a later rollback can report
+  # whether the schema was migrated. kind=rollback + rollbackFrom mark a health-gated
+  # rollback LANDING (last-good re-promoted), so the terminal 'rolledback' result is
+  # written only after last-good itself stabilizes — and survives a mid-gate restart.
   mkdir -p "$STATE_DIR" || return 1
   local migrated="${4:-false}"
+  local rollback_from="${5:-}"
   local tmp="$PROMOTING_FILE.tmp.$$"
-  if ! printf '{"version":"%s","operationId":"%s","kind":"%s","migrationApplied":%s}\n' "$1" "$2" "$3" "$migrated" > "$tmp"; then
+  if ! printf '{"version":"%s","operationId":"%s","kind":"%s","migrationApplied":%s,"rollbackFrom":"%s"}\n' \
+      "$1" "$2" "$3" "$migrated" "$rollback_from" > "$tmp"; then
     rm -f "$tmp" 2>/dev/null; return 1
   fi
   [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
@@ -247,15 +269,21 @@ handle_failed_promotion() {
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
       log "auto-rolling back $GEN_VERSION -> $LG (op ${GEN_OP:-none}): $reason"
-      [ -n "$GEN_OP" ] && { write_result "$GEN_OP" "rolledback" "$LG" "$reason" "$MIG" || log "WARN: rollback result not persisted; reconcile will finalize"; }
-      # Durably switch current + desired to last-good BEFORE clearing the promoting
-      # marker. If we stop in this window otherwise, desired/current still point at
-      # the failed (or now-discarded) version, and a restart would launch it as a
-      # trusted version (crash loop) or fall all the way back to the seed.
-      atomic_promote "$LG"
+      # Do NOT write the terminal 'rolledback' result here: last-good has not been
+      # launched/health-checked yet, and if it fails to come up (e.g. against the
+      # already-migrated DB) reporting a successful rollback would be a lie. Instead,
+      # re-promote last-good as a health-gated promotion carrying the SAME operation,
+      # marked kind=rollback (+ rollbackFrom/reason). The success path finalizes it as
+      # 'rolledback' ONLY after last-good passes readiness + stabilization; if last-good
+      # also fails, the no-fallback branch records it as 'failed'. Persist the promoting
+      # marker (carrying the FAILED version's migrationApplied) BEFORE flipping the
+      # symlink so a crash in the gap resumes the rollback landing, not the broken one.
+      GEN_ROLLBACK_FROM="$GEN_VERSION"; GEN_ROLLBACK_REASON="$reason"
+      write_promoting "$LG" "$GEN_OP" "rollback" "$MIG" "$GEN_VERSION" \
+        || log "WARN: could not persist rollback promoting marker; reconcile will finalize op ${GEN_OP:-none}"
+      atomic_promote "$LG" || log "WARN: could not persist promotion to $LG; retrying in loop"
       discard_failed_release "$GEN_VERSION" "$GEN_KIND"
-      clear_promoting
-      GEN_VERSION="$LG"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+      GEN_VERSION="$LG"; GEN_KIND="rollback"; GEN_PROMOTION=1
       return 0
     fi
     # No fallback: keep retrying the SAME version. Only clear the promoting guard
@@ -272,7 +300,7 @@ handle_failed_promotion() {
   fi
   log "no known-good version to fall back to; retrying $GEN_VERSION in 3s"
   sleep 3
-  GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+  GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
   return 0
 }
 
@@ -324,9 +352,25 @@ elif [ -f "$PENDING_FILE" ]; then
 else
   GEN_VERSION="$(resolve_start_version)"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
 fi
+# Context for a rollback LANDING carried across loop iterations (set by
+# handle_failed_promotion, consumed by the success path). On a mid-gate restart these
+# are empty and the success path recovers rollbackFrom from the promoting marker.
+GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
 
 while true; do
-  atomic_promote "$GEN_VERSION"
+  if ! atomic_promote "$GEN_VERSION"; then
+    if [ "$GEN_PROMOTION" = "1" ]; then
+      # Cannot record the promotion state (read-only/full state volume): do NOT launch
+      # and approve a version whose symlink/desired-version could not be committed —
+      # roll back to a version whose state is already consistent.
+      log "cannot persist promotion state for $GEN_VERSION; rolling back"
+      handle_failed_promotion "无法持久化提升状态（状态卷可能只读或已满），已自动回滚"
+      continue
+    fi
+    # Non-promotion (ordinary restart): the existing symlink most likely already
+    # points at this version, so keep serving rather than take the service down.
+    log "WARN: cannot persist promotion state for $GEN_VERSION; continuing with existing symlink"
+  fi
   RELEASE_DIR="$RELEASES_DIR/$GEN_VERSION"
   # Validate the release is complete BEFORE launching/health-gating: the api entry,
   # and (for the api+admin release unit) the admin bundle. A missing piece on a
@@ -366,20 +410,32 @@ while true; do
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
     SUCC_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$SUCC_MIG" = "true" ] || SUCC_MIG="false"
+    # A rollback LANDING (kind=rollback) finalizes as 'rolledback' — but only now that
+    # last-good has itself passed readiness + stabilization, so we never report a
+    # rollback that failed to restore service. migrationApplied carries the FAILED
+    # update's value (whether the schema was migrated) so the app can still warn.
+    if [ "$GEN_KIND" = "rollback" ]; then
+      RES_STATUS="rolledback"
+      RB_FROM="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
+      RES_REASON="${GEN_ROLLBACK_REASON:-新版本未通过验证，已自动回滚}"
+      [ -n "$RB_FROM" ] && RES_REASON="${RES_REASON}（原版本 ${RB_FROM}）"
+    else
+      RES_STATUS="success"; RES_REASON=""
+    fi
     if [ -n "$GEN_OP" ]; then
-      if write_result "$GEN_OP" "success" "$GEN_VERSION" "" "$SUCC_MIG"; then
+      if write_result "$GEN_OP" "$RES_STATUS" "$GEN_VERSION" "$RES_REASON" "$SUCC_MIG"; then
         clear_promoting
       else
         # Could not durably persist the outcome — keep the promoting marker so a
         # supervisor restart resumes + re-finalizes this (good) version rather than
-        # losing the success. (Version is healthy; safe to re-gate on restart.)
-        log "WARN: could not persist success result; keeping promoting marker for retry"
+        # losing the outcome. (Version is healthy; safe to re-gate on restart.)
+        log "WARN: could not persist ${RES_STATUS} result; keeping promoting marker for retry"
       fi
     else
       clear_promoting
     fi
     log "$GEN_VERSION healthy + stable (last-good)"
-    GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
+    GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
     wait "$APP_PID"; EXIT_CODE=$?
     APP_PID=""
     log "app for $GEN_VERSION exited (code $EXIT_CODE)"
