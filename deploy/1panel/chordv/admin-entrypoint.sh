@@ -55,6 +55,11 @@ point_webroot() {
   # GNU mv -T (bookworm image) renames over the symlink itself, never follows its
   # directory target. Same-directory rename keeps every lookup on old or new dist.
   local tmp="${WEBROOT_LINK}.tmp.$$"
+  # PID 1 is reused after container restart. Remove only a leftover temporary
+  # symlink from an interrupted handoff; never delete an unexpected regular file.
+  if [ -L "$tmp" ] && ! rm -f "$tmp"; then
+    log "ERROR: cannot remove stale temporary webroot link"; return 1
+  fi
   if ! ln -s "$1" "$tmp"; then
     log "ERROR: cannot prepare webroot link"; return 1
   fi
