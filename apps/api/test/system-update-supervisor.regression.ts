@@ -102,7 +102,7 @@ async function waitForResult(file: string, timeoutMs: number): Promise<ResultMar
  * (0.0.2) over a last-good release (0.0.1) whose health is parameterized, and
  * return the terminal result the supervisor records for the operation.
  */
-async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding = false, migrateFails = false) {
+async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding = false, migrateFails = false, hangsOnStop = false) {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-"));
   const stateDir = path.join(root, "state");
@@ -111,6 +111,8 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
   writeRelease(root, "0.0.1", lastGoodKind, port);
   // A resumed landing may already have discarded the original candidate.
   if (!resumeLanding) writeRelease(root, "0.0.2", "bad", port);
+  if (hangsOnStop) writeFileSync(path.join(root, "releases", "0.0.2", APP_ENTRY),
+    "process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");
   writeFileSync(path.join(stateDir, "last-good-version"), "0.0.1");
   writeFileSync(path.join(stateDir, "desired-version"), resumeLanding ? "0.0.1" : "0.0.2");
   const opId = `sysop-rollback-${lastGoodKind}${resumeLanding ? "-resumed" : ""}`;
@@ -133,6 +135,7 @@ async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding =
     ...(migrateFails ? failingMigrationEnv(root, ["0.0.1", "0.0.2"]) : {}),
     // Keep the bad releases' health gate short so the (fast) crash path dominates and
     // the "last-good also fails" scenario doesn't sit out a long timeout per attempt.
+    CHORDV_SYSTEM_FAILED_STOP_TIMEOUT_SECONDS: "1",
     CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
     CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
   };
@@ -883,6 +886,10 @@ async function main() {
   assert.equal(manual.result?.status, "success", manual.stderr);
   assert.equal(manual.result.version, "0.0.1");
   assert.equal(manual.stderr.includes("P3009"), false, "manual rollback must skip migrate deploy");
+  const hung = await runRollbackScenario("good", false, false, true);
+  assert.equal(hung.result?.status, "rolledback", hung.stderr);
+  assert.equal(hung.served, true, "unresponsive candidate must not block healthy fallback");
+  assert.match(hung.stderr, /failed candidate did not stop within 1s/);
   await runTerminalFailureRetryScenario(false);
   await runTerminalFailureRetryScenario(true);
   for (const lastGood of ["missing", "same", "unusable"] as const) await runBlockedSnapshotRecoveryScenario(lastGood);

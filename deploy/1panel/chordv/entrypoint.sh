@@ -48,6 +48,7 @@ API_PORT="${CHORDV_API_PORT:-3000}"
 # and roll back, not become last-good.
 HEALTH_PATH="${CHORDV_SYSTEM_HEALTH_PATH:-/api/health/ready}"
 HEALTH_TIMEOUT="${CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS:-90}"
+FAILED_STOP_TIMEOUT="${CHORDV_SYSTEM_FAILED_STOP_TIMEOUT_SECONDS:-30}"
 NODE_BIN="${CHORDV_SYSTEM_NODE_BIN:-node}"
 
 PENDING_FILE="$STATE_DIR/pending.json"
@@ -371,7 +372,13 @@ run_snapshot() {
     log "ERROR: snapshot database URL not set; cannot snapshot before migrate"
     return 1
   fi
-  mkdir -p "$BACKUP_DIR" || { log "ERROR: cannot create backup dir $BACKUP_DIR"; return 1; }
+  # Reject zero/invalid retention BEFORE creating or reusing a recovery point.
+  if ! [[ "$SNAPSHOT_KEEP" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    log "ERROR: snapshot retention must be an integer between 1 and 999999"; return 1
+  fi
+  if [ -L "$BACKUP_DIR" ] || ! (umask 077; mkdir -p "$BACKUP_DIR") || ! chmod 700 "$BACKUP_DIR"; then
+    log "ERROR: cannot secure backup directory"; return 1
+  fi
   # Reuse a snapshot ONLY when it belongs to THIS SAME operation (keyed by opId), i.e.
   # we are resuming the very same promotion after a crash/re-gate. A later retry of the
   # same VERSION is a different operation (new opId) and MUST take a fresh snapshot, or
@@ -380,10 +387,15 @@ run_snapshot() {
   # leaves a distinct .partial file (below) that never matches this glob, so the resume
   # takes a fresh dump instead of trusting a truncated one.
   local base="pre-migrate-${version}-${op}"
-  if ls "$BACKUP_DIR/$base"-*.sql.gz >/dev/null 2>&1; then
+  local existing
+  for existing in "$BACKUP_DIR/$base"-*.sql.gz; do
+    [ -e "$existing" ] || continue
+    if [ -L "$existing" ] || [ ! -f "$existing" ] || ! chmod 600 "$existing"; then
+      log "ERROR: cannot secure existing snapshot"; return 1
+    fi
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
-  fi
+  done
   local stamp target tmp snapshot_url
   if ! snapshot_url="$(snapshot_database_url)"; then
     log "ERROR: invalid snapshot database URL; cannot snapshot before migrate"
@@ -394,11 +406,11 @@ run_snapshot() {
   # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
   # is only renamed to the final name after gzip integrity is verified and flushed —
   # so a truncated dump from a crash can never be mistaken for a valid recovery point.
-  tmp="$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.$$"
+  tmp="$(umask 077; mktemp "$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.XXXXXX")" || return 1
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  if ! ( set -o pipefail; PGDATABASE="$snapshot_url" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump 2>/dev/null | gzip > "$tmp" ); then
+  if ! ( umask 077; set -o pipefail; PGDATABASE="$snapshot_url" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump 2>/dev/null | gzip > "$tmp" ); then
     log "ERROR: database snapshot failed"
     rm -f "$tmp" 2>/dev/null
     return 1
@@ -540,6 +552,36 @@ handle_failed_promotion() {
   sleep 3
   GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
   return 0
+}
+
+stop_failed_candidate() {
+  # A failed health gate cannot rely on the application's drain eventually exiting.
+  # Keep the existing promotion journal throughout graceful shutdown. Before forced
+  # termination, persist a terminal decision so a supervisor crash cannot approve
+  # this candidate on restart. Only a confirmed process exit permits rollback.
+  local pid="$APP_PID" started="$SECONDS"
+  if ! [[ "$FAILED_STOP_TIMEOUT" =~ ^[1-9][0-9]{0,2}$ ]]; then
+    log "FATAL: failed-candidate shutdown timeout must be 1..999 seconds"; exit 1
+  fi
+  kill -TERM "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ $((SECONDS - started)) -lt "$FAILED_STOP_TIMEOUT" ]; do sleep 1; done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "WARN: failed candidate did not stop within ${FAILED_STOP_TIMEOUT}s"
+    if [ "$GEN_PROMOTION" = "1" ] && ! write_promoting "$GEN_VERSION" "$GEN_OP" "$GEN_KIND" "$GEN_MIG" \
+        "${GEN_ROLLBACK_FROM:-}" "${GEN_ROLLBACK_FROM:-$GEN_VERSION}" "健康检查失败且应用关闭超时，需确认恢复状态"; then
+      log "FATAL: cannot persist shutdown recovery decision; retaining original journal and stopping container"
+      exit 1
+    fi
+    kill -KILL "$pid" 2>/dev/null || true
+    started="$SECONDS"
+    while kill -0 "$pid" 2>/dev/null && [ $((SECONDS - started)) -lt 5 ]; do sleep 1; done
+    if kill -0 "$pid" 2>/dev/null; then
+      log "FATAL: failed candidate still alive after SIGKILL; stopping container without launching fallback"
+      exit 1
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+  APP_PID=""
 }
 
 APP_PID=""
@@ -731,6 +773,6 @@ while true; do
 
   # Failed to come up (never healthy, or crashed during stabilization) → roll back.
   log "$GEN_VERSION failed to become healthy+stable"
-  kill -TERM "$APP_PID" 2>/dev/null; wait "$APP_PID" 2>/dev/null; APP_PID=""
+  stop_failed_candidate
   handle_failed_promotion "新版本健康检查未通过，已自动回滚"
 done
