@@ -7,11 +7,15 @@ import ts from "typescript";
 // checks multi-day operations without waiting days or reproducing the polling code.
 const source = readFileSync(resolve(import.meta.dirname, "../src/features/system-update/SystemUpdateBadge.tsx"), "utf8");
 const tree = ts.createSourceFile("badge.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let callback = "";
+let callback = "", finishCallback = "";
 function visit(node: ts.Node) {
   if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "pollOperation") {
     assert.ok(node.initializer && ts.isCallExpression(node.initializer));
     callback = node.initializer.arguments[0].getText(tree);
+  }
+  if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "finishPolling") {
+    assert.ok(node.initializer && ts.isCallExpression(node.initializer));
+    finishCallback = node.initializer.arguments[0].getText(tree);
   }
   ts.forEachChild(node, visit);
 }
@@ -56,3 +60,28 @@ assert.equal(calls, before); assert.equal(queue.length, 0, "unmount ends trackin
 mounted.current = true; polledOpId.current = "other"; poll("op"); await tick();
 assert.equal(calls, before); assert.equal(queue.length, 0, "superseded operation cannot keep polling");
 console.log("system-update-tracking.regression.ts passed (multi-day status, capped backoff, terminal, unmount, supersession)");
+
+assert.ok(finishCallback);
+const finishCode = ts.transpileModule(`const finish = ${finishCallback};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+function deferred() {
+  let resolve!: (value?: unknown) => void;
+  return { promise: new Promise(done => { resolve = done; }), resolve: (value?: unknown) => resolve(value) };
+}
+for (const status of ["succeeded", "failed", "rolled_back"]) {
+  const runtime = deferred(), check = deferred(), aux = deferred();
+  let phase = "running", busy: string | null = "update", cachedCheck: unknown = { hasUpdate: true };
+  const ref = { current: "op" };
+  const finish = new Function("setActiveOp", "setPhase", "setCheck", "loadRuntime", "runCheck", "loadAux", "notifications", "kindLabel", "mounted", "polledOpId", "setBusy", `${finishCode}; return finish;`)(
+    () => undefined, (value: string) => { phase = value; }, (value: unknown) => { cachedCheck = value; },
+    () => runtime.promise, () => check.promise, () => aux.promise, { show: () => undefined }, () => "更新",
+    { current: true }, ref, (value: string | null) => { busy = value; }
+  );
+  const pending = finish({ status, kind: "update", toVersion: "2.0.0" });
+  const locked = () => { assert.equal(phase, "finishing"); assert.equal(busy, "update"); assert.equal(ref.current, "op"); };
+  locked(); assert.equal(cachedCheck, null, "discard actionable stale release before awaiting refresh");
+  runtime.resolve({ currentVersion: "1.0.0" }); await new Promise(resolve => setImmediate(resolve)); locked();
+  check.resolve(); await new Promise(resolve => setImmediate(resolve)); locked();
+  aux.resolve(); await pending;
+  assert.equal(phase, "done"); assert.equal(busy, null); assert.equal(ref.current, null);
+}
+console.log("finishPolling slow-refresh regressions passed for success, failure and rollback");

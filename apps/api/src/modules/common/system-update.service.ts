@@ -52,6 +52,7 @@ const READINESS_CACHE_TTL_MS = 5_000;
 
 type RawManifest = {
   version?: unknown;
+  channel?: unknown;
   tag?: unknown;
   publishedAt?: unknown;
   changelog?: unknown;
@@ -453,11 +454,6 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       // the schema was changed; the supervisor takes the snapshot only when it is set.
       await lock.assertHeld();
 
-      // Bookkeeping uses Prisma BEFORE draining/closing Nest. No supervisor intent yet.
-      await this.pruneOldReleases(release.version, fromVersion).catch((error) =>
-        this.logger.warn(`Prune old releases failed (non-fatal): ${this.describeError(error)}`)
-      );
-
       // Keep the advisory lock until the process actually exits (see
       // scheduleProcessExit): the DB session closing on exit releases it, which
       // closes the window where a second request could grab the lock before the
@@ -738,7 +734,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       // rejected, not followed.
       manifestText = await this.fetchManifestText(manifestUrl, null, true);
     }
-    const normalized = this.normalizeManifest(JSON.parse(manifestText) as RawManifest);
+    const raw = JSON.parse(manifestText) as RawManifest;
+    if (publicKey && raw.channel !== "stable") {
+      throw new BadRequestException("签名清单未授权稳定发布渠道，已拒绝检查。");
+    }
+    const normalized = this.normalizeManifest(raw);
     if (publicKey) {
       // Freshness ratchet for the signed feed (a signature gives authenticity, not
       // freshness). Only in signed mode: the signature authenticates the version, so
@@ -1342,25 +1342,6 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
           failureReason: "任务在服务重启期间中断，未确认完成。"
         }).catch(() => undefined);
       }
-    }
-  }
-
-  private async pruneOldReleases(nextVersion: string, currentVersion: string) {
-    if (!this.config.releasesDir) return;
-    const keep = this.config.keepReleases;
-    let versions: SystemUpdateRollbackVersionDto[];
-    try {
-      versions = await this.listRollbackVersions();
-    } catch {
-      return;
-    }
-    const protectedVersions = new Set([nextVersion, currentVersion]);
-    const removable = versions
-      .map((item) => item.version)
-      .filter((version) => !protectedVersions.has(version));
-    const toRemove = removable.slice(Math.max(keep - protectedVersions.size, 0));
-    for (const version of toRemove) {
-      await this.removeDirSafe(path.join(this.config.releasesDir, version));
     }
   }
 

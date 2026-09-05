@@ -252,6 +252,8 @@ Compose 已设置上述默认值，因此保留旧 `.env` 且缺少此变量时�
 - **配置了签名公钥**（`CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`，base64 的 DER/SPKI ed25519 公钥）：清单可走加速镜像（保证可用性），但会用该公钥校验随清单发布的分离签名 `manifest.json.sig`，校验不过直接拒绝。**国内 + 镜像部署请用这种模式。**
 - **未配置公钥**：清单只走**直连**拉取（不经镜像），镜像仅用于体积较大的产物下载，其完整性由可信 SHA-256 保证。
 
+签名清单必须包含 `"channel": "stable"`；工作流会为预发布写入 `"channel": "prerelease"`，两者一起参与签名，生产更新入口拒绝预发布或缺少渠道的签名清单。自定义发布源需同步此字段；旧不可变资产不得补写/重签，应发布新版本。
+
 启用签名：本地生成一次密钥对，私钥填到仓库 secret `CHORDV_MANIFEST_SIGNING_KEY`（CI 用它签名），公钥填到实例环境变量 `CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`：
 
 ```bash

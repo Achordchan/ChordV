@@ -33,7 +33,7 @@ import {
 } from "./api";
 
 type BusyKind = "update" | "rollback" | "restart";
-type Phase = "idle" | "running" | "reconnecting" | "done";
+type Phase = "idle" | "running" | "reconnecting" | "finishing" | "done";
 
 const POLL_INTERVAL_MS = 3000;
 // Operation durations are configurable on the supervisor. Only an observed terminal
@@ -152,27 +152,34 @@ export function SystemUpdateBadge() {
 
   const finishPolling = useCallback(
     async (op: SystemUpdateOperationDto) => {
-      polledOpId.current = null;
       setActiveOp(op);
-      setPhase("done");
-      setBusy(null);
-      // Reload runtime FIRST: for a rollback, op.toVersion is deliberately the
-      // release that FAILED (preserved for audit), so the actual landing version
-      // is the refreshed running version, not op.toVersion.
-      const status = await loadRuntime();
-      const landingVersion = status?.currentVersion ?? null;
-      await runCheck(true);
-      await loadAux();
-      if (op.status === "succeeded") {
-        notifications.show({ color: "teal", title: "操作成功", message: `已完成${kindLabel(op.kind)}，当前版本 v${landingVersion ?? op.toVersion ?? ""}。` });
-      } else if (op.status === "rolled_back") {
-        notifications.show({
-          color: "orange",
-          title: "已自动回滚",
-          message: `${kindLabel(op.kind)} v${op.toVersion ?? "?"} 未通过健康检查，已自动回滚到 v${landingVersion ?? "上一版本"}，服务未受影响。${op.migrationApplied ? "注意：本次已执行数据库迁移，代码已回滚但库结构未回退，请人工确认。" : ""}`
-        });
-      } else if (op.status === "failed") {
-        notifications.show({ color: "red", title: "操作失败", message: op.failureReason ?? "未知原因" });
+      setPhase("finishing");
+      setCheck(null);
+      try {
+        // Reload runtime FIRST: for a rollback, op.toVersion is deliberately the
+        // release that FAILED (preserved for audit), so the actual landing version
+        // is the refreshed running version, not op.toVersion.
+        const status = await loadRuntime();
+        const landingVersion = status?.currentVersion ?? null;
+        await runCheck(true);
+        await loadAux();
+        if (op.status === "succeeded") {
+          notifications.show({ color: "teal", title: "操作成功", message: `已完成${kindLabel(op.kind)}，当前版本 v${landingVersion ?? op.toVersion ?? ""}。` });
+        } else if (op.status === "rolled_back") {
+          notifications.show({
+            color: "orange",
+            title: "已自动回滚",
+            message: `${kindLabel(op.kind)} v${op.toVersion ?? "?"} 未通过健康检查，已自动回滚到 v${landingVersion ?? "上一版本"}，服务未受影响。${op.migrationApplied ? "注意：本次已执行数据库迁移，代码已回滚但库结构未回退，请人工确认。" : ""}`
+          });
+        } else if (op.status === "failed") {
+          notifications.show({ color: "red", title: "操作失败", message: op.failureReason ?? "未知原因" });
+        }
+      } finally {
+        if (mounted.current) {
+          polledOpId.current = null;
+          setPhase("done");
+          setBusy(null);
+        }
       }
     },
     [loadAux, loadRuntime, runCheck]
@@ -364,7 +371,9 @@ export function SystemUpdateBadge() {
                 <Group gap="xs" wrap="nowrap">
                   <Loader size="xs" />
                   <Text size="xs">
-                    {phase === "reconnecting"
+                    {phase === "finishing"
+                      ? "正在刷新版本与操作记录…"
+                      : phase === "reconnecting"
                       ? "服务重启中，正在重新连接…请勿关闭页面。"
                       : busy === "restart"
                         ? "正在重启服务…"

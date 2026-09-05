@@ -105,6 +105,7 @@ export function verifyReleaseBytes(options, files) {
   const manifestBytes = files.get('manifest.json');
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
   assert.equal(manifest.version, version, 'Manifest version mismatch');
+  assert.equal(manifest.channel, options.prerelease ? 'prerelease' : 'stable', 'Manifest channel mismatch');
   assert.equal(manifest.tag, tag, 'Manifest tag mismatch');
   assert.equal(manifest.htmlUrl, `https://github.com/${repository}/releases/tag/${tag}`, 'Manifest release URL mismatch');
   assert.equal(typeof manifest.publishedAt, 'string', 'Missing manifest timestamp');
@@ -183,21 +184,30 @@ export function guardSigningContinuity(willSign, current) {
   assert.ok(!current?.has('manifest.json.sig') || willSign, 'Stable feed is signed; refusing unsigned release/publication. Restore the signing secret.');
 }
 
+function validateStableManifest(options, manifest) {
+  // Existing GitHub-hosted feeds may predate the channel claim. They can be read
+  // for monotonic upgrade checks, but newly published incoming bytes require it.
+  assert.ok(manifest.channel === undefined || manifest.channel === 'stable', 'Invalid stable channel');
+  // Fail closed on malformed existing feed, not just an unreadable version.
+  assert.equal(manifest.tag, `backend-v${manifest.version}`, 'Invalid stable tag');
+  assert.equal(manifest.htmlUrl, `https://github.com/${options.repository}/releases/tag/${manifest.tag}`, 'Invalid stable release URL');
+  assert.equal(manifest.artifact?.url, `https://github.com/${options.repository}/releases/download/${manifest.tag}/chordv-backend-${manifest.version}.tar.gz`, 'Invalid stable artifact URL');
+  assert.match(manifest.artifact.sha256 ?? '', /^[a-f0-9]{64}$/, 'Invalid stable checksum');
+  assert.ok(Number.isSafeInteger(manifest.artifact.sizeBytes) && manifest.artifact.sizeBytes > 0, 'Invalid stable size');
+  assert.ok(typeof manifest.publishedAt === 'string' && Number.isFinite(Date.parse(manifest.publishedAt)), 'Invalid stable timestamp');
+  assert.ok(Array.isArray(manifest.changelog) && manifest.changelog.every((line) => typeof line === 'string'), 'Invalid stable changelog');
+  compareSemver(manifest.version, manifest.version);
+}
+
 export function guardStableBytes(options, incoming, current) {
   guardSigningContinuity(incoming.has('manifest.json.sig'), current);
   const next = JSON.parse(incoming.get('manifest.json').toString('utf8'));
   assert.equal(next.version, options.version, 'Incoming stable version mismatch');
+  assert.equal(next.channel, 'stable', 'Incoming manifest must authorize the stable channel');
   compareSemver(next.version, next.version);
   if (!current) return 'publish';
   const previous = JSON.parse(current.get('manifest.json').toString('utf8'));
-  // Fail closed on malformed existing feed, not just an unreadable version.
-  assert.equal(previous.tag, `backend-v${previous.version}`, 'Invalid stable tag');
-  assert.equal(previous.htmlUrl, `https://github.com/${options.repository}/releases/tag/${previous.tag}`, 'Invalid stable release URL');
-  assert.equal(previous.artifact?.url, `https://github.com/${options.repository}/releases/download/${previous.tag}/chordv-backend-${previous.version}.tar.gz`, 'Invalid stable artifact URL');
-  assert.match(previous.artifact.sha256 ?? '', /^[a-f0-9]{64}$/, 'Invalid stable checksum');
-  assert.ok(Number.isSafeInteger(previous.artifact.sizeBytes) && previous.artifact.sizeBytes > 0, 'Invalid stable size');
-  assert.ok(typeof previous.publishedAt === 'string' && Number.isFinite(Date.parse(previous.publishedAt)), 'Invalid stable timestamp');
-  assert.ok(Array.isArray(previous.changelog) && previous.changelog.every((line) => typeof line === 'string'), 'Invalid stable changelog');
+  validateStableManifest(options, previous);
   const order = compareSemver(next.version, previous.version);
   assert.ok(order >= 0, `Stable feed ${previous.version} is newer than ${next.version}; refusing downgrade`);
   if (order === 0) {
@@ -232,8 +242,7 @@ export async function readStable(options, api) {
     current.set(name, bytes);
   }
   // Reuse structural/SemVer validation even when called before any build exists.
-  const version = JSON.parse(current.get('manifest.json').toString('utf8')).version;
-  guardStableBytes({ ...options, version }, current, current);
+  validateStableManifest(options, JSON.parse(current.get('manifest.json').toString('utf8')));
   return { current, sha };
 }
 

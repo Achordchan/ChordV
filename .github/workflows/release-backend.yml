@@ -166,6 +166,7 @@ jobs:
               .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
             const manifest = {
               version: process.env.VERSION,
+              channel: process.env.PRERELEASE === "true" ? "prerelease" : "stable",
               tag: process.env.TAG,
               publishedAt: process.env.PUBLISHED_AT,
               htmlUrl: `https://github.com/${process.env.REPO}/releases/tag/${process.env.TAG}`,

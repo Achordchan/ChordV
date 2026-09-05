@@ -44,7 +44,6 @@ export type SystemUpdateRuntimeConfig = {
   stateDir: string | null;
   backupDir: string | null;
   manifestUrl: string | null;
-  keepReleases: number;
   snapshotKeep: number;
   snapshotBeforeMigrate: boolean;
   healthTimeoutSeconds: number;
@@ -125,7 +124,6 @@ export function resolveSystemUpdateRuntimeConfig(): SystemUpdateRuntimeConfig {
     stateDir,
     backupDir: readEnv("CHORDV_SYSTEM_UPDATE_BACKUP_DIR") ?? "/app/backups",
     manifestUrl: readEnv("CHORDV_SYSTEM_UPDATE_MANIFEST_URL"),
-    keepReleases: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_KEEP_RELEASES", 3),
     snapshotKeep: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP", 5),
     snapshotBeforeMigrate: readSnapshotEnabled(),
     healthTimeoutSeconds: readPositiveIntEnv("CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS", 90),

@@ -22,7 +22,7 @@ function fixture(signed = false) {
   const name = `chordv-backend-${options.version}.tar.gz`;
   const digest = createHash('sha256').update(artifact).digest('hex');
   const manifest = {
-    version: options.version, tag: options.tag,
+    version: options.version, tag: options.tag, channel: 'stable',
     publishedAt: '2026-09-05T10:00:00Z', changelog: ['Original changelog'],
     htmlUrl: `https://github.com/${options.repository}/releases/tag/${options.tag}`,
     artifact: {
@@ -394,4 +394,34 @@ test('workflow gates all mutable build steps, verifies before stable and never u
   assert.ok(workflow.indexOf('backend-release-resume.mjs stable') < workflow.indexOf('- name: Publish manifest to stable raw branch'));
   assert.match(workflow, /permissions:\n  contents: read/);
   assert.match(workflow, /permissions:\n      contents: write/);
+});
+
+
+test('signed assets bind channel to release kind and cannot enter stable as prerelease', () => {
+  const f = fixture(true);
+  mutateManifest(f, manifest => { manifest.channel = 'prerelease'; });
+  f.files.set('manifest.json.sig', Buffer.from(sign(null, f.files.get('manifest.json'), privateKey).toString('base64')));
+  assert.equal(verifyReleaseBytes({ ...options, prerelease: true, signingKey }, f.files), f.files);
+  assert.throws(() => verifyReleaseBytes({ ...options, signingKey }, f.files), /channel mismatch/);
+  assert.throws(() => guardStableBytes(options, f.files, null), /stable channel/);
+  mutateManifest(f, manifest => { manifest.channel = 'stable'; });
+  assert.throws(() => verifyReleaseBytes({ ...options, signingKey }, f.files), /signature mismatch/);
+  const legacy = fixture(); mutateManifest(legacy, manifest => { delete manifest.channel; });
+  assert.throws(() => verifyReleaseBytes(options, legacy.files), /channel mismatch/);
+});
+
+test('workflow generates the channel claim inside the exact signed manifest bytes', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/release-backend.yml', import.meta.url), 'utf8');
+  const step = workflow.split('- name: Generate manifest.json')[1].split('- name: Sign manifest')[0];
+  const code = step.match(/node -e '([\s\S]*?)'\n/)?.[1];
+  assert.ok(code);
+  const root = await mkdtemp(join(tmpdir(), 'backend-channel-test-'));
+  try {
+    for (const prerelease of ['true', 'false']) {
+      execFileSync(process.execPath, ['-e', code], { cwd: root, env: { ...process.env, PRERELEASE: prerelease,
+        VERSION: '1.2.3', TAG: 'backend-v1.2.3', REPO: options.repository, CHANGELOG: '', SHA: 'a'.repeat(64), SIZE: '10',
+        URL: 'https://example.com/package', PUBLISHED_AT: '2026-09-05T00:00:00Z' } });
+      assert.equal(JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8')).channel, prerelease === 'true' ? 'prerelease' : 'stable');
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

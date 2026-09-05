@@ -197,6 +197,29 @@ write_promoting() {
   return 0
 }
 
+prune_releases() {
+  # Only called after this forward update is healthy and approved, while promoting
+  # still fences competing system operations. Reuse the release's SemVer ordering.
+  "$NODE_BIN" - "$RELEASES_DIR" "$GEN_VERSION" "$(read_file_trim "$LAST_GOOD_FILE.previous")" "${CHORDV_SYSTEM_UPDATE_KEEP_RELEASES:-3}" <<'NODE'
+const fs = require("node:fs/promises"), path = require("node:path");
+(async () => {
+  const [root, current, previous, rawKeep] = process.argv.slice(2);
+  if (!/^[1-9][0-9]{0,5}$/.test(rawKeep)) throw new Error("Invalid release retention");
+  const { compareSemver } = require(path.join(root, current, "apps/api/dist/apps/api/src/modules/common/release-center.utils.js"));
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const names = entries.filter(entry => {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) return false;
+    try { compareSemver(entry.name, entry.name); return true; } catch { return false; }
+  }).map(entry => entry.name).sort((a, b) => compareSemver(b, a));
+  const protectedNames = new Set([current, previous].filter(name => names.includes(name)));
+  const removable = names.filter(name => !protectedNames.has(name));
+  for (const name of removable.slice(Math.max(Number(rawKeep) - protectedNames.size, 0))) {
+    await fs.rm(path.join(root, name), { recursive: true });
+  }
+})().catch(error => { console.error(`Release pruning failed: ${error.message}`); process.exitCode = 1; });
+NODE
+}
+
 approve_generation() {
   # Ephemeral authorization for this exact process: a new random token is generated
   # on EVERY launch. Atomic visibility is enough; a lost file after host restart
@@ -797,6 +820,7 @@ while true; do
     FINALIZED=0
     RESULT_OK=0
     APPROVAL_OK=0
+    PRUNE_OK=0
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
@@ -843,6 +867,12 @@ while true; do
           continue
         fi
         APPROVAL_OK=1
+      fi
+      if [ "$PRUNE_OK" != "1" ]; then
+        if [ "$GEN_KIND" = "update" ] && [ "$RES_STATUS" = "success" ]; then
+          prune_releases || log "WARN: historical release pruning failed; keeping remaining history"
+        fi
+        PRUNE_OK=1
       fi
       # A leftover marker fences future operations. Retry its removal before
       # dropping context, without republishing results already consumed by the API.
