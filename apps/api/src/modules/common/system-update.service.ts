@@ -278,14 +278,15 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   ): Promise<SystemUpdateStartResultDto> {
     this.assertOperational();
     await this.assertNoPromotionInFlight();
-    const operationId = createId("sysop");
-    const lock = await this.acquireLock();
     const fromVersion = this.config.currentVersion;
     // Bind the operation to the version the admin actually reviewed/confirmed. A forced
     // re-fetch inside the background task could otherwise pick up a NEWER release
     // published between the UI check and the confirm, silently installing unreviewed
     // changes. Normalized so "v1.2.0" and "1.2.0" compare equal.
     const expected = expectedVersion && expectedVersion.trim() ? normalizeVersion(expectedVersion) : null;
+    // Validation must finish before acquiring the dedicated advisory-lock connection.
+    const operationId = createId("sysop");
+    const lock = await this.acquireLock();
     await this.createOperationGuarded(lock, { operationId, kind: "update", actorLabel, actorUserId, fromVersion, toVersion: expected });
     void this.runUpdateInBackground(operationId, fromVersion, lock, expected);
     return { operationId, accepted: true, message: "更新任务已开始，服务将在完成后自动重启。" };
@@ -366,7 +367,17 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         await lock.release().catch(() => undefined);
         return;
       }
-      const release = this.cache?.release ?? null;
+      // Use this check's release, not mutable shared cache state from another check.
+      const release = check.release;
+      // Validate the confirmed target even if the refreshed feed was withdrawn or
+      // moved back to the current/older version: that is not a successful update.
+      if (expectedVersion && release?.version !== expectedVersion) {
+        await this.finishOperation(operationId, "failed", {
+          failureReason: `确认的版本 v${expectedVersion} 与当前最新版本 ${release ? `v${release.version}` : "（无可用版本）"} 不一致。已取消更新，请重新检查并确认。`
+        });
+        await lock.release().catch(() => undefined);
+        return;
+      }
       if (!check.hasUpdate || !release) {
         await this.finishOperation(operationId, "succeeded", {
           toVersion: fromVersion,
@@ -375,19 +386,14 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         await lock.release().catch(() => undefined);
         return;
       }
-      // Refuse to silently install a DIFFERENT version than the admin confirmed. If a
-      // newer release was published between the UI check and this forced re-fetch, the
-      // operator has not reviewed it — abort and let them re-check + re-confirm.
-      if (expectedVersion && release.version !== expectedVersion) {
-        await this.finishOperation(operationId, "failed", {
-          failureReason: `确认的版本 v${expectedVersion} 与当前最新版本 v${release.version} 不一致（可能在此期间发布了新版本）。已取消更新，请重新检查并确认。`
-        });
-        await lock.release().catch(() => undefined);
-        return;
-      }
       await this.markRunning(operationId, release.version);
 
-      const releaseDir = await this.downloadAndExtractRelease(release);
+      if (!release.downloadUrl || !release.sha256) {
+        throw new BadRequestException("更新清单缺少下载地址或 SHA-256，已取消更新。");
+      }
+      const releaseDir = await this.downloadAndExtractRelease({
+        ...release, downloadUrl: release.downloadUrl, sha256: release.sha256
+      });
       const pendingMigrations = await this.detectPendingMigrations(releaseDir);
       const willMigrate = pendingMigrations.length > 0;
       if (willMigrate) {
@@ -755,7 +761,12 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async fetchManifestText(manifestUrl: string, mirror: string | null, requireHttps = false): Promise<string> {
+  private async fetchManifestText(
+    manifestUrl: string,
+    mirror: string | null,
+    requireHttps = false,
+    fetchUrl = fetchPublicHttpUrl
+  ): Promise<string> {
     // mirror === null means direct-only; otherwise try the mirror then fall back
     // to direct (for availability only — authenticity is enforced by the caller).
     const candidates: string[] = [];
@@ -771,12 +782,16 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       const timer = setTimeout(() => controller.abort(), MANIFEST_FETCH_TIMEOUT_MS);
       timer.unref?.();
       try {
-        const { response } = await fetchPublicHttpUrl(
+        const { response } = await fetchUrl(
           candidate,
           { method: "GET", signal: controller.signal, headers: { "user-agent": "ChordV-Admin/1.0" } },
           { errorPrefix: "System update manifest URL", requireHttps }
         );
         if (!response.ok) {
+          // Error headers do not mean the body has finished. Abort immediately and
+          // cancel the stream before clearing the timer or trying another origin.
+          controller.abort();
+          await response.body?.cancel().catch(() => undefined);
           throw new Error(`HTTP ${response.status}`);
         }
         return await this.readCappedText(response);

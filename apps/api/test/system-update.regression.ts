@@ -12,6 +12,8 @@ import { SystemUpdateController } from "../src/modules/system/system-update.cont
 import { SystemUpdateService, verifyManifestSignature } from "../src/modules/common/system-update.service";
 import type { PrismaService } from "../src/modules/common/prisma.service";
 import type { DownloadMirrorService } from "../src/modules/common/download-mirror.service";
+import type { SystemUpdateCheckDto } from "@chordv/shared";
+import type { fetchPublicHttpUrl } from "../src/modules/common/remote-url.utils";
 
 const SYSTEM_ENV_KEYS = [
   "CHORDV_SYSTEM_VERSION",
@@ -112,7 +114,78 @@ function routeMetadata(controller: object, method: string) {
   assert.equal(controllerPath, "health");
 }
 
+async function assertUpdateRequestSafety() {
+  const service = buildService();
+  const svc = service as unknown as {
+    assertOperational(): void;
+    assertNoPromotionInFlight(): Promise<void>;
+    acquireLock(): Promise<{ release(): Promise<void> }>;
+    createOperationGuarded(): Promise<void>;
+    runUpdateInBackground(op: string, from: string, lock: { release(): Promise<void> }, expected?: string): Promise<void>;
+    finishOperation(op: string, status: string, data: { failureReason?: string; toVersion?: string }): Promise<void>;
+    downloadAndExtractRelease(): Promise<string>;
+    cache: unknown;
+  };
+  svc.assertOperational = () => undefined;
+  svc.assertNoPromotionInFlight = async () => undefined;
+  let acquired = 0;
+  svc.acquireLock = async () => { acquired += 1; return { release: async () => undefined }; };
+  svc.createOperationGuarded = async () => undefined;
+
+  await assert.rejects(() => service.startUpdate(null, null, "not-a-version"), BadRequestException);
+  assert.equal(acquired, 0, "malformed confirmed versions must never acquire a PostgreSQL lock");
+
+  for (const version of ["1.0.0", "0.9.0", "1.3.0", null]) {
+    const release = version ? {
+      version, tag: null, publishedAt: null, changelog: [], notes: null, htmlUrl: null,
+      downloadUrl: "https://example.com/release.tar.gz", fileSizeBytes: null, sha256: "a".repeat(64)
+    } : null;
+    const check: SystemUpdateCheckDto = {
+      currentVersion: "1.0.0", latestVersion: version ?? "1.0.0", hasUpdate: version === "1.3.0",
+      cached: false, checkedAt: new Date().toISOString(), release, warning: null
+    };
+    service.checkUpdate = async () => check;
+    // A concurrent cache refresh must not replace the release returned by this check.
+    svc.cache = { release: { ...release, version: "1.2.0" } };
+    const outcomes: { status: string; reason?: string; target?: string }[] = [];
+    svc.finishOperation = async (_op, status, data) => {
+      outcomes.push({ status, reason: data.failureReason, target: data.toVersion });
+    };
+    let released = 0;
+    svc.downloadAndExtractRelease = async () => { assert.fail("changed target must not be downloaded"); };
+    await svc.runUpdateInBackground("sysop-confirmed", "1.0.0", {
+      release: async () => { released += 1; }
+    }, "1.2.0");
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].status, "failed", `changed/missing target ${version} must not report success`);
+    assert.match(outcomes[0].reason ?? "", /确认的版本 v1\.2\.0/);
+    assert.equal(outcomes[0].target, undefined, "keep the originally confirmed audit target");
+    assert.equal(released, 1);
+  }
+}
+
+async function assertRejectedManifestBodyCleanup() {
+  const svc = buildService() as unknown as {
+    fetchManifestText(url: string, mirror: string | null, requireHttps: boolean, fetchUrl: typeof fetchPublicHttpUrl): Promise<string>;
+  };
+  const signals: AbortSignal[] = [];
+  let cancelled = 0;
+  const fetchStub = (async (_url: string, options: { signal: AbortSignal }) => {
+    signals.push(options.signal);
+    return { response: {
+      ok: false, status: 503,
+      body: { cancel: async () => { cancelled += 1; } }
+    } };
+  }) as unknown as typeof fetchPublicHttpUrl;
+  await assert.rejects(() => svc.fetchManifestText("https://example.com/latest.json", "https://mirror.example/", false, fetchStub), /HTTP 503/);
+  assert.equal(signals.length, 2, "exercise both mirror and direct error responses");
+  assert.equal(cancelled, 2, "every rejected response body must be cancelled");
+  assert.ok(signals.every((signal) => signal.aborted), "abort error streams before releasing their timeout");
+}
+
 async function main() {
+  await assertUpdateRequestSafety();
+  await assertRejectedManifestBodyCleanup();
   // 3) Disabled environment (no releases/state dir) refuses mutating operations.
   await withSystemEnv({ CHORDV_SYSTEM_VERSION: "0.0.1" }, async () => {
     const service = buildService();

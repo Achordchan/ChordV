@@ -400,7 +400,8 @@ handle_failed_promotion() {
     # but the operation's real target was the candidate that started the failure
     # (GEN_ROLLBACK_FROM) — writing last-good here would collapse the audit's toVersion
     # and lose which candidate actually failed.
-    local attempted="${GEN_ROLLBACK_FROM:-$GEN_VERSION}"
+    local attempted="${GEN_ROLLBACK_FROM:-$(json_get "$PROMOTING_FILE" rollbackFrom)}"
+    attempted="${attempted:-$GEN_VERSION}"
     if [ -n "$GEN_OP" ]; then
       if write_result "$GEN_OP" "failed" "$attempted" "${reason}（无可回滚版本）" "$MIG"; then
         clear_promoting
@@ -476,7 +477,7 @@ else
 fi
 # Context for a rollback LANDING carried across loop iterations (set by
 # handle_failed_promotion, consumed by the success path). On a mid-gate restart these
-# are empty and the success path recovers rollbackFrom from the promoting marker.
+# are empty and both terminal paths recover rollbackFrom from the promoting marker.
 GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
 
 while true; do
@@ -540,29 +541,11 @@ while true; do
   APP_PID=$!
 
   if wait_healthy "$APP_PID" && confirm_stable "$APP_PID"; then
-    # Record last-good DURABLY before finalizing. If it can't be committed (read-only/
-    # full/corrupt state volume) we must NOT clear the promoting marker or write a
-    # success result: a later failed update would then have no valid rollback target.
-    # Retry inline to ride out a transient I/O error.
+    # Finalization must keep retrying while this app serves, not exhaust a fixed
+    # retry budget and wait for an unrelated app exit. Keep ALL generation context
+    # and the promoting marker until last-good AND the result are persisted.
     LG_OK=0
-    for _lg_try in 1 2 3 4 5; do
-      if write_last_good "$GEN_VERSION"; then LG_OK=1; break; fi
-      log "WARN: last-good write for $GEN_VERSION failed (attempt ${_lg_try}); retrying"
-      sleep 2
-    done
-    if [ "$LG_OK" != "1" ]; then
-      # Still failing: DEFER finalization but PRESERVE the full promotion context
-      # (GEN_OP/GEN_KIND/GEN_PROMOTION + promoting.json) so it is finalized WITH a
-      # result later — either when this app exits and the loop re-gates (snapshot is
-      # skipped since one already exists; migrate is idempotent), or after a supervisor
-      # restart resumes from promoting.json. NEVER clear promoting without writing the
-      # operation's result. Keep serving the healthy version meanwhile.
-      log "WARN: could not persist last-good for $GEN_VERSION after retries; keeping full promotion context, deferring finalization"
-      wait "$APP_PID"; EXIT_CODE=$?
-      APP_PID=""
-      log "app for $GEN_VERSION exited (code $EXIT_CODE); re-gating to retry finalization (op ${GEN_OP:-none})"
-      continue
-    fi
+    FINALIZED=0
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
@@ -582,17 +565,34 @@ while true; do
     else
       RES_STATUS="success"; RES_REASON=""
     fi
-    if [ -n "$GEN_OP" ]; then
-      if write_result "$GEN_OP" "$RES_STATUS" "$GEN_VERSION" "$RES_REASON" "$SUCC_MIG"; then
-        clear_promoting
-      else
-        # Could not durably persist the outcome — keep the promoting marker so a
-        # supervisor restart resumes + re-finalizes this (good) version rather than
-        # losing the outcome. (Version is healthy; safe to re-gate on restart.)
-        log "WARN: could not persist ${RES_STATUS} result; keeping promoting marker for retry"
+    while kill -0 "$APP_PID" 2>/dev/null; do
+      # Last-good MUST be durable before publishing success. Once committed, retry
+      # only the result so a separate last-good I/O failure cannot block that retry.
+      if [ "$LG_OK" != "1" ]; then
+        if write_last_good "$GEN_VERSION"; then
+          LG_OK=1
+        else
+          log "WARN: last-good write for $GEN_VERSION failed; keeping full promotion context, retrying in 2s"
+          sleep 2
+          continue
+        fi
       fi
-    else
+      if [ -n "$GEN_OP" ] && ! write_result "$GEN_OP" "$RES_STATUS" "$GEN_VERSION" "$RES_REASON" "$SUCC_MIG"; then
+        log "WARN: could not persist ${RES_STATUS} result; keeping full promotion context, retrying in 2s"
+        sleep 2
+        continue
+      fi
       clear_promoting
+      FINALIZED=1
+      break
+    done
+    if [ "$FINALIZED" != "1" ]; then
+      # App exited during persistence retries: reap it and re-gate with the SAME
+      # operation context. Do not process a new pending op or lose rollbackFrom.
+      wait "$APP_PID"; EXIT_CODE=$?
+      APP_PID=""
+      log "app for $GEN_VERSION exited (code $EXIT_CODE); re-gating to retry finalization (op ${GEN_OP:-none})"
+      continue
     fi
     log "$GEN_VERSION healthy + stable (last-good)"
     GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""

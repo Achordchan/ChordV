@@ -83,20 +83,23 @@ async function waitForResult(file: string, timeoutMs: number): Promise<ResultMar
  * (0.0.2) over a last-good release (0.0.1) whose health is parameterized, and
  * return the terminal result the supervisor records for the operation.
  */
-async function runRollbackScenario(lastGoodKind: "good" | "bad") {
+async function runRollbackScenario(lastGoodKind: "good" | "bad", resumeLanding = false) {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-"));
   const stateDir = path.join(root, "state");
   mkdirSync(stateDir, { recursive: true });
 
   writeRelease(root, "0.0.1", lastGoodKind, port);
-  writeRelease(root, "0.0.2", "bad", port);
+  // A resumed landing may already have discarded the original candidate.
+  if (!resumeLanding) writeRelease(root, "0.0.2", "bad", port);
   writeFileSync(path.join(stateDir, "last-good-version"), "0.0.1");
-  writeFileSync(path.join(stateDir, "desired-version"), "0.0.2");
-  const opId = `sysop-rollback-${lastGoodKind}`;
+  writeFileSync(path.join(stateDir, "desired-version"), resumeLanding ? "0.0.1" : "0.0.2");
+  const opId = `sysop-rollback-${lastGoodKind}${resumeLanding ? "-resumed" : ""}`;
   writeFileSync(
     path.join(stateDir, "promoting.json"),
-    JSON.stringify({ version: "0.0.2", operationId: opId, kind: "update", migrationApplied: false })
+    JSON.stringify(resumeLanding
+      ? { version: "0.0.1", operationId: opId, kind: "rollback", migrationApplied: true, rollbackFrom: "0.0.2" }
+      : { version: "0.0.2", operationId: opId, kind: "update", migrationApplied: false })
   );
 
   const env = {
@@ -267,6 +270,103 @@ async function runSnapshotFailureScenario() {
   }
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs: number, message: () => string) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message());
+    await sleep(100);
+  }
+}
+
+/** Fail actual atomic renames until the test releases them, without restarting the app. */
+async function runFinalizationRetryScenario(fault: "result" | "last-good", resumeLanding = false) {
+  const port = await freePort();
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-retry-"));
+  const stateDir = path.join(root, "state");
+  const binDir = path.join(root, "bin");
+  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(binDir);
+  const version = resumeLanding ? "0.0.1" : "0.0.2";
+  const release = writeRelease(root, version, "good", port);
+  const launchFile = path.join(root, "launches");
+  const appFile = path.join(release, APP_ENTRY);
+  writeFileSync(appFile,
+    `require('fs').appendFileSync(${JSON.stringify(launchFile)},process.pid+'\\n');` + readFileSync(appFile, "utf8"));
+  const opId = `sysop-retry-${fault}${resumeLanding ? "-landing" : ""}`;
+  const markerFile = path.join(stateDir, "promoting.json");
+  const marker = {
+    version, operationId: opId, kind: resumeLanding ? "rollback" : "update",
+    migrationApplied: resumeLanding, rollbackFrom: resumeLanding ? "0.0.2" : ""
+  };
+  writeFileSync(markerFile, JSON.stringify(marker));
+  writeFileSync(path.join(stateDir, "desired-version"), version);
+  writeFileSync(path.join(stateDir, "last-good-version"), "0.0.1");
+  const resultFile = path.join(stateDir, `operation-result.${opId}.json`);
+  const blocker = path.join(root, "block-writes");
+  const attemptsFile = path.join(root, "failed-writes");
+  writeFileSync(blocker, "");
+  // Intercept only the selected destination; all other state writes use real mv.
+  // Permission-based faults are not deterministic when CI happens to run as root.
+  writeFileSync(path.join(binDir, "mv"), `#!/usr/bin/env bash
+if [ "\${!#}" = "$CHORDV_TEST_FAULT_TARGET" ] && [ -f "$CHORDV_TEST_BLOCKER" ]; then
+  printf 'failed\\n' >> "$CHORDV_TEST_ATTEMPTS"
+  exit 1
+fi
+exec /bin/mv "$@"
+`, { mode: 0o755 });
+  const env = {
+    ...process.env,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    CHORDV_TEST_FAULT_TARGET: fault === "result" ? resultFile : path.join(stateDir, "last-good-version"),
+    CHORDV_TEST_BLOCKER: blocker,
+    CHORDV_TEST_ATTEMPTS: attemptsFile,
+    CHORDV_SYSTEM_NODE_BIN: process.execPath,
+    CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
+    CHORDV_SYSTEM_STATE_DIR: stateDir,
+    CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
+    CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
+    CHORDV_API_PORT: String(port),
+    CHORDV_SUPERVISOR_MIGRATE: "false",
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
+    CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+  };
+  const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+  try {
+    // Six failures exceed the former five-attempt last-good budget. Result writes
+    // must retry too, instead of clearing GEN_* and waiting forever for app exit.
+    const failures = fault === "last-good" ? 6 : 2;
+    await waitUntil(
+      () => existsSync(attemptsFile) && readFileSync(attemptsFile, "utf8").trim().split("\n").length >= failures,
+      30_000, () => `${fault} persistence did not keep retrying.\n${stderr}`);
+    assert.deepEqual(JSON.parse(readFileSync(markerFile, "utf8")), marker, "retry must retain the original promotion marker");
+    assert.equal(existsSync(resultFile), false, "must not publish a result before persistence succeeds");
+    const launches = readFileSync(launchFile, "utf8");
+    assert.equal(launches.trim().split("\n").length, 1, "persistence retries must not restart the app");
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/health/ready`)).status, 200, "app must serve during retries");
+    rmSync(blocker);
+    const result = await waitForResult(resultFile, 15_000);
+    assert.ok(result, `${fault} persistence did not recover without an app restart.\n${stderr}`);
+    assert.equal(result.operationId, opId, "retry must finalize the original operation");
+    assert.equal(result.status, resumeLanding ? "rolledback" : "success");
+    assert.equal(result.version, version);
+    assert.equal(result.migrationApplied, resumeLanding, "retry must retain migration context");
+    await waitUntil(() => !existsSync(markerFile), 5_000, () => `finalized marker was not cleared.\n${stderr}`);
+    assert.equal(readFileSync(path.join(stateDir, "last-good-version"), "utf8"), version);
+    assert.equal(readFileSync(launchFile, "utf8"), launches, "recovery must use the same app process");
+    process.kill(Number(launches.trim()), 0);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/health/ready`)).status, 200);
+  } finally {
+    try {
+      if (typeof child.pid === "number") process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   // Scenario A: last-good is healthy → the promotion of the broken release is
   // auto-rolled-back, and the terminal 'rolledback' result is recorded ONLY after
@@ -339,6 +439,25 @@ async function main() {
       `snapshot failure means migration never ran → migrationApplied must be false (got ${s.result.migrationApplied}).\nsupervisor stderr:\n${s.stderr}`
     );
   }
+
+  // Scenario E: supervisor restarted after writing the automatic rollback marker.
+  // The candidate is already gone; only rollbackFrom can identify the failed target.
+  {
+    const s = await runRollbackScenario("bad", true);
+    assert.ok(s.result, `resumed rollback did not record a result.\n${s.stderr}`);
+    assert.equal(s.result.operationId, s.opId);
+    assert.equal(s.result.status, "failed", "an unhealthy resumed fallback must not claim rollback success");
+    assert.equal(s.result.version, "0.0.2", "resumed failure must recover the original candidate from rollbackFrom");
+    assert.equal(s.result.migrationApplied, true, "resumed failure must preserve migration context");
+  }
+
+  // Scenario F: recover transient result I/O failures in-place for both a forward
+  // update and a resumed automatic rollback, preserving the original operation.
+  await runFinalizationRetryScenario("result");
+  await runFinalizationRetryScenario("result", true);
+
+  // Scenario G: last-good persistence must recover even after the old retry budget.
+  await runFinalizationRetryScenario("last-good");
 }
 
 void main().then(() => {
