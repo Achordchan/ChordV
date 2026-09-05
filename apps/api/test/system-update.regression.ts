@@ -1,6 +1,9 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { BadRequestException } from "@nestjs/common";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
@@ -138,6 +141,47 @@ async function main() {
     const service = buildService();
     assert.equal(service.getCurrentVersion(), "1.2.3");
   });
+
+  // 6) Signed-manifest anti-downgrade ratchet: once a signed version is accepted, a
+  //    later (mirror-replayed) manifest advertising an OLDER version is rejected, and
+  //    the persisted floor only ever moves forward. This closes the replay window
+  //    where a stale/malicious mirror hides a newer release behind an old signed one.
+  {
+    const stateDir = mkdtempSync(path.join(tmpdir(), "chordv-floor-"));
+    try {
+      await withSystemEnv(
+        {
+          CHORDV_SYSTEM_VERSION: "1.0.0",
+          CHORDV_SYSTEM_RELEASES_DIR: path.join(stateDir, "releases"),
+          CHORDV_SYSTEM_STATE_DIR: stateDir
+        },
+        async () => {
+          const service = buildService();
+          const svc = service as unknown as { enforceSignedManifestFloor: (v: string) => Promise<void> };
+          const floorFile = path.join(stateDir, "manifest-floor-version");
+
+          await svc.enforceSignedManifestFloor("1.2.0");
+          assert.equal(readFileSync(floorFile, "utf8").trim(), "1.2.0", "first accepted version sets the floor");
+
+          await svc.enforceSignedManifestFloor("1.3.0");
+          assert.equal(readFileSync(floorFile, "utf8").trim(), "1.3.0", "a newer version raises the floor");
+
+          await assert.rejects(
+            () => svc.enforceSignedManifestFloor("1.2.0"),
+            /低于|回放|降级/,
+            "an older signed manifest must be rejected as replay/downgrade"
+          );
+          assert.equal(readFileSync(floorFile, "utf8").trim(), "1.3.0", "a rejected downgrade must NOT lower the floor");
+
+          // Re-serving the current highest version is allowed (== floor, no downgrade).
+          await svc.enforceSignedManifestFloor("1.3.0");
+          assert.equal(readFileSync(floorFile, "utf8").trim(), "1.3.0");
+        }
+      );
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }
 }
 
 void main().then(() => {

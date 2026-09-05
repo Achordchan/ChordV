@@ -34,6 +34,7 @@ import {
   resolveSystemUpdateRuntimeConfig,
   SYSTEM_UPDATE_DESIRED_VERSION_FILE,
   SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE,
+  SYSTEM_UPDATE_MANIFEST_FLOOR_FILE,
   SYSTEM_UPDATE_PENDING_FILE,
   SYSTEM_UPDATE_PROMOTING_FILE,
   SYSTEM_UPDATE_RESULT_PREFIX,
@@ -360,25 +361,25 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       const releaseDir = await this.downloadAndExtractRelease(release);
       const pendingMigrations = await this.detectPendingMigrations(releaseDir);
       const willMigrate = pendingMigrations.length > 0;
-
-      // Take the pre-migration snapshot BEFORE writing the promotion marker. Order
-      // matters across two crash windows:
-      //   - crash during pg_dump  → NO marker yet → supervisor does not promote →
-      //     safe abort (DB untouched); a truncated dump is cleaned by snapshotDatabase.
-      //   - crash after the marker → a COMPLETED snapshot already exists, so the
-      //     supervisor may safely promote + let the entrypoint finish migrating.
-      if (willMigrate && this.config.snapshotBeforeMigrate) {
+      if (willMigrate) {
         this.logger.warn(
           `Update ${release.version} carries ${pendingMigrations.length} pending migration(s): ${pendingMigrations.join(", ")}`
         );
-        await this.snapshotDatabase(release.version);
       }
 
-      // Persist the promotion INTENT before running migrations. If the process dies
-      // after migrate deploy commits but before this marker exists, the supervisor
-      // would otherwise start the OLD code on the NEW schema. With the marker written
-      // first (and a snapshot already on disk), the supervisor promotes the new
-      // version and the entrypoint's own `migrate deploy` finishes any interrupted one.
+      // Persist the promotion INTENT, then exit. The pre-migration SNAPSHOT and the
+      // MIGRATION itself are performed by the supervisor AFTER this process has exited
+      // (see entrypoint.sh: run_snapshot + run_migrate before launch). This is
+      // deliberate on two counts:
+      //   1. The current code must never serve requests against a schema that a
+      //      migration is concurrently changing (a dropped/renamed column would break
+      //      live requests for the whole migration). With migrate moved past our exit,
+      //      the old code is fully stopped before any DDL runs.
+      //   2. No DB-touching worker is left running in THIS process, so an abrupt kill
+      //      (SIGKILL/OOM) cannot orphan a migration/snapshot that keeps mutating the
+      //      DB while the supervisor promotes or rolls back. Both are supervisor-owned.
+      // migrationApplied travels in the marker so a later rollback can still warn that
+      // the schema was changed; the supervisor takes the snapshot only when it is set.
       await this.writePendingMarker({
         version: release.version,
         operationId,
@@ -386,26 +387,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         migrationApplied: willMigrate
       });
 
-      if (willMigrate) {
-        try {
-          await this.runPrismaMigrateDeploy(releaseDir);
-        } catch (error) {
-          // Migration failed → withdraw the promotion intent so we do not activate a
-          // release whose migrations did not fully apply, and discard the release.
-          // A Postgres migration is NOT guaranteed transactional (one migration can
-          // apply some DDL then fail while still "unfinished" in _prisma_migrations),
-          // so we must assume the DB may be in an intermediate state and always point
-          // at the pre-migration snapshot for recovery — never "clean abort".
-          await this.clearPendingMarker().catch(() => undefined);
-          await this.removeDirSafe(releaseDir);
-          throw new ServiceUnavailableException(
-            `数据库迁移失败，数据库可能处于中间状态（Prisma/Postgres 迁移不保证事务性，可能已提交部分 DDL）。` +
-              `请人工检查并用迁移前快照恢复（快照目录见 CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。原始错误：${this.describeError(error)}`
-          );
-        }
-      }
-
-      // Best-effort bookkeeping AFTER the intent is durable and any migration ran.
+      // Best-effort bookkeeping AFTER the promotion intent is durable.
       await this.pruneOldReleases(release.version, fromVersion).catch((error) =>
         this.logger.warn(`Prune old releases failed (non-fatal): ${this.describeError(error)}`)
       );
@@ -511,86 +493,6 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     return names.filter((name) => !applied.has(name));
   }
 
-  private async snapshotDatabase(version: string): Promise<void> {
-    const databaseUrl = process.env.DATABASE_URL?.trim();
-    if (!databaseUrl) {
-      throw new ServiceUnavailableException("缺少 DATABASE_URL，无法在迁移前创建数据库快照。");
-    }
-    const backupDir = this.config.backupDir ?? (this.config.stateDir ? path.join(this.config.stateDir, "backups") : null);
-    if (!backupDir) {
-      throw new ServiceUnavailableException("未配置数据库快照目录（CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。");
-    }
-    await fs.mkdir(backupDir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const target = path.join(backupDir, `pre-migrate-${version}-${stamp}.sql.gz`);
-    // Use bash (present in the bookworm runtime image): `set -o pipefail` is a
-    // bashism — under dash (Debian's /bin/sh) it aborts before pg_dump runs.
-    try {
-      await this.runShell(
-        "bash",
-        ["-c", 'set -o pipefail; pg_dump "$DATABASE_URL" | gzip > "$SNAPSHOT_TARGET"'],
-        { ...process.env, DATABASE_URL: databaseUrl, SNAPSHOT_TARGET: target },
-        "数据库快照",
-        10 * 60 * 1000
-      );
-      // Force the archive to stable storage before we go on to (durably) commit a
-      // migration — otherwise a host crash right after pg_dump could leave the
-      // snapshot missing/corrupt while the destructive migration survives, defeating
-      // the recovery point. STRICT: a durability failure aborts the update.
-      await this.fsyncFile(target);
-    } catch (error) {
-      // A failed pg_dump/gzip — or a snapshot that could not be durably committed —
-      // leaves a truncated/untrustworthy .sql.gz behind. Remove it so a later
-      // restore can't pick up a corrupt snapshot and it doesn't waste space, and
-      // abort: we must not migrate without a trustworthy recovery point.
-      await fs.rm(target, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    // Directory entry durability is best-effort (dir fsync is unsupported on some
-    // filesystems); the file above is the recovery point that must be durable.
-    await this.fsyncDir(backupDir);
-    this.logger.log(`Database snapshot created before migration: ${target}`);
-    await this.pruneSnapshots(backupDir);
-  }
-
-  private async pruneSnapshots(backupDir: string): Promise<void> {
-    // Unbounded pg_dump snapshots would fill the state volume and then break
-    // future snapshots, pending markers, and audit writes. Keep the newest N.
-    const keep = this.config.snapshotKeep;
-    try {
-      const entries = await fs.readdir(backupDir);
-      const names = entries.filter((name) => /^pre-migrate-.*\.sql\.gz$/.test(name));
-      const withTime = await Promise.all(
-        names.map(async (name) => {
-          const stat = await fs.stat(path.join(backupDir, name)).catch(() => null);
-          return { name, mtime: stat ? stat.mtimeMs : 0 };
-        })
-      );
-      // Newest first, then drop everything beyond the keep count.
-      const removable = withTime.sort((a, b) => b.mtime - a.mtime).slice(keep);
-      for (const { name } of removable) {
-        await fs.rm(path.join(backupDir, name), { force: true }).catch(() => undefined);
-      }
-      if (removable.length > 0) {
-        this.logger.log(`Pruned ${removable.length} old database snapshot(s), keeping ${keep}.`);
-      }
-    } catch (error) {
-      this.logger.warn(`Snapshot pruning failed: ${this.describeError(error)}`);
-    }
-  }
-
-  private async runPrismaMigrateDeploy(releaseDir: string): Promise<void> {
-    const prismaBin = path.join(releaseDir, "node_modules/.bin/prisma");
-    const schemaPath = path.join(releaseDir, "apps/api/prisma/schema.prisma");
-    await this.runShell(
-      prismaBin,
-      ["migrate", "deploy", "--schema", schemaPath],
-      { ...process.env },
-      "数据库迁移",
-      10 * 60 * 1000,
-      releaseDir
-    );
-  }
 
   private async extractTarball(archivePath: string, destDir: string): Promise<void> {
     await this.runShell(
@@ -736,7 +638,56 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       // rejected, not followed.
       manifestText = await this.fetchManifestText(manifestUrl, null, true);
     }
-    return this.normalizeManifest(JSON.parse(manifestText) as RawManifest);
+    const normalized = this.normalizeManifest(JSON.parse(manifestText) as RawManifest);
+    if (publicKey) {
+      // Freshness ratchet for the signed feed (a signature gives authenticity, not
+      // freshness). Only in signed mode: the signature authenticates the version, so
+      // the floor can't be poisoned by a forged high version, and the accelerate
+      // mirror — the replay vector — is used ONLY when signing is configured.
+      await this.enforceSignedManifestFloor(normalized.version);
+    }
+    return normalized;
+  }
+
+  private async enforceSignedManifestFloor(version: string): Promise<void> {
+    if (!this.config.stateDir) return;
+    const floorFile = path.join(this.config.stateDir, SYSTEM_UPDATE_MANIFEST_FLOOR_FILE);
+    let floor: string | null = null;
+    try {
+      floor = (await fs.readFile(floorFile, "utf8")).trim() || null;
+    } catch {
+      floor = null; // no floor yet (first accepted manifest)
+    }
+    if (floor) {
+      let cmp = 0;
+      try {
+        cmp = compareSemver(version, floor);
+      } catch {
+        cmp = 0; // unparseable floor — don't block on it
+      }
+      if (cmp < 0) {
+        // A correctly-signed but OLDER manifest than one we already accepted: reject
+        // it as a replay/downgrade (a stale/malicious mirror trying to hide a newer
+        // release). checkUpdate turns this into a surfaced warning + "no update".
+        throw new BadRequestException(
+          `更新清单版本 v${version} 低于已接受的最新版本 v${floor}，疑似回放/降级（加速镜像可能返回了过期清单），已拒绝。`
+        );
+      }
+    }
+    // Raise the floor when this signed manifest advertises a strictly newer version.
+    let higher = !floor;
+    if (floor) {
+      try {
+        higher = compareSemver(version, floor) > 0;
+      } catch {
+        higher = false;
+      }
+    }
+    if (higher) {
+      await this.writeFileDurable(floorFile, version).catch((error) =>
+        this.logger.warn(`Failed to persist manifest floor: ${this.describeError(error)}`)
+      );
+    }
   }
 
   private async fetchManifestText(manifestUrl: string, mirror: string | null, requireHttps = false): Promise<string> {
@@ -1067,19 +1018,6 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
     await fs.rename(tmp, file);
     await this.fsyncDir(path.dirname(file));
-  }
-
-  private async fsyncFile(target: string) {
-    // STRICT fsync of a FILE — errors propagate. A durability failure here (a
-    // delayed write-back error only surfaced by fsync) means the bytes may never
-    // reach stable storage, so the caller must abort rather than proceed to a
-    // destructive migration on top of a snapshot/marker that could vanish.
-    const handle = await fs.open(target, "r");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
   }
 
   private async fsyncDir(dir: string) {

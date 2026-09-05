@@ -35,6 +35,14 @@ RUN_MIGRATE="${CHORDV_SUPERVISOR_MIGRATE:-true}"
 # Upper bound for a supervisor-run migration (seconds) so a hung migrate can't
 # wedge the container after the old process has exited. Covers a large migrate.
 MIGRATE_TIMEOUT="${CHORDV_SYSTEM_MIGRATE_TIMEOUT:-900}"
+# Pre-migration DB snapshot (recovery point) — owned by the SUPERVISOR, not the app,
+# so it is taken with the old process already stopped (a consistent point-in-time) and
+# can never be orphaned by an app SIGKILL. Only taken when the staged update actually
+# migrates (promoting.json migrationApplied=true). pg_dump ships in the runtime image.
+SNAPSHOT_ENABLED="${CHORDV_SYSTEM_UPDATE_SNAPSHOT:-true}"
+BACKUP_DIR="${CHORDV_SYSTEM_UPDATE_BACKUP_DIR:-$STATE_DIR/backups}"
+SNAPSHOT_KEEP="${CHORDV_SYSTEM_UPDATE_SNAPSHOT_KEEP:-5}"
+SNAPSHOT_TIMEOUT="${CHORDV_SYSTEM_UPDATE_SNAPSHOT_TIMEOUT:-600}"
 API_PORT="${CHORDV_API_PORT:-3000}"
 # Gate promotions on READINESS (exercises the DB), not bare liveness: a version
 # that opens its port but has a broken Prisma runtime/schema must fail the gate
@@ -227,6 +235,59 @@ confirm_stable() {
   return 0
 }
 
+write_last_good() {
+  # Durably record the last known-good version (tmp+mv+sync). Returns non-zero if it
+  # could not be committed: the caller must NOT finalize a promotion without it, or a
+  # later failed update would have no valid rollback target and could strand the
+  # service on a broken release.
+  local version="$1" tmp="$LAST_GOOD_FILE.tmp.$$"
+  if ! printf '%s' "$version" > "$tmp" || ! mv -f "$tmp" "$LAST_GOOD_FILE"; then
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
+  sync 2>/dev/null || true
+  return 0
+}
+
+prune_snapshots() {
+  # Keep only the newest SNAPSHOT_KEEP pre-migrate snapshots so they can't fill the
+  # state volume and then break future snapshots / markers / audit writes.
+  local n=0 f
+  ls -1t "$BACKUP_DIR"/pre-migrate-*.sql.gz 2>/dev/null | while IFS= read -r f; do
+    n=$((n + 1))
+    [ "$n" -gt "$SNAPSHOT_KEEP" ] && rm -f "$f" 2>/dev/null
+  done
+  return 0
+}
+
+run_snapshot() {
+  # run_snapshot <version> — pre-migration DB snapshot. Returns non-zero if a snapshot
+  # was required but could not be durably created; the caller then rolls back instead
+  # of migrating (never migrate without a trustworthy recovery point).
+  local version="$1"
+  [ "$SNAPSHOT_ENABLED" = "true" ] || return 0
+  if [ -z "${DATABASE_URL:-}" ]; then
+    log "ERROR: DATABASE_URL not set; cannot snapshot before migrate"
+    return 1
+  fi
+  mkdir -p "$BACKUP_DIR" || { log "ERROR: cannot create backup dir $BACKUP_DIR"; return 1; }
+  local stamp target
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  target="$BACKUP_DIR/pre-migrate-${version}-${stamp}.sql.gz"
+  log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
+  # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
+  # hung dump can't wedge the container after the old process has already exited.
+  if ! ( set -o pipefail; timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$DATABASE_URL" | gzip > "$target" ); then
+    log "ERROR: database snapshot failed"
+    rm -f "$target" 2>/dev/null
+    return 1
+  fi
+  [ -s "$target" ] || { log "ERROR: database snapshot is empty"; rm -f "$target" 2>/dev/null; return 1; }
+  sync 2>/dev/null || true
+  prune_snapshots
+  return 0
+}
+
 run_migrate() {
   local release="$1"
   [ "$RUN_MIGRATE" = "true" ] || return 0
@@ -393,6 +454,19 @@ while true; do
     log "FATAL: release $GEN_VERSION missing $MISSING (no promotion to roll back)"; exit 1
   fi
 
+  # Pre-migration snapshot: only for a forward promotion that will migrate. A rollback
+  # LANDING (kind=rollback) goes to an OLDER release whose migrations are already
+  # applied, so `migrate deploy` is a no-op there — snapshotting again would only delay
+  # recovery. migrationApplied is read from the promoting marker the app staged.
+  PROMO_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$PROMO_MIG" = "true" ] || PROMO_MIG="false"
+  if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
+    if ! run_snapshot "$GEN_VERSION"; then
+      log "pre-migration snapshot failed for $GEN_VERSION"
+      handle_failed_promotion "迁移前数据库快照失败，未执行迁移，已自动回滚"
+      continue
+    fi
+  fi
+
   if ! run_migrate "$RELEASE_DIR"; then
     log "migration failed for $GEN_VERSION"
     handle_failed_promotion "迁移失败，已回滚代码（数据库结构未回退）"
@@ -405,7 +479,19 @@ while true; do
   APP_PID=$!
 
   if wait_healthy "$APP_PID" && confirm_stable "$APP_PID"; then
-    printf '%s' "$GEN_VERSION" > "$LAST_GOOD_FILE"
+    # Record last-good DURABLY before finalizing. If it can't be committed (read-only/
+    # full/corrupt state volume) we must NOT clear the promoting marker or write a
+    # success result: a later failed update would then have no valid rollback target.
+    # Keep serving this (healthy) version; a supervisor restart re-gates via the
+    # promoting marker and retries finalization once the volume is writable again.
+    if ! write_last_good "$GEN_VERSION"; then
+      log "WARN: could not persist last-good for $GEN_VERSION; deferring finalization (promoting marker kept)"
+      GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+      wait "$APP_PID"; EXIT_CODE=$?
+      APP_PID=""
+      log "app for $GEN_VERSION exited (code $EXIT_CODE); restarting"
+      continue
+    fi
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.

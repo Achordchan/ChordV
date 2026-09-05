@@ -29,6 +29,11 @@ export const SYSTEM_UPDATE_RESULT_PREFIX = "operation-result";
 export const SYSTEM_UPDATE_PROMOTING_FILE = "promoting.json";
 export const SYSTEM_UPDATE_DESIRED_VERSION_FILE = "desired-version";
 export const SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE = "last-good-version";
+// Anti-replay/anti-downgrade ratchet for the SIGNED update feed: the highest signed
+// manifest version ever accepted. A signature proves authenticity but not freshness,
+// so a third-party mirror could replay an older, correctly-signed manifest to hide a
+// newer release. We reject any signed manifest advertising a version below this floor.
+export const SYSTEM_UPDATE_MANIFEST_FLOOR_FILE = "manifest-floor-version";
 
 export type SystemUpdateRuntimeConfig = {
   currentVersion: string;
