@@ -40,8 +40,11 @@ export async function fetchSystemOperation(operationId: string) {
   return result.operation;
 }
 
-export function startSystemUpdate() {
-  return request<SystemUpdateStartResultDto>("/admin/system/update", { method: "POST", body: "{}" });
+export function startSystemUpdate(expectedVersion?: string) {
+  return request<SystemUpdateStartResultDto>("/admin/system/update", {
+    method: "POST",
+    body: JSON.stringify(expectedVersion ? { expectedVersion } : {})
+  });
 }
 
 export function startSystemRollback(version?: string) {

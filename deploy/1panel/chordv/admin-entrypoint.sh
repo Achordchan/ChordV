@@ -12,7 +12,14 @@ RELEASES_DIR="${CHORDV_ADMIN_RELEASES_DIR:-/usr/share/nginx/releases}"
 STATE_DIR="${CHORDV_ADMIN_STATE_DIR:-/usr/share/nginx/state}"
 WEBROOT_LINK="${CHORDV_ADMIN_WEBROOT_LINK:-/usr/share/nginx/current}"
 ADMIN_SUBPATH="${CHORDV_ADMIN_SUBPATH:-apps/admin/dist}"
-DESIRED_FILE="$STATE_DIR/desired-version"
+# Follow the HEALTH-APPROVED version (last-good-version), NOT desired-version. The
+# supervisor flips desired-version/`current` BEFORE the candidate API passes readiness
+# + stabilization; serving the admin bundle from that would let clients load an
+# unapproved release during a promotion, and — after a rollback deletes that release —
+# leave already-loaded pages requesting lazy chunks that now 404. last-good-version is
+# written ONLY after the health gate + stabilization succeed, so admin always serves a
+# confirmed release that matches (or safely lags) the API by at most the gate window.
+LAST_GOOD_FILE="$STATE_DIR/last-good-version"
 POLL_SECONDS="${CHORDV_ADMIN_POLL_SECONDS:-3}"
 WAIT_TIMEOUT="${CHORDV_ADMIN_WAIT_TIMEOUT:-300}"
 
@@ -29,18 +36,16 @@ if [ -f "$TEMPLATE" ]; then
 fi
 
 resolve_dist() {
-  # echoes the admin dist dir for the desired (or newest) release, or nothing.
-  local v dir
-  v="$( [ -f "$DESIRED_FILE" ] && tr -d ' \t\r\n' < "$DESIRED_FILE" )"
+  # Echoes the admin dist dir for the HEALTH-APPROVED (last-good) release, or nothing.
+  # Deliberately NO "newest release" fallback: serving an arbitrary/unapproved bundle
+  # is exactly what we must avoid. Before the API's first healthy boot writes
+  # last-good-version, this returns nothing and the caller waits (first boot) or keeps
+  # serving the currently-approved bundle (steady state) instead of switching.
+  local v
+  v="$( [ -f "$LAST_GOOD_FILE" ] && tr -d ' \t\r\n' < "$LAST_GOOD_FILE" )"
   if [ -n "$v" ] && [ -d "$RELEASES_DIR/$v/$ADMIN_SUBPATH" ]; then
     printf '%s' "$RELEASES_DIR/$v/$ADMIN_SUBPATH"; return 0
   fi
-  # fall back to the newest release dir that has an admin bundle
-  for dir in $(ls -1 "$RELEASES_DIR" 2>/dev/null | sort -Vr); do
-    if [ -d "$RELEASES_DIR/$dir/$ADMIN_SUBPATH" ]; then
-      printf '%s' "$RELEASES_DIR/$dir/$ADMIN_SUBPATH"; return 0
-    fi
-  done
   return 1
 }
 
@@ -52,7 +57,7 @@ until DIST="$(resolve_dist)"; do
   if [ "$waited" -ge "$WAIT_TIMEOUT" ]; then
     log "FATAL: no admin bundle in $RELEASES_DIR after ${WAIT_TIMEOUT}s"; exit 1
   fi
-  log "waiting for a release with $ADMIN_SUBPATH ..."
+  log "waiting for a health-approved release with $ADMIN_SUBPATH (last-good-version) ..."
   sleep "$POLL_SECONDS"; waited=$((waited + POLL_SECONDS))
 done
 point_webroot "$DIST"

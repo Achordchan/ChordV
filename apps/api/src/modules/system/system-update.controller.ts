@@ -9,6 +9,15 @@ class RollbackBodyDto {
   version?: string;
 }
 
+class UpdateBodyDto {
+  // The version the admin reviewed in the UI. The service refuses to install a
+  // different (e.g. newer, just-published) release than this, so unreviewed changes
+  // are never applied silently.
+  @IsOptional()
+  @IsString()
+  expectedVersion?: string;
+}
+
 class OperationsQueryDto {
   // A bare digit string only — rejects `?limit=abc` with a 400 rather than letting
   // NaN reach Prisma's `take` and surface as an internal server error.
@@ -66,9 +75,9 @@ export class SystemUpdateController {
   }
 
   @Post("update")
-  update(@Req() request: AuthedRequest) {
+  update(@Body() body: UpdateBodyDto, @Req() request: AuthedRequest) {
     const actor = actorFrom(request);
-    return this.systemUpdateService.startUpdate(actor.actorLabel, actor.actorUserId);
+    return this.systemUpdateService.startUpdate(actor.actorLabel, actor.actorUserId, body.expectedVersion);
   }
 
   @Post("rollback")

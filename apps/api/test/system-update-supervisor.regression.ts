@@ -211,6 +211,62 @@ async function runManualRollbackScenario() {
   }
 }
 
+/**
+ * Boot the supervisor with an in-flight update whose promoting marker says it WILL
+ * migrate (migrationApplied=true), but make the pre-migration snapshot FAIL (no
+ * DATABASE_URL). The migration therefore never runs, so the auto-rollback result must
+ * record migrationApplied=FALSE — not the marker's true — so the audit/UI never claims
+ * the schema changed when it did not.
+ */
+async function runSnapshotFailureScenario() {
+  const port = await freePort();
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-"));
+  const stateDir = path.join(root, "state");
+  mkdirSync(stateDir, { recursive: true });
+
+  writeRelease(root, "0.0.1", "good", port); // last-good target
+  writeRelease(root, "0.0.2", "good", port); // candidate (never launched: snapshot fails first)
+  writeFileSync(path.join(stateDir, "last-good-version"), "0.0.1");
+  writeFileSync(path.join(stateDir, "desired-version"), "0.0.2");
+  const opId = "sysop-snapshot-fail";
+  writeFileSync(
+    path.join(stateDir, "promoting.json"),
+    JSON.stringify({ version: "0.0.2", operationId: opId, kind: "update", migrationApplied: true })
+  );
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"),
+    CHORDV_SYSTEM_STATE_DIR: stateDir,
+    CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
+    CHORDV_SYSTEM_SEED_DIR: path.join(root, "seed"),
+    CHORDV_API_PORT: String(port),
+    CHORDV_SUPERVISOR_MIGRATE: "false",
+    CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true",
+    CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(stateDir, "backups"),
+    CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "8",
+    CHORDV_SYSTEM_UPDATE_STABILIZE_SECONDS: "1"
+  };
+  delete env.DATABASE_URL; // force run_snapshot to fail before any migration runs
+
+  const child = spawn("bash", [entrypoint], { env, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr?.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  try {
+    const result = await waitForResult(path.join(stateDir, `operation-result.${opId}.json`), 60_000);
+    return { result, opId, stderr };
+  } finally {
+    try {
+      if (typeof child.pid === "number") process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   // Scenario A: last-good is healthy → the promotion of the broken release is
   // auto-rolled-back, and the terminal 'rolledback' result is recorded ONLY after
@@ -260,6 +316,21 @@ async function main() {
       `a successful manual rollback must be 'success', not '${s.result.status}'.\nsupervisor stderr:\n${s.stderr}`
     );
     assert.equal(s.result.version, "0.0.1", "manual rollback must land on the requested target");
+  }
+
+  // Scenario D: the pre-migration snapshot fails, so migration NEVER runs. The
+  // auto-rollback result must record migrationApplied=FALSE (not the marker's true),
+  // or the audit/UI would wrongly claim the schema changed and mislead recovery.
+  {
+    const s = await runSnapshotFailureScenario();
+    assert.ok(s.result, `supervisor did not record a result within timeout.\nsupervisor stderr:\n${s.stderr}`);
+    assert.equal(s.result.operationId, s.opId, "result must be keyed to the operation");
+    assert.equal(s.result.status, "rolledback", "a pre-migration snapshot failure must auto-roll-back");
+    assert.equal(
+      s.result.migrationApplied,
+      false,
+      `snapshot failure means migration never ran → migrationApplied must be false (got ${s.result.migrationApplied}).\nsupervisor stderr:\n${s.stderr}`
+    );
   }
 }
 

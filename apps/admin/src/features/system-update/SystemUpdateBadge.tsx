@@ -249,7 +249,7 @@ export function SystemUpdateBadge() {
       try {
         const result =
           kind === "update"
-            ? await startSystemUpdate()
+            ? await startSystemUpdate(version) // version carries the confirmed target
             : kind === "rollback"
               ? await startSystemRollback(version)
               : await startSystemRestart();
@@ -439,6 +439,9 @@ export function SystemUpdateBadge() {
                   onClick={() =>
                     requestConfirm({
                       kind: "update",
+                      // Bind to the reviewed version: the backend refuses to install a
+                      // different release than this if a newer one was just published.
+                      version: check.release?.version,
                       title: "确认更新",
                       body: `将更新至 v${check.release?.version} 并重启服务，期间管理端会短暂不可用。确认继续？`
                     })

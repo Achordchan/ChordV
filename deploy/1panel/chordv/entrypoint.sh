@@ -330,10 +330,18 @@ handle_failed_promotion() {
   # discarded version); if the atomic result write nonetheless fails (e.g. full
   # volume), the app's boot reconcile stale-sweep still marks the orphaned op
   # terminal, so it is never left running forever.
-  local reason="$1" LG="" MIG
-  # Whether the failed promotion had migrated the schema — carried so the app can
-  # warn "code rolled back but schema not". Read from the durable promoting marker.
-  MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$MIG" = "true" ] || MIG="false"
+  local reason="$1" mig_override="${2:-}" LG="" MIG
+  # Whether the failed promotion may have CHANGED the schema — carried so the app can
+  # warn "code rolled back but schema not". Callers that fail BEFORE migration runs
+  # (incomplete release, snapshot failure, promote-state failure) pass an explicit
+  # "false" so the audit/UI does not wrongly claim the schema changed. Otherwise
+  # (health-gate failure after migrate, migration failure itself) fall back to the
+  # promoting marker's migrationApplied.
+  if [ -n "$mig_override" ]; then
+    MIG="$mig_override"
+  else
+    MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$MIG" = "true" ] || MIG="false"
+  fi
   if [ "$GEN_PROMOTION" = "1" ]; then
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
@@ -455,7 +463,7 @@ while true; do
       # and approve a version whose symlink/desired-version could not be committed —
       # roll back to a version whose state is already consistent.
       log "cannot persist promotion state for $GEN_VERSION; rolling back"
-      handle_failed_promotion "无法持久化提升状态（状态卷可能只读或已满），已自动回滚"
+      handle_failed_promotion "无法持久化提升状态（状态卷可能只读或已满），已自动回滚" "false"
       continue
     fi
     # Non-promotion (ordinary restart): the existing symlink most likely already
@@ -478,7 +486,7 @@ while true; do
       # (with desired/promoting already persisted) would restart into the same
       # broken version forever.
       log "release $GEN_VERSION missing $MISSING; rolling back"
-      handle_failed_promotion "新版本不完整（缺少 ${MISSING}），已自动回滚"
+      handle_failed_promotion "新版本不完整（缺少 ${MISSING}），已自动回滚" "false"
       continue
     fi
     log "FATAL: release $GEN_VERSION missing $MISSING (no promotion to roll back)"; exit 1
@@ -492,14 +500,14 @@ while true; do
   if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
     if ! run_snapshot "$GEN_VERSION"; then
       log "pre-migration snapshot failed for $GEN_VERSION"
-      handle_failed_promotion "迁移前数据库快照失败，未执行迁移，已自动回滚"
+      handle_failed_promotion "迁移前数据库快照失败，未执行迁移，已自动回滚" "false"
       continue
     fi
   fi
 
   if ! run_migrate "$RELEASE_DIR"; then
     log "migration failed for $GEN_VERSION"
-    handle_failed_promotion "迁移失败，已回滚代码（数据库结构未回退）"
+    handle_failed_promotion "迁移失败，已回滚代码（数据库结构未回退）" "true"
     continue
   fi
 

@@ -271,14 +271,23 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     return row ? this.toOperationDto(row) : null;
   }
 
-  async startUpdate(actorLabel: string | null, actorUserId: string | null): Promise<SystemUpdateStartResultDto> {
+  async startUpdate(
+    actorLabel: string | null,
+    actorUserId: string | null,
+    expectedVersion?: string | null
+  ): Promise<SystemUpdateStartResultDto> {
     this.assertOperational();
     await this.assertNoPromotionInFlight();
     const operationId = createId("sysop");
     const lock = await this.acquireLock();
     const fromVersion = this.config.currentVersion;
-    await this.createOperationGuarded(lock, { operationId, kind: "update", actorLabel, actorUserId, fromVersion, toVersion: null });
-    void this.runUpdateInBackground(operationId, fromVersion, lock);
+    // Bind the operation to the version the admin actually reviewed/confirmed. A forced
+    // re-fetch inside the background task could otherwise pick up a NEWER release
+    // published between the UI check and the confirm, silently installing unreviewed
+    // changes. Normalized so "v1.2.0" and "1.2.0" compare equal.
+    const expected = expectedVersion && expectedVersion.trim() ? normalizeVersion(expectedVersion) : null;
+    await this.createOperationGuarded(lock, { operationId, kind: "update", actorLabel, actorUserId, fromVersion, toVersion: expected });
+    void this.runUpdateInBackground(operationId, fromVersion, lock, expected);
     return { operationId, accepted: true, message: "更新任务已开始，服务将在完成后自动重启。" };
   }
 
@@ -339,7 +348,12 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     return { operationId, accepted: true, message: "服务正在重启。" };
   }
 
-  private async runUpdateInBackground(operationId: string, fromVersion: string, lock: OperationLock) {
+  private async runUpdateInBackground(
+    operationId: string,
+    fromVersion: string,
+    lock: OperationLock,
+    expectedVersion?: string | null
+  ) {
     try {
       const check = await this.checkUpdate(true);
       // Only act on a manifest we just re-fetched cleanly. A forced refresh that
@@ -357,6 +371,16 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         await this.finishOperation(operationId, "succeeded", {
           toVersion: fromVersion,
           failureReason: null
+        });
+        await lock.release().catch(() => undefined);
+        return;
+      }
+      // Refuse to silently install a DIFFERENT version than the admin confirmed. If a
+      // newer release was published between the UI check and this forced re-fetch, the
+      // operator has not reviewed it — abort and let them re-check + re-confirm.
+      if (expectedVersion && release.version !== expectedVersion) {
+        await this.finishOperation(operationId, "failed", {
+          failureReason: `确认的版本 v${expectedVersion} 与当前最新版本 v${release.version} 不一致（可能在此期间发布了新版本）。已取消更新，请重新检查并确认。`
         });
         await lock.release().catch(() => undefined);
         return;
@@ -716,9 +740,18 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       }
     }
     if (higher) {
-      await this.writeFileDurable(floorFile, version).catch((error) =>
-        this.logger.warn(`Failed to persist manifest floor: ${this.describeError(error)}`)
-      );
+      // FAIL CLOSED: if the floor cannot be durably advanced, do NOT accept the
+      // manifest. Accepting-and-caching without ratcheting would leave a window where a
+      // stale/malicious mirror could later replay an OLDER signed manifest (the floor
+      // never moved), defeating the anti-replay guarantee. checkUpdate turns this into
+      // a surfaced warning + "no update", and an update refuses to proceed on a warning.
+      try {
+        await this.writeFileDurable(floorFile, version);
+      } catch (error) {
+        throw new ServiceUnavailableException(
+          `无法持久化更新清单版本阈值（状态卷可能不可写）：${this.describeError(error)}。为防回放攻击已拒绝本次检查。`
+        );
+      }
     }
   }
 
