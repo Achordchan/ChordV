@@ -218,10 +218,12 @@ export function compareSemver(left: string, right: string) {
       return leftNumeric ? -1 : 1;
     }
     // Numeric identifiers are unbounded integers; other identifiers use ASCII order, not locale collation.
-    const leftValue = leftNumeric ? BigInt(leftIdentifier) : leftIdentifier;
-    const rightValue = rightNumeric ? BigInt(rightIdentifier) : rightIdentifier;
-    if (leftValue !== rightValue) {
-      return leftValue > rightValue ? 1 : -1;
+    if (leftNumeric && rightNumeric) {
+      const leftValue = BigInt(leftIdentifier);
+      const rightValue = BigInt(rightIdentifier);
+      if (leftValue !== rightValue) return leftValue > rightValue ? 1 : -1;
+    } else if (leftIdentifier !== rightIdentifier) {
+      return leftIdentifier > rightIdentifier ? 1 : -1;
     }
   }
   return 0;
