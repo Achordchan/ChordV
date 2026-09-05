@@ -312,11 +312,24 @@ export class SystemUpdateService implements OnModuleInit {
       const pendingMigrations = await this.detectPendingMigrations(releaseDir);
       const willMigrate = pendingMigrations.length > 0;
 
-      // Persist the promotion INTENT before touching the database. If the process
-      // dies after migrate deploy commits but before this marker exists, the
-      // supervisor would otherwise start the OLD code on the NEW schema. With the
-      // marker written first, the supervisor promotes the new version, and the
-      // entrypoint's own `migrate deploy` completes any migration a crash interrupted.
+      // Take the pre-migration snapshot BEFORE writing the promotion marker. Order
+      // matters across two crash windows:
+      //   - crash during pg_dump  → NO marker yet → supervisor does not promote →
+      //     safe abort (DB untouched); a truncated dump is cleaned by snapshotDatabase.
+      //   - crash after the marker → a COMPLETED snapshot already exists, so the
+      //     supervisor may safely promote + let the entrypoint finish migrating.
+      if (willMigrate && this.config.snapshotBeforeMigrate) {
+        this.logger.warn(
+          `Update ${release.version} carries ${pendingMigrations.length} pending migration(s): ${pendingMigrations.join(", ")}`
+        );
+        await this.snapshotDatabase(release.version);
+      }
+
+      // Persist the promotion INTENT before running migrations. If the process dies
+      // after migrate deploy commits but before this marker exists, the supervisor
+      // would otherwise start the OLD code on the NEW schema. With the marker written
+      // first (and a snapshot already on disk), the supervisor promotes the new
+      // version and the entrypoint's own `migrate deploy` finishes any interrupted one.
       await this.writePendingMarker({
         version: release.version,
         operationId,
@@ -325,13 +338,7 @@ export class SystemUpdateService implements OnModuleInit {
       });
 
       if (willMigrate) {
-        this.logger.warn(
-          `Update ${release.version} carries ${pendingMigrations.length} pending migration(s): ${pendingMigrations.join(", ")}`
-        );
         try {
-          if (this.config.snapshotBeforeMigrate) {
-            await this.snapshotDatabase(release.version);
-          }
           await this.runPrismaMigrateDeploy(releaseDir);
         } catch (error) {
           // Migration failed → withdraw the promotion intent so we do not activate a

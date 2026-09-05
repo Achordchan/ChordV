@@ -29,7 +29,10 @@ APP_ENTRY="${CHORDV_SYSTEM_APP_ENTRY:-apps/api/dist/apps/api/src/main.js}"
 MIGRATE_SCRIPT="${CHORDV_SYSTEM_MIGRATE_SCRIPT:-scripts/prisma-migrate-with-baseline.mjs}"
 RUN_MIGRATE="${CHORDV_SUPERVISOR_MIGRATE:-true}"
 API_PORT="${CHORDV_API_PORT:-3000}"
-HEALTH_PATH="${CHORDV_SYSTEM_HEALTH_PATH:-/api/health}"
+# Gate promotions on READINESS (exercises the DB), not bare liveness: a version
+# that opens its port but has a broken Prisma runtime/schema must fail the gate
+# and roll back, not become last-good.
+HEALTH_PATH="${CHORDV_SYSTEM_HEALTH_PATH:-/api/health/ready}"
 HEALTH_TIMEOUT="${CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS:-90}"
 NODE_BIN="${CHORDV_SYSTEM_NODE_BIN:-node}"
 
@@ -65,11 +68,19 @@ atomic_promote() {
 
 write_result() {
   # write_result <operationId> <status:success|failed|rolledback> <version> <reason> [migrationApplied]
-  mkdir -p "$STATE_DIR"
-  local migrated="${5:-false}"
-  cat > "$RESULT_FILE" <<EOF
-{"operationId":"$1","status":"$2","version":"$3","reason":"$4","migrationApplied":$migrated}
-EOF
+  # Atomic write (tmp + mv + sync): the app polls this file concurrently, so a
+  # partial `cat >` could be read as truncated JSON and the outcome discarded as
+  # "malformed". Returns non-zero if the outcome could not be durably persisted.
+  mkdir -p "$STATE_DIR" || return 1
+  local migrated="${5:-false}" tmp="$RESULT_FILE.tmp.$$"
+  if ! printf '{"operationId":"%s","status":"%s","version":"%s","reason":"%s","migrationApplied":%s}\n' \
+      "$1" "$2" "$3" "$4" "$migrated" > "$tmp"; then
+    rm -f "$tmp" 2>/dev/null; return 1
+  fi
+  [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$RESULT_FILE" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  sync 2>/dev/null || true
+  return 0
 }
 
 write_promoting() {
@@ -189,9 +200,15 @@ discard_failed_release() {
 
 handle_failed_promotion() {
   # A promoted release failed to come up (migration / health gate / stabilization).
-  # Roll back to last-good when we can; otherwise record failure and retry. Always
-  # clears the promotion marker so a later restart does not resume a dead promotion.
+  # Roll back to last-good when we can; otherwise record failure and retry.
   # Mutates the GEN_* globals for the next loop iteration. $1 is a reason string.
+  #
+  # write_result is atomic (tmp+mv) so a concurrent poll never reads a truncated
+  # outcome. In the rollback branch we must move off the broken version (clear the
+  # promoting guard so new ops are not blocked and a restart does not re-promote a
+  # discarded version); if the atomic result write nonetheless fails (e.g. full
+  # volume), the app's boot reconcile stale-sweep still marks the orphaned op
+  # terminal, so it is never left running forever.
   local reason="$1" LG="" MIG
   # Whether the failed promotion had migrated the schema — carried so the app can
   # warn "code rolled back but schema not". Read from the durable promoting marker.
@@ -200,14 +217,23 @@ handle_failed_promotion() {
     LG="$(read_file_trim "$LAST_GOOD_FILE")"
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
       log "auto-rolling back $GEN_VERSION -> $LG (op ${GEN_OP:-none}): $reason"
-      [ -n "$GEN_OP" ] && write_result "$GEN_OP" "rolledback" "$LG" "$reason" "$MIG"
+      [ -n "$GEN_OP" ] && { write_result "$GEN_OP" "rolledback" "$LG" "$reason" "$MIG" || log "WARN: rollback result not persisted; reconcile will finalize"; }
       discard_failed_release "$GEN_VERSION" "$GEN_KIND"
       clear_promoting
       GEN_VERSION="$LG"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
       return 0
     fi
-    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "failed" "$GEN_VERSION" "$reason（无可回滚版本）" "$MIG"
-    clear_promoting
+    # No fallback: keep retrying the SAME version. Only clear the promoting guard
+    # once the failure is durably recorded, so the outcome is not lost.
+    if [ -n "$GEN_OP" ]; then
+      if write_result "$GEN_OP" "failed" "$GEN_VERSION" "$reason（无可回滚版本）" "$MIG"; then
+        clear_promoting
+      else
+        log "WARN: could not persist failure result; keeping promoting marker for retry"
+      fi
+    else
+      clear_promoting
+    fi
   fi
   log "no known-good version to fall back to; retrying $GEN_VERSION in 3s"
   sleep 3
@@ -296,8 +322,18 @@ while true; do
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
     SUCC_MIG="$(json_get "$PROMOTING_FILE" migrationApplied)"; [ "$SUCC_MIG" = "true" ] || SUCC_MIG="false"
-    [ -n "$GEN_OP" ] && write_result "$GEN_OP" "success" "$GEN_VERSION" "" "$SUCC_MIG"
-    clear_promoting
+    if [ -n "$GEN_OP" ]; then
+      if write_result "$GEN_OP" "success" "$GEN_VERSION" "" "$SUCC_MIG"; then
+        clear_promoting
+      else
+        # Could not durably persist the outcome — keep the promoting marker so a
+        # supervisor restart resumes + re-finalizes this (good) version rather than
+        # losing the success. (Version is healthy; safe to re-gate on restart.)
+        log "WARN: could not persist success result; keeping promoting marker for retry"
+      fi
+    else
+      clear_promoting
+    fi
     log "$GEN_VERSION healthy + stable (last-good)"
     GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
     wait "$APP_PID"; EXIT_CODE=$?
