@@ -209,6 +209,25 @@ async function assertTimeoutAndDisconnectedWork() {
   await sleep(650); assert.equal(drained, false); left.resolve(); await drain;
 }
 
+async function assertDrainBeforeListen() {
+  const lifecycle = new WorkLifecycle();
+  const server = http.createServer();
+  const work = deferred(); lifecycle.track(work.promise);
+  let closed = false;
+  const drain = lifecycle.drain(server, 1000).then(() => { closed = true; });
+  await sleep(50);
+  assert.equal(closed, false, "unopened HTTP server does not mean registered startup work is done");
+  work.resolve(); await drain;
+  lifecycle.assertHealthy();
+  assert.equal((lifecycle as any).recoveryHold, undefined);
+  const failed = new WorkLifecycle();
+  const broken = http.createServer();
+  broken.close = ((callback: (error?: Error) => void) => {
+    callback(Object.assign(new Error("real close failure"), { code: "EIO" })); return broken;
+  }) as typeof broken.close;
+  await assert.rejects(failed.drain(broken, 1000), /real close failure/);
+}
+
 async function assertActualScheduledAndStreams() {
   // Use the actual decorated cron worker, not a synthetic app.close mock.
   const batch = deferred(); let claims = 0;
@@ -242,11 +261,16 @@ async function repeatedSignalChild() {
   assert.ok(start >= 0 && end > start, "exercise the production signal registration block");
   const lifecycle = new WorkLifecycle();
   const server = http.createServer();
-  await new Promise<void>((resolve) => server.listen(0, resolve));
-  lifecycle.track(new Promise<void>(() => undefined));
+  const startup = process.env.CHORDV_SIGNAL_TEST_STARTUP === "true";
+  if (!startup) await new Promise<void>((resolve) => server.listen(0, resolve));
+  lifecycle.track(startup ? sleep(100) : new Promise<void>(() => undefined));
   const shutdown = async () => {
     process.send?.("draining");
     await lifecycle.drain(server, 10_000);
+    if (startup) {
+      await fs.writeFile(path.join(process.env.CHORDV_SIGNAL_TEST_DIR!, "closed"), "shutdown completed");
+      return;
+    }
     // If the production handler lets drain complete incorrectly, this is observable.
     await fs.writeFile(path.join(process.env.CHORDV_SIGNAL_TEST_DIR!, "pending.json"), "unsafe");
   };
@@ -293,13 +317,40 @@ async function assertRepeatedSignals() {
   }
 }
 
+async function assertStartupSignal() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "chordv-startup-signal-"));
+  const child = spawn(process.execPath, ["--import", "tsx", __filename], {
+    cwd: path.join(__dirname, ".."), env: { ...process.env, CHORDV_SIGNAL_TEST_DIR: dir, CHORDV_SIGNAL_TEST_STARTUP: "true" },
+    stdio: ["ignore", "ignore", "pipe", "ipc"]
+  });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  const exited = new Promise<number | null>(resolve => child.once("exit", resolve));
+  child.on("message", message => { if (message === "ready") child.kill("SIGTERM"); });
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const code = await Promise.race([exited, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`startup shutdown stuck: ${stderr}`)), 10_000);
+    })]);
+    assert.equal(code, 0, stderr);
+    assert.equal(await fs.readFile(path.join(dir, "closed"), "utf8"), "shutdown completed");
+    assert.doesNotMatch(stderr, /fenced|ERR_SERVER_NOT_RUNNING/);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   if (process.env.CHORDV_SIGNAL_TEST_DIR) { await repeatedSignalChild(); return; }
   await assertRepeatedSignals();
+  await assertStartupSignal();
   await assertRealHttpDrain();
   await assertDedicatedLockLifecycle();
   await assertFailures();
   await assertTimeoutAndDisconnectedWork();
+  await assertDrainBeforeListen();
   await assertActualScheduledAndStreams();
   console.log("system-update graceful shutdown regressions passed");
 }

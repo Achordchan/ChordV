@@ -92,7 +92,9 @@ export class WorkLifecycle implements NestInterceptor {
     this.streamClosers.clear();
     let closed = false;
     server.close((error?: Error) => {
-      if (error) this.failure = error;
+      // Startup signals may arrive before listen(). That server is already closed;
+      // still drain registered work and preserve every other close failure.
+      if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") this.failure = error;
       closed = true;
     });
     server.closeIdleConnections();

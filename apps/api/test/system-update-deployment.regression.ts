@@ -130,4 +130,10 @@ try {
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
+// The deployed nginx image and release CI are Linux/GNU; macOS validates this
+// separately in the actual admin image instead of substituting rename semantics.
+if (process.platform === "linux") {
+  const webroot = spawnSync("sh", [path.join(root, "apps/api/test/system-update-webroot.regression.sh")], { encoding: "utf8" });
+  assert.equal(webroot.status, 0, webroot.stderr);
+}
 console.log("system-update-deployment.regression.ts passed");

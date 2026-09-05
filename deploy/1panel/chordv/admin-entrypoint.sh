@@ -51,7 +51,18 @@ resolve_dist() {
   return 1
 }
 
-point_webroot() { ln -sfn "$1" "$WEBROOT_LINK"; }
+point_webroot() {
+  # GNU mv -T (bookworm image) renames over the symlink itself, never follows its
+  # directory target. Same-directory rename keeps every lookup on old or new dist.
+  local tmp="${WEBROOT_LINK}.tmp.$$"
+  if ! ln -s "$1" "$tmp"; then
+    log "ERROR: cannot prepare webroot link"; return 1
+  fi
+  if ! mv -fT "$tmp" "$WEBROOT_LINK"; then
+    rm -f "$tmp"
+    log "ERROR: cannot replace webroot link"; return 1
+  fi
+}
 
 # Wait for the api container to populate the shared release volume on first boot.
 waited=0
@@ -62,7 +73,7 @@ until DIST="$(resolve_dist)"; do
   log "waiting for a health-approved release with $ADMIN_SUBPATH (last-good-version) ..."
   sleep "$POLL_SECONDS"; waited=$((waited + POLL_SECONDS))
 done
-point_webroot "$DIST"
+point_webroot "$DIST" || exit 1
 CURRENT_DIST="$DIST"
 log "serving $DIST"
 
@@ -92,8 +103,9 @@ while true; do
   NEW_DIST="$(resolve_dist || true)"
   if [ -n "$NEW_DIST" ] && [ "$NEW_DIST" != "$CURRENT_DIST" ]; then
     log "version change: $CURRENT_DIST -> $NEW_DIST"
-    point_webroot "$NEW_DIST"
-    CURRENT_DIST="$NEW_DIST"
-    nginx -s reload || log "nginx reload failed"
+    if point_webroot "$NEW_DIST"; then
+      CURRENT_DIST="$NEW_DIST"
+      nginx -s reload || log "nginx reload failed"
+    fi
   fi
 done
