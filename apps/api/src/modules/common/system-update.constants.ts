@@ -17,7 +17,12 @@ import * as path from "node:path";
  */
 
 export const SYSTEM_UPDATE_PENDING_FILE = "pending.json";
+// The supervisor writes one result file per operation ("operation-result.<op>.json")
+// so a later operation never clobbers an earlier one the app has not consumed yet.
+// The legacy single "operation-result.json" is still drained for forward-compat with
+// an older supervisor image. The app matches both via SYSTEM_UPDATE_RESULT_PREFIX.
 export const SYSTEM_UPDATE_RESULT_FILE = "operation-result.json";
+export const SYSTEM_UPDATE_RESULT_PREFIX = "operation-result";
 // Written by the supervisor while a promotion is being health-gated/stabilized;
 // present == "a promotion is in flight" even across the process restart (when the
 // advisory lock cannot be held). Cleared once stabilization succeeds or rolls back.

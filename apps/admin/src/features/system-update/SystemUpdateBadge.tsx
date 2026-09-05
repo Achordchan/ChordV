@@ -36,10 +36,17 @@ type BusyKind = "update" | "rollback" | "restart";
 type Phase = "idle" | "running" | "reconnecting" | "done";
 
 const POLL_INTERVAL_MS = 3000;
-// Must exceed the backend's worst case: a pre-migration pg_dump snapshot and a
-// prisma migrate deploy can each run up to ~10 min, plus download + restart.
-// A shorter UI timeout would wrongly declare failure while the update is still live.
-const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+// We do NOT cap polling by wall-clock while the operation is still reachable: as long
+// as the backend answers with a non-terminal status, the operation is demonstrably
+// live and we keep waiting (a pre-migration pg_dump and a prisma migrate can each run
+// ~10 min with the app still serving). We only give up after the API has been
+// CONTINUOUSLY unreachable longer than the supervisor's worst-case dark window:
+// supervisor migration (CHORDV_SYSTEM_MIGRATE_TIMEOUT, default 900s) + health gate
+// (~90s) + stabilization (~10s) + restart overhead. 25 min leaves comfortable margin;
+// a still-reachable long op never trips it. The absolute backstop guards a backend
+// bug that leaves an op wedged "running" forever so the UI does not spin indefinitely.
+const MAX_UNREACHABLE_MS = 25 * 60 * 1000;
+const ABSOLUTE_MAX_MS = 60 * 60 * 1000;
 
 function parseErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -184,32 +191,45 @@ export function SystemUpdateBadge() {
 
   const pollOperation = useCallback(
     (operationId: string, startedAt: number) => {
+      // lastContactAt advances on every successful poll (op reachable, even while
+      // running). We only time out when the API has been unreachable for longer than
+      // MAX_UNREACHABLE_MS — never while the operation is still answering — so a slow
+      // snapshot/migration can't make the UI wrongly declare failure and re-enable
+      // controls mid-update. See the constant comments for the worst-case derivation.
+      let lastContactAt = startedAt;
+      const giveUp = (message: string) => {
+        polledOpId.current = null;
+        setPhase("done");
+        setBusy(null);
+        notifications.show({ color: "yellow", title: "状态确认超时", message });
+      };
       const tick = async () => {
         if (!mounted.current) return;
-        if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
-          polledOpId.current = null;
-          setPhase("done");
-          setBusy(null);
-          notifications.show({
-            color: "yellow",
-            title: "状态确认超时",
-            message: "长时间未确认到最终状态，请稍后手动刷新查看结果。"
-          });
+        if (Date.now() - startedAt > ABSOLUTE_MAX_MS) {
+          giveUp("操作已超过最长跟踪时间仍未确认到最终状态，请稍后手动刷新查看结果。");
           return;
         }
         try {
           const op = await fetchSystemOperation(operationId);
           if (!mounted.current) return;
+          lastContactAt = Date.now();
           if (op && (op.status === "succeeded" || op.status === "failed" || op.status === "rolled_back")) {
             await finishPolling(op);
             return;
           }
-          // Still running and reachable.
+          // Still running and reachable — keep waiting, no matter how long.
           if (op) setActiveOp(op);
           setPhase("running");
         } catch {
-          // Unreachable = the container is restarting on the new/rolled-back version.
-          if (mounted.current) setPhase("reconnecting");
+          if (!mounted.current) return;
+          // Unreachable = the container is restarting / migrating on the new (or
+          // rolled-back) version. Only give up if this has persisted past the
+          // supervisor's worst-case dark window.
+          if (Date.now() - lastContactAt > MAX_UNREACHABLE_MS) {
+            giveUp("服务长时间未恢复，请稍后手动刷新查看结果。");
+            return;
+          }
+          setPhase("reconnecting");
         }
         pollTimer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
       };

@@ -44,7 +44,12 @@ HEALTH_TIMEOUT="${CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS:-90}"
 NODE_BIN="${CHORDV_SYSTEM_NODE_BIN:-node}"
 
 PENDING_FILE="$STATE_DIR/pending.json"
-RESULT_FILE="$STATE_DIR/operation-result.json"
+# Each operation's outcome is written to its OWN file (operation-result.<op>.json),
+# never a single shared operation-result.json: a second operation must not clobber a
+# first one the app has not consumed yet (e.g. the app booted while PostgreSQL was
+# briefly unavailable, so the first result is still waiting). The app scans + drains
+# every operation-result*.json on boot and on each status poll.
+RESULT_PREFIX="$STATE_DIR/operation-result"
 DESIRED_FILE="$STATE_DIR/desired-version"
 LAST_GOOD_FILE="$STATE_DIR/last-good-version"
 # In-progress promotion: persisted so a supervisor/host restart mid-promotion
@@ -75,17 +80,23 @@ atomic_promote() {
 
 write_result() {
   # write_result <operationId> <status:success|failed|rolledback> <version> <reason> [migrationApplied]
-  # Atomic write (tmp + mv + sync): the app polls this file concurrently, so a
-  # partial `cat >` could be read as truncated JSON and the outcome discarded as
-  # "malformed". Returns non-zero if the outcome could not be durably persisted.
+  # Atomic write (tmp + mv + sync) to a PER-OPERATION file: the app polls concurrently,
+  # so a partial `cat >` could be read as truncated JSON; and a distinct filename per
+  # operation means a later operation's result never overwrites an earlier unconsumed
+  # one (the app drains every operation-result*.json). Overwriting the SAME op's file
+  # (e.g. a resumed promotion re-finalizing) is fine. All write_result callers pass a
+  # non-empty operationId. Returns non-zero if the outcome could not be durably persisted.
   mkdir -p "$STATE_DIR" || return 1
-  local migrated="${5:-false}" tmp="$RESULT_FILE.tmp.$$"
+  local op="$1" migrated="${5:-false}"
+  [ -n "$op" ] || return 1
+  local out="$RESULT_PREFIX.$op.json" tmp
+  tmp="$RESULT_PREFIX.$op.json.tmp.$$"
   if ! printf '{"operationId":"%s","status":"%s","version":"%s","reason":"%s","migrationApplied":%s}\n' \
-      "$1" "$2" "$3" "$4" "$migrated" > "$tmp"; then
+      "$op" "$2" "$3" "$4" "$migrated" > "$tmp"; then
     rm -f "$tmp" 2>/dev/null; return 1
   fi
   [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
-  mv -f "$tmp" "$RESULT_FILE" || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$out" || { rm -f "$tmp" 2>/dev/null; return 1; }
   sync 2>/dev/null || true
   return 0
 }

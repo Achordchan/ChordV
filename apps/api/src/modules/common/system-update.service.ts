@@ -36,7 +36,7 @@ import {
   SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE,
   SYSTEM_UPDATE_PENDING_FILE,
   SYSTEM_UPDATE_PROMOTING_FILE,
-  SYSTEM_UPDATE_RESULT_FILE,
+  SYSTEM_UPDATE_RESULT_PREFIX,
   type SystemUpdateRuntimeConfig
 } from "./system-update.constants";
 
@@ -533,17 +533,21 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         "数据库快照",
         10 * 60 * 1000
       );
+      // Force the archive to stable storage before we go on to (durably) commit a
+      // migration — otherwise a host crash right after pg_dump could leave the
+      // snapshot missing/corrupt while the destructive migration survives, defeating
+      // the recovery point. STRICT: a durability failure aborts the update.
+      await this.fsyncFile(target);
     } catch (error) {
-      // A failed pg_dump/gzip leaves a truncated .sql.gz behind — remove it so a
-      // later restore can't pick up a corrupt snapshot and it doesn't waste space.
+      // A failed pg_dump/gzip — or a snapshot that could not be durably committed —
+      // leaves a truncated/untrustworthy .sql.gz behind. Remove it so a later
+      // restore can't pick up a corrupt snapshot and it doesn't waste space, and
+      // abort: we must not migrate without a trustworthy recovery point.
       await fs.rm(target, { force: true }).catch(() => undefined);
       throw error;
     }
-    // Force the archive AND the directory entry to stable storage before we go on to
-    // (durably) commit a migration — otherwise a host crash right after pg_dump could
-    // leave the snapshot missing/corrupt while the destructive migration survives,
-    // defeating the recovery point.
-    await this.fsyncPath(target);
+    // Directory entry durability is best-effort (dir fsync is unsupported on some
+    // filesystems); the file above is the recovery point that must be durable.
     await this.fsyncDir(backupDir);
     this.logger.log(`Database snapshot created before migration: ${target}`);
     await this.pruneSnapshots(backupDir);
@@ -1051,22 +1055,34 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     await this.fsyncDir(path.dirname(file));
   }
 
-  private async fsyncPath(target: string) {
-    // Best-effort fsync of a file or directory; some platforms disallow dir fsync.
+  private async fsyncFile(target: string) {
+    // STRICT fsync of a FILE — errors propagate. A durability failure here (a
+    // delayed write-back error only surfaced by fsync) means the bytes may never
+    // reach stable storage, so the caller must abort rather than proceed to a
+    // destructive migration on top of a snapshot/marker that could vanish.
+    const handle = await fs.open(target, "r");
     try {
-      const handle = await fs.open(target, "r");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async fsyncDir(dir: string) {
+    // Best-effort fsync of a DIRECTORY: some platforms/filesystems reject opening
+    // a directory for fsync (EISDIR/EINVAL/EPERM). The rename that precedes it is
+    // already atomic; the dir fsync only hardens WHEN the entry reaches disk, so a
+    // failure here is logged, not fatal.
+    try {
+      const handle = await fs.open(dir, "r");
       try {
         await handle.sync();
       } finally {
         await handle.close();
       }
     } catch (error) {
-      this.logger.warn(`fsync ${target} failed (non-fatal): ${this.describeError(error)}`);
+      this.logger.warn(`fsync dir ${dir} failed (non-fatal): ${this.describeError(error)}`);
     }
-  }
-
-  private async fsyncDir(dir: string) {
-    await this.fsyncPath(dir);
   }
 
   private async clearPendingMarker() {
@@ -1084,12 +1100,33 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
    */
   private async consumeResultMarker(): Promise<void> {
     if (!this.config.stateDir) return;
-    const resultFile = path.join(this.config.stateDir, SYSTEM_UPDATE_RESULT_FILE);
+    // Drain EVERY per-operation result file (plus the legacy single file): the
+    // supervisor writes one "operation-result.<op>.json" per operation so a second
+    // operation never clobbers a first the app has not yet persisted. Ignore .tmp
+    // files (an in-flight atomic write) and process oldest-first for stable ordering.
+    let entries: string[];
+    try {
+      entries = await fs.readdir(this.config.stateDir);
+    } catch {
+      return;
+    }
+    const resultFiles = entries
+      .filter(
+        (name) =>
+          name.startsWith(SYSTEM_UPDATE_RESULT_PREFIX) && name.endsWith(".json") && !name.includes(".tmp.")
+      )
+      .sort();
+    for (const name of resultFiles) {
+      await this.consumeOneResultMarker(path.join(this.config.stateDir, name));
+    }
+  }
+
+  private async consumeOneResultMarker(resultFile: string): Promise<void> {
     let raw: string;
     try {
       raw = await fs.readFile(resultFile, "utf8");
     } catch {
-      return; // no marker
+      return; // consumed by a concurrent poll, or gone
     }
     let marker: {
       operationId?: string;
@@ -1101,7 +1138,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     try {
       marker = JSON.parse(raw);
     } catch {
-      this.logger.warn("Discarding unparseable operation-result marker.");
+      this.logger.warn(`Discarding unparseable operation-result marker: ${path.basename(resultFile)}`);
       await fs.rm(resultFile, { force: true }).catch(() => undefined);
       return;
     }
