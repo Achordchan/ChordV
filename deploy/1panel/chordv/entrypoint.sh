@@ -26,6 +26,10 @@ STATE_DIR="${CHORDV_SYSTEM_STATE_DIR:-/app/state}"
 CURRENT_LINK="${CHORDV_SYSTEM_CURRENT_LINK:-/app/current}"
 SEED_DIR="${CHORDV_SYSTEM_SEED_DIR:-/app/seed}"
 APP_ENTRY="${CHORDV_SYSTEM_APP_ENTRY:-apps/api/dist/apps/api/src/main.js}"
+# api + admin ship as one release unit; validate the admin bundle too so a release
+# missing it is rejected/rolled back rather than silently serving a stale UI from a
+# different release (set empty to skip, e.g. API-only deployments or stub tests).
+ADMIN_ENTRY="${CHORDV_SYSTEM_ADMIN_ENTRY:-apps/admin/dist/index.html}"
 MIGRATE_SCRIPT="${CHORDV_SYSTEM_MIGRATE_SCRIPT:-scripts/prisma-migrate-with-baseline.mjs}"
 RUN_MIGRATE="${CHORDV_SUPERVISOR_MIGRATE:-true}"
 API_PORT="${CHORDV_API_PORT:-3000}"
@@ -105,7 +109,7 @@ write_promoting() {
 clear_promoting() { rm -f "$PROMOTING_FILE"; }
 
 resolve_start_version() {
-  local desired current
+  local desired current lastgood
   desired="$(read_file_trim "$DESIRED_FILE")"
   if [ -n "$desired" ] && [ -d "$RELEASES_DIR/$desired" ]; then
     printf '%s' "$desired"; return 0
@@ -115,6 +119,14 @@ resolve_start_version() {
     if [ -n "$current" ] && [ -d "$RELEASES_DIR/$current" ]; then
       printf '%s' "$current"; return 0
     fi
+  fi
+  # Prefer the last known-good version over the image seed: if desired/current point
+  # at a version whose dir is gone (e.g. a discarded failed update), fall back to the
+  # release that last passed health, not all the way back to the baked seed.
+  lastgood="$(read_file_trim "$LAST_GOOD_FILE")"
+  if [ -n "$lastgood" ] && [ -d "$RELEASES_DIR/$lastgood" ]; then
+    log "desired/current unusable; falling back to last-good $lastgood"
+    printf '%s' "$lastgood"; return 0
   fi
   # Nothing usable — bootstrap from the image-baked seed release.
   local seed_version
@@ -218,6 +230,11 @@ handle_failed_promotion() {
     if [ -n "$LG" ] && [ "$LG" != "$GEN_VERSION" ] && [ -d "$RELEASES_DIR/$LG" ]; then
       log "auto-rolling back $GEN_VERSION -> $LG (op ${GEN_OP:-none}): $reason"
       [ -n "$GEN_OP" ] && { write_result "$GEN_OP" "rolledback" "$LG" "$reason" "$MIG" || log "WARN: rollback result not persisted; reconcile will finalize"; }
+      # Durably switch current + desired to last-good BEFORE clearing the promoting
+      # marker. If we stop in this window otherwise, desired/current still point at
+      # the failed (or now-discarded) version, and a restart would launch it as a
+      # trusted version (crash loop) or fall all the way back to the seed.
+      atomic_promote "$LG"
       discard_failed_release "$GEN_VERSION" "$GEN_KIND"
       clear_promoting
       GEN_VERSION="$LG"; GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0
@@ -226,7 +243,7 @@ handle_failed_promotion() {
     # No fallback: keep retrying the SAME version. Only clear the promoting guard
     # once the failure is durably recorded, so the outcome is not lost.
     if [ -n "$GEN_OP" ]; then
-      if write_result "$GEN_OP" "failed" "$GEN_VERSION" "$reason（无可回滚版本）" "$MIG"; then
+      if write_result "$GEN_OP" "failed" "$GEN_VERSION" "${reason}（无可回滚版本）" "$MIG"; then
         clear_promoting
       else
         log "WARN: could not persist failure result; keeping promoting marker for retry"
@@ -293,16 +310,25 @@ fi
 while true; do
   atomic_promote "$GEN_VERSION"
   RELEASE_DIR="$RELEASES_DIR/$GEN_VERSION"
-  if [ ! -f "$RELEASE_DIR/$APP_ENTRY" ]; then
+  # Validate the release is complete BEFORE launching/health-gating: the api entry,
+  # and (for the api+admin release unit) the admin bundle. A missing piece on a
+  # promoted release rolls back; on the initial/seed version it is fatal (nothing to
+  # fall back to).
+  MISSING=""
+  [ -f "$RELEASE_DIR/$APP_ENTRY" ] || MISSING="$APP_ENTRY"
+  if [ -z "$MISSING" ] && [ -n "$ADMIN_ENTRY" ] && [ ! -f "$RELEASE_DIR/$ADMIN_ENTRY" ]; then
+    MISSING="$ADMIN_ENTRY"
+  fi
+  if [ -n "$MISSING" ]; then
     if [ "$GEN_PROMOTION" = "1" ]; then
       # A corrupt/incomplete promoted release: roll back instead of exiting, which
       # (with desired/promoting already persisted) would restart into the same
       # broken version forever.
-      log "entry $APP_ENTRY missing in $RELEASE_DIR; rolling back"
-      handle_failed_promotion "新版本缺少启动入口（下载/解压不完整），已自动回滚"
+      log "release $GEN_VERSION missing $MISSING; rolling back"
+      handle_failed_promotion "新版本不完整（缺少 ${MISSING}），已自动回滚"
       continue
     fi
-    log "FATAL: entry $APP_ENTRY missing in $RELEASE_DIR (no promotion to roll back)"; exit 1
+    log "FATAL: release $GEN_VERSION missing $MISSING (no promotion to roll back)"; exit 1
   fi
 
   if ! run_migrate "$RELEASE_DIR"; then

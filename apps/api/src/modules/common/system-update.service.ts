@@ -131,6 +131,36 @@ export class SystemUpdateService implements OnModuleInit {
     };
   }
 
+  /**
+   * Promotion readiness gate. Proves not just DB connectivity but that the schema
+   * the RUNNING release expects is actually present — a release that boots HTTP but
+   * is missing a migration (new table/column) must fail this so the supervisor rolls
+   * it back instead of marking it last-good. Throws a GENERIC error (details only in
+   * logs) since this endpoint is unauthenticated and must not leak internal specifics.
+   */
+  async assertReady(): Promise<void> {
+    try {
+      await this.prisma.$queryRawUnsafe("SELECT 1");
+    } catch (error) {
+      this.logger.warn(`Readiness: database connectivity failed: ${this.describeError(error)}`);
+      throw new ServiceUnavailableException("service not ready");
+    }
+    // Schema compatibility: every migration bundled with the running release must be
+    // applied. The app runs with cwd = the release dir, so its own migrations live
+    // under cwd/apps/api/prisma/migrations (same relative path in local dev).
+    let pending: string[];
+    try {
+      pending = await this.detectPendingMigrations(process.cwd());
+    } catch (error) {
+      this.logger.warn(`Readiness: schema check failed: ${this.describeError(error)}`);
+      throw new ServiceUnavailableException("service not ready");
+    }
+    if (pending.length > 0) {
+      this.logger.warn(`Readiness: ${pending.length} unapplied migration(s): ${pending.join(", ")}`);
+      throw new ServiceUnavailableException("service not ready");
+    }
+  }
+
   async checkUpdate(force: boolean): Promise<SystemUpdateCheckDto> {
     const now = Date.now();
     if (!force && this.cache && now - this.cache.checkedAt < this.config.cacheTtlMs) {
@@ -343,17 +373,16 @@ export class SystemUpdateService implements OnModuleInit {
         } catch (error) {
           // Migration failed → withdraw the promotion intent so we do not activate a
           // release whose migrations did not fully apply, and discard the release.
-          const stillPending = await this.detectPendingMigrations(releaseDir).catch(() => pendingMigrations);
+          // A Postgres migration is NOT guaranteed transactional (one migration can
+          // apply some DDL then fail while still "unfinished" in _prisma_migrations),
+          // so we must assume the DB may be in an intermediate state and always point
+          // at the pre-migration snapshot for recovery — never "clean abort".
           await this.clearPendingMarker().catch(() => undefined);
           await this.removeDirSafe(releaseDir);
-          if (stillPending.length < pendingMigrations.length) {
-            const applied = pendingMigrations.length - stillPending.length;
-            throw new ServiceUnavailableException(
-              `数据库迁移失败，且已有 ${applied}/${pendingMigrations.length} 个迁移被提交，数据库处于中间状态。` +
-                `请人工检查并用迁移前快照恢复（快照目录见 CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。原始错误：${this.describeError(error)}`
-            );
-          }
-          throw error;
+          throw new ServiceUnavailableException(
+            `数据库迁移失败，数据库可能处于中间状态（Prisma/Postgres 迁移不保证事务性，可能已提交部分 DDL）。` +
+              `请人工检查并用迁移前快照恢复（快照目录见 CHORDV_SYSTEM_UPDATE_BACKUP_DIR）。原始错误：${this.describeError(error)}`
+          );
         }
       }
 

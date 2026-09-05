@@ -1,23 +1,20 @@
-import { Controller, Get, ServiceUnavailableException } from "@nestjs/common";
-import { PrismaService } from "../common/prisma.service";
+import { Controller, Get } from "@nestjs/common";
 import { SystemUpdateService } from "../common/system-update.service";
 
 /**
  * Liveness (`/health`) and readiness (`/health/ready`) endpoints.
  *
  * - Liveness is dependency-free (process is up).
- * - Readiness exercises the database with a trivial query. The self-update
- *   supervisor health-gates a freshly promoted version on READINESS, so a release
- *   that opens its HTTP port but has a broken Prisma runtime / incompatible client
- *   / unusable schema fails the gate and is rolled back, instead of silently
- *   becoming last-good while every authenticated request fails.
+ * - Readiness delegates to SystemUpdateService.assertReady(), which verifies DB
+ *   connectivity AND that the running release's schema is present. The self-update
+ *   supervisor gates a freshly promoted version on readiness, so a release that
+ *   opens its port but has a broken Prisma runtime / missing migration is rolled
+ *   back instead of silently becoming last-good. assertReady throws a GENERIC 503
+ *   (details only in server logs) — this endpoint is unauthenticated.
  */
 @Controller("health")
 export class HealthController {
-  constructor(
-    private readonly systemUpdateService: SystemUpdateService,
-    private readonly prisma: PrismaService
-  ) {}
+  constructor(private readonly systemUpdateService: SystemUpdateService) {}
 
   @Get()
   health() {
@@ -26,13 +23,7 @@ export class HealthController {
 
   @Get("ready")
   async ready() {
-    try {
-      await this.prisma.$queryRawUnsafe("SELECT 1");
-    } catch (error) {
-      throw new ServiceUnavailableException(
-        `database not ready: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
+    await this.systemUpdateService.assertReady();
     return { status: "ready", version: this.systemUpdateService.getCurrentVersion() };
   }
 }
