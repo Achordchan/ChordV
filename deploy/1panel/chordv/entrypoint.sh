@@ -196,7 +196,7 @@ write_promoting() {
   return 0
 }
 
-clear_promoting() { rm -f "$PROMOTING_FILE"; }
+clear_promoting() { rm -f "$PROMOTING_FILE" || return 1; sync; }
 
 consume_pending() {
   # Keep the only recovery journal until its complete promotion context is durable.
@@ -267,17 +267,31 @@ wait_healthy() {
   # wait_healthy <pid> — 0 if the app answers health before timeout while alive.
   # X-Forwarded-Proto: https satisfies the production HTTPS-only guard for this
   # in-container probe, mirroring what the openresty terminator sends upstream.
-  local pid="$1" waited=0 url="http://127.0.0.1:${API_PORT}${HEALTH_PATH}"
-  while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+  local pid="$1" started="$SECONDS" remaining probe_timeout
+  local url="http://127.0.0.1:${API_PORT}${HEALTH_PATH}"
+  while [ $((SECONDS - started)) -lt "$HEALTH_TIMEOUT" ]; do
     if ! kill -0 "$pid" 2>/dev/null; then
       log "app pid $pid exited during health gate"; return 1
     fi
-    if curl -fsS -o /dev/null --max-time 3 -H "X-Forwarded-Proto: https" "$url" 2>/dev/null; then
-      return 0
+    remaining=$((HEALTH_TIMEOUT - (SECONDS - started)))
+    probe_timeout=3
+    [ "$remaining" -ge "$probe_timeout" ] || probe_timeout="$remaining"
+    # Count probe latency too and never give curl more than the remaining budget.
+    if curl -fsS -o /dev/null --max-time "$probe_timeout" -H "X-Forwarded-Proto: https" "$url" 2>/dev/null; then
+      [ $((SECONDS - started)) -lt "$HEALTH_TIMEOUT" ] && return 0
+      break
     fi
-    sleep 1; waited=$((waited + 1))
+    [ $((SECONDS - started)) -lt "$HEALTH_TIMEOUT" ] || break
+    sleep 1
   done
   log "health gate timed out after ${HEALTH_TIMEOUT}s"; return 1
+}
+
+validate_health_timeout() {
+  if ! [[ "$HEALTH_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$HEALTH_TIMEOUT" -gt 86400 ]; then
+    log "FATAL: health timeout must be an integer between 1 and 86400 seconds"
+    return 1
+  fi
 }
 
 validate_stabilization() {
@@ -616,6 +630,7 @@ forward_signal() {
 trap forward_signal TERM INT
 
 validate_stabilization || exit 1
+validate_health_timeout || exit 1
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 
 # Resume an interrupted promotion: if we restarted after desired-version was
@@ -726,6 +741,7 @@ while true; do
     # and the promoting marker until last-good AND the result are persisted.
     LG_OK=0
     FINALIZED=0
+    RESULT_OK=0
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
@@ -757,12 +773,21 @@ while true; do
           continue
         fi
       fi
-      if [ -n "$GEN_OP" ] && ! write_result "$GEN_OP" "$RES_STATUS" "$GEN_VERSION" "$RES_REASON" "$SUCC_MIG"; then
-        log "WARN: could not persist ${RES_STATUS} result; keeping full promotion context, retrying in 2s"
+      if [ "$RESULT_OK" != "1" ]; then
+        if [ -n "$GEN_OP" ] && ! write_result "$GEN_OP" "$RES_STATUS" "$GEN_VERSION" "$RES_REASON" "$SUCC_MIG"; then
+          log "WARN: could not persist ${RES_STATUS} result; keeping full promotion context, retrying in 2s"
+          sleep 2
+          continue
+        fi
+        RESULT_OK=1
+      fi
+      # A leftover marker fences future operations. Retry its removal before
+      # dropping context, without republishing results already consumed by the API.
+      if ! clear_promoting; then
+        log "WARN: cannot clear promoting marker; keeping full promotion context, retrying in 2s"
         sleep 2
         continue
       fi
-      clear_promoting
       FINALIZED=1
       break
     done

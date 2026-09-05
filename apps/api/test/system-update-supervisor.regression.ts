@@ -310,7 +310,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number, message: (
 }
 
 /** Fail actual atomic renames until the test releases them, without restarting the app. */
-async function runFinalizationRetryScenario(fault: "result" | "last-good", resumeLanding = false) {
+async function runFinalizationRetryScenario(fault: "result" | "last-good" | "remove", resumeLanding = false) {
   const port = await freePort();
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-retry-"));
   const stateDir = path.join(root, "state");
@@ -345,10 +345,17 @@ if [ "\${!#}" = "$CHORDV_TEST_FAULT_TARGET" ] && [ -f "$CHORDV_TEST_BLOCKER" ]; 
 fi
 exec /bin/mv "$@"
 `, { mode: 0o755 });
+  writeFileSync(path.join(binDir, "rm"), `#!/usr/bin/env bash
+if [ "\${!#}" = "$CHORDV_TEST_FAULT_TARGET" ] && [ -f "$CHORDV_TEST_BLOCKER" ]; then
+  printf 'failed\\n' >> "$CHORDV_TEST_ATTEMPTS"
+  exit 1
+fi
+exec /bin/rm "$@"
+`, { mode: 0o755 });
   const env = {
     ...process.env,
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-    CHORDV_TEST_FAULT_TARGET: fault === "result" ? resultFile : path.join(stateDir, "last-good-version"),
+    CHORDV_TEST_FAULT_TARGET: fault === "remove" ? markerFile : fault === "result" ? resultFile : path.join(stateDir, "last-good-version"),
     CHORDV_TEST_BLOCKER: blocker,
     CHORDV_TEST_ATTEMPTS: attemptsFile,
     CHORDV_SYSTEM_NODE_BIN: process.execPath,
@@ -373,7 +380,7 @@ exec /bin/mv "$@"
       () => existsSync(attemptsFile) && readFileSync(attemptsFile, "utf8").trim().split("\n").length >= failures,
       30_000, () => `${fault} persistence did not keep retrying.\n${stderr}`);
     assert.deepEqual(JSON.parse(readFileSync(markerFile, "utf8")), marker, "retry must retain the original promotion marker");
-    assert.equal(existsSync(resultFile), false, "must not publish a result before persistence succeeds");
+    assert.equal(existsSync(resultFile), fault === "remove", "result must be persisted before marker removal");
     const launches = readFileSync(launchFile, "utf8");
     assert.equal(launches.trim().split("\n").length, 1, "persistence retries must not restart the app");
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/health/ready`)).status, 200, "app must serve during retries");
@@ -817,6 +824,37 @@ function testStabilizationConfig() {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
+async function testHealthElapsedDeadline() {
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer(socket => {
+    sockets.add(socket); socket.on("close", () => sockets.delete(socket));
+    // Accept TCP but never send HTTP headers: curl must consume the time budget.
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const source = readFileSync(entrypoint, "utf8");
+  const definitions = source.slice(0, source.indexOf('\nAPP_PID=""'));
+  const started = Date.now();
+  const child = spawn("bash", ["-c", `${definitions}\nwait_healthy "$$"`], {
+    env: { ...process.env, CHORDV_API_PORT: String(address.port), CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "2" },
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+  let stderr = "";
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  try {
+    const code = await new Promise<number | null>(resolve => child.once("exit", resolve));
+    const elapsed = Date.now() - started;
+    assert.equal(code, 1, stderr);
+    assert.match(stderr, /health gate timed out after 2s/);
+    assert.ok(elapsed < 4500, `health deadline multiplied by probe latency: ${elapsed}ms`);
+  } finally {
+    child.kill("SIGKILL");
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
 async function main() {
   // Scenario A: last-good is healthy → the promotion of the broken release is
   // auto-rolled-back, and the terminal 'rolledback' result is recorded ONLY after
@@ -908,6 +946,8 @@ async function main() {
 
   // Scenario G: last-good persistence must recover even after the old retry budget.
   await runFinalizationRetryScenario("last-good");
+  await runFinalizationRetryScenario("remove");
+  await runFinalizationRetryScenario("remove", true);
 
   const automatic = await runRollbackScenario("good", false, true);
   assert.equal(automatic.result?.status, "rolledback", automatic.stderr);
@@ -931,6 +971,7 @@ async function main() {
   testJournalFieldExtraction();
   testSnapshotDatabaseUrl();
   testStabilizationConfig();
+  await testHealthElapsedDeadline();
 }
 
 void main().then(() => {
