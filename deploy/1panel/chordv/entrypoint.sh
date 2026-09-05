@@ -64,6 +64,7 @@ LAST_GOOD_FILE="$STATE_DIR/last-good-version"
 # still knows this is a health-gated promotion (and can roll back), rather than
 # treating the half-promoted release as a plain, trusted start.
 PROMOTING_FILE="$STATE_DIR/promoting.json"
+APPROVAL_FILE="$STATE_DIR/approved-generation"
 # A new release must stay up AND healthy for this long before it is trusted as
 # last-good — otherwise a version that serves one probe then crashes on delayed
 # init would be restarted forever instead of rolled back.
@@ -146,7 +147,7 @@ atomic_promote() {
     log "ERROR: cannot persist desired-version for $version (state volume read-only/full?)"
     return 1
   fi
-  sync 2>/dev/null || true
+  sync || return 1
   return 0
 }
 
@@ -169,7 +170,7 @@ write_result() {
   fi
   [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$out" || { rm -f "$tmp" 2>/dev/null; return 1; }
-  sync 2>/dev/null || true
+  sync || return 1
   return 0
 }
 
@@ -192,8 +193,19 @@ write_promoting() {
   fi
   [ -s "$tmp" ] || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$PROMOTING_FILE" || { rm -f "$tmp" 2>/dev/null; return 1; }
-  sync 2>/dev/null || true
+  sync || return 1
   return 0
+}
+
+approve_generation() {
+  # Ephemeral authorization for this exact process: a new random token is generated
+  # on EVERY launch. Atomic visibility is enough; a lost file after host restart
+  # cannot authorize the next process, which always has a different token.
+  local tmp="$APPROVAL_FILE.tmp.$$"
+  [ ! -d "$APPROVAL_FILE" ] || return 1
+  if ! printf '%s' "$GEN_APPROVAL_TOKEN" > "$tmp" || ! mv -f "$tmp" "$APPROVAL_FILE"; then
+    rm -f "$tmp" 2>/dev/null; return 1
+  fi
 }
 
 clear_promoting() { rm -f "$PROMOTING_FILE" || return 1; sync; }
@@ -258,7 +270,7 @@ resolve_start_version() {
     fi
     rm -rf "$RELEASES_DIR/$seed_version"
     mv -f "$stage" "$RELEASES_DIR/$seed_version"
-    sync 2>/dev/null || true
+    sync || { log "FATAL: cannot synchronize seeded release"; exit 1; }
   fi
   printf '%s' "$seed_version"
 }
@@ -341,7 +353,7 @@ write_last_good() {
     rm -f "$tmp" 2>/dev/null
     return 1
   fi
-  sync 2>/dev/null || true
+  sync || return 1
   # Publish only the health-approved marker, AFTER the private rollback target.
   # Admin never mounts private state (which may still contain legacy DB snapshots).
   # A failed public write leaves the previous approved marker intact; callers retry
@@ -351,7 +363,7 @@ write_last_good() {
     rm -f "$public_tmp" 2>/dev/null
     return 1
   fi
-  sync 2>/dev/null || true
+  sync || return 1
   return 0
 }
 
@@ -444,6 +456,7 @@ run_snapshot() {
       log "ERROR: existing snapshot is corrupt or cannot be verified; refusing migration"
       return 1
     fi
+    sync || { log "ERROR: cannot synchronize reused snapshot"; return 1; }
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
   done
@@ -471,11 +484,15 @@ run_snapshot() {
   if ! gzip -t "$tmp" 2>/dev/null; then
     log "ERROR: snapshot archive is corrupt/incomplete"; rm -f "$tmp" 2>/dev/null; return 1
   fi
-  sync 2>/dev/null || true # flush contents before publishing the reusable name
+  if ! sync; then
+    log "ERROR: cannot synchronize snapshot contents"; rm -f "$tmp" 2>/dev/null; return 1
+  fi
   if ! mv -f "$tmp" "$target"; then
     log "ERROR: cannot finalize snapshot"; rm -f "$tmp" 2>/dev/null; return 1
   fi
-  sync 2>/dev/null || true # flush the directory entry (the rename)
+  if ! sync; then
+    log "ERROR: cannot synchronize published snapshot"; return 1
+  fi
   prune_snapshots
   return 0
 }
@@ -672,6 +689,7 @@ mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
 if [ -e "$PROMOTING_FILE" ] || [ -L "$PROMOTING_FILE" ]; then
   load_journal "$PROMOTING_FILE" promoting
+  sync || { log "FATAL: cannot synchronize resumed promotion journal; retaining all markers"; exit 1; }
   RESUME_V="$JOURNAL_VERSION"; RESUME_OP="$JOURNAL_OP"; RESUME_KIND="$JOURNAL_KIND"
   RESUME_FAILURE="$JOURNAL_FAILURE"; RESUME_REASON="$JOURNAL_REASON"
   GEN_MIG="$JOURNAL_MIG"; GEN_ROLLBACK_FROM="$JOURNAL_ROLLBACK"
@@ -762,6 +780,10 @@ while true; do
     continue
   fi
 
+  GEN_APPROVAL_TOKEN="$("$NODE_BIN" -e 'process.stdout.write(require("node:crypto").randomUUID())')" || exit 1
+  [ -n "$GEN_APPROVAL_TOKEN" ] || exit 1
+  export CHORDV_SYSTEM_APPROVAL_TOKEN="$GEN_APPROVAL_TOKEN"
+  export CHORDV_SYSTEM_APPROVAL_FILE="$APPROVAL_FILE"
   export CHORDV_SYSTEM_VERSION="$GEN_VERSION"
   log "launching $GEN_VERSION"
   ( cd "$RELEASE_DIR" && exec "$NODE_BIN" "$APP_ENTRY" ) &
@@ -774,6 +796,7 @@ while true; do
     LG_OK=0
     FINALIZED=0
     RESULT_OK=0
+    APPROVAL_OK=0
     # Finalize the operation ONLY now — after health + stabilization. The app does
     # not self-confirm on boot (a version can open the port then fail during delayed
     # init); it consumes this marker to mark the op succeeded.
@@ -812,6 +835,14 @@ while true; do
           continue
         fi
         RESULT_OK=1
+      fi
+      if [ "$APPROVAL_OK" != "1" ]; then
+        if ! approve_generation; then
+          log "WARN: cannot approve current process; business traffic remains gated, retrying in 2s"
+          sleep 2
+          continue
+        fi
+        APPROVAL_OK=1
       fi
       # A leftover marker fences future operations. Retry its removal before
       # dropping context, without republishing results already consumed by the API.

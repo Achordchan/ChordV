@@ -450,6 +450,23 @@ async function main() {
           await assert.rejects(() => svc.enforceSignedManifestFloor("1.2.0"), /低于/);
           await svc.enforceSignedManifestFloor("1.4.0");
           assert.equal(readFileSync(floorFile, "utf8"), "1.4.0", "repaired state resumes the serialized ratchet");
+          const originalOpen = fsPromises.open;
+          try {
+            for (const code of ["EIO", "ENOSPC", "EACCES", "EPERM"]) {
+              fsPromises.open = (async (file: unknown, ...args: unknown[]) => {
+                const handle = await Reflect.apply(originalOpen, fsPromises, [file, ...args]);
+                if (file !== stateDir) return handle;
+                return { sync: async () => { throw Object.assign(new Error("injected directory sync failure"), { code }); }, close: () => handle.close() };
+              }) as typeof fsPromises.open;
+              await assert.rejects(() => svc.enforceSignedManifestFloor("1.5.0"), /injected directory sync failure/);
+              // The rename is visible even when its directory sync failed. Reading
+              // that equal value must not bypass durability on the next check.
+              assert.equal(readFileSync(floorFile, "utf8"), "1.5.0");
+              await assert.rejects(() => svc.enforceSignedManifestFloor("1.5.0"), /injected directory sync failure/);
+            }
+          } finally { fsPromises.open = originalOpen; }
+          await svc.enforceSignedManifestFloor("1.5.0");
+
         }
       );
     } finally {

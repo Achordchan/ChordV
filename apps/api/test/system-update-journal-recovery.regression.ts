@@ -21,11 +21,15 @@ function fixture() {
   // Intercept only atomic state renames; all other shell behavior is real.
   writeFileSync(path.join(bin, "mv"), `#!/usr/bin/env bash
 for target in "$@"; do
-  if [[ -f "$CHORDV_TEST_FAULT" && ( ( "$target" == */promoting.json && "$(cat "$CHORDV_TEST_FAULT")" != result ) || "$target" == */operation-result.*.json ) ]]; then
+  if [[ -f "$CHORDV_TEST_FAULT" && "$(cat "$CHORDV_TEST_FAULT")" != sync && ( ( "$target" == */promoting.json && "$(cat "$CHORDV_TEST_FAULT")" != result ) || "$target" == */operation-result.*.json ) ]]; then
     echo "injected state write failure" >&2; exit 1
   fi
 done
 exec /bin/mv "$@"
+`, { mode: 0o755 });
+  writeFileSync(path.join(bin, "sync"), `#!/usr/bin/env bash
+if [[ -f "$CHORDV_TEST_FAULT" && "$(cat "$CHORDV_TEST_FAULT")" == sync ]]; then exit 1; fi
+exec /bin/sync
 `, { mode: 0o755 });
   // No HTTP socket needed: these tests cover journal handoff before health gating.
   writeFileSync(path.join(bin, "curl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
@@ -181,6 +185,32 @@ async function restartKeepsVersion() {
   } finally { await f.cleanup(); }
 }
 
+async function journalSyncFailure() {
+  const f = fixture();
+  try {
+    f.release("0.0.1"); f.release("0.0.2");
+    const pending = path.join(f.state, "pending.json");
+    const bytes = JSON.stringify({ version: "0.0.2", operationId: "sysop-sync", kind: "update", migrationApplied: false });
+    writeFileSync(pending, bytes); writeFileSync(f.fault, "sync");
+    let run = f.start();
+    await until(() => run.logs().includes("retaining pending journal"), run.logs);
+    assert.equal(readFileSync(pending, "utf8"), bytes);
+    assert.ok(existsSync(path.join(f.state, "promoting.json")), "rename can be visible before failed sync");
+    assert.equal(existsSync(f.launches), false);
+    await f.stop(run.child);
+    run = f.start();
+    await until(() => run.child.exitCode !== null, run.logs);
+    assert.match(run.logs(), /cannot synchronize resumed promotion journal/);
+    assert.equal(readFileSync(pending, "utf8"), bytes);
+    assert.equal(existsSync(f.launches), false);
+    rmSync(f.fault);
+    run = f.start();
+    await until(() => existsSync(path.join(f.state, "operation-result.sysop-sync.json")), run.logs);
+    assert.equal(JSON.parse(readFileSync(path.join(f.state, "operation-result.sysop-sync.json"), "utf8")).status, "success");
+    assert.equal(existsSync(pending), false);
+  } finally { await f.cleanup(); }
+}
+
 async function main() {
   await pendingRetry(false);
   await pendingRetry(true);
@@ -188,6 +218,7 @@ async function main() {
   await interruptedHandoff(false);
   await interruptedHandoff(true);
   await restartKeepsVersion();
-  console.log("system-update-journal-recovery.regression.ts passed (9 recovery scenarios)");
+  await journalSyncFailure();
+  console.log("system-update-journal-recovery.regression.ts passed (10 recovery scenarios)");
 }
 void main();

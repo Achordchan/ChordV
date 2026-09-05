@@ -102,5 +102,26 @@ try {
   assert.notEqual(result.status, 0);
   assert.equal(readFileSync(calls, "utf8"), before, "permission failure cannot dump/migrate");
   assert.deepEqual(readdirSync(backup), kept);
+  rmSync(path.join(root, "chmod"));
+  const counter = path.join(root, "sync-count");
+  writeFileSync(path.join(root, "sync"), `#!/usr/bin/env bash
+count=0
+[ ! -f "$CHORDV_TEST_SYNC_COUNTER" ] || count="$(cat "$CHORDV_TEST_SYNC_COUNTER")"
+count=$((count + 1)); printf '%s' "$count" > "$CHORDV_TEST_SYNC_COUNTER"
+[ "$count" != "$CHORDV_TEST_SYNC_FAIL_AT" ] || exit 1
+exec /bin/sync
+`, { mode: 0o755 });
+  const syncRun = (op: string, failure: string) => {
+    rmSync(counter, { force: true });
+    return run(op, "5", { CHORDV_TEST_SYNC_COUNTER: counter, CHORDV_TEST_SYNC_FAIL_AT: failure });
+  };
+  assert.notEqual(syncRun("sync-before", "1").status, 0);
+  assert.equal(readdirSync(backup).some(file => file.includes("sync-before")), false);
+  assert.notEqual(syncRun("sync-after", "2").status, 0);
+  assert.equal(readdirSync(backup).some(file => file.includes("sync-after") && file.endsWith(".sql.gz")), true);
+  const callsBeforeReuse = readFileSync(calls, "utf8");
+  assert.notEqual(syncRun("sync-after", "1").status, 0, "reuse cannot bypass the failed publication sync");
+  assert.equal(readFileSync(calls, "utf8"), callsBeforeReuse);
+  assert.equal(syncRun("sync-after", "0").status, 0, "storage recovery permits verified durable reuse");
   console.log("system-update-snapshot-security.regression.ts passed");
 } finally { rmSync(root, { recursive: true, force: true }); }

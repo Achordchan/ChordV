@@ -1,3 +1,4 @@
+import { promotionAdmission } from "../../promotion-admission";
 import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, HttpException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
@@ -62,7 +63,7 @@ export class ClientTicketService {
     // Pending attachment rows are shared in Postgres so restarts/multi-instance stay consistent.
     const intervalMs = Math.max(30_000, Math.floor(SUPPORT_TICKET_ATTACHMENT_UPLOAD_TOKEN_TTL_MS / 2));
     const tick = () => {
-      if (!workLifecycle.isDraining) workLifecycle.track(this.pruneExpiredPendingAttachmentsAndCleanup());
+      if (!workLifecycle.isDraining && promotionAdmission.isApproved()) workLifecycle.track(this.pruneExpiredPendingAttachmentsAndCleanup());
     };
     tick();
     const timer = setInterval(tick, intervalMs);

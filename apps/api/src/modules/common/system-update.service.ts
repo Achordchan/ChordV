@@ -801,6 +801,9 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       }
     }
     const higher = comparison > 0;
+    // A prior rename may be visible after a failed directory sync. Even an equal
+    // floor must establish durability before it can authenticate another check.
+    if (!higher) await this.fsyncDir(this.config.stateDir);
     if (higher) {
       // FAIL CLOSED: if the floor cannot be durably advanced, do NOT accept the
       // manifest. Accepting-and-caching without ratcheting would leave a window where a
@@ -1207,10 +1210,8 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async fsyncDir(dir: string) {
-    // Best-effort fsync of a DIRECTORY: some platforms/filesystems reject opening
-    // a directory for fsync (EISDIR/EINVAL/EPERM). The rename that precedes it is
-    // already atomic; the dir fsync only hardens WHEN the entry reaches disk, so a
-    // failure here is logged, not fatal.
+    // Only explicitly unsupported directory sync is portable best-effort. Real
+    // storage/permission errors must propagate to the durable-write caller.
     try {
       const handle = await fs.open(dir, "r");
       try {
@@ -1219,14 +1220,16 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         await handle.close();
       }
     } catch (error) {
-      this.logger.warn(`fsync dir ${dir} failed (non-fatal): ${this.describeError(error)}`);
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!["EINVAL", "ENOTSUP", "EOPNOTSUPP"].includes(code ?? "")) throw error;
+      this.logger.warn(`Directory sync unsupported for ${dir}: ${this.describeError(error)}`);
     }
   }
 
   private async clearPendingMarker() {
     if (!this.config.stateDir) return;
     await fs.rm(path.join(this.config.stateDir, SYSTEM_UPDATE_PENDING_FILE), { force: true });
-    await this.fsyncDir(this.config.stateDir).catch(() => undefined);
+    await this.fsyncDir(this.config.stateDir);
   }
 
   /**

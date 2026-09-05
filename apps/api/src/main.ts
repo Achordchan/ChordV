@@ -4,6 +4,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { workLifecycle, withShutdownDeadline } from "./work-lifecycle";
+import { promotionAdmission } from "./promotion-admission";
 import { SystemUpdateService } from "./modules/common/system-update.service";
 import { resolveCorsOrigin } from "./cors";
 import { forceHttpsMiddleware } from "./https-enforcement";
@@ -32,6 +33,7 @@ async function bootstrap() {
   });
 
   // Install BEFORE Nest registers body parsers, routes and multipart interceptors.
+  app.use(promotionAdmission.middleware);
   app.use(workLifecycle.middleware);
   app.useGlobalInterceptors(workLifecycle);
   const shutdown = async () => {

@@ -1,6 +1,7 @@
 import type { CallHandler, ExecutionContext, NestInterceptor } from "@nestjs/common";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { finalize } from "rxjs";
+import { promotionAdmission } from "./promotion-admission";
 
 /** Explicit accounting, not cancellation: a response/remote-call budget is NOT task completion. */
 export class WorkLifecycle implements NestInterceptor {
@@ -121,7 +122,7 @@ export function DrainableJob(): MethodDecorator {
   return (_target, _key, descriptor: PropertyDescriptor) => {
     const original = descriptor.value;
     descriptor.value = function (...args: unknown[]) {
-      if (workLifecycle.isDraining) return Promise.resolve();
+      if (workLifecycle.isDraining || !promotionAdmission.isApproved()) return Promise.resolve();
       return workLifecycle.track(Promise.resolve().then(() => original.apply(this, args)));
     };
   };
