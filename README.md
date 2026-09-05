@@ -239,6 +239,14 @@ docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build --force-
 
 后台系统版本号维护在仓库根 [`SYSTEM_VERSION`](SYSTEM_VERSION)（独立于各 `package.json`，从 `0.0.1` 起）。发布由 GitHub Actions [`release-backend.yml`](.github/workflows/release-backend.yml) 完成：先跑回归测试，再构建可迁移的发布压缩包 + `checksums.txt` + `manifest.json`，发布到 `backend-v*` 的 GitHub Release，并把清单推送到 `backend-manifest` 分支（稳定 raw 地址，供实例检查更新）。运营后台在“全局加速镜像”里配置好 `https://ghfast.top/` 之类前缀后，实例即可通过左上角版本入口检查并一键更新。
 
+容器部署默认使用稳定清单地址：
+
+```dotenv
+CHORDV_SYSTEM_UPDATE_MANIFEST_URL=https://raw.githubusercontent.com/Achordchan/ChordV/backend-manifest/latest.json
+```
+
+Compose 已设置上述默认值，因此保留旧 `.env` 且缺少此变量时仍有明确更新源；新环境模板也包含该项。使用 fork 或独立发布源时，在部署目录 `.env`（或 Compose 的 `--env-file`）中设置自定义完整 HTTPS 地址，重新创建 API 容器后生效；空值会回到默认地址。该地址需先由 `release-backend.yml` 成功发布稳定版本，尚无清单时会显示读取失败，配置地址不等于已完成首次发布。仅运行本地 API 时，仍按本地环境变量决定是否配置更新源。
+
 **更新包的信任边界（重要）**：清单里的 SHA-256 是整个更新的信任锚，因此**清单本身不能只经加速镜像获取**（被拼接的镜像是第三方服务，若被污染可返回“自己的压缩包 + 匹配哈希”导致容器内执行任意代码）。两种模式：
 
 - **配置了签名公钥**（`CHORDV_SYSTEM_UPDATE_MANIFEST_PUBLIC_KEY`，base64 的 DER/SPKI ed25519 公钥）：清单可走加速镜像（保证可用性），但会用该公钥校验随清单发布的分离签名 `manifest.json.sig`，校验不过直接拒绝。**国内 + 镜像部署请用这种模式。**

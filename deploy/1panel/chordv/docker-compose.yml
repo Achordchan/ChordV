@@ -46,6 +46,8 @@ services:
       # Keep the SAME container path (/data/releases) the previous compose used, so
       # existing DB records that store /data/releases/... paths stay resolvable.
       CHORDV_RELEASE_STORAGE_ROOT: /data/releases
+      # Existing deployments may predate this setting; use the stable feed unless overridden.
+      CHORDV_SYSTEM_UPDATE_MANIFEST_URL: ${CHORDV_SYSTEM_UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Achordchan/ChordV/backend-manifest/latest.json}
       # Fixed container paths override legacy .env entries. Backups/private journals
       # must never be redirected into the admin-readable public marker volume.
       CHORDV_SYSTEM_STATE_DIR: /app/state
