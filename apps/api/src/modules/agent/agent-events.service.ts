@@ -3,6 +3,7 @@ import { Cron } from "@nestjs/schedule";
 import type { AgentCommandDto } from "@chordv/shared";
 import { Observable } from "rxjs";
 import { PrismaService } from "../common/prisma.service";
+import { DrainableJob, workLifecycle } from "../../work-lifecycle";
 
 type EventSink = (event: MessageEvent) => void;
 
@@ -30,7 +31,12 @@ export class AgentEventsService {
       void this.loadPending(agentId).then((commands) => commands.forEach((command) => sink(this.toEvent(command))));
       const keepaliveTimer = setInterval(() => deliver({ type: "keepalive", data: JSON.stringify({ occurredAt: new Date().toISOString() }) }), 15000);
 
+      // An agent command stream is a long-lived request: without this the drain
+      // waits for a subscription that only ends when the agent disconnects, so
+      // every self-update stalled until the full drain timeout and fenced.
+      const removeDrainListener = workLifecycle.onDrain(() => subscriber.complete());
       return () => {
+        removeDrainListener();
         clearInterval(keepaliveTimer);
         sinks.delete(sink);
         if (sinks.size === 0) this.subscribers.delete(agentId);
@@ -44,6 +50,7 @@ export class AgentEventsService {
   }
 
   @Cron("*/30 * * * * *")
+  @DrainableJob()
   async retryDueCommands() {
     if (this.retrying) return;
     this.retrying = true;
