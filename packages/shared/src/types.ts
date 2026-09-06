@@ -1281,3 +1281,60 @@ export interface UpdatePolicyInputDto {
   chinaDirect?: boolean;
   aiServicesProxy?: boolean;
 }
+
+export type SystemUpdateOperationKind = "update" | "rollback" | "restart";
+
+export type SystemUpdateOperationStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "rolled_back";
+
+export interface SystemUpdateReleaseInfoDto {
+  version: string;
+  tag: string | null;
+  publishedAt: string | null;
+  changelog: string[];
+  notes: string | null;
+  htmlUrl: string | null;
+  downloadUrl: string | null;
+  fileSizeBytes: string | null;
+  sha256: string | null;
+}
+
+export interface SystemUpdateCheckDto {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  cached: boolean;
+  checkedAt: string;
+  release: SystemUpdateReleaseInfoDto | null;
+  warning: string | null;
+}
+
+export interface SystemUpdateRollbackVersionDto {
+  version: string;
+  installedAt: string | null;
+  isCurrent: boolean;
+}
+
+export interface SystemUpdateOperationDto {
+  id: string;
+  operationId: string;
+  kind: SystemUpdateOperationKind;
+  status: SystemUpdateOperationStatus;
+  actorLabel: string | null;
+  fromVersion: string | null;
+  toVersion: string | null;
+  failureReason: string | null;
+  migrationApplied: boolean;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface SystemUpdateStartResultDto {
+  operationId: string;
+  accepted: boolean;
+  message: string;
+}

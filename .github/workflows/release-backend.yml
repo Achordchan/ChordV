@@ -1,0 +1,274 @@
+name: Release Backend System
+
+# Builds the "backend system" (apps/api + apps/admin as one unit), publishes a
+# relocatable release tarball to a `backend-v*` GitHub Release, and updates the
+# manifest that running instances read to detect + self-apply updates.
+#
+# This REPLACES the retired Deploy Baota pipeline. It does NOT touch the server:
+# instances pull the release themselves via the in-app "检查更新 / 一键更新" flow
+# (see docs/prd/backend-self-update.md). The desktop release flow is unaffected.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "后台系统版本号（必须与仓库根 SYSTEM_VERSION 一致），不带 v，例如 0.0.2"
+        required: true
+        type: string
+      changelog:
+        description: "更新日志（每行一条），可留空"
+        required: false
+        type: string
+      resume_existing:
+        description: "显式恢复已发布版本：校验相同提交及全部原始资产，仅补发稳定清单，不重建或覆盖资产"
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: "标记为预发布（不更新 latest 清单）"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: chordv-backend-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build & publish backend release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Create a release and push backend-manifest; no other scopes.
+    env:
+      PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
+      RESUME_EXISTING: ${{ github.event.inputs.resume_existing || 'false' }}
+      # Guard before building/creating without exposing the private key to those steps.
+      SIGNING_EXPECTED: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY != '' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve & verify version
+        id: version
+        env:
+          RAW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          version="${RAW_VERSION#v}"
+          # Match the backend's STRICT_SEMVER_PATTERN exactly (normalizeVersion):
+          # no leading zeros; prerelease/build are non-empty dot-separated identifiers
+          # (so 1.2.3.foo, 01.2.3, and 1.2.3-beta..1 are all rejected here too, rather
+          # than force-publishing a manifest every running instance would reject).
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?(\+([0-9A-Za-z-]+)(\.([0-9A-Za-z-]+))*)?$'
+          if [[ ! "$version" =~ $semver ]]; then
+            echo "Invalid version (must be strict SemVer): ${RAW_VERSION}" >&2; exit 1
+          fi
+          # Match MAX_VERSION_LENGTH in apps/api/src/modules/common/release-center.utils.ts:
+          # the version is embedded verbatim in artifact filenames and release-directory
+          # names, so anything longer can exceed the 255-byte filename limit downstream.
+          if (( ${#version} > 64 )); then
+            echo "Invalid version (longer than 64 characters): ${RAW_VERSION}" >&2; exit 1
+          fi
+          file_version="$(tr -d ' \t\r\n' < SYSTEM_VERSION)"
+          if [[ "$version" != "$file_version" ]]; then
+            echo "Version input ($version) does not match SYSTEM_VERSION ($file_version). Bump SYSTEM_VERSION first." >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=backend-v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup release tooling
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Select fresh build or explicit immutable resume
+        id: publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/backend-release-resume.mjs prepare
+
+      - name: Test release resume guard
+        run: node --test scripts/backend-release-resume.test.mjs
+
+      - name: Setup pnpm
+        if: steps.publication.outputs.mode == 'build'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.3
+
+      - name: Setup Node
+        if: steps.publication.outputs.mode == 'build'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.publication.outputs.mode == 'build'
+        run: pnpm install --filter @chordv/api... --filter @chordv/admin... --frozen-lockfile
+
+      - name: Run API regression tests
+        if: steps.publication.outputs.mode == 'build'
+        run: pnpm test:api
+
+      - name: Build backend system (shared + api + admin)
+        if: steps.publication.outputs.mode == 'build'
+        run: |
+          pnpm --filter @chordv/shared build
+          pnpm --filter @chordv/api db:generate
+          pnpm --filter @chordv/api build
+          pnpm --filter @chordv/admin build
+
+      - name: Assemble relocatable release tree
+        if: steps.publication.outputs.mode == 'build'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Same runtime subset the Docker seed ships; drop source + admin's
+          # build-only node_modules (apps/admin/dist is static).
+          rm -rf apps/admin/node_modules apps/admin/src apps/api/src packages/shared/src
+          mkdir -p dist-release
+          # Include the per-package node_modules too: pnpm's isolated layout resolves
+          # each package's deps through its OWN node_modules (relative symlinks into
+          # the root .pnpm store), so omitting them breaks resolution at runtime.
+          tar -czf "dist-release/chordv-backend-${VERSION}.tar.gz" \
+            SYSTEM_VERSION \
+            package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json \
+            scripts/prisma-migrate-with-baseline.mjs \
+            node_modules \
+            packages/shared/package.json packages/shared/dist packages/shared/node_modules \
+            apps/api/package.json apps/api/dist apps/api/prisma apps/api/node_modules \
+            apps/admin/dist
+          cd dist-release
+          sha256sum "chordv-backend-${VERSION}.tar.gz" > checksums.txt
+          echo "SHA256:"; cat checksums.txt
+
+      - name: Generate manifest.json
+        if: steps.publication.outputs.mode == 'build'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+          CHANGELOG: ${{ github.event.inputs.changelog }}
+        run: |
+          set -euo pipefail
+          cd dist-release
+          artifact="chordv-backend-${VERSION}.tar.gz"
+          SHA="$(cut -d' ' -f1 checksums.txt)" \
+          SIZE="$(stat -c%s "$artifact")" \
+          URL="https://github.com/${REPO}/releases/download/${TAG}/${artifact}" \
+          PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          node -e '
+            const changelog = (process.env.CHANGELOG || "")
+              .split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+            const manifest = {
+              version: process.env.VERSION,
+              channel: process.env.PRERELEASE === "true" ? "prerelease" : "stable",
+              tag: process.env.TAG,
+              publishedAt: process.env.PUBLISHED_AT,
+              htmlUrl: `https://github.com/${process.env.REPO}/releases/tag/${process.env.TAG}`,
+              changelog,
+              artifact: { url: process.env.URL, sha256: process.env.SHA, sizeBytes: Number(process.env.SIZE) }
+            };
+            require("fs").writeFileSync("manifest.json", JSON.stringify(manifest, null, 2));
+          '
+          echo "manifest.json:"; cat manifest.json
+
+      - name: Sign manifest (ed25519, if signing key configured)
+        if: steps.publication.outputs.mode == 'build'
+        env:
+          SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          cd dist-release
+          if [ -z "${SIGNING_KEY:-}" ]; then
+            echo "No CHORDV_MANIFEST_SIGNING_KEY secret; skipping signature."
+            echo "Instances without a pinned public key will fetch the manifest DIRECT-ONLY"
+            echo "(no accelerate mirror). For China/mirror deployments, configure signing."
+            exit 0
+          fi
+          printf '%s' "$SIGNING_KEY" > /tmp/manifest_key.pem
+          # Detached ed25519 signature over the EXACT manifest.json bytes.
+          node -e '
+            const crypto = require("crypto"), fs = require("fs");
+            const key = crypto.createPrivateKey(fs.readFileSync("/tmp/manifest_key.pem"));
+            const sig = crypto.sign(null, fs.readFileSync("manifest.json"), key);
+            fs.writeFileSync("manifest.json.sig", sig.toString("base64"));
+          '
+          rm -f /tmp/manifest_key.pem
+          echo "Signed manifest.json -> manifest.json.sig"
+
+      - name: Create GitHub Release (never update or clobber existing assets)
+        if: steps.publication.outputs.mode == 'build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RESUME_EXISTING: 'false'
+        run: |
+          set -euo pipefail
+          # Recheck after the build. gh release create fails on a concurrent release
+          # creation; unlike an upsert action it never deletes/replaces old assets.
+          node scripts/backend-release-resume.mjs prepare
+          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+            --title "ChordV Backend ${TAG}" --generate-notes)
+          if [[ "$PRERELEASE" == 'true' ]]; then args+=(--prerelease); fi
+          assets=("dist-release/chordv-backend-${VERSION}.tar.gz"
+            dist-release/checksums.txt dist-release/manifest.json)
+          if [[ -f dist-release/manifest.json.sig ]]; then assets+=(dist-release/manifest.json.sig); fi
+          gh release create "$TAG" "${assets[@]}" "${args[@]}"
+
+      - name: Download and verify immutable published bytes (fresh or resume)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGNING_KEY: ${{ secrets.CHORDV_MANIFEST_SIGNING_KEY }}
+        run: node scripts/backend-release-resume.mjs verify
+
+      - name: Guard stable feed monotonicity
+        id: stable
+        if: ${{ github.event.inputs.prerelease != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/backend-release-resume.mjs stable
+
+      - name: Publish manifest to stable raw branch
+        if: ${{ github.event.inputs.prerelease != 'true' && steps.stable.outputs.mode == 'publish' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          STABLE_SHA: ${{ steps.stable.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # A dedicated orphan-ish branch serves a stable raw URL that instances
+          # poll: https://raw.githubusercontent.com/<repo>/backend-manifest/latest.json
+          # (kept separate from main history; ghfast-proxyable). The manifest and
+          # optional signature always use verified Release bytes, including on retry.
+          # Workflow-wide concurrency serializes fresh releases and explicit resumes.
+          tmp="$(mktemp -d)"
+          cp published-release/manifest.json "$tmp/latest.json"
+          if [[ -f published-release/manifest.json.sig ]]; then
+            cp published-release/manifest.json.sig "$tmp/latest.json.sig"
+          fi
+          cd "$tmp"
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b backend-manifest
+          git add -A
+          git commit -q -m "backend manifest ${TAG}"
+          # Empty expected SHA means the branch must still be absent. Any external
+          # writer since the monotonicity check makes this push fail, never overwrite.
+          git push -q --force-with-lease="refs/heads/backend-manifest:${STABLE_SHA}" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" backend-manifest
+          echo "Manifest published to backend-manifest branch."

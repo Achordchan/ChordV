@@ -1,3 +1,4 @@
+import { workLifecycle, DrainableJob } from "../../work-lifecycle";
 import {
   BadGatewayException,
   BadRequestException,
@@ -1205,7 +1206,7 @@ export class RuntimeSessionService {
     });
 
     const subscriptionIds = Array.from(new Set(subscriptions.map((subscription) => subscription.id)));
-    await Promise.all(subscriptionIds.map((subscriptionId) => this.queuePanelAccessSyncForNodeSubscription(nodeId, subscriptionId)));
+    await workLifecycle.all(subscriptionIds.map((subscriptionId) => this.queuePanelAccessSyncForNodeSubscription(nodeId, subscriptionId)));
     return subscriptionIds.length;
   }
 
@@ -1243,7 +1244,7 @@ export class RuntimeSessionService {
     });
 
     try {
-      await Promise.race([task, timeoutTask]);
+      await Promise.race([workLifecycle.track(task), timeoutTask]);
     } catch {
       // Individual subscription failures are logged by the guarded task and must not stop other node syncs.
     } finally {
@@ -1358,6 +1359,7 @@ export class RuntimeSessionService {
   }
 
   @Cron("*/30 * * * * *")
+  @DrainableJob()
   async retryPendingPanelSyncJobs() {
     try {
       const now = new Date();
@@ -1392,6 +1394,7 @@ export class RuntimeSessionService {
       const workerCount = Math.min(jobs.length, readPanelSyncJobConcurrency());
       const workers = Array.from({ length: workerCount }, async () => {
         while (true) {
+          if (workLifecycle.isDraining) return; // leave unclaimed durable jobs for the next process
           const job = jobs[nextIndex];
           nextIndex += 1;
           if (!job) {
@@ -1442,7 +1445,7 @@ export class RuntimeSessionService {
           }
         }
       });
-      await Promise.all(workers);
+      await workLifecycle.all(workers);
     } catch (error) {
       this.logger.warn(`Panel sync worker batch failed: ${readRuntimeErrorMessage(error)}`);
     }
@@ -1763,7 +1766,7 @@ export class RuntimeSessionService {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } finally {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -1858,6 +1861,7 @@ export class RuntimeSessionService {
   }
 
   @Cron("*/30 * * * * *")
+  @DrainableJob()
   async retryPendingLeaseRevocationJobs() {
     try {
       const now = new Date();
@@ -1884,6 +1888,7 @@ export class RuntimeSessionService {
       const workerCount = Math.min(jobs.length, readLeaseRevocationJobConcurrency());
       const workers = Array.from({ length: workerCount }, async () => {
         while (true) {
+          if (workLifecycle.isDraining) return; // leave unclaimed durable jobs for the next process
           const job = jobs[nextIndex];
           nextIndex += 1;
           if (!job) {
@@ -1934,7 +1939,7 @@ export class RuntimeSessionService {
           }
         }
       });
-      await Promise.all(workers);
+      await workLifecycle.all(workers);
     } catch (error) {
       this.logger.warn(`Lease revocation worker batch failed: ${readRuntimeErrorMessage(error)}`);
     }
@@ -2042,7 +2047,7 @@ export class RuntimeSessionService {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -2095,6 +2100,7 @@ export class RuntimeSessionService {
   }
 
   @Cron("*/30 * * * * *")
+  @DrainableJob()
   async sweepExpiredLeases() {
     const now = new Date();
     const expired = await this.prisma.nodeSessionLease.findMany({
@@ -2375,7 +2381,7 @@ export class RuntimeSessionService {
     try {
       return {
         ok: true as const,
-        ...(await Promise.race([readTask, timeoutTask]))
+        ...(await Promise.race([workLifecycle.track(readTask), timeoutTask]))
       };
     } catch (error) {
       const errorMessage = readRuntimeErrorMessage(error) || "panel runtime read failed";
@@ -3129,7 +3135,7 @@ async function withNodePanelBindingSubscriptionBudget<T>(taskFactory: () => Prom
     }, NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([task, timeoutTask]);
+    return await Promise.race([workLifecycle.track(task), timeoutTask]);
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
@@ -3346,7 +3352,7 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
     return;
   }
   if (typeof writer.panelClientBinding.update === "function") {
-    await Promise.all(
+    await workLifecycle.all(
       bindingIds.map((id) =>
         writer.panelClientBinding.update({
           where: { id },

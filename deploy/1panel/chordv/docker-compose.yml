@@ -1,26 +1,88 @@
+# ChordV backend Docker deployment (1Panel), with in-place self-update.
+#
+# Build context is the repo root so the Dockerfiles can see the whole workspace;
+# run this from the repo root, e.g.:
+#   docker compose -f deploy/1panel/chordv/docker-compose.yml up -d --build
+#
+# The api/admin code lives in the `*-releases` volumes (not baked read-only into
+# the image), so a self-update writes a new release dir and flips a symlink; the
+# `*-state` volumes persist which version is current + rollback bookkeeping across
+# container recreation. `restart: unless-stopped` is the safety net if the
+# in-container supervisor itself dies (normal self-updates never exit the container).
 services:
   postgres:
     image: postgres:16
     container_name: chordv-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: chordv
-      POSTGRES_USER: chordv
-      POSTGRES_PASSWORD: chordv
+      POSTGRES_DB: ${POSTGRES_DB:-chordv}
+      POSTGRES_USER: ${POSTGRES_USER:-chordv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chordv}
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chordv} -d ${POSTGRES_DB:-chordv}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      context: ../../..
+      dockerfile: deploy/1panel/chordv/Dockerfile.api
+    image: chordv-api:latest
     container_name: chordv-api
     restart: unless-stopped
+    # Maximum configured drain (30m) + Nest hooks (30s) + supervisor margin.
+    stop_grace_period: 32m
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
+    environment:
+      # Release-center artifacts (desktop installers uploaded via 发布中心) must live
+      # on a persistent mount, not the container layer, or they vanish on recreate.
+      # Keep the SAME container path (/data/releases) the previous compose used, so
+      # existing DB records that store /data/releases/... paths stay resolvable.
+      CHORDV_RELEASE_STORAGE_ROOT: /data/releases
+      # Existing deployments may predate this setting; use the stable feed unless overridden.
+      CHORDV_SYSTEM_UPDATE_MANIFEST_URL: ${CHORDV_SYSTEM_UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Achordchan/ChordV/backend-manifest/latest.json}
+      # Fixed container paths override legacy .env entries. Backups/private journals
+      # must never be redirected into the admin-readable public marker volume.
+      CHORDV_SYSTEM_STATE_DIR: /app/state
+      CHORDV_SYSTEM_PUBLIC_STATE_DIR: /app/public-state
+      CHORDV_SYSTEM_UPDATE_BACKUP_DIR: /app/backups
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
+      - ./api-releases:/app/releases
+      - ./api-state:/app/state
+      - ./api-public-state:/app/public-state
+      - ./api-backups:/app/backups
+      # Keep the SAME host source (./releases) AND container path (/data/releases)
+      # the previous compose used, so existing release-center artifacts and the
+      # /data/releases/... paths stored in the DB remain valid after the switch.
       - ./releases:/data/releases
+
+  admin:
+    build:
+      context: ../../..
+      dockerfile: deploy/1panel/chordv/Dockerfile.admin
+    image: chordv-admin:latest
+    container_name: chordv-admin
+    restart: unless-stopped
+    environment:
+      # Baked into the static bundle at build time via VITE_API_BASE_URL if needed;
+      # runtime nginx just serves files and proxies /api to the api service.
+      CHORDV_API_UPSTREAM: ${CHORDV_API_UPSTREAM:-http://api:3000}
+      CHORDV_ADMIN_STATE_DIR: /usr/share/nginx/public-state
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3002:80"
+    volumes:
+      # Share releases and ONLY the approved public marker (read-only). Never mount
+      # api-state here: existing api-state/backups may contain full database dumps.
+      - ./api-releases:/usr/share/nginx/releases:ro
+      - ./api-public-state:/usr/share/nginx/public-state:ro

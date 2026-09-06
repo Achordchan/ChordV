@@ -1,5 +1,9 @@
 generator client {
   provider = "prisma-client-js"
+  // "native" covers local dev; the explicit debian/arm64 openssl-3.0.x targets
+  // let the same generated client run inside the bookworm (openssl 3.0.x) runtime
+  // image regardless of whether CI builds on x64 or arm64.
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
@@ -168,6 +172,40 @@ model SystemSetting {
   value     Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+enum SystemUpdateOperationKind {
+  update
+  rollback
+  restart
+}
+
+enum SystemUpdateOperationStatus {
+  pending
+  running
+  succeeded
+  failed
+  rolled_back
+}
+
+model SystemUpdateOperation {
+  id               String                      @id
+  operationId      String                      @unique
+  kind             SystemUpdateOperationKind
+  status           SystemUpdateOperationStatus @default(pending)
+  actorUserId      String?
+  actorLabel       String?
+  fromVersion      String?
+  toVersion        String?
+  failureReason    String?
+  migrationApplied Boolean                     @default(false)
+  startedAt        DateTime                    @default(now())
+  finishedAt       DateTime?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  @@index([status, startedAt])
+  @@index([startedAt])
 }
 
 model User {

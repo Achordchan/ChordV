@@ -1,20 +1,11 @@
-name: Deploy Baota
+name: Deploy Baota (DEPRECATED)
 
+# DEPRECATED / 已停用自动触发。
+# 后台系统已迁移到 1Panel Docker 容器 + 应用内一键自更新，发布走 release-backend.yml。
+# 见 docs/prd/backend-self-update.md 与 README「部署说明」。
+# 这里移除了 push 自动触发，仅保留手动 workflow_dispatch 作为迁移期兜底；
+# 确认容器部署稳定后，可连同 scripts/deploy-baota.sh 一并删除。
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/deploy-baota.yml"
-      - "scripts/deploy-baota.sh"
-      - "apps/api/**"
-      - "apps/admin/**"
-      - "packages/shared/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "tsconfig.base.json"
-      - "turbo.json"
   workflow_dispatch:
 
 concurrency:
