@@ -401,12 +401,24 @@ prune_snapshots() {
   return 0
 }
 
-snapshot_database_url() {
-  # Prisma accepts query options libpq/pg_dump rejects. Filter only its known
-  # extras, preserving the raw authority/path and remaining query bytes (including
-  # percent-encoded credentials/options). Never put credentials on the command line
-  # or print parser/pg_dump errors, which may echo the full connection string.
-  # A dedicated direct connection can bypass a Prisma/pooler URL when necessary.
+snapshot_dump_invocation() {
+  # Emit the pg_dump invocation parts for the pre-migration snapshot, separated
+  # by \x1f (rejected in all fields, so it cannot collide): the connection URI
+  # with its password stripped, then the exact decoded password ("" if absent).
+  #
+  # The URI is passed through BYTE-VERBATIM except for two removals — the
+  # password and Prisma-only query options — so libpq itself resolves every
+  # connection semantic (service/servicefile selection, PGPORT/PGHOST/PGDATABASE
+  # defaults, unix sockets, IPv6 hosts, keepalives, target_session_attrs, ...).
+  # No URI re-serialization on our side: each earlier attempt to translate the
+  # URI into another representation (positional args, a generated service file)
+  # lost some valid corner and broke updates. The password travels through the
+  # dump subshell's ENVIRONMENT, which preserves exact bytes (including
+  # leading/trailing whitespace) and never appears in /proc/<pid>/cmdline,
+  # `docker top` or process telemetry. A URL that puts a secret in its query
+  # (sslpassword) or mixes a password with passfile fails closed instead of
+  # leaking or dropping one. Never print parser errors, which may echo the
+  # connection string.
   "$NODE_BIN" - <<'NODE'
 try {
   const raw = process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL || process.env.DATABASE_URL;
@@ -416,21 +428,68 @@ try {
     "schema", "connection_limit", "pool_timeout", "socket_timeout", "pgbouncer",
     "statement_cache_size", "sslaccept", "sslidentity"
   ]);
-  const index = raw.indexOf("?");
-  if (index < 0) process.stdout.write(raw);
-  else {
-    const query = raw.slice(index + 1).split("&").filter((part) => {
-      const key = decodeURIComponent(part.split("=", 1)[0].replace(/\+/g, " "));
-      return part && !prismaOnly.has(key);
-    }).join("&");
-    process.stdout.write(raw.slice(0, index) + (query ? "?" + query : ""));
+  const schemeEnd = raw.indexOf("://") + 3;
+  const authorityEnd = ["/", "?", "#"].reduce(
+    (end, ch) => {
+      const at = raw.indexOf(ch, schemeEnd);
+      return at === -1 ? end : Math.min(end, at);
+    },
+    raw.length
+  );
+  let authority = raw.slice(schemeEnd, authorityEnd);
+  const rest = raw.slice(authorityEnd);
+  // Strip ONLY the password from the authority; keep user/host/port bytes as-is.
+  const at = authority.lastIndexOf("@");
+  if (at >= 0) {
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.indexOf(":");
+    if (colon >= 0) authority = userinfo.slice(0, colon) + authority.slice(at);
   }
+  let pathAndFragment = rest;
+  let query = "";
+  const queryIndex = rest.indexOf("?");
+  let hasPassfile = false;
+  let queryPassword = null;
+  if (queryIndex >= 0) {
+    const rawQuery = rest.slice(queryIndex + 1);
+    pathAndFragment = rest.slice(0, queryIndex);
+    const kept = [];
+    for (const part of rawQuery.split("&")) {
+      if (!part) continue;
+      const eq = part.indexOf("=");
+      const key = decodeURIComponent(part.slice(0, eq < 0 ? part.length : eq));
+      if (prismaOnly.has(key)) continue;
+      if (key === "sslpassword") throw new Error();
+      if (key === "passfile") hasPassfile = true;
+      // libpq accepts the password as a URI query parameter too; pull it out
+      // so it reaches the environment transport instead of pg_dump's argv.
+      if (key === "password") {
+        if (eq < 0) throw new Error();
+        queryPassword = decodeURIComponent(part.slice(eq + 1));
+        continue;
+      }
+      kept.push(part);
+    }
+    if (kept.length > 0) query = "?" + kept.join("&");
+  }
+  const hasPassword = url.password !== "";
+  // A password (authority OR query) combined with a passfile parameter is
+  // ambiguous precedence, as are passwords in both the authority and the
+  // query; refuse rather than silently drop or prefer one of them.
+  if ((hasPassword || queryPassword !== null) && hasPassfile) throw new Error();
+  if (hasPassword && queryPassword !== null) throw new Error();
+  const password = hasPassword ? decodeURIComponent(url.password) : (queryPassword ?? "");
+  // Only NUL (unrepresentable in shell strings/environment) and \x1f (the
+  // field separator this protocol uses) are rejected; PostgreSQL passwords may
+  // validly contain newlines, tabs and other control bytes, and the
+  // environment transport preserves them exactly.
+  if (/[\x00\x1f]/.test(password)) throw new Error();
+  process.stdout.write(raw.slice(0, schemeEnd) + authority + pathAndFragment + query + "\x1f" + password + "\x1f");
 } catch {
   process.exitCode = 1;
 }
 NODE
 }
-
 normalize_snapshot_setting() {
   "$NODE_BIN" - "$SNAPSHOT_ENABLED" <<'NODE'
 const value = process.argv[2].trim().toLowerCase();
@@ -483,11 +542,24 @@ run_snapshot() {
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
   done
-  local stamp target tmp snapshot_url
-  if ! snapshot_url="$(snapshot_database_url)"; then
+  local stamp target tmp out uri password
+  if ! out="$(snapshot_dump_invocation)"; then
     log "ERROR: invalid snapshot database URL; cannot snapshot before migrate"
     return 1
   fi
+  # Protocol: <uri>\x1f<password>\x1f — a trailing separator guards the
+  # password's own trailing bytes (command substitution strips trailing
+  # NEWLINES, so a password ending in \n must not be last). \x1f cannot occur
+  # in either field. Parameter expansion (not `read`) keeps embedded newlines,
+  # tabs and leading/trailing whitespace byte-exact for the environment
+  # transport.
+  case "$out" in
+    *$'\x1f'*$'\x1f') ;;
+    *) log "ERROR: malformed snapshot invocation parts"; return 1 ;;
+  esac
+  uri="${out%%$'\x1f'*}"
+  password="${out#*$'\x1f'}"
+  password="${password%$'\x1f'}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   target="$BACKUP_DIR/${base}-${stamp}.sql.gz"
   # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
@@ -497,7 +569,16 @@ run_snapshot() {
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  if ! ( umask 077; set -o pipefail; PGDATABASE="$snapshot_url" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump 2>/dev/null | gzip > "$tmp" ); then
+  # The URI argument carries no password (only the coordinates/options libpq
+  # needs, exactly as before); the password travels via the subshell's
+  # environment, which preserves exact bytes and stays out of /proc cmdline.
+  # pg_dump errors are suppressed (they may echo connection data).
+  if ! (
+    umask 077
+    set -o pipefail
+    if [ -n "$password" ]; then export PGPASSWORD="$password"; fi
+    timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$uri" 2>/dev/null | gzip > "$tmp"
+  ); then
     log "ERROR: database snapshot failed"
     rm -f "$tmp" 2>/dev/null
     return 1
@@ -704,6 +785,7 @@ SNAPSHOT_ENABLED="$(normalize_snapshot_setting)" || exit 1
 validate_stabilization || exit 1
 validate_health_timeout || exit 1
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"
+
 
 # Resume an interrupted promotion: if we restarted after desired-version was
 # switched but before the health gate finished, treat it as a promotion again so

@@ -769,40 +769,103 @@ function testSnapshotDatabaseUrl() {
   const script = readFileSync(entrypoint, "utf8");
   const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-url-"));
+  const SEP = "\x1f";
+  const splitOutput = (out: string) => {
+    assert.ok(out.endsWith(SEP), "output must end with the \x1f terminator");
+    const body = out.slice(0, -1);
+    const sep = body.indexOf(SEP);
+    assert.ok(sep >= 0, "output must carry the \x1f separator");
+    return [body.slice(0, sep), body.slice(sep + 1)];
+  };
   const raw = "postgresql://us%40er:p%3Ass%2F%25%3F%23@db.example:5432/chordv?schema=public&sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&connection_limit=4&pool_timeout=10&socket_timeout=9&pgbouncer=true&statement_cache_size=0&sslaccept=strict&sslidentity=client.p12&%73chema=other&sslrootcert=%2Fcerts%2Froot.pem";
-  const expected = "postgresql://us%40er:p%3Ass%2F%25%3F%23@db.example:5432/chordv?sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&sslrootcert=%2Fcerts%2Froot.pem";
+  const expectedUri = "postgresql://us%40er@db.example:5432/chordv?sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&sslrootcert=%2Fcerts%2Froot.pem";
+  const expectedPassword = "p:ss/%?#";
   const env = { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath, DATABASE_URL: raw, CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "" };
-  const convert = (overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", ["-c", `${definitions}\nsnapshot_database_url`], { env: { ...env, ...overrides }, encoding: "utf8" });
+  const convert = (overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", ["-c", `${definitions}\nsnapshot_dump_invocation`], { env: { ...env, ...overrides }, encoding: "utf8" });
   try {
     let result = convert();
-    assert.equal(result.status, 0); assert.equal(result.stdout, expected); assert.equal(result.stderr, "");
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), [expectedUri, expectedPassword]);
+    assert.equal(result.stderr, "");
+    // The URI passes through byte-verbatim (minus password/Prisma options), so
+    // libpq itself resolves service=, servicefile=, PGPORT/PGHOST defaults,
+    // unix sockets and every connection option — nothing is re-serialized.
     const direct = "postgresql://a%40b:p%3Aq@direct/db?sslmode=verify-full";
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: direct });
-    assert.equal(result.status, 0); assert.equal(result.stdout, direct);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://a%40b@direct/db?sslmode=verify-full", "p:q"]);
     result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
-    // Exercise the real snapshot pipeline too: pg_dump gets only an environment
-    // connection string, and even errors echoing credentials never reach logs.
+    // ?service= flows through untouched; no service-file lookup exists to get wrong.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql:///?service=production&connect_timeout=9" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql:///?service=production&connect_timeout=9", ""]);
+    // libpq percent-decoding keeps a literal '+' (only %20 is a space).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:a+b@db.example:5432/chordv?application_name=backup+job" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example:5432/chordv?application_name=backup+job", "a+b"]);
+    // IPv6 authority hosts stay bracketed in the URI (libpq accepts them there).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@[2001:db8::1]:5432/chordv" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@[2001:db8::1]:5432/chordv", "pw"]);
+    // Exact whitespace survives the environment transport.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:%20secret%20@db.example/chordv" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/chordv", " secret "]);
+    // A secret in the query string, or password mixed with passfile, fails closed.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@db/db?sslpassword=key" });
+    assert.notEqual(result.status, 0, "sslpassword in argv must be refused");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@db/db?passfile=/x" });
+    assert.notEqual(result.status, 0, "password + passfile is ambiguous and must be refused");
+    // libpq also accepts ?password=; it must move to the environment, not argv.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user@db.example/app?password=secret&sslmode=require" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app?sslmode=require", "secret"]);
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@db/app?password=other" });
+    assert.notEqual(result.status, 0, "password in both authority and query is ambiguous and must be refused");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user@db/app?password=secret&passfile=/run/postgresql/passfile" });
+    assert.notEqual(result.status, 0, "query password combined with passfile is ambiguous and must be refused");
+    // Control bytes other than NUL/\x1f are valid password bytes and must
+    // survive exactly (newlines, tabs, trailing whitespace).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:a%0Ab%09@db.example/app" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app", "a\nb\t"]);
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:tail%0A@db.example/app" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app", "tail\n"], "trailing newline must survive the terminator protocol");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:sep%1Fx@db.example/app" });
+    assert.notEqual(result.status, 0, "the \x1f separator byte must be refused");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user@db/db?passfile=/x" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db/db?passfile=/x", ""]);
+    // Exercise the real snapshot pipeline too: pg_dump's argv carries the
+    // password-stripped URI only; the password rides in the dump subshell's
+    // environment (exact bytes, never in /proc cmdline or `docker top`), and
+    // errors echoing argv never disclose credentials.
     writeFileSync(path.join(root, "timeout"), '#!/usr/bin/env bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
     writeFileSync(path.join(root, "pg_dump"), `#!/usr/bin/env bash
-printf '%s' "$PGDATABASE" > "$CHORDV_TEST_CAPTURE"
+printf '%s' "$1" > "$CHORDV_TEST_CAPTURE"
 printf '%s' "$#" > "$CHORDV_TEST_ARGC"
-printf '%s' "$PGDATABASE" >&2
+printf '%s' "$PGPASSWORD" > "$CHORDV_TEST_PASSWORD"
+printf '%s' "$1" >&2
 [ "$CHORDV_TEST_DUMP_FAIL" = "true" ] && exit 1
 printf 'test snapshot\\n'
 `, { mode: 0o755 });
     for (const fail of [false, true]) {
       const capture = path.join(root, "capture");
       const argc = path.join(root, "argc");
+      const passwordFile = path.join(root, "password");
       const dump = spawnSync("bash", ["-c", `${definitions}\nrun_snapshot 0.0.2 op-${fail}`], {
         encoding: "utf8", env: { ...env, PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
           CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true", CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
-          CHORDV_TEST_CAPTURE: capture, CHORDV_TEST_ARGC: argc, CHORDV_TEST_DUMP_FAIL: String(fail) }
+          CHORDV_TEST_CAPTURE: capture, CHORDV_TEST_ARGC: argc, CHORDV_TEST_PASSWORD: passwordFile,
+          CHORDV_TEST_DUMP_FAIL: String(fail) }
       });
       assert.equal(dump.status, fail ? 1 : 0, dump.stderr);
-      assert.equal(readFileSync(capture, "utf8"), expected);
-      assert.equal(readFileSync(argc, "utf8"), "0", "credentials must not be command-line arguments");
-      assert.equal(dump.stderr.includes("p%3Ass"), false, "pg_dump errors must not disclose credentials");
+      assert.equal(readFileSync(capture, "utf8"), expectedUri, "pg_dump argv must be the password-stripped URI, verbatim");
+      assert.equal(readFileSync(argc, "utf8"), "1", "the URI must be pg_dump's single command-line argument");
+      assert.equal(readFileSync(passwordFile, "utf8"), expectedPassword, "the password must reach the dump environment exactly");
+      assert.equal(dump.stderr.includes(expectedPassword), false, "pg_dump errors must not disclose credentials");
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
