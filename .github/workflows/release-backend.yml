@@ -147,6 +147,12 @@ jobs:
           # Same runtime subset the Docker seed ships; drop source + admin's
           # build-only node_modules (apps/admin/dist is static).
           rm -rf apps/admin/node_modules apps/admin/src apps/api/src packages/shared/src
+          # Ship only the runtime closure: apps/api's dependencies + the prisma
+          # CLI (the container runs migrations), resolved through pnpm's layout.
+          # Without this the tarball carries the whole monorepo store — admin's
+          # react/tabler/mantine/vite toolchain, turbo, typescript, node-agent's
+          # better-sqlite3, every prisma dialect's wasm — ~149MB instead of ~83MB.
+          node scripts/prune-release-node-modules.mjs
           mkdir -p dist-release
           # Include the per-package node_modules too: pnpm's isolated layout resolves
           # each package's deps through its OWN node_modules (relative symlinks into
