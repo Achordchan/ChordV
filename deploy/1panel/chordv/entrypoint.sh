@@ -786,12 +786,6 @@ validate_stabilization || exit 1
 validate_health_timeout || exit 1
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 
-# Snapshot credentials now travel only through process environment variables,
-# never files. Earlier iterations of this code wrote credential files (.pgpass.*
-# in the persistent backup volume, .chordv-pgservice.* on ephemeral storage) —
-# sweep every location those versions could have left behind.
-rm -f /dev/shm/.chordv-pgservice.* "${TMPDIR:-/tmp}"/.chordv-pgservice.* 2>/dev/null
-rm -f "$BACKUP_DIR"/.pgpass.* 2>/dev/null
 
 # Resume an interrupted promotion: if we restarted after desired-version was
 # switched but before the health gate finished, treat it as a promotion again so
