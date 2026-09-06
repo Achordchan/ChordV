@@ -115,6 +115,15 @@ jobs:
         if: steps.publication.outputs.mode == 'build'
         run: pnpm install --filter @chordv/api... --filter @chordv/admin... --frozen-lockfile
 
+      # pnpm's filtered install runs @prisma/client's postinstall from the store,
+      # where no schema is findable — so the client stays an UNGENERATED stub:
+      # imports resolve, but runtime sentinels like Prisma.DbNull are undefined and
+      # PrismaClient refuses to instantiate. Generate before the tests, not only in
+      # the build step below.
+      - name: Generate Prisma client
+        if: steps.publication.outputs.mode == 'build'
+        run: pnpm --filter @chordv/api db:generate
+
       - name: Run API regression tests
         if: steps.publication.outputs.mode == 'build'
         run: pnpm test:api
