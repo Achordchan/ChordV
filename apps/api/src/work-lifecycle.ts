@@ -79,12 +79,15 @@ export class WorkLifecycle implements NestInterceptor {
    * sites keep their own handling for that.
    */
   async awaitWithBudgetElse<T, F = T>(task: Promise<T>, timeoutMs: number, onExpiry: () => F): Promise<T | F> {
+    // Identity, not `instanceof`: a nested awaitWithBudget inside `task` rejects with
+    // the SAME error class, and taking that for our own expiry would swallow a task
+    // failure — returning stale fallback data and logging the wrong timeout. Only the
+    // instance this call's own timer produced counts, and it is built only on expiry.
+    let expiry: WorkBudgetExceededError | undefined;
     try {
-      // Passed explicitly, not left to the default: this method's correctness is
-      // the round trip through exactly this error type, not whatever the default is.
-      return await this.awaitWithBudget(task, timeoutMs, () => new WorkBudgetExceededError(timeoutMs));
+      return await this.awaitWithBudget(task, timeoutMs, () => (expiry = new WorkBudgetExceededError(timeoutMs)));
     } catch (error) {
-      if (error instanceof WorkBudgetExceededError) return onExpiry();
+      if (expiry !== undefined && error === expiry) return onExpiry();
       throw error;
     }
   }

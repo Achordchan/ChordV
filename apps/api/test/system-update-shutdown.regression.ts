@@ -334,6 +334,15 @@ async function assertBudgetWindowsAndNoRaceTrack() {
     /task blew up/,
     "a task failure propagates instead of being swallowed as an expiry"
   );
+  // A nested budget expiring is the TASK failing, not ours: it must propagate, or the
+  // caller silently gets fallback data under a timeout value that never elapsed.
+  const nested = lifecycle.awaitWithBudget(new Promise<string>(() => undefined), 10);
+  await assert.rejects(
+    lifecycle.awaitWithBudgetElse(nested, 5_000, () => "fallback"),
+    (error: unknown) => error instanceof WorkBudgetExceededError && error.timeoutMs === 10,
+    "a nested budget expiry propagates instead of being taken for our own"
+  );
+
   await assert.rejects(lifecycle.awaitWithBudget(never, 20), (error: unknown) => {
     assert.ok(error instanceof WorkBudgetExceededError);
     assert.equal((error as WorkBudgetExceededError).timeoutMs, 20);
