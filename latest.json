@@ -1,0 +1,15 @@
+{
+  "version": "0.0.6",
+  "channel": "stable",
+  "tag": "backend-v0.0.6",
+  "publishedAt": "2026-09-06T15:57:08Z",
+  "htmlUrl": "https://github.com/Achordchan/ChordV/releases/tag/backend-v0.0.6",
+  "changelog": [
+    "修复面板触发的更新被拖到排空超时：Agent 命令流（长驻 SSE）现响应排空，命令重试定时任务排空期间不再领取新作业。"
+  ],
+  "artifact": {
+    "url": "https://github.com/Achordchan/ChordV/releases/download/backend-v0.0.6/chordv-backend-0.0.6.tar.gz",
+    "sha256": "4d901978a6dcb5375d6686e47f721d8370faedcafb760e95100b5af04719296c",
+    "sizeBytes": 86670546
+  }
+}
