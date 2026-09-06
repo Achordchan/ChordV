@@ -782,7 +782,11 @@ function testSnapshotDatabaseUrl() {
     const direct = "postgresql://a%40b:p%3Aq@direct/db?sslmode=verify-full";
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: direct });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "host=direct\nport=5432\ndbname=db\nuser=a@b\npassword=p:q\nsslmode=verify-full");
+    assert.equal(result.stdout, "host=direct\ndbname=db\nuser=a@b\npassword=p:q\nsslmode=verify-full");
+    // An omitted port must stay omitted so libpq applies PGPORT/default resolution.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://backup@db/chordv", PGPORT: "6543" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /^port=/m, "omitted URI port must not be pinned in the service file");
     result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
     // Valid libpq options must not be gated by an allowlist — libpq itself

@@ -436,10 +436,11 @@ try {
     }
   }
   const authority = new Map();
-  if (url.hostname) {
-    authority.set("host", decodeURIComponent(url.hostname).replace(/^\[|\]$/g, ""));
-    authority.set("port", url.port ? decodeURIComponent(url.port) : "5432");
-  }
+  if (url.hostname) authority.set("host", decodeURIComponent(url.hostname).replace(/^\[|\]$/g, ""));
+  // Only fields the URI actually carries become service entries: an omitted
+  // port must keep libpq's normal PGPORT/default resolution instead of being
+  // pinned to 5432 here.
+  if (url.port) authority.set("port", decodeURIComponent(url.port));
   if (url.pathname.length > 1) authority.set("dbname", decodeURIComponent(url.pathname.replace(/^\//, "")));
   if (url.username) authority.set("user", decodeURIComponent(url.username));
   if (url.password) authority.set("password", decodeURIComponent(url.password));
