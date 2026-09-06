@@ -771,9 +771,11 @@ function testSnapshotDatabaseUrl() {
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-url-"));
   const SEP = "\x1f";
   const splitOutput = (out: string) => {
-    const sep = out.indexOf(SEP);
+    assert.ok(out.endsWith(SEP), "output must end with the \x1f terminator");
+    const body = out.slice(0, -1);
+    const sep = body.indexOf(SEP);
     assert.ok(sep >= 0, "output must carry the \x1f separator");
-    return [out.slice(0, sep), out.slice(sep + 1)];
+    return [body.slice(0, sep), body.slice(sep + 1)];
   };
   const raw = "postgresql://us%40er:p%3Ass%2F%25%3F%23@db.example:5432/chordv?schema=public&sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&connection_limit=4&pool_timeout=10&socket_timeout=9&pgbouncer=true&statement_cache_size=0&sslaccept=strict&sslidentity=client.p12&%73chema=other&sslrootcert=%2Fcerts%2Froot.pem";
   const expectedUri = "postgresql://us%40er@db.example:5432/chordv?sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&sslrootcert=%2Fcerts%2Froot.pem";
@@ -815,6 +817,22 @@ function testSnapshotDatabaseUrl() {
     assert.notEqual(result.status, 0, "sslpassword in argv must be refused");
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@db/db?passfile=/x" });
     assert.notEqual(result.status, 0, "password + passfile is ambiguous and must be refused");
+    // libpq also accepts ?password=; it must move to the environment, not argv.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user@db.example/app?password=secret&sslmode=require" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app?sslmode=require", "secret"]);
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@db/app?password=other" });
+    assert.notEqual(result.status, 0, "password in both authority and query is ambiguous and must be refused");
+    // Control bytes other than NUL/\x1f are valid password bytes and must
+    // survive exactly (newlines, tabs, trailing whitespace).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:a%0Ab%09@db.example/app" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app", "a\nb\t"]);
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:tail%0A@db.example/app" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app", "tail\n"], "trailing newline must survive the terminator protocol");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:sep%1Fx@db.example/app" });
+    assert.notEqual(result.status, 0, "the \x1f separator byte must be refused");
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user@db/db?passfile=/x" });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db/db?passfile=/x", ""]);

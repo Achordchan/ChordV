@@ -449,6 +449,7 @@ try {
   let query = "";
   const queryIndex = rest.indexOf("?");
   let hasPassfile = false;
+  let queryPassword = null;
   if (queryIndex >= 0) {
     const rawQuery = rest.slice(queryIndex + 1);
     pathAndFragment = rest.slice(0, queryIndex);
@@ -460,17 +461,30 @@ try {
       if (prismaOnly.has(key)) continue;
       if (key === "sslpassword") throw new Error();
       if (key === "passfile") hasPassfile = true;
+      // libpq accepts the password as a URI query parameter too; pull it out
+      // so it reaches the environment transport instead of pg_dump's argv.
+      if (key === "password") {
+        if (eq < 0) throw new Error();
+        queryPassword = decodeURIComponent(part.slice(eq + 1));
+        continue;
+      }
       kept.push(part);
     }
     if (kept.length > 0) query = "?" + kept.join("&");
   }
   const hasPassword = url.password !== "";
-  // A password AND a passfile parameter are ambiguous precedence; refuse
-  // rather than silently drop one of them.
+  // A password AND a passfile parameter are ambiguous precedence, as are
+  // passwords in both the authority and the query; refuse rather than
+  // silently drop one of them.
   if (hasPassword && hasPassfile) throw new Error();
-  const password = hasPassword ? decodeURIComponent(url.password) : "";
-  if (/[\x00-\x1f\x7f]/.test(password)) throw new Error();
-  process.stdout.write(raw.slice(0, schemeEnd) + authority + pathAndFragment + query + "\x1f" + password);
+  if (hasPassword && queryPassword !== null) throw new Error();
+  const password = hasPassword ? decodeURIComponent(url.password) : (queryPassword ?? "");
+  // Only NUL (unrepresentable in shell strings/environment) and \x1f (the
+  // field separator this protocol uses) are rejected; PostgreSQL passwords may
+  // validly contain newlines, tabs and other control bytes, and the
+  // environment transport preserves them exactly.
+  if (/[\x00\x1f]/.test(password)) throw new Error();
+  process.stdout.write(raw.slice(0, schemeEnd) + authority + pathAndFragment + query + "\x1f" + password + "\x1f");
 } catch {
   process.exitCode = 1;
 }
@@ -533,9 +547,19 @@ run_snapshot() {
     log "ERROR: invalid snapshot database URL; cannot snapshot before migrate"
     return 1
   fi
-  # \x1f cannot occur in either field (control characters are rejected), and
-  # read with a non-whitespace IFS preserves leading/trailing spaces exactly.
-  IFS=$'\x1f' read -r uri password <<< "$out"
+  # Protocol: <uri>\x1f<password>\x1f — a trailing separator guards the
+  # password's own trailing bytes (command substitution strips trailing
+  # NEWLINES, so a password ending in \n must not be last). \x1f cannot occur
+  # in either field. Parameter expansion (not `read`) keeps embedded newlines,
+  # tabs and leading/trailing whitespace byte-exact for the environment
+  # transport.
+  case "$out" in
+    *$'\x1f'*$'\x1f') ;;
+    *) log "ERROR: malformed snapshot invocation parts"; return 1 ;;
+  esac
+  uri="${out%%$'\x1f'*}"
+  password="${out#*$'\x1f'}"
+  password="${password%$'\x1f'}"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   target="$BACKUP_DIR/${base}-${stamp}.sql.gz"
   # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
