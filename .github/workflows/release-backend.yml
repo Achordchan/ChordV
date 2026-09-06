@@ -113,7 +113,9 @@ jobs:
 
       - name: Install dependencies
         if: steps.publication.outputs.mode == 'build'
-        run: pnpm install --filter @chordv/api... --filter @chordv/admin... --frozen-lockfile
+        # test:api also runs @chordv/node-agent's own suite (tsx + better-sqlite3
+        # live in ITS node_modules), so its filter must be installed too.
+        run: pnpm install --filter @chordv/api... --filter @chordv/admin... --filter @chordv/node-agent... --frozen-lockfile
 
       # pnpm's filtered install runs @prisma/client's postinstall from the store,
       # where no schema is findable — so the client stays an UNGENERATED stub:
