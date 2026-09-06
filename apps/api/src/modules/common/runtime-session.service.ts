@@ -1293,9 +1293,18 @@ export class RuntimeSessionService {
   }
 
   private async queuePanelAccessSyncForNodeSubscription(nodeId: string, subscriptionId: string) {
+    let settled = false;
     const task = Promise.resolve()
       .then(() => this.queueSubscriptionPanelAccessSync(subscriptionId))
-      .then(() => undefined);
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
     void task.catch((error) => {
       this.logger.warn(
         `Node ${nodeId} panel access sync for subscription ${subscriptionId} failed after local node save: ${
@@ -1304,16 +1313,26 @@ export class RuntimeSessionService {
       );
     });
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          this.logger.warn(
+            `Node ${nodeId} panel access sync for subscription ${subscriptionId} exceeded ${NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS}ms and will continue in background.`
+          );
+        }
+        resolve();
+      }, NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS);
+    });
+
     try {
-      // Budget covers the waiting window only: on expiry the queueing keeps running
-      // for the background logger above instead of holding a drain work item.
-      await workLifecycle.awaitWithBudgetElse(task, NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS, () => {
-        this.logger.warn(
-          `Node ${nodeId} panel access sync for subscription ${subscriptionId} exceeded ${NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS}ms and will continue in background.`
-        );
-      });
+      await Promise.race([workLifecycle.track(task), timeoutTask]);
     } catch {
       // Individual subscription failures are logged by the guarded task and must not stop other node syncs.
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -3344,16 +3363,33 @@ function readRuntimeErrorMessage(error: unknown) {
 }
 
 async function withNodePanelBindingSubscriptionBudget<T>(taskFactory: () => Promise<T>, label: string): Promise<T> {
-  const task = Promise.resolve().then(taskFactory);
-  try {
-    // Budget covers the waiting window only: on expiry the remaining subscription
-    // work is abandoned to its own retry path, not held against the drain.
-    return await workLifecycle.awaitWithBudget(
-      task,
-      NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS,
-      () => new Error(`${label} exceeded ${NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS}ms; remaining subscriptions will continue`)
+  let settled = false;
+  const task = Promise.resolve()
+    .then(taskFactory)
+    .then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
     );
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutTask = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      if (!settled) {
+        reject(new Error(`${label} exceeded ${NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS}ms; remaining subscriptions will continue`));
+      }
+    }, NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([workLifecycle.track(task), timeoutTask]);
   } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
     void task.catch(() => undefined);
   }
 }

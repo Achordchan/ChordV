@@ -1558,49 +1558,91 @@ export class AdminNodeService {
   }
 
   private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {
+    let settled = false;
     const guardedTask = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS);
       timer.unref?.();
-    }).then(task);
+    }).then(task).then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
     void guardedTask.catch((error) => {
       this.logger?.warn(
         `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
-    try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      return await workLifecycle.awaitWithBudgetElse(guardedTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<T>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
         this.logger?.warn(
           `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
         );
-        return timeoutResult;
-      });
+        resolve(timeoutResult);
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+    });
+
+    try {
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
       return timeoutResult;
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
   private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
-    const guardedTask = Promise.resolve().then(task).then(() => undefined);
+    let settled = false;
+    const guardedTask = Promise.resolve()
+      .then(task)
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        }
+      );
     void guardedTask.catch((error) => {
       this.logger?.warn(
         `Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        if (!settled) {
+          this.logger?.warn(
+            `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+          );
+        }
+        resolve();
+      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
+      timeoutHandle.unref?.();
+    });
+
     try {
-      // Budget covers the WAITING window only: a slow or hung remote call is
-      // abandoned to its owner instead of holding a self-update drain work item.
-      await workLifecycle.awaitWithBudgetElse(guardedTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
-        this.logger?.warn(
-          `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
-        );
-      });
+      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch {
       // The guarded task logs the failure; local node changes must remain committed.
+    } finally {
+      if (settled && timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 

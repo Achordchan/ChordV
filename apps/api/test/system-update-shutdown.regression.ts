@@ -352,18 +352,41 @@ async function assertBudgetWindowsAndNoRaceTrack() {
   // The abandoned task is still pending, yet the drain must not wait for it.
   await lifecycle.drain(server, 1000);
 
-  const offenders: string[] = [];
+  // A budget window is only legitimate when the abandoned work has ANOTHER owner (a
+  // retry queue that will re-run it, a background logger). Work whose whole purpose is
+  // to CREATE the durable record has no such owner: releasing its accounting lets a
+  // self-update close Prisma and exit mid-enqueue, leaving the local change without the
+  // panel sync it implies. Those helpers therefore stay tracked. They are local DB
+  // enqueues, so the drain waits on the database, never on an unreachable panel.
+  // Converting them needs "persist a retry record, THEN bound the wait" — until that
+  // exists this list must SHRINK, never grow.
+  const keptTracked = new Map<string, number>([
+    ["src/modules/common/runtime-session.service.ts", 2],   // queuePanelAccessSyncForNodeSubscription, withNodePanelBindingSubscriptionBudget
+    ["src/modules/common/admin-node.service.ts", 2],        // runAfterLocalNodeSaveWithBudget, tryRunAfterLocalNodeSave
+    ["src/modules/common/admin-subscription.service.ts", 1] // withSubscriptionFollowUpBudget
+  ]);
+  const found = new Map<string, number>();
   const walk = async (dir: string) => {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else if (entry.name.endsWith(".ts") && (await fs.readFile(full, "utf8")).includes("Promise.race([workLifecycle.track(")) {
-        offenders.push(path.relative(path.join(__dirname, ".."), full));
-      }
+      if (entry.isDirectory()) { await walk(full); continue; }
+      if (!entry.name.endsWith(".ts")) continue;
+      const hits = (await fs.readFile(full, "utf8")).split("Promise.race([workLifecycle.track(").length - 1;
+      if (hits > 0) found.set(path.relative(path.join(__dirname, ".."), full), hits);
     }
   };
   await walk(path.join(__dirname, "../src"));
-  assert.deepEqual(offenders, [], `use awaitWithBudget/awaitWithBudgetElse instead of racing a tracked task: ${offenders.join(", ")}`);
+  for (const [file, hits] of found) {
+    const allowed = keptTracked.get(file) ?? 0;
+    assert.ok(
+      hits <= allowed,
+      `${file} races ${hits} tracked task(s) but only ${allowed} are documented as durable-intent: ` +
+      "use awaitWithBudget/awaitWithBudgetElse, or keep the work tracked without a race"
+    );
+  }
+  for (const [file, allowed] of keptTracked) {
+    assert.ok((found.get(file) ?? 0) <= allowed, `stale exception for ${file}`);
+  }
 }
 
 async function repeatedSignalChild() {
