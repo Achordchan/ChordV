@@ -9,7 +9,7 @@ import { NestFactory } from "@nestjs/core";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { WorkLifecycle, workLifecycle, withShutdownDeadline } from "../src/work-lifecycle";
+import { DrainCancelledError, WorkLifecycle, workLifecycle, withShutdownDeadline } from "../src/work-lifecycle";
 import { SystemUpdateService } from "../src/modules/common/system-update.service";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
@@ -149,18 +149,29 @@ async function assertDedicatedLockLifecycle() {
 
 async function assertFailures() {
   const exit = process.exit;
-  process.exit = (() => assert.fail("failed shutdown must not exit")) as never;
   try {
-    for (const scenario of ["drain", "hooks", "lock", "final-lock", "write", "revoke"]) {
+    for (const scenario of ["drain", "cancel", "hooks", "lock", "final-lock", "write", "audit", "revoke"]) {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "chordv-drain-fail-"));
       const service = serviceAt(dir);
-      let released = false, fenced = false, checks = 0;
+      let released = false, fenced = false, checks = 0, exited = 0;
+      // Once the failure is durably audited and the pending intent revoked (or
+      // was never written), the process exits non-zero so the supervisor can
+      // relaunch the SAME version through its readiness gate — staying alive
+      // but deaf required a manual restart for every drain timeout. Only the
+      // revoke-failure scenario keeps its fence instead of exiting.
+      process.exit = ((code: number) => {
+        exited += 1;
+        assert.equal(code, 1, "failed shutdown must exit non-zero for supervisor restart");
+      }) as never;
       service.configureShutdown(async () => {
         await assert.rejects(fs.access(path.join(dir, "pending.json")));
         if (scenario === "drain") throw new Error("active task timed out");
+        if (scenario === "cancel") throw new DrainCancelledError();
         if (scenario === "hooks") await withShutdownDeadline(Promise.reject(new Error("destroy hook failed")), 50);
       }, () => { fenced = true; }, () => undefined);
       if (scenario === "write") (service as any).writePendingMarker = async () => { throw new Error("disk full"); };
+      // Deterministic audit-write failure: chmod cannot block a root test runner.
+      if (scenario === "audit") (service as any).writeFileDurable = async () => { throw new Error("state volume read-only"); };
       if (scenario === "revoke") {
         (service as any).writePendingMarker = async () => { throw new Error("rename failed"); };
         (service as any).clearPendingMarker = async () => { throw new Error("read-only state"); };
@@ -172,18 +183,48 @@ async function assertFailures() {
       assert.ok(fenced);
       assert.equal(released, scenario !== "revoke", "never release fence if pending revocation fails");
       await assert.rejects(fs.access(path.join(dir, "pending.json")));
-      if (scenario !== "revoke") {
+      if (scenario === "revoke" || scenario === "cancel" || scenario === "audit") {
+        assert.equal(exited, 0, "revoked-intent, signal-cancelled and un-auditable failures must stay fenced for manual recovery");
+      } else {
+        assert.equal(exited, 1, "audited failure must exit for supervisor restart");
+      }
+      if (scenario !== "revoke" && scenario !== "cancel" && scenario !== "audit") {
         const result = JSON.parse(await fs.readFile(path.join(dir, `operation-result.${marker.operationId}.json`), "utf8"));
         assert.equal(result.status, "failed"); assert.equal(result.migrationApplied, false);
         assert.equal(result.version, undefined, "preserve original audit target");
         const bytes = JSON.stringify(result);
+        exited = 0;
         await (service as any).drainAndExit({ assertHeld: async () => { throw new Error("later failure"); }, release: async () => undefined }, marker.operationId, marker);
         assert.equal(await fs.readFile(path.join(dir, `operation-result.${marker.operationId}.json`), "utf8"), bytes, "do not overwrite terminal result");
+        assert.equal(exited, 1, "repeat failure must still exit after re-auditing");
       }
       await fs.rm(dir, { recursive: true, force: true });
     }
     await assert.rejects(withShutdownDeadline(new Promise(() => undefined), 25), /timed out/);
   } finally { process.exit = exit; }
+}
+
+async function assertBudgetedWorkReleasesOnTimeout() {
+  // A budgeted task that never settles must release its work item when the
+  // budget expires — this is the primitive that keeps a hung remote call from
+  // blocking a self-update drain for the whole drain window ("N work items
+  // remain" in production).
+  const lifecycle = new WorkLifecycle();
+  const server = http.createServer(); await new Promise<void>((resolve) => server.listen(0, resolve));
+  const hung = new Promise<string>(() => undefined);
+  class BudgetExceeded extends Error {}
+  await assert.rejects(lifecycle.awaitWithBudget(hung, 25, () => new BudgetExceeded("budget")), BudgetExceeded);
+  await lifecycle.drain(server, 2_000);
+  clearInterval((lifecycle as unknown as { recoveryHold?: NodeJS.Timeout }).recoveryHold);
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+
+  // A task that settles in time resolves normally and still releases.
+  const prompt = new WorkLifecycle();
+  const server2 = http.createServer(); await new Promise<void>((resolve) => server2.listen(0, resolve));
+  assert.equal(await prompt.awaitWithBudget(Promise.resolve("ok"), 1_000), "ok");
+  await prompt.drain(server2, 2_000);
+  clearInterval((prompt as unknown as { recoveryHold?: NodeJS.Timeout }).recoveryHold);
+  await new Promise<void>((resolve) => server2.close(() => resolve()));
 }
 
 async function assertTimeoutAndDisconnectedWork() {
@@ -276,7 +317,7 @@ async function repeatedSignalChild() {
   };
   const cancel = lifecycle.cancelDrain.bind(lifecycle);
   lifecycle.cancelDrain = () => { cancel(); process.send?.("cancelled"); };
-  new Function("workLifecycle", "shutdown", source.slice(start, end).replace(" as const", ""))(lifecycle, shutdown);
+  new Function("workLifecycle", "shutdown", "DrainCancelledError", source.slice(start, end).replace(" as const", ""))(lifecycle, shutdown, DrainCancelledError);
   process.send?.("ready");
 }
 
@@ -349,6 +390,7 @@ async function main() {
   await assertRealHttpDrain();
   await assertDedicatedLockLifecycle();
   await assertFailures();
+  await assertBudgetedWorkReleasesOnTimeout();
   await assertTimeoutAndDisconnectedWork();
   await assertDrainBeforeListen();
   await assertActualScheduledAndStreams();

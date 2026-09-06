@@ -423,7 +423,16 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local change is already committed. Accounting
+      // covers only the awaiting window — an abandoned background continuation
+      // must not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       this.logger?.warn(`Local change saved, but ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
     } finally {
@@ -602,7 +611,16 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([workLifecycle.track(taskPromise), timeoutPromise]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback. Accounting covers only the awaiting window — an
+      // abandoned background load must not hold a work item (blocking a
+      // self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        return await Promise.race([taskPromise, timeoutPromise]);
+      } finally {
+        leave();
+      }
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
@@ -939,7 +957,16 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([workLifecycle.track(detailTask), timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local action already succeeded. Accounting
+      // covers only the awaiting window — an abandoned background refresh must
+      // not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        return await Promise.race([detailTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       this.logger.warn(`${actionLabel}, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
       return fallback();
@@ -2059,8 +2086,17 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      const queuedCount = await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
-      return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local node access is already saved. Accounting
+      // covers only the awaiting window — an abandoned background sync must
+      // not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        const queuedCount = await Promise.race([guardedTask, timeoutTask]);
+        return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
+      } finally {
+        leave();
+      }
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but panel access sync failed for ${subscriptionId}: ${errorMessage}`);
@@ -2101,7 +2137,16 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local node access is already saved. Accounting
+      // covers only the awaiting window — an abandoned background refresh must
+      // not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        return await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } finally {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -2361,7 +2406,16 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local node access is already saved. Accounting
+      // covers only the awaiting window — an abandoned background follow-up
+      // must not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        return await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but revocation follow-up failed for ${subscriptionId}: ${errorMessage}`);

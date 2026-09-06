@@ -479,7 +479,17 @@ export class AnnouncementPolicyService {
     });
 
     try {
-      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the warning-only behavior after the local change is already committed.
+      // Accounting covers only the awaiting window — a publish that outlives
+      // its budget continues in the background and must not hold a work item
+      // (blocking a self-update drain) until it happens to settle.
+      const leave = workLifecycle.enter();
+      try {
+        await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       this.logger.warn(`Local change saved, but ${eventType} publish failed: ${readErrorMessage(error)}`);
     } finally {

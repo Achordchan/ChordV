@@ -3,7 +3,7 @@ import "reflect-metadata";
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { workLifecycle, withShutdownDeadline } from "./work-lifecycle";
+import { DrainCancelledError, workLifecycle, withShutdownDeadline } from "./work-lifecycle";
 import { promotionAdmission } from "./promotion-admission";
 import { SystemUpdateService } from "./modules/common/system-update.service";
 import { resolveCorsOrigin } from "./cors";
@@ -60,7 +60,19 @@ async function bootstrap() {
     process.on(signal, () => {
       if (workLifecycle.isDraining) { workLifecycle.cancelDrain(); return; }
       void shutdown().then(() => process.exit(0), (error) => {
-        console.error(`Shutdown failed; process fenced for manual recovery: ${String(error)}`);
+        if (error instanceof DrainCancelledError) {
+          // The operator cancelled on purpose: keep the fence and let the
+          // supervisor's stop flow own the process; exiting here would turn a
+          // deliberate interrupt into an unplanned same-version restart.
+          console.error(`Shutdown cancelled by signal; process fenced: ${String(error)}`);
+          return;
+        }
+        // A deaf process only drags container stops out to the full grace
+        // period; exit non-zero so the supervisor's own shutdown completes
+        // (and a container restart brings the app back through the readiness
+        // gate instead of a fenced half-state).
+        console.error(`Shutdown failed; exiting for supervisor restart: ${String(error)}`);
+        process.exit(1);
       });
     });
   }

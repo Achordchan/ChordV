@@ -8,7 +8,7 @@ import {
   ServiceUnavailableException
 } from "@nestjs/common";
 import { spawn } from "node:child_process";
-import { workLifecycle } from "../../work-lifecycle";
+import { DrainCancelledError, workLifecycle } from "../../work-lifecycle";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -1387,6 +1387,9 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       }
       // Prisma may already be closed. Persist using the existing boot/poll consumer;
       // never overwrite an existing terminal result or claim a migration happened.
+      // Durable-audit gate: the exit below must never strand an operation
+      // without its terminal result after the pending intent was revoked.
+      let audited = true;
       try {
         if (!this.config.stateDir) throw new Error("No state directory for shutdown failure");
         await fs.mkdir(this.config.stateDir, { recursive: true });
@@ -1394,16 +1397,46 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         const tmp = `${result}.tmp.${process.pid}.${++this.tmpSeq}`;
         try {
           await this.writeFileDurable(tmp, JSON.stringify({ operationId, status: "failed", reason, migrationApplied: false }));
-          // Hard-link publishes complete bytes exclusively; EEXIST preserves the winner.
-          await fs.link(tmp, result);
+          // Hard-link publishes complete bytes exclusively; EEXIST means a
+          // terminal result is already durable — preserve the winner and count
+          // the audit as durable (a repeat failure must not fence forever).
+          try {
+            await fs.link(tmp, result);
+          } catch (linkError) {
+            if ((linkError as NodeJS.ErrnoException).code !== "EEXIST") throw linkError;
+          }
           await this.fsyncDir(this.config.stateDir);
         } finally { await fs.rm(tmp, { force: true }).catch(() => undefined); }
       } catch (auditError) {
         this.logger.error(`Shutdown failure result could not be persisted: ${this.describeError(auditError)}`);
+        audited = false;
       }
       await lock.release().catch((releaseError) => this.logger.error(`Lock cleanup failed: ${this.describeError(releaseError)}`));
-      // No automatic exit or resumption: timeout does not cancel underlying work, and
-      // failed Nest hooks can leave services half-closed. Operator recovery is required.
+      if (error instanceof DrainCancelledError) {
+        // A repeated TERM/INT deliberately cancelled this drain: keep the
+        // process fenced for the operator (the supervisor's stop flow owns
+        // it). Exiting here would turn a deliberate interrupt into an
+        // unplanned same-version restart — the same rule main.ts applies.
+        this.logger.error("Shutdown cancelled by signal; process stays fenced for operator recovery");
+        return;
+      }
+      // The failure must be DURABLY audited before the exit hands control to
+      // the supervisor: restarting without the terminal result would strand
+      // the operation after its pending intent was already revoked. When the
+      // state volume cannot take the audit write, stay fenced for the
+      // operator instead.
+      if (!audited) {
+        this.logger.error("Shutdown failure result is not durable; process stays fenced for operator recovery");
+        return;
+      }
+      // The failure is durably audited and the pending intent revoked: exit so
+      // the supervisor relaunches THIS version through its normal readiness +
+      // stabilization gates. Staying alive-but-deaf instead required a manual
+      // container restart for every drain timeout — the production incident
+      // this path must self-heal. The revoked-intent branch above keeps its
+      // fence: a marker we could not remove must never drive a promotion.
+      this.logger.error(`Exiting for supervisor restart after failed shutdown: ${reason}`);
+      process.exit(1);
     }
   }
 
