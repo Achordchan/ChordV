@@ -1,32 +1,90 @@
-FROM node:20.19.0-bookworm-slim
+# syntax=docker/dockerfile:1
+# ChordV backend image for the self-update deployment.
+#
+# Unlike a classic "bake the app into the image and run it" Dockerfile, the app
+# here runs out of a *writable* release directory so it can update itself in
+# place (see deploy/1panel/chordv/entrypoint.sh). The image ships a self-contained
+# "seed" release at /app/seed; on first boot the supervisor copies it into the
+# releases volume as /app/releases/<version> and points /app/current at it.
+#
+# Build context is the REPO ROOT (see docker-compose.yml build.context).
 
+# ---- build stage: install deps, build shared + api + admin, generate prisma client ----
+# api and admin are ONE release unit: the built tree carries both apps/api/dist and
+# apps/admin/dist so a single release/tarball updates the whole backend system.
+FROM node:20.19.0-bookworm-slim AS build
+
+# openssl so `prisma generate` detects the correct (3.0.x) engine for the runtime image.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@9.15.3 --activate
-
-WORKDIR /app
+WORKDIR /build
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
+COPY apps/admin/package.json apps/admin/package.json
 COPY packages/shared/package.json packages/shared/package.json
 
-RUN pnpm install --filter @chordv/api... --frozen-lockfile
+# Full install (dev deps needed for tsc/vite + the prisma CLI used by migrate deploy at runtime).
+RUN pnpm install --filter @chordv/api... --filter @chordv/admin... --frozen-lockfile
 
 COPY apps/api apps/api
+COPY apps/admin apps/admin
 COPY packages/shared packages/shared
 COPY scripts/prisma-migrate-with-baseline.mjs scripts/prisma-migrate-with-baseline.mjs
+COPY SYSTEM_VERSION SYSTEM_VERSION
 
 RUN pnpm --filter @chordv/shared build \
   && pnpm --filter @chordv/api db:generate \
-  && pnpm --filter @chordv/api build
+  && pnpm --filter @chordv/api build \
+  && pnpm --filter @chordv/admin build
+
+# The seed release only needs runtime artifacts. Drop source + admin's build-only
+# node_modules (apps/admin/dist is static and needs none) to keep the image smaller.
+# api/shared node_modules stay (relative pnpm symlinks the runtime resolves through).
+RUN rm -rf apps/admin/node_modules apps/admin/src apps/api/src packages/shared/src
+
+# ---- runtime stage: node + tools the self-update flow needs ----
+FROM node:20.19.0-bookworm-slim AS runtime
+
+# openssl/ca-certificates: prisma engine + TLS. curl/tar/gzip: download + extract
+# release tarballs and the supervisor health probe. postgresql-client-16: pre-migration
+# pg_dump snapshots (must match the PG16 server, so pull it from PGDG).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates curl tar gzip gnupg lsb-release \
+  && install -d /usr/share/postgresql-common/pgdg \
+  && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+  && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends postgresql-client-16 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@9.15.3 --activate
+WORKDIR /app
+
+# Seed release = the whole built tree (pnpm node_modules symlinks are relative and
+# stay valid when the supervisor relocates this into /app/releases/<version>).
+COPY --from=build /build /app/seed
+COPY deploy/1panel/chordv/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 ENV NODE_ENV=production
 ENV CHORDV_API_PORT=3000
-# Production must provide CHORDV_PANEL_PASSWORD_MASTER_KEY (32-byte hex/base64) at runtime.
+ENV CHORDV_SYSTEM_RELEASES_DIR=/app/releases
+ENV CHORDV_SYSTEM_STATE_DIR=/app/state
+ENV CHORDV_SYSTEM_CURRENT_LINK=/app/current
+ENV CHORDV_SYSTEM_SEED_DIR=/app/seed
+# Direct docker run deployments must bind these to distinct persistent directories;
+# never place snapshots/private state in admin-readable releases or public-state.
+ENV CHORDV_SYSTEM_PUBLIC_STATE_DIR=/app/public-state
+ENV CHORDV_SYSTEM_UPDATE_BACKUP_DIR=/app/backups
+# Production must also provide CHORDV_PANEL_PASSWORD_MASTER_KEY + secrets at runtime (env_file).
 
 EXPOSE 3000
 
-# Pre-existing db-push databases are baselined before migrate deploy.
-CMD ["sh", "-c", "node scripts/prisma-migrate-with-baseline.mjs && node apps/api/dist/apps/api/src/main.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD curl -fsS -H "X-Forwarded-Proto: https" http://127.0.0.1:3000/api/health || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]

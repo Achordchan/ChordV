@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
   ConflictException,
@@ -386,7 +387,7 @@ export class DevDataService implements OnModuleInit {
     userId?: string | null;
     teamId?: string | null;
   }) {
-    void this.publishNodeAccessUpdatedEvent(target).catch((error) => {
+    void workLifecycle.track(this.publishNodeAccessUpdatedEvent(target)).catch((error) => {
       this.logger?.warn(`Local node access change saved, but async node access publish failed: ${readPanelSyncErrorMessage(error)}`);
     });
   }
@@ -422,7 +423,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      await Promise.race([guardedTask, timeoutTask]);
+      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local change saved, but ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
     } finally {
@@ -532,7 +533,7 @@ export class DevDataService implements OnModuleInit {
 
   async getAdminSnapshot(): Promise<AdminSnapshotDto> {
     const [policy, users, plans, subscriptions, teams, nodes, panelSyncJobs, leaseRevocationJobs, announcements, releases, ticketCounts] =
-      await Promise.all([
+      await workLifecycle.all([
         this.getAdminPolicy(),
         this.safeAdminSnapshotList("users", () => this.listAdminUsers()),
         this.safeAdminSnapshotList("plans", () => this.listAdminPlans()),
@@ -601,7 +602,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([taskPromise, timeoutPromise]);
+      return await Promise.race([workLifecycle.track(taskPromise), timeoutPromise]);
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
@@ -611,7 +612,7 @@ export class DevDataService implements OnModuleInit {
     const now = new Date();
     let counts: [number, number, number, number, number, number, Awaited<ReturnType<typeof this.getSupportTicketDashboardCounts>>];
     try {
-      counts = await Promise.all([
+      counts = await workLifecycle.all([
         this.prisma.user.count(),
         this.prisma.team.count(),
         this.prisma.plan.count({ where: { isActive: true } }),
@@ -938,7 +939,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([detailTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(detailTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(`${actionLabel}, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
       return fallback();
@@ -1364,7 +1365,7 @@ export class DevDataService implements OnModuleInit {
   private async getSupportTicketDashboardCounts() {
     let counts: [number, number, number];
     try {
-      counts = await Promise.all([
+      counts = await workLifecycle.all([
         this.prisma.supportTicket.count({
           where: { status: { in: ["open", "waiting_user"] } }
         }),
@@ -2003,8 +2004,8 @@ export class DevDataService implements OnModuleInit {
   }
 
   private startSubscriptionPanelAccessSync(subscriptionId: string) {
-    const timer = setTimeout(() => {
-      void this.trySyncSubscriptionPanelAccess(subscriptionId)
+    const timer = workLifecycle.defer(() => {
+      return this.trySyncSubscriptionPanelAccess(subscriptionId)
         .then((result) => {
           if (!result.ok) {
             this.logger?.warn(`Node access saved, but async panel access sync is pending for ${subscriptionId}: ${result.errorMessage}`);
@@ -2058,7 +2059,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      const queuedCount = await Promise.race([guardedTask, timeoutTask]);
+      const queuedCount = await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
       return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
@@ -2100,7 +2101,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } finally {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -2244,7 +2245,7 @@ export class DevDataService implements OnModuleInit {
     filter: { nodeIds?: string[] } | undefined,
     reason: string
   ): Promise<NodeAccessRevocationEffects> {
-    const [panelQueue, leaseQueue, leaseQueueFollowUp] = await Promise.all([
+    const [panelQueue, leaseQueue, leaseQueueFollowUp] = await workLifecycle.all([
       this.withNodeAccessFollowUpBudget(
         subscriptionId,
         this.queuePanelDisableJobsForNodeAccessRevocation(subscriptionId, filter).then((panelSyncMessage) => ({
@@ -2280,8 +2281,8 @@ export class DevDataService implements OnModuleInit {
     filter: { nodeIds?: string[] } | undefined,
     reason: string
   ) {
-    const timer = setTimeout(() => {
-      void this.applyNodeAccessRevocationEffectsBestEffort(subscriptionId, filter, reason)
+    const timer = workLifecycle.defer(() => {
+      return this.applyNodeAccessRevocationEffectsBestEffort(subscriptionId, filter, reason)
         .then((result) => {
           if (result.panelSyncMessage) {
             this.logger?.warn(`Node access revocation follow-up for ${subscriptionId}: ${result.panelSyncMessage}`);
@@ -2302,8 +2303,8 @@ export class DevDataService implements OnModuleInit {
     filter: { nodeIds?: string[] } | undefined,
     reason: string
   ) {
-    const timer = setTimeout(() => {
-      void this.withNodeAccessFollowUpBudget(
+    const timer = workLifecycle.defer(() => {
+      return this.withNodeAccessFollowUpBudget(
         subscriptionId,
         this.tryApplyNodeAccessRevocationEffects(subscriptionId, filter, reason)
       )
@@ -2360,7 +2361,7 @@ export class DevDataService implements OnModuleInit {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but revocation follow-up failed for ${subscriptionId}: ${errorMessage}`);

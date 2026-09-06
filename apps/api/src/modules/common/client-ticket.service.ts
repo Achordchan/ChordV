@@ -1,3 +1,5 @@
+import { promotionAdmission } from "../../promotion-admission";
+import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, HttpException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
   ClientSupportTicketDetailDto,
@@ -61,10 +63,12 @@ export class ClientTicketService {
   private startPendingAttachmentJanitor() {
     // Pending attachment rows are shared in Postgres so restarts/multi-instance stay consistent.
     const intervalMs = Math.max(30_000, Math.floor(SUPPORT_TICKET_ATTACHMENT_UPLOAD_TOKEN_TTL_MS / 2));
-    void this.pruneExpiredPendingAttachmentsAndCleanup();
-    const timer = setInterval(() => {
-      void this.pruneExpiredPendingAttachmentsAndCleanup();
-    }, intervalMs);
+    const tick = () => {
+      if (!workLifecycle.isDraining && promotionAdmission.isApproved()) workLifecycle.track(this.pruneExpiredPendingAttachmentsAndCleanup());
+    };
+    tick();
+    const timer = setInterval(tick, intervalMs);
+    workLifecycle.onDrain(() => clearInterval(timer));
     timer.unref?.();
   }
 
@@ -771,7 +775,7 @@ export class ClientTicketService {
     });
 
     try {
-      return await Promise.race([detailTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(detailTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(`Client ticket write saved, but detail refresh failed for ${ticketId}: ${readErrorMessage(error)}`);
       return fallback();

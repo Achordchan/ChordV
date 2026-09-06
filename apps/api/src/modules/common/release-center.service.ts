@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import * as path from "node:path";
 import type {
@@ -431,7 +432,7 @@ export class ReleaseCenterService {
     }
 
     this.startReleaseCleanupBestEffort("release artifact files after release delete", async () => {
-      await Promise.all(
+      await workLifecycle.all(
         storedFilePaths.map((storedFilePath: string) =>
           removeReleaseArtifactFile(resolveReleaseArtifactAbsolutePath(storedFilePath))
         )
@@ -468,7 +469,7 @@ export class ReleaseCenterService {
     channel: ReleaseChannel = "stable",
     latestVersion?: string | null
   ) {
-    void this.clientEventsPublisher.publishVersionUpdated(platform, channel, latestVersion).catch((error) => {
+    void workLifecycle.track(this.clientEventsPublisher.publishVersionUpdated(platform, channel, latestVersion)).catch((error) => {
       this.logger.warn(
         `Local release change saved, but version_updated publish failed: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -1366,7 +1367,7 @@ export class ReleaseCenterService {
     });
 
     try {
-      return await Promise.race([refreshTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(refreshTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(
         `Local release change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
@@ -1503,7 +1504,7 @@ export class ReleaseCenterService {
     });
 
     try {
-      await Promise.race([cleanupTask, timeoutTask]);
+      await Promise.race([workLifecycle.track(cleanupTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(
         `Local release change saved, but ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
@@ -1516,8 +1517,8 @@ export class ReleaseCenterService {
   }
 
   private startReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
-    const timer = setTimeout(() => {
-      void this.runReleaseCleanupBestEffort(label, task).catch((error) => {
+    const timer = workLifecycle.defer(() => {
+      return this.runReleaseCleanupBestEffort(label, task).catch((error) => {
         this.logger.warn(
           `Local release change saved, but background ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
         );

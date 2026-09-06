@@ -1,3 +1,4 @@
+import { workLifecycle, DrainableJob } from "../../work-lifecycle";
 import { ConflictException, Injectable, Logger } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import { Cron } from "@nestjs/schedule";
@@ -60,6 +61,7 @@ export class UsageSyncService {
   }
 
   @Cron("*/30 * * * * *")
+  @DrainableJob()
   async syncNodeUsage() {
     const lockClient = new PgClient({
       connectionString: process.env.DATABASE_URL
@@ -980,7 +982,7 @@ export class UsageSyncService {
     reason: string,
     detail: string
   ) {
-    await Promise.all(
+    await workLifecycle.all(
       subscriptionIds.map(async (subscriptionId) => {
         try {
           await this.meteringIncidentService.open(subscriptionId, nodeId, reason, detail);
@@ -994,7 +996,7 @@ export class UsageSyncService {
   }
 
   private async resolveIncidentForSubscriptions(subscriptionIds: string[], nodeId: string, reason: string) {
-    await Promise.all(
+    await workLifecycle.all(
       subscriptionIds.map(async (subscriptionId) => {
         try {
           await this.meteringIncidentService.resolve(subscriptionId, nodeId, reason);
@@ -1081,7 +1083,7 @@ async function runWithConcurrency<T>(
 ) {
   const workerCount = Math.max(1, Math.min(concurrency, items.length));
   let cursor = 0;
-  await Promise.all(
+  await workLifecycle.all(
     Array.from({ length: workerCount }, async () => {
       while (cursor < items.length) {
         const index = cursor;
@@ -1101,7 +1103,7 @@ async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string
     }, timeoutMs);
   });
   try {
-    return await Promise.race([task, timeoutTask]);
+    return await Promise.race([workLifecycle.track(task), timeoutTask]);
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);

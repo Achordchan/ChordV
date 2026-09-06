@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from "@nestjs/common";
 import { AuthSessionService } from "./auth-session.service";
 
@@ -7,7 +8,7 @@ export class AdminAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<{ headers: { authorization?: string }; authUser?: { role?: string } }>();
-    const user = await this.authSessionService.authenticateAccessToken(request.headers.authorization);
+    const user = await workLifecycle.track(this.authSessionService.authenticateAccessToken(request.headers.authorization));
     if (user.role !== "admin") {
       throw new ForbiddenException("需要管理员权限");
     }

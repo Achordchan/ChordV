@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
   ConflictException,
@@ -151,7 +152,7 @@ export class AdminSubscriptionService {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local subscription change saved, but ${label} failed: ${readErrorMessage(error, "unknown error")}`);
       return timeoutResult;
@@ -163,8 +164,8 @@ export class AdminSubscriptionService {
   }
 
   private startSubscriptionFollowUpInBackground(label: string, task: () => Promise<unknown>): PanelSyncBestEffortResult {
-    const timer = setTimeout(() => {
-      void this.withSubscriptionFollowUpBudget(label, undefined, async () => {
+    const timer = workLifecycle.defer(() => {
+      return this.withSubscriptionFollowUpBudget(label, undefined, async () => {
         try {
           await task();
         } catch (error) {
@@ -193,7 +194,7 @@ export class AdminSubscriptionService {
 
   async listAdminUsers(): Promise<AdminUserRecordDto[]> {
     const [rows, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
-      () => Promise.all([
+      () => workLifecycle.all([
         this.prisma.user.findMany({
           include: {
             subscriptions: {
@@ -483,7 +484,7 @@ export class AdminSubscriptionService {
 
   async listAdminPlans(): Promise<AdminPlanRecordDto[]> {
     const [plans, subscriptionCounts] = await runAdminSubscriptionLocalOperation(
-      () => Promise.all([
+      () => workLifecycle.all([
         this.prisma.plan.findMany({ orderBy: { createdAt: "asc" } }),
         this.countSubscriptionsByPlan()
       ]),
@@ -658,7 +659,7 @@ export class AdminSubscriptionService {
 
   async listAdminSubscriptions(): Promise<AdminSubscriptionRecordDto[]> {
     const [rows, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
-      () => Promise.all([
+      () => workLifecycle.all([
         this.prisma.subscription.findMany({
           include: {
             plan: true,
@@ -1122,7 +1123,7 @@ export class AdminSubscriptionService {
 
   async listAdminTeams(): Promise<AdminTeamRecordDto[]> {
     const [teams, panelSyncJobs] = await runAdminSubscriptionLocalOperation(
-      () => Promise.all([
+      () => workLifecycle.all([
         this.prisma.team.findMany({
           include: {
             owner: true,
@@ -1182,7 +1183,7 @@ export class AdminSubscriptionService {
     const userIds = Array.from(new Set(rows.map((row) => row.userId)));
     const nodeIds = Array.from(new Set(rows.map((row) => row.nodeId).filter((nodeId): nodeId is string => Boolean(nodeId))));
     const [users, nodes] = await runAdminSubscriptionLocalOperation(
-      () => Promise.all([
+      () => workLifecycle.all([
         this.prisma.user.findMany({
           where: { id: { in: userIds } },
           select: { id: true, displayName: true, email: true }
@@ -1223,7 +1224,7 @@ export class AdminSubscriptionService {
 
   private async listActivePanelSyncJobs(): Promise<PanelSyncSummaryJob[]> {
     try {
-      const [counts, recentFailedJobs] = await Promise.all([
+      const [counts, recentFailedJobs] = await workLifecycle.all([
         this.prisma.panelSyncJob.groupBy({
           by: ["subscriptionId", "userId", "teamId", "status"],
           where: {
@@ -2149,8 +2150,8 @@ export class AdminSubscriptionService {
     teamId?: string | null;
     state?: SubscriptionState | null;
   }) {
-    const timer = setTimeout(() => {
-      void this.runSubscriptionUpdatedPublishInBackground(target);
+    const timer = workLifecycle.defer(() => {
+      return this.runSubscriptionUpdatedPublishInBackground(target);
     }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
   }
@@ -2221,8 +2222,8 @@ export class AdminSubscriptionService {
   }
 
   private startUserStatusFollowUpInBackground(userId: string, status: "active" | "disabled"): PanelSyncBestEffortResult {
-    const timer = setTimeout(() => {
-      void this.runUserStatusFollowUpInBackground(userId, status);
+    const timer = workLifecycle.defer(() => {
+      return this.runUserStatusFollowUpInBackground(userId, status);
     }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return {
@@ -2232,8 +2233,8 @@ export class AdminSubscriptionService {
   }
 
   private startUserDisconnectFollowUpInBackground(userId: string, reason: string): PanelSyncBestEffortResult {
-    const timer = setTimeout(() => {
-      void this.runUserDisconnectFollowUpInBackground(userId, reason);
+    const timer = workLifecycle.defer(() => {
+      return this.runUserDisconnectFollowUpInBackground(userId, reason);
     }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return {
@@ -2256,7 +2257,7 @@ export class AdminSubscriptionService {
       async () => {
         try {
           const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
-          const syncResults = await Promise.all(
+          const syncResults = await workLifecycle.all(
             subscriptionIds.map((subscriptionId) => this.queueSubscriptionDisconnectBestEffort(subscriptionId, reason, { userId }))
           );
           return mergePanelSyncResults(...syncResults);
@@ -2280,7 +2281,7 @@ export class AdminSubscriptionService {
       async () => {
         try {
           const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
-          const syncResults = await Promise.all(
+          const syncResults = await workLifecycle.all(
             subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId))
           );
           return mergePanelSyncResults(...syncResults);
@@ -2297,7 +2298,7 @@ export class AdminSubscriptionService {
   private async runUserDisconnectFollowUpInBackground(userId: string, reason: string) {
     try {
       const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
-      const syncResults = await Promise.all(
+      const syncResults = await workLifecycle.all(
         subscriptionIds.map((subscriptionId) => this.queueSubscriptionDisconnectBestEffort(subscriptionId, reason, { userId }))
       );
       let panelSync: PanelSyncBestEffortResult = { ok: true };
@@ -2317,12 +2318,12 @@ export class AdminSubscriptionService {
       const subscriptionIds = await this.findCurrentSubscriptionIdsForUser(userId);
       const syncResults =
         status === "disabled"
-          ? await Promise.all(
+          ? await workLifecycle.all(
               subscriptionIds.map((subscriptionId) =>
                 this.queueSubscriptionDisconnectBestEffort(subscriptionId, "user_disabled", { userId })
               )
             )
-          : await Promise.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId)));
+          : await workLifecycle.all(subscriptionIds.map((subscriptionId) => this.syncSubscriptionPanelAccessBestEffort(subscriptionId)));
       let panelSync: PanelSyncBestEffortResult = { ok: true };
       for (const result of syncResults) {
         panelSync = mergePanelSyncResults(panelSync, result);
@@ -2356,8 +2357,8 @@ export class AdminSubscriptionService {
   }
 
   private startTeamStatusFollowUpInBackground(teamId: string, status: "active" | "disabled"): PanelSyncBestEffortResult {
-    const timer = setTimeout(() => {
-      void this.runTeamStatusFollowUpInBackground(teamId, status);
+    const timer = workLifecycle.defer(() => {
+      return this.runTeamStatusFollowUpInBackground(teamId, status);
     }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return {
@@ -2397,8 +2398,8 @@ export class AdminSubscriptionService {
   }
 
   private startTeamMemberRemovedFollowUpInBackground(member: { teamId: string; userId: string }): PanelSyncBestEffortResult {
-    const timer = setTimeout(() => {
-      void this.runTeamMemberRemovedFollowUpInBackground(member);
+    const timer = workLifecycle.defer(() => {
+      return this.runTeamMemberRemovedFollowUpInBackground(member);
     }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return {
@@ -2460,8 +2461,8 @@ export class AdminSubscriptionService {
   }
 
   private startTeamMemberDisconnectFollowUpInBackground(member: { teamId: string; userId: string }): PanelSyncBestEffortResult {
-    const timer = setTimeout(() => {
-      void this.runTeamMemberDisconnectFollowUpInBackground(member);
+    const timer = workLifecycle.defer(() => {
+      return this.runTeamMemberDisconnectFollowUpInBackground(member);
     }, SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS);
     timer.unref?.();
     return {
@@ -2525,7 +2526,7 @@ export class AdminSubscriptionService {
       where: { userId },
       select: { teamId: true }
     });
-    const teamSubscriptions = await Promise.all(
+    const teamSubscriptions = await workLifecycle.all(
       memberships.map((membership) => this.findCurrentTeamSubscription(membership.teamId))
     );
     for (const subscription of teamSubscriptions) {
@@ -2599,7 +2600,7 @@ export class AdminSubscriptionService {
         }
       }
     );
-    const [panelDisableResult, leaseJobResult] = await Promise.all([
+    const [panelDisableResult, leaseJobResult] = await workLifecycle.all([
       panelDisable,
       leaseJob
     ]);

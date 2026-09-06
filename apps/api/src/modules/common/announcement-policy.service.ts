@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import type {
@@ -381,8 +382,8 @@ export class AnnouncementPolicyService {
   }
 
   private startPublishEventInBackground(eventType: string, task: () => Promise<unknown>) {
-    const timer = setTimeout(() => {
-      void task().catch((error) => {
+    const timer = workLifecycle.defer(() => {
+      return task().catch((error) => {
         this.logger.warn(`Local change saved, but background ${eventType} publish failed: ${readErrorMessage(error)}`);
       });
     }, 0);
@@ -478,7 +479,7 @@ export class AnnouncementPolicyService {
     });
 
     try {
-      await Promise.race([guardedTask, timeoutTask]);
+      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       this.logger.warn(`Local change saved, but ${eventType} publish failed: ${readErrorMessage(error)}`);
     } finally {

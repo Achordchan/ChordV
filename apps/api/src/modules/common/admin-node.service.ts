@@ -1,3 +1,4 @@
+import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
   HttpException,
@@ -127,7 +128,7 @@ export class AdminNodeService {
 
   private async readNodePanelSyncSummaryBestEffort() {
     try {
-      const [jobCounts, recentFailedJobs] = await Promise.all([
+      const [jobCounts, recentFailedJobs] = await workLifecycle.all([
         this.prisma.panelSyncJob.groupBy({
           by: ["nodeId", "status"],
           where: {
@@ -638,7 +639,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       if (error instanceof BadRequestException) {
         throw error;
@@ -684,7 +685,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([probeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(probeTask), timeoutTask]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger?.warn(`Local node import saved, but initial probe failed for ${row.id}: ${message}`);
@@ -933,7 +934,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([runtimeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
     } catch (error) {
       const errorMessage = readAdminNodeErrorMessage(error);
       this.logger?.warn(`Local node subscription URL will be saved, but reading subscription runtime failed: ${errorMessage}`);
@@ -1056,7 +1057,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([runtimeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger?.warn(`Node ${current.id} panel runtime refresh failed: ${errorMessage}`);
@@ -1099,7 +1100,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([runtimeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
     } catch (error) {
       return {
         derived: null,
@@ -1204,7 +1205,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([runtimeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger?.warn(`Local node panel config will be saved, but reading new panel runtime failed: ${errorMessage}`);
@@ -1255,7 +1256,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([probeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(probeTask), timeoutTask]);
     } finally {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -1359,14 +1360,14 @@ export class AdminNodeService {
         results[index] = await this.probeNodeForBulk(nodes[index], remainingBudgetMs);
       }
     });
-    await Promise.all(workers);
+    await workLifecycle.all(workers);
     const skippedNodes = nodes.filter((_node, index) => !results[index]);
     if (skippedNodes.length > 0) {
       const checkedAt = new Date();
       this.logger.warn(
         `Bulk node probe request budget ${requestBudgetMs}ms exhausted; ${skippedNodes.length} nodes were marked for retry.`
       );
-      void this.markBulkProbeSkippedNodes(skippedNodes, requestBudgetMs, checkedAt);
+      void workLifecycle.track(this.markBulkProbeSkippedNodes(skippedNodes, requestBudgetMs, checkedAt));
       for (const node of skippedNodes) {
         const index = nodes.findIndex((item) => item.id === node.id);
         results[index] = this.buildBulkProbeSkippedRecord(node, requestBudgetMs, checkedAt);
@@ -1442,7 +1443,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([probeTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(probeTask), timeoutTask]);
     } finally {
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
@@ -1742,7 +1743,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
       return timeoutResult;
@@ -1786,7 +1787,7 @@ export class AdminNodeService {
     });
 
     try {
-      await Promise.race([guardedTask, timeoutTask]);
+      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } catch {
       // The guarded task logs the failure; local node changes must remain committed.
     } finally {
@@ -1862,7 +1863,7 @@ export class AdminNodeService {
     });
 
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);

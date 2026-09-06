@@ -3,6 +3,9 @@ import "reflect-metadata";
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
+import { workLifecycle, withShutdownDeadline } from "./work-lifecycle";
+import { promotionAdmission } from "./promotion-admission";
+import { SystemUpdateService } from "./modules/common/system-update.service";
 import { resolveCorsOrigin } from "./cors";
 import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
@@ -31,7 +34,36 @@ async function bootstrap() {
     }
   });
 
-  app.enableShutdownHooks();
+  // Install BEFORE Nest registers body parsers, routes and multipart interceptors.
+  app.use(promotionAdmission.middleware);
+  app.use(workLifecycle.middleware);
+  app.useGlobalInterceptors(workLifecycle);
+  const shutdown = async () => {
+    try {
+      await workLifecycle.drain(app.getHttpServer(), Math.min(
+        readPositiveIntegerEnv("CHORDV_API_DRAIN_TIMEOUT_MS", 12 * 60 * 1000), 30 * 60 * 1000
+      ));
+      await withShutdownDeadline(app.close(), 30_000);
+      workLifecycle.assertHealthy();
+    } catch (error) {
+      workLifecycle.fence(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+  };
+  app.get(SystemUpdateService).configureShutdown(shutdown, (error) => workLifecycle.fence(error), () => workLifecycle.assertHealthy());
+  // Own signal ordering too: Nest's default hooks disconnect Prisma BEFORE HTTP drain.
+  // A signal during self-update cancels the drain by preventing a second close; it
+  // never publishes intent or forces unfinished work to exit.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    // Keep the listener installed: repeated signals must not restore Node's default
+    // termination behavior while work is still draining or the process is fenced.
+    process.on(signal, () => {
+      if (workLifecycle.isDraining) { workLifecycle.cancelDrain(); return; }
+      void shutdown().then(() => process.exit(0), (error) => {
+        console.error(`Shutdown failed; process fenced for manual recovery: ${String(error)}`);
+      });
+    });
+  }
   app.setGlobalPrefix("api");
   const forceHttps = (process.env.CHORDV_API_FORCE_HTTPS ?? "true").toLowerCase() === "true";
   if (process.env.NODE_ENV === "production" && forceHttps) {
