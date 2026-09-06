@@ -497,7 +497,12 @@ run_snapshot() {
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  if ! ( umask 077; set -o pipefail; PGDATABASE="$snapshot_url" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump 2>/dev/null | gzip > "$tmp" ); then
+  # pg_dump only accepts a full connection URI as a COMMAND-LINE argument: passed
+  # via PGDATABASE it is treated as a plain database name, and the dump then
+  # silently targets the local socket (failing here, or worse - elsewhere
+  # succeeding against an unintended local server). The URL never hits the
+  # process list in logs, and pg_dump's own errors are suppressed below.
+  if ! ( umask 077; set -o pipefail; timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$snapshot_url" 2>/dev/null | gzip > "$tmp" ); then
     log "ERROR: database snapshot failed"
     rm -f "$tmp" 2>/dev/null
     return 1

@@ -781,13 +781,15 @@ function testSnapshotDatabaseUrl() {
     assert.equal(result.status, 0); assert.equal(result.stdout, direct);
     result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
-    // Exercise the real snapshot pipeline too: pg_dump gets only an environment
-    // connection string, and even errors echoing credentials never reach logs.
+    // Exercise the real snapshot pipeline too: pg_dump receives the connection
+    // URI as its command-line ARGUMENT (pg_dump 16 ignores URIs passed via
+    // PGDATABASE — it treats them as a plain database name and silently targets
+    // the local socket), and errors echoing credentials never reach logs.
     writeFileSync(path.join(root, "timeout"), '#!/usr/bin/env bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
     writeFileSync(path.join(root, "pg_dump"), `#!/usr/bin/env bash
-printf '%s' "$PGDATABASE" > "$CHORDV_TEST_CAPTURE"
+printf '%s' "$1" > "$CHORDV_TEST_CAPTURE"
 printf '%s' "$#" > "$CHORDV_TEST_ARGC"
-printf '%s' "$PGDATABASE" >&2
+printf '%s' "$1" >&2
 [ "$CHORDV_TEST_DUMP_FAIL" = "true" ] && exit 1
 printf 'test snapshot\\n'
 `, { mode: 0o755 });
@@ -800,8 +802,8 @@ printf 'test snapshot\\n'
           CHORDV_TEST_CAPTURE: capture, CHORDV_TEST_ARGC: argc, CHORDV_TEST_DUMP_FAIL: String(fail) }
       });
       assert.equal(dump.status, fail ? 1 : 0, dump.stderr);
-      assert.equal(readFileSync(capture, "utf8"), expected);
-      assert.equal(readFileSync(argc, "utf8"), "0", "credentials must not be command-line arguments");
+      assert.equal(readFileSync(capture, "utf8"), expected, "pg_dump must receive the connection URI as argv[1]");
+      assert.equal(readFileSync(argc, "utf8"), "1", "the URI must be pg_dump's single command-line argument");
       assert.equal(dump.stderr.includes("p%3Ass"), false, "pg_dump errors must not disclose credentials");
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
