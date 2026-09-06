@@ -422,16 +422,20 @@ export class DevDataService implements OnModuleInit {
       }, EVENT_PUBLISH_BUDGET_MS);
     });
 
-          // Accounting covers only the awaiting window; the abandoned background
-      // continuation must not hold a work item (blocking a self-update drain)
-      // until it happens to settle.
+    try {
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local change is already committed. Accounting
+      // covers only the awaiting window — an abandoned background continuation
+      // must not hold a work item (blocking a self-update drain).
       const leave = workLifecycle.enter();
-try {
-      await Promise.race([guardedTask, timeoutTask]);
+      try {
+        await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       this.logger?.warn(`Local change saved, but ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
     } finally {
-        leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -606,14 +610,18 @@ try {
       }, timeoutMs);
     });
 
-          // Accounting covers only the awaiting window; the abandoned background
-      // continuation must not hold a work item (blocking a self-update drain)
-      // until it happens to settle.
+    try {
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback. Accounting covers only the awaiting window — an
+      // abandoned background load must not hold a work item (blocking a
+      // self-update drain).
       const leave = workLifecycle.enter();
-try {
-      return await Promise.race([taskPromise, timeoutPromise]);
-    } finally {
+      try {
+        return await Promise.race([taskPromise, timeoutPromise]);
+      } finally {
         leave();
+      }
+    } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   }
@@ -948,17 +956,21 @@ try {
       }, TICKET_DETAIL_REFRESH_BUDGET_MS);
     });
 
-          // Accounting covers only the awaiting window; the abandoned background
-      // continuation must not hold a work item (blocking a self-update drain)
-      // until it happens to settle.
+    try {
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local action already succeeded. Accounting
+      // covers only the awaiting window — an abandoned background refresh must
+      // not hold a work item (blocking a self-update drain).
       const leave = workLifecycle.enter();
-try {
-      return await Promise.race([detailTask, timeoutTask]);
+      try {
+        return await Promise.race([detailTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       this.logger.warn(`${actionLabel}, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
       return fallback();
     } finally {
-        leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -2073,19 +2085,23 @@ try {
       }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
     });
 
-          // Accounting covers only the awaiting window; the abandoned background
-      // continuation must not hold a work item (blocking a self-update drain)
-      // until it happens to settle.
+    try {
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local node access is already saved. Accounting
+      // covers only the awaiting window — an abandoned background sync must
+      // not hold a work item (blocking a self-update drain).
       const leave = workLifecycle.enter();
-try {
-      const queuedCount = await Promise.race([guardedTask, timeoutTask]);
-      return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
+      try {
+        const queuedCount = await Promise.race([guardedTask, timeoutTask]);
+        return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
+      } finally {
+        leave();
+      }
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but panel access sync failed for ${subscriptionId}: ${errorMessage}`);
       return { ok: false, errorMessage };
     } finally {
-        leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -2120,13 +2136,18 @@ try {
       }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
     });
 
-    // Accounting covers only the awaiting window; the abandoned background
-    // continuation must not hold a work item (blocking a self-update drain).
-    const leave = workLifecycle.enter();
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local node access is already saved. Accounting
+      // covers only the awaiting window — an abandoned background refresh must
+      // not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        return await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } finally {
-      leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -2384,11 +2405,17 @@ try {
       }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
     });
 
-    // Accounting covers only the awaiting window; the abandoned background
-    // continuation must not hold a work item (blocking a self-update drain).
-    const leave = workLifecycle.enter();
     try {
-      return await Promise.race([guardedTask, timeoutTask]);
+      // Entry inside the guarded scope: a failed registration must not bypass
+      // the fallback after the local node access is already saved. Accounting
+      // covers only the awaiting window — an abandoned background follow-up
+      // must not hold a work item (blocking a self-update drain).
+      const leave = workLifecycle.enter();
+      try {
+        return await Promise.race([guardedTask, timeoutTask]);
+      } finally {
+        leave();
+      }
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but revocation follow-up failed for ${subscriptionId}: ${errorMessage}`);
@@ -2397,7 +2424,6 @@ try {
         panelSyncMessage: `node access revocation follow-up failed: ${errorMessage}`
       };
     } finally {
-      leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }

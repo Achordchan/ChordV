@@ -53,12 +53,14 @@ export class WorkLifecycle implements NestInterceptor {
     timeoutMs: number,
     makeTimeoutError: () => Error = () => new Error(`work budget of ${timeoutMs}ms exceeded`)
   ): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(makeTimeoutError()), timeoutMs);
-    });
+    // Enter BEFORE creating the timer: if entry can ever fail, no timer must
+    // be left behind unraced — its later rejection would be unhandled.
     const leave = this.enter();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      const timeoutTask = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(makeTimeoutError()), timeoutMs);
+      });
       return await Promise.race([task, timeoutTask]);
     } finally {
       leave();
