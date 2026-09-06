@@ -823,6 +823,8 @@ function testSnapshotDatabaseUrl() {
     assert.deepEqual(splitOutput(result.stdout), ["postgresql://user@db.example/app?sslmode=require", "secret"]);
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@db/app?password=other" });
     assert.notEqual(result.status, 0, "password in both authority and query is ambiguous and must be refused");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user@db/app?password=secret&passfile=/run/postgresql/passfile" });
+    assert.notEqual(result.status, 0, "query password combined with passfile is ambiguous and must be refused");
     // Control bytes other than NUL/\x1f are valid password bytes and must
     // survive exactly (newlines, tabs, trailing whitespace).
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:a%0Ab%09@db.example/app" });

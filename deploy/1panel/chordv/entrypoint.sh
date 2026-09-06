@@ -473,10 +473,10 @@ try {
     if (kept.length > 0) query = "?" + kept.join("&");
   }
   const hasPassword = url.password !== "";
-  // A password AND a passfile parameter are ambiguous precedence, as are
-  // passwords in both the authority and the query; refuse rather than
-  // silently drop one of them.
-  if (hasPassword && hasPassfile) throw new Error();
+  // A password (authority OR query) combined with a passfile parameter is
+  // ambiguous precedence, as are passwords in both the authority and the
+  // query; refuse rather than silently drop or prefer one of them.
+  if ((hasPassword || queryPassword !== null) && hasPassfile) throw new Error();
   if (hasPassword && queryPassword !== null) throw new Error();
   const password = hasPassword ? decodeURIComponent(url.password) : (queryPassword ?? "");
   // Only NUL (unrepresentable in shell strings/environment) and \x1f (the
