@@ -787,6 +787,14 @@ function testSnapshotDatabaseUrl() {
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://backup@db/chordv", PGPORT: "6543" });
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /^port=/m, "omitted URI port must not be pinned in the service file");
+    // URIs relying on libpq defaults stay valid: unix-socket form (no host) and
+    // database-name-defaults-to-user form (no dbname).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql:///chordv" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "dbname=chordv");
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://backup@db.example" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "host=db.example\nuser=backup");
     result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
     // Valid libpq options must not be gated by an allowlist — libpq itself

@@ -445,7 +445,10 @@ try {
   if (url.username) authority.set("user", decodeURIComponent(url.username));
   if (url.password) authority.set("password", decodeURIComponent(url.password));
   const merged = new Map([...authority, ...params]);
-  if (!merged.get("host") || !merged.get("dbname")) throw new Error();
+  // No host/dbname requirement: libpq accepts URIs that omit them
+  // (postgresql:///chordv → default unix socket; postgresql://backup@db →
+  // database defaults to the user) and resolves PGHOST/PGPORT/PGDATABASE
+  // from the environment, exactly as the verbatim-URI passthrough did.
   const lines = [];
   for (const [key, value] of merged) {
     if (/[\x00-\x1f\x7f]/.test(key) || /[\x00-\x1f\x7f]/.test(value)) throw new Error();
