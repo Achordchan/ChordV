@@ -170,7 +170,8 @@ async function assertFailures() {
         if (scenario === "hooks") await withShutdownDeadline(Promise.reject(new Error("destroy hook failed")), 50);
       }, () => { fenced = true; }, () => undefined);
       if (scenario === "write") (service as any).writePendingMarker = async () => { throw new Error("disk full"); };
-      if (scenario === "audit") await fs.chmod(dir, 0o500);
+      // Deterministic audit-write failure: chmod cannot block a root test runner.
+      if (scenario === "audit") (service as any).writeFileDurable = async () => { throw new Error("state volume read-only"); };
       if (scenario === "revoke") {
         (service as any).writePendingMarker = async () => { throw new Error("rename failed"); };
         (service as any).clearPendingMarker = async () => { throw new Error("read-only state"); };
@@ -197,7 +198,6 @@ async function assertFailures() {
         assert.equal(await fs.readFile(path.join(dir, `operation-result.${marker.operationId}.json`), "utf8"), bytes, "do not overwrite terminal result");
         assert.equal(exited, 1, "repeat failure must still exit after re-auditing");
       }
-      if (scenario === "audit") await fs.chmod(dir, 0o700).catch(() => undefined);
       await fs.rm(dir, { recursive: true, force: true });
     }
     await assert.rejects(withShutdownDeadline(new Promise(() => undefined), 25), /timed out/);
