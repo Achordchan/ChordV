@@ -478,11 +478,16 @@ export class AnnouncementPolicyService {
       }, EVENT_PUBLISH_BUDGET_MS);
     });
 
+    // Accounting covers only the awaiting window: a publish that outlives its
+    // budget continues in the background and must not hold a work item (and
+    // block a self-update drain) until it happens to settle.
+    const leave = workLifecycle.enter();
     try {
-      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      await Promise.race([guardedTask, timeoutTask]);
     } catch (error) {
       this.logger.warn(`Local change saved, but ${eventType} publish failed: ${readErrorMessage(error)}`);
     } finally {
+      leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }

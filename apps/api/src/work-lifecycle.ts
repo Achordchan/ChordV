@@ -20,7 +20,7 @@ export class WorkLifecycle implements NestInterceptor {
   }
 
   cancelDrain() {
-    this.fence(new Error("Shutdown interrupted by a signal; promotion cancelled"));
+    this.fence(new DrainCancelledError());
   }
 
   get isDraining() { return this.draining; }
@@ -37,6 +37,33 @@ export class WorkLifecycle implements NestInterceptor {
     // Observe both outcomes without manufacturing an unhandled rejected promise.
     void task.then(leave, leave);
     return task;
+  }
+
+  /**
+   * Await a task under a time budget. Accounting covers ONLY the waiting
+   * window: when the budget expires, the still-pending task is abandoned to
+   * its owner (a retry queue, a background logger) instead of holding a work
+   * item for as long as the underlying promise happens to take. A
+   * never-settling remote call raced against `workLifecycle.track(...)` used
+   * to block every self-update drain until the full drain timeout ("N work
+   * items remain") and fence the process.
+   */
+  async awaitWithBudget<T>(
+    task: Promise<T>,
+    timeoutMs: number,
+    makeTimeoutError: () => Error = () => new Error(`work budget of ${timeoutMs}ms exceeded`)
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutTask = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(makeTimeoutError()), timeoutMs);
+    });
+    const leave = this.enter();
+    try {
+      return await Promise.race([task, timeoutTask]);
+    } finally {
+      leave();
+      if (timer) clearTimeout(timer);
+    }
   }
 
   all<T extends readonly unknown[] | []>(tasks: T): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }> {
@@ -116,6 +143,18 @@ export class WorkLifecycle implements NestInterceptor {
 // One registry for this single-process deployment; utility functions can account for
 // underlying promises too, without changing every service's DI constructor.
 export const workLifecycle = new WorkLifecycle();
+
+/**
+ * A shutdown interrupted by a repeated signal. Distinct from drain failures:
+ * the operator explicitly cancelled, so the caller must keep the process
+ * fenced (the supervisor's stop flow owns it) instead of exiting for an
+ * automatic same-version restart.
+ */
+export class DrainCancelledError extends Error {
+  constructor() {
+    super("Shutdown interrupted by a signal; promotion cancelled");
+  }
+}
 
 /** Apply under @Cron: reject new ticks before they claim DB jobs; await the actual batch. */
 export function DrainableJob(): MethodDecorator {

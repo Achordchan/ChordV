@@ -1402,8 +1402,14 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Shutdown failure result could not be persisted: ${this.describeError(auditError)}`);
       }
       await lock.release().catch((releaseError) => this.logger.error(`Lock cleanup failed: ${this.describeError(releaseError)}`));
-      // No automatic exit or resumption: timeout does not cancel underlying work, and
-      // failed Nest hooks can leave services half-closed. Operator recovery is required.
+      // The failure is durably audited and the pending intent revoked: exit so
+      // the supervisor relaunches THIS version through its normal readiness +
+      // stabilization gates. Staying alive-but-deaf instead required a manual
+      // container restart for every drain timeout — the production incident
+      // this path must self-heal. The revoked-intent branch above keeps its
+      // fence: a marker we could not remove must never drive a promotion.
+      this.logger.error(`Exiting for supervisor restart after failed shutdown: ${reason}`);
+      process.exit(1);
     }
   }
 

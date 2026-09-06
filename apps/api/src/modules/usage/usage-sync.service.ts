@@ -1095,20 +1095,14 @@ async function runWithConcurrency<T>(
 }
 
 async function withTimeout<T>(task: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  // Keep the timer referenced so a never-settling task still times out reliably.
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const timeoutTask = new Promise<never>((_resolve, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([workLifecycle.track(task), timeoutTask]);
-  } finally {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
-    }
-  }
+  // The budget's accounting covers only the awaiting window: an abandoned,
+  // never-settling task must not hold a work item (and block a self-update
+  // drain) for longer than its own budget.
+  return await workLifecycle.awaitWithBudget(
+    task,
+    timeoutMs,
+    () => new Error(`${label} timed out after ${timeoutMs}ms`)
+  );
 }
 
 type NodeTrafficSample = {

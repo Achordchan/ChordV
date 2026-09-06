@@ -1819,18 +1819,9 @@ export class RuntimeSessionService {
     job: { id: string; action: string; nodeId: string; panelClientEmail: string },
     task: Promise<T>
   ): Promise<T> {
-    let settled = false;
-    const guardedTask = task.then(
-      (result) => {
-        settled = true;
-        return result;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
-    void guardedTask.catch((error) => {
+    // A task that settles after its budget (or never) must not surface as an
+    // unhandled rejection; its late failure is the retry path's concern.
+    void task.catch((error) => {
       this.logger.warn(
         `Delayed panel sync job remote call failed after timeout or retry handoff (${job.id}/${job.action}/${job.nodeId}/${job.panelClientEmail}): ${
           error instanceof Error ? error.message : String(error)
@@ -1838,24 +1829,16 @@ export class RuntimeSessionService {
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    // The budget's accounting covers only the awaiting window: a hung remote
+    // call is handed back to the retry path (the job row's nextRunAt) instead
+    // of holding a work item until it happens to settle — that hold is what
+    // wedged self-update drains with "N work items remain".
     const timeoutMs = readPanelSyncJobTimeoutMs();
-    const timeoutTask = new Promise<never>((_resolve, reject) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        reject(new PanelSyncRemoteCallTimeoutError(timeoutMs));
-      }, timeoutMs);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
+    return await workLifecycle.awaitWithBudget(
+      task,
+      timeoutMs,
+      () => new PanelSyncRemoteCallTimeoutError(timeoutMs)
+    );
   }
 
   private async confirmPanelTrafficReset(
@@ -2101,18 +2084,9 @@ export class RuntimeSessionService {
     job: { id: string; reason: string; subscriptionId: string | null; userId: string | null; nodeId: string | null },
     task: Promise<unknown>
   ) {
-    let settled = false;
-    const guardedTask = task.then(
-      (result) => {
-        settled = true;
-        return result;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
-    void guardedTask.catch((error) => {
+    // A task that settles after its budget (or never) must not surface as an
+    // unhandled rejection; its late failure is the retry path's concern.
+    void task.catch((error) => {
       this.logger.warn(
         `Delayed lease revocation effect failed after timeout or retry handoff (${job.id}/${job.reason}/${job.subscriptionId ?? "-"}/${job.userId ?? "-"}/${job.nodeId ?? "-"}): ${
           error instanceof Error ? error.message : String(error)
@@ -2120,23 +2094,14 @@ export class RuntimeSessionService {
       );
     });
 
+    // Accounting covers only the awaiting window: a hung effect is handed back
+    // to the retry path instead of holding a work item until it settles.
     const timeoutMs = readLeaseRevocationJobTimeoutMs();
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        if (!settled) {
-          reject(new LeaseRevocationEffectTimeoutError(timeoutMs));
-        }
-      }, timeoutMs);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
+    return await workLifecycle.awaitWithBudget(
+      task,
+      timeoutMs,
+      () => new LeaseRevocationEffectTimeoutError(timeoutMs)
+    );
   }
 
   async syncActiveLeasesForSubscription(subscription: {

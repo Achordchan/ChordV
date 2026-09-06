@@ -422,11 +422,16 @@ export class DevDataService implements OnModuleInit {
       }, EVENT_PUBLISH_BUDGET_MS);
     });
 
-    try {
-      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+          // Accounting covers only the awaiting window; the abandoned background
+      // continuation must not hold a work item (blocking a self-update drain)
+      // until it happens to settle.
+      const leave = workLifecycle.enter();
+try {
+      await Promise.race([guardedTask, timeoutTask]);
     } catch (error) {
       this.logger?.warn(`Local change saved, but ${eventType} publish failed: ${readPanelSyncErrorMessage(error)}`);
     } finally {
+        leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -601,9 +606,14 @@ export class DevDataService implements OnModuleInit {
       }, timeoutMs);
     });
 
-    try {
-      return await Promise.race([workLifecycle.track(taskPromise), timeoutPromise]);
+          // Accounting covers only the awaiting window; the abandoned background
+      // continuation must not hold a work item (blocking a self-update drain)
+      // until it happens to settle.
+      const leave = workLifecycle.enter();
+try {
+      return await Promise.race([taskPromise, timeoutPromise]);
     } finally {
+        leave();
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   }
@@ -938,12 +948,17 @@ export class DevDataService implements OnModuleInit {
       }, TICKET_DETAIL_REFRESH_BUDGET_MS);
     });
 
-    try {
-      return await Promise.race([workLifecycle.track(detailTask), timeoutTask]);
+          // Accounting covers only the awaiting window; the abandoned background
+      // continuation must not hold a work item (blocking a self-update drain)
+      // until it happens to settle.
+      const leave = workLifecycle.enter();
+try {
+      return await Promise.race([detailTask, timeoutTask]);
     } catch (error) {
       this.logger.warn(`${actionLabel}, but detail refresh failed for ${ticketId}: ${readPanelSyncErrorMessage(error)}`);
       return fallback();
     } finally {
+        leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -2058,14 +2073,19 @@ export class DevDataService implements OnModuleInit {
       }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
     });
 
-    try {
-      const queuedCount = await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+          // Accounting covers only the awaiting window; the abandoned background
+      // continuation must not hold a work item (blocking a self-update drain)
+      // until it happens to settle.
+      const leave = workLifecycle.enter();
+try {
+      const queuedCount = await Promise.race([guardedTask, timeoutTask]);
       return typeof queuedCount === "number" ? { ok: true, queuedCount } : queuedCount;
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but panel access sync failed for ${subscriptionId}: ${errorMessage}`);
       return { ok: false, errorMessage };
     } finally {
+        leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -2100,9 +2120,13 @@ export class DevDataService implements OnModuleInit {
       }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
     });
 
+    // Accounting covers only the awaiting window; the abandoned background
+    // continuation must not hold a work item (blocking a self-update drain).
+    const leave = workLifecycle.enter();
     try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      return await Promise.race([guardedTask, timeoutTask]);
     } finally {
+      leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -2360,8 +2384,11 @@ export class DevDataService implements OnModuleInit {
       }, NODE_ACCESS_FOLLOW_UP_BUDGET_MS);
     });
 
+    // Accounting covers only the awaiting window; the abandoned background
+    // continuation must not hold a work item (blocking a self-update drain).
+    const leave = workLifecycle.enter();
     try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      return await Promise.race([guardedTask, timeoutTask]);
     } catch (error) {
       const errorMessage = readPanelSyncErrorMessage(error);
       this.logger?.warn(`Node access saved, but revocation follow-up failed for ${subscriptionId}: ${errorMessage}`);
