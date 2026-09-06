@@ -8,7 +8,7 @@ import {
   ServiceUnavailableException
 } from "@nestjs/common";
 import { spawn } from "node:child_process";
-import { workLifecycle } from "../../work-lifecycle";
+import { DrainCancelledError, workLifecycle } from "../../work-lifecycle";
 import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -1402,6 +1402,14 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Shutdown failure result could not be persisted: ${this.describeError(auditError)}`);
       }
       await lock.release().catch((releaseError) => this.logger.error(`Lock cleanup failed: ${this.describeError(releaseError)}`));
+      if (error instanceof DrainCancelledError) {
+        // A repeated TERM/INT deliberately cancelled this drain: keep the
+        // process fenced for the operator (the supervisor's stop flow owns
+        // it). Exiting here would turn a deliberate interrupt into an
+        // unplanned same-version restart — the same rule main.ts applies.
+        this.logger.error("Shutdown cancelled by signal; process stays fenced for operator recovery");
+        return;
+      }
       // The failure is durably audited and the pending intent revoked: exit so
       // the supervisor relaunches THIS version through its normal readiness +
       // stabilization gates. Staying alive-but-deaf instead required a manual

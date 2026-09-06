@@ -150,7 +150,7 @@ async function assertDedicatedLockLifecycle() {
 async function assertFailures() {
   const exit = process.exit;
   try {
-    for (const scenario of ["drain", "hooks", "lock", "final-lock", "write", "revoke"]) {
+    for (const scenario of ["drain", "cancel", "hooks", "lock", "final-lock", "write", "revoke"]) {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "chordv-drain-fail-"));
       const service = serviceAt(dir);
       let released = false, fenced = false, checks = 0, exited = 0;
@@ -166,6 +166,7 @@ async function assertFailures() {
       service.configureShutdown(async () => {
         await assert.rejects(fs.access(path.join(dir, "pending.json")));
         if (scenario === "drain") throw new Error("active task timed out");
+        if (scenario === "cancel") throw new DrainCancelledError();
         if (scenario === "hooks") await withShutdownDeadline(Promise.reject(new Error("destroy hook failed")), 50);
       }, () => { fenced = true; }, () => undefined);
       if (scenario === "write") (service as any).writePendingMarker = async () => { throw new Error("disk full"); };
@@ -180,12 +181,12 @@ async function assertFailures() {
       assert.ok(fenced);
       assert.equal(released, scenario !== "revoke", "never release fence if pending revocation fails");
       await assert.rejects(fs.access(path.join(dir, "pending.json")));
-      if (scenario === "revoke") {
-        assert.equal(exited, 0, "revoked-intent failure must stay fenced for manual recovery");
+      if (scenario === "revoke" || scenario === "cancel") {
+        assert.equal(exited, 0, "revoked-intent and signal-cancelled failures must stay fenced for manual recovery");
       } else {
         assert.equal(exited, 1, "audited failure must exit for supervisor restart");
       }
-      if (scenario !== "revoke") {
+      if (scenario !== "revoke" && scenario !== "cancel") {
         const result = JSON.parse(await fs.readFile(path.join(dir, `operation-result.${marker.operationId}.json`), "utf8"));
         assert.equal(result.status, "failed"); assert.equal(result.migrationApplied, false);
         assert.equal(result.version, undefined, "preserve original audit target");

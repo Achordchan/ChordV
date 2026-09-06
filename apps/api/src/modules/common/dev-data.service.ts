@@ -2397,6 +2397,7 @@ try {
         panelSyncMessage: `node access revocation follow-up failed: ${errorMessage}`
       };
     } finally {
+      leave();
       if (settled && timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
