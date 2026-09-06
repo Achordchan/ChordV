@@ -204,17 +204,12 @@ export function RuntimeComponentsPanel(props: RuntimeComponentsPanelProps) {
       }
     } else {
       const originUrl = form.originUrl.trim();
-      const expectedHash = form.expectedHash.trim();
       if (!originUrl) {
         showRuntimeComponentValidation("请填写更新地址");
         return;
       }
       if (!/^https?:\/\//i.test(originUrl)) {
         showRuntimeComponentValidation("更新地址必须是完整的 http/https 地址");
-        return;
-      }
-      if (!/^[a-fA-F0-9]{64}$/.test(expectedHash)) {
-        showRuntimeComponentValidation("请填写有效的 64 位 SHA-256 校验值。");
         return;
       }
     }

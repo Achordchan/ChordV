@@ -4,6 +4,8 @@ import type {
   AdminNodeRecordDto,
   AdminPanelSyncJobDto,
   ImportNodeInputDto,
+  SwitchNodeControlModeInputDto,
+  SwitchNodeControlModeResultDto,
   UpdateNodeInputDto
 } from "@chordv/shared";
 import { request } from "./base";
@@ -82,6 +84,14 @@ export function fetchNodePanelInbounds(input: {
 export function updateNode(nodeId: string, input: UpdateNodeInputDto) {
   return request<AdminNodeRecordDto>(`/admin/nodes/${nodeId}`, {
     method: "PATCH",
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+export function switchNodeControlMode(nodeId: string, input: SwitchNodeControlModeInputDto) {
+  return request<SwitchNodeControlModeResultDto>(`/admin/nodes/${nodeId}/control-mode`, {
+    method: "POST",
     body: JSON.stringify(input),
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });

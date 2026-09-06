@@ -24,6 +24,7 @@ _deploy/
 .tmp/
 .ssh/
 .playwright-cli/
+.data/
 
 .tmp-*
 *.tgz

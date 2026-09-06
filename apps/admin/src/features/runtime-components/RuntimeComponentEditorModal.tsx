@@ -135,16 +135,11 @@ export function RuntimeComponentEditorModal(props: RuntimeComponentEditorModalPr
               onChange={(event) => onChange({ ...value, originUrl: event.currentTarget.value })}
             />
             <TextInput
-              label="SHA-256 校验值"
-              description="填写远程文件的 64 位十六进制 SHA-256，用于客户端安装前校验。"
-              placeholder="64 位十六进制字符串"
+              label="SHA-256 校验值（选填）"
+              description="填写有效值时在客户端安装前附加校验；留空或格式无效不会阻断更新。"
+              placeholder="选填，64 位十六进制字符串"
               value={value.expectedHash}
               onChange={(event) => onChange({ ...value, expectedHash: event.currentTarget.value })}
-              error={
-                value.expectedHash.trim() && !/^[a-fA-F0-9]{64}$/.test(value.expectedHash.trim())
-                  ? "请输入有效的 64 位 SHA-256"
-                  : undefined
-              }
             />
           </Stack>
         )}

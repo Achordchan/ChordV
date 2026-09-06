@@ -94,8 +94,17 @@ configure_remote_panel_password_master_key() {
     'IFS= read -r DEPLOY_PATH; export DEPLOY_PATH; python3 -'
 }
 
+configure_remote_agent_token_pepper() {
+  {
+    printf '%s\n' "${DEPLOY_PATH}"
+    cat scripts/install-agent-token-pepper.py
+  } | ssh ${SSH_BASE_OPTS} "${REMOTE}" \
+    'IFS= read -r DEPLOY_PATH; export DEPLOY_PATH; python3 -'
+}
+
 # Run before building or syncing payloads so a missing secret cannot cause a partial deployment.
 configure_remote_panel_password_master_key
+configure_remote_agent_token_pepper
 
 echo "构建后端与后台..."
 pnpm --filter @chordv/shared build

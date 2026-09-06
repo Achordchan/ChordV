@@ -3,6 +3,7 @@ import type {
   AdminSubscriptionRecordDto,
   AnnouncementDisplayMode,
   AnnouncementLevel,
+  NodeControlMode,
   SubscriptionState,
   UserRole,
   UserStatus
@@ -73,6 +74,48 @@ export function nodePanelColor(status: AdminNodeRecordDto["panelStatus"], panelE
   if (status === "online") return "green";
   if (status === "degraded") return "yellow";
   if (status === "offline" && panelEnabled) return "orange";
+  return "gray";
+}
+
+export function translateNodeControlMode(mode: NodeControlMode) {
+  if (mode === "shadow_direct") return "Agent 影子计量";
+  if (mode === "direct_primary") return "Agent 主控";
+  if (mode === "rollback_pending") return "回退处理中";
+  return "3X-UI 主控";
+}
+
+export function nodeControlModeColor(mode: NodeControlMode) {
+  if (mode === "shadow_direct") return "grape";
+  if (mode === "direct_primary") return "green";
+  if (mode === "rollback_pending") return "orange";
+  return "blue";
+}
+
+export function translateAgentStatus(status?: string | null) {
+  if (status === "online" || status === "active") return "在线";
+  if (status === "degraded") return "异常";
+  if (status === "offline") return "离线";
+  return "等待心跳";
+}
+
+export function agentStatusColor(status?: string | null) {
+  if (status === "online" || status === "active") return "green";
+  if (status === "degraded") return "yellow";
+  if (status === "offline") return "red";
+  return "gray";
+}
+
+export function translateXrayStatus(status?: string | null) {
+  if (status === "healthy") return "正常";
+  if (status === "degraded") return "异常";
+  if (status === "offline") return "离线";
+  return "未知";
+}
+
+export function xrayStatusColor(status?: string | null) {
+  if (status === "healthy") return "green";
+  if (status === "degraded") return "yellow";
+  if (status === "offline") return "red";
   return "gray";
 }
 

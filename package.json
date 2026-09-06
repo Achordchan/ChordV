@@ -4,19 +4,20 @@
   "version": "1.1.7",
   "packageManager": "pnpm@9.15.3",
   "engines": {
-    "node": "20.19.0"
+    "node": "20.19.x"
   },
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
     "check": "turbo check",
     "lint": "turbo lint",
-    "test:api": "pnpm --filter @chordv/api test:regression",
+    "test:api": "pnpm --filter @chordv/api test:regression && pnpm --filter @chordv/api test:direct && pnpm --filter @chordv/node-agent test",
     "prepare:1panel-bundle": "node ./scripts/prepare-1panel-chordv-bundle.mjs",
     "release:desktop": "bash scripts/release-desktop.sh",
     "setup:mac": "docker compose up -d postgres && pnpm install && pnpm --filter @chordv/api db:generate && pnpm --filter @chordv/api db:push && NODE_ENV=development CHORDV_DEV_SEED_CONFIRM=true pnpm --filter @chordv/api db:seed",
     "dev:mac": "pnpm --filter @chordv/desktop tauri:dev",
-    "dev:ops": "concurrently -k -n api,admin -c blue,green \"pnpm --filter @chordv/api dev\" \"pnpm --filter @chordv/admin dev -- --host 127.0.0.1\"",
+    "dev:local": "concurrently -k -n api,admin,client -c blue,green,magenta \"corepack pnpm --filter @chordv/api dev\" \"corepack pnpm --filter @chordv/admin dev --host 127.0.0.1 --strictPort\" \"node ./scripts/local-desktop-dev.mjs\"",
+    "dev:local:agent": "concurrently -k -n api,admin,client,node-agent -c blue,green,magenta,cyan \"corepack pnpm --filter @chordv/api dev\" \"corepack pnpm --filter @chordv/admin dev --host 127.0.0.1 --strictPort\" \"node ./scripts/local-desktop-dev.mjs\" \"node ./scripts/local-node-agent-dev.mjs\"",
     "dev:api": "pnpm --filter @chordv/api dev",
     "dev:admin": "pnpm --filter @chordv/admin dev",
     "dev:desktop": "pnpm --filter @chordv/desktop dev",

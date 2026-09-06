@@ -80,7 +80,7 @@ function normalizeReleaseArtifactFileHash(value: string | null | undefined) {
     return null;
   }
   if (!/^[a-fA-F0-9]{64}$/.test(raw)) {
-    throw new BadRequestException("安装包 SHA-256 校验值格式无效。");
+    return null;
   }
   return raw.toLowerCase();
 }
@@ -1135,9 +1135,9 @@ export class ReleaseCenterService {
     platform: PlatformTarget
   ) {
     const expectedSize = artifact.fileSizeBytes;
-    const expectedHash = artifact.fileHash?.trim().toLowerCase() ?? "";
-    if (expectedSize === null || expectedSize === undefined || expectedSize <= 0n || !/^[a-f0-9]{64}$/.test(expectedHash)) {
-      throw new BadRequestException("安装包缺少可验证的文件大小或 SHA-256。");
+    const expectedHash = normalizeReleaseArtifactFileHash(artifact.fileHash);
+    if (expectedSize === null || expectedSize === undefined || expectedSize <= 0n) {
+      throw new BadRequestException("安装包缺少可验证的文件大小。");
     }
 
     let absolutePath: string;
@@ -1168,7 +1168,7 @@ export class ReleaseCenterService {
           `安装包实际大小与填写值不一致：填写 ${expectedSize} 字节，实际 ${actualSize} 字节。`
         );
       }
-      if (actualHash !== expectedHash) {
+      if (expectedHash && actualHash !== expectedHash) {
         throw new BadRequestException("安装包实际 SHA-256 与填写值不一致。");
       }
 

@@ -25,9 +25,9 @@ export function ExternalArtifactMetadataFields(props: ExternalArtifactMetadataFi
         disabled={props.disabled}
       />
       <TextInput
-        label="SHA-256 校验值"
-        description="填写远程文件的 64 位十六进制 SHA-256。"
-        placeholder="64 位十六进制字符串"
+        label="SHA-256 校验值（选填）"
+        description="填写有效值时执行附加校验；留空或格式无效不会阻断更新。"
+        placeholder="选填，64 位十六进制字符串"
         value={props.value.fileHash}
         onChange={(event) => props.onChange({ fileHash: event.currentTarget.value })}
         disabled={props.disabled}

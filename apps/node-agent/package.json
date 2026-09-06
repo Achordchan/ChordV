@@ -1,0 +1,30 @@
+{
+  "name": "@chordv/node-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "20.19.x"
+  },
+  "scripts": {
+    "predev": "corepack pnpm rebuild better-sqlite3",
+    "dev": "tsx watch src/main.ts",
+    "prestart": "corepack pnpm rebuild better-sqlite3",
+    "start": "node dist/src/main.js",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "pretest": "corepack pnpm rebuild better-sqlite3",
+    "test": "tsx --test test/config.test.ts test/api-contract.test.ts test/store.test.ts test/boot-baseline.test.ts test/command-processor.test.ts test/runner.test.ts test/xray-adapter.test.ts test/deploy.test.ts"
+  },
+  "dependencies": {
+    "@remnawave/xtls-sdk": "0.16.0",
+    "better-sqlite3": "11.10.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

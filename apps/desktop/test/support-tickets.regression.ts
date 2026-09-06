@@ -100,9 +100,22 @@ function testVisibleTicketUpdateMarksDetailRead() {
   assert.match(runtimeActionsSource, /!shouldMarkIncomingTicketRead[\s\S]*options\.markTicketUnread\(runtimeEvent\.ticketId\);/);
   assert.match(
     runtimeActionsSource,
-    /if \(shouldMarkIncomingTicketRead\) \{[\s\S]*await options\.loadTicketDetail\(preferredTicketId, \{ markRead: true \}\);[\s\S]*await options\.loadTicketList\(preferredTicketId\);[\s\S]*\} else \{[\s\S]*Promise\.all/
+    /if \(shouldMarkIncomingTicketRead\) \{[\s\S]*loadTicketDetail\(preferredTicketId, \{ markRead: true, silent: true \}\)[\s\S]*loadTicketList\(preferredTicketId, \{ silent: true \}\)[\s\S]*\} else \{[\s\S]*Promise\.all/
   );
+  assert.match(supportTicketsSource, /if \(!loadOptions\?\.silent\) \{\s*setTicketListBusy\(true\)/);
+  assert.match(supportTicketsSource, /if \(!loadOptions\?\.silent\) \{\s*setTicketDetailBusy\(true\)/);
   assert.match(supportTicketsSource, /await markTicketAsRead\(ticketId, options\.accessToken\);/);
+}
+
+function testNewTicketMessageScrollsToLatestWithoutRefreshJitter() {
+  const modalSource = readFileSync(resolve(import.meta.dirname, "../src/components/TicketCenterModal.tsx"), "utf8");
+  const stylesSource = readFileSync(resolve(import.meta.dirname, "../src/styles.css"), "utf8");
+
+  assert.match(modalSource, /scrollContainer\.scrollTop = scrollContainer\.scrollHeight;/);
+  assert.match(modalSource, /props\.ticketDetail\?\.id, latestMessageId/);
+  assert.doesNotMatch(modalSource, /followLatestMessageRef|bottomDistance <= 48/);
+  assert.doesNotMatch(modalSource, /props\.ticketDetail, latestMessageId/);
+  assert.match(stylesSource, /\.desktop-runtime-overlay \{[\s\S]*?z-index: 320;/);
 }
 
 function main() {
@@ -114,6 +127,7 @@ function main() {
   testReplyAttachmentUsesUploadProgressBeforeSubmit();
   testJsonRequestsHaveTimeoutAndNetworkErrorNormalization();
   testVisibleTicketUpdateMarksDetailRead();
+  testNewTicketMessageScrollsToLatestWithoutRefreshJitter();
   console.log("desktop support tickets regression checks passed");
 }
 

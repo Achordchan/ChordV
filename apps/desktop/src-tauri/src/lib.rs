@@ -16,10 +16,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-#[cfg(target_os = "macos")]
-use tauri::menu::{PredefinedMenuItem, SubmenuBuilder};
 #[cfg(not(target_os = "android"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
+#[cfg(target_os = "macos")]
+use tauri::menu::{PredefinedMenuItem, SubmenuBuilder};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, RunEvent, State};
@@ -74,7 +74,8 @@ const DOWNLOAD_DIAGNOSTIC_LOG_FILE_NAME: &str = "download-diagnostics.log";
 const DOWNLOAD_TOTAL_TIMEOUT_SECS: u64 = 180;
 const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DOWNLOAD_IDLE_TIMEOUT_SECS: u64 = 20;
-const SHARED_UPDATE_LIMITS_JSON: &str = include_str!("../../../../packages/shared/src/update-limits.data.json");
+const SHARED_UPDATE_LIMITS_JSON: &str =
+    include_str!("../../../../packages/shared/src/update-limits.data.json");
 const MAX_RUNTIME_COMPONENT_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_XRAY_RUNTIME_COMPONENT_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_RUNTIME_COMPONENT_EXTRACTED_BYTES: u64 = 512 * 1024 * 1024;
@@ -619,7 +620,6 @@ struct RuntimeComponentDownloadProgress {
     message: Option<String>,
 }
 
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeComponentLocalInfo {
@@ -628,6 +628,7 @@ struct RuntimeComponentLocalInfo {
     path: Option<String>,
     size_bytes: Option<u64>,
     checksum_sha256: Option<String>,
+    version_label: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1312,13 +1313,12 @@ fn api_proxy_bypass_hosts() -> Vec<String> {
     hosts
 }
 
-
 #[derive(Debug, Clone)]
 struct TrustedDesktopUpdatePackage {
     url: Url,
     file_name: Option<String>,
     expected_total_bytes: Option<u64>,
-    expected_hash: String,
+    expected_hash: Option<String>,
     package_kind: String,
 }
 
@@ -1341,9 +1341,7 @@ fn is_url_under_api_base(url: &Url, api_base: &Url) -> bool {
     }
     let base_path = api_base.path().trim_end_matches('/');
     let path = url.path();
-    path == base_path
-        || path.starts_with(&format!("{base_path}/"))
-        || path.starts_with("/api/")
+    path == base_path || path.starts_with(&format!("{base_path}/")) || path.starts_with("/api/")
 }
 
 fn json_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -1382,7 +1380,8 @@ fn resolve_trusted_desktop_update_url(
         "mirror" => ("更新", download_url),
         "origin" => (
             "原始更新",
-            origin_download_url.ok_or_else(|| "服务端更新清单缺少 originDownloadUrl".to_string())?,
+            origin_download_url
+                .ok_or_else(|| "服务端更新清单缺少 originDownloadUrl".to_string())?,
         ),
         _ => return Err("更新下载候选仅支持 mirror 或 origin".into()),
     };
@@ -1500,15 +1499,14 @@ async fn fetch_trusted_desktop_update_package(
     let download_url = json_string_field(&artifact, &["downloadUrl", "download_url"])
         .or_else(|| json_string_field(&payload, &["downloadUrl", "download_url"]))
         .ok_or_else(|| "服务端更新清单缺少 downloadUrl".to_string())?;
-    let expected_hash = require_sha256_hex(
-        json_string_field(&artifact, &["fileHash", "file_hash"])
-            .or_else(|| json_string_field(&payload, &["fileHash", "file_hash"]))
-            .as_deref(),
-        "server update package",
-    )?;
+    let expected_hash = json_string_field(&artifact, &["fileHash", "file_hash"])
+        .or_else(|| json_string_field(&payload, &["fileHash", "file_hash"]))
+        .as_deref()
+        .and_then(normalize_sha256_hex);
     let expected_total_bytes = Some(require_desktop_update_download_size(
-        json_u64_field(&artifact, &["fileSizeBytes", "file_size_bytes", "fileSize"])
-            .or_else(|| json_u64_field(&payload, &["fileSizeBytes", "file_size_bytes", "fileSize"])),
+        json_u64_field(&artifact, &["fileSizeBytes", "file_size_bytes", "fileSize"]).or_else(
+            || json_u64_field(&payload, &["fileSizeBytes", "file_size_bytes", "fileSize"]),
+        ),
     )?);
     let file_name = json_string_field(&artifact, &["fileName", "file_name"])
         .or_else(|| json_string_field(&payload, &["fileName", "file_name"]));
@@ -1538,7 +1536,14 @@ async fn fetch_trusted_desktop_full_update_package(
     channel: &str,
     preferred_candidate: &str,
 ) -> Result<TrustedDesktopUpdatePackage, String> {
-    fetch_trusted_desktop_update_package(app, current_version, channel, "full_update", preferred_candidate).await
+    fetch_trusted_desktop_update_package(
+        app,
+        current_version,
+        channel,
+        "full_update",
+        preferred_candidate,
+    )
+    .await
 }
 
 async fn fetch_trusted_desktop_installer_package(
@@ -1547,7 +1552,14 @@ async fn fetch_trusted_desktop_installer_package(
     channel: &str,
     preferred_candidate: &str,
 ) -> Result<TrustedDesktopUpdatePackage, String> {
-    fetch_trusted_desktop_update_package(app, current_version, channel, "installer", preferred_candidate).await
+    fetch_trusted_desktop_update_package(
+        app,
+        current_version,
+        channel,
+        "installer",
+        preferred_candidate,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1600,7 +1612,7 @@ async fn download_desktop_installer(
                         trusted.url,
                         trusted.file_name.or(input.file_name.clone()),
                         trusted.expected_total_bytes,
-                        Some(trusted.expected_hash),
+                        trusted.expected_hash,
                         Some(trusted.package_kind),
                     )
                 } else {
@@ -1626,7 +1638,7 @@ async fn download_desktop_installer(
                         trusted.url,
                         trusted.file_name.or(input.file_name.clone()),
                         trusted.expected_total_bytes,
-                        Some(trusted.expected_hash),
+                        trusted.expected_hash,
                         Some(trusted.package_kind),
                     )
                 };
@@ -1695,11 +1707,10 @@ async fn download_desktop_installer(
                             message: Some("已复用本地安装器，正在打开安装程序…".into()),
                         },
                     );
-                    let expected_hash = require_sha256_hex(expected_hash.as_deref(), package_label)?;
                     remember_pending_installer_package(
                         &app,
                         final_path.clone(),
-                        Some(expected_hash),
+                        expected_hash.clone(),
                         Some(metadata.len()),
                         package_kind.clone(),
                     )?;
@@ -1921,11 +1932,10 @@ async fn download_desktop_installer(
                     message: Some("安装器下载完成，正在打开安装程序…".into()),
                 },
             );
-            let expected_hash = require_sha256_hex(expected_hash.as_deref(), package_label)?;
             remember_pending_installer_package(
                 &app,
                 final_path.clone(),
-                Some(expected_hash),
+                expected_hash.clone(),
                 Some(downloaded_bytes),
                 package_kind.clone(),
             )?;
@@ -1966,7 +1976,6 @@ async fn download_desktop_installer(
     }
 }
 
-
 fn remember_pending_installer_package(
     app: &AppHandle,
     path: PathBuf,
@@ -1975,7 +1984,9 @@ fn remember_pending_installer_package(
     package_kind: Option<String>,
 ) -> Result<(), String> {
     let state: State<'_, Mutex<PendingInstallerState>> = app.state();
-    let mut pending = state.lock().map_err(|_| "installer pending state lock failed".to_string())?;
+    let mut pending = state
+        .lock()
+        .map_err(|_| "installer pending state lock failed".to_string())?;
     pending.path = Some(path);
     pending.expected_hash = expected_hash;
     pending.expected_total_bytes = expected_total_bytes;
@@ -1985,9 +1996,11 @@ fn remember_pending_installer_package(
 
 fn take_pending_full_update_package(
     app: &AppHandle,
-) -> Result<(PathBuf, String, u64), String> {
+) -> Result<(PathBuf, Option<String>, u64), String> {
     let state: State<'_, Mutex<PendingInstallerState>> = app.state();
-    let pending = state.lock().map_err(|_| "installer pending state lock failed".to_string())?;
+    let pending = state
+        .lock()
+        .map_err(|_| "installer pending state lock failed".to_string())?;
     if pending.package_kind.as_deref() != Some("full_update") {
         return Err("no verified full update package is pending".into());
     }
@@ -1995,10 +2008,7 @@ fn take_pending_full_update_package(
         .path
         .clone()
         .ok_or_else(|| "no verified full update package is pending".to_string())?;
-    let expected_hash = pending
-        .expected_hash
-        .clone()
-        .ok_or_else(|| "pending full update package is missing verified SHA-256".to_string())?;
+    let expected_hash = pending.expected_hash.clone();
     let expected_total_bytes = pending
         .expected_total_bytes
         .filter(|value| *value > 0)
@@ -2034,9 +2044,7 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
         }
 
         let state: State<'_, Mutex<PendingInstallerState>> = app.state();
-        let pending = state
-            .lock()
-            .map_err(|_| "安装器状态异常".to_string())?;
+        let pending = state.lock().map_err(|_| "安装器状态异常".to_string())?;
         let Some(pending_path) = pending.path.as_ref() else {
             return Err("没有已校验的待安装文件，请先完成原生下载".into());
         };
@@ -2045,9 +2053,6 @@ fn open_desktop_installer(app: AppHandle, path: String) -> Result<CommandResult,
             .map_err(|error| format!("无法解析待安装路径：{error}"))?;
         if canonical_pending != canonical_installer {
             return Err("安装器路径与原生校验记录不一致".into());
-        }
-        if pending.expected_hash.as_deref().map(str::trim).filter(|v| !v.is_empty()).is_none() {
-            return Err("待安装文件缺少已校验的 SHA-256".into());
         }
         // Do not accept arbitrary local paths. Only acknowledge already-verified pending.
         Ok(CommandResult {
@@ -2203,14 +2208,14 @@ fn test_routing_rule(
     ))
 }
 
-
 fn desktop_update_report_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_local_data_dir()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?
         .join("updater");
-    fs::create_dir_all(&dir).map_err(|error| format!("failed to create updater directory: {error}"))?;
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("failed to create updater directory: {error}"))?;
     Ok(dir.join("last-install-report.json"))
 }
 
@@ -2301,10 +2306,7 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
                 .path
                 .clone()
                 .ok_or_else(|| "没有待安装的安装器文件".to_string())?;
-            let expected_hash = pending
-                .expected_hash
-                .clone()
-                .ok_or_else(|| "待安装文件缺少已校验的 SHA-256".to_string())?;
+            let expected_hash = pending.expected_hash.clone();
             let expected_total_bytes = pending.expected_total_bytes;
             let package_kind = pending.package_kind.clone();
             (path, expected_hash, expected_total_bytes, package_kind)
@@ -2325,11 +2327,10 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
         if !canonical_installer.starts_with(&canonical_download_dir) {
             return Err("安装器路径不在原生缓存目录内".into());
         }
-        let expected_hash = require_sha256_hex(Some(expected_hash.as_str()), "pending installer")?;
         if !installer_file_matches_expectation(
             &installer_path,
             expected_total_bytes,
-            Some(expected_hash.as_str()),
+            expected_hash.as_deref(),
         )? {
             return Err("安装器校验失败，请重新下载".into());
         }
@@ -2355,9 +2356,7 @@ fn quit_for_update(app: AppHandle) -> Result<CommandResult, String> {
 }
 
 #[tauri::command]
-fn apply_desktop_full_update(
-    app: AppHandle,
-) -> Result<CommandResult, String> {
+fn apply_desktop_full_update(app: AppHandle) -> Result<CommandResult, String> {
     #[cfg(not(windows))]
     {
         let _ = app;
@@ -2382,7 +2381,9 @@ fn apply_desktop_full_update(
                     source_metadata.len()
                 ));
             }
-            verify_file_sha256(&package_path, &expected_hash, "full update package")?;
+            if let Some(expected_hash) = expected_hash.as_deref() {
+                verify_file_sha256(&package_path, expected_hash, "full update package")?;
+            }
 
             let current_exe = std::env::current_exe()
                 .map_err(|error| format!("failed to resolve current executable path: {error}"))?;
@@ -2479,7 +2480,6 @@ fn desktop_runtime_environment(app: AppHandle) -> Result<DesktopRuntimeEnvironme
     }
 }
 
-
 #[tauri::command]
 fn get_runtime_component_local_info(
     app: AppHandle,
@@ -2494,6 +2494,7 @@ fn get_runtime_component_local_info(
             path: None,
             size_bytes: None,
             checksum_sha256: None,
+            version_label: None,
         });
     }
 
@@ -2508,6 +2509,7 @@ fn get_runtime_component_local_info(
                 path: None,
                 size_bytes: None,
                 checksum_sha256: None,
+            version_label: None,
             });
         }
         let metadata = fs::metadata(&target_path).map_err(|error| {
@@ -2521,6 +2523,7 @@ fn get_runtime_component_local_info(
                 path: Some(target_path.to_string_lossy().into_owned()),
                 size_bytes: Some(0),
                 checksum_sha256: None,
+            version_label: None,
             });
         }
         // 检测更新/启动巡检只需要存在性与大小；GEO 大文件每次全量 sha256 会明显卡 UI。
@@ -2531,8 +2534,44 @@ fn get_runtime_component_local_info(
             path: Some(target_path.to_string_lossy().into_owned()),
             size_bytes: Some(size_bytes),
             checksum_sha256: None,
+            version_label: if component == RuntimeComponentKindInput::Xray {
+                detect_xray_version_label(&target_path)
+            } else {
+                None
+            },
         })
     }
+}
+
+fn detect_xray_version_label(path: &Path) -> Option<String> {
+    let mut command = Command::new(path);
+    command.arg("version");
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_xray_version_output(&format!("{stdout}\n{stderr}"))
+}
+
+fn parse_xray_version_output(output: &str) -> Option<String> {
+    output.split_whitespace().find_map(|token| {
+        let candidate = token
+            .trim_matches(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_'))
+            .trim_start_matches(['v', 'V']);
+        let mut parts = candidate.split('.');
+        let major = parts.next()?;
+        let minor = parts.next()?;
+        let patch = parts.next()?.split(['-', '_']).next()?;
+        if major.chars().all(|ch| ch.is_ascii_digit())
+            && minor.chars().all(|ch| ch.is_ascii_digit())
+            && patch.chars().all(|ch| ch.is_ascii_digit())
+        {
+            Some(candidate.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 #[tauri::command]
@@ -2615,10 +2654,14 @@ fn check_runtime_component_file(
             ensure_executable(&target_path)?;
         }
 
+        let local_checksum = runtime_component_local_checksum(
+            component.source_format,
+            component.checksum_sha256.as_deref(),
+        );
         if let Err(message) = validate_runtime_component_file_content_with_checksum(
             &target_path,
             component.component,
-            component.checksum_sha256.as_deref(),
+            local_checksum,
         ) {
             return Ok(RuntimeComponentFileStatus {
                 ready: false,
@@ -2961,6 +3004,20 @@ async fn download_runtime_component(
                     ));
                 }
             }
+            let archive_checksum = runtime_component_download_checksum(
+                component,
+                input.component.checksum_sha256.as_deref(),
+            )
+            .map_err(|message| runtime_component_error("metadata_invalid", message))?;
+            if let Some(expected_hash) = archive_checksum.as_deref() {
+                verify_file_sha256(
+                    &archive_path,
+                    expected_hash,
+                    runtime_component_display_name(component),
+                )
+                .map_err(|message| runtime_component_error("hash_mismatch", message))?;
+            }
+
             append_download_diagnostic_log(
                 &app,
                 "runtime-download",
@@ -3002,15 +3059,10 @@ async fn download_runtime_component(
                 }
             }
 
-            let expected_checksum = require_sha256_hex(
-                input.component.checksum_sha256.as_deref(),
-                runtime_component_display_name(component),
-            )
-            .map_err(|message| runtime_component_error("metadata_invalid", message))?;
             validate_runtime_component_file_content_with_checksum(
                 &temp_target_path,
                 component,
-                Some(expected_checksum.as_str()),
+                None,
             )
             .map_err(|message| runtime_component_error("content_invalid", message))?;
 
@@ -3603,8 +3655,15 @@ fn validate_runtime_component_file_content_with_checksum(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let expected_hash = require_sha256_hex(Some(expected_hash), runtime_component_display_name(component))?;
-        verify_file_sha256(path, &expected_hash, runtime_component_display_name(component))?;
+        let expected_hash = require_sha256_hex(
+            Some(expected_hash),
+            runtime_component_display_name(component),
+        )?;
+        verify_file_sha256(
+            path,
+            &expected_hash,
+            runtime_component_display_name(component),
+        )?;
     }
     Ok(())
 }
@@ -3784,7 +3843,6 @@ fn resolve_runtime_component_archive_entry_name(
     }
 }
 
-
 fn verify_runtime_component_for_connect(
     app: &AppHandle,
     item: &RuntimeComponentPlanItemInput,
@@ -3818,7 +3876,6 @@ fn verify_runtime_component_for_connect(
 
     Ok(())
 }
-
 
 async fn verify_runtime_components_for_connect(app: &AppHandle) -> Result<(), String> {
     let plan = fetch_runtime_components_plan_for_connect(app).await?;
@@ -4049,7 +4106,6 @@ fn ensure_runtime_component_from_bundle(
     Ok(true)
 }
 
-
 fn restore_runtime_component_from_verified_bundle(
     app: &AppHandle,
     component: RuntimeComponentKindInput,
@@ -4072,8 +4128,15 @@ fn restore_runtime_component_from_verified_bundle(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let expected_hash = require_sha256_hex(Some(expected_hash), runtime_component_display_name(component))?;
-        verify_file_sha256(target_path, &expected_hash, runtime_component_display_name(component))?;
+        let expected_hash = require_sha256_hex(
+            Some(expected_hash),
+            runtime_component_display_name(component),
+        )?;
+        verify_file_sha256(
+            target_path,
+            &expected_hash,
+            runtime_component_display_name(component),
+        )?;
     } else {
         validate_runtime_component_file_content(target_path, component)?;
     }
@@ -4211,7 +4274,6 @@ fn ensure_runtime_component_download_not_cancelled(app: &AppHandle) -> Result<()
 fn sanitize_runtime_download_file_name(file_name: &str) -> String {
     sanitize_desktop_download_file_name(file_name)
 }
-
 
 fn maybe_log_download_checkpoint(
     app: &AppHandle,
@@ -4517,6 +4579,31 @@ fn require_sha256_hex(expected_hash: Option<&str>, label: &str) -> Result<String
     normalize_sha256_hex(raw).ok_or_else(|| format!("{label} has invalid SHA-256 checksum"))
 }
 
+fn runtime_component_local_checksum<'a>(
+    source_format: RuntimeComponentSourceFormat,
+    expected_hash: Option<&'a str>,
+) -> Option<&'a str> {
+    match source_format {
+        RuntimeComponentSourceFormat::Direct => expected_hash,
+        RuntimeComponentSourceFormat::ZipEntry => None,
+    }
+}
+
+fn runtime_component_download_checksum(
+    component: RuntimeComponentKindInput,
+    expected_hash: Option<&str>,
+) -> Result<Option<String>, String> {
+    match component {
+        RuntimeComponentKindInput::Geoip | RuntimeComponentKindInput::Geosite => {
+            // 开发者明确要求：GEO 延续 2026-07-14 的生产行为。缺少 SHA-256 不属于 P0/P1，
+            // 不得仅因哈希缺失阻断更新；仍保留 HTTPS、正数文件大小和内容格式校验。
+            Ok(None)
+        }
+        // 开发者明确授权恢复 2026-07-14 行为：Xray 的 SHA-256 是可选附加校验，不是下载门禁。
+        RuntimeComponentKindInput::Xray => Ok(expected_hash.and_then(normalize_sha256_hex)),
+    }
+}
+
 fn require_desktop_update_download_size(value: Option<u64>) -> Result<u64, String> {
     let size = value
         .filter(|value| *value > 0)
@@ -4545,7 +4632,8 @@ fn checked_desktop_update_download_size(
     Ok(next)
 }
 fn sha256_file_hex(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|error| format!("failed to open file for checksum: {error}"))?;
+    let mut file =
+        File::open(path).map_err(|error| format!("failed to open file for checksum: {error}"))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 65_536];
     loop {
@@ -4575,7 +4663,8 @@ fn installer_file_matches_expectation(
     expected_total_bytes: Option<u64>,
     expected_hash: Option<&str>,
 ) -> Result<bool, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("failed to read installer metadata: {error}"))?;
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("failed to read installer metadata: {error}"))?;
     if metadata.len() == 0 {
         return Ok(false);
     }
@@ -4585,17 +4674,17 @@ fn installer_file_matches_expectation(
     {
         return Ok(false);
     }
-    let Some(expected_hash) = expected_hash
+    if let Some(expected_hash) = expected_hash
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .and_then(normalize_sha256_hex)
-    else {
-        return Ok(false);
-    };
-    match verify_file_sha256(path, &expected_hash, "installer package") {
-        Ok(()) => Ok(true),
-        Err(_) => Ok(false),
+    {
+        return match verify_file_sha256(path, &expected_hash, "installer package") {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        };
     }
+    Ok(true)
 }
 
 fn validate_installer_file(
@@ -4627,16 +4716,11 @@ fn validate_installer_file(
             ));
         }
     }
-    let expected_hash = match require_sha256_hex(expected_hash, "installer package") {
-        Ok(value) => value,
-        Err(error) => {
+    if let Some(expected_hash) = expected_hash.and_then(normalize_sha256_hex) {
+        if let Err(error) = verify_file_sha256(path, &expected_hash, "installer package") {
             let _ = fs::remove_file(path);
             return Err(error);
         }
-    };
-    if let Err(error) = verify_file_sha256(path, &expected_hash, "installer package") {
-        let _ = fs::remove_file(path);
-        return Err(error);
     }
     Ok(())
 }
@@ -5229,12 +5313,11 @@ fn spawn_deferred_installer_open(
     let target_app_path = current_macos_app_bundle_path()
         .filter(|path| !path.starts_with("/Volumes"))
         .unwrap_or_else(|| PathBuf::from("/Applications/ChordV.app"));
-    let runtime_dir = ensure_runtime_dir(app)
-        .unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"));
+    let runtime_dir =
+        ensure_runtime_dir(app).unwrap_or_else(|_| std::env::temp_dir().join("chordv-desktop"));
     let log_path = runtime_dir.join("update-installer.log");
-    let report_path = desktop_update_report_path(app).unwrap_or_else(|_| {
-        runtime_dir.join("last-install-report.json")
-    });
+    let report_path = desktop_update_report_path(app)
+        .unwrap_or_else(|_| runtime_dir.join("last-install-report.json"));
     let remove_installer = if should_remove_installer_after_update(app, installer_path) {
         "1"
     } else {
@@ -6315,8 +6398,10 @@ fn tail_log(path: &Path, lines: usize) -> String {
         ring.push_back(line);
     }
 
-    ring.into_iter().collect::<Vec<_>>().join("
-")
+    ring.into_iter().collect::<Vec<_>>().join(
+        "
+",
+    )
 }
 
 fn is_port_open(port: u16) -> bool {
@@ -7285,10 +7370,7 @@ fn migrate_windows_main_binary_on_startup() {
     rewrite_windows_shortcuts_to_main_binary(&install_dir, &target_exe);
 
     // Once ChordV.exe is the real entrypoint, drop the duplicate legacy binary to reclaim disk.
-    if main_exe.exists()
-        && legacy_exe.exists()
-        && current_name.eq_ignore_ascii_case("ChordV.exe")
-    {
+    if main_exe.exists() && legacy_exe.exists() && current_name.eq_ignore_ascii_case("ChordV.exe") {
         let same_file = fs::canonicalize(&main_exe)
             .ok()
             .zip(fs::canonicalize(&legacy_exe).ok())
@@ -7640,18 +7722,17 @@ fn build_shell_menu(
         let quit = MenuItemBuilder::with_id("shell.quit", "退出 ChordV")
             .build(app)
             .map_err(|error| error.to_string())?;
-        let undo = PredefinedMenuItem::undo(app, Some("撤销"))
-            .map_err(|error| error.to_string())?;
-        let redo = PredefinedMenuItem::redo(app, Some("重做"))
-            .map_err(|error| error.to_string())?;
-        let cut = PredefinedMenuItem::cut(app, Some("剪切"))
-            .map_err(|error| error.to_string())?;
-        let copy = PredefinedMenuItem::copy(app, Some("复制"))
-            .map_err(|error| error.to_string())?;
-        let paste = PredefinedMenuItem::paste(app, Some("粘贴"))
-            .map_err(|error| error.to_string())?;
-        let select_all = PredefinedMenuItem::select_all(app, Some("全选"))
-            .map_err(|error| error.to_string())?;
+        let undo =
+            PredefinedMenuItem::undo(app, Some("撤销")).map_err(|error| error.to_string())?;
+        let redo =
+            PredefinedMenuItem::redo(app, Some("重做")).map_err(|error| error.to_string())?;
+        let cut = PredefinedMenuItem::cut(app, Some("剪切")).map_err(|error| error.to_string())?;
+        let copy =
+            PredefinedMenuItem::copy(app, Some("复制")).map_err(|error| error.to_string())?;
+        let paste =
+            PredefinedMenuItem::paste(app, Some("粘贴")).map_err(|error| error.to_string())?;
+        let select_all =
+            PredefinedMenuItem::select_all(app, Some("全选")).map_err(|error| error.to_string())?;
 
         let app_menu = SubmenuBuilder::new(app, "ChordV")
             .item(&about)
@@ -8077,14 +8158,17 @@ pub fn run() {
     });
 }
 
-
 #[cfg(test)]
 mod update_trust_tests {
     use super::{
-        checked_desktop_update_download_size, installer_download_url_allowed, max_desktop_update_download_bytes,
-        normalize_sha256_hex, require_desktop_update_download_size, require_sha256_hex,
-        resolve_trusted_desktop_update_url,
+        checked_desktop_update_download_size, installer_download_url_allowed,
+        installer_file_matches_expectation, max_desktop_update_download_bytes,
+        normalize_sha256_hex, parse_xray_version_output, require_desktop_update_download_size,
+        require_sha256_hex, resolve_trusted_desktop_update_url,
+        runtime_component_download_checksum, runtime_component_local_checksum,
+        validate_installer_file, RuntimeComponentKindInput, RuntimeComponentSourceFormat,
     };
+    use std::fs;
     use url::Url;
 
     #[test]
@@ -8106,6 +8190,73 @@ mod update_trust_tests {
         )
         .expect("valid");
         assert_eq!(ok.len(), 64);
+    }
+
+    #[test]
+    fn xray_version_output_extracts_installed_version() {
+        assert_eq!(
+            parse_xray_version_output("Xray 26.3.27 (Xray, Penetrates Everything.)").as_deref(),
+            Some("26.3.27")
+        );
+        assert_eq!(parse_xray_version_output("invalid output"), None);
+    }
+
+    #[test]
+    fn zip_entry_checksum_applies_to_archive_not_installed_file() {
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            runtime_component_local_checksum(RuntimeComponentSourceFormat::Direct, Some(hash)),
+            Some(hash)
+        );
+        assert_eq!(
+            runtime_component_local_checksum(RuntimeComponentSourceFormat::ZipEntry, Some(hash)),
+            None
+        );
+    }
+
+    #[test]
+    fn runtime_download_keeps_developer_requested_2026_07_14_policy() {
+        assert_eq!(
+            runtime_component_download_checksum(RuntimeComponentKindInput::Geoip, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            runtime_component_download_checksum(RuntimeComponentKindInput::Geosite, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            runtime_component_download_checksum(RuntimeComponentKindInput::Xray, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            runtime_component_download_checksum(RuntimeComponentKindInput::Xray, Some("invalid"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            runtime_component_download_checksum(
+                RuntimeComponentKindInput::Xray,
+                Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            )
+            .unwrap()
+            .as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn installer_validation_allows_missing_or_invalid_optional_hash() {
+        let path =
+            std::env::temp_dir().join(format!("chordv-optional-hash-{}.bin", std::process::id()));
+        fs::write(&path, b"optional hash regression").unwrap();
+        let size = fs::metadata(&path).unwrap().len();
+
+        assert!(installer_file_matches_expectation(&path, Some(size), None).unwrap());
+        assert!(installer_file_matches_expectation(&path, Some(size), Some("invalid")).unwrap());
+        validate_installer_file(&path, size, Some(size), None).unwrap();
+        validate_installer_file(&path, size, Some(size), Some("invalid")).unwrap();
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -8139,7 +8290,10 @@ mod update_trust_tests {
             "origin",
         )
         .expect("origin candidate");
-        assert_eq!(origin.as_str(), "https://api.example.com/downloads/ChordV.zip");
+        assert_eq!(
+            origin.as_str(),
+            "https://api.example.com/downloads/ChordV.zip"
+        );
 
         assert!(resolve_trusted_desktop_update_url(
             &api_base,

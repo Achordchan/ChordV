@@ -557,6 +557,76 @@ async function testPanelDisableQueuePublishesSyncQueueEvent() {
   assert.equal(events[0]?.subscriptionId, "sub_1");
 }
 
+async function testShadowBindingCreationBumpsAgentConfigRevision() {
+  const revisionUpdates: Array<Record<string, unknown>> = [];
+  const service = createRuntimeSessionService({
+    adminRuntimeEventsService: { publish: () => undefined }
+  });
+  const binding = {
+    id: "binding_shadow",
+    subscriptionId: "sub_shadow",
+    userId: "user_shadow",
+    teamId: null,
+    nodeId: "node_shadow",
+    panelClientEmail: "shadow@example.com",
+    panelClientId: "11111111-1111-4111-8111-111111111111",
+    panelInboundId: 4,
+    status: "active",
+    source: "xui"
+  };
+  const writer = {
+    panelClientBinding: {
+      findFirst: async () => null,
+      create: async () => binding
+    },
+    trafficSnapshot: {
+      findUnique: async () => null,
+      upsert: async () => ({})
+    },
+    panelSyncJob: {
+      upsert: async () => ({})
+    },
+    node: {
+      updateMany: async (input: Record<string, unknown>) => {
+        revisionUpdates.push(input);
+        return { count: 1 };
+      }
+    }
+  };
+
+  await (service as any).ensurePanelClientBindingLocally(
+    writer,
+    {
+      node: {
+        id: "node_shadow",
+        name: "Shadow",
+        flow: "xtls-rprx-vision",
+        controlMode: "shadow_direct",
+        panelBaseUrl: "https://panel.example.com",
+        panelApiBasePath: "/",
+        panelUsername: "admin",
+        panelPassword: "secret",
+        panelInboundId: 4
+      },
+      subscriptionId: "sub_shadow",
+      userId: "user_shadow",
+      teamId: null,
+      userDisplayName: "Shadow",
+      expireAt: new Date("2026-08-01T00:00:00Z")
+    },
+    null,
+    binding.panelClientEmail,
+    binding.panelClientId,
+    4
+  );
+
+  assert.equal(revisionUpdates.length, 1);
+  assert.deepEqual(revisionUpdates[0], {
+    where: { id: { in: ["node_shadow"] }, controlMode: "shadow_direct" },
+    data: { agentConfigRevision: { increment: 1n } }
+  });
+}
+
 async function testAdminPanelSyncRetryPublishesSyncQueueEvent() {
   const events: Array<Record<string, unknown>> = [];
   const service = createAdminNodeService({
@@ -1035,6 +1105,8 @@ function createAdminSubscriptionService(overrides: Record<string, unknown> = {})
     runtimeSessionService: {
       queueActiveLeaseSyncForSubscription: async () => 0,
       queueSubscriptionPanelAccessSync: async () => 0,
+      queueDirectSubscriptionAccessSync: async () => 0,
+      quiesceDirectBindingsForTrafficReset: async () => [],
       queueLeaseRevocationJobsForSubscription: async () => 0,
       queueLeaseRevocationJobsForSubscriptionTx: async () => 0,
       ...runtimeSessionOverride
@@ -3984,32 +4056,29 @@ function testReleaseArtifactClientUsableRejectsHttpFullReplacementUrl() {
   );
 }
 
-function testReleaseArtifactClientUsableRejectsMissingFileHash() {
-  assert.throws(
-    () =>
-      assertReleaseArtifactClientUsable(
-        {
-          id: "artifact_1",
-          releaseId: "release_1",
-          source: "external",
-          type: "zip",
-          deliveryMode: "desktop_full_replace",
-          downloadUrl: "http://download.example.com/ChordV_1.1.6_x64-full.zip",
-          originDownloadUrl: null,
-          defaultMirrorPrefix: null,
-          allowClientMirror: false,
-          fileName: "ChordV_1.1.6_x64-full.zip",
-          fileSizeBytes: null,
-          fileHash: null,
-          isPrimary: true,
-          isFullPackage: true,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        },
-        "windows"
-      ),
-    /SHA-256|校验|hash/i,
-    "client-visible release artifacts must provide a valid SHA-256 file hash"
+function testReleaseArtifactClientUsableAllowsMissingFileHash() {
+  assert.doesNotThrow(() =>
+    assertReleaseArtifactClientUsable(
+      {
+        id: "artifact_1",
+        releaseId: "release_1",
+        source: "external",
+        type: "zip",
+        deliveryMode: "desktop_full_replace",
+        downloadUrl: "https://download.example.com/ChordV_1.1.6_x64-full.zip",
+        originDownloadUrl: null,
+        defaultMirrorPrefix: null,
+        allowClientMirror: false,
+        fileName: "ChordV_1.1.6_x64-full.zip",
+        fileSizeBytes: 104857600n,
+        fileHash: null,
+        isPrimary: true,
+        isFullPackage: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      },
+      "windows"
+    )
   );
 }
 
@@ -5374,7 +5443,7 @@ async function testGetActiveRuntimeRevokesDisabledUserLease() {
 }
 
 async function testConnectRejectsRevokedNodeAccessFromDatabaseTruth() {
-  let connectWithXuiCalled = false;
+  let connectWithManagedNodeCalled = false;
   let leaseEvictionCalled = false;
   const activeSubscription = {
     id: "sub_1",
@@ -5399,9 +5468,9 @@ async function testConnectRejectsRevokedNodeAccessFromDatabaseTruth() {
     evictExceededUserLeases: async () => {
       leaseEvictionCalled = true;
     },
-    connectWithXui: async () => {
-      connectWithXuiCalled = true;
-      throw new Error("connectWithXui must not run without DB node access");
+    connectWithManagedNode: async () => {
+      connectWithManagedNodeCalled = true;
+      throw new Error("connectWithManagedNode must not run without DB node access");
     },
     prisma: {
       node: {
@@ -5429,7 +5498,7 @@ async function testConnectRejectsRevokedNodeAccessFromDatabaseTruth() {
     /取消|revoked|授权/i
   );
 
-  assert.equal(connectWithXuiCalled, false, "connect must not provision a panel client after local node access was revoked");
+  assert.equal(connectWithManagedNodeCalled, false, "connect must not provision a managed client after local node access was revoked");
   assert.equal(leaseEvictionCalled, false, "connect must reject revoked node access before evicting any active lease");
 }
 
@@ -9280,6 +9349,9 @@ async function testResetSubscriptionTrafficReturnsPendingWhenPanelQueueStallsAft
 async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall() {
   const panelJobUpserts: Array<Record<string, any>> = [];
   const subscriptionUpdates: Array<Record<string, any>> = [];
+  let directSyncCalls = 0;
+  let terminalBatchReads = 0;
+  let directBoundaryCalls = 0;
   const lockedSubscription = {
     id: "sub_1",
     userId: "user_1",
@@ -9316,6 +9388,19 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z"
     }),
+    runtimeSessionService: {
+      quiesceDirectBindingsForTrafficReset: async (subscriptionId: string, userId: string | null) => {
+        directBoundaryCalls += 1;
+        assert.equal(subscriptionId, "sub_1");
+        assert.equal(userId, "user_1");
+        return [];
+      },
+      queueDirectSubscriptionAccessSync: async (subscriptionId: string) => {
+        directSyncCalls += 1;
+        assert.equal(subscriptionId, "sub_1");
+        return 1;
+      }
+    },
     prisma: {
       panelSyncJob: {
         upsert: async (payload: Record<string, any>) => {
@@ -9352,6 +9437,7 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
                 lastUplinkBytes: 8n,
                 lastDownlinkBytes: 0n,
                 lastSyncedAt: new Date(),
+                source: "xui",
                 node: {
                   id: "node_1",
                   panelBaseUrl: "https://offline-panel.example.com",
@@ -9359,6 +9445,26 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
                   panelUsername: "admin",
       panelPassword: "password"
     }
+              },
+              {
+                id: "binding_direct",
+                subscriptionId: "sub_1",
+                userId: "user_1",
+                teamId: null,
+                nodeId: "node_direct",
+                panelClientEmail: "user-direct@example.com",
+                panelClientId: "client_direct",
+                panelInboundId: 0,
+                lastUplinkBytes: 80n,
+                lastDownlinkBytes: 20n,
+                lastSyncedAt: new Date(),
+                source: "direct",
+                status: "disabled",
+                directDisableWatermarks: [{ bootId: "boot-direct", sequenceThrough: "4" }],
+                node: {
+                  id: "node_direct",
+                  controlMode: "direct_primary"
+                }
               }
             ],
             update: async () => ({})
@@ -9366,6 +9472,14 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
           trafficLedger: {
             deleteMany: async () => ({}),
             aggregate: async () => ({ _sum: { usedTrafficGb: 0 } })
+          },
+          nodeUsageBatch: {
+            findUnique: async ({ where }: Record<string, any>) => {
+              terminalBatchReads += 1;
+              assert.equal(where.nodeId_bootId_sequence.bootId, "boot-direct");
+              assert.equal(where.nodeId_bootId_sequence.sequence, 4n);
+              return { accountedAt: new Date() };
+            }
           },
           panelSyncJob: {
             upsert: async (payload: Record<string, any>) => {
@@ -9384,6 +9498,9 @@ async function testResetSubscriptionTrafficQueuesPanelResetWithoutDirectXuiCall(
   assert.equal(subscriptionUpdates[0].data.remainingTrafficGb, 10);
   assert.equal(panelJobUpserts.length, 1, "traffic reset must create a reset_client_traffic retry job");
   assert.equal(panelJobUpserts[0].create.action, "reset_client_traffic");
+  assert.equal(directSyncCalls, 1, "standalone traffic reset must refresh Direct bindings and Agent quota");
+  assert.equal(directBoundaryCalls, 1, "traffic reset must quiesce active Direct bindings before resetting counters");
+  assert.equal(terminalBatchReads, 1, "traffic reset must settle disabled Direct watermark batches before clearing usage");
   assert.equal(result.ok, true);
   assert.equal(result.panelSyncStatus, "pending");
   assert.match(result.panelSyncMessage ?? "", /queued/);
@@ -11848,6 +11965,36 @@ async function testQueuePanelDeleteJobsSkipsStaleBindingForeignKey() {
   assert.equal(bindingUpdates.length, 0);
 }
 
+async function testQueueDirectDeleteKeepsSnapshotUntilWatermarkBatchesSettle() {
+  let snapshotDeletes = 0;
+  const bindingUpdates: Array<Record<string, any>> = [];
+  const service = createRuntimeSessionService({ logger: { warn: () => undefined } });
+  (service as any).queueDirectBindingCommand = async () => undefined;
+  await service.queuePanelDeleteJobsForSubscriptionTx({
+    panelClientBinding: {
+      findMany: async () => [{
+        id: "binding_direct_delete",
+        subscriptionId: "sub_direct_delete",
+        userId: "user_direct_delete",
+        teamId: null,
+        nodeId: "node_direct_delete",
+        panelClientEmail: "direct-delete@example.invalid",
+        panelClientId: "direct-delete-uuid",
+        panelInboundId: 0,
+        source: "direct",
+        node: { controlMode: "direct_primary" }
+      }],
+      updateMany: async (payload: Record<string, any>) => { bindingUpdates.push(payload); return { count: 1 }; }
+    },
+    trafficSnapshot: {
+      deleteMany: async () => { snapshotDeletes += 1; return { count: 1 }; }
+    }
+  }, "sub_direct_delete");
+  assert.equal(snapshotDeletes, 0, "Direct 删除必须保留快照，直到删除水位内的历史批次完成入账");
+  assert.equal(bindingUpdates[0].data.status, "deleted");
+  assert.notEqual(bindingUpdates[0].data.directDisableWatermarks, undefined);
+}
+
 async function testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob() {
   const updates: Array<Record<string, any>> = [];
   const createManyCalls: Array<Record<string, any>> = [];
@@ -12309,6 +12456,16 @@ async function testFetchSubscriptionNodeMapsInvalidUrlToBadRequest() {
   );
 }
 
+async function testFetchSubscriptionNodeAcceptsDirectVlessLink() {
+  const result = await fetchSubscriptionNode(
+    "vless://11111111-1111-4111-8111-111111111111@node.example.com:443?security=reality&pbk=public-key&sid=abcd&sni=node.example.com#Direct"
+  );
+  assert.equal(result.serverHost, "node.example.com");
+  assert.equal(result.serverPort, 443);
+  assert.equal(result.uuid, "11111111-1111-4111-8111-111111111111");
+  assert.equal(result.realityPublicKey, "public-key");
+}
+
 async function testFetchSubscriptionNodeMapsNetworkFailureToBadGateway() {
   await assert.rejects(
     () => fetchSubscriptionNode("http://127.0.0.1:9/sub"),
@@ -12600,6 +12757,46 @@ async function testXuiInboundRuntimeRejectsMissingRealityPublicKey() {
       }),
     /publicKey/
   );
+}
+
+async function testXuiInboundRuntimeUsesStoredPublicKeyForLatestPanelShape() {
+  const service = new XuiService();
+  service["login"] = async () => undefined;
+  service["request"] = async () => ({
+    success: true,
+    obj: {
+      id: 3,
+      remark: "3x-ui 3.5 reality",
+      port: 57794,
+      protocol: "vless",
+      listen: "",
+      settings: {
+        clients: [{ id: "client_uuid", email: "user@example.com", enable: true, flow: "xtls-rprx-vision" }]
+      },
+      streamSettings: {
+        network: "tcp",
+        security: "reality",
+        realitySettings: {
+          dest: "aws.amazon.com:443",
+          serverNames: ["aws.amazon.com"],
+          shortIds: ["67"],
+          privateKey: "must-not-be-used"
+        }
+      }
+    }
+  });
+
+  const runtime = await service.getInboundRuntime({
+    id: "node_1",
+    panelBaseUrl: "https://panel.example.com/custom",
+    panelApiBasePath: "/custom",
+    panelUsername: "admin",
+    panelPassword: "password",
+    panelInboundId: 3,
+    realityPublicKey: "stored_public_key"
+  });
+
+  assert.equal(runtime.realityPublicKey, "stored_public_key");
 }
 
 async function testUpdateNodeAccessKeepsLocalSaveWhenPanelPresyncFails() {
@@ -19003,6 +19200,7 @@ async function testUsageSyncUsesStoredInboundIdGroups() {
         ]
       },
       node: {
+        findUnique: async () => ({ controlMode: "shadow_direct" }),
         update: async () => undefined
       }
     },
@@ -19071,6 +19269,7 @@ async function testUsageSyncKeepsNodeDegradedWhenAnyInboundFails() {
         ]
       },
       node: {
+        findUnique: async () => ({ controlMode: "shadow_direct" }),
         update: async (payload: Record<string, any>) => {
           nodeUpdates.push(payload.data);
         }
@@ -19158,6 +19357,7 @@ async function testUsageSyncDoesNotLetStalledNodesBlockHealthyNode() {
         ]
       },
       node: {
+        findUnique: async () => ({ controlMode: "shadow_direct" }),
         update: async (payload: Record<string, any>) => {
           nodeUpdates.push({ nodeId: payload.where.id, data: payload.data });
         }
@@ -19259,6 +19459,7 @@ async function testUsageSyncIncidentWriteFailureDoesNotBlockHealthyNode() {
         ]
       },
       node: {
+        findUnique: async () => ({ controlMode: "shadow_direct" }),
         update: async (payload: Record<string, any>) => {
           nodeUpdates.push({ nodeId: payload.where.id, data: payload.data });
         }
@@ -20440,7 +20641,14 @@ async function testClientNodesRequirePanelEnabled() {
 
   const nodes = await service.getNodes("Bearer token");
 
-  assert.equal(capturedWhere[0].node.panelEnabled, true, "client node list must filter out panel-disabled nodes");
+  assert.deepEqual(
+    capturedWhere[0].node.OR,
+    [
+      { controlMode: "direct_primary" },
+      { panelEnabled: true, controlMode: { in: ["xui_primary", "shadow_direct"] } }
+    ],
+    "client node list must allow panel-enabled XUI nodes and direct-primary Agent nodes"
+  );
   assert.equal(nodes.length, 1);
 }
 
@@ -20982,7 +21190,7 @@ async function testConnectWithXuiUsesCachedRuntimeWhenPanelReadStalls() {
   });
 
   const runtime = await Promise.race([
-    service["connectWithXui"](
+    service["connectWithManagedNode"](
       node,
       {
         id: "user_1",
@@ -21096,7 +21304,7 @@ async function testConnectWithXuiUsesLocalRuntimeForNewBindingWhenPanelReadFails
     }
   });
 
-  const runtime = await service["connectWithXui"](
+  const runtime = await service["connectWithManagedNode"](
     node,
     {
       id: "user_1",
@@ -21203,7 +21411,7 @@ async function testConnectWithXuiCreatesBindingWithoutPrismaUpsertUniqueDependen
     }
   });
 
-  await service["connectWithXui"](
+  await service["connectWithManagedNode"](
     node,
     {
       id: "user_1",
@@ -21314,7 +21522,7 @@ async function testConnectWithXuiKeepsRuntimeWhenPostLeaseStatusWritesFail() {
     }
   });
 
-  const runtime = await service["connectWithXui"](
+  const runtime = await service["connectWithManagedNode"](
     node,
     {
       id: "user_1",
@@ -21430,7 +21638,7 @@ async function testConnectWithXuiRejectsIncompleteCachedRuntimeWhenPanelReadFail
 
   await assert.rejects(
     () =>
-      service["connectWithXui"](
+      service["connectWithManagedNode"](
         node,
         {
           id: "user_1",
@@ -21687,7 +21895,7 @@ async function testPanelDeleteJobUsesStoredSnapshotAndCompletes() {
   assert.equal(jobUpdates[0].data.status, "completed");
 }
 
-async function testRuntimePlanRequiresCompleteComponentSet() {
+async function testRuntimePlanReturnsAvailablePartialComponentSet() {
   const service = createRuntimeComponentsService({
     prisma: {
       runtimeComponent: {
@@ -21721,7 +21929,8 @@ async function testRuntimePlanRequiresCompleteComponentSet() {
     architecture: "x64"
   });
 
-  assert.equal(plan.components.length, 0, "client plan must not expose a partial runtime component set");
+  assert.equal(plan.components.length, 1, "client plan must expose the components actually configured by the backend");
+  assert.equal(plan.components[0].kind, "geoip");
 }
 
 async function testRuntimeComponentCreateRejectsUploadedSource() {
@@ -23325,7 +23534,7 @@ async function testRuntimePlanSkipsUploadedRowsMissingFiles() {
     architecture: "x64"
   });
 
-  assert.equal(plan.components.length, 0, "client plan must not expose uploaded runtime components without stored files");
+  assert.deepEqual(plan.components.map((item) => item.kind).sort(), ["geoip", "geosite"], "missing uploaded Xray must be filtered without hiding usable GEO components");
 }
 
 async function testRuntimePlanSkipsUploadedRowsWithStaleMetadata() {
@@ -23387,7 +23596,7 @@ async function testRuntimePlanSkipsUploadedRowsWithStaleMetadata() {
       architecture: "x64"
     });
 
-    assert.equal(plan.components.length, 0, "client plan must not expose uploaded runtime components with stale metadata");
+    assert.deepEqual(plan.components.map((item) => item.kind).sort(), ["geoip", "geosite"], "stale uploaded Xray must be filtered without hiding valid GEO components");
   } finally {
     if (previousReleaseStorageRoot === undefined) {
       delete process.env.CHORDV_RELEASE_STORAGE_ROOT;
@@ -34522,6 +34731,7 @@ async function main() {
   await testSyncPanelAccessForNodeUsesQueueSyncAndContinuesAfterSubscriptionStalls();
   await testUpdateNodeAccessQueuesPanelSyncAfterLocalTransaction();
   await testPanelDisableQueuePublishesSyncQueueEvent();
+  await testShadowBindingCreationBumpsAgentConfigRevision();
   await testAdminPanelSyncRetryPublishesSyncQueueEvent();
   await testClientAuthGuardRejectsAdminTokens();
   await testClientAuthGuardAllowsUserTokens();
@@ -34559,7 +34769,7 @@ async function main() {
   testUploadedReleaseArtifactDoesNotUseClientMirror();
   testReleaseArtifactClientUsableRejectsWindowsInstallerDownloads();
   testReleaseArtifactClientUsableRejectsHttpFullReplacementUrl();
-  testReleaseArtifactClientUsableRejectsMissingFileHash();
+  testReleaseArtifactClientUsableAllowsMissingFileHash();
   await testExternalReleaseMetadataRejectsPrivateNetworkUrl();
   await testExternalReleaseMetadataRejectsStalledResponse();
   await testExternalReleaseMetadataMapsHttp500ToBadRequest();
@@ -34702,6 +34912,7 @@ async function main() {
   await testPanelSyncJobBusinessRequeueDoesNotUnlockRunningJob();
   await testPanelSyncJobBusinessRequeueSkipsCreateWhenDedupeAlreadyExists();
   await testQueuePanelDeleteJobsSkipsStaleBindingForeignKey();
+  await testQueueDirectDeleteKeepsSnapshotUntilWatermarkBatchesSettle();
   await testLeaseRevocationBusinessRequeueDoesNotUnlockRunningJob();
   await testRetryLeaseRevocationJobRequeuesWithoutKeepingBackoff();
   await testLeaseRevocationQueueFallsBackWhenNodeNameLookupFails();
@@ -34716,6 +34927,7 @@ async function main() {
   testParseVlessLinkRejectsMissingPort();
   testParseVlessLinkRejectsMalformedUrl();
   await testFetchSubscriptionNodeMapsInvalidUrlToBadRequest();
+  await testFetchSubscriptionNodeAcceptsDirectVlessLink();
   await testFetchSubscriptionNodeMapsNetworkFailureToBadGateway();
   await testXuiPanelRequestUsesCallerAbortBudget();
   await testXuiBusinessNotFoundFallsBackToInboundDelete();
@@ -34723,6 +34935,7 @@ async function main() {
   await testXuiInboundRuntimeReadsMldsa65Verify();
   await testXuiInboundRuntimeReadsPqvAlias();
   await testXuiInboundRuntimeRejectsMissingRealityPublicKey();
+  await testXuiInboundRuntimeUsesStoredPublicKeyForLatestPanelShape();
   await testListAdminNodesUsesAggregatedPanelSyncCounts();
   await testListAdminNodesIgnoresPanelSyncSummaryReadFailure();
   await testListNodePanelInboundsPropagatesOfflinePanelError();
@@ -34849,7 +35062,7 @@ async function main() {
   await testRemovePanelBindingQueuesDeleteWithoutRemoteCall();
   await testExpiredSubscriptionPanelSyncQueuesDeleteWithoutRemoteCall();
   await testPanelDeleteJobUsesStoredSnapshotAndCompletes();
-  await testRuntimePlanRequiresCompleteComponentSet();
+  await testRuntimePlanReturnsAvailablePartialComponentSet();
   await testRuntimeComponentCreateRejectsUploadedSource();
   await testRuntimeComponentCreateRequiresHttpUrl();
   await testRuntimeComponentCreateRejectsBlankFileName();

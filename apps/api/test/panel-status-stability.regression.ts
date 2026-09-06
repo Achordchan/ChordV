@@ -173,6 +173,7 @@ async function testUsageSyncDegradesOnlyAfterThreshold() {
         ]
       },
       node: {
+        findUnique: async () => ({ controlMode: "shadow_direct" }),
         update: async (payload: any) => {
           updates.push(payload);
           return payload;

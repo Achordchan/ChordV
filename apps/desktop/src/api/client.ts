@@ -1335,6 +1335,8 @@ function normalizeRuntimeComponentsPlan(
       raw.components.find((item) => item.defaultMirrorPrefix)?.defaultMirrorPrefix ?? null,
     components: raw.components.map((item) => ({
       id: item.id,
+      revision: item.updatedAt ?? null,
+      versionLabel: item.versionLabel ?? null,
       component: item.kind,
       fileName: item.fileName,
       fileSizeBytes: readNumber(item.fileSizeBytes),

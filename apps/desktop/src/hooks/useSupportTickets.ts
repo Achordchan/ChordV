@@ -31,8 +31,13 @@ type NoticeInput = {
 
 type TicketDraft = CreateClientSupportTicketInputDto;
 
+export type LoadTicketListOptions = {
+  silent?: boolean;
+};
+
 export type LoadTicketDetailOptions = {
   markRead?: boolean;
+  silent?: boolean;
 };
 
 type UseSupportTicketsOptions = {
@@ -122,14 +127,16 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
   }, []);
 
   const loadTicketList = useCallback(
-    async (preferredTicketId?: string | null) => {
+    async (preferredTicketId?: string | null, loadOptions?: LoadTicketListOptions) => {
       if (!options.accessToken) {
         return [];
       }
 
       try {
-        setTicketListBusy(true);
-        setTicketCenterError(null);
+        if (!loadOptions?.silent) {
+          setTicketListBusy(true);
+          setTicketCenterError(null);
+        }
         const nextTickets = (await fetchSupportTickets(options.accessToken)).map((ticket) =>
           reconcileLocalSupportTicketUnread(ticket, locallyUnreadTicketIdsRef.current)
         );
@@ -144,10 +151,14 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
           await options.onUnauthorized?.();
           return [];
         }
-        setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "工单列表加载失败");
+        if (!loadOptions?.silent) {
+          setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "工单列表加载失败");
+        }
         return [];
       } finally {
-        setTicketListBusy(false);
+        if (!loadOptions?.silent) {
+          setTicketListBusy(false);
+        }
       }
     },
     [options.accessToken, options.onUnauthorized, options.readError]
@@ -160,8 +171,10 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
       }
 
       try {
-        setTicketDetailBusy(true);
-        setTicketCenterError(null);
+        if (!loadOptions?.silent) {
+          setTicketDetailBusy(true);
+          setTicketCenterError(null);
+        }
         const isBackgroundRefresh = consumeSupportTicketBackgroundDetailRefresh(ticketId);
         const shouldMarkRead = loadOptions?.markRead ?? !isBackgroundRefresh;
         const detail = await fetchSupportTicketDetail(options.accessToken, ticketId);
@@ -175,10 +188,14 @@ export function useSupportTickets(options: UseSupportTicketsOptions) {
           await options.onUnauthorized?.();
           return null;
         }
-        setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "工单详情加载失败");
+        if (!loadOptions?.silent) {
+          setTicketCenterError(reason instanceof Error ? (options.readError ?? defaultReadError)(reason.message) : "工单详情加载失败");
+        }
         return null;
       } finally {
-        setTicketDetailBusy(false);
+        if (!loadOptions?.silent) {
+          setTicketDetailBusy(false);
+        }
       }
     },
     [markTicketAsRead, options.accessToken, options.onUnauthorized, options.readError]

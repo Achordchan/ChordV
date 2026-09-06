@@ -68,6 +68,40 @@ enum XuiPanelStatus {
   degraded
 }
 
+enum NodeControlMode {
+  xui_primary
+  shadow_direct
+  direct_primary
+  rollback_pending
+}
+
+enum PanelClientSource {
+  xui
+  direct
+}
+
+enum TrafficSnapshotSource {
+  xui
+  direct
+}
+
+enum NodeAgentCommandType {
+  ENSURE_USER
+  ENABLE_USER
+  DISABLE_USER
+  REMOVE_USER
+  RECONCILE_USERS
+  REFRESH_QUOTA
+}
+
+enum NodeAgentJobStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
 enum NodeSessionLeaseStatus {
   active
   expired
@@ -274,6 +308,8 @@ model Subscription {
   totalTrafficGb     Float
   usedTrafficGb      Float
   remainingTrafficGb Float
+  totalTrafficBytes  BigInt                   @default(0)
+  usedTrafficBytes   BigInt                   @default(0)
   expireAt           DateTime
   state              SubscriptionState
   renewable          Boolean
@@ -333,6 +369,7 @@ model TrafficLedger {
   subscriptionId String
   nodeId         String?
   usedTrafficGb  Float
+  usedTrafficBytes BigInt       @default(0)
   recordedAt     DateTime
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
@@ -382,6 +419,10 @@ model Node {
   panelStatus      XuiPanelStatus  @default(offline)
   panelLastSyncedAt DateTime?
   panelError       String?
+  controlMode      NodeControlMode @default(xui_primary)
+  controlStatus    String          @default("unknown")
+  agentLastSeenAt  DateTime?
+  agentConfigRevision BigInt       @default(0)
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   subscriptionAccesses SubscriptionNodeAccess[]
@@ -392,6 +433,11 @@ model Node {
   securityEvents    SecurityEvent[]
   panelClientBindings PanelClientBinding[]
   panelSyncJobs     PanelSyncJob[]
+  nodeAgents        NodeAgent[]
+  nodeCommandJobs   NodeCommandJob[]
+  nodeUsageBatches  NodeUsageBatch[]
+
+  @@index([controlMode, isActive])
 }
 
 model SubscriptionNodeAccess {
@@ -436,6 +482,8 @@ model TrafficSnapshot {
   uplinkBytes      BigInt       @default(0)
   downlinkBytes    BigInt       @default(0)
   totalBytes       BigInt       @default(0)
+  source           TrafficSnapshotSource @default(xui)
+  counterGeneration String      @default("0")
   sampledAt        DateTime
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
@@ -531,6 +579,10 @@ model PanelClientBinding {
   lastDownlinkBytes BigInt      @default(0)
   lastSyncedAt     DateTime?
   status           String       @default("active")
+  source           PanelClientSource @default(xui)
+  directRevision   BigInt       @default(0)
+  directDisabledAt DateTime?
+  directDisableWatermarks Json?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
@@ -542,6 +594,77 @@ model PanelClientBinding {
   @@unique([subscriptionId, userId, nodeId])
   @@index([subscriptionId, nodeId, status])
   @@index([nodeId, panelClientEmail])
+  @@index([nodeId, source, status])
+}
+
+model NodeAgent {
+  id                  String   @id
+  agentId             String   @unique
+  nodeId              String
+  tokenHash           String   @unique
+  tokenPrefix         String
+  version             String?
+  status              String   @default("offline")
+  bootId              String?
+  lastSequence        BigInt   @default(0)
+  lastAckSequence     BigInt   @default(0)
+  configRevision      BigInt   @default(0)
+  queueDepth          Int      @default(0)
+  xrayStatus          String   @default("unknown")
+  lastSeenAt          DateTime?
+  revokedAt           DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  node                Node     @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  commandJobs         NodeCommandJob[]
+  usageBatches        NodeUsageBatch[]
+
+  @@index([nodeId, revokedAt, lastSeenAt])
+  @@index([status, lastSeenAt])
+}
+
+model NodeCommandJob {
+  id              String               @id
+  dedupeKey       String               @unique
+  nodeId          String
+  agentId         String?
+  commandType     NodeAgentCommandType
+  targetRevision  BigInt               @default(0)
+  payload         Json
+  status          NodeAgentJobStatus   @default(pending)
+  attempts        Int                  @default(0)
+  nextRunAt       DateTime             @default(now())
+  lockedAt        DateTime?
+  result          Json?
+  lastError       String?
+  completedAt     DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  node            Node                 @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  agent           NodeAgent?           @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([nodeId, status, nextRunAt])
+  @@index([agentId, status, nextRunAt])
+}
+
+model NodeUsageBatch {
+  id              String    @id
+  nodeId          String
+  agentId         String
+  bootId          String
+  sequence        BigInt
+  payloadHash     String
+  payload         Json
+  sampledAt       DateTime
+  receivedAt      DateTime  @default(now())
+  accountedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  node            Node      @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  agent           NodeAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([nodeId, bootId, sequence])
+  @@index([agentId, bootId, sequence])
+  @@index([nodeId, accountedAt, sampledAt])
 }
 
 model PanelSyncJob {

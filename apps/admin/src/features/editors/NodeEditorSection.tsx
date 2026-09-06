@@ -1,10 +1,15 @@
-import { Alert, Button, Group, NumberInput, Select, Switch, TextInput, Text } from "@mantine/core";
-import type { AdminNodePanelInboundDto } from "@chordv/shared";
+import { Accordion, Alert, Button, Group, NumberInput, Select, Stack, Switch, TextInput, Text } from "@mantine/core";
+import type { AdminNodePanelInboundDto, AdminNodeRecordDto } from "@chordv/shared";
 import { countryOptions } from "@chordv/shared";
 import type { NodeFormState } from "../../utils/admin-forms";
 import { CountryFlag } from "../../components/CountryFlag";
+import {
+  nodeControlModeColor,
+  translateNodeControlMode
+} from "../../utils/admin-translate";
 
 type NodeEditorSectionProps = {
+  node: AdminNodeRecordDto | null;
   nodeForm: NodeFormState;
   setNodeForm: React.Dispatch<React.SetStateAction<NodeFormState>>;
   nodePanelInbounds: AdminNodePanelInboundDto[];
@@ -13,16 +18,19 @@ type NodeEditorSectionProps = {
 };
 
 export function NodeEditorSection(props: NodeEditorSectionProps) {
-  const nodePanelInboundOptions = props.nodePanelInbounds.map((item) => ({
-    value: String(item.id),
-    label: `${item.remark} · ID ${item.id} · ${item.protocol.toUpperCase()} · ${item.port} 端口 · ${item.clientCount} 客户端`
-  }));
+  const controlMode = props.node?.controlMode ?? "xui_primary";
 
   return (
     <>
-      <Alert color="blue" variant="light">
-        当前为 3x-ui 直连模式，节点运行参数会直接从面板入站读取，无需填写订阅地址。
-      </Alert>
+      {controlMode === "xui_primary" ? (
+        <Alert color="blue" variant="light">
+          当前由 3X-UI 管理用户和计量，节点运行参数会直接从面板入站读取。
+        </Alert>
+      ) : (
+        <Alert color={nodeControlModeColor(controlMode)} variant="light" title={`当前控制链路：${translateNodeControlMode(controlMode)}`}>
+          控制模式、Agent 健康度和迁移操作请在节点列表的“节点控制器”中管理；本抽屉只修改节点资料和保留的回退配置。
+        </Alert>
+      )}
       <TextInput
         label="节点名称"
         value={props.nodeForm.name}
@@ -83,10 +91,39 @@ export function NodeEditorSection(props: NodeEditorSectionProps) {
         onChange={(event) => props.setNodeForm((current) => ({ ...current, recommended: event.currentTarget.checked }))}
         label="推荐节点"
       />
+      {controlMode === "xui_primary" ? (
+        <PanelConfigurationFields {...props} />
+      ) : (
+        <Accordion variant="contained" radius="md">
+          <Accordion.Item value="migration-panel-config">
+            <Accordion.Control>迁移与回退：保留的 3X-UI 配置</Accordion.Control>
+            <Accordion.Panel>
+              <Stack gap="md">
+                <Alert color="yellow" variant="light">
+                  这些配置只用于迁移核对和人工回退，不是当前 Agent 控制链路的运行状态。
+                </Alert>
+                <PanelConfigurationFields {...props} />
+              </Stack>
+            </Accordion.Panel>
+          </Accordion.Item>
+        </Accordion>
+      )}
+    </>
+  );
+}
+
+function PanelConfigurationFields(props: NodeEditorSectionProps) {
+  const nodePanelInboundOptions = props.nodePanelInbounds.map((item) => ({
+    value: String(item.id),
+    label: `${item.remark} · ID ${item.id} · ${item.protocol.toUpperCase()} · ${item.port} 端口 · ${item.clientCount} 客户端`
+  }));
+
+  return (
+    <>
       <Switch
         checked={props.nodeForm.panelEnabled}
         onChange={(event) => props.setNodeForm((current) => ({ ...current, panelEnabled: event.currentTarget.checked }))}
-        label="启用 3x-ui 面板"
+        label="启用 3X-UI 面板"
       />
       <TextInput
         label="面板地址"

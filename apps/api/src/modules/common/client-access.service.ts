@@ -35,6 +35,7 @@ import { ClientTicketService } from "./client-ticket.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { isPrismaTransientError, throwLocalReadAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
+import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { ReleaseCenterService } from "./release-center.service";
 import {
   pickCurrentSubscription,
@@ -212,7 +213,10 @@ export class ClientAccessService {
         subscriptionId: access.subscription.id,
         node: {
           isActive: true,
-          panelEnabled: true
+          OR: [
+            { controlMode: "direct_primary" },
+            { panelEnabled: true, controlMode: { in: ["xui_primary", "shadow_direct"] } }
+          ]
         }
       },
       include: { node: true },
@@ -259,7 +263,10 @@ export class ClientAccessService {
         nodeId: { in: requestedNodeIds },
         node: {
           isActive: true,
-          panelEnabled: true
+          OR: [
+            { controlMode: "direct_primary" },
+            { panelEnabled: true, controlMode: { in: ["xui_primary", "shadow_direct"] } }
+          ]
         }
       },
       include: { node: true }
@@ -422,10 +429,7 @@ export class ClientAccessService {
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
-    const rows = await this.prisma.trafficLedger.findMany({
-      where: { teamId, userId, subscriptionId }
-    });
-    return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
+    return readMemberUsedTrafficGb(this.prisma, teamId, userId, subscriptionId);
   }
 
   private async resolveUserForLogin(account: string) {

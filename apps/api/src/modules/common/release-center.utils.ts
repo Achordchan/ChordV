@@ -342,10 +342,7 @@ export function assertReleaseArtifactClientUsable(artifact: ReleaseArtifactRowLi
   assertReleaseArtifactTypeAllowed(platform, type);
   assertReleaseArtifactDeliveryAllowed(platform, type, deliveryMode);
 
-  const fileHash = artifact.fileHash?.trim() ?? "";
-  if (!/^[a-fA-F0-9]{64}$/.test(fileHash)) {
-    throw new BadRequestException("安装包必须提供有效的 SHA-256 校验值。");
-  }
+
   if (artifact.fileSizeBytes === null || artifact.fileSizeBytes === undefined || artifact.fileSizeBytes <= 0n) {
     throw new BadRequestException("安装包必须提供正数文件大小元数据。");
   }

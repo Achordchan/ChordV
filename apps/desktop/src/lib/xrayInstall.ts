@@ -25,16 +25,32 @@ export function basenamePath(path: string | null | undefined, fallback = "xray")
 }
 
 export function resolveXrayVersionLabel(
-  item: { fileName?: string | null; checksumSha256?: string | null } | null | undefined
+  item: {
+    fileName?: string | null;
+    versionLabel?: string | null;
+    checksumSha256?: string | null;
+    candidates?: RuntimeComponentDownloadItem["candidates"];
+    selectedUrl?: string | null;
+  } | null | undefined
 ) {
   if (!item) return null;
+  const explicitLabel = String(item.versionLabel ?? "").trim();
+  if (explicitLabel) return explicitLabel.replace(/^v/i, "");
+  const originUrl = item.candidates?.find((candidate) => candidate.source === "origin")?.url ?? item.selectedUrl ?? "";
+  const releaseMatch = originUrl.match(/\/releases\/download\/v?([^/]+)\//i);
+  if (releaseMatch?.[1]) return releaseMatch[1];
   const fileName = basenamePath(item.fileName, "");
   if (!fileName) return null;
   const match = fileName.match(/(\d+\.\d+\.\d+(?:[-_][\w.]+)?)/);
   if (match?.[1]) return match[1];
-  // Generic names like xray/xray.exe are not version labels.
-  if (/^xray(?:\.exe)?$/i.test(fileName)) return null;
-  return fileName;
+  // Generic artifact names are filenames, never versions.
+  if (/^xray(?:[-_](?:windows|macos|linux))?(?:[-_](?:32|64|x64|arm64|arm64-v8a))?(?:\.exe|\.zip)?$/i.test(fileName)) return null;
+  return null;
+}
+
+export function isUnresolvedGithubLatestXrayPlan(item: RuntimeComponentDownloadItem | null | undefined) {
+  const originUrl = resolveXrayOriginUrl(item);
+  return Boolean(originUrl && /\/releases\/latest\/download\//i.test(originUrl) && !resolveXrayVersionLabel(item));
 }
 
 export function resolveXrayOriginUrl(item: RuntimeComponentDownloadItem | null | undefined) {
@@ -53,6 +69,7 @@ export function buildXrayContentKey(item: RuntimeComponentDownloadItem | null | 
   if (!item) return null;
   const parts = [
     String(item.id ?? "").trim(),
+    String(item.revision ?? "").trim(),
     String(item.fileName ?? "").trim(),
     resolveXrayVersionLabel(item) ?? "",
     resolveXrayOriginUrl(item) ?? "",

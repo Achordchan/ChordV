@@ -137,6 +137,7 @@ export function AdminDrawerForm(props: AdminDrawerFormProps) {
         ) : null}
         {props.drawerType === "node" ? (
           <NodeEditorSection
+            node={props.snapshot.nodes.find((item) => item.id === props.drawerRecordId) ?? null}
             nodeForm={props.nodeForm}
             setNodeForm={props.setNodeForm}
             nodePanelInbounds={props.nodePanelInbounds}

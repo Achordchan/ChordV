@@ -1,5 +1,5 @@
 import { workLifecycle, DrainableJob } from "../../work-lifecycle";
-import { Injectable, Logger } from "@nestjs/common";
+import { ConflictException, Injectable, Logger } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import { Cron } from "@nestjs/schedule";
 import { randomUUID } from "node:crypto";
@@ -15,10 +15,10 @@ import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { MeteringIncidentService } from "../common/metering-incident.service";
 import { PrismaService } from "../common/prisma.service";
 import { RuntimeSessionService } from "../common/runtime-session.service";
-import { runWithSubscriptionUsageLock } from "../common/usage-lock.utils";
+import { runWithNodeUsageLock, runWithSubscriptionUsageLock } from "../common/usage-lock.utils";
 import { XuiService } from "../xui/xui.service";
+import { trafficBytesToGbNumber, trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
 
-const GB_IN_BYTES = 1024 ** 3;
 const NODE_USAGE_STALE_SECONDS = Number(process.env.CHORDV_NODE_USAGE_STALE_SECONDS ?? 90);
 const DEFAULT_PANEL_STATUS_FAILURE_THRESHOLD = 3;
 const PANEL_STATUS_HARD_FAILURE_PATTERN = /账号或密码错误|用户名或密码|credential|unauthorized|401|403|登录接口不存在|入站信息为空|未找到入站/i;
@@ -90,6 +90,70 @@ export class UsageSyncService {
     }
   }
 
+  async settleNodeForDirectCutover(nodeId: string): Promise<Date> {
+    const bindings = await this.prisma.panelClientBinding.findMany({
+      where: {
+        nodeId,
+        status: "active",
+        subscription: { state: "active" },
+        node: {
+          panelEnabled: true,
+          isActive: true,
+          controlMode: "shadow_direct"
+        }
+      },
+      include: {
+        node: {
+          select: {
+            id: true,
+            panelBaseUrl: true,
+            panelApiBasePath: true,
+            panelUsername: true,
+            panelPassword: true,
+            panelInboundId: true
+          }
+        }
+      },
+      orderBy: { id: "asc" }
+    });
+    if (bindings.length === 0) throw new ConflictException("节点没有可结清的活跃 XUI 绑定");
+
+    const groups = new Map<number, typeof bindings>();
+    for (const binding of bindings) {
+      const group = groups.get(binding.panelInboundId) ?? [];
+      group.push(binding);
+      groups.set(binding.panelInboundId, group);
+    }
+
+    let finalSampledAt = new Date(0);
+    for (const [panelInboundId, nodeBindings] of groups) {
+      const records = await this.xuiService.listNodeUsage({
+        id: nodeId,
+        panelBaseUrl: nodeBindings[0].node.panelBaseUrl,
+        panelApiBasePath: nodeBindings[0].node.panelApiBasePath,
+        panelUsername: nodeBindings[0].node.panelUsername,
+        panelPassword: nodeBindings[0].node.panelPassword,
+        panelInboundId,
+        panelRequestTimeoutMs: USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS,
+        panelAbortSignal: AbortSignal.timeout(USAGE_SYNC_NODE_REMOTE_TIMEOUT_MS)
+      });
+      const recordsByEmail = new Map(records.map((record) => [record.xrayUserEmail.trim().toLowerCase(), record]));
+      const missing = nodeBindings.filter((binding) => !recordsByEmail.has(binding.panelClientEmail.trim().toLowerCase()));
+      if (missing.length > 0) throw new ConflictException(`最终 XUI 样本缺失：${missing.map((binding) => binding.id).join(",")}`);
+      const allowedEmails = new Set(nodeBindings.map((binding) => binding.panelClientEmail.trim().toLowerCase()));
+      const acceptedRecords = records.filter((record) => allowedEmails.has(record.xrayUserEmail.trim().toLowerCase()));
+      const context = await this.loadNodeSyncContext(nodeId, panelInboundId);
+      await this.applyNodeSamples(nodeId, acceptedRecords, context);
+      for (const record of acceptedRecords) {
+        const sampledAt = new Date(record.sampledAt);
+        if (Number.isNaN(sampledAt.getTime())) throw new ConflictException("最终 XUI 样本时间无效");
+        if (sampledAt > finalSampledAt) finalSampledAt = sampledAt;
+      }
+    }
+    if (finalSampledAt.getTime() === 0) throw new ConflictException("最终 XUI 样本为空");
+    return finalSampledAt;
+  }
+
   private async syncXuiUsage() {
     const bindings = await this.prisma.panelClientBinding.findMany({
       where: {
@@ -107,7 +171,9 @@ export class UsageSyncService {
         },
         node: {
           panelEnabled: true,
-          isActive: true
+          isActive: true,
+          controlMode: { in: ["xui_primary", "shadow_direct"] },
+          controlStatus: { not: "direct_cutover_pending" }
         }
       },
       include: {
@@ -190,6 +256,16 @@ export class UsageSyncService {
     };
 
     await runWithConcurrency(Array.from(nodeGroups.values()), USAGE_SYNC_NODE_CONCURRENCY, async (groups) => {
+      const lockedNodeId = groups[0]?.nodeId;
+      if (!lockedNodeId) return;
+      await runWithNodeUsageLock(lockedNodeId, async () => {
+      const currentNode = await this.prisma.node.findUnique({
+        where: { id: lockedNodeId },
+        select: { controlMode: true, controlStatus: true }
+      });
+      if (!currentNode || currentNode.controlStatus === "direct_cutover_pending" || (currentNode.controlMode !== "xui_primary" && currentNode.controlMode !== "shadow_direct")) {
+        return;
+      }
       for (const { nodeId, panelInboundId, bindings: nodeBindings } of groups) {
         const subscriptionIds = Array.from(new Set(nodeBindings.map((item) => item.subscriptionId)));
         const nodeResult = readNodeResult(nodeId);
@@ -229,6 +305,7 @@ export class UsageSyncService {
           );
         }
       }
+      });
     });
 
     for (const [nodeId, result] of nodeResults) {
@@ -512,7 +589,6 @@ export class UsageSyncService {
 
   private async applyUsageDelta(input: UsageDeltaInput) {
     const apply = async () => {
-      const deltaGb = Number(input.deltaBytes) / GB_IN_BYTES;
       let nextState: "active" | "expired" | "exhausted" | "paused" | null = null;
       let previousState: "active" | "expired" | "exhausted" | "paused" | null = null;
 
@@ -526,8 +602,18 @@ export class UsageSyncService {
         }
         previousState = current.state;
 
-        const nextUsedTrafficGb = roundTrafficGb(current.usedTrafficGb + deltaGb);
-        const nextRemainingTrafficGb = roundTrafficGb(Math.max(0, current.totalTrafficGb - nextUsedTrafficGb));
+        const totalTrafficBytes = current.totalTrafficBytes > 0n
+          ? current.totalTrafficBytes
+          : trafficGbNumberToBytes(current.totalTrafficGb);
+        const usedTrafficBytes = current.usedTrafficBytes > 0n
+          ? current.usedTrafficBytes
+          : trafficGbNumberToBytes(current.usedTrafficGb);
+        const nextUsedTrafficBytes = usedTrafficBytes + input.deltaBytes;
+        const nextRemainingTrafficBytes = totalTrafficBytes > nextUsedTrafficBytes
+          ? totalTrafficBytes - nextUsedTrafficBytes
+          : 0n;
+        const nextUsedTrafficGb = trafficBytesToGbNumber(nextUsedTrafficBytes);
+        const nextRemainingTrafficGb = trafficBytesToGbNumber(nextRemainingTrafficBytes);
         nextState =
           current.state !== "active"
             ? current.state
@@ -580,6 +666,8 @@ export class UsageSyncService {
           data: {
             usedTrafficGb: nextUsedTrafficGb,
             remainingTrafficGb: nextRemainingTrafficGb,
+            totalTrafficBytes,
+            usedTrafficBytes: nextUsedTrafficBytes,
             state: nextState,
             lastSyncedAt: input.sampledAt
           }
@@ -593,7 +681,8 @@ export class UsageSyncService {
               userId: input.userId,
               subscriptionId: input.subscriptionId,
               nodeId: input.nodeId,
-              usedTrafficGb: roundTrafficGb(deltaGb),
+              usedTrafficGb: trafficBytesToGbNumber(input.deltaBytes),
+              usedTrafficBytes: input.deltaBytes,
               recordedAt: input.sampledAt
             }
           });

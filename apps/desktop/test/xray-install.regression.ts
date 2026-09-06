@@ -3,6 +3,7 @@ import {
   basenamePath,
   buildXrayContentKey,
   buildXrayInstalledIdentityFromPlan,
+  isUnresolvedGithubLatestXrayPlan,
   isXrayIdentityCurrent,
   resolveXrayVersionLabel,
   type XrayInstalledIdentity
@@ -12,6 +13,8 @@ import type { RuntimeComponentDownloadItem } from "../src/lib/runtimeComponents.
 function makeXrayItem(overrides: Partial<RuntimeComponentDownloadItem> = {}): RuntimeComponentDownloadItem {
   return {
     id: "rtcomp_1",
+    revision: "2026-03-27T17:55:33Z",
+    versionLabel: null,
     component: "xray",
     fileName: "Xray-windows-64-v1.8.0.zip",
     fileSizeBytes: 12_000_000,
@@ -39,7 +42,41 @@ function testBasenameSupportsWindowsPaths() {
 
 function testGenericFileNameIsNotVersion() {
   assert.equal(resolveXrayVersionLabel({ fileName: "xray.exe" }), null);
+  assert.equal(resolveXrayVersionLabel({ fileName: "Xray-windows-64.zip" }), null);
+  assert.equal(resolveXrayVersionLabel({ fileName: "Xray-windows-64.zip", versionLabel: "26.3.27" }), "26.3.27");
+  assert.equal(
+    isUnresolvedGithubLatestXrayPlan(makeXrayItem({
+      versionLabel: null,
+      fileName: "Xray-windows-64.zip",
+      candidates: [{
+        label: "origin",
+        source: "origin",
+        url: "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip"
+      }]
+    })),
+    true
+  );
   assert.equal(resolveXrayVersionLabel({ fileName: "Xray-windows-64-v1.8.24.zip" }), "1.8.24");
+  assert.equal(
+    resolveXrayVersionLabel({
+      fileName: "Xray-windows-64.zip",
+      candidates: [
+        {
+          label: "origin",
+          source: "origin",
+          url: "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip"
+        }
+      ]
+    }),
+    "26.3.27"
+  );
+}
+
+function testRevisionChangeIsNotCurrent() {
+  const current = makeXrayItem();
+  const installed = buildXrayInstalledIdentityFromPlan(current, 20_000_000);
+  const next = makeXrayItem({ revision: "2026-04-01T00:00:00Z" });
+  assert.equal(isXrayIdentityCurrent(installed, next, 20_000_000), false);
 }
 
 function testSameComponentIdDifferentContentIsNotCurrent() {
@@ -162,6 +199,7 @@ function testLegacyIdOnlyRecordIsNotCurrent() {
 function main() {
   testBasenameSupportsWindowsPaths();
   testGenericFileNameIsNotVersion();
+  testRevisionChangeIsNotCurrent();
   testSameComponentIdDifferentContentIsNotCurrent();
   testMirrorOnlyChangeStaysCurrent();
   testLocalSizeMismatchIsNotCurrent();

@@ -179,6 +179,27 @@ function testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit() {
 }
 
 
+function testExternalArtifactOptionalHashDoesNotBlock() {
+  const missing = buildExternalArtifactPayload(
+    "windows",
+    "https://cdn.example.com/ChordV-full.zip",
+    true,
+    "104857600",
+    "",
+    "windows_full_replace_zip"
+  );
+  const invalid = buildExternalArtifactPayload(
+    "windows",
+    "https://cdn.example.com/ChordV-full.zip",
+    true,
+    "104857600",
+    "invalid",
+    "windows_full_replace_zip"
+  );
+
+  assert.equal(missing.fileHash, null);
+  assert.equal(invalid.fileHash, null);
+}
 function testDesktopExternalArtifactRejectsHttpUrl() {
   assert.throws(
     () =>
@@ -295,6 +316,7 @@ testBlankUpdateReleaseTitleDoesNotFallbackToVersion();
 testWindowsZipExternalArtifactCanStayExternalDownload();
 testWindowsZipExternalArtifactCanBeFullReplaceWhenExplicit();
 testWindowsNonZipExternalArtifactCanBeFullReplaceWhenExplicit();
+testExternalArtifactOptionalHashDoesNotBlock();
 testDesktopExternalArtifactRejectsHttpUrl();
 testNewReleaseModalRendersExternalMetadataFields();
 testExternalArtifactPayloadRejectsDesktopOversize();

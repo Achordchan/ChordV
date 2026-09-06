@@ -15,6 +15,7 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ImageBedService, type UploadedTicketAttachmentFile } from "./image-bed.service";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { PrismaService } from "./prisma.service";
+import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { createId } from "./release-center.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -1011,10 +1012,7 @@ export class ClientTicketService {
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
-    const rows = await this.prisma.trafficLedger.findMany({
-      where: { teamId, userId, subscriptionId }
-    });
-    return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
+    return readMemberUsedTrafficGb(this.prisma, teamId, userId, subscriptionId);
   }
 }
 

@@ -5,6 +5,7 @@ import { Client as PgClient } from "pg";
 
 const SUBSCRIPTION_USAGE_LOCK_KEY_1 = 420_704;
 const SUBSCRIPTION_OWNER_LOCK_KEY_1 = 420_705;
+const NODE_USAGE_LOCK_KEY_1 = 420_706;
 const DEFAULT_SUBSCRIPTION_LOCK_WAIT_TIMEOUT_MS = 5_000;
 const DEFAULT_SUBSCRIPTION_LOCK_RETRY_INTERVAL_MS = 100;
 const localSubscriptionLocks = new Map<string, Promise<void>>();
@@ -94,6 +95,89 @@ export async function runWithSubscriptionOwnerLock<T>(ownerKey: string, task: ()
   }
 }
 
+export async function runWithNodeUsageLock<T>(nodeId: string, task: () => Promise<T>) {
+  const lockKey = `node-usage:${nodeId}`;
+  if (heldSubscriptionLocks.getStore()?.has(lockKey)) {
+    return task();
+  }
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    return runWithLocalSubscriptionLock(lockKey, task);
+  }
+  const lockClient = new PgClient({
+    connectionString,
+    connectionTimeoutMillis: readPositiveIntegerEnv(
+      "CHORDV_SUBSCRIPTION_LOCK_CONNECT_TIMEOUT_MS",
+      readSubscriptionLockWaitTimeoutMs()
+    )
+  });
+  let locked = false;
+  try {
+    await lockClient.connect();
+    await acquirePgSubscriptionLock(lockClient, "node usage", [NODE_USAGE_LOCK_KEY_1, deriveSubscriptionAdvisoryLockKey(nodeId)]);
+    locked = true;
+    return await runWithinHeldSubscriptionLock(lockKey, task);
+  } finally {
+    if (locked) {
+      await lockClient.query("select pg_advisory_unlock($1, $2)", [NODE_USAGE_LOCK_KEY_1, deriveSubscriptionAdvisoryLockKey(nodeId)]).catch(() => undefined);
+    }
+    await lockClient.end().catch(() => undefined);
+  }
+}
+
+export async function runWithNodeAndSubscriptionUsageLocks<T>(
+  nodeId: string,
+  subscriptionIds: string[],
+  task: () => Promise<T>
+) {
+  const lockSpecs = [
+    {
+      localKey: `node-usage:${nodeId}`,
+      label: "node usage",
+      args: [NODE_USAGE_LOCK_KEY_1, deriveSubscriptionAdvisoryLockKey(nodeId)] as [number, number]
+    },
+    ...Array.from(new Set(subscriptionIds)).sort().map((subscriptionId) => ({
+      localKey: `usage:${subscriptionId}`,
+      label: "subscription usage",
+      args: [SUBSCRIPTION_USAGE_LOCK_KEY_1, deriveSubscriptionAdvisoryLockKey(subscriptionId)] as [number, number]
+    }))
+  ];
+  const heldLocks = heldSubscriptionLocks.getStore();
+  const missingSpecs = lockSpecs.filter((spec) => !heldLocks?.has(spec.localKey));
+  if (missingSpecs.length === 0) {
+    return task();
+  }
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    return runWithLocalSubscriptionLocks(missingSpecs.map((spec) => spec.localKey), task);
+  }
+
+  const lockClient = new PgClient({
+    connectionString,
+    connectionTimeoutMillis: readPositiveIntegerEnv(
+      "CHORDV_SUBSCRIPTION_LOCK_CONNECT_TIMEOUT_MS",
+      readSubscriptionLockWaitTimeoutMs()
+    )
+  });
+  const acquired: Array<[number, number]> = [];
+  try {
+    await lockClient.connect();
+    for (const spec of missingSpecs) {
+      await acquirePgSubscriptionLock(lockClient, spec.label, spec.args);
+      acquired.push(spec.args);
+    }
+    const nextLocks = new Set(heldLocks ?? []);
+    for (const spec of missingSpecs) nextLocks.add(spec.localKey);
+    return await heldSubscriptionLocks.run(nextLocks, task);
+  } finally {
+    for (const args of acquired.reverse()) {
+      await lockClient.query("select pg_advisory_unlock($1, $2)", args).catch(() => undefined);
+    }
+    await lockClient.end().catch(() => undefined);
+  }
+}
+
 async function runWithLocalSubscriptionLock<T>(key: string, task: () => Promise<T>) {
   if (heldSubscriptionLocks.getStore()?.has(key)) {
     return task();
@@ -123,6 +207,12 @@ async function runWithLocalSubscriptionLock<T>(key: string, task: () => Promise<
       localSubscriptionLocks.delete(key);
     }
   }
+}
+
+function runWithLocalSubscriptionLocks<T>(keys: string[], task: () => Promise<T>): Promise<T> {
+  const [first, ...rest] = keys;
+  if (!first) return task();
+  return runWithLocalSubscriptionLock(first, () => runWithLocalSubscriptionLocks(rest, task));
 }
 
 function runWithinHeldSubscriptionLock<T>(key: string, task: () => Promise<T>) {

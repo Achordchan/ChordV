@@ -6,10 +6,19 @@ import { spawnSync } from "node:child_process";
 
 const repoRoot = path.resolve(process.cwd(), "../..");
 const installerPath = path.join(repoRoot, "scripts/install-panel-password-key.py");
+const agentPepperInstallerPath = path.join(repoRoot, "scripts/install-agent-token-pepper.py");
 const pythonCommand = process.platform === "win32" ? "python" : "python3";
 
 function runInstaller(deployPath: string) {
   return spawnSync(pythonCommand, [installerPath], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, DEPLOY_PATH: deployPath }
+  });
+}
+
+function runAgentPepperInstaller(deployPath: string) {
+  return spawnSync(pythonCommand, [agentPepperInstallerPath], {
     cwd: repoRoot,
     encoding: "utf8",
     env: { ...process.env, DEPLOY_PATH: deployPath }
@@ -52,15 +61,38 @@ try {
   rmSync(invalidDeployPath, { recursive: true, force: true });
 }
 
+const agentPepperDeployPath = mkdtempSync(path.join(tmpdir(), "chordv-agent-pepper-"));
+try {
+  const startScriptPath = path.join(agentPepperDeployPath, "start.sh");
+  writeFileSync(startScriptPath, "#!/usr/bin/env bash\nexport CHORDV_JWT_SECRET=existing\nnode api.js\n", "utf8");
+
+  const initialInstall = runAgentPepperInstaller(agentPepperDeployPath);
+  assert.equal(initialInstall.status, 0, initialInstall.stderr || initialInstall.stdout);
+  const installedScript = readFileSync(startScriptPath, "utf8");
+  const installedPepper = installedScript.match(/^export CHORDV_AGENT_TOKEN_PEPPER=([0-9a-f]{64})$/m)?.[1];
+  assert.ok(installedPepper, "Agent pepper installer did not write a 32-byte hexadecimal value");
+
+  const preserveExisting = runAgentPepperInstaller(agentPepperDeployPath);
+  assert.equal(preserveExisting.status, 0, preserveExisting.stderr || preserveExisting.stdout);
+  assert.match(preserveExisting.stdout, /preserving it/);
+  assert.equal(readFileSync(startScriptPath, "utf8"), installedScript);
+} finally {
+  rmSync(agentPepperDeployPath, { recursive: true, force: true });
+}
+
 const workflow = readFileSync(path.join(repoRoot, ".github/workflows/deploy-baota.yml"), "utf8");
 assert.doesNotMatch(workflow, /secrets\.CHORDV_PANEL_PASSWORD_MASTER_KEY/);
 
 const deployScript = readFileSync(path.join(repoRoot, "scripts/deploy-baota.sh"), "utf8");
 const preflightCall = deployScript.search(/\r?\nconfigure_remote_panel_password_master_key\r?\n/);
+const agentPepperPreflightCall = deployScript.search(/\r?\nconfigure_remote_agent_token_pepper\r?\n/);
 const buildStart = deployScript.search(/\r?\npnpm --filter @chordv\/shared build/);
 assert.ok(preflightCall >= 0, "deployment secret preflight call is missing");
+assert.ok(agentPepperPreflightCall > preflightCall, "Agent token pepper preflight must run after panel key preflight");
 assert.ok(buildStart > preflightCall, "deployment secret preflight must run before builds and file sync");
+assert.ok(buildStart > agentPepperPreflightCall, "Agent token pepper preflight must run before builds and file sync");
 assert.match(deployScript, /cat scripts\/install-panel-password-key\.py/);
+assert.match(deployScript, /cat scripts\/install-agent-token-pepper\.py/);
 assert.match(deployScript, /scripts\/prisma-migrate-with-baseline\.mjs/);
 assert.match(deployScript, /export DEPLOY_PATH; python3 -/);
 assert.doesNotMatch(deployScript, /ensure_panel_password_master_key/);

@@ -48,10 +48,12 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { AdminRuntimeEventsService } from "./admin-runtime-events.service";
 import { AuthSessionService } from "./auth-session.service";
 import { PrismaService } from "./prisma.service";
-import { RuntimeSessionService } from "./runtime-session.service";
+import { readMemberUsedTrafficGb } from "./member-traffic-usage";
+import { RuntimeSessionService, assertDirectTerminalWatermarksSettled } from "./runtime-session.service";
 import { runWithSubscriptionOwnerLock, runWithSubscriptionUsageLock } from "./usage-lock.utils";
 import { buildSnapshotKey, DEFAULT_MAX_CONCURRENT_SESSIONS } from "./runtime-session.utils";
 import { createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
+import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { isPrismaCodedError, toPrismaTransientHttpError } from "./prisma-error.utils";
 import {
   isEffectiveSubscription,
@@ -70,6 +72,8 @@ import {
 const SUBSCRIPTION_FOLLOW_UP_BUDGET_MS = 300;
 const SUBSCRIPTION_DEFERRED_EFFECT_DELAY_MS = 50;
 const PANEL_SYNC_RECENT_ERROR_LIMIT = 1_000;
+const DIRECT_RESET_BOUNDARY_TIMEOUT_MS = 30_000;
+const DIRECT_RESET_BOUNDARY_POLL_MS = 250;
 
 type PanelSyncBestEffortResult = { ok: true } | { ok: false; errorMessage: string };
 type AdminSubscriptionEntity = Parameters<typeof toAdminSubscriptionRecord>[0];
@@ -416,6 +420,10 @@ export class AdminSubscriptionService {
       requestedUserId: typeof input.userId === "string" ? input.userId : undefined,
       allowTeamWideReset: false
     });
+    reset.panelSync = mergePanelSyncResults(
+      reset.panelSync,
+      await this.syncDirectSubscriptionAccessBestEffort(reset.subscription.id)
+    );
     await this.publishSubscriptionUpdatedEvent({
       subscriptionId: reset.subscription.id,
       userId: reset.subscription.userId,
@@ -717,6 +725,8 @@ export class AdminSubscriptionService {
           totalTrafficGb,
           usedTrafficGb,
           remainingTrafficGb,
+          totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+          usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
           expireAt,
           state,
           renewable: plan.renewable,
@@ -788,6 +798,7 @@ export class AdminSubscriptionService {
               data: {
                 totalTrafficGb,
                 remainingTrafficGb,
+                totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
                 expireAt: nextExpireAt,
                 state,
                 sourceAction: "renewed",
@@ -867,6 +878,7 @@ export class AdminSubscriptionService {
               planId: plan.id,
               totalTrafficGb,
               remainingTrafficGb,
+              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
               expireAt,
               renewable: plan.renewable,
               state,
@@ -938,6 +950,8 @@ export class AdminSubscriptionService {
               totalTrafficGb,
               usedTrafficGb,
               remainingTrafficGb,
+              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+              usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
               expireAt,
               state,
               sourceAction: "adjusted",
@@ -1738,6 +1752,8 @@ export class AdminSubscriptionService {
           totalTrafficGb,
           usedTrafficGb,
           remainingTrafficGb,
+          totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+          usedTrafficBytes: trafficGbNumberToBytes(usedTrafficGb),
           expireAt,
           state,
           renewable: plan.renewable,
@@ -1819,6 +1835,8 @@ export class AdminSubscriptionService {
       targetUserId = subscription.userId;
     }
 
+    await this.quiesceAndSettleDirectTrafficReset(subscription.id, targetUserId);
+
     let clearedBindingCount = 0;
     let updatedSubscription: AdminSubscriptionEntity | null = null;
     let panelSync: PanelSyncBestEffortResult = { ok: true };
@@ -1841,11 +1859,16 @@ export class AdminSubscriptionService {
             }
           });
           clearedBindingCount = bindings.length;
-          panelResetBindings = bindings;
+          for (const binding of bindings) {
+            if (binding.source === "direct" && binding.status === "disabled") {
+              await assertDirectTerminalWatermarksSettled(tx, binding);
+            }
+          }
+          panelResetBindings = bindings.filter((binding: any) => binding.source !== "direct");
           const baselineSamples = bindings.map((binding: any) => ({
             binding,
-            uplinkBytes: 0n,
-            downlinkBytes: 0n,
+            uplinkBytes: binding.source === "direct" ? binding.lastUplinkBytes : 0n,
+            downlinkBytes: binding.source === "direct" ? binding.lastDownlinkBytes : 0n,
             sampledAt: resetSampledAt
           }));
 
@@ -1869,6 +1892,7 @@ export class AdminSubscriptionService {
               ? resolveRenewExpireAt(lockedSubscription.expireAt, options.renewExpireAt ?? undefined)
               : options.expireAt ?? new Date(lockedSubscription.expireAt);
           let usedTrafficGb = 0;
+          let usedTrafficBytes = 0n;
 
           if (lockedSubscription.teamId) {
             await tx.trafficLedger.deleteMany({
@@ -1882,15 +1906,16 @@ export class AdminSubscriptionService {
             if (targetUserId) {
               const aggregate = await tx.trafficLedger.aggregate({
                 where: { subscriptionId: lockedSubscription.id },
-                _sum: { usedTrafficGb: true }
+                _sum: { usedTrafficGb: true, usedTrafficBytes: true }
               });
               usedTrafficGb = aggregate._sum.usedTrafficGb ?? 0;
+              usedTrafficBytes = aggregate._sum.usedTrafficBytes ?? 0n;
             }
           }
 
           panelResetQueuedAt = resetSampledAt;
           panelSync =
-            bindings.length > 0
+            panelResetBindings.length > 0
               ? {
                   ok: false,
                   errorMessage: "3x-ui traffic reset queued for background retry; local counters are already reset"
@@ -1904,6 +1929,8 @@ export class AdminSubscriptionService {
               totalTrafficGb,
               usedTrafficGb,
               remainingTrafficGb,
+              totalTrafficBytes: trafficGbNumberToBytes(totalTrafficGb),
+              usedTrafficBytes,
               expireAt,
               state: resolveSubscriptionState(
                 options.statePreference ?? (lockedSubscription.state === "paused" ? "paused" : "active"),
@@ -2769,6 +2796,55 @@ export class AdminSubscriptionService {
     );
   }
 
+  private async syncDirectSubscriptionAccessBestEffort(subscriptionId: string) {
+    return this.withSubscriptionFollowUpBudget(
+      `Direct subscription access sync for ${subscriptionId}`,
+      {
+        ok: false as const,
+        errorMessage: "Direct Agent 配额刷新仍在后台执行"
+      },
+      async () => {
+        try {
+          const queuedCount = await this.runtimeSessionService.queueDirectSubscriptionAccessSync(subscriptionId);
+          return queuedCount > 0
+            ? { ok: false as const, errorMessage: "Direct Agent 用户恢复命令已进入队列" }
+            : { ok: true as const };
+        } catch (error) {
+          return {
+            ok: false as const,
+            errorMessage: readErrorMessage(error, "Direct Agent 配额刷新失败")
+          };
+        }
+      }
+    );
+  }
+
+  private async quiesceAndSettleDirectTrafficReset(subscriptionId: string, userId: string | null) {
+    const bindingIds = await this.runtimeSessionService.quiesceDirectBindingsForTrafficReset(subscriptionId, userId);
+    if (bindingIds.length === 0) return;
+    const deadline = Date.now() + DIRECT_RESET_BOUNDARY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const bindings = await this.prisma.panelClientBinding.findMany({
+        where: { id: { in: bindingIds }, source: "direct" }
+      });
+      if (bindings.length !== bindingIds.length) {
+        throw new ConflictException("Direct 流量重置边界绑定发生变化，请重试");
+      }
+      let settled = true;
+      for (const binding of bindings) {
+        try {
+          await assertDirectTerminalWatermarksSettled(this.prisma, binding);
+        } catch {
+          settled = false;
+          break;
+        }
+      }
+      if (settled) return;
+      await new Promise((resolve) => setTimeout(resolve, DIRECT_RESET_BOUNDARY_POLL_MS));
+    }
+    throw new ServiceUnavailableException("等待 Direct 流量重置边界结清超时，请稍后重试");
+  }
+
   private async findCurrentPersonalSubscription(userId: string) {
     const rows = await runAdminSubscriptionLocalOperation(
       () => this.prisma.subscription.findMany({
@@ -2862,10 +2938,7 @@ export class AdminSubscriptionService {
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
-    const rows = await this.prisma.trafficLedger.findMany({
-      where: { teamId, userId, subscriptionId }
-    });
-    return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
+    return readMemberUsedTrafficGb(this.prisma, teamId, userId, subscriptionId);
   }
 
   private async ensureUserExists(userId: string) {

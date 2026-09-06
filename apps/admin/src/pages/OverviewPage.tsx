@@ -6,9 +6,13 @@ import { CountryFlag } from "../components/CountryFlag";
 import { StatusBadge } from "../features/shared/StatusBadge";
 import { formatDateTime } from "../utils/admin-format";
 import {
+  agentStatusColor,
+  nodeControlModeColor,
   nodePanelColor,
   nodeProbeColor,
   subscriptionStateColor,
+  translateAgentStatus,
+  translateNodeControlMode,
   translatePanelStatus,
   translateProbeStatus,
   translateSubscriptionState
@@ -28,9 +32,12 @@ export function OverviewPage(props: OverviewPageProps) {
     if (item.isActive === false) {
       return false;
     }
+    const controlMode = item.controlMode ?? "xui_primary";
+    const controlAbnormal = controlMode === "xui_primary"
+      ? item.panelStatus === "degraded" || (item.panelEnabled && item.panelStatus === "offline")
+      : !["online", "active"].includes(item.controlStatus ?? item.agent?.status ?? "unknown");
     return (
-      item.panelStatus === "degraded" ||
-      (item.panelEnabled && item.panelStatus === "offline") ||
+      controlAbnormal ||
       (item.panelSyncPendingCount ?? 0) > 0 ||
       (item.panelSyncRunningCount ?? 0) > 0 ||
       (item.panelSyncFailedCount ?? 0) > 0
@@ -201,7 +208,7 @@ function CompactNodeList({ items }: { items: AdminNodeRecordDto[] }) {
                   </Text>
                 </Group>
                 <Text size="xs" c="dimmed" lineClamp={1}>
-                  3x-ui：{translatePanelStatus(item.panelStatus, item.panelEnabled)} · 探测：{translateProbeStatus(item.probeStatus)}
+                  {buildNodeControlText(item)} · 探测：{translateProbeStatus(item.probeStatus)}
                   {buildNodePanelSyncText(item)}
                 </Text>
               </div>
@@ -227,6 +234,15 @@ function compactNodeStatus(item: AdminNodeRecordDto) {
     return { color: "yellow", label: "待同步" };
   }
 
+  const controlMode = item.controlMode ?? "xui_primary";
+  if (controlMode !== "xui_primary") {
+    const status = item.controlStatus ?? item.agent?.status;
+    return {
+      color: status === "online" || status === "active" ? nodeControlModeColor(controlMode) : agentStatusColor(status),
+      label: status === "online" || status === "active" ? translateNodeControlMode(controlMode) : `Agent ${translateAgentStatus(status)}`
+    };
+  }
+
   if (item.panelStatus === "degraded") {
     return { color: nodePanelColor(item.panelStatus, item.panelEnabled), label: "面板异常" };
   }
@@ -236,6 +252,14 @@ function compactNodeStatus(item: AdminNodeRecordDto) {
   }
 
   return { color: nodeProbeColor(item.probeStatus), label: translateProbeStatus(item.probeStatus) };
+}
+
+function buildNodeControlText(item: AdminNodeRecordDto) {
+  const controlMode = item.controlMode ?? "xui_primary";
+  if (controlMode === "xui_primary") {
+    return `3X-UI：${translatePanelStatus(item.panelStatus, item.panelEnabled)}`;
+  }
+  return `${translateNodeControlMode(controlMode)}：${translateAgentStatus(item.controlStatus ?? item.agent?.status)}`;
 }
 
 function buildNodePanelSyncText(item: AdminNodeRecordDto) {

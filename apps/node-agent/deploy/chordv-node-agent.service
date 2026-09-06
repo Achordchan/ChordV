@@ -1,0 +1,25 @@
+[Unit]
+Description=ChordV Node Agent
+After=network-online.target xray.service
+Wants=network-online.target
+Requires=xray.service
+
+[Service]
+Type=simple
+User=chordv-agent
+Group=chordv-agent
+WorkingDirectory=/opt/chordv-node-agent
+EnvironmentFile=/etc/chordv/node-agent.env
+ExecStart=/usr/bin/node /opt/chordv-node-agent/dist/src/main.js
+ExecStartPre=/usr/bin/node --version
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/chordv-node-agent
+
+[Install]
+WantedBy=multi-user.target

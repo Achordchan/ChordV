@@ -11,9 +11,11 @@ import {
   ServiceUnavailableException
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
+import { Prisma } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
 import { Client as PgClient } from "pg";
 import type {
+  AgentCommandDto,
   ConnectRequestDto,
   GeneratedRuntimeConfigDto,
   TeamMemberRole,
@@ -27,6 +29,7 @@ import { ClientRuntimeEventsService } from "./client-runtime-events.service";
 import { ClientRoutingRuleService } from "./client-routing-rule.service";
 import { MeteringIncidentService } from "./metering-incident.service";
 import { PrismaService } from "./prisma.service";
+import { readMemberUsedTrafficGb } from "./member-traffic-usage";
 import { throwLocalReadAsServiceUnavailable, throwLocalSaveAsServiceUnavailable } from "./prisma-error.utils";
 import { toNodeSummary } from "./node-import.utils";
 import {
@@ -50,9 +53,13 @@ import {
 } from "./runtime-session.utils";
 import { pickCurrentSubscription } from "./subscription.utils";
 import { runWithSubscriptionUsageLock } from "./usage-lock.utils";
+import { canServeManagedClients, usesAgentControl, usesAgentShadowMetering, type NodeControlModeValue } from "./node-control-mode";
 import { createOrRefreshLeaseRevocationJob, createOrRefreshPanelSyncJob } from "./panel-sync-job.utils";
+import { createOrRefreshNodeCommandJob } from "./node-command-job.utils";
 import { decryptPanelPassword } from "./panel-password-crypto";
+import { trafficGbNumberToBytes } from "./traffic-bytes.utils";
 import { XuiService } from "../xui/xui.service";
+import { AgentEventsService } from "../agent/agent-events.service";
 
 type ResolvedSubscriptionAccess = {
   subscription: {
@@ -86,6 +93,7 @@ type ActiveRuntimeUsageContext = {
 
 const NODE_PANEL_ACCESS_SYNC_TIMEOUT_MS = 300;
 const NODE_PANEL_BINDING_SUBSCRIPTION_TIMEOUT_MS = 300;
+const DIRECT_OFFLINE_ALLOWANCE_BYTES = 64n * 1024n * 1024n;
 const CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS = Number(process.env.CHORDV_CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS ?? 1500);
 
 type PanelBindingFilter = {
@@ -127,7 +135,8 @@ export class RuntimeSessionService {
     private readonly clientRuntimeEventsService: ClientRuntimeEventsService,
     private readonly clientRoutingRuleService: ClientRoutingRuleService,
     private readonly adminRuntimeEventsService: AdminRuntimeEventsService,
-    private readonly xuiService: XuiService
+    private readonly xuiService: XuiService,
+    private readonly agentEventsService: AgentEventsService
   ) {}
 
   private async runWithUserLeaseLock<T>(userId: string, task: () => Promise<T>) {
@@ -217,7 +226,7 @@ export class RuntimeSessionService {
     if (!node.isActive) {
       throw new ForbiddenException("当前节点已禁用");
     }
-    if (!node.panelEnabled) {
+    if (!canServeManagedClients(node.controlMode, node.panelEnabled)) {
       throw new ForbiddenException("当前节点未启用面板接入");
     }
 
@@ -255,7 +264,7 @@ export class RuntimeSessionService {
           nodeId: request.nodeId,
           node: {
             isActive: true,
-            panelEnabled: true
+            OR: [{ panelEnabled: true }, { controlMode: "direct_primary" }]
           }
         }
       });
@@ -277,7 +286,7 @@ export class RuntimeSessionService {
       );
       await this.evictExceededUserLeases(user.id, concurrentLimit, 1);
 
-      return this.connectWithXui(node, user, access, request, policy, customRoutingRules);
+      return this.connectWithManagedNode(node, user, access, request, policy, customRoutingRules);
       });
     });
     } catch (error) {
@@ -484,6 +493,41 @@ export class RuntimeSessionService {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId);
   }
 
+  async queueDirectSubscriptionAccessSync(subscriptionId: string) {
+    return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
+      ensureOnly: true,
+      directOnly: true
+    });
+  }
+
+  async quiesceDirectBindingsForTrafficReset(subscriptionId: string, userId?: string | null) {
+    const outcome = await this.prisma.$transaction(async (writer) => {
+      const bindings = await writer.panelClientBinding.findMany({
+        where: {
+          subscriptionId,
+          source: "direct",
+          status: "active",
+          ...(userId ? { userId } : {})
+        }
+      });
+      const commands: Array<{ agentId: string; command: AgentCommandDto }> = [];
+      for (const binding of bindings) {
+        const queued = await this.queueDirectBindingCommand(writer, binding, "DISABLE_USER", {
+          bindingId: binding.id,
+          userKey: binding.panelClientEmail,
+          email: binding.panelClientEmail,
+          uuid: binding.panelClientId,
+          reason: "traffic_reset_boundary"
+        }, { publish: false });
+        commands.push(queued);
+      }
+      await markPanelBindingsDisabledLocally(writer, bindings.map((binding) => binding.id));
+      return { bindingIds: bindings.map((binding) => binding.id), commands };
+    });
+    for (const queued of outcome.commands) this.agentEventsService.publish(queued.agentId, queued.command);
+    return outcome.bindingIds;
+  }
+
   async queueSubscriptionPanelAccessSyncTx(writer: any, subscriptionId: string) {
     return this.syncSubscriptionPanelAccessLocked(subscriptionId, {
       writer,
@@ -496,10 +540,12 @@ export class RuntimeSessionService {
     options?: {
       writer?: any;
       ensureOnly?: boolean;
+      directOnly?: boolean;
     }
   ) {
     const writer = options?.writer ?? this.prisma;
     const ensureOnly = options?.ensureOnly ?? false;
+    const directOnly = options?.directOnly ?? false;
     const subscription = await writer.subscription.findUnique({
       where: { id: subscriptionId },
       include: {
@@ -529,7 +575,7 @@ export class RuntimeSessionService {
 
     const allowedNodeIds = new Set(
       subscription.nodeAccesses
-        .filter((item: any) => item.node.isActive && item.node.panelEnabled)
+        .filter((item: any) => item.node.isActive && canServeManagedClients(item.node.controlMode, item.node.panelEnabled))
         .map((item: any) => item.nodeId)
     );
     const bindings = ensureOnly
@@ -616,7 +662,10 @@ export class RuntimeSessionService {
 
     for (const target of targets) {
       for (const access of subscription.nodeAccesses) {
-        if (!access.node.isActive || !access.node.panelEnabled) {
+        if (directOnly && access.node.controlMode !== "direct_primary") {
+          continue;
+        }
+        if (!access.node.isActive || !canServeManagedClients(access.node.controlMode, access.node.panelEnabled)) {
           continue;
         }
         const binding = await this.ensurePanelClientBinding(writer, {
@@ -629,7 +678,8 @@ export class RuntimeSessionService {
             panelUsername: access.node.panelUsername,
             panelPassword: access.node.panelPassword,
             panelInboundId: access.node.panelInboundId,
-            panelEnabled: access.node.panelEnabled
+            panelEnabled: access.node.panelEnabled,
+            controlMode: access.node.controlMode
           },
           subscriptionId,
           userId: target.userId,
@@ -779,7 +829,8 @@ export class RuntimeSessionService {
             panelBaseUrl: true,
             panelApiBasePath: true,
             panelUsername: true,
-            panelPassword: true
+            panelPassword: true,
+            controlMode: true
           }
         }
       }
@@ -792,6 +843,16 @@ export class RuntimeSessionService {
 
     for (const binding of bindings) {
       const snapshot = binding.node ?? {};
+      if (binding.source === "direct") {
+        await this.queueDirectBindingCommand(writer, binding, "DISABLE_USER", {
+          bindingId: binding.id,
+          userKey: binding.panelClientEmail,
+          email: binding.panelClientEmail,
+          uuid: binding.panelClientId
+        });
+        queuedCount += 1;
+        continue;
+      }
       const dedupeKey = `disable:${binding.id}`;
       await createOrRefreshPanelSyncJob(writer, dedupeKey, {
         create: {
@@ -837,6 +898,10 @@ export class RuntimeSessionService {
     }
 
     await markPanelBindingsDisabledLocally(writer, bindings.map((binding: { id: string }) => binding.id));
+    await this.bumpShadowAgentConfigRevision(
+      writer,
+      bindings.filter((binding: any) => binding.node?.controlMode === "shadow_direct").map((binding: any) => binding.nodeId)
+    );
     this.publishSyncQueueUpdatedBestEffort({
       nodeId: filter?.nodeIds?.[0] ?? bindings[0]?.nodeId ?? null,
       subscriptionId
@@ -869,7 +934,8 @@ export class RuntimeSessionService {
             panelBaseUrl: true,
             panelApiBasePath: true,
             panelUsername: true,
-            panelPassword: true
+            panelPassword: true,
+            controlMode: true
           }
         }
       }
@@ -881,6 +947,16 @@ export class RuntimeSessionService {
     const now = new Date();
     let queuedCount = 0;
     for (const binding of bindings) {
+      if (binding.source === "direct") {
+        await this.queueDirectBindingCommand(writer, binding, "REMOVE_USER", {
+          bindingId: binding.id,
+          userKey: binding.panelClientEmail,
+          email: binding.panelClientEmail,
+          uuid: binding.panelClientId
+        });
+        queuedCount += 1;
+        continue;
+      }
       const dedupeKey = `delete:${binding.id}`;
       await createOrRefreshPanelSyncJob(writer, dedupeKey, {
         create: {
@@ -937,9 +1013,15 @@ export class RuntimeSessionService {
         status: { in: ["active", "disabled"] }
       },
       data: {
-        status: "deleted"
+        status: "deleted",
+        directDisabledAt: now,
+        directDisableWatermarks: Prisma.DbNull
       }
     });
+    await this.bumpShadowAgentConfigRevision(
+      writer,
+      bindings.filter((binding: any) => binding.node?.controlMode === "shadow_direct").map((binding: any) => binding.nodeId)
+    );
     this.publishSyncQueueUpdatedBestEffort({
       nodeId: filter?.nodeIds?.[0] ?? bindings[0]?.nodeId ?? null,
       subscriptionId
@@ -1599,12 +1681,14 @@ export class RuntimeSessionService {
           where: { id: job.bindingId },
           data:
             job.action === "disable_client"
-              ? { status: "disabled" }
+              ? { status: "disabled", directDisabledAt: new Date(), directDisableWatermarks: Prisma.DbNull }
               : job.action === "delete_client"
                 ? { status: "deleted" }
                 : job.action === "ensure_client"
                   ? {
                       status: "active",
+                      directDisabledAt: null,
+                      directDisableWatermarks: Prisma.DbNull,
                       panelClientId: ensuredPanelClientId ?? job.panelClientId,
                       panelInboundId: ensuredPanelInboundId ?? job.panelInboundId ?? 0,
                       lastSyncedAt: new Date()
@@ -2157,7 +2241,7 @@ export class RuntimeSessionService {
     this.publishSyncQueueUpdatedBestEffort({ nodeId, subscriptionId: null });
   }
 
-  private async connectWithXui(
+  private async connectWithManagedNode(
     node: {
       id: string;
       name: string;
@@ -2184,6 +2268,7 @@ export class RuntimeSessionService {
       panelPassword: string | null;
       panelInboundId: number | null;
       panelEnabled: boolean;
+      controlMode: NodeControlModeValue;
     },
     user: UserProfileDto,
     access: ResolvedSubscriptionAccess,
@@ -2286,7 +2371,7 @@ export class RuntimeSessionService {
       teamId: subscription.teamId
     };
 
-    await this.updateConnectedNodeRuntimeBestEffort(node.id, effectiveNode, inboundRuntime);
+    await this.updateConnectedNodeRuntimeBestEffort(node.id, effectiveNode, inboundRuntime, node.controlMode);
     if (inboundRuntime.ok) {
       await this.resolveNodeMeteringIncidentBestEffort(subscription.id, node.id);
     }
@@ -2307,7 +2392,8 @@ export class RuntimeSessionService {
       spiderX: string;
       mldsa65Verify?: string | null;
     },
-    inboundRuntime: { ok: boolean; errorMessage?: string | null }
+    inboundRuntime: { ok: boolean; errorMessage?: string | null },
+    controlMode: NodeControlModeValue
   ) {
     try {
       await this.prisma.node.update({
@@ -2323,8 +2409,14 @@ export class RuntimeSessionService {
           fingerprint: effectiveNode.fingerprint,
           spiderX: effectiveNode.spiderX,
           mldsa65Verify: effectiveNode.mldsa65Verify ?? "",
-          panelStatus: inboundRuntime.ok ? "online" : "degraded",
-          panelError: inboundRuntime.ok ? null : inboundRuntime.errorMessage
+          ...(usesAgentControl(controlMode)
+            ? {
+                controlStatus: inboundRuntime.ok ? "online" : "degraded"
+              }
+            : {
+                panelStatus: inboundRuntime.ok ? "online" : "degraded",
+                panelError: inboundRuntime.ok ? null : inboundRuntime.errorMessage
+              })
         }
       });
     } catch (error) {
@@ -2357,9 +2449,27 @@ export class RuntimeSessionService {
       panelApiBasePath: string | null;
       panelUsername: string | null;
       panelPassword: string | null;
+      controlMode: NodeControlModeValue;
     },
     panelInboundId: number
   ) {
+    if (usesAgentControl(node.controlMode)) {
+      this.assertCachedNodeRuntimeUsable(node);
+      return {
+        ok: true as const,
+        errorMessage: null,
+        serverHost: node.serverHost,
+        serverPort: node.serverPort,
+        uuid: node.uuid,
+        flow: node.flow,
+        realityPublicKey: node.realityPublicKey,
+        shortId: node.shortId,
+        serverName: node.serverName,
+        fingerprint: node.fingerprint,
+        spiderX: node.spiderX,
+        mldsa65Verify: node.mldsa65Verify ?? null
+      };
+    }
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const readTask = this.xuiService.getInboundRuntime({
       id: node.id,
@@ -2368,6 +2478,7 @@ export class RuntimeSessionService {
       panelUsername: node.panelUsername,
       panelPassword: node.panelPassword,
       panelInboundId,
+      realityPublicKey: node.realityPublicKey,
       panelRequestTimeoutMs: CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS,
       panelAbortSignal: AbortSignal.timeout(CONNECT_PANEL_RUNTIME_READ_TIMEOUT_MS)
     });
@@ -2435,6 +2546,7 @@ export class RuntimeSessionService {
       panelPassword: string | null;
       panelInboundId: number | null;
       panelEnabled: boolean;
+      controlMode: NodeControlModeValue;
     };
     subscriptionId: string;
     userId: string;
@@ -2443,7 +2555,7 @@ export class RuntimeSessionService {
     userDisplayName: string;
     expireAt: Date;
   }) {
-    if (!input.node.panelEnabled) {
+    if (!canServeManagedClients(input.node.controlMode, input.node.panelEnabled)) {
       throw new BadRequestException("节点未启用 3x-ui 面板接入");
     }
 
@@ -2474,6 +2586,7 @@ export class RuntimeSessionService {
         id: string;
         name: string;
         flow: string;
+        controlMode: NodeControlModeValue;
         panelBaseUrl: string | null;
         panelApiBasePath: string | null;
         panelUsername: string | null;
@@ -2499,6 +2612,15 @@ export class RuntimeSessionService {
     const resolvedPanelInboundId = panelInboundId ?? 0;
 
     if (existing) {
+      if ((existing.status === "deleted" || existing.status === "disabled") && usesAgentControl(input.node.controlMode)) {
+        await assertDirectTerminalWatermarksSettled(writer, existing);
+      }
+      const refreshShadowConfig = usesAgentShadowMetering(input.node.controlMode) && (
+        existing.status !== "active" ||
+        existing.panelClientEmail !== panelClientEmail ||
+        existing.panelClientId !== panelClientId ||
+        existing.teamId !== input.teamId
+      );
       const binding = await writer.panelClientBinding.update({
         where: { id: existing.id },
         data: {
@@ -2506,7 +2628,10 @@ export class RuntimeSessionService {
           panelClientId,
           panelInboundId: existing.status === "deleted" ? resolvedPanelInboundId : panelInboundId ?? existing.panelInboundId,
           status: "active",
-          teamId: input.teamId
+          directDisabledAt: null,
+          directDisableWatermarks: Prisma.DbNull,
+          teamId: input.teamId,
+          source: usesAgentControl(input.node.controlMode) ? "direct" : "xui"
         }
       });
       const snapshot = await writer.trafficSnapshot.findUnique({
@@ -2527,6 +2652,7 @@ export class RuntimeSessionService {
         });
       }
       await this.queuePanelEnsureJobForBinding(writer, binding, input);
+      if (refreshShadowConfig) await this.bumpShadowAgentConfigRevision(writer, [binding.nodeId]);
       return { ...binding, cachedRemoteClient: existing.status !== "deleted" };
     }
 
@@ -2542,7 +2668,8 @@ export class RuntimeSessionService {
       lastUplinkBytes: baseline.uplinkBytes,
       lastDownlinkBytes: baseline.downlinkBytes,
       lastSyncedAt: baseline.sampledAt,
-      status: "active"
+      status: "active",
+      source: usesAgentControl(input.node.controlMode) ? "direct" : "xui"
     });
     const binding = recovered.binding;
     await this.ensureTrafficSnapshotBaseline(writer, {
@@ -2555,7 +2682,19 @@ export class RuntimeSessionService {
       sampledAt: baseline.sampledAt
     });
     await this.queuePanelEnsureJobForBinding(writer, binding, input);
+    if (usesAgentShadowMetering(input.node.controlMode) && !recovered.cachedRemoteClient) {
+      await this.bumpShadowAgentConfigRevision(writer, [binding.nodeId]);
+    }
     return { ...binding, cachedRemoteClient: recovered.cachedRemoteClient };
+  }
+
+  private async bumpShadowAgentConfigRevision(writer: any, nodeIds: string[]) {
+    const uniqueNodeIds = Array.from(new Set(nodeIds.filter(Boolean)));
+    if (uniqueNodeIds.length === 0) return;
+    await writer.node.updateMany({
+      where: { id: { in: uniqueNodeIds }, controlMode: "shadow_direct" },
+      data: { agentConfigRevision: { increment: 1n } }
+    });
   }
 
   private async queuePanelEnsureJobForBinding(
@@ -2569,16 +2708,38 @@ export class RuntimeSessionService {
       panelClientEmail: string;
       panelClientId: string;
       panelInboundId: number;
+      source?: "xui" | "direct";
     },
     input: {
       node: {
+        flow: string;
         panelBaseUrl: string | null;
         panelApiBasePath: string | null;
         panelUsername: string | null;
         panelPassword: string | null;
       };
+      expireAt: Date;
     }
   ) {
+    if (binding.source === "direct") {
+      const subscription = await writer.subscription.findUnique({
+        where: { id: binding.subscriptionId },
+        select: { totalTrafficBytes: true, usedTrafficBytes: true, remainingTrafficGb: true }
+      });
+      if (!subscription) {
+        throw new NotFoundException("Direct 用户绑定对应的订阅不存在");
+      }
+      await this.queueDirectBindingCommand(writer, binding, "ENSURE_USER", {
+        bindingId: binding.id,
+        userKey: binding.panelClientEmail,
+        email: binding.panelClientEmail,
+        uuid: binding.panelClientId,
+        flow: input.node.flow,
+        expiresAt: input.expireAt.toISOString(),
+        ...buildDirectUserQuotaPayload(subscription)
+      });
+      return;
+    }
     const now = new Date();
     const dedupeKey = `ensure:${binding.id}`;
     await createOrRefreshPanelSyncJob(writer, dedupeKey, {
@@ -2627,6 +2788,83 @@ export class RuntimeSessionService {
     });
   }
 
+  private async queueDirectBindingCommand(
+    writer: any,
+    binding: {
+      id: string;
+      nodeId: string;
+      subscriptionId: string;
+      userId: string | null;
+      teamId: string | null;
+      panelClientEmail: string;
+      panelClientId: string;
+    },
+    commandType: "ENSURE_USER" | "ENABLE_USER" | "DISABLE_USER" | "REMOVE_USER" | "RECONCILE_USERS" | "REFRESH_QUOTA",
+    payload: Record<string, unknown>,
+    options: { publish?: boolean } = {}
+  ) {
+    const nodeRevision = await writer.node.update({
+      where: { id: binding.nodeId },
+      data: { agentConfigRevision: { increment: 1n } },
+      select: { agentConfigRevision: true }
+    });
+    const updated = await writer.panelClientBinding.update({
+      where: { id: binding.id },
+      data: {
+        source: "direct",
+        directRevision: nodeRevision.agentConfigRevision
+      }
+    });
+    const agent = await writer.nodeAgent.findFirst({
+      where: { nodeId: binding.nodeId, revokedAt: null },
+      orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }]
+    });
+    if (!agent) {
+      throw new ServiceUnavailableException("该节点尚未配置有效的 Node Agent 凭据");
+    }
+    const dedupeKey = `agent:${commandType.toLowerCase()}:${binding.id}:${updated.directRevision.toString()}`;
+    const now = new Date();
+    const job = await createOrRefreshNodeCommandJob(writer, dedupeKey, {
+      create: {
+        id: randomUUID(),
+        dedupeKey,
+        nodeId: binding.nodeId,
+        agentId: agent.id,
+        commandType,
+        targetRevision: updated.directRevision,
+        payload,
+        status: "pending",
+        nextRunAt: now
+      },
+      update: {
+        agentId: agent.id,
+        commandType,
+        targetRevision: updated.directRevision,
+        payload,
+        status: "pending",
+        nextRunAt: now,
+        lockedAt: null,
+        completedAt: null,
+        attempts: 0,
+        lastError: null,
+        result: null
+      }
+    });
+    const command = {
+      commandId: job.id,
+      type: job.commandType,
+      targetRevision: job.targetRevision.toString(),
+      payload: job.payload as Record<string, unknown>,
+      createdAt: job.createdAt.toISOString()
+    } satisfies AgentCommandDto;
+    if (options.publish !== false) this.agentEventsService.publish(agent.id, command);
+    this.publishSyncQueueUpdatedBestEffort({
+      nodeId: binding.nodeId,
+      subscriptionId: binding.subscriptionId
+    });
+    return { agentId: agent.id, command };
+  }
+
   private async createPanelClientBindingOrRecover(writer: any, data: {
     id: string;
     subscriptionId: string;
@@ -2640,6 +2878,8 @@ export class RuntimeSessionService {
     lastDownlinkBytes: bigint;
     lastSyncedAt: Date;
     status: string;
+    source: "xui" | "direct";
+    directRevision?: bigint;
   }) {
     const existing: any = await writer.panelClientBinding.findFirst({
       where: {
@@ -3023,15 +3263,66 @@ export class RuntimeSessionService {
   }
 
   private async getMemberUsedTrafficGb(teamId: string, userId: string, subscriptionId: string) {
-    const rows = await this.prisma.trafficLedger.findMany({
-      where: { teamId, userId, subscriptionId }
-    });
-    return rows.reduce((sum, item) => sum + item.usedTrafficGb, 0);
+    return readMemberUsedTrafficGb(this.prisma, teamId, userId, subscriptionId);
   }
 
   private async resolveActiveUserFromToken(token?: string): Promise<UserProfileDto> {
     return this.authSessionService.authenticateAccessToken(token);
   }
+}
+
+export function buildDirectUserQuotaPayload(subscription: {
+  totalTrafficBytes: bigint;
+  usedTrafficBytes: bigint;
+  remainingTrafficGb: number;
+}) {
+  const quotaRemainingBytes = subscription.totalTrafficBytes > 0n
+    ? subscription.totalTrafficBytes > subscription.usedTrafficBytes
+      ? subscription.totalTrafficBytes - subscription.usedTrafficBytes
+      : 0n
+    : trafficGbNumberToBytes(subscription.remainingTrafficGb);
+  return {
+    quotaRemainingBytes: quotaRemainingBytes.toString(),
+    offlineAllowanceBytes: DIRECT_OFFLINE_ALLOWANCE_BYTES.toString()
+  };
+}
+
+export async function assertDirectTerminalWatermarksSettled(
+  writer: any,
+  binding: { id: string; nodeId: string; directDisableWatermarks: Prisma.JsonValue | null }
+) {
+  const watermarks = parseDirectDisableWatermarks(binding.directDisableWatermarks);
+  if (!watermarks) {
+    throw new ConflictException(`Direct 用户停用水位尚未确认：${binding.id}`);
+  }
+  for (const watermark of watermarks) {
+    const batch = await writer.nodeUsageBatch.findUnique({
+      where: {
+        nodeId_bootId_sequence: {
+          nodeId: binding.nodeId,
+          bootId: watermark.bootId,
+          sequence: watermark.sequenceThrough
+        }
+      },
+      select: { accountedAt: true }
+    });
+    if (!batch?.accountedAt) {
+      throw new ConflictException(`Direct 用户停用前流量批次尚未结清：${binding.id}`);
+    }
+  }
+}
+
+function parseDirectDisableWatermarks(value: Prisma.JsonValue | null) {
+  if (!Array.isArray(value)) return null;
+  const result: Array<{ bootId: string; sequenceThrough: bigint }> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const bootId = Reflect.get(item, "bootId");
+    const sequenceThrough = Reflect.get(item, "sequenceThrough");
+    if (typeof bootId !== "string" || typeof sequenceThrough !== "string" || !/^(0|[1-9]\d*)$/.test(sequenceThrough)) return null;
+    result.push({ bootId, sequenceThrough: BigInt(sequenceThrough) });
+  }
+  return result;
 }
 
 function buildXuiRuntimeFromLease(
@@ -3339,6 +3630,7 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
   if (bindingIds.length === 0) {
     return;
   }
+  const disabledAt = new Date();
   if (typeof writer.panelClientBinding.updateMany === "function") {
     await writer.panelClientBinding.updateMany({
       where: {
@@ -3346,7 +3638,9 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
         status: "active"
       },
       data: {
-        status: "disabled"
+        status: "disabled",
+        directDisabledAt: disabledAt,
+        directDisableWatermarks: Prisma.DbNull
       }
     });
     return;
@@ -3356,7 +3650,7 @@ async function markPanelBindingsDisabledLocally(writer: any, bindingIds: string[
       bindingIds.map((id) =>
         writer.panelClientBinding.update({
           where: { id },
-          data: { status: "disabled" }
+          data: { status: "disabled", directDisabledAt: disabledAt, directDisableWatermarks: Prisma.DbNull }
         })
       )
     );

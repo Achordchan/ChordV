@@ -16,6 +16,7 @@ type XuiNodeConfig = {
   panelUsername: string | null;
   panelPassword: string | null;
   panelInboundId: number | null;
+  realityPublicKey?: string | null;
   panelRequestTimeoutMs?: number | null;
   panelAbortSignal?: AbortSignal | null;
 };
@@ -382,7 +383,8 @@ export class XuiService {
     const realityPublicKey =
       readString(realityDerivedSettings?.publicKey) ??
       readString(realitySettings?.publicKey) ??
-      readString(streamSettings?.publicKey);
+      readString(streamSettings?.publicKey) ??
+      readString(node.realityPublicKey);
     const shortId =
       shortIds[0] ??
       readString(realityDerivedSettings?.shortId) ??

@@ -9,6 +9,7 @@ import { SystemUpdateService } from "./modules/common/system-update.service";
 import { resolveCorsOrigin } from "./cors";
 import { forceHttpsMiddleware } from "./https-enforcement";
 import { LoggingExceptionFilter } from "./logging-exception.filter";
+import { assertAgentTokenPepperReadyForProduction } from "./modules/agent/agent.service";
 import {
   assertNoPlaintextPanelPasswordsInProduction,
   assertPanelPasswordCryptoReadyForProduction,
@@ -19,6 +20,7 @@ async function bootstrap() {
   await assertPrismaMigrationBaselineOrExit();
   try {
     assertPanelPasswordCryptoReadyForProduction();
+    assertAgentTokenPepperReadyForProduction();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
@@ -77,9 +79,14 @@ async function bootstrap() {
   app.useGlobalFilters(new LoggingExceptionFilter());
 
   const port = Number(process.env.CHORDV_API_PORT ?? 3000);
-  await app.listen(port);
+  const host = process.env.CHORDV_API_HOST?.trim();
+  if (host) {
+    await app.listen(port, host);
+  } else {
+    await app.listen(port);
+  }
   configureHttpServerTimeouts(app.getHttpServer());
-  console.log(`ChordV API listening on http://localhost:${port}/api`);
+  console.log(`ChordV API listening on http://${host || "localhost"}:${port}/api`);
 }
 
 function configureHttpServerTimeouts(server: {
