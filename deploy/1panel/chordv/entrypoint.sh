@@ -401,22 +401,25 @@ prune_snapshots() {
   return 0
 }
 
-snapshot_service_config() {
-  # Emit the BODY of a libpq service-file section (key=value lines) for the
-  # pre-migration snapshot connection. libpq service files natively accept
-  # every connection parameter (sslmode, keepalives_*, target_session_attrs,
-  # client_encoding, …), so valid URL options pass through instead of being
-  # gated by a narrow allowlist; invalid keywords are rejected by libpq itself
-  # when the dump runs. URL query parameters override the authority components,
-  # matching libpq's own URI semantics. IPv6 authority hosts keep their
-  # brackets stripped ("host=2001:db8::1", not "[…]"). Prisma-only options are
-  # dropped; control characters cannot be represented and fail closed.
-  # Credentials NEVER reach stdout of a logging caller or pg_dump's argv: the
-  # password travels only inside a 0600 service file on ephemeral storage.
-  # Never print parser errors, which may echo the full connection string.
+snapshot_dump_invocation() {
+  # Emit the pg_dump invocation parts for the pre-migration snapshot, separated
+  # by \x1f (rejected in all fields, so it cannot collide): the connection URI
+  # with its password stripped, then the exact decoded password ("" if absent).
+  #
+  # The URI is passed through BYTE-VERBATIM except for two removals — the
+  # password and Prisma-only query options — so libpq itself resolves every
+  # connection semantic (service/servicefile selection, PGPORT/PGHOST/PGDATABASE
+  # defaults, unix sockets, IPv6 hosts, keepalives, target_session_attrs, ...).
+  # No URI re-serialization on our side: each earlier attempt to translate the
+  # URI into another representation (positional args, a generated service file)
+  # lost some valid corner and broke updates. The password travels through the
+  # dump subshell's ENVIRONMENT, which preserves exact bytes (including
+  # leading/trailing whitespace) and never appears in /proc/<pid>/cmdline,
+  # `docker top` or process telemetry. A URL that puts a secret in its query
+  # (sslpassword) or mixes a password with passfile fails closed instead of
+  # leaking or dropping one. Never print parser errors, which may echo the
+  # connection string.
   "$NODE_BIN" - <<'NODE'
-const fs = require("node:fs");
-const os = require("node:os");
 try {
   const raw = process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL || process.env.DATABASE_URL;
   const url = new URL(raw);
@@ -425,94 +428,54 @@ try {
     "schema", "connection_limit", "pool_timeout", "socket_timeout", "pgbouncer",
     "statement_cache_size", "sslaccept", "sslidentity"
   ]);
-  const params = new Map();
-  // A ?service=name (optionally ?servicefile=path) query selects a libpq
-  // service section as the BASE configuration; it must not be written into the
-  // generated section (libpq rejects nested service specifications). The URL's
-  // own authority and other query parameters override the section, matching
-  // libpq's URI-over-service precedence.
-  let serviceName = null, serviceFile = null;
-  const index = raw.indexOf("?");
-  if (index >= 0) {
-    for (const part of raw.slice(index + 1).split("&")) {
+  const schemeEnd = raw.indexOf("://") + 3;
+  const authorityEnd = ["/", "?", "#"].reduce(
+    (end, ch) => {
+      const at = raw.indexOf(ch, schemeEnd);
+      return at === -1 ? end : Math.min(end, at);
+    },
+    raw.length
+  );
+  let authority = raw.slice(schemeEnd, authorityEnd);
+  const rest = raw.slice(authorityEnd);
+  // Strip ONLY the password from the authority; keep user/host/port bytes as-is.
+  const at = authority.lastIndexOf("@");
+  if (at >= 0) {
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.indexOf(":");
+    if (colon >= 0) authority = userinfo.slice(0, colon) + authority.slice(at);
+  }
+  let pathAndFragment = rest;
+  let query = "";
+  const queryIndex = rest.indexOf("?");
+  let hasPassfile = false;
+  if (queryIndex >= 0) {
+    const rawQuery = rest.slice(queryIndex + 1);
+    pathAndFragment = rest.slice(0, queryIndex);
+    const kept = [];
+    for (const part of rawQuery.split("&")) {
       if (!part) continue;
       const eq = part.indexOf("=");
       const key = decodeURIComponent(part.slice(0, eq < 0 ? part.length : eq));
       if (prismaOnly.has(key)) continue;
-      const value = eq < 0 ? "" : decodeURIComponent(part.slice(eq + 1));
-      if (key === "service") { serviceName = value; continue; }
-      if (key === "servicefile") { serviceFile = value; continue; }
-      params.set(key, value);
+      if (key === "sslpassword") throw new Error();
+      if (key === "passfile") hasPassfile = true;
+      kept.push(part);
     }
+    if (kept.length > 0) query = "?" + kept.join("&");
   }
-  const base = new Map();
-  if (serviceName !== null) {
-    if (!serviceName) throw new Error();
-    // Resolution order mirrors libpq: an explicit servicefile parameter, then
-    // PGSERVICEFILE, then ~/.pg_service.conf, then /etc/pg_service.conf.
-    const candidates = [
-      serviceFile,
-      process.env.PGSERVICEFILE,
-      require("node:path").join(os.homedir(), ".pg_service.conf"),
-      "/etc/pg_service.conf"
-    ].filter(Boolean);
-    const chosen = candidates.find((candidate) => { try { return fs.statSync(candidate).isFile(); } catch { return false; } });
-    if (!chosen) throw new Error();
-    let section = null, seen = false;
-    for (const rawLine of fs.readFileSync(chosen, "utf8").split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith("#")) continue;
-      const header = /^\[(.+)\]$/.exec(line);
-      if (header) { section = header[1].trim(); continue; }
-      const eq = line.indexOf("=");
-      if (eq <= 0 || section === null) throw new Error();
-      if (section !== serviceName) continue;
-      seen = true;
-      base.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
-    }
-    if (!seen) throw new Error();
-    if (base.has("service")) throw new Error();
-  }
-  const authority = new Map();
-  if (url.hostname) authority.set("host", decodeURIComponent(url.hostname).replace(/^\[|\]$/g, ""));
-  // Only fields the URI actually carries become service entries: an omitted
-  // port must keep libpq's normal PGPORT/default resolution instead of being
-  // pinned to 5432 here.
-  if (url.port) authority.set("port", decodeURIComponent(url.port));
-  if (url.pathname.length > 1) authority.set("dbname", decodeURIComponent(url.pathname.replace(/^\//, "")));
-  if (url.username) authority.set("user", decodeURIComponent(url.username));
-  if (url.password) authority.set("password", decodeURIComponent(url.password));
-  const merged = new Map([...base, ...authority, ...params]);
-  // No host/dbname requirement: libpq accepts URIs that omit them
-  // (postgresql:///chordv → default unix socket; postgresql://backup@db →
-  // database defaults to the user) and resolves PGHOST/PGPORT/PGDATABASE
-  // from the environment, exactly as the verbatim-URI passthrough did.
-  const lines = [];
-  for (const [key, value] of merged) {
-    if (/[\x00-\x1f\x7f]/.test(key) || /[\x00-\x1f\x7f]/.test(value)) throw new Error();
-    lines.push(`${key}=${value}`);
-  }
-  process.stdout.write(lines.join("\n"));
+  const hasPassword = url.password !== "";
+  // A password AND a passfile parameter are ambiguous precedence; refuse
+  // rather than silently drop one of them.
+  if (hasPassword && hasPassfile) throw new Error();
+  const password = hasPassword ? decodeURIComponent(url.password) : "";
+  if (/[\x00-\x1f\x7f]/.test(password)) throw new Error();
+  process.stdout.write(raw.slice(0, schemeEnd) + authority + pathAndFragment + query + "\x1f" + password);
 } catch {
   process.exitCode = 1;
 }
 NODE
 }
-
-snapshot_cred_dir() {
-  # Where the snapshot service file lives. Prefer memory-backed /dev/shm —
-  # wiped whenever the container stops, so a crash mid-dump can never leave
-  # credentials on a persistent volume. Fall back to the platform temp dir only
-  # where /dev/shm does not exist (dev machines running the regression suite).
-  if [ -n "${CHORDV_SYSTEM_UPDATE_SNAPSHOT_CRED_DIR:-}" ]; then
-    printf '%s' "$CHORDV_SYSTEM_UPDATE_SNAPSHOT_CRED_DIR"
-  elif [ -d /dev/shm ] && [ -w /dev/shm ]; then
-    printf '%s' /dev/shm
-  else
-    printf '%s' "${TMPDIR:-/tmp}"
-  fi
-}
-
 normalize_snapshot_setting() {
   "$NODE_BIN" - "$SNAPSHOT_ENABLED" <<'NODE'
 const value = process.argv[2].trim().toLowerCase();
@@ -565,45 +528,37 @@ run_snapshot() {
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
   done
-  local stamp target tmp conn svc svc_dir
-  if ! conn="$(snapshot_service_config)"; then
+  local stamp target tmp out uri password
+  if ! out="$(snapshot_dump_invocation)"; then
     log "ERROR: invalid snapshot database URL; cannot snapshot before migrate"
     return 1
   fi
-  # The service file (credentials + every libpq option) lives on EPHEMERAL
-  # storage — /dev/shm is wiped when the container stops, so a crash mid-dump
-  # can never leave the database password on a persistent volume. Startup also
-  # sweeps stale files for same-container restarts and pre-service-file
-  # versions. pg_dump's argv stays secret-free: it names only the service.
-  svc_dir="$(snapshot_cred_dir)"
-  svc="$(umask 077; mktemp "$svc_dir/.chordv-pgservice.XXXXXX")" || {
-    log "ERROR: cannot create ephemeral snapshot service file in $svc_dir"
-    return 1
-  }
-  { printf '[chordv-snapshot]\n'; printf '%s\n' "$conn"; } > "$svc"
+  # \x1f cannot occur in either field (control characters are rejected), and
+  # read with a non-whitespace IFS preserves leading/trailing spaces exactly.
+  IFS=$'\x1f' read -r uri password <<< "$out"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   target="$BACKUP_DIR/${base}-${stamp}.sql.gz"
   # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
   # is only renamed to the final name after gzip integrity is verified and flushed —
   # so a truncated dump from a crash can never be mistaken for a valid recovery point.
-  tmp="$(umask 077; mktemp "$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.XXXXXX")" || { rm -f "$svc"; return 1; }
+  tmp="$(umask 077; mktemp "$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.XXXXXX")" || return 1
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  # A connection URI is NOT usable via PGDATABASE (pg_dump treats it as a plain
-  # database name and falls back to the local socket), and argv must stay free
-  # of secrets: the service name is the only connection argument. pg_dump errors
-  # are suppressed (they may echo connection data).
+  # The URI argument carries no password (only the coordinates/options libpq
+  # needs, exactly as before); the password travels via the subshell's
+  # environment, which preserves exact bytes and stays out of /proc cmdline.
+  # pg_dump errors are suppressed (they may echo connection data).
   if ! (
     umask 077
     set -o pipefail
-    PGSERVICEFILE="$svc" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "service=chordv-snapshot" 2>/dev/null | gzip > "$tmp"
+    if [ -n "$password" ]; then export PGPASSWORD="$password"; fi
+    timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$uri" 2>/dev/null | gzip > "$tmp"
   ); then
     log "ERROR: database snapshot failed"
-    rm -f "$tmp" "$svc" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
     return 1
   fi
-  rm -f "$svc"
   [ -s "$tmp" ] || { log "ERROR: database snapshot is empty"; rm -f "$tmp" 2>/dev/null; return 1; }
   # Verify the gzip archive is COMPLETE before trusting/renaming it.
   if ! gzip -t "$tmp" 2>/dev/null; then
@@ -807,12 +762,10 @@ validate_stabilization || exit 1
 validate_health_timeout || exit 1
 mkdir -p "$STATE_DIR" "$RELEASES_DIR"
 
-# Stale snapshot credential files must not outlive a crash. The snapshot
-# service file lives on ephemeral storage (wiped whenever the container stops),
-# but a same-container restart preserves it, and versions before the
-# service-file approach wrote .pgpass.* into the PERSISTENT backup volume —
-# sweep every possible location at startup.
-rm -f "${CHORDV_SYSTEM_UPDATE_SNAPSHOT_CRED_DIR:-/dev/shm}"/.chordv-pgservice.* 2>/dev/null
+# Snapshot credentials now travel only through process environment variables,
+# never files. Earlier iterations of this code wrote credential files (.pgpass.*
+# in the persistent backup volume, .chordv-pgservice.* on ephemeral storage) —
+# sweep every location those versions could have left behind.
 rm -f /dev/shm/.chordv-pgservice.* "${TMPDIR:-/tmp}"/.chordv-pgservice.* 2>/dev/null
 rm -f "$BACKUP_DIR"/.pgpass.* 2>/dev/null
 
