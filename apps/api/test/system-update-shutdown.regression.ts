@@ -150,7 +150,7 @@ async function assertDedicatedLockLifecycle() {
 async function assertFailures() {
   const exit = process.exit;
   try {
-    for (const scenario of ["drain", "cancel", "hooks", "lock", "final-lock", "write", "revoke"]) {
+    for (const scenario of ["drain", "cancel", "hooks", "lock", "final-lock", "write", "audit", "revoke"]) {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "chordv-drain-fail-"));
       const service = serviceAt(dir);
       let released = false, fenced = false, checks = 0, exited = 0;
@@ -170,6 +170,7 @@ async function assertFailures() {
         if (scenario === "hooks") await withShutdownDeadline(Promise.reject(new Error("destroy hook failed")), 50);
       }, () => { fenced = true; }, () => undefined);
       if (scenario === "write") (service as any).writePendingMarker = async () => { throw new Error("disk full"); };
+      if (scenario === "audit") await fs.chmod(dir, 0o500);
       if (scenario === "revoke") {
         (service as any).writePendingMarker = async () => { throw new Error("rename failed"); };
         (service as any).clearPendingMarker = async () => { throw new Error("read-only state"); };
@@ -181,12 +182,12 @@ async function assertFailures() {
       assert.ok(fenced);
       assert.equal(released, scenario !== "revoke", "never release fence if pending revocation fails");
       await assert.rejects(fs.access(path.join(dir, "pending.json")));
-      if (scenario === "revoke" || scenario === "cancel") {
-        assert.equal(exited, 0, "revoked-intent and signal-cancelled failures must stay fenced for manual recovery");
+      if (scenario === "revoke" || scenario === "cancel" || scenario === "audit") {
+        assert.equal(exited, 0, "revoked-intent, signal-cancelled and un-auditable failures must stay fenced for manual recovery");
       } else {
         assert.equal(exited, 1, "audited failure must exit for supervisor restart");
       }
-      if (scenario !== "revoke" && scenario !== "cancel") {
+      if (scenario !== "revoke" && scenario !== "cancel" && scenario !== "audit") {
         const result = JSON.parse(await fs.readFile(path.join(dir, `operation-result.${marker.operationId}.json`), "utf8"));
         assert.equal(result.status, "failed"); assert.equal(result.migrationApplied, false);
         assert.equal(result.version, undefined, "preserve original audit target");
@@ -196,6 +197,7 @@ async function assertFailures() {
         assert.equal(await fs.readFile(path.join(dir, `operation-result.${marker.operationId}.json`), "utf8"), bytes, "do not overwrite terminal result");
         assert.equal(exited, 1, "repeat failure must still exit after re-auditing");
       }
+      if (scenario === "audit") await fs.chmod(dir, 0o700).catch(() => undefined);
       await fs.rm(dir, { recursive: true, force: true });
     }
     await assert.rejects(withShutdownDeadline(new Promise(() => undefined), 25), /timed out/);
