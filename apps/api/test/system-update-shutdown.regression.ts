@@ -15,6 +15,7 @@ import { RuntimeSessionService } from "../src/modules/common/runtime-session.ser
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
 import { ClientRuntimeEventsService } from "../src/modules/common/client-runtime-events.service";
 import { AdminRuntimeEventsService } from "../src/modules/common/admin-runtime-events.service";
+import { AgentEventsService } from "../src/modules/agent/agent-events.service";
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 function deferred() {
@@ -280,6 +281,16 @@ async function assertActualScheduledAndStreams() {
   const validation = deferred();
   const clientSub = client.streamForUser("u", { validate: () => validation.promise }).subscribe();
   const adminSub = admin.stream().subscribe();
+  // A connected node agent holds its command stream open indefinitely: unless the
+  // drain completes it too, its request work items are never released and the HTTP
+  // server never finishes closing (every panel update stalled on exactly this).
+  let agentClaims = 0;
+  const agentEvents = Object.create(AgentEventsService.prototype) as AgentEventsService;
+  Object.assign(agentEvents, {
+    prisma: { nodeCommandJob: { findMany: async () => { agentClaims++; return []; } } },
+    subscribers: new Map(), logger: { error() {}, warn() {} }, retrying: false
+  });
+  const agentSub = agentEvents.stream("agent-1", async () => undefined).subscribe();
   const janitor = Object.create(ClientTicketService.prototype) as any;
   const cleanup = deferred(); let cleanups = 0;
   janitor.pruneExpiredPendingAttachmentsAndCleanup = async () => { cleanups++; await cleanup.promise; };
@@ -289,7 +300,13 @@ async function assertActualScheduledAndStreams() {
   await sleep(10);
   const drain = workLifecycle.drain(server, 4000).then(() => { drained = true; });
   await worker.retryPendingPanelSyncJobs(); assert.equal(claims, 1, "no cron DB claims during drain");
+  const agentClaimsBeforeDrain = agentClaims;
+  await agentEvents.retryDueCommands();
+  assert.equal(agentClaims, agentClaimsBeforeDrain, "no agent command claims during drain");
   assert.ok(clientSub.closed && adminSub.closed, "SSE subscriptions explicitly completed");
+  assert.ok(agentSub.closed, "agent command stream explicitly completed");
+  assert.equal((agentEvents as unknown as { subscribers: Map<string, Set<unknown>> }).subscribers.size, 0,
+    "agent stream teardown ran (sink unregistered)");
   await sleep(750); assert.equal(drained, false);
   batch.resolve(); await running; await sleep(20); assert.equal(drained, false);
   cleanup.resolve(); validation.resolve(); await drain; assert.equal(cleanups, 1);
