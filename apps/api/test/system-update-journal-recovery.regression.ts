@@ -18,6 +18,8 @@ function fixture() {
   const state = path.join(root, "state"), bin = path.join(root, "bin");
   mkdirSync(state); mkdirSync(bin);
   const fault = path.join(root, "fault"), launches = path.join(root, "launches");
+  // Presence of this file makes the fake curl fail: "process alive but never healthy".
+  const unhealthy = path.join(root, "unhealthy");
   // Intercept only atomic state renames; all other shell behavior is real.
   writeFileSync(path.join(bin, "mv"), `#!/usr/bin/env bash
 for target in "$@"; do
@@ -32,7 +34,11 @@ if [[ -f "$CHORDV_TEST_FAULT" && "$(cat "$CHORDV_TEST_FAULT")" == sync ]]; then 
 exec /bin/sync
 `, { mode: 0o755 });
   // No HTTP socket needed: these tests cover journal handoff before health gating.
-  writeFileSync(path.join(bin, "curl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+  // The fake probe succeeds UNLESS $CHORDV_TEST_UNHEALTHY exists, so a test can
+  // simulate "process alive but never healthy" deterministically (a real
+  // process.exit(1) stub races the supervisor's first liveness check on slow
+  // runners and can slip past the gate via this fake curl).
+  writeFileSync(path.join(bin, "curl"), "#!/usr/bin/env bash\n[[ -f \"$CHORDV_TEST_UNHEALTHY\" ]] && exit 1\nexit 0\n", { mode: 0o755 });
   function release(version: string) {
     const dir = path.join(root, "releases", version);
     mkdirSync(path.join(dir, "apps/api/dist/apps/api/src"), { recursive: true });
@@ -43,9 +49,9 @@ fs.appendFileSync(${JSON.stringify(launches)},${JSON.stringify(version + "\n")})
 setInterval(()=>{if(fs.existsSync(${JSON.stringify(path.join(root, "exit-app"))})){fs.unlinkSync(${JSON.stringify(path.join(root, "exit-app"))});process.exit(0)}},20);`);
   }
   const children: ChildProcess[] = [];
-  function start() {
+  function start(extraEnv: Record<string, string> = {}) {
     const child = spawn("bash", [entrypoint], { detached: true, stdio: ["ignore", "ignore", "pipe"], env: {
-      ...process.env, PATH: `${bin}:${process.env.PATH}`, CHORDV_TEST_FAULT: fault,
+      ...process.env, PATH: `${bin}:${process.env.PATH}`, CHORDV_TEST_FAULT: fault, CHORDV_TEST_UNHEALTHY: unhealthy, ...extraEnv,
       CHORDV_SYSTEM_NODE_BIN: process.execPath,
       CHORDV_SYSTEM_RELEASES_DIR: path.join(root, "releases"), CHORDV_SYSTEM_STATE_DIR: state,
       CHORDV_SYSTEM_PUBLIC_STATE_DIR: path.join(root, "public"), CHORDV_SYSTEM_CURRENT_LINK: path.join(root, "current"),
@@ -61,7 +67,7 @@ setInterval(()=>{if(fs.existsSync(${JSON.stringify(path.join(root, "exit-app"))}
     try { process.kill(-child.pid!, "SIGKILL"); } catch { /* process already stopped */ }
     if (child.exitCode === null && child.signalCode === null) await new Promise(resolve => child.once("exit", resolve));
   }
-  return { root, state, fault, launches, release, start, stop, async cleanup() {
+  return { root, state, fault, unhealthy, launches, release, start, stop, async cleanup() {
     for (const child of children) await stop(child);
     rmSync(root, { recursive: true, force: true });
   } };
@@ -167,13 +173,19 @@ async function restartKeepsVersion() {
   const f = fixture();
   try {
     f.release("0.0.1"); f.release("0.0.2");
-    writeFileSync(path.join(f.root, "releases/0.0.2/apps/api/dist/apps/api/src/main.js"), "process.exit(1);");
+    // Keep the candidate ALIVE but never healthy (the fake curl fails while
+    // $CHORDV_TEST_UNHEALTHY exists), so the health gate times out
+    // deterministically. A process.exit(1) stub instead races the supervisor's
+    // first liveness probe: on slow CI runners node outlives the probe, the fake
+    // curl passes, and the supervisor re-gates forever instead of finalizing.
+    writeFileSync(path.join(f.root, "releases/0.0.2/apps/api/dist/apps/api/src/main.js"), "setInterval(() => {}, 1000);");
+    writeFileSync(f.unhealthy, "gate");
     writeFileSync(path.join(f.state, "last-good-version"), "0.0.2");
     writeFileSync(path.join(f.state, "last-good-version.previous"), "0.0.1");
     writeFileSync(path.join(f.state, "desired-version"), "0.0.2");
     writeFileSync(path.join(f.state, "pending.json"), JSON.stringify({ version: "0.0.2", operationId: "sysop-restart", kind: "restart", migrationApplied: false }));
     for (let attempt = 0; attempt < 2; attempt++) {
-      const run = f.start();
+      const run = f.start({ CHORDV_SYSTEM_UPDATE_HEALTH_TIMEOUT_SECONDS: "3" });
       await until(() => run.child.exitCode !== null, run.logs);
       const result = JSON.parse(readFileSync(path.join(f.state, "operation-result.sysop-restart.json"), "utf8"));
       assert.equal(result.status, "failed"); assert.equal(result.version, "0.0.2");
