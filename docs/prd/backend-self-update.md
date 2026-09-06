@@ -14,6 +14,10 @@
 
 落地时相对 4.1/6.2/6.3 的调整（以下早期说明需以代码和最新评审补充为准）：
 
+**第40轮补充：限时后台工作统一走预算窗口，禁止 race 已登记任务。** `Promise.race([workLifecycle.track(task), timeoutTask])` 看似等价，实则超时返回后工作项仍持有到底层 promise 结算：一个挂死的远端调用（例如不可达的 3x-ui 面板）会把排空拖到该调用自己的 socket 超时。**预算窗口只有在被放弃的工作另有所有者时才合法**（重试队列会重跑、后台日志会记录）：远端读、探测、幂等清理属于这一类，共 16 处已改为 `awaitWithBudget`（到期抛可辨识的 `WorkBudgetExceededError`，按**实例身份**判定——嵌套预算抛的是同一个类，用 `instanceof` 会把内层到期当成自己到期，吞掉任务失败并按未到期的外层超时值打日志）或 `awaitWithBudgetElse`（到期跑**惰性**兜底并返回其值，类型为任务与兜底的联合，与 race 语义一致；任务自身失败仍向上抛）。预算只覆盖**等待窗口**，到期即释放登记，未结算的操作交还其所有者。
+
+**反例同样重要：本身就在创建持久记录的工作没有所有者，必须保持登记。** 面板同步入队、租约撤销入队、面板禁用入队、节点保存后的续作（`queuePanelAccessSyncForNodeSubscription`、`withNodePanelBindingSubscriptionBudget`、`runAfterLocalNodeSaveWithBudget`、`tryRunAfterLocalNodeSave`、`withSubscriptionFollowUpBudget`）若在预算到期时释放登记，自更新可能在入队落盘前关闭 Prisma 并退出，本地改动就留下没有对应面板同步的状态。这 5 处保持原样跟踪；它们都是**本地 DB 入队**，排空等的是数据库而非打不通的面板，因此不重新引入远端挂死那一类风险。彻底解法是「先落盘重试记录、再限时等待」，另开 PR 处理。计时器保持 referenced（unref 可能丢掉唯一句柄导致超时永不触发）。`system-update-shutdown.regression.ts` 增加源码断言：race 已登记任务的写法按**带说明的例外清单**核对（上述 5 处，注明原因），清单**只能减不能增**——在已允许的文件里再加一处也会失败。
+
 **第39轮补充：长连接与定时任务必须响应排空。** Agent 命令流（`/api/agent/v1/events`）是长驻 SSE 请求，在线 Agent 不会主动断开：它的请求工作项和 HTTP 服务器关闭因此永不释放，面板触发的更新每次都被拖到排空超时并围栏——这是三次面板更新全部失败、随后只能手工提升的直接原因。所有长连接流必须与管理端/客户端 SSE 一致，注册 `workLifecycle.onDrain(() => subscriber.complete())` 并在退订时移除该监听；Agent 命令重试定时任务补 `@DrainableJob()`，排空期间不再领取新的命令作业。新增任何长连接或定时任务时必须同时接入这两个契约，并在 `system-update-shutdown.regression.ts` 中断言其订阅在排空开始后已完成。
 
 **第38轮补充：签名渠道、历史清理与收尾状态。** 发布工作流将channel（stable/prerelease）写入清单后再签名；API签名模式只接受显式stable渠道，先验证渠道再推进防重放阈值。发布资产校验要求渠道与Release类型一致，稳定源发布拒绝prerelease或缺失渠道的传入资产；读取GitHub已有旧稳定清单做升级比较时仍可识别缺失渠道的历史记录。没有渠道字段的旧签名资产不能通过新API或恢复校验，应发布带渠道的新版本，禁止修改/重签原不可变资产。

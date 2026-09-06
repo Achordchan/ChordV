@@ -9,7 +9,7 @@ import { NestFactory } from "@nestjs/core";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { DrainCancelledError, WorkLifecycle, workLifecycle, withShutdownDeadline } from "../src/work-lifecycle";
+import { DrainCancelledError, WorkBudgetExceededError, WorkLifecycle, workLifecycle, withShutdownDeadline } from "../src/work-lifecycle";
 import { SystemUpdateService } from "../src/modules/common/system-update.service";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
@@ -312,6 +312,83 @@ async function assertActualScheduledAndStreams() {
   cleanup.resolve(); validation.resolve(); await drain; assert.equal(cleanups, 1);
 }
 
+async function assertBudgetWindowsAndNoRaceTrack() {
+  // A budget must account for the WAITING window only. `Promise.race([track(task),
+  // timeoutTask])` looks equivalent but keeps the work item until the underlying
+  // promise settles, so one hung remote call blocks a whole self-update drain.
+  const lifecycle = new WorkLifecycle();
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+
+  const never = new Promise<string>(() => undefined);
+  const expired = await lifecycle.awaitWithBudgetElse(never, 20, () => "fallback");
+  assert.equal(expired, "fallback", "expiry resolves with the lazy fallback");
+
+  let built = 0;
+  const settledFast = await lifecycle.awaitWithBudgetElse(Promise.resolve("real"), 5_000, () => { built++; return "fallback"; });
+  assert.equal(settledFast, "real");
+  assert.equal(built, 0, "fallback is never built on the happy path");
+
+  await assert.rejects(
+    lifecycle.awaitWithBudgetElse(Promise.reject(new Error("task blew up")), 5_000, () => "fallback"),
+    /task blew up/,
+    "a task failure propagates instead of being swallowed as an expiry"
+  );
+  // A nested budget expiring is the TASK failing, not ours: it must propagate, or the
+  // caller silently gets fallback data under a timeout value that never elapsed.
+  const nested = lifecycle.awaitWithBudget(new Promise<string>(() => undefined), 10);
+  await assert.rejects(
+    lifecycle.awaitWithBudgetElse(nested, 5_000, () => "fallback"),
+    (error: unknown) => error instanceof WorkBudgetExceededError && error.timeoutMs === 10,
+    "a nested budget expiry propagates instead of being taken for our own"
+  );
+
+  await assert.rejects(lifecycle.awaitWithBudget(never, 20), (error: unknown) => {
+    assert.ok(error instanceof WorkBudgetExceededError);
+    assert.equal((error as WorkBudgetExceededError).timeoutMs, 20);
+    return true;
+  });
+
+  // The abandoned task is still pending, yet the drain must not wait for it.
+  await lifecycle.drain(server, 1000);
+
+  // A budget window is only legitimate when the abandoned work has ANOTHER owner (a
+  // retry queue that will re-run it, a background logger). Work whose whole purpose is
+  // to CREATE the durable record has no such owner: releasing its accounting lets a
+  // self-update close Prisma and exit mid-enqueue, leaving the local change without the
+  // panel sync it implies. Those helpers therefore stay tracked. They are local DB
+  // enqueues, so the drain waits on the database, never on an unreachable panel.
+  // Converting them needs "persist a retry record, THEN bound the wait" — until that
+  // exists this list must SHRINK, never grow.
+  const keptTracked = new Map<string, number>([
+    ["src/modules/common/runtime-session.service.ts", 2],   // queuePanelAccessSyncForNodeSubscription, withNodePanelBindingSubscriptionBudget
+    ["src/modules/common/admin-node.service.ts", 2],        // runAfterLocalNodeSaveWithBudget, tryRunAfterLocalNodeSave
+    ["src/modules/common/admin-subscription.service.ts", 1] // withSubscriptionFollowUpBudget
+  ]);
+  const found = new Map<string, number>();
+  const walk = async (dir: string) => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { await walk(full); continue; }
+      if (!entry.name.endsWith(".ts")) continue;
+      const hits = (await fs.readFile(full, "utf8")).split("Promise.race([workLifecycle.track(").length - 1;
+      if (hits > 0) found.set(path.relative(path.join(__dirname, ".."), full), hits);
+    }
+  };
+  await walk(path.join(__dirname, "../src"));
+  for (const [file, hits] of found) {
+    const allowed = keptTracked.get(file) ?? 0;
+    assert.ok(
+      hits <= allowed,
+      `${file} races ${hits} tracked task(s) but only ${allowed} are documented as durable-intent: ` +
+      "use awaitWithBudget/awaitWithBudgetElse, or keep the work tracked without a race"
+    );
+  }
+  for (const [file, allowed] of keptTracked) {
+    assert.ok((found.get(file) ?? 0) <= allowed, `stale exception for ${file}`);
+  }
+}
+
 async function repeatedSignalChild() {
   const source = await fs.readFile(path.join(__dirname, "../src/main.ts"), "utf8");
   const start = source.indexOf('  for (const signal of ["SIGTERM", "SIGINT"] as const) {');
@@ -411,6 +488,7 @@ async function main() {
   await assertTimeoutAndDisconnectedWork();
   await assertDrainBeforeListen();
   await assertActualScheduledAndStreams();
+  await assertBudgetWindowsAndNoRaceTrack();
   console.log("system-update graceful shutdown regressions passed");
 }
 void main().catch((error) => { console.error(error); process.exitCode = 1; });

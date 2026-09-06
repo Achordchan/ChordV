@@ -1,5 +1,5 @@
 import { promotionAdmission } from "../../promotion-admission";
-import { workLifecycle } from "../../work-lifecycle";
+import { WorkBudgetExceededError, workLifecycle } from "../../work-lifecycle";
 import { BadRequestException, HttpException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import type {
   ClientSupportTicketDetailDto,
@@ -748,41 +748,21 @@ export class ClientTicketService {
     token: string | undefined,
     fallback: () => ClientSupportTicketDetailDto
   ) {
-    let settled = false;
-    const detailTask = this.getClientSupportTicketDetail(ticketId, token).then(
-      (detail) => {
-        settled = true;
-        return detail;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const detailTask = this.getClientSupportTicketDetail(ticketId, token);
     void detailTask.catch(() => undefined);
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<ClientSupportTicketDetailDto>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        this.logger.warn(
-          `Client ticket write saved, but detail refresh exceeded ${TICKET_DETAIL_REFRESH_BUDGET_MS}ms and will continue in background.`
-        );
-        resolve(fallback());
-      }, TICKET_DETAIL_REFRESH_BUDGET_MS);
-    });
-
     try {
-      return await Promise.race([workLifecycle.track(detailTask), timeoutTask]);
+      // Budget covers the waiting window only: on expiry the refresh keeps running
+      // instead of holding a drain work item. `fallback()` stays lazy, so it is
+      // built only on the paths that actually return it.
+      return await workLifecycle.awaitWithBudget(detailTask, TICKET_DETAIL_REFRESH_BUDGET_MS);
     } catch (error) {
-      this.logger.warn(`Client ticket write saved, but detail refresh failed for ${ticketId}: ${readErrorMessage(error)}`);
+      this.logger.warn(
+        error instanceof WorkBudgetExceededError
+          ? `Client ticket write saved, but detail refresh exceeded ${TICKET_DETAIL_REFRESH_BUDGET_MS}ms and will continue in background.`
+          : `Client ticket write saved, but detail refresh failed for ${ticketId}: ${readErrorMessage(error)}`
+      );
       return fallback();
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 

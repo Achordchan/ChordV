@@ -51,7 +51,7 @@ export class WorkLifecycle implements NestInterceptor {
   async awaitWithBudget<T>(
     task: Promise<T>,
     timeoutMs: number,
-    makeTimeoutError: () => Error = () => new Error(`work budget of ${timeoutMs}ms exceeded`)
+    makeTimeoutError: () => Error = () => new WorkBudgetExceededError(timeoutMs)
   ): Promise<T> {
     // Enter BEFORE creating the timer: if entry can ever fail, no timer must
     // be left behind unraced — its later rejection would be unhandled.
@@ -65,6 +65,30 @@ export class WorkLifecycle implements NestInterceptor {
     } finally {
       leave();
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Like `awaitWithBudget`, but budget expiry is a NORMAL outcome rather than an
+   * error: `onExpiry` runs (the caller's "saved, but X exceeded its budget and
+   * will continue in background" warning) and ITS return value resolves the call.
+   * Evaluated lazily on expiry only, so a fallback that costs something — or that
+   * a successful task would have made wrong — is never built on the happy path.
+   * The fallback need NOT share the task's type — the result is the union, as
+   * `Promise.race` gave. A failure of the task itself still propagates: call
+   * sites keep their own handling for that.
+   */
+  async awaitWithBudgetElse<T, F = T>(task: Promise<T>, timeoutMs: number, onExpiry: () => F): Promise<T | F> {
+    // Identity, not `instanceof`: a nested awaitWithBudget inside `task` rejects with
+    // the SAME error class, and taking that for our own expiry would swallow a task
+    // failure — returning stale fallback data and logging the wrong timeout. Only the
+    // instance this call's own timer produced counts, and it is built only on expiry.
+    let expiry: WorkBudgetExceededError | undefined;
+    try {
+      return await this.awaitWithBudget(task, timeoutMs, () => (expiry = new WorkBudgetExceededError(timeoutMs)));
+    } catch (error) {
+      if (expiry !== undefined && error === expiry) return onExpiry();
+      throw error;
     }
   }
 
@@ -145,6 +169,18 @@ export class WorkLifecycle implements NestInterceptor {
 // One registry for this single-process deployment; utility functions can account for
 // underlying promises too, without changing every service's DI constructor.
 export const workLifecycle = new WorkLifecycle();
+
+/**
+ * Budget expiry for `awaitWithBudget`: the waiting window ended, the task itself
+ * was abandoned to its owner (a retry queue, a background logger) and may still
+ * be running. Distinguishable so a caller can treat expiry as an expected
+ * outcome (see `awaitWithBudgetElse`) without swallowing real task failures.
+ */
+export class WorkBudgetExceededError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`work budget of ${timeoutMs}ms exceeded`);
+  }
+}
 
 /**
  * A shutdown interrupted by a repeated signal. Distinct from drain failures:
