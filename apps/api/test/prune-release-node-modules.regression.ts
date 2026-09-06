@@ -36,8 +36,14 @@ function buildFixture() {
     link(path.join(entryModules(entry), ...name.split("/")), targetDir);
 
   const nestCore = storeEntry("nest-core@1.0.0", "@nestjs/core", {
-    dependencies: { rxjs: "7.0.0", "reflect-metadata": "0.2.0" }
+    dependencies: { rxjs: "7.0.0", "reflect-metadata": "0.2.0" },
+    // pnpm auto-installed peers: the required one must travel with the consumer,
+    // the optional one may be absent at runtime.
+    peerDependencies: { "peer-required": "*", "peer-optional": "*" },
+    peerDependenciesMeta: { "peer-optional": { optional: true } }
   });
+  const peerRequired = storeEntry("peer-required@1.0.0", "peer-required", {});
+  const peerOptional = storeEntry("peer-optional@1.0.0", "peer-optional", {});
   const rxjs = storeEntry("rxjs@7.0.0", "rxjs", {});
   const reflect = storeEntry("reflect-metadata@0.2.0", "reflect-metadata", {});
   const typescript = storeEntry("typescript@5.0.0", "typescript", {});
@@ -48,6 +54,8 @@ function buildFixture() {
 
   depLink("nest-core@1.0.0", "rxjs", rxjs);
   depLink("nest-core@1.0.0", "reflect-metadata", reflect);
+  depLink("nest-core@1.0.0", "peer-required", peerRequired);
+  depLink("nest-core@1.0.0", "peer-optional", peerOptional);
   depLink("prisma@6.0.0", "@prisma/engines", engines);
   depLink("@prisma+engines@6.0.0", "@prisma/debug", debug);
 
@@ -108,6 +116,8 @@ async function main() {
     assert.equal(kept("nest-core@1.0.0"), true, "app dependency must be kept");
     assert.equal(kept("rxjs@7.0.0"), true, "transitive dependency must be kept");
     assert.equal(kept("reflect-metadata@0.2.0"), true, "transitive dependency must be kept");
+    assert.equal(kept("peer-required@1.0.0"), true, "required peer of a kept package must be kept");
+    assert.equal(kept("peer-optional@1.0.0"), false, "optional peer may be dropped (absent is a valid state)");
     assert.equal(kept("@prisma+client@6.0.0"), true, "prisma client must be kept");
     assert.equal(kept("prisma@6.0.0"), true, "prisma CLI (migrate) must be kept");
     assert.equal(kept("@prisma+engines@6.0.0"), true, "scoped dependency of prisma must be kept");

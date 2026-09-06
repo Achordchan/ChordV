@@ -53,6 +53,21 @@ function readJsonIfExists(filePath) {
   }
 }
 
+function requiredPeerNames(manifest) {
+  // pnpm auto-installs peers next to their consumer and links them as siblings
+  // in the consumer's entry. A REQUIRED peer the consumer loads at runtime must
+  // travel with the release or the consumer breaks with MODULE_NOT_FOUND; an
+  // OPTIONAL peer may legitimately be absent (e.g. prisma's typescript), and the
+  // container-verified migrate path confirms the CLI never requires it.
+  const peers = manifest.peerDependencies ?? {};
+  const optional = new Set(
+    Object.entries(manifest.peerDependenciesMeta ?? {})
+      .filter(([, meta]) => meta != null && meta.optional === true)
+      .map(([name]) => name)
+  );
+  return Object.keys(peers).filter((name) => !optional.has(name));
+}
+
 function isScoped(name) {
   return name.startsWith("@") && name.includes("/");
 }
@@ -134,7 +149,8 @@ export function pruneReleaseNodeModules(root, options = {}) {
     if (!manifest) continue;
     const depNames = [
       ...Object.keys(manifest.dependencies ?? {}),
-      ...Object.keys(manifest.optionalDependencies ?? {})
+      ...Object.keys(manifest.optionalDependencies ?? {}),
+      ...requiredPeerNames(manifest)
     ];
     for (const depName of depNames) {
       const resolved = resolvePackageDir(depName, [...depBases, apiDir, sharedDir, root]);
