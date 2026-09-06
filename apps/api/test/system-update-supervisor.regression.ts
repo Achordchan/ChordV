@@ -795,6 +795,33 @@ function testSnapshotDatabaseUrl() {
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://backup@db.example" });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "host=db.example\nuser=backup");
+    // libpq percent-decoding preserves a literal '+' (only %20 is a space).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:a+b@db.example:5432/chordv?application_name=backup+job" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^password=a\+b$/m, "literal + in credentials must survive");
+    assert.match(result.stdout, /^application_name=backup\+job$/m, "literal + in options must survive");
+    // ?service=name selects a libpq service section as the BASE configuration
+    // instead of being written into the generated section (libpq rejects
+    // nesting); the URL's own fields override the section.
+    const operatorService = path.join(root, "operator-pg_service.conf");
+    writeFileSync(operatorService, "# operator services\n[production]\nhost = prod.example\nport = 6543\ndbname = proddb\nsslmode = require\n[other]\nhost = other.example\n");
+    result = convert({
+      CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql:///?service=production&user=override&connect_timeout=9",
+      PGSERVICEFILE: operatorService
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "host=prod.example\nport=6543\ndbname=proddb\nsslmode=require\nuser=override\nconnect_timeout=9");
+    assert.doesNotMatch(result.stdout, /service=/, "service must not be nested inside the generated section");
+    // An explicit ?servicefile= parameter points at the service file directly.
+    result = convert({
+      CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql:///?service=other&servicefile=" + operatorService,
+      PGSERVICEFILE: path.join(root, "does-not-exist.conf")
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "host=other.example");
+    // A missing service section or file fails closed.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql:///?service=absent", PGSERVICEFILE: operatorService });
+    assert.notEqual(result.status, 0, "missing service section must fail");
     result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
     // Valid libpq options must not be gated by an allowlist — libpq itself

@@ -415,6 +415,8 @@ snapshot_service_config() {
   # password travels only inside a 0600 service file on ephemeral storage.
   # Never print parser errors, which may echo the full connection string.
   "$NODE_BIN" - <<'NODE'
+const fs = require("node:fs");
+const os = require("node:os");
 try {
   const raw = process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL || process.env.DATABASE_URL;
   const url = new URL(raw);
@@ -424,16 +426,52 @@ try {
     "statement_cache_size", "sslaccept", "sslidentity"
   ]);
   const params = new Map();
+  // A ?service=name (optionally ?servicefile=path) query selects a libpq
+  // service section as the BASE configuration; it must not be written into the
+  // generated section (libpq rejects nested service specifications). The URL's
+  // own authority and other query parameters override the section, matching
+  // libpq's URI-over-service precedence.
+  let serviceName = null, serviceFile = null;
   const index = raw.indexOf("?");
   if (index >= 0) {
     for (const part of raw.slice(index + 1).split("&")) {
       if (!part) continue;
       const eq = part.indexOf("=");
-      const key = decodeURIComponent(part.slice(0, eq < 0 ? part.length : eq).replace(/\+/g, " "));
+      const key = decodeURIComponent(part.slice(0, eq < 0 ? part.length : eq));
       if (prismaOnly.has(key)) continue;
-      const value = eq < 0 ? "" : decodeURIComponent(part.slice(eq + 1).replace(/\+/g, " "));
+      const value = eq < 0 ? "" : decodeURIComponent(part.slice(eq + 1));
+      if (key === "service") { serviceName = value; continue; }
+      if (key === "servicefile") { serviceFile = value; continue; }
       params.set(key, value);
     }
+  }
+  const base = new Map();
+  if (serviceName !== null) {
+    if (!serviceName) throw new Error();
+    // Resolution order mirrors libpq: an explicit servicefile parameter, then
+    // PGSERVICEFILE, then ~/.pg_service.conf, then /etc/pg_service.conf.
+    const candidates = [
+      serviceFile,
+      process.env.PGSERVICEFILE,
+      require("node:path").join(os.homedir(), ".pg_service.conf"),
+      "/etc/pg_service.conf"
+    ].filter(Boolean);
+    const chosen = candidates.find((candidate) => { try { return fs.statSync(candidate).isFile(); } catch { return false; } });
+    if (!chosen) throw new Error();
+    let section = null, seen = false;
+    for (const rawLine of fs.readFileSync(chosen, "utf8").split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const header = /^\[(.+)\]$/.exec(line);
+      if (header) { section = header[1].trim(); continue; }
+      const eq = line.indexOf("=");
+      if (eq <= 0 || section === null) throw new Error();
+      if (section !== serviceName) continue;
+      seen = true;
+      base.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
+    }
+    if (!seen) throw new Error();
+    if (base.has("service")) throw new Error();
   }
   const authority = new Map();
   if (url.hostname) authority.set("host", decodeURIComponent(url.hostname).replace(/^\[|\]$/g, ""));
@@ -444,7 +482,7 @@ try {
   if (url.pathname.length > 1) authority.set("dbname", decodeURIComponent(url.pathname.replace(/^\//, "")));
   if (url.username) authority.set("user", decodeURIComponent(url.username));
   if (url.password) authority.set("password", decodeURIComponent(url.password));
-  const merged = new Map([...authority, ...params]);
+  const merged = new Map([...base, ...authority, ...params]);
   // No host/dbname requirement: libpq accepts URIs that omit them
   // (postgresql:///chordv → default unix socket; postgresql://backup@db →
   // database defaults to the user) and resolves PGHOST/PGPORT/PGDATABASE
