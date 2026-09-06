@@ -51,7 +51,7 @@ export class WorkLifecycle implements NestInterceptor {
   async awaitWithBudget<T>(
     task: Promise<T>,
     timeoutMs: number,
-    makeTimeoutError: () => Error = () => new Error(`work budget of ${timeoutMs}ms exceeded`)
+    makeTimeoutError: () => Error = () => new WorkBudgetExceededError(timeoutMs)
   ): Promise<T> {
     // Enter BEFORE creating the timer: if entry can ever fail, no timer must
     // be left behind unraced — its later rejection would be unhandled.
@@ -65,6 +65,27 @@ export class WorkLifecycle implements NestInterceptor {
     } finally {
       leave();
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Like `awaitWithBudget`, but budget expiry is a NORMAL outcome rather than an
+   * error: `onExpiry` runs (the caller's "saved, but X exceeded its budget and
+   * will continue in background" warning) and ITS return value resolves the call.
+   * Evaluated lazily on expiry only, so a fallback that costs something — or that
+   * a successful task would have made wrong — is never built on the happy path.
+   * The fallback need NOT share the task's type — the result is the union, as
+   * `Promise.race` gave. A failure of the task itself still propagates: call
+   * sites keep their own handling for that.
+   */
+  async awaitWithBudgetElse<T, F = T>(task: Promise<T>, timeoutMs: number, onExpiry: () => F): Promise<T | F> {
+    try {
+      // Passed explicitly, not left to the default: this method's correctness is
+      // the round trip through exactly this error type, not whatever the default is.
+      return await this.awaitWithBudget(task, timeoutMs, () => new WorkBudgetExceededError(timeoutMs));
+    } catch (error) {
+      if (error instanceof WorkBudgetExceededError) return onExpiry();
+      throw error;
     }
   }
 
@@ -145,6 +166,18 @@ export class WorkLifecycle implements NestInterceptor {
 // One registry for this single-process deployment; utility functions can account for
 // underlying promises too, without changing every service's DI constructor.
 export const workLifecycle = new WorkLifecycle();
+
+/**
+ * Budget expiry for `awaitWithBudget`: the waiting window ended, the task itself
+ * was abandoned to its owner (a retry queue, a background logger) and may still
+ * be running. Distinguishable so a caller can treat expiry as an expected
+ * outcome (see `awaitWithBudgetElse`) without swallowing real task failures.
+ */
+export class WorkBudgetExceededError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`work budget of ${timeoutMs}ms exceeded`);
+  }
+}
 
 /**
  * A shutdown interrupted by a repeated signal. Distinct from drain failures:

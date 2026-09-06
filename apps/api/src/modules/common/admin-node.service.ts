@@ -609,91 +609,48 @@ export class AdminNodeService {
   }
 
   private async readNodePanelInboundsWithBudget(runtimeTask: Promise<AdminNodePanelInboundDto[]>) {
-    let settled = false;
-    const guardedTask = runtimeTask.then(
-      (result) => {
-        settled = true;
-        return result;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
-    void guardedTask.catch((error) => {
+    void runtimeTask.catch((error) => {
       this.logger?.warn(`Delayed 3x-ui inbound list read failed: ${readAdminNodeErrorMessage(error)}`);
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<never>((_resolve, reject) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        reject(
-          new ServiceUnavailableException(
-            `3x-ui inbound list read timed out after ${readListNodePanelInboundsBudgetMs()}ms; panel may be offline or too slow`
-          )
-        );
-      }, readListNodePanelInboundsBudgetMs());
-    });
-
     try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudget(runtimeTask, readListNodePanelInboundsBudgetMs(), () =>
+        new ServiceUnavailableException(
+          `3x-ui inbound list read timed out after ${readListNodePanelInboundsBudgetMs()}ms; panel may be offline or too slow`
+        )
+      );
     } catch (error) {
       if (error instanceof BadRequestException) {
         throw error;
       }
       throw new ServiceUnavailableException(`3x-ui inbound list read failed: ${readAdminNodeErrorMessage(error)}`);
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
   private async probeNodeAfterLocalImport(row: Parameters<typeof toAdminNodeRecord>[0]) {
     const fallbackRecord = toAdminNodeRecord(row);
-    let settled = false;
-    const probeTask = this.probeNode(row.id).then(
-      (record) => {
-        settled = true;
-        return record;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const probeTask = this.probeNode(row.id);
     void probeTask.catch((error) => {
       this.logger?.warn(
         `Local node import saved, but delayed initial probe failed for ${row.id}: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<ReturnType<typeof toAdminNodeRecord>>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudgetElse(probeTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
         this.logger?.warn(
           `Local node import saved, but initial probe exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
         );
-        resolve(fallbackRecord);
-      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(probeTask), timeoutTask]);
+        return fallbackRecord;
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger?.warn(`Local node import saved, but initial probe failed for ${row.id}: ${message}`);
       return fallbackRecord;
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -902,47 +859,29 @@ export class AdminNodeService {
     derived: ReturnType<typeof parseVlessLink> | null;
     errorMessage: string | null;
   }> {
-    let settled = false;
-    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then(
-      (derived) => {
-        settled = true;
+    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then((derived) => {
         return { derived, errorMessage: null };
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    });
     void runtimeTask.catch((error) => {
       this.logger?.warn(
         `Local node subscription URL will be saved, but delayed subscription runtime read failed: ${readAdminNodeErrorMessage(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudgetElse(runtimeTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
         const message = "subscription runtime read is still running in background";
         this.logger?.warn(
           `Local node subscription URL will be saved, but reading subscription runtime exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
         );
-        resolve({ derived: null, errorMessage: message });
-      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
+        return { derived: null, errorMessage: message };
+      });
     } catch (error) {
       const errorMessage = readAdminNodeErrorMessage(error);
       this.logger?.warn(`Local node subscription URL will be saved, but reading subscription runtime failed: ${errorMessage}`);
       return { derived: null, errorMessage };
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -1025,7 +964,6 @@ export class AdminNodeService {
     errorMessage: string | null;
   }> {
     const budgetMs = readRefreshNodeRuntimeBudgetMs();
-    let settled = false;
     const runtimeTask = this.xuiService
       .getInboundRuntime({
         id: current.id,
@@ -1039,33 +977,22 @@ export class AdminNodeService {
         panelAbortSignal: AbortSignal.timeout(budgetMs)
       })
       .then((derived) => {
-        settled = true;
         return { derived, errorMessage: null as string | null };
       });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        resolve({
+    try {
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudgetElse(runtimeTask, budgetMs, () => {
+        return {
           derived: null,
           errorMessage: `panel runtime refresh exceeded ${budgetMs}ms`
-        });
-      }, budgetMs);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
+        };
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger?.warn(`Node ${current.id} panel runtime refresh failed: ${errorMessage}`);
       return { derived: null, errorMessage };
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -1074,42 +1001,24 @@ export class AdminNodeService {
     errorMessage: string | null;
   }> {
     const budgetMs = readRefreshNodeRuntimeBudgetMs();
-    let settled = false;
-    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then(
-      (derived) => {
-        settled = true;
+    const runtimeTask = fetchSubscriptionNode(subscriptionUrl).then((derived) => {
         return { derived, errorMessage: null as string | null };
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
-
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        resolve({
-          derived: null,
-          errorMessage: `subscription runtime refresh exceeded ${budgetMs}ms`
-        });
-      }, budgetMs);
     });
 
     try {
-      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudgetElse(runtimeTask, budgetMs, () => {
+        return {
+          derived: null,
+          errorMessage: `subscription runtime refresh exceeded ${budgetMs}ms`
+        };
+      });
     } catch (error) {
       return {
         derived: null,
         errorMessage: readAdminNodeErrorMessage(error)
       };
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -1167,21 +1076,13 @@ export class AdminNodeService {
     errorMessage: string | null;
   }> {
     const budgetMs = NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS;
-    let settled = false;
     const runtimeTask = this.xuiService.getInboundRuntime({
       ...input,
       panelRequestTimeoutMs: budgetMs,
       panelAbortSignal: AbortSignal.timeout(budgetMs)
-    }).then(
-      (derived) => {
-        settled = true;
+    }).then((derived) => {
         return { derived, errorMessage: null };
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    });
     void runtimeTask.catch((error) => {
       this.logger?.warn(
         `Local node panel config will be saved, but delayed panel runtime read failed: ${
@@ -1190,30 +1091,20 @@ export class AdminNodeService {
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<{ derived: null; errorMessage: string }>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudgetElse(runtimeTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
         const message = "panel runtime read is still running in background";
         this.logger?.warn(
           `Local node panel config will be saved, but reading new panel runtime exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
         );
-        resolve({ derived: null, errorMessage: message });
-      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(runtimeTask), timeoutTask]);
+        return { derived: null, errorMessage: message };
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger?.warn(`Local node panel config will be saved, but reading new panel runtime failed: ${errorMessage}`);
       return { derived: null, errorMessage };
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -1230,38 +1121,16 @@ export class AdminNodeService {
   }
 
   private async probeNodeWithRequestBudget(current: any): Promise<AdminNodeRecordDto> {
-    let settled = false;
-    const probeTask = this.probeNodeUnchecked(current).then(
-      (result) => {
-        settled = true;
-        return result;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const probeTask = this.probeNodeUnchecked(current);
     void probeTask.catch((error) => {
       this.logger.warn(`Delayed node probe for ${current.id} failed: ${readAdminNodeErrorMessage(error)}`);
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<AdminNodeRecordDto>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        resolve(this.markNodeProbeTimedOut(current, readNodeProbeBudgetMs()));
-      }, readNodeProbeBudgetMs());
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(probeTask), timeoutTask]);
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
+    // Budget covers the WAITING window only: a slow or hung remote call is
+    // abandoned to its owner instead of holding a self-update drain work item.
+    return await workLifecycle.awaitWithBudgetElse(probeTask, readNodeProbeBudgetMs(), () =>
+      this.markNodeProbeTimedOut(current, readNodeProbeBudgetMs())
+    );
   }
 
   private async probeNodeUnchecked(current: any): Promise<AdminNodeRecordDto> {
@@ -1417,38 +1286,18 @@ export class AdminNodeService {
   }
 
   private async probeNodeWithBulkBudget(nodeId: string, budgetMs = readBulkNodeProbeBudgetMs()) {
-    let settled = false;
-    const probeTask = this.probeNode(nodeId).then(
-      (result) => {
-        settled = true;
-        return result;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const probeTask = this.probeNode(nodeId);
     void probeTask.catch((error) => {
       this.logger.warn(`Delayed bulk probe for node ${nodeId} failed: ${readAdminNodeErrorMessage(error)}`);
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<never>((_resolve, reject) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        reject(new Error(`bulk node probe exceeded ${budgetMs}ms`));
-      }, Math.max(1, Math.min(budgetMs, readBulkNodeProbeBudgetMs())));
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(probeTask), timeoutTask]);
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
+    // Budget covers the WAITING window only: a slow or hung remote call is
+    // abandoned to its owner instead of holding a self-update drain work item.
+    return await workLifecycle.awaitWithBudget(
+      probeTask,
+      Math.max(1, Math.min(budgetMs, readBulkNodeProbeBudgetMs())),
+      () => new Error(`bulk node probe exceeded ${budgetMs}ms`)
+    );
   }
 
   private async markBulkProbeSkippedNodes(
@@ -1709,91 +1558,49 @@ export class AdminNodeService {
   }
 
   private async runAfterLocalNodeSaveWithBudget<T>(label: string, timeoutResult: T, task: () => Promise<T>): Promise<T> {
-    let settled = false;
     const guardedTask = new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, NODE_AFTER_SAVE_DEFERRED_EFFECT_DELAY_MS);
       timer.unref?.();
-    }).then(task).then(
-      (result) => {
-        settled = true;
-        return result;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    }).then(task);
     void guardedTask.catch((error) => {
       this.logger?.warn(
         `Local node change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<T>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      return await workLifecycle.awaitWithBudgetElse(guardedTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
         this.logger?.warn(
           `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
         );
-        resolve(timeoutResult);
-      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+        return timeoutResult;
+      });
     } catch (error) {
       this.logger?.warn(`Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
       return timeoutResult;
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
   private async tryRunAfterLocalNodeSave(label: string, task: () => Promise<unknown>) {
-    let settled = false;
-    const guardedTask = Promise.resolve()
-      .then(task)
-      .then(
-        () => {
-          settled = true;
-        },
-        (error) => {
-          settled = true;
-          throw error;
-        }
-      );
+    const guardedTask = Promise.resolve().then(task).then(() => undefined);
     void guardedTask.catch((error) => {
       this.logger?.warn(
         `Local node change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (!settled) {
-          this.logger?.warn(
-            `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
-          );
-        }
-        resolve();
-      }, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS);
-      timeoutHandle.unref?.();
-    });
-
     try {
-      await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+      // Budget covers the WAITING window only: a slow or hung remote call is
+      // abandoned to its owner instead of holding a self-update drain work item.
+      await workLifecycle.awaitWithBudgetElse(guardedTask, NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS, () => {
+        this.logger?.warn(
+          `Local node change saved, but ${label} exceeded ${NODE_AFTER_SAVE_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
+        );
+      });
     } catch {
       // The guarded task logs the failure; local node changes must remain committed.
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -1826,14 +1633,11 @@ export class AdminNodeService {
   }
 
   private async readImportRuntimeWithBudget<T>(runtimeTask: Promise<T>, label: string): Promise<T> {
-    let settled = false;
     const guardedTask = runtimeTask.then(
       (result) => {
-        settled = true;
         return result;
       },
       (error) => {
-        settled = true;
         if (error instanceof HttpException) {
           throw error;
         }
@@ -1848,27 +1652,13 @@ export class AdminNodeService {
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<never>((_resolve, reject) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        reject(
-          new BadRequestException(
-            `${label} timed out before local node import was saved; import failed and no node was saved`
-          )
-        );
-      }, readImportNodeRuntimeBudgetMs());
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
+    // Budget covers the WAITING window only: a slow or hung remote call is
+    // abandoned to its owner instead of holding a self-update drain work item.
+    return await workLifecycle.awaitWithBudget(guardedTask, readImportNodeRuntimeBudgetMs(), () =>
+      new BadRequestException(
+        `${label} timed out before local node import was saved; import failed and no node was saved`
+      )
+    );
   }
 
   private async resolveNodePanelEnabled(input: {

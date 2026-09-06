@@ -9,7 +9,7 @@ import { NestFactory } from "@nestjs/core";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { DrainCancelledError, WorkLifecycle, workLifecycle, withShutdownDeadline } from "../src/work-lifecycle";
+import { DrainCancelledError, WorkBudgetExceededError, WorkLifecycle, workLifecycle, withShutdownDeadline } from "../src/work-lifecycle";
 import { SystemUpdateService } from "../src/modules/common/system-update.service";
 import { RuntimeSessionService } from "../src/modules/common/runtime-session.service";
 import { ClientTicketService } from "../src/modules/common/client-ticket.service";
@@ -312,6 +312,51 @@ async function assertActualScheduledAndStreams() {
   cleanup.resolve(); validation.resolve(); await drain; assert.equal(cleanups, 1);
 }
 
+async function assertBudgetWindowsAndNoRaceTrack() {
+  // A budget must account for the WAITING window only. `Promise.race([track(task),
+  // timeoutTask])` looks equivalent but keeps the work item until the underlying
+  // promise settles, so one hung remote call blocks a whole self-update drain.
+  const lifecycle = new WorkLifecycle();
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+
+  const never = new Promise<string>(() => undefined);
+  const expired = await lifecycle.awaitWithBudgetElse(never, 20, () => "fallback");
+  assert.equal(expired, "fallback", "expiry resolves with the lazy fallback");
+
+  let built = 0;
+  const settledFast = await lifecycle.awaitWithBudgetElse(Promise.resolve("real"), 5_000, () => { built++; return "fallback"; });
+  assert.equal(settledFast, "real");
+  assert.equal(built, 0, "fallback is never built on the happy path");
+
+  await assert.rejects(
+    lifecycle.awaitWithBudgetElse(Promise.reject(new Error("task blew up")), 5_000, () => "fallback"),
+    /task blew up/,
+    "a task failure propagates instead of being swallowed as an expiry"
+  );
+  await assert.rejects(lifecycle.awaitWithBudget(never, 20), (error: unknown) => {
+    assert.ok(error instanceof WorkBudgetExceededError);
+    assert.equal((error as WorkBudgetExceededError).timeoutMs, 20);
+    return true;
+  });
+
+  // The abandoned task is still pending, yet the drain must not wait for it.
+  await lifecycle.drain(server, 1000);
+
+  const offenders: string[] = [];
+  const walk = async (dir: string) => {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.endsWith(".ts") && (await fs.readFile(full, "utf8")).includes("Promise.race([workLifecycle.track(")) {
+        offenders.push(path.relative(path.join(__dirname, ".."), full));
+      }
+    }
+  };
+  await walk(path.join(__dirname, "../src"));
+  assert.deepEqual(offenders, [], `use awaitWithBudget/awaitWithBudgetElse instead of racing a tracked task: ${offenders.join(", ")}`);
+}
+
 async function repeatedSignalChild() {
   const source = await fs.readFile(path.join(__dirname, "../src/main.ts"), "utf8");
   const start = source.indexOf('  for (const signal of ["SIGTERM", "SIGINT"] as const) {');
@@ -411,6 +456,7 @@ async function main() {
   await assertTimeoutAndDisconnectedWork();
   await assertDrainBeforeListen();
   await assertActualScheduledAndStreams();
+  await assertBudgetWindowsAndNoRaceTrack();
   console.log("system-update graceful shutdown regressions passed");
 }
 void main().catch((error) => { console.error(error); process.exitCode = 1; });

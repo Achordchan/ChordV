@@ -119,47 +119,25 @@ export class AdminSubscriptionService {
     timeoutResult: T,
     task: () => Promise<T>
   ): Promise<T> {
-    let settled = false;
-    const guardedTask = Promise.resolve()
-      .then(task)
-      .then(
-        (result) => {
-          settled = true;
-          return result;
-        },
-        (error) => {
-          settled = true;
-          throw error;
-        }
-      );
+    const guardedTask = Promise.resolve().then(task);
     void guardedTask.catch((error) => {
       this.logger?.warn(
         `Local subscription change saved, but delayed ${label} failed: ${readErrorMessage(error, "unknown error")}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<T>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the waiting window only: on expiry the follow-up keeps running
+      // for the background logger above and stops holding a drain work item.
+      return await workLifecycle.awaitWithBudgetElse(guardedTask, SUBSCRIPTION_FOLLOW_UP_BUDGET_MS, () => {
         this.logger?.warn(
           `Local subscription change saved, but ${label} exceeded ${SUBSCRIPTION_FOLLOW_UP_BUDGET_MS}ms and will continue in background.`
         );
-        resolve(timeoutResult);
-      }, SUBSCRIPTION_FOLLOW_UP_BUDGET_MS);
-    });
-
-    try {
-      return await Promise.race([workLifecycle.track(guardedTask), timeoutTask]);
+        return timeoutResult;
+      });
     } catch (error) {
       this.logger?.warn(`Local subscription change saved, but ${label} failed: ${readErrorMessage(error, "unknown error")}`);
       return timeoutResult;
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 

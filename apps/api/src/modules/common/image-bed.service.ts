@@ -720,17 +720,12 @@ function readImageBedConfigReadTimeoutMs() {
 }
 
 function withTimeout<T>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-  // Keep the timer referenced: unref() can drop the only event-loop handle while a
-  // never-settling Prisma promise is racing, so the timeout never fires (and tests exit early).
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const timeoutTask = new Promise<never>((_resolve, reject) => {
-    timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-  });
-  return Promise.race([workLifecycle.track(task), timeoutTask]).finally(() => {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
-    }
-  });
+  // The budget covers only the WAITING window: a still-pending task is abandoned to
+  // its owner instead of holding a work item (and blocking every self-update drain)
+  // for as long as the underlying promise happens to take. The timer stays
+  // referenced: unref() can drop the only event-loop handle while a never-settling
+  // Prisma promise is racing, so the timeout never fires (and tests exit early).
+  return workLifecycle.awaitWithBudget(task, timeoutMs, () => new Error(timeoutMessage));
 }
 
 function readRecord(value: unknown) {

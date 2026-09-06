@@ -1338,45 +1338,25 @@ export class ReleaseCenterService {
   }
 
   private async getAdminReleaseBestEffort(releaseId: string, fallback: AdminReleaseRecordDto, label: string) {
-    let settled = false;
-    const refreshTask = this.getAdminRelease(releaseId).then(
-      (release) => {
-        settled = true;
-        return release;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const refreshTask = this.getAdminRelease(releaseId);
     void refreshTask.catch((error) => {
       this.logger.warn(
         `Local release change saved, but delayed ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<AdminReleaseRecordDto>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (!settled) {
-          this.logger.warn(`Local release change saved, but ${label} exceeded ${RELEASE_RESPONSE_REFRESH_BUDGET_MS}ms.`);
-        }
-        resolve(fallback);
-      }, RELEASE_RESPONSE_REFRESH_BUDGET_MS);
-      timeoutHandle.unref?.();
-    });
-
     try {
-      return await Promise.race([workLifecycle.track(refreshTask), timeoutTask]);
+      // Budget covers the waiting window only, so a slow refresh stops holding a
+      // drain work item; the read keeps running for the background logger above.
+      return await workLifecycle.awaitWithBudgetElse(refreshTask, RELEASE_RESPONSE_REFRESH_BUDGET_MS, () => {
+        this.logger.warn(`Local release change saved, but ${label} exceeded ${RELEASE_RESPONSE_REFRESH_BUDGET_MS}ms.`);
+        return fallback;
+      });
     } catch (error) {
       this.logger.warn(
         `Local release change saved, but ${label} failed: ${error instanceof Error ? error.message : String(error)}`
       );
       return fallback;
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -1474,45 +1454,23 @@ export class ReleaseCenterService {
   }
 
   private async runReleaseCleanupBestEffort(label: string, task: () => Promise<unknown>) {
-    let settled = false;
-    const cleanupTask = task().then(
-      () => {
-        settled = true;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const cleanupTask = task().then(() => undefined);
     void cleanupTask.catch((error) => {
       this.logger.warn(
         `Local release change saved, but delayed ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      await workLifecycle.awaitWithBudgetElse(cleanupTask, RELEASE_FILE_CLEANUP_BUDGET_MS, () => {
         this.logger.warn(
           `Local release change saved, but ${label} cleanup exceeded ${RELEASE_FILE_CLEANUP_BUDGET_MS}ms and will continue in background.`
         );
-        resolve();
-      }, RELEASE_FILE_CLEANUP_BUDGET_MS);
-    });
-
-    try {
-      await Promise.race([workLifecycle.track(cleanupTask), timeoutTask]);
+      });
     } catch (error) {
       this.logger.warn(
         `Local release change saved, but ${label} cleanup failed: ${error instanceof Error ? error.message : String(error)}`
       );
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
