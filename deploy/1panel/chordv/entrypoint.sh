@@ -401,12 +401,16 @@ prune_snapshots() {
   return 0
 }
 
-snapshot_database_url() {
-  # Prisma accepts query options libpq/pg_dump rejects. Filter only its known
-  # extras, preserving the raw authority/path and remaining query bytes (including
-  # percent-encoded credentials/options). Never put credentials on the command line
-  # or print parser/pg_dump errors, which may echo the full connection string.
-  # A dedicated direct connection can bypass a Prisma/pooler URL when necessary.
+snapshot_conn_parts() {
+  # Emit connection coordinates for the pre-migration snapshot, one per line
+  # (percent-decoded): host, port, dbname, user, password, then any number of
+  # KEY=value libpq environment assignments (SSL/timeout/options) carried over
+  # from the URL's query string. Prisma-only options are dropped; anything else
+  # unrecognized fails closed instead of being silently discarded.
+  # Credentials NEVER reach stdout of a logging caller, pg_dump's argv, or the
+  # process command line: the password travels only into a 0600 PGPASSFILE and
+  # the rest only into the dump subshell's environment. Never print parser
+  # errors, which may echo the full connection string.
   "$NODE_BIN" - <<'NODE'
 try {
   const raw = process.env.CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL || process.env.DATABASE_URL;
@@ -416,15 +420,38 @@ try {
     "schema", "connection_limit", "pool_timeout", "socket_timeout", "pgbouncer",
     "statement_cache_size", "sslaccept", "sslidentity"
   ]);
+  const libpqEnv = new Map([
+    ["sslmode", "PGSSLMODE"], ["sslrootcert", "PGSSLROOTCERT"], ["sslcert", "PGSSLCERT"],
+    ["sslkey", "PGSSLKEY"], ["connect_timeout", "PGCONNECT_TIMEOUT"],
+    ["application_name", "PGAPPNAME"], ["options", "PGOPTIONS"],
+    ["sslnegotiation", "PGSSLNEGOTIATION"], ["channel_binding", "PGCHANNELBINDING"]
+  ]);
+  const env = [];
   const index = raw.indexOf("?");
-  if (index < 0) process.stdout.write(raw);
-  else {
-    const query = raw.slice(index + 1).split("&").filter((part) => {
-      const key = decodeURIComponent(part.split("=", 1)[0].replace(/\+/g, " "));
-      return part && !prismaOnly.has(key);
-    }).join("&");
-    process.stdout.write(raw.slice(0, index) + (query ? "?" + query : ""));
+  if (index >= 0) {
+    for (const part of raw.slice(index + 1).split("&")) {
+      if (!part) continue;
+      const eq = part.indexOf("=");
+      const key = decodeURIComponent(part.slice(0, eq < 0 ? part.length : eq).replace(/\+/g, " "));
+      const value = eq < 0 ? "" : decodeURIComponent(part.slice(eq + 1).replace(/\+/g, " "));
+      if (prismaOnly.has(key)) continue;
+      const envName = libpqEnv.get(key);
+      if (!envName) throw new Error();
+      env.push(`${envName}=${value}`);
+    }
   }
+  const parts = [
+    url.hostname ? decodeURIComponent(url.hostname) : "",
+    url.port ? decodeURIComponent(url.port) : "5432",
+    url.pathname ? decodeURIComponent(url.pathname.replace(/^\//, "")) : "",
+    url.username ? decodeURIComponent(url.username) : "",
+    url.password ? decodeURIComponent(url.password) : ""
+  ];
+  if (!parts[0] || !parts[2]) throw new Error();
+  // A newline or control character cannot be represented in a PGPASSFILE line
+  // or an environment assignment; reject rather than truncate.
+  if (parts.some((part) => /[\x00-\x1f\x7f]/.test(part))) throw new Error();
+  process.stdout.write([...parts, ...env].join("\n"));
 } catch {
   process.exitCode = 1;
 }
@@ -483,30 +510,72 @@ run_snapshot() {
     log "pre-migrate snapshot for op ${op} already exists; reusing it"
     return 0
   done
-  local stamp target tmp snapshot_url
-  if ! snapshot_url="$(snapshot_database_url)"; then
+  local stamp target tmp conn pgpass
+  local esc_host esc_port esc_dbname esc_user esc_password
+  local host port dbname user password env_lines="" kv bad_param=""
+  if ! conn="$(snapshot_conn_parts)"; then
     log "ERROR: invalid snapshot database URL; cannot snapshot before migrate"
     return 1
   fi
+  # Coordinates + password first, then KEY=value libpq environment assignments
+  # (SSL/timeout/options) carried over from the URL query. Line-based reads keep
+  # values (which may contain spaces) intact; no bash-4 arrays so the script
+  # stays runnable by the dev-machine bash used in the regression suite.
+  {
+    IFS= read -r host
+    IFS= read -r port
+    IFS= read -r dbname
+    IFS= read -r user
+    IFS= read -r password
+    while IFS= read -r kv; do
+      case "${kv%%=*}" in
+        PGSSLMODE|PGSSLROOTCERT|PGSSLCERT|PGSSLKEY|PGSSLNEGOTIATION|PGCHANNELBINDING|PGCONNECT_TIMEOUT|PGAPPNAME|PGOPTIONS)
+          env_lines="${env_lines}${kv}"$'\n' ;;
+        *) bad_param="${kv%%=*}" ;;
+      esac
+    done
+  } <<< "$conn"
+  if [ -z "$host" ] || [ -z "$dbname" ] || [ -n "$bad_param" ]; then
+    log "ERROR: malformed or unsupported snapshot connection parameter (${bad_param:-missing host/dbname})"
+    return 1
+  fi
+  # libpq takes the password from a 0600 temp file instead of pg_dump's argv:
+  # command lines are visible to /proc, `docker top` and process telemetry for
+  # the whole dump, so the URI-with-password can never be an argument. The file
+  # is removed the moment the dump finishes, and never outlives this function.
+  pgpass="$(umask 077; mktemp "${BACKUP_DIR}/.pgpass.XXXXXX")" || return 1
+  # PGPASSFILE escapes literal ':' and '\' in each field.
+  esc_host="${host//\\/\\\\}"; esc_host="${esc_host//:/\\:}"
+  esc_port="${port//\\/\\\\}"; esc_port="${esc_port//:/\\:}"
+  esc_dbname="${dbname//\\/\\\\}"; esc_dbname="${esc_dbname//:/\\:}"
+  esc_user="${user//\\/\\\\}"; esc_user="${esc_user//:/\\:}"
+  esc_password="${password//\\/\\\\}"; esc_password="${esc_password//:/\\:}"
+  printf '%s:%s:%s:%s:%s\n' "$esc_host" "$esc_port" "$esc_dbname" "$esc_user" "$esc_password" > "$pgpass"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   target="$BACKUP_DIR/${base}-${stamp}.sql.gz"
   # Dump to a .partial temp name first; it is NOT reusable (doesn't match the glob) and
   # is only renamed to the final name after gzip integrity is verified and flushed —
   # so a truncated dump from a crash can never be mistaken for a valid recovery point.
-  tmp="$(umask 077; mktemp "$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.XXXXXX")" || return 1
+  tmp="$(umask 077; mktemp "$BACKUP_DIR/.${base}-${stamp}.sql.gz.partial.XXXXXX")" || { rm -f "$pgpass"; return 1; }
   log "snapshotting database before migrate -> $(basename "$target") (timeout ${SNAPSHOT_TIMEOUT}s)"
   # pipefail so a pg_dump failure fails the pipe even though gzip succeeds; timeout so a
   # hung dump can't wedge the container after the old process has already exited.
-  # pg_dump only accepts a full connection URI as a COMMAND-LINE argument: passed
-  # via PGDATABASE it is treated as a plain database name, and the dump then
-  # silently targets the local socket (failing here, or worse - elsewhere
-  # succeeding against an unintended local server). The URL never hits the
-  # process list in logs, and pg_dump's own errors are suppressed below.
-  if ! ( umask 077; set -o pipefail; timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump "$snapshot_url" 2>/dev/null | gzip > "$tmp" ); then
+  # A connection URI is NOT usable via PGDATABASE (pg_dump treats it as a plain
+  # database name and falls back to the local socket), and argv must stay free
+  # of secrets: connection coordinates only, password via PGPASSFILE, SSL and
+  # timeout options via the dump subshell's environment. pg_dump errors are
+  # suppressed (they may echo connection data).
+  if ! (
+    umask 077
+    set -o pipefail
+    while IFS= read -r kv; do [ -n "$kv" ] && export "$kv"; done <<< "$env_lines"
+    PGPASSFILE="$pgpass" timeout -k 30 "$SNAPSHOT_TIMEOUT" pg_dump -h "$host" -p "$port" -U "$user" -d "$dbname" 2>/dev/null | gzip > "$tmp"
+  ); then
     log "ERROR: database snapshot failed"
-    rm -f "$tmp" 2>/dev/null
+    rm -f "$tmp" "$pgpass" 2>/dev/null
     return 1
   fi
+  rm -f "$pgpass"
   [ -s "$tmp" ] || { log "ERROR: database snapshot is empty"; rm -f "$tmp" 2>/dev/null; return 1; }
   # Verify the gzip archive is COMPLETE before trusting/renaming it.
   if ! gzip -t "$tmp" 2>/dev/null; then
