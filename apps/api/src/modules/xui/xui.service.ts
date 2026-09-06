@@ -588,7 +588,13 @@ export class XuiService {
         ...existing,
         ...fallback,
         id: readString(existing.id) ?? fallback.id,
-        email: readString(existing.email) ?? fallback.email
+        email: readString(existing.email) ?? fallback.email,
+        // Panel versions serialize allowedIPs inconsistently: newer 3x-ui serves
+        // a bare string ("" when empty) while its update endpoint demands []string.
+        // Echoing the fetched value back verbatim makes every updateClient fail
+        // with "cannot unmarshal string into Go struct field Client.allowedIPs".
+        // Normalize to the array shape the panel's Go struct expects.
+        allowedIPs: readAllowedIpsArray(existing.allowedIPs)
       };
     } catch (error) {
       if (!isPanelFallbackMissError(error)) {
@@ -1220,6 +1226,17 @@ function readPanelClientPayloadObject(value: unknown): Record<string, unknown> |
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readAllowedIpsArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  }
+  if (typeof value === "string") {
+    // Comma-separated form (and the empty string) as served by some panel versions.
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function readPanelFetchErrorMessage(error: unknown) {

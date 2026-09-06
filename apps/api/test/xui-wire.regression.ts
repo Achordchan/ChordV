@@ -150,8 +150,137 @@ async function testEnsureClientUsesRealPanelWireProtocol() {
   }
 }
 
+async function testUpdateClientNormalizesStringAllowedIps() {
+  // Newer 3x-ui panels serve the client's allowedIPs as a bare string ("" when
+  // empty) while the update endpoint's Go struct demands []string. Echoing the
+  // fetched value back verbatim fails every update with
+  // "cannot unmarshal string into Go struct field Client.allowedIPs" — the exact
+  // production incident behind the stuck panel-sync jobs since 2026-08-10.
+  const captured: CapturedRequest[] = [];
+  const server = createServer(async (request, response) => {
+    const body = await readBody(request);
+    captured.push({
+      method: request.method ?? "",
+      url: request.url ?? "",
+      headers: request.headers,
+      body
+    });
+
+    if (request.method === "GET" && request.url === "/csrf-token") {
+      sendJson(response, { success: true, obj: "csrf-token-1" }, { "set-cookie": "csrf_sid=pre; Path=/; HttpOnly" });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/login") {
+      sendJson(response, { success: true }, { "set-cookie": "session=ok; Path=/; HttpOnly" });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/panel/api/inbounds/get/7") {
+      sendJson(response, {
+        success: true,
+        obj: {
+          id: 7,
+          settings: JSON.stringify({
+            clients: [
+              {
+                id: "existing-uuid",
+                email: "user@example.com",
+                enable: false,
+                flow: "",
+                expiryTime: 0,
+                limitIp: 0,
+                totalGB: 0,
+                reset: 0,
+                // String form as served by newer panel versions.
+                allowedIPs: ""
+              }
+            ]
+          })
+        }
+      });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/panel/api/clients/get/user%40example.com") {
+      sendJson(response, {
+        success: true,
+        obj: {
+          client: {
+            id: "existing-uuid",
+            email: "user@example.com",
+            enable: false,
+            flow: "",
+            expiryTime: 0,
+            limitIp: 0,
+            totalGB: 0,
+            reset: 0,
+            allowedIPs: "10.0.0.1, 10.0.0.2"
+          }
+        }
+      });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/panel/api/clients/update/user%40example.com") {
+      sendJson(response, { success: true });
+      return;
+    }
+
+    response.writeHead(404);
+    response.end("not found");
+  });
+
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    assert(address && typeof address === "object");
+
+    const service = new XuiService();
+    await service.ensureClient(
+      {
+        id: "node_1",
+        panelBaseUrl: `http://127.0.0.1:${address.port}`,
+        panelApiBasePath: "",
+        panelUsername: "achord",
+        panelPassword: "secret",
+        panelInboundId: 7,
+        panelRequestTimeoutMs: 5000
+      },
+      {
+        id: "client-uuid-1",
+        email: "user@example.com",
+        enable: true,
+        flow: "xtls-rprx-vision",
+        expiryTime: 1780000000000,
+        limitIp: 0,
+        totalGB: 0,
+        subId: "",
+        reset: 0,
+        tgId: 0,
+        comment: "Node A"
+      }
+    );
+
+    const update = captured.find((request) => request.url === "/panel/api/clients/update/user%40example.com");
+    assert.ok(update, "ensureClient must update the existing disabled client");
+    const updatePayload = JSON.parse(update.body);
+    assert.deepEqual(
+      updatePayload.allowedIPs,
+      ["10.0.0.1", "10.0.0.2"],
+      "comma-separated allowedIPs must be normalized to the array the panel's Go struct expects"
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
+
 async function main() {
   await testEnsureClientUsesRealPanelWireProtocol();
+  await testUpdateClientNormalizesStringAllowedIps();
   console.log("xui wire regression checks passed");
 }
 
