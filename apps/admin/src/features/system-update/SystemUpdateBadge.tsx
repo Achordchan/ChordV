@@ -281,7 +281,12 @@ export function SystemUpdateBadge() {
       // now re-fetches it and, once enabled, refreshes the update check too — so the
       // panel self-heals instead of stranding the admin on stale disabled controls.
       const status = await loadRuntime();
-      if (status?.enabled) void runCheck(false);
+      // Update actions require a FRESH (non-cached, warning-free) check, but the
+      // mount-time check may still be inside the backend's cache window — which
+      // used to leave "立即更新" disabled until the admin manually re-checked.
+      // Opening the panel IS the intent to act, so force a fresh check here; the
+      // safety condition itself is unchanged (only fresh results can update).
+      if (status?.enabled) void runCheck(true);
       void loadAux();
       void resumeActiveOperation();
     })();
