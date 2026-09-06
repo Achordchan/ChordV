@@ -770,54 +770,71 @@ function testSnapshotDatabaseUrl() {
   const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
   const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-url-"));
   const raw = "postgresql://us%40er:p%3Ass%2F%25%3F%23@db.example:5432/chordv?schema=public&sslmode=require&connect_timeout=12&application_name=backup%20job&options=-c%20search_path%3Dpublic&connection_limit=4&pool_timeout=10&socket_timeout=9&pgbouncer=true&statement_cache_size=0&sslaccept=strict&sslidentity=client.p12&%73chema=other&sslrootcert=%2Fcerts%2Froot.pem";
-  const expectedParts = "db.example\n5432\nchordv\nus@er\np:ss/%?#";
-  const expectedEnv = "PGSSLMODE=require\nPGCONNECT_TIMEOUT=12\nPGAPPNAME=backup job\nPGOPTIONS=-c search_path=public\nPGSSLROOTCERT=/certs/root.pem";
+  const expectedBody = "host=db.example\nport=5432\ndbname=chordv\nuser=us@er\npassword=p:ss/%?#\n" +
+    "sslmode=require\nconnect_timeout=12\napplication_name=backup job\noptions=-c search_path=public\nsslrootcert=/certs/root.pem";
   const env = { ...process.env, CHORDV_SYSTEM_NODE_BIN: process.execPath, DATABASE_URL: raw, CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "" };
-  const convert = (overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", ["-c", `${definitions}\nsnapshot_conn_parts`], { env: { ...env, ...overrides }, encoding: "utf8" });
+  const convert = (overrides: NodeJS.ProcessEnv = {}) => spawnSync("bash", ["-c", `${definitions}\nsnapshot_service_config`], { env: { ...env, ...overrides }, encoding: "utf8" });
   try {
     let result = convert();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, `${expectedParts}\n${expectedEnv}`);
+    assert.equal(result.stdout, expectedBody);
     assert.equal(result.stderr, "");
     const direct = "postgresql://a%40b:p%3Aq@direct/db?sslmode=verify-full";
     result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: direct });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, "direct\n5432\ndb\na@b\np:q\nPGSSLMODE=verify-full");
+    assert.equal(result.stdout, "host=direct\nport=5432\ndbname=db\nuser=a@b\npassword=p:q\nsslmode=verify-full");
     result = convert({ DATABASE_URL: "postgresql://secret:password@host/db?%XX=bad" });
     assert.notEqual(result.status, 0); assert.equal(result.stdout, ""); assert.equal(result.stderr, "");
-    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@host/db?unknown_option=1" });
-    assert.notEqual(result.status, 0, "unrecognized connection parameters must fail closed, not be dropped");
-    // Exercise the real snapshot pipeline too: pg_dump's argv carries only the
-    // connection coordinates — never the password (it travels in a 0600
-    // PGPASSFILE removed as soon as the dump ends), SSL/timeout options ride in
-    // the environment, and errors echoing argv never disclose credentials.
+    // Valid libpq options must not be gated by an allowlist — libpq itself
+    // rejects invalid keywords when the dump connects.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@host/db?target_session_attrs=read-write&keepalives_idle=30&client_encoding=UTF8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /target_session_attrs=read-write/);
+    assert.match(result.stdout, /keepalives_idle=30/);
+    assert.match(result.stdout, /client_encoding=UTF8/);
+    // URL query parameters override the authority components (libpq URI semantics).
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@host:5432/db?host=override.example&port=6543" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^host=override\.example$/m);
+    assert.match(result.stdout, /^port=6543$/m);
+    // IPv6 authority hosts keep their URI brackets stripped for libpq.
+    result = convert({ CHORDV_SYSTEM_UPDATE_SNAPSHOT_DATABASE_URL: "postgresql://user:pw@[2001:db8::1]:5432/chordv" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^host=2001:db8::1$/m);
+    assert.doesNotMatch(result.stdout, /\[/);
+    // Exercise the real snapshot pipeline too: pg_dump's argv names ONLY the
+    // service (never credentials — they live in a 0600 service file on
+    // ephemeral storage, removed as soon as the dump ends), and errors
+    // echoing argv never disclose credentials.
     writeFileSync(path.join(root, "timeout"), '#!/usr/bin/env bash\nshift 3\nexec "$@"\n', { mode: 0o755 });
     writeFileSync(path.join(root, "pg_dump"), `#!/usr/bin/env bash
 printf '%s' "$*" > "$CHORDV_TEST_CAPTURE"
 printf '%s' "$#" > "$CHORDV_TEST_ARGC"
-printf '%s' "$PGSSLMODE" > "$CHORDV_TEST_SSLMODE"
-cp "$PGPASSFILE" "$CHORDV_TEST_PGPASS"
+cp "$PGSERVICEFILE" "$CHORDV_TEST_SERVICE"
 printf '%s' "$*" >&2
 [ "$CHORDV_TEST_DUMP_FAIL" = "true" ] && exit 1
 printf 'test snapshot\\n'
 `, { mode: 0o755 });
+    const credDir = path.join(root, "cred");
+    mkdirSync(credDir, { recursive: true });
     for (const fail of [false, true]) {
       const capture = path.join(root, "capture");
       const argc = path.join(root, "argc");
-      const sslmode = path.join(root, "sslmode");
-      const pgpass = path.join(root, "pgpass");
+      const service = path.join(root, "service");
       const dump = spawnSync("bash", ["-c", `${definitions}\nrun_snapshot 0.0.2 op-${fail}`], {
         encoding: "utf8", env: { ...env, PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
           CHORDV_SYSTEM_UPDATE_SNAPSHOT: "true", CHORDV_SYSTEM_UPDATE_BACKUP_DIR: path.join(root, "backups"),
-          CHORDV_TEST_CAPTURE: capture, CHORDV_TEST_ARGC: argc, CHORDV_TEST_SSLMODE: sslmode,
-          CHORDV_TEST_PGPASS: pgpass, CHORDV_TEST_DUMP_FAIL: String(fail) }
+          CHORDV_SYSTEM_UPDATE_SNAPSHOT_CRED_DIR: credDir,
+          CHORDV_TEST_CAPTURE: capture, CHORDV_TEST_ARGC: argc, CHORDV_TEST_SERVICE: service,
+          CHORDV_TEST_DUMP_FAIL: String(fail) }
       });
       assert.equal(dump.status, fail ? 1 : 0, dump.stderr);
-      assert.equal(readFileSync(capture, "utf8"), "-h db.example -p 5432 -U us@er -d chordv", "pg_dump argv must carry coordinates only");
-      assert.equal(readFileSync(argc, "utf8"), "8", "pg_dump must receive exactly -h/-p/-U/-d with values");
-      assert.equal(readFileSync(sslmode, "utf8"), "require", "URL sslmode must reach the dump environment");
-      assert.equal(readFileSync(pgpass, "utf8"), "db.example:5432:chordv:us@er:p\\:ss/%?#\n", "password must travel via PGPASSFILE with : and \\ escaped");
+      assert.equal(readFileSync(capture, "utf8"), "service=chordv-snapshot", "pg_dump argv must name only the service");
+      assert.equal(readFileSync(argc, "utf8"), "1", "the service name must be pg_dump's single command-line argument");
+      assert.equal(readFileSync(service, "utf8"), `[chordv-snapshot]\n${expectedBody}\n`, "credentials must travel in the 0600 service file");
       assert.equal(dump.stderr.includes("p:ss/%?#"), false, "pg_dump errors must not disclose credentials");
+      const leftover = readdirSync(credDir).filter((name) => name.startsWith(".chordv-pgservice"));
+      assert.equal(leftover.length, 0, "the service file must be removed when the dump ends (success or failure)");
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
