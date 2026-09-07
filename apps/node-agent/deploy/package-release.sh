@@ -32,8 +32,20 @@ esac
 mkdir -p -- "$out_dir"
 tarball="$out_dir/chordv-agent-$arch.tar.gz"
 
+# 先写同目录临时文件再原子 rename：输出目录可能就是 agent-dist 分发目录，
+# 而 AgentDownloadController 可能正在流式读取同名文件——原地覆盖会截断它
+# 已打开的文件（fd 不保护原地写入），并让失败的打包留下不完整的公开产物。
+# 同目录保证 rename 在同一文件系统内；正在下载的旧文件由其 fd 继续读完。
+tmp_tarball=$(mktemp -- "$tarball.tmp.XXXXXX") || fail "无法在输出目录创建临时文件：$out_dir"
+trap 'rm -f -- "$tmp_tarball"' EXIT
+
 # -C "$source_dir" . ：tarball 顶层即 dist/ node_modules/ deploy/，
 # 与 install 脚本的 tar -xz -C /opt/chordv-node-agent 相对应。
-tar -czf "$tarball" -C "$source_dir" .
+tar -czf "$tmp_tarball" -C "$source_dir" .
+# 校验自己刚写出的归档，损坏的产物不得发布。
+tar -tzf "$tmp_tarball" >/dev/null || fail "生成的安装包无法读取，未发布"
+chmod 0644 "$tmp_tarball"
+mv -f -- "$tmp_tarball" "$tarball"
+trap - EXIT
 
 printf '安装包已生成：%s（%s）\n' "$tarball" "$(du -h "$tarball" | cut -f1)"
