@@ -9,6 +9,7 @@ import {
   Loader,
   Modal,
   Popover,
+  Progress,
   ScrollArea,
   Stack,
   Text,
@@ -18,6 +19,7 @@ import { notifications } from "@mantine/notifications";
 import type {
   SystemUpdateCheckDto,
   SystemUpdateOperationDto,
+  SystemUpdateOperationPhase,
   SystemUpdateRollbackVersionDto
 } from "@chordv/shared";
 import {
@@ -85,6 +87,174 @@ function kindLabel(kind: SystemUpdateOperationDto["kind"]): string {
   return kind === "update" ? "更新" : kind === "rollback" ? "回滚" : "重启";
 }
 
+// Ordered lifecycle stages of a running operation, matching the backend phase union.
+// Which steps APPLY depends on the operation kind: a rollback/restart never downloads
+// or extracts, and snapshot/migrate only run for an update that carries migrations
+// (migrationApplied is only known after the fact, so those steps show for any update
+// while running and collapse away on a skipped path — the phase union has no
+// "skipped" report, so they simply never activate).
+const PHASE_STEPS: Array<{ phase: SystemUpdateOperationPhase; label: string }> = [
+  { phase: "checking", label: "检查" },
+  { phase: "downloading", label: "下载" },
+  { phase: "extracting", label: "解压" },
+  { phase: "draining", label: "切换" },
+  { phase: "snapshotting", label: "快照" },
+  { phase: "migrating", label: "迁移" },
+  { phase: "health-gating", label: "健康检查" },
+  { phase: "stabilizing", label: "稳定观察" }
+];
+
+// Steps that can ever run per operation kind. A step that cannot run is rendered as
+// crossed-out/dimmed rather than completed, so a rollback does not claim a download
+// it never performed.
+const APPLICABLE_STEPS: Record<SystemUpdateOperationDto["kind"], ReadonlySet<SystemUpdateOperationPhase>> = {
+  update: new Set(PHASE_STEPS.map((step) => step.phase)),
+  rollback: new Set(["checking", "draining", "health-gating", "stabilizing"]),
+  restart: new Set(["draining", "health-gating", "stabilizing"])
+};
+
+// Supervisor-owned stages: whether they RUN is decided after the app exits (only an
+// update carrying migrations snapshots/migrates), so they are only check-marked when
+// actually OBSERVED by a poll — passing them silently is a skip, not a completion.
+// App-side stages always run in order for the kinds that include them.
+const OBSERVED_ONLY_STEPS: ReadonlySet<SystemUpdateOperationPhase> = new Set(["snapshotting", "migrating"]);
+
+function phaseDescription(phase: SystemUpdateOperationPhase): string {
+  switch (phase) {
+    case "checking":
+      return "正在确认最新版本与清单签名…";
+    case "downloading":
+      return "正在下载更新包…";
+    case "extracting":
+      return "正在校验并解压更新包…";
+    case "draining":
+      return "正在排空请求并切换版本，服务将短暂重启…";
+    case "snapshotting":
+      return "正在对数据库做迁移前快照…";
+    case "migrating":
+      return "正在执行数据库迁移…";
+    case "health-gating":
+      return "新版本已启动，正在通过健康检查…";
+    case "stabilizing":
+      return "新版本运行正常，正在稳定观察…";
+    case "rollback-health-gating":
+      return "新版本未通过验证，回滚目标已启动，正在通过健康检查…";
+    case "rollback-stabilizing":
+      return "回滚目标运行正常，正在稳定观察，随后将恢复服务…";
+    default:
+      return phase;
+  }
+}
+
+/**
+ * Render the live progress area for a running operation: a phase step indicator
+ * plus a byte-percentage progress bar while downloading. Falls back to kind-specific
+ * static copy when no phase has been reported yet (older backend, or the brief
+ * window before the first phase lands).
+ */
+function OperationProgress({
+  op,
+  kind,
+  observedPhases,
+  reconnecting
+}: {
+  op: SystemUpdateOperationDto | null;
+  kind: BusyKind | null;
+  observedPhases: ReadonlySet<string>;
+  reconnecting: boolean;
+}) {
+  const activeKind = op?.kind ?? kind;
+  if (!op?.phase) {
+    const fallback =
+      activeKind === "rollback"
+        ? "正在回滚并重启服务…"
+        : activeKind === "restart"
+          ? "正在重启服务…"
+          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…";
+    return (
+      <Text size="xs">
+        {reconnecting ? "服务重启中，正在重新连接…请勿关闭页面。" : fallback}
+      </Text>
+    );
+  }
+  const applicable = APPLICABLE_STEPS[op.kind] ?? APPLICABLE_STEPS.update;
+  // Auto-rollback landings report "rollback-*" phases for the same step slot.
+  const stepPhase = op.phase.replace(/^rollback-/, "");
+  const stepIndex = PHASE_STEPS.findIndex((step) => step.phase === stepPhase);
+  return (
+    <Stack gap={6}>
+      <Group gap={4} wrap="nowrap" align="center">
+        {PHASE_STEPS.map((step, index) => {
+          // Supervisor-owned stages only check-mark when a poll actually OBSERVED
+          // them AND a LATER phase was observed afterwards: snapshot/migrate are
+          // recorded when the command STARTS, so observing the phase alone does
+          // not prove it succeeded — the advancement (health-gating, or a
+          // rollback-* landing) is the completion signal. Without it (command
+          // failed → auto-rollback), the failed stage stays unmarked instead of
+          // wearing a ✓.
+          let observedAndAdvanced = false;
+          let superseded = false;
+          if (OBSERVED_ONLY_STEPS.has(step.phase)) {
+            for (const candidate of observedPhases) {
+              // Only FORWARD phases are advancement evidence: an auto-rollback
+              // landing (rollback-health-gating) maps to a later STEP SLOT but
+              // means the stage FAILED, not that it completed.
+              if (candidate.startsWith("rollback-")) continue;
+              if (PHASE_STEPS.findIndex((s) => s.phase === candidate) > index) {
+                if (observedPhases.has(step.phase)) {
+                  observedAndAdvanced = true;
+                } else {
+                  // A later forward phase is already active while this stage was
+                  // never observed: it was bypassed (an update without pending
+                  // migrations goes draining -> health-gating directly), not
+                  // still pending.
+                  superseded = true;
+                }
+                break;
+              }
+            }
+          }
+          const skipped = !applicable.has(step.phase);
+          const state = skipped || superseded
+            ? "skipped"
+            : index === stepIndex
+              ? "active"
+              : OBSERVED_ONLY_STEPS.has(step.phase)
+                ? observedAndAdvanced
+                  ? "done"
+                  : "todo"
+                : stepIndex >= 0 && index < stepIndex
+                  ? "done"
+                  : "todo";
+          return (
+            <Group key={step.phase} gap={4} wrap="nowrap">
+              {index > 0 ? <Text size="10px" c={state === "todo" || state === "skipped" ? "dimmed" : "blue"}>→</Text> : null}
+              <Text
+                size="10px"
+                td={state === "skipped" ? "line-through" : "none"}
+                fw={state === "active" ? 700 : 400}
+                c={state === "active" ? "blue" : state === "done" ? "teal" : "dimmed"}
+              >
+                {step.label}
+                {state === "done" ? " ✓" : ""}
+              </Text>
+            </Group>
+          );
+        })}
+      </Group>
+      <Text size="xs">{phaseDescription(op.phase)}{reconnecting ? "（连接中断，重连中…）" : ""}</Text>
+      {op.phase === "downloading" && op.progress !== null ? (
+        <>
+          <Progress value={op.progress} size="sm" radius="sm" animated />
+          <Text size="10px" c="dimmed" ta="center">
+            {op.progress}%
+          </Text>
+        </>
+      ) : null}
+    </Stack>
+  );
+}
+
 export function SystemUpdateBadge() {
   const [opened, setOpened] = useState(false);
   const [runtime, setRuntime] = useState<SystemRuntimeStatusDto | null>(null);
@@ -104,6 +274,9 @@ export function SystemUpdateBadge() {
   const pollTimer = useRef<number | null>(null);
   const polledOpId = useRef<string | null>(null);
   const mounted = useRef(true);
+  // Supervisor stages (snapshot/migrate) actually seen by a poll for the CURRENT
+  // operation — reset when a new operation begins or is resumed.
+  const observedPhases = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     mounted.current = true;
@@ -199,6 +372,16 @@ export function SystemUpdateBadge() {
           }
           if (op) {
             interval = POLL_INTERVAL_MS;
+            // Merge both sources into the observed set, keeping rollback aliases
+            // VERBATIM: the server is the only place the early stages
+            // (snapshot/migrate) can be observed from, and completion evidence
+            // must distinguish a rollback landing from forward advancement.
+            for (const phase of op.observedPhases ?? []) {
+              observedPhases.current.add(phase);
+            }
+            if (op.phase) {
+              observedPhases.current.add(op.phase);
+            }
             setActiveOp(op);
             setPhase("running");
           } else {
@@ -222,6 +405,7 @@ export function SystemUpdateBadge() {
       setBusy(kind);
       setPhase("running");
       setActiveOp(null);
+      observedPhases.current = new Set();
       try {
         const result =
           kind === "update"
@@ -251,6 +435,10 @@ export function SystemUpdateBadge() {
       const active = ops.find((op) => op.status === "running" || op.status === "pending");
       if (active && !polledOpId.current && mounted.current) {
         polledOpId.current = active.operationId;
+        observedPhases.current = new Set([
+          ...(active.observedPhases ?? []),
+          ...(active.phase ? [active.phase] : [])
+        ]);
         setActiveOp(active);
         setBusy(active.kind);
         setPhase("running");
@@ -373,19 +561,13 @@ export function SystemUpdateBadge() {
 
             {inProgress ? (
               <Alert color="blue" variant="light" p="xs">
-                <Group gap="xs" wrap="nowrap">
-                  <Loader size="xs" />
-                  <Text size="xs">
-                    {phase === "finishing"
-                      ? "正在刷新版本与操作记录…"
-                      : phase === "reconnecting"
-                      ? "服务重启中，正在重新连接…请勿关闭页面。"
-                      : busy === "restart"
-                        ? "正在重启服务…"
-                        : busy === "rollback"
-                          ? "正在回滚并重启服务…"
-                          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…"}
-                  </Text>
+                <Group gap="xs" wrap="nowrap" align="flex-start">
+                  <Loader size="xs" mt={4} />
+                  {phase === "finishing" ? (
+                    <Text size="xs">正在刷新版本与操作记录…</Text>
+                  ) : (
+                    <OperationProgress op={activeOp} kind={busy} observedPhases={observedPhases.current} reconnecting={phase === "reconnecting"} />
+                  )}
                 </Group>
               </Alert>
             ) : null}

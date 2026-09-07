@@ -36,6 +36,12 @@ export const SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE = "last-good-version";
 // so a third-party mirror could replay an older, correctly-signed manifest to hide a
 // newer release. We reject any signed manifest advertising a version below this floor.
 export const SYSTEM_UPDATE_MANIFEST_FLOOR_FILE = "manifest-floor-version";
+// Written by the supervisor during the post-exit stages (snapshot/migrate/health
+// gate/stabilization) of a promotion. The freshly-launched app reads it on every
+// status poll to surface the current phase while the operation is still running —
+// the old process is gone by then, so the DB row alone cannot advance. Cosmetic and
+// best-effort: unlike promoting.json it never gates or fences anything.
+export const SYSTEM_UPDATE_PHASE_FILE = "phase.json";
 
 export type SystemUpdateRuntimeConfig = {
   currentVersion: string;

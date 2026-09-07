@@ -765,6 +765,37 @@ function testJournalFieldExtraction() {
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
+function testWritePhaseSequence() {
+  // The phase marker must deduplicate the HISTORY (bounded, reader caps at 16)
+  // while always republishing the CURRENT phase as the last element — a
+  // finalization retry re-entering an earlier stage must move "now" back, not
+  // leave a stale stabilizing as the tail.
+  const script = readFileSync(entrypoint, "utf8");
+  const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
+  const root = mkdtempSync(path.join(tmpdir(), "chordv-sup-phase-seq-"));
+  try {
+    mkdirSync(path.join(root, "state"));
+    const phases = (sequence: string) => spawnSync("bash", ["-c", `${definitions}
+GEN_OP="sysop_phase_seq"
+${sequence.split(" ").map((p) => `write_phase ${p}`).join("\n")}
+cat "$PHASE_FILE"`], {
+      encoding: "utf8",
+      env: { ...process.env, CHORDV_SYSTEM_STATE_DIR: path.join(root, "state") }
+    });
+    let result = phases("snapshotting migrating health-gating stabilizing");
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '{"operationId":"sysop_phase_seq","phases":["snapshotting","migrating","health-gating","stabilizing","stabilizing"]}\n');
+    // Finalization retry: re-enter health-gating after the app exits.
+    result = phases("snapshotting migrating health-gating stabilizing health-gating");
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      '{"operationId":"sysop_phase_seq","phases":["snapshotting","migrating","health-gating","stabilizing","health-gating"]}\n',
+      "a re-gated stage must become the tail (current), not leave stale stabilizing"
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 function testSnapshotDatabaseUrl() {
   const script = readFileSync(entrypoint, "utf8");
   const definitions = script.slice(0, script.indexOf('\nAPP_PID=""'));
@@ -1050,6 +1081,7 @@ async function main() {
   await testInvalidJournals();
   await testInvalidPendingAfterAppExit();
   testJournalFieldExtraction();
+  testWritePhaseSequence();
   testSnapshotDatabaseUrl();
   testStabilizationConfig();
   await testHealthElapsedDeadline();
