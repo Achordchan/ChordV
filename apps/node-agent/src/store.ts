@@ -218,6 +218,34 @@ export class AgentStore {
 
   getConfigRevision(): string { return this.getMeta('config_revision') || '0'; }
 
+  /**
+   * The inbound this node currently serves, as last applied. Kept in meta_v2 so
+   * it is bound to the node identity like every other piece of state: a
+   * repurposed host that archives its identity also loses its memory of the old
+   * node's inbound, and the startup self-heal then refuses to keep serving it.
+   */
+  getInboundState(): { hash: string; report: Record<string, unknown>; appliedRevision: string } | undefined {
+    const raw = this.getMeta('inbound_state');
+    if (!raw) return undefined;
+    try {
+      const parsed = JSON.parse(raw) as { hash?: unknown; report?: unknown; appliedRevision?: unknown };
+      if (typeof parsed.hash !== 'string' || !parsed.report || typeof parsed.report !== 'object') return undefined;
+      return {
+        hash: parsed.hash,
+        report: parsed.report as Record<string, unknown>,
+        appliedRevision: typeof parsed.appliedRevision === 'string' ? parsed.appliedRevision : '0',
+      };
+    } catch { return undefined; }
+  }
+
+  setInboundState(state: { hash: string; report: Record<string, unknown>; appliedRevision: string }): void {
+    this.setMeta('inbound_state', JSON.stringify(state));
+  }
+
+  clearInboundState(): void {
+    this.db.prepare('DELETE FROM meta_v2 WHERE key = ?').run('inbound_state');
+  }
+
   advanceConfigRevision(revision: string): void {
     const next = decimal(revision);
     if (BigInt(next) > BigInt(this.getConfigRevision())) this.setMeta('config_revision', next);

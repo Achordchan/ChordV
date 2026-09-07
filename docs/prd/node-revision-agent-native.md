@@ -73,12 +73,25 @@ R1 安全与恢复边界：
 - 安装脚本仅探测 /usr/bin/node、/usr/local/bin/node，解析软链接后限定 /usr 或 /opt 系统路径，并以 chordv-agent 用户验证 Node 20.19.x 可执行；root nvm、ProtectHome 隐藏路径或仅 root 可执行的安装不被采用。
 - 关闭弹窗会使当前会话及轮询失效，迟到创建结果仅刷新节点列表，不恢复旧弹窗。待注册节点提供“继续接入”，可重新签发令牌；无需保留明文旧命令或创建重复节点。R1 尚无注册完成的 SSE 事件，沿用3秒检查、故障退避至30秒，关闭/换会话/就绪/15分钟等待期结束时停止。
 
-### 2.2 新增:入站配置下发(agent)
+### 2.2 新增:入站配置下发(agent)  —— R2-A 已实现
 
 - 命令 `ENSURE_INBOUND`:payload 携带完整 Reality 参数(或由控制面生成密钥对下发)
 - agent 职责扩展:管理 `/etc/chordv/xray/` 配置目录(生成含 API 片段的完整配置)、`systemctl reload` Xray、读取生效状态上报
 - 密钥管理:Reality 私钥只在 agent 侧生成(可选:控制面下发)——**默认 agent 侧生成、公钥经注册/心跳上报**,私钥永不出 VPS
 - Xray 安装:install 脚本负责(官方安装脚本或发行包),agent 只管配置与运行状态,不负责安装(保持边界)
+
+R2-A 落地细节:
+
+- 命令 `ENSURE_INBOUND` 的 payload 由控制面归一化后落库(`agent-inbound.ts` 的 `normalizeInboundSpec`,含默认端口 443 / dest / SNI),`dedupeKey` 取规格指纹,重复下发天然幂等。
+- agent 无权写 Xray 配置:它把请求写进自己目录下的 `pending.json`,systemd path 单元触发 **root 拥有的** `/usr/local/lib/chordv/xray-apply.js`(从发布目录复制出来,避免 agent 改写 root 会执行的脚本)。助手把 agent 视为不可信输入重新逐字段校验,并**自行渲染**入站结构,绝不搬运 agent 提供的 JSON。
+- 配置目录 `/etc/chordv/xray/conf.d/`:`00-base.json`(出站)、`10-api.json`(计量片段,root 所有且从不重新生成)、`50-inbound.json`(唯一生成文件,含 Reality 私钥,`root:chordv-xray 0640`)。发布前用完整候选目录跑 `xray run -test`,原子改名发布,重启失败回滚上一份并再次重启。
+- Reality 密钥对与 shortId 由助手在 VPS 上生成,私钥只进 root 文件;改端口/SNI 保留密钥(轮换会让已发出的订阅全部失效),仅 `rotateKeys: true` 才重新生成。
+- Xray 重启会清空 gRPC 下发的用户,因此任何触发重启的部署之后 agent 立即 reconcile;另外按 `getSysStats().uptime` 回退检测运维/升级/OOM 造成的重启。
+- 部署成功的判据是**运行中的实例**:`getSysStats` 加按 tag 查询 `getInboundUsers` 都通过才算完成;助手失败、端口/SNI 与下发不符、验活失败一律让命令响亮失败,不写任何 Node 字段。
+- 节点对外地址来自 `GET /api/agent/v1/whoami`(控制面看到的来源地址,走已鉴权信道),`CHORDV_NODE_PUBLIC_HOST` 可覆盖。控制面独立校验为公网单播地址,并校验端口/SNI/flow 等与下发一致后才写回 `Node`。
+- 写回只让节点**可以被激活**(`isNodeOnboardingReady` 转真),`isActive` 仍由管理员决定;迟到的结果不会覆盖更新的部署(按已完成的 `ENSURE_INBOUND` job revision 判断)。
+- 本机残留他人身份的入站配置(重装/还原备份/换身份)时,agent 启动即请求助手发布空入站,宁可不提供服务也不拿旧节点的密钥继续服务。
+- Xray 二进制走同源分发 `GET /api/agent-download/xray/:arch`(另有 `.sha256`),需要部署侧提供 `CHORDV_XRAY_DIST_DIR`;未配置即报错,不回退到其他下载源。
 
 ### 2.3 新增:agent 发布托管
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply ChordV Xray inbound configuration
+# The unprivileged agent cannot write Xray's config or restart it. It writes a
+# request file instead; this fixed, root-owned script is the only thing that
+# acts on it, and it re-validates everything the agent wrote.
+After=xray.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/node /usr/local/lib/chordv/xray-apply.js
+PrivateTmp=true

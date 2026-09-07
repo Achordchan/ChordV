@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { renderInstallScript } from "../src/modules/agent/agent-install.controller";
+import { renderInstallScript, renderXrayInstall } from "../src/modules/agent/agent-install.controller";
 
 const root = mkdtempSync(path.join(tmpdir(), "agent-install-staging-"));
 try {
@@ -21,9 +21,14 @@ try {
   }
   writeFileSync(path.join(root, "corrupt.tgz"), "not an archive");
   writeFileSync(path.join(root, "curl"), `#!/bin/bash
+url=""
 while [[ $# -gt 0 ]]; do
-  if [[ "$1" == -o ]]; then output="$2"; shift 2; else shift; fi
+  if [[ "$1" == -o ]]; then output="$2"; shift 2;
+  else [[ "$1" == http* ]] && url="$1"; shift; fi
 done
+# The Xray section fetches the artifact and its digest from the same origin, so
+# the stub has to answer both.
+if [[ "$url" == *.sha256 ]]; then cp "\${TEST_SHA:-/dev/null}" "$output"; exit 0; fi
 if [[ "\${TEST_PARTIAL:-false}" == true ]]; then head -c 64 "$TEST_PAYLOAD" > "$output"; exit 18; fi
 cp "$TEST_PAYLOAD" "$output"
 `, { mode: 0o755 });
@@ -96,5 +101,50 @@ grep -q valid "$first/dist/src/main.js"
 [[ -z "$(find /opt/chordv-node-agent/releases -maxdepth 1 -name '.staging.*' -print)" ]]
 `], { encoding: "utf8" });
   assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner)");
+
+  // The Xray section runs as root on a fresh host: verify what it actually
+  // creates, not just what the rendered text says.
+  writeFileSync(path.join(root, "xray.sh"), `#!/bin/bash
+set -euo pipefail
+API_BASE='https://example.com/api'
+ARCH=linux-x64
+SERVICE_USER=chordv-agent
+NODE_BIN=/usr/local/bin/node
+STAGING_DIR="$(mktemp -d)"
+CURRENT_LINK=/opt/chordv-node-agent/current
+${renderXrayInstall()}
+`);
+  const xrayInstall = spawnSync("docker", ["run", "--rm", "--network", "none", "--entrypoint", "bash", "-v", `${root}:/test:ro`, "chordv-api:latest", "-ec", `
+mkdir -p /test-bin /release/deploy /release/dist/src
+cp /test/curl /test-bin/curl
+export PATH=/test-bin:$PATH
+id chordv-agent >/dev/null 2>&1 || useradd --system chordv-agent
+printf '{"log":{}}' > /release/deploy/xray-base.json
+printf '{"api":{}}' > /release/deploy/xray-api.fragment.json
+printf 'helper' > /release/dist/src/xray-apply.js
+mkdir -p /opt/chordv-node-agent && ln -sfn /release /opt/chordv-node-agent/current
+mkdir -p /payload && printf '#!/bin/sh\necho stub-xray\n' > /payload/xray && chmod 0755 /payload/xray
+tar -czf /tmp/xray.tgz -C /payload xray
+sha256sum /tmp/xray.tgz | cut -d' ' -f1 > /tmp/xray.sha256
+
+# A digest that does not match must abort before anything is installed.
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/dev/null bash /test/xray.sh 2>/tmp/xray.err && exit 99
+# Fail for the RIGHT reason: the digest check, not a missing tool upstream of it.
+grep -qi 'sha256sum' /tmp/xray.err
+[[ ! -e /usr/local/bin/xray ]]
+[[ ! -e /etc/chordv/xray/conf.d/00-base.json ]]
+
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+[[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/00-base.json)" == root:root:644 ]]
+[[ "$(stat -c '%U:%G:%a' /etc/chordv/xray/conf.d/10-api.json)" == root:root:644 ]]
+[[ ! -e /etc/chordv/xray/conf.d/50-inbound.json ]]
+[[ "$(stat -c '%U:%G:%a' /usr/local/lib/chordv/xray-apply.js)" == root:root:755 ]]
+[[ "$(stat -c '%U:%a' /var/lib/chordv-node-agent/xray)" == chordv-agent:700 ]]
+[[ "$(stat -c '%a' /usr/local/bin/xray)" == 755 ]]
+grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
+grep -q 'PathChanged=/var/lib/chordv-node-agent/xray/pending.json' /etc/systemd/system/chordv-xray-apply.path
+grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
+`], { encoding: "utf8" });
+  assert.equal(xrayInstall.status, 0, `xray install: ${xrayInstall.stdout}\n${xrayInstall.stderr}`);
+  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner, xray install verifies its digest and keeps config root-owned)");
 } finally { rmSync(root, { recursive: true, force: true }); }

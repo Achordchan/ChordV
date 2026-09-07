@@ -5,7 +5,10 @@ import { join, relative } from 'node:path';
 import { loadConfig } from '../src/config.js';
 
 const script = readFileSync(new URL('../deploy/build-release.sh', import.meta.url), 'utf8');
+const configSource = readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');
 const healthCheck = readFileSync(new URL('../deploy/health-check.sh', import.meta.url), 'utf8');
+const apiFragment = JSON.parse(readFileSync(new URL('../deploy/xray-api.fragment.json', import.meta.url), 'utf8'));
+const baseConfig = JSON.parse(readFileSync(new URL('../deploy/xray-base.json', import.meta.url), 'utf8'));
 
 
 test('Linux 发布产物强制复制原生模块并拒绝运行时共享 inode', () => {
@@ -35,4 +38,21 @@ test('健康检查解析的默认状态库路径与 loadConfig 一致', () => {
   }
   assert.equal(fallback, join('data', 'node-agent.db'));
   assert.ok(healthCheck.includes(`AGENT_DATABASE_PATH:-$PWD/${fallback}`), `脚本默认路径与 loadConfig 不一致：${fallback}`);
+});
+
+test('Xray 基础配置提供出站，且计量片段端口与 agent 默认地址一致', () => {
+  // The api fragment declares an `api` outbound rule and the api-in inbound but
+  // no freedom outbound; without the base file Xray refuses to start and the
+  // agent's xrayStatus would never turn healthy.
+  const outbounds = (baseConfig.outbounds as Array<{ protocol: string }>).map((item) => item.protocol);
+  assert.ok(outbounds.includes('freedom'), `基础配置必须提供 freedom 出站：${outbounds.join('、')}`);
+  assert.equal(baseConfig.inbounds, undefined, '基础配置不得声明入站');
+
+  const apiInbound = (apiFragment.inbounds as Array<{ tag: string; listen: string; port: number }>)
+    .find((item) => item.tag === 'api-in');
+  assert.ok(apiInbound, '计量片段必须提供 api-in');
+  const [, fallback] = /XRAY_API_ADDRESS\?\.trim\(\) \|\| '([^']+)'/.exec(configSource) ?? [];
+  // Two files that must not drift: the agent dials this address by default, so
+  // a fragment that moves the port would silently break metering.
+  assert.equal(`${apiInbound!.listen}:${apiInbound!.port}`, fallback);
 });

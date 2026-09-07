@@ -165,7 +165,7 @@ export class CreateAgentCredentialDto {
 }
 
 export class QueueAgentCommandDto {
-  @IsIn(["ENSURE_USER", "ENABLE_USER", "DISABLE_USER", "REMOVE_USER", "RECONCILE_USERS", "REFRESH_QUOTA"])
+  @IsIn(["ENSURE_USER", "ENABLE_USER", "DISABLE_USER", "REMOVE_USER", "RECONCILE_USERS", "REFRESH_QUOTA", "ENSURE_INBOUND"])
   type!: NodeAgentCommandType;
 
   @IsOptional()

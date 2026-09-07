@@ -117,6 +117,7 @@ enum NodeAgentCommandType {
   REMOVE_USER
   RECONCILE_USERS
   REFRESH_QUOTA
+  ENSURE_INBOUND
 }
 
 enum NodeAgentJobStatus {

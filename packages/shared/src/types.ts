@@ -1334,7 +1334,8 @@ export type NodeAgentCommandType =
   | "DISABLE_USER"
   | "REMOVE_USER"
   | "RECONCILE_USERS"
-  | "REFRESH_QUOTA";
+  | "REFRESH_QUOTA"
+  | "ENSURE_INBOUND";
 export type NodeAgentJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface AgentHeartbeatInputDto {

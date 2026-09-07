@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { AGENT_VERSION } from './agent-version.js';
 import type { AgentConfig } from './config.js';
 import type { AgentApiClient } from './api-client.js';
 import type { AgentStore } from './store.js';
 import type { XrayAdapter } from './xray-adapter.js';
 import { CommandProcessor } from './command-processor.js';
+import { FileInboundApplier, type InboundApplier } from './xray-inbound.js';
 import { isNodeControlMode, type AgentConfigSnapshot } from './types.js';
 
 export class AgentRunner {
@@ -15,15 +19,31 @@ export class AgentRunner {
   private readonly timers = new Set<NodeJS.Timeout>();
   private stateMutationTail: Promise<void> = Promise.resolve();
   private eventsController?: AbortController;
+  private lastXrayUptime = 0;
+  private readonly inbound: InboundApplier;
 
   constructor(
     private readonly config: AgentConfig,
     private readonly store: AgentStore,
     private readonly api: AgentApiClient,
     private readonly xray: XrayAdapter,
+    inbound: InboundApplier = new FileInboundApplier(config.inboundRequestDir),
   ) {
-    this.commands = new CommandProcessor(store, xray);
+    this.inbound = inbound;
+    this.commands = new CommandProcessor(store, xray, {
+      applier: inbound,
+      inboundTag: config.xrayInboundTag,
+      resolvePublicHost: () => this.resolvePublicHost(),
+    });
     this.currentConfig = store.getConfigSnapshot();
+  }
+
+  /** Operator override first; otherwise the address the control plane sees. */
+  private async resolvePublicHost(): Promise<string> {
+    if (this.config.publicHost) return this.config.publicHost;
+    const observed = (await this.api.whoami()).observedIp?.trim();
+    if (!observed) throw new Error('控制面未能返回本机公网地址，请配置 CHORDV_NODE_PUBLIC_HOST');
+    return observed;
   }
 
   async start(): Promise<void> {
@@ -35,6 +55,7 @@ export class AgentRunner {
       this.logError(new Error(`后台暂不可用，使用 revision ${this.currentConfig.revision} 的本地配置启动`));
     }
     await this.checkXrayAndRecover();
+    await this.discardForeignInbound();
     this.schedule(() => this.sample(), this.config.sampleIntervalMs);
     this.schedule(() => this.flushBatches(), 1_000);
     this.schedule(() => this.sendHeartbeat(), this.config.heartbeatIntervalMs);
@@ -102,11 +123,55 @@ export class AgentRunner {
     });
   }
 
+  /**
+   * This host may carry an inbound deployed for a DIFFERENT node identity — a
+   * repurposed VPS, a restored image, a hand-copied data directory. The state
+   * database travels with the identity, the Xray config does not, so "the
+   * helper has applied an inbound but this identity never asked for one" means
+   * the keys and port belong to a stranger. Publish an empty inbound instead of
+   * serving them.
+   */
+  private async discardForeignInbound(): Promise<void> {
+    if (this.store.getInboundState()) return;
+    if (!this.helperHasDeployedInbound()) return;
+    await this.inbound.reset(randomUUID());
+    await this.commands.reconcile(this.store.listDesiredUsers());
+    console.warn('[node-agent] 已清除不属于本节点身份的 Xray 入站配置');
+  }
+
+  /**
+   * A helper result only proves a deployment if it succeeded and named a port —
+   * a failed attempt leaves a result file too, and treating that as a foreign
+   * inbound would restart Xray on every boot for nothing.
+   */
+  private helperHasDeployedInbound(): boolean {
+    try {
+      const raw = readFileSync(join(this.config.inboundRequestDir, 'result.json'), 'utf8');
+      const parsed = JSON.parse(raw) as { ok?: unknown; listenPort?: unknown };
+      return parsed.ok === true && typeof parsed.listenPort === 'number' && parsed.listenPort > 0;
+    } catch { return false; }
+  }
+
   private async checkXrayAndRecover(): Promise<void> {
     await this.xray.health();
     const recovered = !this.xrayHealthy;
     this.xrayHealthy = true;
     if (recovered && this.currentConfig.controlMode === 'direct_primary') {
+      await this.commands.reconcile(this.store.listDesiredUsers());
+    }
+  }
+
+  /**
+   * Users added over gRPC live only in Xray's memory, so ANY restart — ours, an
+   * operator's, a package upgrade, an OOM kill — silently empties the inbound
+   * while the agent still believes it is provisioned. A falling uptime is the
+   * only signal that reaches us, so treat it as a reconcile trigger.
+   */
+  private async detectXrayRestart(): Promise<void> {
+    const uptime = await this.xray.uptimeSeconds();
+    const restarted = this.lastXrayUptime > 0 && uptime < this.lastXrayUptime;
+    this.lastXrayUptime = uptime;
+    if (restarted && this.currentConfig.controlMode === 'direct_primary') {
       await this.commands.reconcile(this.store.listDesiredUsers());
     }
   }
@@ -120,6 +185,7 @@ export class AgentRunner {
   private async sampleWithinStateMutation(): Promise<void> {
     try {
       await this.checkXrayAndRecover();
+      await this.detectXrayRestart();
       const counters = await this.xray.readAbsoluteCounters();
       const result = this.store.recordSample(counters, new Date(), this.backendOnline);
       if (this.currentConfig.controlMode === 'direct_primary') {

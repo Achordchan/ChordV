@@ -275,11 +275,13 @@ EOF
 chown root:"\$SERVICE_USER" "\$ENV_FILE"
 chmod 0640 "\$ENV_FILE"
 
+${renderXrayInstall()}
 cat > /etc/systemd/system/chordv-node-agent.service <<UNIT
 [Unit]
 Description=ChordV Node Agent
-After=network-online.target
+After=network-online.target xray.service
 Wants=network-online.target
+Requires=xray.service
 
 [Service]
 Type=simple
@@ -302,7 +304,11 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable chordv-node-agent.service
+systemctl enable xray.service chordv-xray-apply.path chordv-node-agent.service
+# Xray comes up with base + metering fragment only; the inbound arrives later
+# as an ENSURE_INBOUND command, so a fresh host is healthy but serves nobody.
+systemctl restart xray.service
+systemctl start chordv-xray-apply.path
 
 echo "==> 启动 Agent（首次启动将使用注册令牌完成接入）…"
 systemctl restart chordv-node-agent.service
@@ -313,5 +319,104 @@ else
   echo "警告：Agent 服务未进入 active 状态，请查看日志：journalctl -u chordv-node-agent -n 50" >&2
   exit 1
 fi
+`;
+}
+
+/**
+ * Installs Xray and the root half of inbound deployment. Rendered separately so
+ * a regression can run exactly this section in a container, and placed after
+ * the agent release is published so a failure here cannot strand a half-staged
+ * agent. The binary comes from THIS origin — the same trust anchor as the agent
+ * tarball — rather than a second host the installer would also have to trust.
+ */
+export function renderXrayInstall(): string {
+  return `# --- chordv:xray-install:begin ---
+XRAY_USER="chordv-xray"
+XRAY_BIN=/usr/local/bin/xray
+XRAY_CONF_DIR=/etc/chordv/xray/conf.d
+HELPER_DIR=/usr/local/lib/chordv
+REQUEST_DIR=/var/lib/chordv-node-agent/xray
+
+if ! id "\$XRAY_USER" >/dev/null 2>&1; then
+  useradd --system --home /var/lib/chordv-xray --shell /usr/sbin/nologin "\$XRAY_USER"
+fi
+
+# Staged inside the installer's own staging directory so the existing EXIT
+# cleanup removes it too — replacing that trap here would drop the agent
+# staging cleanup along with it.
+XRAY_STAGING="$(mktemp -d "\$STAGING_DIR/xray.XXXXXX")"
+curl -fsSL --connect-timeout 15 --max-time 600 \\
+  "\$API_BASE/agent-download/xray/\$ARCH" -o "\$XRAY_STAGING/xray.tar.gz"
+curl -fsSL --connect-timeout 15 --max-time 60 \\
+  "\$API_BASE/agent-download/xray/\$ARCH.sha256" -o "\$XRAY_STAGING/xray.sha256"
+# The digest is served from the same origin, so it proves integrity (a truncated
+# or swapped-mid-publish artifact), not authorship — authorship is the TLS origin.
+( cd "\$XRAY_STAGING" && printf '%s  xray.tar.gz\\n' "$(cut -d' ' -f1 < xray.sha256)" | sha256sum -c - )
+tar --no-same-owner --no-same-permissions -xzf "\$XRAY_STAGING/xray.tar.gz" -C "\$XRAY_STAGING"
+[[ -f "\$XRAY_STAGING/xray" ]] || { echo "安装失败：Xray 包中缺少 xray 可执行文件。" >&2; exit 1; }
+install -m 0755 -o root -g root "\$XRAY_STAGING/xray" "\$XRAY_BIN"
+"\$XRAY_BIN" version >/dev/null
+
+# Xray's configuration belongs to root. The agent must never be able to write
+# what root then runs, and must never be able to read the Reality private key.
+install -d -m 0755 -o root -g root /etc/chordv/xray "\$XRAY_CONF_DIR"
+install -m 0644 -o root -g root "\$CURRENT_LINK/deploy/xray-base.json" "\$XRAY_CONF_DIR/00-base.json"
+install -m 0644 -o root -g root "\$CURRENT_LINK/deploy/xray-api.fragment.json" "\$XRAY_CONF_DIR/10-api.json"
+
+# The helper is copied OUT of the agent-owned release directory: run from there,
+# a compromised agent could rewrite the script root executes.
+install -d -m 0755 -o root -g root "\$HELPER_DIR"
+install -m 0755 -o root -g root "\$CURRENT_LINK/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
+install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"
+
+cat > /etc/systemd/system/xray.service <<XRAYUNIT
+[Unit]
+Description=Xray Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=\$XRAY_USER
+ExecStart=\$XRAY_BIN run -confdir \$XRAY_CONF_DIR
+Restart=on-failure
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/chordv/xray
+
+[Install]
+WantedBy=multi-user.target
+XRAYUNIT
+
+cat > /etc/systemd/system/chordv-xray-apply.service <<APPLYUNIT
+[Unit]
+Description=Apply ChordV Xray inbound configuration
+After=xray.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=\${NODE_BIN@Q} \$HELPER_DIR/xray-apply.js
+PrivateTmp=true
+APPLYUNIT
+
+cat > /etc/systemd/system/chordv-xray-apply.path <<APPLYPATH
+[Unit]
+Description=Watch for ChordV inbound apply requests
+
+[Path]
+PathChanged=\$REQUEST_DIR/pending.json
+Unit=chordv-xray-apply.service
+
+[Install]
+WantedBy=multi-user.target
+APPLYPATH
+
+rm -rf -- "\$XRAY_STAGING"
+# --- chordv:xray-install:end ---
 `;
 }

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 export interface AgentCredentials {
   agentId: string;
@@ -28,6 +28,14 @@ export interface AgentConfig {
    * default so a repurposed host can never silently keep a stale identity.
    */
   resetIdentity?: boolean;
+  /**
+   * Agent-owned handoff directory for the root Xray helper (pending.json /
+   * result.json). Defaults beside the state database, which the installer keeps
+   * at /var/lib/chordv-node-agent.
+   */
+  inboundRequestDir: string;
+  /** Operator override for the address clients dial, ahead of API-observed detection. */
+  publicHost?: string;
 }
 
 function required(name: string): string {
@@ -115,6 +123,11 @@ export function loadConfig(): AgentConfig {
     xrayApiAddress,
     xrayInboundTag: process.env.XRAY_INBOUND_TAG?.trim() || 'vless-in',
     databasePath: resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db'),
+    inboundRequestDir: resolve(
+      process.env.CHORDV_XRAY_REQUEST_DIR
+      || join(dirname(resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db')), 'xray')
+    ),
+    ...(process.env.CHORDV_NODE_PUBLIC_HOST?.trim() ? { publicHost: process.env.CHORDV_NODE_PUBLIC_HOST.trim() } : {}),
     ...(registerToken && !token ? { registerToken } : {}),
     credentialsPath: resolve(process.env.AGENT_CREDENTIALS_PATH || './data/credentials.json'),
     ...(truthyFlag('CHORDV_AGENT_RESET_IDENTITY') ? { resetIdentity: true } : {}),

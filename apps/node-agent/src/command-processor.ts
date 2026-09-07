@@ -1,21 +1,44 @@
-import { isNodeControlMode, type AgentCommand, type CommandResult, type DesiredUser } from './types.js';
+import { randomUUID } from 'node:crypto';
+import { isNodeControlMode, type AgentCommand, type CommandResult, type DesiredUser, type InboundReport } from './types.js';
 import type { AgentStore } from './store.js';
 import type { XrayAdapter } from './xray-adapter.js';
+import { inboundSpecHash, parseInboundSpec, type InboundApplier } from './xray-inbound.js';
+
+/**
+ * What ENSURE_INBOUND needs beyond users: the root helper that owns the Xray
+ * config, the tag metering reads, and the address clients will dial. Optional
+ * so the user-command paths (and their tests) construct a processor unchanged.
+ */
+export interface InboundDeps {
+  applier: InboundApplier;
+  inboundTag: string;
+  resolvePublicHost(): Promise<string>;
+  /** Restarting Xray is not instant; how long to wait for the tag to appear. */
+  verifyAttempts?: number;
+  verifyDelayMs?: number;
+}
 
 export class CommandProcessor {
-  constructor(private readonly store: AgentStore, private readonly xray: XrayAdapter) {}
+  constructor(
+    private readonly store: AgentStore,
+    private readonly xray: XrayAdapter,
+    private readonly inbound?: InboundDeps,
+  ) {}
 
   async execute(command: AgentCommand, writable: boolean): Promise<CommandResult> {
     const previous = this.store.beginCommand(command);
     if (previous) return previous;
     let result: CommandResult;
     try {
-      await this.apply(command, writable);
+      // apply() may return fields that only it can produce (the deployed
+      // inbound's public parameters), so they are merged here rather than
+      // reconstructed by the caller.
+      const extra = await this.apply(command, writable);
       this.store.advanceConfigRevision(command.targetRevision);
       result = {
         commandId: command.commandId,
         status: 'completed',
-        result: { appliedRevision: command.targetRevision },
+        result: { appliedRevision: command.targetRevision, ...extra },
       };
     } catch (error) {
       result = {
@@ -28,7 +51,7 @@ export class CommandProcessor {
     return result;
   }
 
-  private async apply(command: AgentCommand, writable: boolean): Promise<void> {
+  private async apply(command: AgentCommand, writable: boolean): Promise<Record<string, unknown> | void> {
     if (!writable && command.type !== 'REFRESH_QUOTA' && command.type !== 'RECONCILE_USERS') {
       throw new Error('当前控制模式禁止修改 Xray 用户');
     }
@@ -90,8 +113,81 @@ export class CommandProcessor {
         const bindingId = stringField(command.payload, 'bindingId');
         const quota = stringField(command.payload, 'quotaRemainingBytes');
         this.store.updateQuota(bindingId, quota, command.targetRevision);
+        return;
       }
+      case 'ENSURE_INBOUND':
+        return { inbound: await this.ensureInbound(command) };
     }
+  }
+
+  /**
+   * Deploys the control plane's inbound through the root helper and reports the
+   * parameters clients need. Everything here is fail-loud: a node whose command
+   * says "completed" must be a node an operator can activate, so a helper
+   * failure, a stale revision or an inbound that does not come back live all
+   * throw instead of reporting a partial success.
+   */
+  private async ensureInbound(command: AgentCommand): Promise<InboundReport> {
+    if (!this.inbound) throw new Error('本机未启用 Xray 入站部署能力（缺少配置助手）');
+    const spec = parseInboundSpec(command.payload, this.inbound.inboundTag);
+    const hash = inboundSpecHash(spec);
+    const previous = this.store.getInboundState();
+    if (previous && isOlderRevision(command.targetRevision, previous.appliedRevision)) {
+      throw new Error('拒绝执行过期的 ENSURE_INBOUND revision');
+    }
+
+    // Re-issuing the same spec must not restart Xray: a restart drops every
+    // live connection and every gRPC-provisioned user. Verify the running
+    // instance instead and answer from what was applied last time.
+    if (previous?.hash === hash && !spec.rotateKeys && await this.xray.inboundLive()) {
+      const report = { ...(previous.report as unknown as InboundReport), changed: false, liveVerifiedAt: new Date().toISOString() };
+      this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision });
+      return report;
+    }
+
+    const requestId = randomUUID();
+    const applied = await this.inbound.applier.apply(spec, requestId);
+    if (applied.listenPort !== spec.listenPort) {
+      throw new Error(`配置助手部署的端口 ${applied.listenPort} 与下发的 ${spec.listenPort} 不一致`);
+    }
+    if (!spec.serverNames.includes(applied.serverName)) {
+      throw new Error(`配置助手返回的 serverName ${applied.serverName} 不在下发列表中`);
+    }
+    await this.waitForInbound(this.inbound.verifyAttempts ?? 15, this.inbound.verifyDelayMs ?? 1_000);
+    // A restart wipes users added over gRPC — they live only in Xray's memory.
+    if (applied.restarted) await this.reconcile(this.store.listDesiredUsers());
+
+    const report: InboundReport = {
+      requestId,
+      inboundTag: spec.inboundTag,
+      serverHost: await this.inbound.resolvePublicHost(),
+      serverPort: spec.listenPort,
+      realityPublicKey: applied.realityPublicKey,
+      shortId: applied.shortId,
+      serverName: applied.serverName,
+      flow: spec.flow,
+      fingerprint: spec.fingerprint,
+      spiderX: spec.spiderX,
+      xrayVersion: applied.xrayVersion,
+      changed: applied.changed,
+      liveVerifiedAt: new Date().toISOString(),
+    };
+    this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision });
+    return report;
+  }
+
+  /** A restart is not instant; give the new inbound a bounded window to appear. */
+  private async waitForInbound(attempts: number, delayMs: number): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        await this.xray.health();
+        if (await this.xray.inboundLive()) return;
+        lastError = new Error('Xray 已启动但未加载目标入站 tag');
+      } catch (error) { lastError = error; }
+      await new Promise((done) => setTimeout(done, delayMs));
+    }
+    throw new Error(`入站部署后未能确认生效：${lastError instanceof Error ? lastError.message : String(lastError)}`);
   }
 
   private resolveUser(command: AgentCommand): DesiredUser {

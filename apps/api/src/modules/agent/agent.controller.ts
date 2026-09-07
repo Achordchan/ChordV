@@ -5,6 +5,12 @@ import { AgentCommandResultDto, AgentHeartbeatDto, AgentUsageBatchDto } from "./
 import { AgentEventsService } from "./agent-events.service";
 import { AgentService } from "./agent.service";
 
+/** Express reports IPv4-mapped IPv6 for dual-stack sockets; report the IPv4. */
+function normalizeObservedIp(value: string | undefined): string {
+  const address = value?.trim() ?? "";
+  return address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+}
+
 @Controller("agent/v1")
 @UseGuards(AgentAuthGuard)
 export class AgentController {
@@ -27,6 +33,18 @@ export class AgentController {
   @Post("usage-batches")
   usageBatches(@Req() request: AgentAuthenticatedRequest, @Body() body: AgentUsageBatchDto) {
     return this.service.ingestUsageBatch(requireAgent(request.agent), body);
+  }
+
+  /**
+   * The source address the control plane sees. The agent uses it as the node's
+   * public host: a cloud host's own NIC usually holds a private address, and an
+   * unauthenticated third-party echo service would be a new trust dependency
+   * for a value that ends up in every client's config.
+   */
+  @Get("whoami")
+  whoami(@Req() request: AgentAuthenticatedRequest) {
+    requireAgent(request.agent);
+    return { observedIp: normalizeObservedIp(request.ip) };
   }
 
   @Get("config")

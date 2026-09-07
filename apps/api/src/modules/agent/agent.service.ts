@@ -11,6 +11,7 @@ import { NodeAgent, Prisma } from "@prisma/client";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AgentCommandResultDto, AgentHeartbeatDto, AgentUsageBatchDto, QueueAgentCommandDto } from "./agent.dto";
 import { AgentEventsService } from "./agent-events.service";
+import { inboundSpecKey, normalizeInboundSpec, parseInboundReport, type NormalizedInboundSpec } from "./agent-inbound";
 import { ClientEventsPublisher } from "../common/client-events.publisher";
 import { PrismaService } from "../common/prisma.service";
 import { trafficGbNumberToBytes } from "../common/traffic-bytes.utils";
@@ -239,7 +240,7 @@ export class AgentService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const job = await tx.nodeCommandJob.findFirst({
         where: { id: commandId, nodeId: agent.nodeId, agentId: agent.id, status: { in: ["pending", "running", "failed"] } },
-        select: { id: true, commandType: true, payload: true }
+        select: { id: true, commandType: true, payload: true, targetRevision: true }
       });
       if (!job) return false;
       await tx.nodeCommandJob.update({
@@ -252,6 +253,9 @@ export class AgentService {
           nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000)
         }
       });
+      if (input.status === "completed" && job.commandType === "ENSURE_INBOUND") {
+        await this.applyInboundReport(tx, agent.nodeId, job, input);
+      }
       if (input.status === "completed" && (job.commandType === "DISABLE_USER" || job.commandType === "REMOVE_USER")) {
         const payload = job.payload as Record<string, unknown>;
         const bindingId = typeof payload.bindingId === "string" ? payload.bindingId : null;
@@ -269,6 +273,30 @@ export class AgentService {
     return { accepted: true };
   }
 
+  /**
+   * Writes the connection parameters an agent reported for a deployed inbound.
+   * The node stays inactive: this only makes activation POSSIBLE (the shared
+   * onboarding invariant starts passing), because shipping users to an inbound
+   * nobody has smoke-tested is the operator's call, not ours.
+   */
+  private async applyInboundReport(
+    tx: Prisma.TransactionClient,
+    nodeId: string,
+    job: { id: string; payload: Prisma.JsonValue; targetRevision: bigint },
+    input: AgentCommandResultDto
+  ) {
+    const spec = normalizeInboundSpec((job.payload ?? {}) as Record<string, unknown>);
+    const fields = parseInboundReport(input.result, spec);
+    // A delayed or retried result must not overwrite a newer deployment. The
+    // completed job log is the applied-revision record; no extra column needed.
+    const newer = await tx.nodeCommandJob.findFirst({
+      where: { nodeId, commandType: "ENSURE_INBOUND", status: "completed", id: { not: job.id }, targetRevision: { gt: job.targetRevision } },
+      select: { id: true }
+    });
+    if (newer) return;
+    await tx.node.update({ where: { id: nodeId }, data: fields });
+  }
+
   async queueCommand(nodeId: string, input: QueueAgentCommandDto): Promise<AgentCommandDto> {
     const agent = await this.prisma.nodeAgent.findFirst({
       where: { nodeId, revokedAt: null },
@@ -281,7 +309,16 @@ export class AgentService {
       select: { agentConfigRevision: true }
     });
     const targetRevision = node.agentConfigRevision;
-    const dedupeKey = input.dedupeKey ?? `${nodeId}:${input.type}:${randomUUID()}`;
+    // The inbound spec is the one payload the server must understand: it is
+    // what the agent's report is later compared against field by field, and a
+    // command dispatched with an unvalidated spec could never be verified.
+    const payload = input.type === "ENSURE_INBOUND"
+      ? normalizeInboundSpec((input.payload ?? {}) as Record<string, unknown>)
+      : input.payload;
+    const dedupeKey = input.dedupeKey
+      ?? (input.type === "ENSURE_INBOUND"
+        ? inboundSpecKey(nodeId, payload as NormalizedInboundSpec)
+        : `${nodeId}:${input.type}:${randomUUID()}`);
     const job = await this.prisma.nodeCommandJob.upsert({
       where: { dedupeKey },
       update: {},
@@ -292,7 +329,7 @@ export class AgentService {
         agentId: agent.id,
         commandType: input.type,
         targetRevision,
-        payload: input.payload as Prisma.InputJsonValue
+        payload: payload as Prisma.InputJsonValue
       }
     });
     const command = serializeCommand(job);

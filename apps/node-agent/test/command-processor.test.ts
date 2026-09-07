@@ -7,11 +7,17 @@ import { CommandProcessor } from '../src/command-processor.js';
 import { AgentStore } from '../src/store.js';
 import type { AbsoluteCounter, AgentCommand, DesiredUser } from '../src/types.js';
 import type { XrayAdapter } from '../src/xray-adapter.js';
+import type { HelperResult, InboundApplier } from '../src/xray-inbound.js';
+import type { InboundSpec } from '../src/types.js';
 
 class FakeXray implements XrayAdapter {
   users = new Map<string, string>();
   ensureCalls = 0;
+  uptime = 1;
+  live = true;
   async health(): Promise<void> {}
+  async uptimeSeconds(): Promise<number> { return this.uptime; }
+  async inboundLive(): Promise<boolean> { return this.live; }
   async readAbsoluteCounters(): Promise<AbsoluteCounter[]> { return []; }
   async listUsers(): Promise<Array<{ email: string; uuid?: string }>> { return [...this.users].map(([email, uuid]) => ({ email, uuid })); }
   async ensureUser(user: DesiredUser): Promise<void> {
@@ -193,5 +199,101 @@ test('非 direct 模式 RECONCILE 只更新本地状态，不写 Xray', async ()
       assert.equal(fixture.store.getConfigSnapshot().controlMode, controlMode);
       assert.deepEqual([...fixture.xray.users], [['untouched@example.com', 'existing']]);
     } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+  }
+});
+
+class FakeApplier implements InboundApplier {
+  calls: InboundSpec[] = [];
+  outcome: Partial<HelperResult> = {};
+  failure?: Error;
+  async apply(spec: InboundSpec, requestId: string): Promise<HelperResult> {
+    this.calls.push(spec);
+    if (this.failure) throw this.failure;
+    return {
+      requestId, ok: true, changed: true, restarted: true,
+      realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
+      serverName: spec.serverNames[0], listenPort: spec.listenPort, xrayVersion: 'Xray 1.8.24',
+      ...this.outcome,
+    };
+  }
+  async reset(requestId: string): Promise<HelperResult> {
+    return { requestId, ok: true, changed: true, restarted: true, realityPublicKey: '', shortId: '', serverName: '', listenPort: 0, xrayVersion: '' };
+  }
+}
+
+function inboundSetup() {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  return { ...fixture, applier, processor };
+}
+
+const inboundPayload = {
+  inboundTag: 'vless-in', listenPort: 443, dest: 'www.microsoft.com:443',
+  serverNames: ['www.microsoft.com'], flow: 'xtls-rprx-vision', fingerprint: 'chrome', spiderX: '/',
+};
+
+test('ENSURE_INBOUND 上报可用连接参数，重复下发不再重启 Xray', async () => {
+  const fixture = inboundSetup();
+  fixture.store.replaceDesiredUsers([desired()], '1');
+  try {
+    const result = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(result.status, 'completed');
+    const inbound = result.result?.inbound as Record<string, unknown>;
+    assert.equal(result.result?.appliedRevision, '900719925474099312345');
+    assert.equal(inbound.serverHost, '203.0.113.7');
+    assert.equal(inbound.serverPort, 443);
+    assert.equal(inbound.serverName, 'www.microsoft.com');
+    assert.equal(inbound.flow, 'xtls-rprx-vision');
+    assert.equal(inbound.changed, true);
+    // A restart empties Xray's in-memory user table, so the users must be
+    // re-pushed before the command reports success.
+    assert.equal(fixture.xray.users.get(desired().email), desired().uuid);
+
+    const repeat = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-2'), true);
+    assert.equal(fixture.applier.calls.length, 1, '同一规格不得再次驱动助手重启 Xray');
+    assert.equal((repeat.result?.inbound as Record<string, unknown>).changed, false);
+    assert.equal((repeat.result?.inbound as Record<string, unknown>).realityPublicKey, 'k'.repeat(43));
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('入站部署失败必须响亮失败，且不留下已部署状态', async () => {
+  const fixture = inboundSetup();
+  try {
+    fixture.applier.failure = new Error('Xray 入站部署失败（阶段 config-test）：端口冲突');
+    const failed = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error ?? '', /端口冲突/);
+    assert.equal(fixture.store.getInboundState(), undefined);
+
+    // Live verification is part of success: a helper that claims to have
+    // applied while the tag never appears must not report completed.
+    const other = inboundSetup();
+    try {
+      other.xray.live = false;
+      const unverified = await other.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      assert.equal(unverified.status, 'failed');
+      assert.match(unverified.error ?? '', /未能确认生效/);
+    } finally { other.store.close(); rmSync(other.directory, { recursive: true, force: true }); }
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('非 direct 模式与不可用能力都拒绝部署入站', async () => {
+  const fixture = inboundSetup();
+  const bare = setup();
+  try {
+    const gated = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), false);
+    assert.equal(gated.status, 'failed');
+    assert.equal(fixture.applier.calls.length, 0);
+
+    const missing = await bare.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(missing.status, 'failed');
+    assert.match(missing.error ?? '', /配置助手/);
+  } finally {
+    fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true });
+    bare.store.close(); rmSync(bare.directory, { recursive: true, force: true });
   }
 });

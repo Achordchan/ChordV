@@ -58,6 +58,7 @@ services:
       # distribution directory (files are dropped there by the release flow,
       # independent of API releases).
       CHORDV_AGENT_DIST_DIR: /app/agent-dist
+      CHORDV_XRAY_DIST_DIR: /app/xray-dist
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
@@ -72,6 +73,7 @@ services:
       # Node-agent install tarballs (chordv-agent-linux-x64.tar.gz /
       # chordv-agent-linux-arm64.tar.gz) served by /api/agent-download/:arch.
       - ./api-agent-dist:/app/agent-dist
+      - ./api-xray-dist:/app/xray-dist
 
   admin:
     build:

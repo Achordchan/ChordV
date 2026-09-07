@@ -1,0 +1,246 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { AgentService } from "../src/modules/agent/agent.service";
+import { renderInstallScript, renderXrayInstall } from "../src/modules/agent/agent-install.controller";
+import {
+  INBOUND_DEFAULTS,
+  inboundSpecKey,
+  isPublicUnicastAddress,
+  normalizeInboundSpec,
+  parseInboundReport
+} from "../src/modules/agent/agent-inbound";
+import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
+
+const read = (relative: string) => readFileSync(path.resolve(__dirname, relative), "utf8");
+
+const goodReport = (overrides: Record<string, unknown> = {}) => ({
+  inbound: {
+    requestId: "11111111-2222-4333-8444-555555555555",
+    inboundTag: "vless-in",
+    serverHost: "203.0.113.7",
+    serverPort: 443,
+    realityPublicKey: "k".repeat(43),
+    shortId: "0123456789abcdef",
+    serverName: "www.microsoft.com",
+    flow: "xtls-rprx-vision",
+    fingerprint: "chrome",
+    spiderX: "/",
+    xrayVersion: "Xray 1.8.24",
+    changed: true,
+    liveVerifiedAt: "2026-09-07T00:00:00.000Z",
+    ...overrides
+  }
+});
+
+function testCommandTypeIsDeclaredEverywhere() {
+  // Six declaration sites; a missing one is either a compile error or, worse,
+  // a command the server will happily queue and the agent will reject.
+  assert.match(read("../../../packages/shared/src/types.ts"), /\|\s*"ENSURE_INBOUND"/);
+  assert.match(read("../prisma/schema.prisma"), /enum NodeAgentCommandType \{[^}]*ENSURE_INBOUND/s);
+  assert.match(read("../src/modules/agent/agent.dto.ts"), /@IsIn\(\[[^\]]*"ENSURE_INBOUND"/s);
+  assert.match(read("../../node-agent/src/types.ts"), /AGENT_COMMAND_TYPES = \[[^\]]*'ENSURE_INBOUND'/s);
+  // The runtime-session union drifted from the shared type once; it must now be
+  // imported rather than re-listed.
+  const runtimeSession = read("../src/modules/common/runtime-session.service.ts");
+  assert.match(runtimeSession, /commandType: NodeAgentCommandType,/);
+  assert.equal(/commandType: "ENSURE_USER" \| "ENABLE_USER"/.test(runtimeSession), false);
+  const migrations = read("../prisma/migrations/20260907200000_agent_ensure_inbound_command/migration.sql");
+  assert.match(migrations, /ALTER TYPE "NodeAgentCommandType" ADD VALUE IF NOT EXISTS 'ENSURE_INBOUND';/);
+}
+
+function testSpecNormalization() {
+  const spec = normalizeInboundSpec({});
+  assert.deepEqual(spec, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
+  assert.equal(normalizeInboundSpec({ listenPort: 8443 }).listenPort, 8443);
+  assert.equal(normalizeInboundSpec({ rotateKeys: true }).rotateKeys, true);
+
+  for (const [label, payload] of [
+    ["port too large", { listenPort: 70000 }],
+    ["port zero", { listenPort: 0 }],
+    ["port not an integer", { listenPort: 443.5 }],
+    ["dest without port", { dest: "www.microsoft.com" }],
+    ["dest hostname invalid", { dest: "bad host:443" }],
+    ["empty serverNames", { serverNames: [] }],
+    ["too many serverNames", { serverNames: Array(9).fill("a.example.com") }],
+    ["serverName invalid", { serverNames: ["bad host"] }],
+    ["unsupported flow", { flow: "xtls-rprx-direct" }],
+    ["fingerprint invalid", { fingerprint: "Chrome!" }],
+    ["spiderX without slash", { spiderX: "path" }],
+    ["spiderX with quote", { spiderX: '/a"b' }],
+    ["rotateKeys not boolean", { rotateKeys: "yes" }],
+    ["inboundTag invalid", { inboundTag: "a b" }]
+  ] as const) {
+    assert.throws(() => normalizeInboundSpec(payload as Record<string, unknown>), /入站参数|不合法/, `应拒绝：${label}`);
+  }
+
+  // Re-issuing the same deployment must collapse onto one job, whatever the
+  // key order or serverNames order.
+  assert.equal(
+    inboundSpecKey("node-1", normalizeInboundSpec({ serverNames: ["a.example.com", "b.example.com"] })),
+    inboundSpecKey("node-1", normalizeInboundSpec({ serverNames: ["b.example.com", "a.example.com"] }))
+  );
+  assert.notEqual(inboundSpecKey("node-1", spec), inboundSpecKey("node-2", spec));
+  assert.notEqual(inboundSpecKey("node-1", spec), inboundSpecKey("node-1", normalizeInboundSpec({ listenPort: 8443 })));
+}
+
+function testPublicAddressPolicy() {
+  for (const host of ["203.0.113.7", "8.8.8.8", "2001:db8::1"]) {
+    assert.equal(isPublicUnicastAddress(host), true, `${host} 应视为公网地址`);
+  }
+  for (const host of [
+    "127.0.0.1", "10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.10.1",
+    "100.64.0.1", "0.0.0.0", "224.0.0.1", "::1", "::", "fd00::1", "fe80::1", "ff02::1",
+    "pending-agent", "example.com", ""
+  ]) {
+    assert.equal(isPublicUnicastAddress(host), false, `${host} 不应被当作可用公网地址`);
+  }
+  // A hostname is not accepted here: clients dial what the agent reported, and
+  // the agent reports the address the control plane observed.
+  assert.equal(isPublicUnicastAddress("172.32.0.1"), true, "172.32/12 之外不属于私网");
+}
+
+function testReportValidation() {
+  const spec = normalizeInboundSpec({});
+  assert.deepEqual(parseInboundReport(goodReport(), spec), {
+    serverHost: "203.0.113.7",
+    serverPort: 443,
+    realityPublicKey: "k".repeat(43),
+    shortId: "0123456789abcdef",
+    serverName: "www.microsoft.com",
+    flow: "xtls-rprx-vision",
+    fingerprint: "chrome",
+    spiderX: "/"
+  });
+
+  for (const [label, overrides] of [
+    ["private address", { serverHost: "10.1.2.3" }],
+    ["loopback", { serverHost: "127.0.0.1" }],
+    ["placeholder", { serverHost: "pending-agent" }],
+    ["port mismatch", { serverPort: 8443 }],
+    ["short public key", { realityPublicKey: "k".repeat(20) }],
+    ["odd shortId", { shortId: "abc" }],
+    ["non-hex shortId", { shortId: "zzzz" }],
+    ["unordered serverName", { serverName: "www.example.org" }],
+    ["tag mismatch", { inboundTag: "other" }],
+    ["flow mismatch", { flow: "" }],
+    ["fingerprint mismatch", { fingerprint: "safari" }],
+    ["spiderX mismatch", { spiderX: "/other" }]
+  ] as const) {
+    assert.throws(() => parseInboundReport(goodReport(overrides as Record<string, unknown>), spec), /Agent 上报/, `应拒绝：${label}`);
+  }
+  assert.throws(() => parseInboundReport({}, spec), /缺少 inbound/);
+  assert.throws(() => parseInboundReport(undefined, spec), /缺少入站部署结果/);
+}
+
+async function testWriteBackAndActivation() {
+  const spec = normalizeInboundSpec({});
+  const node: Record<string, unknown> = {
+    registrationStatus: "agent_ready",
+    protocol: "vless",
+    security: "reality",
+    serverHost: "pending-agent",
+    serverPort: 0,
+    uuid: "11111111-1111-4111-8111-111111111111",
+    realityPublicKey: "",
+    serverName: "",
+    fingerprint: "chrome",
+    isActive: false
+  };
+  // Before the inbound report the node can never be activated: this is exactly
+  // the gap R2 closes.
+  assert.equal(isNodeOnboardingReady(node), false);
+
+  const runComplete = async (options: { result: unknown; newerJob?: boolean }) => {
+    const updates: Array<Record<string, unknown>> = [];
+    const tx = {
+      nodeCommandJob: {
+        findFirst: async ({ where }: { where: Record<string, unknown> }) =>
+          where.status === "completed"
+            ? (options.newerJob ? { id: "newer" } : null)
+            : { id: "command-1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 5n },
+        update: async () => ({})
+      },
+      node: { update: async ({ data }: { data: Record<string, unknown> }) => { updates.push(data); return data; } },
+      panelClientBinding: { updateMany: async () => ({ count: 0 }) }
+    };
+    const service = new AgentService(
+      { $transaction: async (run: (client: unknown) => Promise<unknown>) => run(tx) } as never,
+      { publish() {} } as never,
+      { publishSubscriptionUpdated: async () => undefined } as never
+    );
+    await service.completeCommand({ id: "agent-1", nodeId: "node-1" } as never, "command-1", { status: "completed", result: options.result } as never);
+    return updates;
+  };
+
+  const [written] = await runComplete({ result: goodReport() });
+  assert.deepEqual(written, {
+    serverHost: "203.0.113.7",
+    serverPort: 443,
+    realityPublicKey: "k".repeat(43),
+    shortId: "0123456789abcdef",
+    serverName: "www.microsoft.com",
+    flow: "xtls-rprx-vision",
+    fingerprint: "chrome",
+    spiderX: "/"
+  });
+  // Activation becomes POSSIBLE, but the node stays inactive: shipping users to
+  // an inbound nobody smoke-tested is the operator's call.
+  assert.equal(isNodeOnboardingReady({ ...node, ...written }), true);
+  assert.equal(Object.hasOwn(written, "isActive"), false);
+  assert.equal(Object.hasOwn(written, "registrationStatus"), false);
+
+  // A report that fails validation writes nothing at all — half-applied
+  // connection parameters look activatable and cannot connect.
+  await assert.rejects(runComplete({ result: goodReport({ serverHost: "10.0.0.9" }) }), /公网地址不可用/);
+
+  // A delayed result must not overwrite a newer deployment.
+  assert.deepEqual(await runComplete({ result: goodReport(), newerJob: true }), []);
+}
+
+function testInstallerAndDownloadRoute() {
+  const script = renderInstallScript({ token: "chordv_register_" + "a".repeat(20), apiBase: "https://example.com" });
+  const section = renderXrayInstall();
+  assert.ok(script.includes(section), "安装脚本必须内联 Xray 安装段，便于单独回归");
+
+  // Same origin as the agent tarball: a second download host would widen what
+  // an install trusts and add a reachability dependency.
+  assert.match(section, /\$API_BASE\/agent-download\/xray\/\$ARCH/);
+  assert.match(section, /sha256sum -c -/);
+  // Xray's config belongs to root; the agent may not write what root runs.
+  assert.match(section, /install -d -m 0755 -o root -g root \/etc\/chordv\/xray/);
+  assert.match(section, /install -m 0644 -o root -g root "\$CURRENT_LINK\/deploy\/xray-api.fragment.json"/);
+  // The helper is copied OUT of the agent-writable release directory.
+  assert.match(section, /install -m 0755 -o root -g root "\$CURRENT_LINK\/dist\/src\/xray-apply.js" "\$HELPER_DIR\/xray-apply.js"/);
+  assert.match(section, /ExecStart=\$\{NODE_BIN@Q\} \$HELPER_DIR\/xray-apply.js/);
+  assert.equal(/ExecStart=.*\$CURRENT_LINK/.test(section), false, "root 助手不得直接从发布目录执行");
+  assert.match(section, /install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"/);
+  assert.match(section, /PathChanged=\$REQUEST_DIR\/pending.json/);
+  assert.match(section, /ReadOnlyPaths=\/etc\/chordv\/xray/);
+  assert.match(section, /NoNewPrivileges=true/);
+  // The agent unit keeps its hardening and now depends on Xray.
+  assert.match(script, /Requires=xray.service/);
+  assert.match(script, /NoNewPrivileges=true/);
+  // The installer's own staging cleanup must survive: the Xray section must not
+  // install an EXIT trap of its own.
+  assert.equal(/trap [^\n]*EXIT/.test(section), false);
+
+  const controller = read("../src/modules/agent/agent-download.controller.ts");
+  assert.match(controller, /CHORDV_XRAY_DIST_DIR/);
+  assert.match(controller, /agent-download\/xray\/:name/);
+  // Unconfigured is an error in its own right; falling back to another source
+  // would quietly widen the trust set.
+  assert.match(controller, /未配置 Xray 分发/);
+  assert.match(controller, /O_NOFOLLOW/);
+}
+
+function main() {
+  testCommandTypeIsDeclaredEverywhere();
+  testSpecNormalization();
+  testPublicAddressPolicy();
+  testReportValidation();
+  testInstallerAndDownloadRoute();
+  return testWriteBackAndActivation();
+}
+
+main().then(() => console.log("agent inbound regression passed (命令声明齐全、规格与上报校验、写回与激活边界、安装脚本与分发路由)"));

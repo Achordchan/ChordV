@@ -3,6 +3,10 @@ import type { AbsoluteCounter, DesiredUser } from './types.js';
 
 export interface XrayAdapter {
   health(): Promise<void>;
+  /** Seconds the running Xray process reports; a decrease means it restarted. */
+  uptimeSeconds(): Promise<number>;
+  /** True when the inbound tag is loaded in the RUNNING instance, not just on disk. */
+  inboundLive(): Promise<boolean>;
   readAbsoluteCounters(): Promise<AbsoluteCounter[]>;
   listUsers(): Promise<Array<{ email: string; uuid?: string }>>;
   ensureUser(user: DesiredUser): Promise<void>;
@@ -26,6 +30,21 @@ export class XtlsXrayAdapter implements XrayAdapter {
   async health(): Promise<void> {
     const result = await this.api.stats.getSysStats();
     if (!result.isOk) throw new Error(result.message || 'Xray StatsService 不可用');
+  }
+
+  async uptimeSeconds(): Promise<number> {
+    const result = await this.api.stats.getSysStats();
+    if (!result.isOk || !result.data) throw new Error(result.message || 'Xray StatsService 不可用');
+    return Number(result.data.uptime ?? 0);
+  }
+
+  /**
+   * getInboundUsers is tag-scoped, so a success proves the RUNNING Xray has the
+   * inbound loaded under the expected tag. A config file on disk proves nothing.
+   */
+  async inboundLive(): Promise<boolean> {
+    const result = await this.api.handler.getInboundUsers(this.inboundTag);
+    return result.isOk && Boolean(result.data);
   }
 
   async readAbsoluteCounters(): Promise<AbsoluteCounter[]> {

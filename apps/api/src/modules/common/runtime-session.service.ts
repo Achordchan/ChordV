@@ -18,6 +18,7 @@ import { Client as PgClient } from "pg";
 import type {
   AgentCommandDto,
   ConnectRequestDto,
+  NodeAgentCommandType,
   GeneratedRuntimeConfigDto,
   TeamMemberRole,
   TeamStatus,
@@ -2762,7 +2763,9 @@ export class RuntimeSessionService {
       panelClientEmail: string;
       panelClientId: string;
     },
-    commandType: "ENSURE_USER" | "ENABLE_USER" | "DISABLE_USER" | "REMOVE_USER" | "RECONCILE_USERS" | "REFRESH_QUOTA",
+    // Imported rather than re-listed: this union drifted from the shared type
+    // once already, and a missing member here silently blocks a command kind.
+    commandType: NodeAgentCommandType,
     payload: Record<string, unknown>,
     options: { publish?: boolean } = {}
   ) {

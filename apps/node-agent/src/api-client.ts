@@ -71,6 +71,14 @@ export class AgentApiClient {
 
   getConfig(): Promise<AgentConfigSnapshot> { return this.request('/api/agent/v1/config'); }
 
+  /**
+   * The address the control plane sees this agent connect from. Used as the
+   * node's public host: it comes back over the already-authenticated channel,
+   * unlike a third-party echo service, and a cloud host's own NIC usually holds
+   * a private address that would be confidently wrong.
+   */
+  whoami(): Promise<{ observedIp: string }> { return this.request('/api/agent/v1/whoami'); }
+
   heartbeat(payload: AgentHeartbeat): Promise<{ accepted: boolean; ackThrough: string; configRevision: string }> {
     return this.request('/api/agent/v1/heartbeat', { method: 'POST', body: JSON.stringify(payload) });
   }
