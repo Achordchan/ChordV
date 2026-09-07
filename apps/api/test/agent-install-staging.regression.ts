@@ -133,10 +133,25 @@ sha256sum /tmp/xray.tgz | cut -d' ' -f1 > /tmp/xray.sha256
 mkdir -p /etc/systemd/system
 printf '[Unit]\\nDescription=Someone else Xray\\n' > /etc/systemd/system/xray.service
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/takeover.err && exit 96
-grep -q '不是本安装脚本管理的 Xray 服务' /tmp/takeover.err
+grep -q '不是由本安装脚本管理的 Xray 服务' /tmp/takeover.err
 grep -q 'Someone else Xray' /etc/systemd/system/xray.service
 [[ ! -e /usr/local/bin/xray ]]
 rm -f /etc/systemd/system/xray.service
+
+# A vendor unit lives under /usr/lib; writing ours into /etc would override it
+# without ever touching the file the guard used to check.
+mkdir -p /usr/lib/systemd/system
+printf '[Unit]\\nDescription=Vendor Xray\\n' > /usr/lib/systemd/system/xray.service
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/vendor.err && exit 95
+grep -q '/usr/lib/systemd/system/xray.service' /tmp/vendor.err
+[[ ! -e /etc/systemd/system/xray.service ]]
+rm -f /usr/lib/systemd/system/xray.service
+
+# A drop-in is someone's deliberate customization of that service too.
+mkdir -p /etc/systemd/system/xray.service.d
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/dropin.err && exit 94
+grep -q 'xray.service.d' /tmp/dropin.err
+rmdir /etc/systemd/system/xray.service.d
 
 # A digest that does not match must abort before anything is installed.
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/dev/null bash /test/xray.sh 2>/tmp/xray.err && exit 99

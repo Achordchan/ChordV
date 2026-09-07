@@ -340,16 +340,28 @@ XRAY_UNIT=/etc/systemd/system/xray.service
 # config directory holding no user-facing inbound and restart it, silently
 # taking the existing service offline. Only a unit this installer wrote may be
 # replaced; anything else requires a deliberate migration.
-if [[ -e "\$XRAY_UNIT" ]] && ! grep -qF "\$XRAY_MARKER" "\$XRAY_UNIT"; then
-  echo "安装失败：\$XRAY_UNIT 已存在且不是本安装脚本管理的 Xray 服务。" >&2
-  echo "如需交给 ChordV 托管：先备份现有 Xray 配置与单元、停止并删除该单元，再重跑本命令；" >&2
+refuse_takeover() {
+  echo "安装失败：本机已存在不是由本安装脚本管理的 Xray 服务（\$1）。" >&2
+  echo "如需交给 ChordV 托管：先备份现有 Xray 配置与单元、停止并禁用该服务，再重跑本命令；" >&2
   echo "否则本次安装会用只含计量片段的配置目录替换它，现有代理服务将立即中断。" >&2
   exit 1
+}
+# A vendor package puts its unit under /usr/lib or /lib, where writing ours into
+# /etc would silently override it — so ask systemd which file it actually
+# resolves, and fall back to the known paths when systemd is unavailable.
+XRAY_FRAGMENT="\$(systemctl show -p FragmentPath --value xray.service 2>/dev/null || true)"
+XRAY_DROPINS="\$(systemctl show -p DropInPaths --value xray.service 2>/dev/null || true)"
+if [[ -n "\$XRAY_FRAGMENT" ]]; then
+  if [[ -e "\$XRAY_FRAGMENT" ]] && ! grep -qF "\$XRAY_MARKER" "\$XRAY_FRAGMENT"; then refuse_takeover "\$XRAY_FRAGMENT"; fi
+else
+  for candidate in "\$XRAY_UNIT" /usr/lib/systemd/system/xray.service /lib/systemd/system/xray.service; do
+    if [[ -e "\$candidate" ]] && ! grep -qF "\$XRAY_MARKER" "\$candidate"; then refuse_takeover "\$candidate"; fi
+  done
 fi
-if [[ -e /etc/systemd/system/xray.service.d ]]; then
-  echo "安装失败：/etc/systemd/system/xray.service.d 存在本机自定义的 Xray 覆盖配置，请人工确认后再安装。" >&2
-  exit 1
-fi
+if [[ -n "\$XRAY_DROPINS" ]]; then refuse_takeover "\$XRAY_DROPINS"; fi
+for dropin in /etc/systemd/system/xray.service.d /usr/lib/systemd/system/xray.service.d /lib/systemd/system/xray.service.d; do
+  if [[ -e "\$dropin" ]]; then refuse_takeover "\$dropin"; fi
+done
 
 XRAY_USER="chordv-xray"
 XRAY_BIN=/usr/local/bin/xray

@@ -171,8 +171,26 @@ export class CommandProcessor {
     }
     await this.waitForInbound(this.inbound.verifyAttempts ?? 15, this.inbound.verifyDelayMs ?? 1_000);
     const serverHost = await this.resolveVerifiedHost(applied.listen);
-    // A restart wipes users added over gRPC — they live only in Xray's memory.
-    if (applied.restarted) await this.reconcile(this.store.listDesiredUsers());
+    // Users added over gRPC live only in Xray's memory, so a restart empties
+    // them. Reconcile on EVERY apply, not only when this call restarted: a
+    // previous attempt may have restarted and then failed before (or during)
+    // its own reconcile, and the helper answers a repeat with restarted:false.
+    const stored = this.store.listDesiredUsers();
+    // The ordered flow becomes Node.flow, so every client config will use it.
+    // Users already installed in Xray carry the OLD flow, and Xray cannot be
+    // asked which flow a user has — so a change is applied by removing them
+    // first and letting the reconcile below re-add them with the new one. The
+    // deployment's revision carries the change, otherwise the store keeps the
+    // higher-revision row it already has.
+    const flowChanged = stored.some((user) => (user.flow ?? '') !== spec.flow);
+    const users = flowChanged
+      ? stored.map((user) => ({ ...user, flow: spec.flow as typeof user.flow, revision: command.targetRevision }))
+      : stored;
+    if (flowChanged) {
+      for (const user of users) await this.xray.removeUser(user.email);
+      for (const user of users) this.store.upsertDesiredUser(user);
+    }
+    await this.reconcile(users);
 
     const report: InboundReport = {
       requestId,

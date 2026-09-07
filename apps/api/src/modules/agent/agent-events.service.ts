@@ -63,7 +63,7 @@ export class AgentEventsService {
           attempts: { gte: 8 },
           OR: [{ nextRunAt: { lte: now } }, { createdAt: { lte: firstAttemptCutoff } }]
         },
-        select: { id: true, nodeId: true, dedupeKey: true }
+        select: { id: true, nodeId: true, dedupeKey: true, commandType: true }
       });
       if (exhausted.length > 0) {
         const ids = exhausted.map((job) => job.id);
@@ -71,9 +71,12 @@ export class AgentEventsService {
           where: { id: { in: ids } },
           data: { status: "cancelled", lastError: "Agent 命令重试次数已达到上限" }
         });
-        // Cancelling ends the operation, so its dedupe key must be released or
-        // the same deployment could never be ordered again on this node.
+        // Cancelling ends the operation, so an ENSURE_INBOUND's key must be
+        // released or that deployment could never be ordered again on this
+        // node. Other types keep their key: it is the caller's idempotency
+        // contract, not a lock on an outstanding operation.
         for (const job of exhausted) {
+          if (job.commandType !== "ENSURE_INBOUND") continue;
           await this.prisma.nodeCommandJob.update({
             where: { id: job.id },
             data: { dedupeKey: `${job.dedupeKey}:cancelled:${job.id}` }

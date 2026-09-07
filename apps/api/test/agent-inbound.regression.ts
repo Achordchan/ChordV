@@ -186,7 +186,7 @@ async function testWriteBackAndActivation() {
       { publishSubscriptionUpdated: async () => undefined } as never
     );
     await service.completeCommand({ id: "agent-1", nodeId: "node-1" } as never, "command-1", { status: "completed", result: options.result } as never);
-    // Completing an operation releases its dedupe key.
+    // Completing an ENSURE_INBOUND releases its dedupe key.
     assert.match(String(jobUpdates[0]?.dedupeKey ?? ""), /:done:command-1$/);
     return updates;
   };
@@ -217,6 +217,31 @@ async function testWriteBackAndActivation() {
   // A delayed result must not overwrite a newer deployment. The guard is the
   // conditional update itself, so two concurrent completions cannot interleave.
   assert.deepEqual(await runComplete({ result: goodReport(), appliedRevision: 9n }), []);
+}
+
+async function testDedupeReleaseIsInboundOnly() {
+  // Other command types keep their caller-supplied key as an idempotency
+  // contract: releasing it would let a delayed ENABLE_USER retry re-enable a
+  // user who has since been disabled.
+  for (const [commandType, released] of [["ENSURE_INBOUND", true], ["ENABLE_USER", false]] as const) {
+    const jobUpdates: Array<Record<string, unknown>> = [];
+    const tx = {
+      nodeCommandJob: {
+        findFirst: async () => ({ id: "job-1", commandType, payload: {}, targetRevision: 5n, dedupeKey: "node-1:key" }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { jobUpdates.push(data); return {}; }
+      },
+      node: { updateMany: async () => ({ count: 1 }) },
+      panelClientBinding: { updateMany: async () => ({ count: 0 }) }
+    };
+    const service = new AgentService(
+      { $transaction: async (run: (client: unknown) => Promise<unknown>) => run(tx) } as never,
+      { publish() {} } as never,
+      { publishSubscriptionUpdated: async () => undefined } as never
+    );
+    const result = commandType === "ENSURE_INBOUND" ? goodReport() : { disableWatermarks: {} };
+    await service.completeCommand({ id: "agent-1", nodeId: "node-1" } as never, "job-1", { status: "completed", result } as never);
+    assert.equal(Object.hasOwn(jobUpdates[0] ?? {}, "dedupeKey"), released, `${commandType} 的去重键释放策略不符`);
+  }
 }
 
 async function testDedupeScope() {
@@ -287,7 +312,12 @@ function testInstallerAndDownloadRoute() {
   // An operator's own Xray must not be taken over: replacing that unit points it
   // at a config directory with no user-facing inbound and restarts it.
   assert.match(section, /chordv-managed: xray/);
-  assert.match(section, /已存在且不是本安装脚本管理的 Xray 服务/);
+  assert.match(section, /已存在不是由本安装脚本管理的 Xray 服务/);
+  // A vendor unit under /usr/lib or /lib is overridden by ours in /etc, so the
+  // guard must ask systemd what it resolves rather than only looking in /etc.
+  assert.match(section, /systemctl show -p FragmentPath --value xray.service/);
+  assert.match(section, /\/usr\/lib\/systemd\/system\/xray.service/);
+  assert.match(section, /DropInPaths/);
   assert.match(section, /NoNewPrivileges=true/);
   // The agent unit keeps its hardening and now depends on Xray.
   // Ordering only: Requires= would stop the agent every time the helper
@@ -314,7 +344,7 @@ function main() {
   testPublicAddressPolicy();
   testReportValidation();
   testInstallerAndDownloadRoute();
-  return testWriteBackAndActivation().then(testDedupeScope);
+  return testWriteBackAndActivation().then(testDedupeScope).then(testDedupeReleaseIsInboundOnly);
 }
 
 main().then(() => console.log("agent inbound regression passed (命令声明齐全、规格与上报校验、写回与激活边界、安装脚本与分发路由)"));

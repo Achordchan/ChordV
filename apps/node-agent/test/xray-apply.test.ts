@@ -265,7 +265,9 @@ test('首次部署失败时不留下半成品配置', () => {
     const applyDeps = deps(root, { isListening: () => false });
     assert.throws(() => applyRequest(request(), applyDeps), /开始监听/);
     assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
-    assert.equal(fs.existsSync(applyDeps.stateFile), false);
+    // The journal survives on purpose — it holds the generated keys so a retry
+    // reuses them — but stays pending, so it is never answered with.
+    assert.equal(JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')).pending, true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -297,4 +299,22 @@ test('监听探测要求端口属于 Xray 自己的进程', () => {
   // Xray fails to bind, and committing here would leave the node offline.
   assert.equal(isPortOwnedBy(8080, '/usr/local/bin/xray', readers('/usr/sbin/nginx')), false);
   assert.equal(isPortOwnedBy(9999, '/usr/local/bin/xray', readers('/usr/local/bin/xray')), false);
+});
+
+test('配置已发布但状态未落盘时，重复下发旧规格必须重新部署', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-journal-'));
+  try {
+    const applyDeps = deps(root);
+    applyRequest(request(), applyDeps);
+    const state = JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(state.pending, false, '成功后必须落成已提交状态');
+
+    // Simulate the crash window: the helper published 8443 and died before
+    // recording it. Xray now serves 8443 while the state describes 443.
+    fs.writeFileSync(applyDeps.stateFile, JSON.stringify({ ...state, pending: true }));
+    const repeat = applyRequest(request(), applyDeps);
+    assert.equal(repeat.changed, true, '未提交的状态不得被当成已部署');
+    assert.equal(applyDeps.restarts, 2);
+    assert.equal(JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')).pending, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

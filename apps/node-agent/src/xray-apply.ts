@@ -216,7 +216,7 @@ function writeFileAtomic(file: string, contents: string, mode: number, owner?: {
   try { fs.fsyncSync(dirDescriptor); } finally { fs.closeSync(dirDescriptor); }
 }
 
-function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number } | undefined {
+function readState(file: string): { hash: string; keys: RealityKeys; serverName: string; listen: string; listenPort: number; pending: boolean } | undefined {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
     const keys = parsed.keys as RealityKeys | undefined;
@@ -227,6 +227,9 @@ function readState(file: string): { hash: string; keys: RealityKeys; serverName:
       serverName: typeof parsed.serverName === 'string' ? parsed.serverName : '',
       listen: typeof parsed.listen === 'string' ? parsed.listen : '',
       listenPort: typeof parsed.listenPort === 'number' ? parsed.listenPort : 0,
+      // Written before the config is published and cleared after: a crash in
+      // between leaves this set, and the no-op branch must then refuse.
+      pending: parsed.pending === true,
     };
   } catch { return undefined; }
 }
@@ -291,7 +294,10 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
 
   const hash = requestHash(request);
   const reusable = state && !request.rotateKeys ? state.keys : undefined;
-  if (state?.hash === hash && !request.rotateKeys && fs.existsSync(target)) {
+  // `pending` means the recorded state may not describe what Xray is serving
+  // (the process died between publishing the config and committing the state),
+  // so the shortcut would answer with a port that is no longer deployed.
+  if (state?.hash === hash && !state.pending && !request.rotateKeys && fs.existsSync(target)) {
     // Nothing to do — and doing it anyway would restart Xray, dropping every
     // live connection and every gRPC-provisioned user for no reason.
     return {
@@ -314,8 +320,15 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   const listen = deps.resolveListen();
   const rendered = JSON.stringify(renderInbound(request, keys, listen), null, 2) + '\n';
   assertConfigValid(deps, rendered);
+  // Journal BEFORE publishing. If the helper dies between publishing the config
+  // and recording it, Xray serves the new inbound while the state file still
+  // describes the old one — and re-issuing the OLD spec would then take the
+  // no-op branch and report a port nothing serves. The pending record makes
+  // that window recoverable: it is never answered with, only re-applied from.
+  const record = { hash, keys, serverName, listen, listenPort: request.listenPort, appliedAt: deps.now() };
+  writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: true }, null, 2) + '\n', 0o600);
   publishAndRestart(deps, target, rendered, owner, request.listenPort);
-  writeFileAtomic(deps.stateFile, JSON.stringify({ hash, keys, serverName, listen, listenPort: request.listenPort, appliedAt: deps.now() }, null, 2) + '\n', 0o600);
+  writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: false }, null, 2) + '\n', 0o600);
   return {
     listen,
     changed: true,

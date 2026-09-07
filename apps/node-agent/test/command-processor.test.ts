@@ -386,3 +386,27 @@ test('无需改动 Xray 时也要刷新对外地址', async () => {
     } finally { other.store.close(); rmSync(other.directory, { recursive: true, force: true }); }
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
+
+test('每次真正部署都重新下发用户，并把新的 flow 应用到已有用户', async () => {
+  const fixture = inboundSetup();
+  fixture.store.replaceDesiredUsers([desired()], '1');
+  try {
+    await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(fixture.xray.users.get(desired().email), desired().uuid);
+
+    // A repeat that the helper answers with restarted:false still reconciles:
+    // an earlier attempt may have restarted Xray and then failed before (or
+    // during) its own reconcile, leaving users missing.
+    fixture.applier.outcome = { changed: true, restarted: false };
+    fixture.xray.users.clear();
+    await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
+    assert.equal(fixture.xray.users.get(desired().email), desired().uuid, '未重启也必须补齐用户');
+
+    // Changing the ordered flow rewrites Node.flow for every client config, so
+    // the users installed in Xray must be reinstalled with that flow too.
+    const before = fixture.xray.ensureCalls;
+    await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, flow: '' }, 'command-3'), true);
+    assert.equal(fixture.store.listDesiredUsers()[0].flow, '');
+    assert.ok(fixture.xray.ensureCalls > before, 'flow 变更必须重新安装用户');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});

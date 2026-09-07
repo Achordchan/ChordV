@@ -251,10 +251,14 @@ export class AgentService {
           lastError: input.status === "completed" ? null : input.error ?? "Agent 执行失败",
           completedAt: input.status === "completed" ? new Date() : null,
           nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000),
-          // A completed job no longer occupies its operation's dedupe key, so
-          // the same deployment can be ordered again later. A failed one keeps
-          // it: that operation is still outstanding and will be retried.
-          ...(input.status === "completed" ? { dedupeKey: `${job.dedupeKey}:done:${job.id}` } : {})
+          // ENSURE_INBOUND alone uses its dedupe key as an OUTSTANDING-operation
+          // lock, so completing it releases the key and the same deployment can
+          // be ordered again. Every other command type keeps the caller's
+          // explicit key as an idempotency contract — releasing it would let a
+          // delayed ENABLE_USER retry re-enable a user disabled since.
+          ...(input.status === "completed" && job.commandType === "ENSURE_INBOUND"
+            ? { dedupeKey: `${job.dedupeKey}:done:${job.id}` }
+            : {})
         }
       });
       if (input.status === "completed" && job.commandType === "ENSURE_INBOUND") {
