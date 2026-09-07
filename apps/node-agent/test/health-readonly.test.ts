@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { readExistingCredentials } from '../src/credentials.js';
-import { AgentStore } from '../src/store.js';
+import { AgentStore, ForeignStateError } from '../src/store.js';
 import type { AgentConfig } from '../src/config.js';
 
 // Resolves to src/main.ts under tsx and to dist/src/main.js when the compiled
@@ -132,6 +132,23 @@ test('a read-only store refuses to probe a database it does not own', () => {
         // Its own database is probed normally.
         new AgentStore(databasePath, options).close();
       }
+    } finally { running.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the health probe reports a state database belonging to another node', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-health-foreign-'));
+  const databasePath = join(root, 'agent.db');
+  const options = { nodeId: 'node-1', bootId: 'health-probe', defaultOfflineAllowanceBytes: 1n, readonly: true as const };
+  try {
+    const running = new AgentStore(databasePath, { ...options, readonly: false });
+    try {
+      const before = fs.readdirSync(root).sort();
+      // Startup refuses this database, so a probe that answered "ok" would hide
+      // precisely the state keeping the service down.
+      assert.throws(() => new AgentStore(databasePath, { ...options, nodeId: 'node-2' }), ForeignStateError);
+      assert.deepEqual(fs.readdirSync(root).sort(), before, '只读探针不得写入或认领身份');
+      new AgentStore(databasePath, options).close();
     } finally { running.close(); }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -94,6 +94,22 @@ export class AgentStore {
         throw new Error('本地状态库未处于运行状态（缺少 WAL 共享段），健康检查不创建任何文件');
       }
       this.db = new Database(databasePath, { readonly: true, fileMustExist: true });
+      // The probe must reach the SAME verdict as a start would: a database
+      // belonging to another node makes the service refuse to boot, so
+      // reporting it healthy would hide exactly the state that keeps it down.
+      // Read the recorded identity only — the probe never adopts one.
+      try {
+        const recorded = this.getMeta('node_id');
+        if (recorded && recorded !== options.nodeId) {
+          throw new ForeignStateError(
+            `本地状态库属于节点 ${recorded}，与当前身份 ${options.nodeId} 不一致，服务无法启动：` +
+              '请停止服务后以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次（旧状态库会被改名保留）',
+          );
+        }
+      } catch (error) {
+        this.db.close();
+        throw error;
+      }
       return;
     }
     mkdirSync(dirname(databasePath), { recursive: true });
