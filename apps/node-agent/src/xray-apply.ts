@@ -211,7 +211,9 @@ export function parseX25519(output: string): { privateKey: string; publicKey: st
 
 function writeFileAtomic(file: string, contents: string, mode: number, owner?: { uid: number; gid: number }): void {
   const directory = dirname(file);
-  const temporary = `${file}.tmp.${process.pid}`;
+  // Random, not just pid-based: a predictable temporary name in a directory an
+  // attacker can write is a name they can pre-empt or replace before the rename.
+  const temporary = `${file}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
   try { fs.unlinkSync(temporary); } catch { /* no leftover */ }
   const descriptor = fs.openSync(temporary, 'wx', mode);
   try {
@@ -520,6 +522,13 @@ function waitForListener(port: number, binary: string, attempts = 20, delayMs = 
 
 function main(): void {
   const requestDir = process.env.CHORDV_XRAY_REQUEST_DIR?.trim() || '/var/lib/chordv-node-agent/xray';
+  // Results are published into a ROOT-owned directory whose ancestors are also
+  // root-owned. Writing them back into the agent's own directory would let a
+  // compromised agent replace that directory with a symlink, or swap root's
+  // temporary file before the rename — turning result publication into
+  // "install arbitrary JSON wherever the symlink points", including Xray's
+  // confdir. The agent only ever reads from here.
+  const resultDir = process.env.CHORDV_XRAY_RESULT_DIR?.trim() || '/var/lib/chordv-xray';
   const confDir = process.env.CHORDV_XRAY_CONF_DIR?.trim() || '/etc/chordv/xray/conf.d';
   const stateFile = process.env.CHORDV_XRAY_STATE_FILE?.trim() || '/etc/chordv/xray/inbound-state.json';
   const xrayBin = process.env.CHORDV_XRAY_BIN?.trim() || '/usr/local/bin/xray';
@@ -546,7 +555,7 @@ function main(): void {
 
   const pending = join(requestDir, 'pending.json');
   const claimed = join(requestDir, 'processing.json');
-  const result = join(requestDir, 'result.json');
+  const result = join(resultDir, 'result.json');
   const agentUid = resolveUid(agentUser);
   // A path unit does not re-trigger while its service is running, so two quick
   // requests can collapse into one run: keep draining until nothing is left.

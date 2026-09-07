@@ -43,18 +43,26 @@ test('规格指纹与字段顺序无关，但排除 rotateKeys', () => {
   assert.notEqual(inboundSpecHash({ ...base, listenPort: 8443 }), inboundSpecHash(base));
 });
 
+// The helper publishes into a root-owned directory the agent cannot write; the
+// tests keep them separate for the same reason production does.
+function outDir(root: string): string {
+  const out = join(root, 'out');
+  fs.mkdirSync(out, { recursive: true });
+  return out;
+}
+
 function applier(root: string, timeoutMs = 200) {
-  return new FileInboundApplier(root, timeoutMs, 1, () => Promise.resolve());
+  return new FileInboundApplier(root, outDir(root), timeoutMs, 1, () => Promise.resolve());
 }
 
 test('助手应答按 requestId 关联，旧结果不算本次的答复', async () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-'));
   try {
     const spec = parseInboundSpec(payload(), 'vless-in');
-    fs.writeFileSync(join(root, 'result.json'), JSON.stringify({ requestId: 'stale', ok: true }));
+    fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({ requestId: 'stale', ok: true }));
     await assert.rejects(applier(root).apply(spec, 'fresh-request-id', 'command-7'), /超时/);
     // The stale answer must not have been consumed as this request's result.
-    assert.equal(JSON.parse(fs.readFileSync(join(root, 'result.json'), 'utf8')).requestId, 'stale');
+    assert.equal(JSON.parse(fs.readFileSync(join(outDir(root), 'result.json'), 'utf8')).requestId, 'stale');
     // The request itself is written durably for the root helper to pick up.
     const pending = JSON.parse(fs.readFileSync(join(root, 'pending.json'), 'utf8'));
     assert.equal(pending.requestId, 'fresh-request-id');
@@ -68,7 +76,7 @@ test('助手应答按 requestId 关联，旧结果不算本次的答复', async 
 test('助手失败、畸形与超大应答都变成明确的错误', async () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-bad-'));
   const spec = parseInboundSpec(payload(), 'vless-in');
-  const result = join(root, 'result.json');
+  const result = join(outDir(root), 'result.json');
   try {
     const attempt = async (body: string) => {
       fs.writeFileSync(result, body);
@@ -92,7 +100,7 @@ test('合法应答被完整解析', async () => {
   const root = fs.mkdtempSync(join(tmpdir(), 'agent-inbound-ok-'));
   try {
     const spec = parseInboundSpec(payload(), 'vless-in');
-    fs.writeFileSync(join(root, 'result.json'), JSON.stringify({
+    fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({
       requestId: 'request-2', ok: true, changed: true, restarted: true,
       realityPublicKey: 'k'.repeat(43), shortId: '0123456789abcdef',
       serverName: 'www.microsoft.com', listen: '::', listenPort: 443, xrayVersion: 'Xray 1.8.24',
@@ -111,7 +119,7 @@ test('reset 的成功应答按 reset 规则解析，不会被当成部署结果�
     // A successful reset carries no keys and port 0 on purpose. Validating it as
     // a deployment would reject it — and that error would surface during agent
     // startup, after the foreign configuration had already been cleared.
-    fs.writeFileSync(join(root, 'result.json'), JSON.stringify({
+    fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({
       requestId: 'reset-1', ok: true, changed: true, restarted: true,
       realityPublicKey: '', shortId: '', serverName: '', listenPort: 0,
     }));
@@ -121,7 +129,7 @@ test('reset 的成功应答按 reset 规则解析，不会被当成部署结果�
     assert.equal(JSON.parse(fs.readFileSync(join(root, 'pending.json'), 'utf8')).mode, 'reset');
 
     // A failed reset still fails loudly.
-    fs.writeFileSync(join(root, 'result.json'), JSON.stringify({ requestId: 'reset-2', ok: false, stage: 'apply', error: '磁盘只读' }));
+    fs.writeFileSync(join(outDir(root), 'result.json'), JSON.stringify({ requestId: 'reset-2', ok: false, stage: 'apply', error: '磁盘只读' }));
     await assert.rejects(applier(root).reset('reset-2'), /磁盘只读/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

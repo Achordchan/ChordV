@@ -269,6 +269,7 @@ CHORDV_REGISTER_TOKEN=\$REGISTER_TOKEN
 AGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db
 AGENT_CREDENTIALS_PATH=/var/lib/chordv-node-agent/credentials.json
 CHORDV_AGENT_NODE_BIN=\${NODE_BIN@Q}
+CHORDV_XRAY_RESULT_DIR=/var/lib/chordv-xray
 EOF
 # systemd reads EnvironmentFile as root before dropping privileges; the group
 # grant only lets the service user read it, never write it.
@@ -368,6 +369,7 @@ XRAY_BIN=/usr/local/bin/xray
 XRAY_CONF_DIR=/etc/chordv/xray/conf.d
 HELPER_DIR=/usr/local/lib/chordv
 REQUEST_DIR=/var/lib/chordv-node-agent/xray
+RESULT_DIR=/var/lib/chordv-xray
 
 if ! id "\$XRAY_USER" >/dev/null 2>&1; then
   useradd --system --home /var/lib/chordv-xray --shell /usr/sbin/nologin "\$XRAY_USER"
@@ -406,12 +408,28 @@ for required in deploy/xray-base.json deploy/xray-api.fragment.json dist/src/xra
 done
 "\$NODE_BIN" --check "\$TRUSTED_DIR/dist/src/xray-apply.js"
 
-install -m 0644 -o root -g root "\$TRUSTED_DIR/deploy/xray-base.json" "\$XRAY_CONF_DIR/00-base.json"
-install -m 0644 -o root -g root "\$TRUSTED_DIR/deploy/xray-api.fragment.json" "\$XRAY_CONF_DIR/10-api.json"
+# Seed these only when absent. An operator may have tuned the API port, routing
+# or stats policy and pointed the agent at it; overwriting on every reinstall
+# would take metering down at the next restart. Differences are reported, not
+# silently reconciled.
+for fragment in 00-base.json:xray-base.json 10-api.json:xray-api.fragment.json; do
+  target="\$XRAY_CONF_DIR/\${fragment%%:*}"
+  source="\$TRUSTED_DIR/deploy/\${fragment##*:}"
+  if [[ -e "\$target" ]]; then
+    cmp -s "\$target" "\$source" || echo "提示：保留了本机已有的 \$target（与本次发布自带的版本不同，如需更新请人工比对）。" >&2
+  else
+    install -m 0644 -o root -g root "\$source" "\$target"
+  fi
+done
 
 install -d -m 0755 -o root -g root "\$HELPER_DIR"
 install -m 0755 -o root -g root "\$TRUSTED_DIR/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
 install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"
+# Results go to a ROOT-owned directory with root-owned ancestors: publishing
+# them into the agent's own directory would let a compromised agent replace
+# that directory with a symlink (or swap root's temporary file before the
+# rename) and have root install arbitrary JSON into Xray's confdir.
+install -d -m 0755 -o root -g root "\$RESULT_DIR"
 
 cat > "\$XRAY_UNIT" <<XRAYUNIT
 \$XRAY_MARKER

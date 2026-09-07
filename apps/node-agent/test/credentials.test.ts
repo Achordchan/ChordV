@@ -12,7 +12,7 @@ import type { AgentRegisterRequest } from '../src/api-client.js';
 function config(file: string): AgentConfig {
   return { credentialsPath: file, registerToken: 'chordv_register_fixture', agentId: '', nodeId: '', token: '',
     apiBaseUrl: 'http://127.0.0.1:1', xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'in',
-    databasePath: join(dirname(file), 'agent.db'), inboundRequestDir: join(dirname(file), 'xray'), sampleIntervalMs: 5000, heartbeatIntervalMs: 15000, offlineAllowanceBytes: 1n };
+    databasePath: join(dirname(file), 'agent.db'), inboundRequestDir: join(dirname(file), 'xray'), inboundResultDir: join(dirname(file), 'xray-out'), sampleIntervalMs: 5000, heartbeatIntervalMs: 15000, offlineAllowanceBytes: 1n };
 }
 const identity = { accepted: true, agentId: 'agent-original', nodeId: 'node-original' };
 const mode = (file: string) => fs.statSync(file).mode & 0o777;

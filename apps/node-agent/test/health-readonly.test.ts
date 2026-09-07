@@ -16,7 +16,7 @@ const entry = fileURLToPath(new URL('../src/main.js', import.meta.url));
 function config(root: string, extra: Partial<AgentConfig> = {}): AgentConfig {
   return { credentialsPath: join(root, 'credentials.json'), registerToken: 'chordv_register_health', agentId: '', nodeId: '', token: '',
     apiBaseUrl: 'http://127.0.0.1:1', xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'in',
-    databasePath: join(root, 'agent.db'), inboundRequestDir: join(root, 'xray'), sampleIntervalMs: 5000, heartbeatIntervalMs: 15000, offlineAllowanceBytes: 1n, ...extra };
+    databasePath: join(root, 'agent.db'), inboundRequestDir: join(root, 'xray'), inboundResultDir: join(root, 'xray-out'), sampleIntervalMs: 5000, heartbeatIntervalMs: 15000, offlineAllowanceBytes: 1n, ...extra };
 }
 
 test('the health probe never registers or creates files in the service data directory', () => {

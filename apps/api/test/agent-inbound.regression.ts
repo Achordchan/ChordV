@@ -308,7 +308,9 @@ function testInstallerAndDownloadRoute() {
   assert.match(section, /sha256sum -c -/);
   // Xray's config belongs to root; the agent may not write what root runs.
   assert.match(section, /install -d -m 0755 -o root -g root \/etc\/chordv\/xray/);
-  assert.match(section, /install -m 0644 -o root -g root "\$TRUSTED_DIR\/deploy\/xray-api.fragment.json"/);
+  // The fragments are seeded from the trusted copy, and only when absent.
+  assert.match(section, /source="\$TRUSTED_DIR\/deploy\/\$\{fragment##\*:\}"/);
+  assert.match(section, /install -m 0644 -o root -g root "\$source" "\$target"/);
   // The helper is copied OUT of the agent-writable release directory.
   // Root must not load anything through the release tree: the service user
   // extracts it, so a compromised agent could substitute the script root runs.
@@ -319,6 +321,12 @@ function testInstallerAndDownloadRoute() {
   assert.match(section, /ExecStart=\$\{NODE_BIN@Q\} \$HELPER_DIR\/xray-apply.js/);
   assert.equal(/ExecStart=.*\$CURRENT_LINK/.test(section), false, "root 助手不得直接从发布目录执行");
   assert.match(section, /install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"/);
+  // Root publishes results outside anything the agent can write: an
+  // agent-owned result directory can be swapped for a symlink into confdir.
+  assert.match(section, /install -d -m 0755 -o root -g root "\$RESULT_DIR"/);
+  assert.match(script, /CHORDV_XRAY_RESULT_DIR=\/var\/lib\/chordv-xray/);
+  // Reinstalls must not silently replace an operator's metering fragment.
+  assert.match(section, /cmp -s "\$target" "\$source"/);
   assert.match(section, /PathChanged=\$REQUEST_DIR\/pending.json/);
   // The oneshot helper synchronously restarts Xray; ordering it after
   // xray.service lets systemd hold that restart until this start job finishes.

@@ -170,6 +170,8 @@ TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 [[ ! -e /etc/chordv/xray/conf.d/50-inbound.json ]]
 [[ "$(stat -c '%U:%G:%a' /usr/local/lib/chordv/xray-apply.js)" == root:root:755 ]]
 [[ "$(stat -c '%U:%a' /var/lib/chordv-node-agent/xray)" == chordv-agent:700 ]]
+# Root's results must land outside anything the agent can write or replace.
+[[ "$(stat -c '%U:%G:%a' /var/lib/chordv-xray)" == root:root:755 ]]
 [[ "$(stat -c '%a' /usr/local/bin/xray)" == 755 ]]
 grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
 grep -q 'PathChanged=/var/lib/chordv-node-agent/xray/pending.json' /etc/systemd/system/chordv-xray-apply.path
@@ -180,8 +182,12 @@ grep -q 'chordv-managed: xray' /etc/systemd/system/xray.service
 printf 'ATTACKER' > /release/dist/src/xray-apply.js
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 ! grep -q ATTACKER /usr/local/lib/chordv/xray-apply.js
-# Re-running the installer over its OWN unit is a normal upgrade.
-TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+# Re-running the installer over its OWN unit is a normal upgrade — but it must
+# not overwrite a metering fragment the operator has tuned.
+printf '{"api":{"tag":"api"},"operator":true}' > /etc/chordv/xray/conf.d/10-api.json
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/upgrade.err
+grep -q operator /etc/chordv/xray/conf.d/10-api.json
+grep -q '保留了本机已有' /tmp/upgrade.err
 `], { encoding: "utf8" });
   assert.equal(xrayInstall.status, 0, `xray install: ${xrayInstall.stdout}\n${xrayInstall.stderr}`);
   console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner, xray install verifies its digest, refuses to take over a foreign xray unit, keeps config root-owned)");

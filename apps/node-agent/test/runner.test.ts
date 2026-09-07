@@ -63,7 +63,7 @@ test('后台恢复且离线批次已确认后重新启用 Direct 用户', async 
     xrayApiAddress: '127.0.0.1:10085',
     xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 60_000,
     heartbeatIntervalMs: 60_000,
     offlineAllowanceBytes: 64n * 1024n * 1024n,
@@ -121,7 +121,7 @@ test('Shadow 心跳发现更高 revision 后刷新完整用户快照且不写 Xr
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 10, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -178,7 +178,7 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -233,7 +233,7 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -290,7 +290,7 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
   try {
@@ -359,7 +359,7 @@ test('Xray 重启后（无论谁触发）都会重新下发用户', async () => 
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -385,11 +385,13 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
     nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
   });
   const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
   mkdirSync(requestDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
   // The state database travels with the identity; /etc/chordv/xray does not. A
   // helper result with no matching state means the deployed keys and port
   // belong to a node this agent is not.
-  writeFileSync(join(requestDir, 'result.json'), JSON.stringify({ requestId: 'old', ok: true, listenPort: 443 }));
+  writeFileSync(join(resultDir, 'result.json'), JSON.stringify({ requestId: 'old', ok: true, listenPort: 443 }));
   const resets: string[] = [];
   const api = {
     getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
@@ -413,7 +415,7 @@ test('本机残留他人节点的入站配置时，启动即清空而不是继�
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: requestDir,
+    inboundRequestDir: requestDir, inboundResultDir: resultDir,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray, {
     apply: async () => { throw new Error('启动时不应部署入站'); },
@@ -439,8 +441,10 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
     nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
   });
   const requestDir = join(directory, 'xray');
+  const resultDir = join(directory, 'xray-out');
   mkdirSync(requestDir, { recursive: true });
-  writeFileSync(join(requestDir, 'result.json'), JSON.stringify({ requestId: 'old', ok: false, stage: 'apply', error: '端口冲突' }));
+  mkdirSync(resultDir, { recursive: true });
+  writeFileSync(join(resultDir, 'result.json'), JSON.stringify({ requestId: 'old', ok: false, stage: 'apply', error: '端口冲突' }));
   const api = {
     getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [] }),
     heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
@@ -464,7 +468,7 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: requestDir,
+    inboundRequestDir: requestDir, inboundResultDir: resultDir,
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray, {
     apply: async () => { throw new Error('不应部署'); },
@@ -525,7 +529,7 @@ test('恢复下发失败后会继续重试，直到用户真的补齐', async ()
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
     databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
-    inboundRequestDir: join(directory, 'xray'),
+    inboundRequestDir: join(directory, 'xray'), inboundResultDir: join(directory, 'xray-out'),
     sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 

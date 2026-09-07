@@ -29,7 +29,7 @@ export class AgentRunner {
     private readonly store: AgentStore,
     private readonly api: AgentApiClient,
     private readonly xray: XrayAdapter,
-    inbound: InboundApplier = new FileInboundApplier(config.inboundRequestDir),
+    inbound: InboundApplier = new FileInboundApplier(config.inboundRequestDir, config.inboundResultDir),
   ) {
     this.inbound = inbound;
     this.commands = new CommandProcessor(store, xray, {
@@ -134,6 +134,9 @@ export class AgentRunner {
    * serving them.
    */
   private async discardForeignInbound(): Promise<void> {
+    // Destructive: it restarts Xray and rewrites the user table. Only the mode
+    // that is allowed to write Xray at all may do it.
+    if (this.currentConfig.controlMode !== 'direct_primary') return;
     if (this.store.getInboundState()) return;
     if (!this.helperHasDeployedInbound()) return;
     await this.inbound.reset(randomUUID());
@@ -148,7 +151,7 @@ export class AgentRunner {
    */
   private helperHasDeployedInbound(): boolean {
     try {
-      const raw = readFileSync(join(this.config.inboundRequestDir, 'result.json'), 'utf8');
+      const raw = readFileSync(join(this.config.inboundResultDir, 'result.json'), 'utf8');
       const parsed = JSON.parse(raw) as { ok?: unknown; listenPort?: unknown };
       return parsed.ok === true && typeof parsed.listenPort === 'number' && parsed.listenPort > 0;
     } catch { return false; }

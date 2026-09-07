@@ -163,6 +163,8 @@ function parseHelperResult(raw: string, requestId: string, mode: 'ensure' | 'res
 export class FileInboundApplier implements InboundApplier {
   constructor(
     private readonly directory: string,
+    /** Root-owned; the helper publishes here and the agent only reads. */
+    private readonly resultDirectory: string,
     private readonly timeoutMs = 120_000,
     private readonly pollIntervalMs = 250,
     private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
@@ -185,7 +187,7 @@ export class FileInboundApplier implements InboundApplier {
     const requestId = payload.requestId as string;
     writeSecretDurable(join(this.directory, 'pending.json'), payload);
     const deadline = Date.now() + this.timeoutMs;
-    const resultPath = join(this.directory, 'result.json');
+    const resultPath = join(this.resultDirectory, 'result.json');
     while (Date.now() < deadline) {
       await this.sleep(this.pollIntervalMs);
       let raw: string;

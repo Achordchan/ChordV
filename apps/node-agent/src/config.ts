@@ -34,6 +34,12 @@ export interface AgentConfig {
    * at /var/lib/chordv-node-agent.
    */
   inboundRequestDir: string;
+  /**
+   * Where the root helper publishes its results. Root-owned on a real host, so
+   * the agent cannot influence what it reads back — and so a compromised agent
+   * cannot redirect root's write into Xray's configuration directory.
+   */
+  inboundResultDir: string;
   /** Operator override for the address clients dial, ahead of API-observed detection. */
   publicHost?: string;
 }
@@ -127,6 +133,7 @@ export function loadConfig(): AgentConfig {
       process.env.CHORDV_XRAY_REQUEST_DIR
       || join(dirname(resolve(process.env.AGENT_DATABASE_PATH || './data/node-agent.db')), 'xray')
     ),
+    inboundResultDir: resolve(process.env.CHORDV_XRAY_RESULT_DIR || '/var/lib/chordv-xray'),
     ...(process.env.CHORDV_NODE_PUBLIC_HOST?.trim() ? { publicHost: process.env.CHORDV_NODE_PUBLIC_HOST.trim() } : {}),
     ...(registerToken && !token ? { registerToken } : {}),
     credentialsPath: resolve(process.env.AGENT_CREDENTIALS_PATH || './data/credentials.json'),
