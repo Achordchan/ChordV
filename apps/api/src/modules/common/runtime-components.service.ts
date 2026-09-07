@@ -732,45 +732,25 @@ export class RuntimeComponentsService {
   }
 
   private async cleanupSharedRulesetDuplicatesBestEffort(kind: RuntimeComponentKind, keepId: string) {
-    let settled = false;
-    const cleanupTask = this.cleanupSharedRulesetDuplicates(kind, keepId).then(
-      () => {
-        settled = true;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const cleanupTask = this.cleanupSharedRulesetDuplicates(kind, keepId).then(() => undefined);
     void cleanupTask.catch((error) => {
       this.logger.warn(
         `Runtime component ${keepId} saved, but delayed shared ruleset cleanup failed: ${readErrorMessage(error)}`
       );
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the waiting window only: on expiry the cleanup keeps running
+      // for the background logger above instead of holding a drain work item.
+      await workLifecycle.awaitWithBudgetElse(cleanupTask, readSharedRulesetCleanupBudgetMs(), () => {
         this.logger.warn(
           `Runtime component ${keepId} saved, but shared ruleset cleanup exceeded ${readSharedRulesetCleanupBudgetMs()}ms and will continue in background.`
         );
-        resolve();
-      }, readSharedRulesetCleanupBudgetMs());
-    });
-
-    try {
-      await Promise.race([workLifecycle.track(cleanupTask), timeoutTask]);
+      });
     } catch (error) {
       this.logger.warn(
         `Runtime component ${keepId} saved, but shared ruleset cleanup failed: ${readErrorMessage(error)}`
       );
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
@@ -787,41 +767,21 @@ export class RuntimeComponentsService {
     if (!absolutePath) {
       return;
     }
-    let settled = false;
-    const cleanupTask = removeRuntimeComponentFile(absolutePath).then(
-      () => {
-        settled = true;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
+    const cleanupTask = removeRuntimeComponentFile(absolutePath).then(() => undefined);
     void cleanupTask.catch((error) => {
       this.logger.warn(`Runtime component saved, but delayed ${label} cleanup failed: ${readErrorMessage(error)}`);
     });
 
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutTask = new Promise<void>((resolve) => {
-      timeoutHandle = setTimeout(() => {
-        if (settled) {
-          return;
-        }
+    try {
+      // Budget covers the waiting window only: on expiry the unlink keeps running
+      // for the background logger above instead of holding a drain work item.
+      await workLifecycle.awaitWithBudgetElse(cleanupTask, readRuntimeComponentFileCleanupBudgetMs(), () => {
         this.logger.warn(
           `Runtime component saved, but ${label} cleanup exceeded ${readRuntimeComponentFileCleanupBudgetMs()}ms and will continue in background.`
         );
-        resolve();
-      }, readRuntimeComponentFileCleanupBudgetMs());
-    });
-
-    try {
-      await Promise.race([workLifecycle.track(cleanupTask), timeoutTask]);
+      });
     } catch (error) {
       this.logger.warn(`Runtime component saved, but ${label} cleanup failed: ${readErrorMessage(error)}`);
-    } finally {
-      if (settled && timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
     }
   }
 
