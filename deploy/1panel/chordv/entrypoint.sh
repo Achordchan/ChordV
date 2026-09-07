@@ -64,6 +64,12 @@ LAST_GOOD_FILE="$STATE_DIR/last-good-version"
 # still knows this is a health-gated promotion (and can roll back), rather than
 # treating the half-promoted release as a plain, trusted start.
 PROMOTING_FILE="$STATE_DIR/promoting.json"
+# Cosmetic progress marker for the post-exit stages. Written by the supervisor while
+# a promotion is snapshotting/migrating/health-gating/stabilizing; the freshly-launched
+# app reads it on each status poll to keep the admin progress display moving while the
+# operation is still running. Best-effort ONLY: write failures are logged and ignored —
+# this file never gates, fences, or drives any supervisor decision, unlike promoting.json.
+PHASE_FILE="$STATE_DIR/phase.json"
 APPROVAL_FILE="$STATE_DIR/approved-generation"
 # A new release must stay up AND healthy for this long before it is trusted as
 # last-good — otherwise a version that serves one probe then crashes on delayed
@@ -232,6 +238,19 @@ approve_generation() {
 }
 
 clear_promoting() { rm -f "$PROMOTING_FILE" || return 1; sync; }
+
+write_phase() {
+  # write_phase <phase> — publish the current post-exit stage for the app's status
+  # poll. Best-effort cosmetic marker: failures are logged by the caller and ignored.
+  # Keyed to the in-flight operation so the app only applies it to a matching row.
+  local phase="$1"
+  [ -n "$GEN_OP" ] || return 0
+  printf '{"operationId":"%s","phase":"%s"}\n' "$GEN_OP" "$phase" > "$PHASE_FILE" 2>/dev/null || \
+    { log "WARN: cannot write progress phase marker (ignored)"; return 0; }
+  return 0
+}
+
+clear_phase() { rm -f "$PHASE_FILE" 2>/dev/null || true; }
 
 consume_pending() {
   # Keep the only recovery journal until its complete promotion context is durable.
@@ -872,6 +891,7 @@ while true; do
   # migrationApplied was validated with the complete journal before promotion.
   PROMO_MIG="$GEN_MIG"
   if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
+    write_phase "snapshotting"
     if ! run_snapshot "$GEN_VERSION" "$GEN_OP"; then
       log "pre-migration snapshot failed for $GEN_VERSION"
       handle_failed_promotion "迁移前数据库快照失败，未执行迁移，已自动回滚" "false"
@@ -879,6 +899,9 @@ while true; do
     fi
   fi
 
+  if [ "$GEN_PROMOTION" = "1" ] && [ "$GEN_KIND" != "rollback" ] && [ "$PROMO_MIG" = "true" ]; then
+    write_phase "migrating"
+  fi
   if ! run_migrate "$RELEASE_DIR"; then
     log "migration failed for $GEN_VERSION"
     handle_failed_promotion "迁移失败，已回滚代码（数据库结构未回退）" "true"
@@ -890,11 +913,19 @@ while true; do
   export CHORDV_SYSTEM_APPROVAL_TOKEN="$GEN_APPROVAL_TOKEN"
   export CHORDV_SYSTEM_APPROVAL_FILE="$APPROVAL_FILE"
   export CHORDV_SYSTEM_VERSION="$GEN_VERSION"
+  # Only a promotion (update/rollback/restart operation) carries an operation to
+  # report progress for; an ordinary relaunch of the last-good version has none.
+  if [ "$GEN_PROMOTION" = "1" ]; then write_phase "health-gating"; else clear_phase; fi
   log "launching $GEN_VERSION"
   ( cd "$RELEASE_DIR" && exec "$NODE_BIN" "$APP_ENTRY" ) &
   APP_PID=$!
 
-  if wait_healthy "$APP_PID" && confirm_stable "$APP_PID"; then
+  if wait_healthy "$APP_PID"; then
+    # Healthy: the remaining risk window is the stabilization observation, so
+    # advance the cosmetic phase before entering it (a failed gate leaves the
+    # phase behind — harmless, the terminal result supersedes it).
+    write_phase "stabilizing"
+    if confirm_stable "$APP_PID"; then
     # Finalization must keep retrying while this app serves, not exhaust a fixed
     # retry budget and wait for an unrelated app exit. Keep ALL generation context
     # and the promoting marker until last-good AND the result are persisted.
@@ -963,6 +994,9 @@ while true; do
         sleep 2
         continue
       fi
+      # Success finalized (the app has consumed, or will consume, the terminal
+      # result): the cosmetic phase marker has served its purpose.
+      clear_phase
       FINALIZED=1
       break
     done
@@ -976,6 +1010,7 @@ while true; do
     fi
     log "$GEN_VERSION healthy + stable (last-good)"
     GEN_OP=""; GEN_KIND=""; GEN_PROMOTION=0; GEN_MIG="false"; GEN_ROLLBACK_FROM=""; GEN_ROLLBACK_REASON=""
+    clear_phase
     wait "$APP_PID"; EXIT_CODE=$?
     APP_PID=""
     log "app for $GEN_VERSION exited (code $EXIT_CODE)"
@@ -986,6 +1021,7 @@ while true; do
       log "no pending marker; restarting $GEN_VERSION"
     fi
     continue
+    fi
   fi
 
   # Failed to come up (never healthy, or crashed during stabilization) → roll back.

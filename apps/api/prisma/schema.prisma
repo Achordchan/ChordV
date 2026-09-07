@@ -227,6 +227,8 @@ model SystemUpdateOperation {
   operationId      String                      @unique
   kind             SystemUpdateOperationKind
   status           SystemUpdateOperationStatus @default(pending)
+  phase            String?
+  progress         Int?
   actorUserId      String?
   actorLabel       String?
   fromVersion      String?

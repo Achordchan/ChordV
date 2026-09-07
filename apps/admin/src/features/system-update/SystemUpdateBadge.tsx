@@ -9,6 +9,7 @@ import {
   Loader,
   Modal,
   Popover,
+  Progress,
   ScrollArea,
   Stack,
   Text,
@@ -18,6 +19,7 @@ import { notifications } from "@mantine/notifications";
 import type {
   SystemUpdateCheckDto,
   SystemUpdateOperationDto,
+  SystemUpdateOperationPhase,
   SystemUpdateRollbackVersionDto
 } from "@chordv/shared";
 import {
@@ -83,6 +85,97 @@ function statusLabel(status: SystemUpdateOperationDto["status"]): string {
 
 function kindLabel(kind: SystemUpdateOperationDto["kind"]): string {
   return kind === "update" ? "更新" : kind === "rollback" ? "回滚" : "重启";
+}
+
+// Ordered lifecycle stages of a running operation, matching the backend phase union.
+// The order is display-only: phases legitimately skip (an update without migrations
+// never shows snapshotting/migrating).
+const PHASE_STEPS: Array<{ phase: SystemUpdateOperationPhase; label: string }> = [
+  { phase: "checking", label: "检查" },
+  { phase: "downloading", label: "下载" },
+  { phase: "extracting", label: "解压" },
+  { phase: "draining", label: "切换" },
+  { phase: "snapshotting", label: "快照" },
+  { phase: "migrating", label: "迁移" },
+  { phase: "health-gating", label: "健康检查" },
+  { phase: "stabilizing", label: "稳定观察" }
+];
+
+function phaseLabel(phase: SystemUpdateOperationPhase): string {
+  return PHASE_STEPS.find((step) => step.phase === phase)?.label ?? phase;
+}
+
+function phaseDescription(phase: SystemUpdateOperationPhase): string {
+  switch (phase) {
+    case "checking":
+      return "正在确认最新版本与清单签名…";
+    case "downloading":
+      return "正在下载更新包…";
+    case "extracting":
+      return "正在校验并解压更新包…";
+    case "draining":
+      return "正在排空请求并切换新版本，服务将短暂重启…";
+    case "snapshotting":
+      return "正在对数据库做迁移前快照…";
+    case "migrating":
+      return "正在执行数据库迁移…";
+    case "health-gating":
+      return "新版本已启动，正在通过健康检查…";
+    case "stabilizing":
+      return "新版本运行正常，正在稳定观察…";
+    default:
+      return phase;
+  }
+}
+
+/**
+ * Render the live progress area for a running operation: a phase step indicator
+ * plus a byte-percentage progress bar while downloading. Falls back to legacy
+ * static copy when no phase has been reported yet (older backend, or the brief
+ * window before the first phase lands).
+ */
+function OperationProgress({ op, reconnecting }: { op: SystemUpdateOperationDto | null; reconnecting: boolean }) {
+  if (!op?.phase) {
+    return (
+      <Text size="xs">
+        {reconnecting
+          ? "服务重启中，正在重新连接…请勿关闭页面。"
+          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…"}
+      </Text>
+    );
+  }
+  const stepIndex = PHASE_STEPS.findIndex((step) => step.phase === op.phase);
+  return (
+    <Stack gap={6}>
+      <Group gap={4} wrap="nowrap" align="center">
+        {PHASE_STEPS.map((step, index) => {
+          const state = index < stepIndex ? "done" : index === stepIndex ? "active" : "todo";
+          return (
+            <Group key={step.phase} gap={4} wrap="nowrap">
+              {index > 0 ? <Text size="10px" c={state === "todo" ? "dimmed" : "blue"}>→</Text> : null}
+              <Text
+                size="10px"
+                fw={state === "active" ? 700 : 400}
+                c={state === "active" ? "blue" : state === "done" ? "teal" : "dimmed"}
+              >
+                {step.label}
+                {state === "done" ? " ✓" : ""}
+              </Text>
+            </Group>
+          );
+        })}
+      </Group>
+      <Text size="xs">{phaseDescription(op.phase)}{reconnecting ? "（连接中断，重连中…）" : ""}</Text>
+      {op.phase === "downloading" && op.progress !== null ? (
+        <Progress value={op.progress} size="sm" radius="sm" animated />
+      ) : null}
+      {op.phase === "downloading" && op.progress !== null ? (
+        <Text size="10px" c="dimmed" ta="center">
+          {op.progress}%
+        </Text>
+      ) : null}
+    </Stack>
+  );
 }
 
 export function SystemUpdateBadge() {
@@ -373,19 +466,13 @@ export function SystemUpdateBadge() {
 
             {inProgress ? (
               <Alert color="blue" variant="light" p="xs">
-                <Group gap="xs" wrap="nowrap">
-                  <Loader size="xs" />
-                  <Text size="xs">
-                    {phase === "finishing"
-                      ? "正在刷新版本与操作记录…"
-                      : phase === "reconnecting"
-                      ? "服务重启中，正在重新连接…请勿关闭页面。"
-                      : busy === "restart"
-                        ? "正在重启服务…"
-                        : busy === "rollback"
-                          ? "正在回滚并重启服务…"
-                          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…"}
-                  </Text>
+                <Group gap="xs" wrap="nowrap" align="flex-start">
+                  <Loader size="xs" mt={4} />
+                  {phase === "finishing" ? (
+                    <Text size="xs">正在刷新版本与操作记录…</Text>
+                  ) : (
+                    <OperationProgress op={activeOp} reconnecting={phase === "reconnecting"} />
+                  )}
                 </Group>
               </Alert>
             ) : null}

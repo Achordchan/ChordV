@@ -769,22 +769,34 @@ export async function fetchExternalReleaseArtifactMetadata(rawUrl: string, defau
   return fetchExternalReleaseArtifactMetadataWithFallback(rawUrl, rawUrl);
 }
 
-export async function downloadExternalReleaseArtifactFile(rawUrl: string, defaultMirrorPrefix?: string | null) {
+// Byte-level progress for a streaming artifact download. `totalBytes` is null when
+// the server did not advertise a content length (then percent progress is unknown).
+export type ExternalReleaseDownloadProgress = { downloadedBytes: number; totalBytes: number | null };
+
+export async function downloadExternalReleaseArtifactFile(
+  rawUrl: string,
+  defaultMirrorPrefix?: string | null,
+  onProgress?: (progress: ExternalReleaseDownloadProgress) => void
+) {
   const preferredUrl = buildExternalReleaseArtifactProbeUrl(rawUrl, defaultMirrorPrefix);
   if (preferredUrl !== rawUrl) {
     try {
-      return await requestExternalReleaseArtifactFile(preferredUrl, rawUrl);
+      return await requestExternalReleaseArtifactFile(preferredUrl, rawUrl, onProgress);
     } catch {
     }
   }
-  return requestExternalReleaseArtifactFile(rawUrl, rawUrl);
+  return requestExternalReleaseArtifactFile(rawUrl, rawUrl, onProgress);
 }
 
 export async function downloadExternalReleaseArtifactFileStrict(rawUrl: string) {
   return requestExternalReleaseArtifactFile(rawUrl, rawUrl);
 }
 
-async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: string) {
+async function requestExternalReleaseArtifactFile(
+  rawUrl: string,
+  fallbackUrl: string,
+  onProgress?: (progress: ExternalReleaseDownloadProgress) => void
+) {
   const dispatcher = createDispatcher(120_000, false);
   const timeout = createAbortTimeout(
     readPositiveIntegerEnv("CHORDV_RELEASE_EXTERNAL_DOWNLOAD_TIMEOUT_MS", DEFAULT_EXTERNAL_RELEASE_DOWNLOAD_TIMEOUT_MS),
@@ -848,6 +860,17 @@ async function requestExternalReleaseArtifactFile(rawUrl: string, fallbackUrl: s
           }
           hash.update(buffer);
           await fileHandle.write(buffer);
+          // Best-effort progress reporting only: an observer error must never fail
+          // the download itself.
+          if (onProgress) {
+            try {
+              onProgress({
+                downloadedBytes: Number(fileSizeBytes),
+                totalBytes: contentLength === null ? null : Number(contentLength)
+              });
+            } catch {
+            }
+          }
         }
       } finally {
         reader.releaseLock?.();

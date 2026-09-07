@@ -18,6 +18,7 @@ import type {
   SystemUpdateCheckDto,
   SystemUpdateOperationDto,
   SystemUpdateOperationKind,
+  SystemUpdateOperationPhase,
   SystemUpdateReleaseInfoDto,
   SystemUpdateRollbackVersionDto,
   SystemUpdateStartResultDto
@@ -30,7 +31,8 @@ import {
   compareSemver,
   createId,
   downloadExternalReleaseArtifactFile,
-  normalizeAcceptedVersion
+  normalizeAcceptedVersion,
+  type ExternalReleaseDownloadProgress
 } from "./release-center.utils";
 import { fetchPublicHttpUrl } from "./remote-url.utils";
 import {
@@ -39,6 +41,7 @@ import {
   SYSTEM_UPDATE_LAST_GOOD_VERSION_FILE,
   SYSTEM_UPDATE_MANIFEST_FLOOR_FILE,
   SYSTEM_UPDATE_PENDING_FILE,
+  SYSTEM_UPDATE_PHASE_FILE,
   SYSTEM_UPDATE_PROMOTING_FILE,
   SYSTEM_UPDATE_RESULT_PREFIX,
   type SystemUpdateRuntimeConfig
@@ -49,6 +52,17 @@ const SYSTEM_UPDATE_LOCK_KEY_2 = 1;
 const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
 const MAX_MANIFEST_BYTES = 256 * 1024;
 const READINESS_CACHE_TTL_MS = 5_000;
+// Phases the supervisor may report through the state-dir phase.json; a strict allowlist
+// so a stale/hand-crafted file cannot leak arbitrary strings into admin responses.
+const SUPERVISOR_PHASES: ReadonlySet<string> = new Set(["snapshotting", "migrating", "health-gating", "stabilizing"]);
+// Phases this app writes itself; the persisted column is free text at the DB level.
+const APP_PHASES: ReadonlySet<string> = new Set(["checking", "downloading", "extracting", "draining"]);
+// Full union for validating whatever a row (or a phase.json override) carries.
+const KNOWN_PHASES: ReadonlySet<string> = new Set([...APP_PHASES, ...SUPERVISOR_PHASES]);
+// Progress is best-effort cosmetics: DB write failures are swallowed (never gate the
+// update itself), and byte progress is throttled to one write per window — a 3s poll
+// gains nothing from faster writes and each one is a DB round-trip on the operation row.
+const PROGRESS_WRITE_INTERVAL_MS = 2_000;
 
 type RawManifest = {
   version?: unknown;
@@ -116,6 +130,12 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private readonly activeChildGroups = new Set<number>();
   // Monotonic suffix so concurrent durable writes never collide on a shared tmp path.
   private tmpSeq = 0;
+  // Throttle state for the download byte-progress DB writes (per operation).
+  // -Infinity means "never written": performance.now() is a small number early in
+  // the process lifetime, so a 0 initial value would (wrongly) throttle the first
+  // write for the first ~2s of an operation started right after boot.
+  private lastProgressWriteAt = -Infinity;
+  private lastProgressWritten = -1;
   // Serializes the signed manifest-floor compare-and-write so concurrent update checks
   // cannot interleave and move the anti-replay floor backward (it must only advance).
   private manifestFloorLock: Promise<unknown> = Promise.resolve();
@@ -127,7 +147,6 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private shutdownApplication?: () => Promise<void>;
   private fenceShutdown?: (error: Error) => void;
   private assertShutdownHealthy?: () => void;
-
   configureShutdown(shutdown: () => Promise<void>, fence: (error: Error) => void, assertHealthy: () => void) {
     this.shutdownApplication = shutdown;
     this.fenceShutdown = fence;
@@ -306,15 +325,25 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       orderBy: { startedAt: "desc" },
       take
     });
-    return rows.map((row) => this.toOperationDto(row));
-  }
+    return rows.map((row) => this.toOperationDto(row));  }
 
   async getOperation(operationId: string): Promise<SystemUpdateOperationDto | null> {
     // The UI polls this during an update; consuming the marker here finalizes the
     // operation the moment the supervisor reports stabilization done/rolled-back.
     await this.consumeResultMarker().catch(() => undefined);
     const row = await this.prisma.systemUpdateOperation.findUnique({ where: { operationId } });
-    return row ? this.toOperationDto(row) : null;
+    if (!row) return null;
+    // A running row with no app-side phase left over from before the process swap:
+    // the supervisor's phase.json (if any, and if it belongs to THIS operation) is
+    // more recent than whatever the exiting process last persisted.
+    let phase = row.phase as SystemUpdateOperationPhase | null;
+    if (row.status === "running" || row.status === "pending") {
+      const supervisor = await this.readSupervisorPhase().catch(() => null);
+      if (supervisor && supervisor.operationId === operationId) {
+        phase = supervisor.phase;
+      }
+    }
+    return this.toOperationDto(row, phase);
   }
 
   async startUpdate(
@@ -389,6 +418,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     expectedVersion?: string | null
   ) {
     try {
+      await this.markPhase(operationId, "checking");
       const check = await this.checkUpdate(true);
       await lock.assertHeld();
       // Only act on a manifest we just re-fetched cleanly. A forced refresh that
@@ -421,14 +451,16 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       await this.markRunning(operationId, release.version);
+      await this.markPhase(operationId, "downloading");
 
       if (!release.downloadUrl || !release.sha256) {
         throw new BadRequestException("更新清单缺少下载地址或 SHA-256，已取消更新。");
       }
       const releaseDir = await this.downloadAndExtractRelease({
         ...release, downloadUrl: release.downloadUrl, sha256: release.sha256
-      }, lock);
+      }, lock, this.downloadProgressWriter(operationId));
       await lock.assertHeld();
+      await this.markPhase(operationId, "extracting");
       const pendingMigrations = await this.detectPendingMigrations(releaseDir);
       const willMigrate = pendingMigrations.length > 0;
       if (willMigrate) {
@@ -458,6 +490,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       // scheduleProcessExit): the DB session closing on exit releases it, which
       // closes the window where a second request could grab the lock before the
       // supervisor writes promoting.json.
+      await this.markPhase(operationId, "draining");
       this.scheduleProcessExit(`staged update ${fromVersion} -> ${release.version} (operation ${operationId})`, lock, operationId, {
         version: release.version, operationId, kind: "update", migrationApplied: willMigrate
       });
@@ -479,6 +512,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     try {
       await lock.assertHeld();
       await this.markRunning(operationId, target);
+      await this.markPhase(operationId, "draining");
       await lock.assertHeld();
       this.scheduleProcessExit(`staged rollback ${fromVersion} -> ${target} (operation ${operationId})`, lock, operationId, {
         version: target, operationId, kind: "rollback"
@@ -492,13 +526,19 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async downloadAndExtractRelease(release: NormalizedRelease, lock: OperationLock): Promise<string> {
+  private async downloadAndExtractRelease(
+    release: NormalizedRelease,
+    lock: OperationLock,
+    onProgress?: (progress: ExternalReleaseDownloadProgress) => boolean
+  ): Promise<string> {
     const releasesDir = this.config.releasesDir;
     if (!releasesDir) {
       throw new ServiceUnavailableException("未配置发布目录（CHORDV_SYSTEM_RELEASES_DIR）。");
     }
     const mirror = await this.resolveMirrorPrefix();
-    const downloaded = await downloadExternalReleaseArtifactFile(release.downloadUrl, mirror);
+    const downloaded = await downloadExternalReleaseArtifactFile(release.downloadUrl, mirror, (progress) =>
+      onProgress ? onProgress(progress) : true
+    );
     try {
       await lock.assertHeld();
       if (downloaded.fileHash.toLowerCase() !== release.sha256.toLowerCase()) {
@@ -1143,14 +1183,59 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async markRunning(operationId: string, toVersion: string) {
+    this.lastProgressWriteAt = -Infinity;
+    this.lastProgressWritten = -1;
     await this.prisma.systemUpdateOperation.update({
       where: { operationId },
-      data: { status: "running", toVersion }
+      data: { status: "running", toVersion, phase: "checking", progress: null }
     });
   }
 
   private async updateOperation(operationId: string, data: { migrationApplied?: boolean }) {
     await this.prisma.systemUpdateOperation.update({ where: { operationId }, data });
+  }
+
+  /**
+   * Persist the current lifecycle phase on a running operation. Best-effort only:
+   * the phase is cosmetic, so a DB write failure is logged and swallowed — it must
+   * never fail or gate the update itself. Also refuses to write once draining has
+   * started: after that point the process is on its way out and half-written
+   * progress rows would race the terminal result marker.
+   */
+  private async markPhase(operationId: string, phase: SystemUpdateOperationPhase, progress?: number) {
+    if (workLifecycle.isDraining || this.shutdownFailed) return;
+    try {
+      await this.prisma.systemUpdateOperation.update({
+        where: { operationId, status: "running" },
+        data: { phase, ...(progress !== undefined ? { progress } : {}) }
+      });
+    } catch (error) {
+      this.logger.warn(`Progress phase update failed (ignored): ${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * Throttled byte-progress callback for the artifact download. Returns a boolean
+   * "still writable" so the (potentially long-running) download loop stops
+   * invoking it after drain starts. percent is clamped 0-99 until the file is
+   * complete (100 belongs to the terminal outcome, not a still-downloading op).
+   */
+  private downloadProgressWriter(operationId: string): (progress: ExternalReleaseDownloadProgress) => boolean {
+    return (progress) => {
+      if (workLifecycle.isDraining || this.shutdownFailed) return false;
+      const now = performance.now();
+      if (now - this.lastProgressWriteAt < PROGRESS_WRITE_INTERVAL_MS) return true;
+      this.lastProgressWriteAt = now;
+      const percent =
+        progress.totalBytes && progress.totalBytes > 0
+          ? Math.min(99, Math.floor((progress.downloadedBytes / progress.totalBytes) * 100))
+          : null;
+      if (percent === null || percent === this.lastProgressWritten) return true;
+      this.lastProgressWritten = percent;
+      // Fire-and-forget: the download loop must not block on a DB round-trip.
+      void this.markPhase(operationId, "downloading", percent).catch(() => undefined);
+      return true;
+    };
   }
 
   private async finishOperation(
@@ -1163,6 +1248,11 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       data: {
         status,
         finishedAt: new Date(),
+        // Terminal statuses carry their outcome; a phase racing the result marker
+        // (e.g. an in-flight progress write landing late) must not linger on a
+        // finished row and surface in the history list.
+        phase: null,
+        progress: null,
         ...(data.toVersion !== undefined ? { toVersion: data.toVersion } : {}),
         ...(data.failureReason !== undefined ? { failureReason: data.failureReason } : {})
       }
@@ -1304,6 +1394,8 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
         data: {
           status,
           finishedAt: new Date(),
+          phase: null,
+          progress: null,
           ...(setToVersion ? { toVersion: marker.version } : {}),
           ...(reason ? { failureReason: reason } : {}),
           ...(typeof marker.migrationApplied === "boolean" ? { migrationApplied: marker.migrationApplied } : {})
@@ -1440,11 +1532,43 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Read the supervisor's current post-exit phase (snapshot/migrate/health gate/
+   * stabilize) from the state-dir phase.json. Cosmetic and best-effort: any read
+   * or parse failure yields null — this never gates an operation. Untrusted
+   * values are dropped (the file is written by our own supervisor, but a stale
+   * or hand-crafted file must not leak arbitrary strings into admin responses).
+   */
+  private async readSupervisorPhase(): Promise<{ operationId: string; phase: SystemUpdateOperationPhase } | null> {
+    if (!this.config.stateDir) return null;
+    const file = path.join(this.config.stateDir, SYSTEM_UPDATE_PHASE_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      return null;
+    }
+    try {
+      const marker = JSON.parse(raw) as { operationId?: unknown; phase?: unknown };
+      if (
+        typeof marker.operationId !== "string" || marker.operationId.trim() !== marker.operationId ||
+        marker.operationId.length === 0 || marker.operationId.length > 64 ||
+        !SUPERVISOR_PHASES.has(marker.phase as string)
+      ) return null;
+      return { operationId: marker.operationId, phase: marker.phase as SystemUpdateOperationPhase };
+    } catch {
+      return null;
+    }
+  }
+
   private toOperationDto(row: {
     id: string;
     operationId: string;
     kind: string;
     status: string;
+    phase: string | null;
+    progress: number | null;
     actorLabel: string | null;
     fromVersion: string | null;
     toVersion: string | null;
@@ -1452,12 +1576,23 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     migrationApplied: boolean;
     startedAt: Date;
     finishedAt: Date | null;
-  }): SystemUpdateOperationDto {
+  }, phaseOverride?: SystemUpdateOperationPhase | null): SystemUpdateOperationDto {
+    // Only surfaced while the operation is actually live; a stale phase on a
+    // terminal row (e.g. a phase write racing the result marker) is noise. The
+    // persisted phase is trusted only inside the union — the column is free text
+    // at the DB level.
+    const live = row.status === "running" || row.status === "pending";
+    const rawPhase = phaseOverride !== undefined ? phaseOverride : row.phase;
+    const phase = (live && rawPhase !== null && KNOWN_PHASES.has(rawPhase)
+      ? rawPhase
+      : null) as SystemUpdateOperationPhase | null;
     return {
       id: row.id,
       operationId: row.operationId,
       kind: row.kind as SystemUpdateOperationKind,
       status: row.status as SystemUpdateOperationDto["status"],
+      phase,
+      progress: phase === "downloading" ? row.progress : null,
       actorLabel: row.actorLabel,
       fromVersion: row.fromVersion,
       toVersion: row.toVersion,

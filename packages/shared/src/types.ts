@@ -1407,6 +1407,21 @@ export type SystemUpdateOperationStatus =
   | "failed"
   | "rolled_back";
 
+// Ordered lifecycle phases surfaced while an operation is running. The app writes
+// checking..draining to the DB while it is alive; after it exits, the supervisor
+// owns snapshotting..stabilizing and publishes them via the state-dir phase file,
+// which the freshly-launched process serves on the status poll. Phases may be
+// skipped (e.g. an update without migrations never shows snapshotting/migrating).
+export type SystemUpdateOperationPhase =
+  | "checking"
+  | "downloading"
+  | "extracting"
+  | "draining"
+  | "snapshotting"
+  | "migrating"
+  | "health-gating"
+  | "stabilizing";
+
 export interface SystemUpdateReleaseInfoDto {
   version: string;
   tag: string | null;
@@ -1440,6 +1455,12 @@ export interface SystemUpdateOperationDto {
   operationId: string;
   kind: SystemUpdateOperationKind;
   status: SystemUpdateOperationStatus;
+  // Current lifecycle phase while status is running/pending; null for terminal
+  // statuses or when neither the app nor the supervisor has reported one yet.
+  phase: SystemUpdateOperationPhase | null;
+  // 0-100 byte progress, meaningful only while phase is "downloading" (and only
+  // when the server advertised a content length); null otherwise.
+  progress: number | null;
   actorLabel: string | null;
   fromVersion: string | null;
   toVersion: string | null;
