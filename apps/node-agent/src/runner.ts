@@ -20,6 +20,8 @@ export class AgentRunner {
   private stateMutationTail: Promise<void> = Promise.resolve();
   private eventsController?: AbortController;
   private lastXrayUptime = 0;
+  /** Set when Xray was (re)started; cleared only once users are back in place. */
+  private reconcilePending = false;
   private readonly inbound: InboundApplier;
 
   constructor(
@@ -154,11 +156,22 @@ export class AgentRunner {
 
   private async checkXrayAndRecover(): Promise<void> {
     await this.xray.health();
-    const recovered = !this.xrayHealthy;
+    if (!this.xrayHealthy) this.reconcilePending = true;
     this.xrayHealthy = true;
-    if (recovered && this.currentConfig.controlMode === 'direct_primary') {
-      await this.commands.reconcile(this.store.listDesiredUsers());
-    }
+    await this.flushPendingReconcile();
+  }
+
+  /**
+   * Recovery is not "we tried once": a HandlerService call can fail while Xray
+   * is still initialising, and by then the health flag and the uptime baseline
+   * have already moved on — nothing would retry, and the node would serve no
+   * users until the next restart. So the intent stays pending until a reconcile
+   * actually completes.
+   */
+  private async flushPendingReconcile(): Promise<void> {
+    if (!this.reconcilePending || this.currentConfig.controlMode !== 'direct_primary') return;
+    await this.commands.reconcile(this.store.listDesiredUsers());
+    this.reconcilePending = false;
   }
 
   /**
@@ -169,11 +182,9 @@ export class AgentRunner {
    */
   private async detectXrayRestart(): Promise<void> {
     const uptime = await this.xray.uptimeSeconds();
-    const restarted = this.lastXrayUptime > 0 && uptime < this.lastXrayUptime;
+    if (this.lastXrayUptime > 0 && uptime < this.lastXrayUptime) this.reconcilePending = true;
     this.lastXrayUptime = uptime;
-    if (restarted && this.currentConfig.controlMode === 'direct_primary') {
-      await this.commands.reconcile(this.store.listDesiredUsers());
-    }
+    await this.flushPendingReconcile();
   }
 
   private async sample(): Promise<void> {
@@ -264,8 +275,11 @@ export class AgentRunner {
             }
             if (
               this.currentConfig.controlMode === 'direct_primary'
-              && (command.type === 'DISABLE_USER' || command.type === 'REMOVE_USER')
+              && (command.type === 'DISABLE_USER' || command.type === 'REMOVE_USER' || command.type === 'ENSURE_INBOUND')
             ) {
+              // A deployment restarts Xray, and its in-memory counters die with
+              // it. Command execution also blocks the periodic sampler, so the
+              // traffic since the last sample would simply be unbilled.
               await this.sampleWithinStateMutation();
             }
             const commandResult = await this.commands.execute(command, this.currentConfig.controlMode === 'direct_primary');

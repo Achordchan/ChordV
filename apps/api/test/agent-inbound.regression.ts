@@ -9,6 +9,7 @@ import {
   isPublicUnicastAddress,
   normalizeInboundSpec,
   parseIPv6Bytes,
+  SUPPORTED_FINGERPRINTS,
   parseInboundReport
 } from "../src/modules/agent/agent-inbound";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
@@ -55,6 +56,9 @@ function testSpecNormalization() {
   assert.deepEqual(spec, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
   assert.equal(normalizeInboundSpec({ listenPort: 8443 }).listenPort, 8443);
   assert.equal(normalizeInboundSpec({ rotateKeys: true }).rotateKeys, true);
+  for (const fingerprint of SUPPORTED_FINGERPRINTS) {
+    assert.equal(normalizeInboundSpec({ fingerprint }).fingerprint, fingerprint);
+  }
 
   for (const [label, payload] of [
     ["port too large", { listenPort: 70000 }],
@@ -67,6 +71,9 @@ function testSpecNormalization() {
     ["serverName invalid", { serverNames: ["bad host"] }],
     ["unsupported flow", { flow: "xtls-rprx-direct" }],
     ["fingerprint invalid", { fingerprint: "Chrome!" }],
+    // A client-side setting the server can never verify: Xray accepts the
+    // deployment either way and every generated config carries the bad value.
+    ["fingerprint unsupported", { fingerprint: "garbage" }],
     ["spiderX without slash", { spiderX: "path" }],
     ["spiderX with quote", { spiderX: '/a"b' }],
     ["rotateKeys not boolean", { rotateKeys: "yes" }],

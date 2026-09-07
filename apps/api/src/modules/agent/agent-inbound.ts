@@ -29,6 +29,16 @@ export interface NormalizedInboundSpec {
   rotateKeys: boolean;
 }
 
+/**
+ * uTLS fingerprints a client runtime can actually present. The server cannot
+ * catch a bad one — the fingerprint is a client-side setting, so Xray accepts
+ * the deployment either way and the node becomes activatable while every
+ * generated config carries an unusable value.
+ */
+export const SUPPORTED_FINGERPRINTS = [
+  "chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"
+] as const;
+
 const HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
 
 function text(payload: Record<string, unknown>, key: string, fallback: string): string {
@@ -77,7 +87,9 @@ export function normalizeInboundSpec(payload: Record<string, unknown>): Normaliz
   const flow = text(payload, "flow", INBOUND_DEFAULTS.flow);
   if (flow !== "" && flow !== "xtls-rprx-vision") throw new BadRequestException(`入站参数 flow 不支持：${flow}`);
   const fingerprint = text(payload, "fingerprint", INBOUND_DEFAULTS.fingerprint);
-  if (!/^[a-z0-9]{1,16}$/.test(fingerprint)) throw new BadRequestException(`入站参数 fingerprint 不合法：${fingerprint}`);
+  if (!(SUPPORTED_FINGERPRINTS as readonly string[]).includes(fingerprint)) {
+    throw new BadRequestException(`入站参数 fingerprint 不受支持：${fingerprint}（可用：${SUPPORTED_FINGERPRINTS.join("、")}）`);
+  }
   const spiderX = text(payload, "spiderX", INBOUND_DEFAULTS.spiderX);
   if (!spiderX.startsWith("/") || spiderX.length > 64 || /[\s"'\\]/.test(spiderX)) {
     throw new BadRequestException(`入站参数 spiderX 不合法：${spiderX}`);

@@ -483,3 +483,75 @@ test('失败的部署结果不算外来入站，重启不会白白清空配置',
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('恢复下发失败后会继续重试，直到用户真的补齐', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chordv-agent-reconcile-retry-'));
+  const store = new AgentStore(join(directory, 'agent.db'), {
+    nodeId: 'node-1', bootId: 'boot-1', defaultOfflineAllowanceBytes: 64n * 1024n * 1024n,
+  });
+  const desired = user();
+  store.applyConfigSnapshot({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] });
+  let uptime = 900;
+  let live: Array<{ email: string; uuid?: string }> = [{ email: desired.email, uuid: desired.uuid }];
+  let failEnsure = false;
+  let ensured = 0;
+  let attempts = 0;
+  let uptimeReads = 0;
+  const api = {
+    getConfig: async () => ({ nodeId: 'node-1', revision: '1', controlMode: 'direct_primary', users: [desired] }),
+    heartbeat: async () => ({ accepted: true, ackThrough: '0', configRevision: '1' }),
+    uploadBatch: async () => ({ accepted: true, duplicate: false, ackThrough: '1' }),
+    reportCommandResult: async () => undefined,
+    consumeEvents: async (_handler: unknown, signal: AbortSignal) => {
+      await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    },
+  } as unknown as AgentApiClient;
+  const xray: XrayAdapter = {
+    health: async () => undefined,
+    uptimeSeconds: async () => { uptimeReads += 1; return uptime; },
+    inboundLive: async () => true,
+    readAbsoluteCounters: async () => [],
+    listUsers: async () => live,
+    ensureUser: async (input) => {
+      attempts += 1;
+      // Xray is still initialising: the first attempt after the restart fails.
+      if (failEnsure) throw new Error('HandlerService 尚未就绪');
+      ensured += 1;
+      live = [{ email: input.email, uuid: input.uuid }];
+    },
+    removeUser: async (email) => { live = live.filter((item) => item.email !== email); },
+  };
+  const runner = new AgentRunner({
+    agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in',
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
+    inboundRequestDir: join(directory, 'xray'),
+    sampleIntervalMs: 5, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
+  }, store, api, xray);
+
+  try {
+    await runner.start();
+    await waitFor(() => ensured >= 1);
+    // The periodic sampler must have taken a baseline before the drop can read
+    // as a restart (start() itself does not sample).
+    await waitFor(() => uptimeReads >= 1);
+    // Xray restarted and dropped its users; the first recovery attempt fails.
+    const attemptsBefore = attempts;
+    failEnsure = true;
+    live = [];
+    uptime = 2;
+    // Wait until the failing recovery has actually been attempted.
+    await waitFor(() => attempts > attemptsBefore);
+    const succeeded = ensured;
+    // Uptime now climbs again and health was already reported true, so only a
+    // pending-recovery flag can bring the users back.
+    uptime = 30;
+    failEnsure = false;
+    await waitFor(() => ensured > succeeded);
+    assert.deepEqual(live.map((item) => item.email), [desired.email]);
+  } finally {
+    await runner.stop();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
