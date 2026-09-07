@@ -61,6 +61,38 @@ const registerTokenFingerprint = (token: string): string =>
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 /**
+ * Moves the previous node's identity AND its runtime state aside under one
+ * timestamp. The sqlite database must travel with the identity: it holds the
+ * old node's desired users, command history and unsettled usage batches, and
+ * reusing it under new credentials would mix two nodes' state and could replay
+ * the old node's work. Nothing is deleted — the archived files stay for
+ * recovery/reconciliation. Runs before the store is opened, with the service
+ * stopped (the installer restarts it), so no descriptor is live here.
+ */
+function archiveIdentity(config: AgentConfig): string[] {
+  const stamp = Date.now();
+  const archived: string[] = [];
+  const directories = new Set<string>();
+  const candidates = [
+    config.credentialsPath,
+    `${config.credentialsPath}.pending`,
+    config.databasePath,
+    `${config.databasePath}-wal`,
+    `${config.databasePath}-shm`,
+  ];
+  for (const file of candidates) {
+    const source = resolve(file);
+    if (!fs.existsSync(source)) continue;
+    const target = `${source}.replaced.${stamp}`;
+    fs.renameSync(source, target);
+    archived.push(target);
+    directories.add(dirname(source));
+  }
+  for (const directory of directories) syncDirectory(directory);
+  return archived;
+}
+
+/**
  * READ-ONLY credential lookup for `--health`. Health checks are normally run by
  * an operator as root, so this path must never register, generate or persist
  * anything: a root-owned credential file (or sqlite WAL) inside the service's
@@ -110,10 +142,10 @@ export async function resolveCredentials(config: AgentConfig, register = request
             `或停止服务后删除 ${config.credentialsPath} 与 ${config.credentialsPath}.pending 后重启`
         );
       }
-      const archived = `${config.credentialsPath}.replaced.${Date.now()}`;
-      fs.renameSync(config.credentialsPath, archived);
-      syncDirectory(dirname(resolve(config.credentialsPath)));
-      console.warn(`[node-agent] 已按 CHORDV_AGENT_RESET_IDENTITY 归档旧身份至 ${archived}，将以新注册令牌重新接入`);
+      const archived = archiveIdentity(config);
+      console.warn(
+        `[node-agent] 已按 CHORDV_AGENT_RESET_IDENTITY 归档旧身份及运行状态（${archived.join('、')}），将以新注册令牌重新接入`
+      );
       saved = null;
     }
   }

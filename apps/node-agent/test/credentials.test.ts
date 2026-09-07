@@ -184,6 +184,9 @@ test('a different registration token must not silently reuse the saved identity'
   const file = join(root, 'credentials.json');
   try {
     const saved = await resolveCredentials(config(file), async () => identity);
+    // Stand in for the running agent's sqlite state; a real database is opened
+    // only after credentials resolve, so its contents are irrelevant here.
+    fs.writeFileSync(join(root, 'agent.db'), 'old node state');
     const fresh = { ...config(file), registerToken: 'chordv_register_second_node' };
     await assert.rejects(
       resolveCredentials(fresh, async () => { assert.fail('must not register while a stale identity is present'); }),
@@ -200,9 +203,19 @@ test('a different registration token must not silently reuse the saved identity'
     assert.deepEqual(reset, { agentId: 'agent-second', nodeId: 'node-second', token: requests[0].agentToken });
     // A new node never inherits the previous node's client secret.
     assert.notEqual(reset.token, saved.token);
+    // The identity AND the previous node's runtime state move aside together:
+    // desired users, command history and unsettled usage must not be inherited.
     const archived = fs.readdirSync(root).filter(name => name.includes('.replaced.'));
-    assert.equal(archived.length, 1);
-    assert.deepEqual(JSON.parse(fs.readFileSync(join(root, archived[0]), 'utf8')).agentId, saved.agentId);
+    const identityFile = archived.find(name => name.startsWith('credentials.json.replaced.'));
+    const stateFile = archived.find(name => name.startsWith('agent.db.replaced.'));
+    const pendingFile = archived.find(name => name.startsWith('credentials.json.pending.replaced.'));
+    assert.ok(identityFile && stateFile && pendingFile, `身份、待注册密钥与状态库都应归档：${archived.join()}`);
+    assert.equal(archived.length, 3, archived.join());
+    assert.equal(fs.existsSync(join(root, 'agent.db')), false, '旧节点的状态库不得被新身份继续使用');
+    assert.equal(fs.existsSync(file + '.pending'), true, '新令牌会重新持久化自己的待注册密钥');
+    assert.equal(JSON.parse(fs.readFileSync(join(root, identityFile), 'utf8')).agentId, saved.agentId);
+    // Nothing is deleted: the old state stays available for reconciliation.
+    assert.equal(fs.readFileSync(join(root, stateFile), 'utf8'), 'old node state');
     // After the reset the new identity is stable without the flag.
     assert.deepEqual(await resolveCredentials(fresh, async () => { assert.fail('reset identity must persist'); }), reset);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

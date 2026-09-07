@@ -277,8 +277,27 @@ async function main() {
     assert.equal(normalizeOrigin(hostile), "", `hostile origin must be rejected: ${String(hostile)}`);
   }
   assert.equal(normalizeOrigin("https://v.example.com/"), "https://v.example.com");
-  assert.equal(normalizeOrigin("http://10.0.0.4:8080"), "http://10.0.0.4:8080");
   assert.equal(normalizeOrigin("https://[2001:db8::1]:8443"), "https://[2001:db8::1]:8443");
+  // Plain HTTP is loopback-only: a remote-HTTP installer would fetch an
+  // executable package over unauthenticated transport, and the installed agent
+  // would then refuse that same base URL and never register.
+  assert.equal(normalizeOrigin("http://10.0.0.4:8080"), "");
+  assert.equal(normalizeOrigin("http://v.example.com"), "");
+  assert.equal(normalizeOrigin("http://127.0.0.1:3000"), "http://127.0.0.1:3000");
+  assert.equal(normalizeOrigin("http://localhost:3000"), "http://localhost:3000");
+  assert.equal(normalizeOrigin("http://[::1]:3000"), "http://[::1]:3000");
+  // The installer's policy must not drift from the agent's own check: anything
+  // the script would configure has to be accepted by assertSafeApiBaseUrl.
+  const { assertSafeApiBaseUrl } = await import("../../node-agent/src/config.js");
+  for (const candidate of [
+    "https://v.example.com", "http://127.0.0.1:3000", "http://localhost:3000", "http://[::1]:3000",
+    "http://10.0.0.4:8080", "http://v.example.com"
+  ]) {
+    const accepted = normalizeOrigin(candidate) !== "";
+    let agentAccepts = true;
+    try { assertSafeApiBaseUrl(candidate); } catch { agentAccepts = false; }
+    assert.equal(accepted, agentAccepts, `installer/agent policy mismatch for ${candidate}`);
+  }
   // Rendering enforces the same contract even if a caller forgets to validate.
   assert.throws(() => renderInstallScript({ token: "t", apiBase: "https://a.example.com/$(id)" }), /公网地址无效/);
   assert.throws(() => renderInstallScript({ token: "$(id)", apiBase: "https://a.example.com" }), /注册令牌格式无效/);

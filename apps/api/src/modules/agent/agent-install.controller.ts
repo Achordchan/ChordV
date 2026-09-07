@@ -63,7 +63,9 @@ export class AgentInstallController {
       return;
     }
     if (!derivedBase) {
-      sendScript(response, renderErrorScript("服务器未配置有效的公网访问地址（CHORDV_PUBLIC_BASE_URL），无法生成安装脚本。"));
+      sendScript(response, renderErrorScript(
+        "服务器未配置有效的公网访问地址（CHORDV_PUBLIC_BASE_URL 需为 https:// 开头的裸域名或 IP，非本机地址不接受 http）。"
+      ));
       return;
     }
     sendScript(response, renderInstallScript({ token: body.token, apiBase: derivedBase }));
@@ -75,7 +77,14 @@ export class AgentInstallController {
  * query or fragment, and a hostname/IP literal made of characters that cannot
  * carry shell syntax. Anything else — including a header holding `$(...)`, a
  * quote or a newline — yields "" so the caller renders the configuration error
- * script instead of executable attacker input. Returns the normalized origin.
+ * script instead of executable attacker input.
+ *
+ * Plain HTTP is accepted for LOOPBACK only, mirroring the agent's own
+ * `assertSafeApiBaseUrl` policy. Two reasons: an installer served over remote
+ * HTTP would download an executable package over unauthenticated transport
+ * (the structural checks verify shape, not authorship), and the installed agent
+ * would then refuse that very base URL and never register — after the host was
+ * already modified. Returns the normalized origin.
  */
 export function normalizeOrigin(value: string | undefined): string {
   const raw = value?.trim();
@@ -89,6 +98,8 @@ export function normalizeOrigin(value: string | undefined): string {
   // literal's brackets aside) that is not a plain hostname/IP plus port.
   if (!/^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/.test(url.host)) return "";
   if (url.port && Number(url.port) > 65535) return "";
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+  if (url.protocol === "http:" && !loopback) return "";
   return `${url.protocol}//${url.host}`;
 }
 
