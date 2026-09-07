@@ -8,6 +8,7 @@ import {
   inboundSpecKey,
   isPublicUnicastAddress,
   normalizeInboundSpec,
+  parseIPv6Bytes,
   parseInboundReport
 } from "../src/modules/agent/agent-inbound";
 import { isNodeOnboardingReady } from "../src/modules/common/node-onboarding-policy";
@@ -91,6 +92,10 @@ function testPublicAddressPolicy() {
   for (const host of [
     "127.0.0.1", "10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.10.1",
     "100.64.0.1", "0.0.0.0", "224.0.0.1", "::1", "::", "fd00::1", "fe80::1", "ff02::1",
+    // Same addresses spelled differently: text prefixes would let these through
+    // and make an unreachable endpoint activatable.
+    "0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001", "::ffff:192.168.1.1",
+    "::ffff:127.0.0.1", "[::1]", "fc00:0:0:0:0:0:0:1", "FE80::abcd",
     "pending-agent", "example.com", ""
   ]) {
     assert.equal(isPublicUnicastAddress(host), false, `${host} 不应被当作可用公网地址`);
@@ -98,6 +103,10 @@ function testPublicAddressPolicy() {
   // A hostname is not accepted here: clients dial what the agent reported, and
   // the agent reports the address the control plane observed.
   assert.equal(isPublicUnicastAddress("172.32.0.1"), true, "172.32/12 之外不属于私网");
+  assert.equal(isPublicUnicastAddress("::ffff:203.0.113.7"), true, "映射的公网 IPv4 仍可用");
+  assert.deepEqual(parseIPv6Bytes("::1")?.slice(-2), [0, 1]);
+  assert.deepEqual(parseIPv6Bytes("2001:db8::1")?.slice(0, 4), [0x20, 0x01, 0x0d, 0xb8]);
+  assert.equal(parseIPv6Bytes("not-an-address"), null);
 }
 
 function testReportValidation() {
@@ -153,11 +162,12 @@ async function testWriteBackAndActivation() {
 
   const runComplete = async (options: { result: unknown; appliedRevision?: bigint }) => {
     const updates: Array<Record<string, unknown>> = [];
+    const jobUpdates: Array<Record<string, unknown>> = [];
     let applied = options.appliedRevision ?? 0n;
     const tx = {
       nodeCommandJob: {
-        findFirst: async () => ({ id: "command-1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 5n }),
-        update: async () => ({})
+        findFirst: async () => ({ id: "command-1", commandType: "ENSURE_INBOUND", payload: spec, targetRevision: 5n, dedupeKey: "node-1:ENSURE_INBOUND:abc" }),
+        update: async ({ data }: { data: Record<string, unknown> }) => { jobUpdates.push(data); return {}; }
       },
       node: {
         // Mirrors the conditional UPDATE: a stale writer matches no rows.
@@ -176,6 +186,8 @@ async function testWriteBackAndActivation() {
       { publishSubscriptionUpdated: async () => undefined } as never
     );
     await service.completeCommand({ id: "agent-1", nodeId: "node-1" } as never, "command-1", { status: "completed", result: options.result } as never);
+    // Completing an operation releases its dedupe key.
+    assert.match(String(jobUpdates[0]?.dedupeKey ?? ""), /:done:command-1$/);
     return updates;
   };
 
@@ -208,17 +220,22 @@ async function testWriteBackAndActivation() {
 }
 
 async function testDedupeScope() {
-  const created: Array<Record<string, unknown>> = [];
-  let outstanding: Record<string, unknown> | null = null;
+  // Model the unique index: the same dedupeKey collapses onto one row. That is
+  // what makes two concurrent identical requests one operation — a read-then-
+  // insert could let both observe "nothing outstanding" and schedule two
+  // disruptive restarts.
+  const rows = new Map<string, Record<string, unknown>>();
   const service = new AgentService(
     {
       nodeAgent: { findFirst: async () => ({ id: "agent-1", agentId: "agent-1", nodeId: "node-1" }) },
       node: { update: async () => ({ agentConfigRevision: 7n }) },
       nodeCommandJob: {
-        findFirst: async () => outstanding,
-        upsert: async ({ create }: { create: Record<string, unknown> }) => {
-          created.push(create);
-          return { ...create, status: "pending", createdAt: new Date(0), targetRevision: 7n, payload: create.payload };
+        upsert: async ({ where, create }: { where: { dedupeKey: string }; create: Record<string, unknown> }) => {
+          const existing = rows.get(where.dedupeKey);
+          if (existing) return existing;
+          const row = { ...create, status: "pending", createdAt: new Date(0), targetRevision: 7n };
+          rows.set(where.dedupeKey, row);
+          return row;
         }
       }
     } as never,
@@ -226,21 +243,26 @@ async function testDedupeScope() {
     { publishSubscriptionUpdated: async () => undefined } as never
   );
 
-  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
-  // An identical request while one is still outstanding is the double-click we
-  // collapse; a finished one must be repeatable, or a node could never go back
-  // to a port it used before.
-  outstanding = { id: "command-1", commandType: "ENSURE_INBOUND", targetRevision: 7n, payload: {}, createdAt: new Date(0) };
-  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
-  assert.equal(created.length, 1, "未完成的同规格请求不应再排一条");
-
-  outstanding = null;
-  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
-  assert.equal(created.length, 2, "已完成的部署必须可以再次下发");
-  assert.notEqual(created[0].dedupeKey, created[1].dedupeKey);
+  const first = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  const second = await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.equal(rows.size, 1, "未完成的同规格请求必须折叠成一条");
+  assert.equal(first.commandId, second.commandId);
   // The payload is normalized before it is persisted: the report is compared
   // against exactly this row.
-  assert.deepEqual(created[1].payload, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
+  assert.deepEqual([...rows.values()][0].payload, { ...INBOUND_DEFAULTS, serverNames: [...INBOUND_DEFAULTS.serverNames], rotateKeys: false });
+
+  // Completion releases the key (see the rename in completeCommand), so the
+  // same deployment can be ordered again — otherwise a node could never return
+  // to a port it used before, and a second rotation would be impossible.
+  const [key, row] = [...rows.entries()][0];
+  rows.delete(key);
+  rows.set(`${key}:done:${row.id as string}`, row);
+  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: {} } as never);
+  assert.equal(rows.size, 2, "已完成的部署必须可以再次下发");
+
+  // A different spec is a different operation.
+  await service.queueCommand("node-1", { type: "ENSURE_INBOUND", payload: { listenPort: 8443 } } as never);
+  assert.equal(rows.size, 3);
 }
 
 function testInstallerAndDownloadRoute() {
@@ -262,6 +284,10 @@ function testInstallerAndDownloadRoute() {
   assert.match(section, /install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"/);
   assert.match(section, /PathChanged=\$REQUEST_DIR\/pending.json/);
   assert.match(section, /ReadOnlyPaths=\/etc\/chordv\/xray/);
+  // An operator's own Xray must not be taken over: replacing that unit points it
+  // at a config directory with no user-facing inbound and restarts it.
+  assert.match(section, /chordv-managed: xray/);
+  assert.match(section, /已存在且不是本安装脚本管理的 Xray 服务/);
   assert.match(section, /NoNewPrivileges=true/);
   // The agent unit keeps its hardening and now depends on Xray.
   // Ordering only: Requires= would stop the agent every time the helper

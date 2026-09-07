@@ -40,10 +40,12 @@ export interface ApplyDeps {
   xrayUser: string;
   restart(): void;
   /**
-   * Whether Xray is actually serving the port. `systemctl restart` on a
-   * Type=simple unit returns before the process binds, so "the start job
-   * succeeded" says nothing: a port already taken by nginx passes the config
-   * test, starts, and exits. Readiness must be inside the rollback window.
+   * Whether XRAY is serving the port. `systemctl restart` on a Type=simple unit
+   * returns before the process binds, so "the start job succeeded" says
+   * nothing — and "someone is listening" says nothing either: a port already
+   * taken by nginx passes the config test, starts, and exits, with the port
+   * still occupied by the squatter. Readiness must be inside the rollback
+   * window and must be about Xray's own socket.
    */
   isListening(port: number): boolean;
   resolveListen(): string;
@@ -378,28 +380,68 @@ function resolveUid(user: string): number {
  * Reads the kernel's socket tables directly: no ss/netstat dependency, and it
  * sees the listener regardless of which address family or interface it bound.
  */
-export function isPortListening(port: number, readFile: (file: string) => string = (file) => fs.readFileSync(file, 'utf8')): boolean {
+export interface ProcReaders {
+  readFile(file: string): string;
+  readDir(directory: string): string[];
+  readLink(file: string): string;
+}
+
+const defaultProcReaders: ProcReaders = {
+  readFile: (file) => fs.readFileSync(file, 'utf8'),
+  readDir: (directory) => fs.readdirSync(directory),
+  readLink: (file) => fs.readlinkSync(file),
+};
+
+/** Socket inodes listening on `port`, from both the IPv4 and IPv6 tables. */
+export function listeningSocketInodes(port: number, readers: ProcReaders = defaultProcReaders): string[] {
   const hex = port.toString(16).toUpperCase().padStart(4, '0');
+  const inodes: string[] = [];
   for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
     let contents: string;
-    try { contents = readFile(table); } catch { continue; }
+    try { contents = readers.readFile(table); } catch { continue; }
     for (const line of contents.split('\n').slice(1)) {
       const columns = line.trim().split(/\s+/);
-      // st === 0A is TCP_LISTEN.
-      if (columns.length > 3 && columns[1]?.endsWith(`:${hex}`) && columns[3] === '0A') return true;
+      // st === 0A is TCP_LISTEN; column 9 is the socket inode.
+      if (columns.length > 9 && columns[1]?.endsWith(`:${hex}`) && columns[3] === '0A') inodes.push(columns[9]);
     }
+  }
+  return inodes;
+}
+
+/**
+ * True only when XRAY holds the listening socket. "Something is listening" is
+ * not the question: if nginx already owns the port, Xray fails to bind while the
+ * probe still sees a listener, and the helper would commit a configuration that
+ * never took effect — leaving an existing node offline with no rollback.
+ */
+export function isPortOwnedBy(port: number, binary: string, readers: ProcReaders = defaultProcReaders): boolean {
+  const inodes = new Set(listeningSocketInodes(port, readers).map((inode) => `socket:[${inode}]`));
+  if (inodes.size === 0) return false;
+  let processes: string[];
+  try { processes = readers.readDir('/proc'); } catch { return false; }
+  for (const entry of processes) {
+    if (!/^\d+$/.test(entry)) continue;
+    let descriptors: string[];
+    try { descriptors = readers.readDir(`/proc/${entry}/fd`); } catch { continue; }
+    const owns = descriptors.some((descriptor) => {
+      try { return inodes.has(readers.readLink(`/proc/${entry}/fd/${descriptor}`)); } catch { return false; }
+    });
+    if (!owns) continue;
+    let cmdline: string;
+    try { cmdline = readers.readFile(`/proc/${entry}/cmdline`); } catch { continue; }
+    if (cmdline.split('\0')[0] === binary) return true;
   }
   return false;
 }
 
-function waitForListener(port: number, attempts = 20, delayMs = 250): boolean {
+function waitForListener(port: number, binary: string, attempts = 20, delayMs = 250): boolean {
   for (let attempt = 0; attempt < attempts; attempt++) {
-    if (isPortListening(port)) return true;
+    if (isPortOwnedBy(port, binary)) return true;
     // Sync sleep: this helper is a one-shot root script, and blocking here is
     // what keeps the rollback window open until the answer is known.
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
   }
-  return isPortListening(port);
+  return isPortOwnedBy(port, binary);
 }
 
 function main(): void {
@@ -419,7 +461,7 @@ function main(): void {
       const [command, ...args] = restartCommand.split(/\s+/);
       execFileSync(command, args, { stdio: 'pipe' });
     },
-    isListening: (port) => waitForListener(port),
+    isListening: (port) => waitForListener(port, xrayBin),
     resolveListen: () => resolveListenAddress(),
     generateKeys: () => ({
       ...parseX25519(execFileSync(xrayBin, ['x25519'], { encoding: 'utf8' })),

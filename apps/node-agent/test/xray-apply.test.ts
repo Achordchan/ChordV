@@ -11,7 +11,8 @@ import {
   parseX25519,
   renderInbound,
   requestHash,
-  isPortListening,
+  isPortOwnedBy,
+  listeningSocketInodes,
   resolveListenAddress,
   type ApplyDeps,
   type InboundRequest,
@@ -268,14 +269,32 @@ test('首次部署失败时不留下半成品配置', () => {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('监听探测识别 TCP_LISTEN 行', () => {
+test('监听探测要求端口属于 Xray 自己的进程', () => {
+  // Real /proc/net/tcp column layout: sl local rem st tx:rx tr:when retrnsmt
+  // uid timeout inode …
   const table = [
-    '  sl  local_address rem_address   st',
-    '   0: 0100007F:1F90 00000000:0000 0A',
-    '   1: 00000000:01BB 00000000:0000 06',
+    '  sl  local_address rem_address   st tx_queue:rx_queue tr:tm->when retrnsmt   uid  timeout inode',
+    '   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4242 1 0000 10 0',
+    '   1: 00000000:01BB 00000000:0000 06 00000000:00000000 00:00000000 00000000     0        0 4243 1 0000 10 0',
   ].join('\n');
-  assert.equal(isPortListening(8080, () => table), true);
+  const readers = (owner: string) => ({
+    readFile: (file: string) => {
+      if (file === '/proc/net/tcp') return table;
+      if (file === '/proc/net/tcp6') throw new Error('ENOENT');
+      if (file === '/proc/17/cmdline') return `${owner}\0run\0-confdir\0/etc/chordv/xray/conf.d`;
+      throw new Error(`unexpected ${file}`);
+    },
+    readDir: (directory: string) => (directory === '/proc' ? ['17', 'self', 'net'] : ['0', '1', '2']),
+    readLink: (file: string) => (file === '/proc/17/fd/1' ? 'socket:[4242]' : '/dev/null'),
+  });
+
+  assert.deepEqual(listeningSocketInodes(8080, readers('/usr/local/bin/xray')), ['4242']);
   // 443 appears, but in TIME_WAIT rather than LISTEN.
-  assert.equal(isPortListening(443, () => table), false);
-  assert.equal(isPortListening(9999, () => table), false);
+  assert.deepEqual(listeningSocketInodes(443, readers('/usr/local/bin/xray')), []);
+
+  assert.equal(isPortOwnedBy(8080, '/usr/local/bin/xray', readers('/usr/local/bin/xray')), true);
+  // nginx holding the port is exactly the case that must NOT count as ready:
+  // Xray fails to bind, and committing here would leave the node offline.
+  assert.equal(isPortOwnedBy(8080, '/usr/local/bin/xray', readers('/usr/sbin/nginx')), false);
+  assert.equal(isPortOwnedBy(9999, '/usr/local/bin/xray', readers('/usr/local/bin/xray')), false);
 });

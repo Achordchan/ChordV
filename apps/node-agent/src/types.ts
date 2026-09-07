@@ -111,6 +111,8 @@ export interface InboundReport {
   flow: string;
   fingerprint: string;
   spiderX: string;
+  /** Address family the inbound accepts, so a repeat can re-check the endpoint. */
+  listen: string;
   xrayVersion: string;
   changed: boolean;
   liveVerifiedAt: string;

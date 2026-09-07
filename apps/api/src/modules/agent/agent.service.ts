@@ -240,7 +240,7 @@ export class AgentService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const job = await tx.nodeCommandJob.findFirst({
         where: { id: commandId, nodeId: agent.nodeId, agentId: agent.id, status: { in: ["pending", "running", "failed"] } },
-        select: { id: true, commandType: true, payload: true, targetRevision: true }
+        select: { id: true, commandType: true, payload: true, targetRevision: true, dedupeKey: true }
       });
       if (!job) return false;
       await tx.nodeCommandJob.update({
@@ -250,7 +250,11 @@ export class AgentService {
           result: (input.result ?? {}) as Prisma.InputJsonValue,
           lastError: input.status === "completed" ? null : input.error ?? "Agent 执行失败",
           completedAt: input.status === "completed" ? new Date() : null,
-          nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000)
+          nextRunAt: input.status === "completed" ? new Date() : new Date(Date.now() + 30_000),
+          // A completed job no longer occupies its operation's dedupe key, so
+          // the same deployment can be ordered again later. A failed one keeps
+          // it: that operation is still outstanding and will be retried.
+          ...(input.status === "completed" ? { dedupeKey: `${job.dedupeKey}:done:${job.id}` } : {})
         }
       });
       if (input.status === "completed" && job.commandType === "ENSURE_INBOUND") {
@@ -318,17 +322,14 @@ export class AgentService {
     // Deduplicate RETRIES of an operation, not every historical occurrence of a
     // spec: an outstanding identical request is the double-click we want to
     // collapse, while a finished one must be repeatable (deploy 443 → 8443 →
-    // 443 again, or a second key rotation with the same payload).
-    let dedupeKey = input.dedupeKey;
-    if (!dedupeKey && input.type === "ENSURE_INBOUND") {
-      const outstanding = await this.prisma.nodeCommandJob.findFirst({
-        where: { nodeId, commandType: "ENSURE_INBOUND", status: { in: ["pending", "running"] }, dedupeKey: { startsWith: inboundSpecKey(nodeId, payload as NormalizedInboundSpec) } },
-        orderBy: { createdAt: "desc" }
-      });
-      if (outstanding) return serializeCommand(outstanding);
-      dedupeKey = `${inboundSpecKey(nodeId, payload as NormalizedInboundSpec)}:${randomUUID()}`;
-    }
-    dedupeKey ??= `${nodeId}:${input.type}:${randomUUID()}`;
+    // 443 again, or a second key rotation with the same payload). The key is
+    // therefore stable only while the operation is outstanding — completeCommand
+    // releases it — so the unique index, not a read-then-write, is what makes
+    // two concurrent identical requests collapse into one job.
+    const dedupeKey = input.dedupeKey
+      ?? (input.type === "ENSURE_INBOUND"
+        ? inboundSpecKey(nodeId, payload as NormalizedInboundSpec)
+        : `${nodeId}:${input.type}:${randomUUID()}`);
     const job = await this.prisma.nodeCommandJob.upsert({
       where: { dedupeKey },
       update: {},

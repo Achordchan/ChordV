@@ -267,6 +267,7 @@ test('入站部署失败必须响亮失败，且不留下已部署状态', async
     const failed = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
     assert.equal(failed.status, 'failed');
     assert.match(failed.error ?? '', /端口冲突/);
+    // The helper never got as far as changing anything, so nothing is recorded.
     assert.equal(fixture.store.getInboundState(), undefined);
 
     // Live verification is part of success: a helper that claims to have
@@ -277,6 +278,10 @@ test('入站部署失败必须响亮失败，且不留下已部署状态', async
       const unverified = await other.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
       assert.equal(unverified.status, 'failed');
       assert.match(unverified.error ?? '', /未能确认生效/);
+      // The helper DID change the machine before verification failed, so the
+      // spec is recorded — but marked incomplete, so it can never be answered
+      // with and a repeat re-deploys.
+      assert.equal(other.store.getInboundState()?.complete, false);
     } finally { other.store.close(); rmSync(other.directory, { recursive: true, force: true }); }
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
@@ -312,6 +317,72 @@ test('对外地址是 IPv6 但入站只监听 IPv4 时拒绝上报', async () =>
     const result = await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
     assert.equal(result.status, 'failed');
     assert.match(result.error ?? '', /IPv6/);
-    assert.equal(fixture.store.getInboundState(), undefined);
+    assert.equal(fixture.store.getInboundState()?.complete, false, '未完成的部署不得被当作可用状态');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('助手已改动但命令未完成时，重复下发旧规格必须重新部署', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  let host = '203.0.113.7';
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier,
+    inboundTag: 'vless-in',
+    resolvePublicHost: async () => { if (!host) throw new Error('控制面未能返回本机公网地址'); return host; },
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    assert.equal(applier.calls.length, 1);
+
+    // The helper deploys 8443, then the command fails afterwards: the machine
+    // now serves 8443 while the last COMPLETE state still says 443.
+    host = '';
+    const moved = await processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
+    assert.equal(moved.status, 'failed');
+    assert.equal(applier.calls.length, 2);
+
+    // Re-issuing 443 must actually restore it, not answer from the cache.
+    host = '203.0.113.7';
+    const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
+    assert.equal(restored.status, 'completed');
+    assert.equal(applier.calls.length, 3, '状态与机器不一致时不得走捷径');
+    assert.equal((restored.result?.inbound as Record<string, unknown>).serverPort, 443);
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('无需改动 Xray 时也要刷新对外地址', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  let host = '203.0.113.7';
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => host,
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+    // The VPS address changed (or the operator corrected the override). Xray
+    // needs no change, but the control plane must stop handing out the old one.
+    host = '198.51.100.9';
+    const repeat = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-2'), true);
+    const inbound = repeat.result?.inbound as Record<string, unknown>;
+    assert.equal(inbound.serverHost, '198.51.100.9');
+    assert.equal(inbound.changed, false);
+    assert.equal(applier.calls.length, 1, '仅地址变化不该重启 Xray');
+
+    // The family check still applies on the shortcut path.
+    host = '2001:db8::1';
+    applier.outcome = { listen: '0.0.0.0' };
+    const other = setup();
+    try {
+      const v4Only = new CommandProcessor(other.store, other.xray, {
+        applier, inboundTag: 'vless-in', resolvePublicHost: async () => '2001:db8::1',
+        verifyAttempts: 3, verifyDelayMs: 1,
+      });
+      await v4Only.execute(command('ENSURE_INBOUND', inboundPayload), true);
+      const failed = await v4Only.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
+      assert.equal(failed.status, 'failed');
+      assert.match(failed.error ?? '', /IPv6/);
+    } finally { other.store.close(); rmSync(other.directory, { recursive: true, force: true }); }
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });

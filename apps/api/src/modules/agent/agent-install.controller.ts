@@ -333,6 +333,24 @@ fi
  */
 export function renderXrayInstall(): string {
   return `# --- chordv:xray-install:begin ---
+XRAY_MARKER="# chordv-managed: xray"
+XRAY_UNIT=/etc/systemd/system/xray.service
+# This host may already run Xray for something else — an operator's own
+# deployment, or a leftover from before. Replacing that unit would point it at a
+# config directory holding no user-facing inbound and restart it, silently
+# taking the existing service offline. Only a unit this installer wrote may be
+# replaced; anything else requires a deliberate migration.
+if [[ -e "\$XRAY_UNIT" ]] && ! grep -qF "\$XRAY_MARKER" "\$XRAY_UNIT"; then
+  echo "安装失败：\$XRAY_UNIT 已存在且不是本安装脚本管理的 Xray 服务。" >&2
+  echo "如需交给 ChordV 托管：先备份现有 Xray 配置与单元、停止并删除该单元，再重跑本命令；" >&2
+  echo "否则本次安装会用只含计量片段的配置目录替换它，现有代理服务将立即中断。" >&2
+  exit 1
+fi
+if [[ -e /etc/systemd/system/xray.service.d ]]; then
+  echo "安装失败：/etc/systemd/system/xray.service.d 存在本机自定义的 Xray 覆盖配置，请人工确认后再安装。" >&2
+  exit 1
+fi
+
 XRAY_USER="chordv-xray"
 XRAY_BIN=/usr/local/bin/xray
 XRAY_CONF_DIR=/etc/chordv/xray/conf.d
@@ -371,7 +389,8 @@ install -d -m 0755 -o root -g root "\$HELPER_DIR"
 install -m 0755 -o root -g root "\$CURRENT_LINK/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
 install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"
 
-cat > /etc/systemd/system/xray.service <<XRAYUNIT
+cat > "\$XRAY_UNIT" <<XRAYUNIT
+\$XRAY_MARKER
 [Unit]
 Description=Xray Service
 After=network-online.target

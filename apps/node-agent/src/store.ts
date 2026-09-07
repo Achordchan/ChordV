@@ -224,7 +224,7 @@ export class AgentStore {
    * repurposed host that archives its identity also loses its memory of the old
    * node's inbound, and the startup self-heal then refuses to keep serving it.
    */
-  getInboundState(): { hash: string; report: Record<string, unknown>; appliedRevision: string } | undefined {
+  getInboundState(): { hash: string; report: Record<string, unknown>; appliedRevision: string; complete: boolean } | undefined {
     const raw = this.getMeta('inbound_state');
     if (!raw) return undefined;
     try {
@@ -234,11 +234,15 @@ export class AgentStore {
         hash: parsed.hash,
         report: parsed.report as Record<string, unknown>,
         appliedRevision: typeof parsed.appliedRevision === 'string' ? parsed.appliedRevision : '0',
+        // A state written between the helper's apply and a successful
+        // verification describes what the MACHINE now runs, not a usable
+        // deployment: it may be reused to detect change, never to answer with.
+        complete: (parsed as { complete?: unknown }).complete === true,
       };
     } catch { return undefined; }
   }
 
-  setInboundState(state: { hash: string; report: Record<string, unknown>; appliedRevision: string }): void {
+  setInboundState(state: { hash: string; report: Record<string, unknown>; appliedRevision: string; complete: boolean }): void {
     this.setMeta('inbound_state', JSON.stringify(state));
   }
 

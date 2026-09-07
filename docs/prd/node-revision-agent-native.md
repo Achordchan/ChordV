@@ -82,15 +82,18 @@ R1 安全与恢复边界：
 
 R2-A 落地细节:
 
-- 命令 `ENSURE_INBOUND` 的 payload 由控制面归一化后落库(`agent-inbound.ts` 的 `normalizeInboundSpec`,含默认端口 443 / dest / SNI),`dedupeKey` 由规格指纹加一次性后缀构成:同规格且仍未完成的请求会被折叠(双击),已完成的可再次下发。
+- 命令 `ENSURE_INBOUND` 的 payload 由控制面归一化后落库(`agent-inbound.ts` 的 `normalizeInboundSpec`,含默认端口 443 / dest / SNI),`dedupeKey` 就是规格指纹本身:同规格且仍未完成的请求由唯一索引原子折叠(并发双击也只会有一条),命令完成或被取消时改名释放该键,已完成的部署因此可以再次下发。
 - agent 无权写 Xray 配置:它把请求写进自己目录下的 `pending.json`,systemd path 单元触发 **root 拥有的** `/usr/local/lib/chordv/xray-apply.js`(从发布目录复制出来,避免 agent 改写 root 会执行的脚本)。助手把 agent 视为不可信输入重新逐字段校验,并**自行渲染**入站结构,绝不搬运 agent 提供的 JSON。
 - 配置目录 `/etc/chordv/xray/conf.d/`:`00-base.json`(出站)、`10-api.json`(计量片段,root 所有且从不重新生成)、`50-inbound.json`(唯一生成文件,含 Reality 私钥,`root:chordv-xray 0640`)。发布前用完整候选目录跑 `xray run -test`,原子改名发布,重启失败回滚上一份并再次重启。
 - Reality 密钥对与 shortId 由助手在 VPS 上生成,私钥只进 root 文件;改端口/SNI 保留密钥(轮换会让已发出的订阅全部失效),仅 `rotateKeys: true` 才重新生成。
 - Xray 重启会清空 gRPC 下发的用户,因此任何触发重启的部署之后 agent 立即 reconcile;另外按 `getSysStats().uptime` 回退检测运维/升级/OOM 造成的重启。agent 单元与 `xray.service` 只用 `Wants=`/`After=` 排序:`Requires=` 会在助手重启 Xray 时把 agent 一并停掉,正好停在它要 reconcile 与回报结果的那一刻。
-- `systemctl restart` 对 `Type=simple` 单元在进程绑定端口前就返回,因此助手在回滚窗口内等待端口真正进入 LISTEN(读 `/proc/net/tcp{,6}`)才算成功;端口被占用会回滚上一份配置并再次重启。回滚通过同一条写入路径复原(普通 copy 会留下 xray 用户读不到的 root 文件,把一次失败变成两次)。
+- `systemctl restart` 对 `Type=simple` 单元在进程绑定端口前就返回,因此助手在回滚窗口内等待端口真正进入 LISTEN、且该监听套接字属于 Xray 自己的进程(按 `/proc/net/tcp{,6}` 的 inode 反查 `/proc/*/fd`)才算成功——端口被 nginx 占着时「有人在监听」恰恰意味着 Xray 没绑上;端口被占用会回滚上一份配置并再次重启。回滚通过同一条写入路径复原(普通 copy 会留下 xray 用户读不到的 root 文件,把一次失败变成两次)。
+- 控制面按解析后的地址字节判断公网单播:`0:0:0:0:0:0:0:1` 是写长了的回环,`::ffff:192.168.1.1` 是套着 IPv6 外衣的私网 IPv4,按文本前缀判断都会放行。
+- 安装脚本拒绝接管不是它自己写的 `xray.service`(单元里带 `# chordv-managed: xray` 标记):替换他人的单元会把服务指向只含计量片段的配置目录并重启,现有代理立刻中断。
 - 监听地址按主机 IPv6 栈决定(`bindv6only=1` 直接报错),并随结果回报;对外地址是 IPv6 而入站只监听 IPv4 时命令失败——这种节点能通过按 tag 的验活,却会把没有监听的端点发给每个客户端。
 - `x25519` 解析失败只报告识别到的标签,绝不回显原始输出:该错误会经 agent 可读的结果文件传到控制面,而输出里带着私钥。
 - 入队去重只折叠**未完成**的同规格请求(双击),已完成的可以再次下发;否则节点无法回到用过的端口,重复轮换也会失效。
+- agent 在助手改动机器之后、验活之前就把规格记为「已应用但未完成」:否则一次「助手成功、随后失败」的部署会让本机以为自己仍在跑旧规格,再次下发旧规格时走捷径、报告一个 Xray 已不再服务的端口。捷径路径也会重新解析对外地址(机器换 IP 或运维改了 `CHORDV_NODE_PUBLIC_HOST` 时,不能因为 Xray 无需改动就继续下发旧端点)。
 - 写回是一条带条件的 `UPDATE`(`inboundAppliedRevision < 本次 revision`):先读后写在并发完成时仍可能让旧结果覆盖新部署。
 - 部署成功的判据是**运行中的实例**:`getSysStats` 加按 tag 查询 `getInboundUsers` 都通过才算完成;助手失败、端口/SNI 与下发不符、验活失败一律让命令响亮失败,不写任何 Node 字段。
 - 节点对外地址来自 `GET /api/agent/v1/whoami`(控制面看到的来源地址,走已鉴权信道),`CHORDV_NODE_PUBLIC_HOST` 可覆盖。控制面独立校验为公网单播地址,并校验端口/SNI/flow 等与下发一致后才写回 `Node`。

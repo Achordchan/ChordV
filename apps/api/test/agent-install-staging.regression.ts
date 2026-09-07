@@ -127,6 +127,17 @@ mkdir -p /payload && printf '#!/bin/sh\necho stub-xray\n' > /payload/xray && chm
 tar -czf /tmp/xray.tgz -C /payload xray
 sha256sum /tmp/xray.tgz | cut -d' ' -f1 > /tmp/xray.sha256
 
+# An Xray unit this installer did not write must not be replaced: doing so
+# would point an operator's own service at a config directory with no
+# user-facing inbound and restart it.
+mkdir -p /etc/systemd/system
+printf '[Unit]\\nDescription=Someone else Xray\\n' > /etc/systemd/system/xray.service
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh 2>/tmp/takeover.err && exit 96
+grep -q '不是本安装脚本管理的 Xray 服务' /tmp/takeover.err
+grep -q 'Someone else Xray' /etc/systemd/system/xray.service
+[[ ! -e /usr/local/bin/xray ]]
+rm -f /etc/systemd/system/xray.service
+
 # A digest that does not match must abort before anything is installed.
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/dev/null bash /test/xray.sh 2>/tmp/xray.err && exit 99
 # Fail for the RIGHT reason: the digest check, not a missing tool upstream of it.
@@ -144,7 +155,10 @@ TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
 grep -q 'PathChanged=/var/lib/chordv-node-agent/xray/pending.json' /etc/systemd/system/chordv-xray-apply.path
 grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
+grep -q 'chordv-managed: xray' /etc/systemd/system/xray.service
+# Re-running the installer over its OWN unit is a normal upgrade.
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 `], { encoding: "utf8" });
   assert.equal(xrayInstall.status, 0, `xray install: ${xrayInstall.stdout}\n${xrayInstall.stderr}`);
-  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner, xray install verifies its digest and keeps config root-owned)");
+  console.log("agent install staging passed (interrupted/corrupt/incomplete preserved, two atomic switches retained old releases, legacy env identity refused before download, health check rejects non-root/writable env file and drops to the state database owner, xray install verifies its digest, refuses to take over a foreign xray unit, keeps config root-owned)");
 } finally { rmSync(root, { recursive: true, force: true }); }

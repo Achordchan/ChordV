@@ -138,16 +138,31 @@ export class CommandProcessor {
     }
 
     // Re-issuing the same spec must not restart Xray: a restart drops every
-    // live connection and every gRPC-provisioned user. Verify the running
-    // instance instead and answer from what was applied last time.
-    if (previous?.hash === hash && !spec.rotateKeys && await this.xray.inboundLive()) {
-      const report = { ...(previous.report as unknown as InboundReport), changed: false, liveVerifiedAt: new Date().toISOString() };
-      this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision });
+    // live connection and every gRPC-provisioned user. The shortcut is only
+    // sound when the LAST APPLY COMPLETED — a helper apply that succeeded and
+    // then failed verification leaves the machine on the new spec while this
+    // state still describes the old one, and taking the shortcut there would
+    // report a port Xray no longer serves.
+    const cached = previous?.hash === hash && !spec.rotateKeys && previous.complete
+      ? (previous.report as unknown as InboundReport)
+      : undefined;
+    if (cached && await this.xray.inboundLive()) {
+      // The address is resolved even here: a VPS whose public address changed
+      // (or an operator who corrected CHORDV_NODE_PUBLIC_HOST) must not keep
+      // the control plane handing out the old endpoint just because Xray needs
+      // no change.
+      const serverHost = await this.resolveVerifiedHost(cached.listen);
+      const report = { ...cached, serverHost, changed: false, liveVerifiedAt: new Date().toISOString() };
+      this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision, complete: true });
       return report;
     }
 
     const requestId = randomUUID();
     const applied = await this.inbound.applier.apply(spec, requestId);
+    // The machine changed HERE. Record it before anything that can still fail,
+    // so a later failure cannot leave this agent believing it serves the
+    // previous spec — and mark it incomplete so the shortcut above refuses it.
+    this.store.setInboundState({ hash, report: {}, appliedRevision: command.targetRevision, complete: false });
     if (applied.listenPort !== spec.listenPort) {
       throw new Error(`配置助手部署的端口 ${applied.listenPort} 与下发的 ${spec.listenPort} 不一致`);
     }
@@ -155,12 +170,7 @@ export class CommandProcessor {
       throw new Error(`配置助手返回的 serverName ${applied.serverName} 不在下发列表中`);
     }
     await this.waitForInbound(this.inbound.verifyAttempts ?? 15, this.inbound.verifyDelayMs ?? 1_000);
-    const serverHost = await this.inbound.resolvePublicHost();
-    // An IPv6 address in front of an IPv4-only listener passes every tag-based
-    // check and hands every client an endpoint nothing is listening on.
-    if (isIPv6(serverHost) && applied.listen !== '::') {
-      throw new Error(`本机对外地址是 IPv6（${serverHost}），但入站只监听 ${applied.listen}：请启用 IPv6 或改用 IPv4 地址`);
-    }
+    const serverHost = await this.resolveVerifiedHost(applied.listen);
     // A restart wipes users added over gRPC — they live only in Xray's memory.
     if (applied.restarted) await this.reconcile(this.store.listDesiredUsers());
 
@@ -175,12 +185,26 @@ export class CommandProcessor {
       flow: spec.flow,
       fingerprint: spec.fingerprint,
       spiderX: spec.spiderX,
+      listen: applied.listen,
       xrayVersion: applied.xrayVersion,
       changed: applied.changed,
       liveVerifiedAt: new Date().toISOString(),
     };
-    this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision });
+    this.store.setInboundState({ hash, report: report as unknown as Record<string, unknown>, appliedRevision: command.targetRevision, complete: true });
     return report;
+  }
+
+  /**
+   * The address clients will dial, checked against the family the inbound
+   * actually accepts: an IPv6 endpoint in front of an IPv4-only listener passes
+   * every tag-based check and gives every client a port nothing listens on.
+   */
+  private async resolveVerifiedHost(listen: string): Promise<string> {
+    const serverHost = await this.inbound!.resolvePublicHost();
+    if (isIPv6(serverHost) && listen !== '::') {
+      throw new Error(`本机对外地址是 IPv6（${serverHost}），但入站只监听 ${listen || '未知地址'}：请启用 IPv6 或改用 IPv4 地址`);
+    }
+    return serverHost;
   }
 
   /** A restart is not instant; give the new inbound a bounded window to appear. */

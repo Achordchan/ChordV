@@ -63,7 +63,7 @@ export class AgentEventsService {
           attempts: { gte: 8 },
           OR: [{ nextRunAt: { lte: now } }, { createdAt: { lte: firstAttemptCutoff } }]
         },
-        select: { id: true, nodeId: true }
+        select: { id: true, nodeId: true, dedupeKey: true }
       });
       if (exhausted.length > 0) {
         const ids = exhausted.map((job) => job.id);
@@ -71,6 +71,14 @@ export class AgentEventsService {
           where: { id: { in: ids } },
           data: { status: "cancelled", lastError: "Agent 命令重试次数已达到上限" }
         });
+        // Cancelling ends the operation, so its dedupe key must be released or
+        // the same deployment could never be ordered again on this node.
+        for (const job of exhausted) {
+          await this.prisma.nodeCommandJob.update({
+            where: { id: job.id },
+            data: { dedupeKey: `${job.dedupeKey}:cancelled:${job.id}` }
+          });
+        }
         await this.prisma.node.updateMany({
           where: {
             id: { in: Array.from(new Set(exhausted.map((job) => job.nodeId))) },

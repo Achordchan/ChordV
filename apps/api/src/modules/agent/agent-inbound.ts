@@ -104,32 +104,66 @@ export function inboundSpecKey(nodeId: string, spec: NormalizedInboundSpec): str
   return `${nodeId}:ENSURE_INBOUND:${createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 32)}`;
 }
 
+/** Parses an IPv6 literal (including `::` compression and an embedded IPv4 tail) into 16 bytes. */
+export function parseIPv6Bytes(value: string): number[] | null {
+  const host = value.trim().replace(/^\[|\]$/g, "");
+  if (isIP(host) !== 6) return null;
+  const [head, tail] = host.split("::") as [string, string | undefined];
+  const expand = (part: string): number[] => {
+    if (!part) return [];
+    const groups: number[] = [];
+    for (const piece of part.split(":")) {
+      if (piece.includes(".")) {
+        // IPv4-mapped/compatible tail: ::ffff:192.168.1.1
+        for (const octet of piece.split(".")) groups.push(Number(octet));
+        continue;
+      }
+      const word = Number.parseInt(piece, 16);
+      groups.push(word >> 8, word & 0xff);
+    }
+    return groups;
+  };
+  const front = expand(head);
+  const back = tail === undefined ? [] : expand(tail);
+  const missing = 16 - front.length - back.length;
+  if (missing < 0 || (tail === undefined && missing !== 0)) return null;
+  return [...front, ...new Array(missing).fill(0), ...back];
+}
+
+function isPublicIPv4(octets: number[]): boolean {
+  const [a, b] = octets;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  return true;
+}
+
 /**
  * Rejects addresses no client can reach, and addresses that would point the
  * whole user base at the wrong machine: loopback, private and CGNAT ranges,
- * link-local, multicast, and the R1 placeholder.
+ * link-local, multicast, and the R1 placeholder. The comparison is on parsed
+ * BYTES, not on text: `0:0:0:0:0:0:0:1` is loopback spelled the long way, and
+ * `::ffff:192.168.1.1` is a private IPv4 wearing an IPv6 costume — both would
+ * slip past a prefix match and make an unreachable endpoint activatable.
  */
 export function isPublicUnicastAddress(host: string): boolean {
-  const family = isIP(host);
-  if (family === 4) {
-    const octets = host.split(".").map(Number);
-    const [a, b] = octets;
-    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
-    if (a === 172 && b >= 16 && b <= 31) return false;
-    if (a === 192 && b === 168) return false;
-    if (a === 169 && b === 254) return false;
-    if (a === 100 && b >= 64 && b <= 127) return false;
-    return true;
+  const family = isIP(host.trim().replace(/^\[|\]$/g, ""));
+  if (family === 4) return isPublicIPv4(host.trim().split(".").map(Number));
+  if (family !== 6) return false;
+  const bytes = parseIPv6Bytes(host);
+  if (!bytes) return false;
+  // IPv4-mapped (::ffff:a.b.c.d) is an IPv4 address; judge it by IPv4 rules.
+  if (bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
+    return isPublicIPv4(bytes.slice(12));
   }
-  if (family === 6) {
-    const normalized = host.toLowerCase().replace(/^\[|\]$/g, "");
-    if (normalized === "::1" || normalized === "::") return false;
-    if (/^f[cd]/.test(normalized)) return false;
-    if (/^fe[89ab]/.test(normalized)) return false;
-    if (/^ff/.test(normalized)) return false;
-    return true;
-  }
-  return false;
+  if (bytes.every((byte) => byte === 0)) return false;               // ::
+  if (bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1) return false; // ::1
+  if ((bytes[0] & 0xfe) === 0xfc) return false;                      // fc00::/7 unique-local
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return false; // fe80::/10 link-local
+  if (bytes[0] === 0xff) return false;                               // ff00::/8 multicast
+  return true;
 }
 
 export interface InboundReportFields {
