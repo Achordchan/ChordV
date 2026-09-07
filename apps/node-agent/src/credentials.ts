@@ -85,16 +85,23 @@ const archiveCandidates = (config: AgentConfig) => [
 
 function archiveWithStamp(config: AgentConfig, stamp: number, files: string[]): string[] {
   const archived: string[] = [];
-  const directories = new Set<string>();
   for (const file of files) {
     const source = resolve(file);
     if (!fs.existsSync(source)) continue;
     const target = `${source}.replaced.${stamp}`;
     fs.renameSync(source, target);
     archived.push(target);
-    directories.add(dirname(source));
   }
-  for (const directory of directories) syncDirectory(directory);
+  // Sync EVERY directory the reset covers, not only the ones renamed in this
+  // pass. A resumed reset finds the already-renamed sources missing, and if its
+  // directory entry was never made durable, deleting the journal would leave a
+  // rename that a power loss can still undo — with no journal left to recover
+  // it. Credentials and database may live in different directories, so this is
+  // not always the journal's own directory.
+  const directories = new Set(files.map((file) => dirname(resolve(file))));
+  for (const directory of directories) {
+    if (fs.existsSync(directory)) syncDirectory(directory);
+  }
   return archived;
 }
 

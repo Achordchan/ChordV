@@ -309,3 +309,43 @@ test('a reset journal naming unrelated files stops startup', async () => {
     assert.equal(fs.existsSync(`${file}.reset-journal`), true, '损坏的日志留给人工确认');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('resuming a reset makes every archive directory durable before dropping the journal', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-split-dirs-'));
+  const credentialsDirectory = join(root, 'etc');
+  const stateDirectory = join(root, 'state');
+  fs.mkdirSync(credentialsDirectory); fs.mkdirSync(stateDirectory);
+  const file = join(credentialsDirectory, 'credentials.json');
+  const databasePath = join(stateDirectory, 'agent.db');
+  const options = { ...config(file), databasePath, registerToken: 'chordv_register_split' };
+  const stamp = 1757260000000;
+  try {
+    fs.writeFileSync(file, JSON.stringify({ agentId: 'agent-old', nodeId: 'node-old', token: 'chordv_agent_old' }) + '\n');
+    fs.writeFileSync(`${databasePath}.replaced.${stamp}`, 'old node state');
+    fs.writeFileSync(`${file}.reset-journal`, JSON.stringify({ stamp, files: [file, `${file}.pending`, databasePath, `${databasePath}-wal`, `${databasePath}-shm`] }) + '\n');
+
+    // Crash after the database was renamed but before its directory entry was
+    // made durable: the resume finds nothing to rename there, so unless it
+    // syncs that directory anyway, dropping the journal leaves a rename a power
+    // loss can still undo — with no journal left to recover it.
+    const syncedDirectories: string[] = [];
+    let syncedBeforeJournalDrop: string[] = [];
+    const openSync = fs.openSync;
+    mock.method(fs, 'openSync', (path: PathLike, flags: string, mode?: number) => {
+      if (flags === 'r') syncedDirectories.push(String(path));
+      return openSync(path, flags as never, mode);
+    });
+    const unlinkSync = fs.unlinkSync;
+    mock.method(fs, 'unlinkSync', (path: PathLike) => {
+      if (String(path).endsWith('.reset-journal')) syncedBeforeJournalDrop = [...syncedDirectories];
+      return unlinkSync(path);
+    });
+    try {
+      await resolveCredentials(options, async () => ({ accepted: true, agentId: 'agent-new', nodeId: 'node-new' }));
+    } finally { mock.restoreAll(); }
+
+    assert.ok(syncedBeforeJournalDrop.includes(stateDirectory), `状态库目录必须在删除日志前落盘：${syncedBeforeJournalDrop.join('、')}`);
+    assert.equal(fs.existsSync(`${file}.reset-journal`), false);
+    assert.equal(fs.readFileSync(`${file}.replaced.${stamp}`, 'utf8').includes('agent-old'), true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
