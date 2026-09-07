@@ -143,6 +143,20 @@ async function progressWriterThrottleAndDrainGuard() {
     systemUpdateOperation: { update: async () => { throw new Error("db gone"); } }
   });
   await (failing as unknown as { markPhase(op: string, phase: string): Promise<void> }).markPhase("sysop-5", "extracting");
+
+  // The checking phase is written BEFORE markRunning lands, so its update must
+  // target a still-pending row (a running-only filter would deterministically
+  // drop the first phase write of every operation).
+  const wheres: unknown[] = [];
+  const pending = buildService({
+    systemUpdateOperation: { update: async (args: unknown) => { wheres.push((args as { where: unknown }).where); } }
+  });
+  await (pending as unknown as { markPhase(op: string, phase: string): Promise<void> }).markPhase("sysop-7", "checking");
+  await (pending as unknown as { markPhase(op: string, phase: string): Promise<void> }).markPhase("sysop-7", "downloading", 40);
+  assert.deepEqual(wheres[0], { operationId: "sysop-7", status: { in: ["pending", "running"] } },
+    "checking must be writable while the row is pending");
+  assert.deepEqual(wheres[1], { operationId: "sysop-7", status: "running" },
+    "later phases only apply to a running row");
 }
 
 async function downloadCallbackPlumbing() {
@@ -170,9 +184,14 @@ async function downloadCallbackPlumbing() {
       return true;
     });
     assert.ok(threw, "observer exception path exercised");
-    assert.equal(events.length, 3, "one progress event per chunk");
-    assert.equal(events[0].totalBytes, 300000);
-    assert.equal(events.at(-1)?.downloadedBytes, 300000);
+    // HTTP response writes do not map 1:1 to stream chunks (the network stack may
+    // split or coalesce them), so assert byte accounting instead of event count.
+    assert.ok(events.length >= 1, "at least one progress event");
+    for (let i = 1; i < events.length; i += 1) {
+      assert.ok(events[i].downloadedBytes >= events[i - 1].downloadedBytes, "byte counts are monotonic");
+    }
+    assert.ok(events.every((event) => event.totalBytes === 300000), "total bytes advertised throughout");
+    assert.equal(events.at(-1)?.downloadedBytes, 300000, "final event carries the full size");
     assert.equal(result.fileSizeBytes, 300000n);
     await result.cleanup();
   } finally {

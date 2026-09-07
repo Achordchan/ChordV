@@ -458,9 +458,10 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       }
       const releaseDir = await this.downloadAndExtractRelease({
         ...release, downloadUrl: release.downloadUrl, sha256: release.sha256
-      }, lock, this.downloadProgressWriter(operationId));
+      }, lock, this.downloadProgressWriter(operationId), async () => {
+        await this.markPhase(operationId, "extracting");
+      });
       await lock.assertHeld();
-      await this.markPhase(operationId, "extracting");
       const pendingMigrations = await this.detectPendingMigrations(releaseDir);
       const willMigrate = pendingMigrations.length > 0;
       if (willMigrate) {
@@ -529,7 +530,8 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   private async downloadAndExtractRelease(
     release: NormalizedRelease,
     lock: OperationLock,
-    onProgress?: (progress: ExternalReleaseDownloadProgress) => boolean
+    onProgress?: (progress: ExternalReleaseDownloadProgress) => boolean,
+    onExtractStart?: () => Promise<void>
   ): Promise<string> {
     const releasesDir = this.config.releasesDir;
     if (!releasesDir) {
@@ -546,6 +548,10 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
           `更新包 SHA-256 校验不匹配（期望 ${release.sha256}，实际 ${downloaded.fileHash}）。`
         );
       }
+      // Download verified, extraction about to begin: advance the phase NOW, not
+      // after this helper returns — a slow tar extraction would otherwise keep the
+      // UI stuck at "downloading 99%" for its whole duration.
+      await onExtractStart?.();
       const finalDir = path.join(releasesDir, release.version);
       const stagingDir = path.join(releasesDir, `.staging-${release.version}-${Date.now()}`);
       await this.removeDirSafe(stagingDir);
@@ -1196,17 +1202,22 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Persist the current lifecycle phase on a running operation. Best-effort only:
+   * Persist the current lifecycle phase on a live operation. Best-effort only:
    * the phase is cosmetic, so a DB write failure is logged and swallowed — it must
    * never fail or gate the update itself. Also refuses to write once draining has
    * started: after that point the process is on its way out and half-written
-   * progress rows would race the terminal result marker.
+   * progress rows would race the terminal result marker. The "checking" phase is
+   * written while the row is still `pending` (markRunning only lands after the
+   * manifest check), so it targets pending-or-running rows; every later phase
+   * only ever applies to a running row.
    */
   private async markPhase(operationId: string, phase: SystemUpdateOperationPhase, progress?: number) {
     if (workLifecycle.isDraining || this.shutdownFailed) return;
     try {
       await this.prisma.systemUpdateOperation.update({
-        where: { operationId, status: "running" },
+        where: phase === "checking"
+          ? { operationId, status: { in: ["pending", "running"] } }
+          : { operationId, status: "running" },
         data: { phase, ...(progress !== undefined ? { progress } : {}) }
       });
     } catch (error) {

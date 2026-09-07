@@ -88,8 +88,11 @@ function kindLabel(kind: SystemUpdateOperationDto["kind"]): string {
 }
 
 // Ordered lifecycle stages of a running operation, matching the backend phase union.
-// The order is display-only: phases legitimately skip (an update without migrations
-// never shows snapshotting/migrating).
+// Which steps APPLY depends on the operation kind: a rollback/restart never downloads
+// or extracts, and snapshot/migrate only run for an update that carries migrations
+// (migrationApplied is only known after the fact, so those steps show for any update
+// while running and collapse away on a skipped path — the phase union has no
+// "skipped" report, so they simply never activate).
 const PHASE_STEPS: Array<{ phase: SystemUpdateOperationPhase; label: string }> = [
   { phase: "checking", label: "检查" },
   { phase: "downloading", label: "下载" },
@@ -101,9 +104,14 @@ const PHASE_STEPS: Array<{ phase: SystemUpdateOperationPhase; label: string }> =
   { phase: "stabilizing", label: "稳定观察" }
 ];
 
-function phaseLabel(phase: SystemUpdateOperationPhase): string {
-  return PHASE_STEPS.find((step) => step.phase === phase)?.label ?? phase;
-}
+// Steps that can ever run per operation kind. A step that cannot run is rendered as
+// crossed-out/dimmed rather than completed, so a rollback does not claim a download
+// it never performed.
+const APPLICABLE_STEPS: Record<SystemUpdateOperationDto["kind"], ReadonlySet<SystemUpdateOperationPhase>> = {
+  update: new Set(PHASE_STEPS.map((step) => step.phase)),
+  rollback: new Set(["checking", "draining", "health-gating", "stabilizing"]),
+  restart: new Set(["draining", "health-gating", "stabilizing"])
+};
 
 function phaseDescription(phase: SystemUpdateOperationPhase): string {
   switch (phase) {
@@ -114,7 +122,7 @@ function phaseDescription(phase: SystemUpdateOperationPhase): string {
     case "extracting":
       return "正在校验并解压更新包…";
     case "draining":
-      return "正在排空请求并切换新版本，服务将短暂重启…";
+      return "正在排空请求并切换版本，服务将短暂重启…";
     case "snapshotting":
       return "正在对数据库做迁移前快照…";
     case "migrating":
@@ -130,31 +138,53 @@ function phaseDescription(phase: SystemUpdateOperationPhase): string {
 
 /**
  * Render the live progress area for a running operation: a phase step indicator
- * plus a byte-percentage progress bar while downloading. Falls back to legacy
+ * plus a byte-percentage progress bar while downloading. Falls back to kind-specific
  * static copy when no phase has been reported yet (older backend, or the brief
  * window before the first phase lands).
  */
-function OperationProgress({ op, reconnecting }: { op: SystemUpdateOperationDto | null; reconnecting: boolean }) {
+function OperationProgress({
+  op,
+  kind,
+  reconnecting
+}: {
+  op: SystemUpdateOperationDto | null;
+  kind: BusyKind | null;
+  reconnecting: boolean;
+}) {
+  const activeKind = op?.kind ?? kind;
   if (!op?.phase) {
+    const fallback =
+      activeKind === "rollback"
+        ? "正在回滚并重启服务…"
+        : activeKind === "restart"
+          ? "正在重启服务…"
+          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…";
     return (
       <Text size="xs">
-        {reconnecting
-          ? "服务重启中，正在重新连接…请勿关闭页面。"
-          : "正在下载并应用更新（下载 → 校验 → 迁移 → 切换 → 重启）…"}
+        {reconnecting ? "服务重启中，正在重新连接…请勿关闭页面。" : fallback}
       </Text>
     );
   }
+  const applicable = APPLICABLE_STEPS[op.kind] ?? APPLICABLE_STEPS.update;
   const stepIndex = PHASE_STEPS.findIndex((step) => step.phase === op.phase);
   return (
     <Stack gap={6}>
       <Group gap={4} wrap="nowrap" align="center">
         {PHASE_STEPS.map((step, index) => {
-          const state = index < stepIndex ? "done" : index === stepIndex ? "active" : "todo";
+          const skipped = !applicable.has(step.phase);
+          const state = skipped
+            ? "skipped"
+            : stepIndex >= 0 && index < stepIndex
+              ? "done"
+              : index === stepIndex
+                ? "active"
+                : "todo";
           return (
             <Group key={step.phase} gap={4} wrap="nowrap">
-              {index > 0 ? <Text size="10px" c={state === "todo" ? "dimmed" : "blue"}>→</Text> : null}
+              {index > 0 ? <Text size="10px" c={state === "todo" || state === "skipped" ? "dimmed" : "blue"}>→</Text> : null}
               <Text
                 size="10px"
+                td={state === "skipped" ? "line-through" : "none"}
                 fw={state === "active" ? 700 : 400}
                 c={state === "active" ? "blue" : state === "done" ? "teal" : "dimmed"}
               >
@@ -167,12 +197,12 @@ function OperationProgress({ op, reconnecting }: { op: SystemUpdateOperationDto 
       </Group>
       <Text size="xs">{phaseDescription(op.phase)}{reconnecting ? "（连接中断，重连中…）" : ""}</Text>
       {op.phase === "downloading" && op.progress !== null ? (
-        <Progress value={op.progress} size="sm" radius="sm" animated />
-      ) : null}
-      {op.phase === "downloading" && op.progress !== null ? (
-        <Text size="10px" c="dimmed" ta="center">
-          {op.progress}%
-        </Text>
+        <>
+          <Progress value={op.progress} size="sm" radius="sm" animated />
+          <Text size="10px" c="dimmed" ta="center">
+            {op.progress}%
+          </Text>
+        </>
       ) : null}
     </Stack>
   );
@@ -471,7 +501,7 @@ export function SystemUpdateBadge() {
                   {phase === "finishing" ? (
                     <Text size="xs">正在刷新版本与操作记录…</Text>
                   ) : (
-                    <OperationProgress op={activeOp} reconnecting={phase === "reconnecting"} />
+                    <OperationProgress op={activeOp} kind={busy} reconnecting={phase === "reconnecting"} />
                   )}
                 </Group>
               </Alert>
