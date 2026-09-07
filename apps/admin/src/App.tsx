@@ -147,6 +147,7 @@ import { AnnouncementsPage } from "./pages/AnnouncementsPage";
 import { CustomerSubscriptionsPage } from "./pages/CustomerSubscriptionsPage";
 import { ImageBedPage } from "./pages/ImageBedPage";
 import { NodesPage, PanelSyncQueueDrawer } from "./pages/NodesPage";
+import { AgentNodeCreateModal } from "./features/nodes/AgentNodeCreateModal";
 import type { PanelSyncQueueFilter } from "./utils/admin-queue-filters";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlansPage } from "./pages/PlansPage";
@@ -428,6 +429,7 @@ export function App() {
   const [teamUsageLoadingByTeamId, setTeamUsageLoadingByTeamId] = useState<Record<string, boolean>>({});
   const [teamUsageErrorByTeamId, setTeamUsageErrorByTeamId] = useState<Record<string, string | null>>({});
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
+  const [agentNodeCreateOpened, setAgentNodeCreateOpened] = useState(false);
   const [probingAll, setProbingAll] = useState(false);
   const probingBusyRef = useRef(false);
   const [refreshingNodeId, setRefreshingNodeId] = useState<string | null>(null);
@@ -3417,6 +3419,16 @@ export function App() {
               <TicketsPage refreshSignal={ticketRefreshSignal} onTicketMutated={refreshDashboardAfterTicketMutation} />
             ) : null}
 
+            <AgentNodeCreateModal
+              opened={agentNodeCreateOpened}
+              onClose={() => setAgentNodeCreateOpened(false)}
+              onNodeRegistered={() => {
+                void fetchAdminNodes().then((updatedNodes) => {
+                  mergeSnapshot({ nodes: updatedNodes });
+                }).catch(() => undefined);
+              }}
+            />
+
             {section === "nodes" ? (
               <NodesPage
                 searchValue={search.nodes}
@@ -3442,6 +3454,7 @@ export function App() {
                 onSwitchNodeControlMode={handleSwitchNodeControlMode}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
                 onDeleteNode={setDeleteNodeTarget}
+                onOpenAgentNodeCreate={() => setAgentNodeCreateOpened(true)}
               />
             ) : null}
 

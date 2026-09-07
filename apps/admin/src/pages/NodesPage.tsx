@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ActionIcon, Badge, Button, Drawer, Group, Stack, Table, Text } from "@mantine/core";
 import type { AdminLeaseRevocationJobDto, AdminNodeRecordDto, AdminPanelSyncJobDto, SwitchNodeControlModeInputDto } from "@chordv/shared";
-import { IconBolt, IconListDetails, IconPencil, IconRefresh, IconSettingsAutomation, IconTrash } from "@tabler/icons-react";
+import { IconBolt, IconListDetails, IconPencil, IconPlus, IconRefresh, IconSettingsAutomation, IconTrash } from "@tabler/icons-react";
 import { CountryFlag } from "../components/CountryFlag";
 import { DataTable } from "../features/shared/DataTable";
 import { RowActions } from "../features/shared/RowActions";
@@ -45,6 +45,7 @@ type NodesPageProps = {
   onSwitchNodeControlMode: (node: AdminNodeRecordDto, input: SwitchNodeControlModeInputDto) => Promise<boolean>;
   onOpenNodeDrawer: (nodeId: string) => void;
   onDeleteNode: (node: AdminNodeRecordDto) => void;
+  onOpenAgentNodeCreate: () => void;
 };
 
 export function NodesPage(props: NodesPageProps) {
@@ -60,14 +61,23 @@ export function NodesPage(props: NodesPageProps) {
         onSearchChange={props.onSearchChange}
         searchPlaceholder="搜索节点、地区或地址"
         actions={
-          <Button
-            variant="default"
-            leftSection={<IconListDetails size={16} />}
-            onClick={() => props.onOpenPanelSyncQueue()}
-          >
-            同步任务
-            {queueCount > 0 ? ` · ${queueCount}` : ""}
-          </Button>
+          <Group gap="xs">
+            <Button
+              size="xs"
+              leftSection={<IconPlus size={14} />}
+              onClick={props.onOpenAgentNodeCreate}
+            >
+              添加节点
+            </Button>
+            <Button
+              variant="default"
+              leftSection={<IconListDetails size={16} />}
+              onClick={() => props.onOpenPanelSyncQueue()}
+            >
+              同步任务
+              {queueCount > 0 ? ` · ${queueCount}` : ""}
+            </Button>
+          </Group>
         }
       >
         <Stack gap="md">

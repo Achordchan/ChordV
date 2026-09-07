@@ -75,6 +75,31 @@ enum NodeControlMode {
   rollback_pending
 }
 
+// Agent-native onboarding lifecycle (docs/prd/node-revision-agent-native.md):
+// a node is created in pending_register, the admin runs the install command on
+// the VPS, and the agent's register call flips it to agent_ready.
+enum NodeRegistrationStatus {
+  pending_register
+  agent_ready
+}
+
+// One-time registration credential issued when a pending_register node is
+// created. The plaintext token only ever travels inside the install command;
+// the server stores its hash. Single-use and short-lived — a replayed or
+// expired token must never mint agent credentials.
+model AgentRegisterToken {
+  id         String    @id
+  nodeId     String
+  tokenHash  String    @unique
+  tokenPrefix String
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+  node       Node      @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+
+  @@index([nodeId, usedAt])
+}
+
 enum PanelClientSource {
   xui
   direct
@@ -423,6 +448,10 @@ model Node {
   panelError       String?
   controlMode      NodeControlMode @default(xui_primary)
   controlStatus    String          @default("unknown")
+  // Agent-native registration lifecycle: pending_register (created, waiting for
+  // the install command to be run) -> agent_ready (agent registered and holds
+  // credentials). Null for legacy nodes that predate agent-native onboarding.
+  registrationStatus NodeRegistrationStatus?
   agentLastSeenAt  DateTime?
   agentConfigRevision BigInt       @default(0)
   createdAt        DateTime        @default(now())
@@ -436,6 +465,7 @@ model Node {
   panelClientBindings PanelClientBinding[]
   panelSyncJobs     PanelSyncJob[]
   nodeAgents        NodeAgent[]
+  registerTokens    AgentRegisterToken[]
   nodeCommandJobs   NodeCommandJob[]
   nodeUsageBatches  NodeUsageBatch[]
 

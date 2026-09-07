@@ -530,6 +530,8 @@ export interface AdminNodeRecordDto extends NodeSummaryDto {
   panelError: string | null;
   controlMode?: NodeControlMode;
   controlStatus?: string;
+  // Agent-native onboarding state: null on legacy nodes.
+  registrationStatus?: "pending_register" | "agent_ready" | null;
   agentLastSeenAt?: string | null;
   agentConfigRevision?: string;
   agent?: AdminNodeAgentDto | null;
@@ -1064,6 +1066,26 @@ export interface UpdateNodeInputDto {
   panelPassword?: string | null;
   panelInboundId?: number | null;
   panelEnabled?: boolean;
+}
+
+// Agent-native node creation (docs/prd/node-revision-agent-native.md, R1):
+// creates a pending_register node with descriptive fields only, then issues
+// the one-time registration token the install command carries. Connection
+// parameters arrive later from the agent itself.
+export interface CreateAgentNodeInputDto {
+  name: string;
+  countryCode?: string;
+  region?: string;
+  provider?: string;
+  tags?: string[];
+  isActive?: boolean;
+  recommended?: boolean;
+}
+
+export interface CreateAgentNodeResultDto {
+  node: AdminNodeRecordDto;
+  registerToken: string;
+  registerTokenExpiresAt: string;
 }
 
 export interface CreateAnnouncementInputDto {

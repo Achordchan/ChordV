@@ -20,6 +20,13 @@ import type { NodeControlMode } from "@chordv/shared";
 
 const DECIMAL_INTEGER = /^(0|[1-9]\d*)$/;
 
+export interface AgentRegisterResultDto {
+  accepted: boolean;
+  agentId: string;
+  token: string;
+  nodeId: string;
+}
+
 export class AgentHeartbeatDto {
   @IsString()
   @IsNotEmpty()
@@ -108,6 +115,37 @@ export class AgentCommandResultDto {
   @IsString()
   @MaxLength(4000)
   error?: string;
+}
+
+export class AgentRegisterDto {
+  // One-time registration token from the install command.
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  registerToken!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  hostname!: string;
+
+  @IsIn(["linux-x64", "linux-arm64"])
+  arch!: "linux-x64" | "linux-arm64";
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  agentVersion!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  xrayVersion?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  bootId!: string;
 }
 
 export class CreateAgentCredentialDto {
