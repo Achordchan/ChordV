@@ -195,6 +195,10 @@ function OperationProgress({
           let observedAndAdvanced = false;
           if (OBSERVED_ONLY_STEPS.has(step.phase) && observedPhases.has(step.phase)) {
             for (const candidate of observedPhases) {
+              // Only FORWARD phases are advancement evidence: an auto-rollback
+              // landing (rollback-health-gating) maps to a later STEP SLOT but
+              // means the stage FAILED, not that it completed.
+              if (candidate.startsWith("rollback-")) continue;
               if (PHASE_STEPS.findIndex((s) => s.phase === candidate) > index) {
                 observedAndAdvanced = true;
                 break;
@@ -359,19 +363,15 @@ export function SystemUpdateBadge() {
           }
           if (op) {
             interval = POLL_INTERVAL_MS;
-            // Merge both sources: the current phase (alias + base form) and the
-            // supervisor history the server replayed from phase.json — the early
-            // stages (snapshot/migrate) ran while no app was alive, so the server
-            // is the only place they can be observed from.
+            // Merge both sources into the observed set, keeping rollback aliases
+            // VERBATIM: the server is the only place the early stages
+            // (snapshot/migrate) can be observed from, and completion evidence
+            // must distinguish a rollback landing from forward advancement.
             for (const phase of op.observedPhases ?? []) {
               observedPhases.current.add(phase);
-              observedPhases.current.add(phase.replace(/^rollback-/, ""));
             }
             if (op.phase) {
-              // Record both the alias (rollback-health-gating) and its base step so
-              // observed-completion logic sees either form.
               observedPhases.current.add(op.phase);
-              observedPhases.current.add(op.phase.replace(/^rollback-/, ""));
             }
             setActiveOp(op);
             setPhase("running");
@@ -428,8 +428,7 @@ export function SystemUpdateBadge() {
         polledOpId.current = active.operationId;
         observedPhases.current = new Set([
           ...(active.observedPhases ?? []),
-          ...(active.observedPhases ?? []).map((phase) => phase.replace(/^rollback-/, "")),
-          ...(active.phase ? [active.phase, active.phase.replace(/^rollback-/, "")] : [])
+          ...(active.phase ? [active.phase] : [])
         ]);
         setActiveOp(active);
         setBusy(active.kind);

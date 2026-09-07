@@ -67,6 +67,9 @@ const KNOWN_PHASES: ReadonlySet<string> = new Set([...APP_PHASES, ...SUPERVISOR_
 // update itself), and byte progress is throttled to one write per window — a 3s poll
 // gains nothing from faster writes and each one is a DB round-trip on the operation row.
 const PROGRESS_WRITE_INTERVAL_MS = 2_000;
+// Callers awaiting an enqueued phase write give up after this long: program order
+// is fixed at enqueue time, so the wait is optional backpressure only (see markPhase).
+const PHASE_WRITE_BUDGET_MS = 5_000;
 
 type RawManifest = {
   version?: unknown;
@@ -1270,7 +1273,19 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     // The chain itself must never reject (a swallowed failure must not poison
     // later enqueued writes); callers get the awaited outcome via `settled`.
     this.phaseWriteChain = run;
-    return settled;
+    // The write is ENQUEUED and ordered the moment we reach this line — program
+    // order is already guaranteed here. Waiting for the DB round-trip is purely
+    // optional backpressure, so bound it: a row lock or wedged query must never
+    // stall a real phase transition (checking/extracting/process exit) on
+    // cosmetic telemetry. On expiry the write stays queued and will still land
+    // (or be coalesced by the next snapshot); only the caller's wait is given up.
+    return Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, PHASE_WRITE_BUDGET_MS);
+        timer.unref?.();
+      })
+    ]);
   }
 
   /**

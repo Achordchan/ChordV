@@ -249,9 +249,12 @@ write_phase() {
   # write_phase <phase> — append the stage to the operation's phase history and
   # republish the whole array. Best-effort cosmetic marker: failures are logged by
   # the caller and ignored. Keyed to the in-flight operation so the app only applies
-  # it to a matching row.
+  # it to a matching row. Deduplicated: a re-gated promotion (app exit during
+  # finalization retries) replays the same stages, and the reader rejects arrays
+  # longer than 16 — unbounded append would eventually blank live progress.
   local phase="$1"
   [ -n "$GEN_OP" ] || return 0
+  case " $GEN_PHASES " in *" $phase "*) return 0 ;; esac
   GEN_PHASES="${GEN_PHASES}${GEN_PHASES:+ }${phase}"
   local phases="" first=1 p
   for p in $GEN_PHASES; do

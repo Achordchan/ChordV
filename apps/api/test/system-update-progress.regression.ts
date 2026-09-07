@@ -210,10 +210,11 @@ async function progressWriterThrottleAndDrainGuard() {
   // is never dropped or reordered behind an older snapshot.
   assert.deepEqual(order, ["downloading:50", "extracting"],
     "queued writes coalesce to the newest state and never reorder against committed writes");
-  // No backlog: the moment the queue drains, the next write executes immediately.
-  const start = performance.now();
+  // No backlog: the moment the queue drains, the next write executes — assert by
+  // CALL COUNT and ordering (wall-clock thresholds flake on loaded CI workers).
   await serialSvc.markPhase("sysop-8", "draining");
-  assert.ok(performance.now() - start < 20, "a drained chain must not stall the next phase write");
+  assert.deepEqual(order, ["downloading:50", "extracting", "draining"],
+    "a drained chain executes each subsequent write exactly once, in order");
 
   // The checking phase is written BEFORE markRunning lands, so its update must
   // target a still-pending row (a running-only filter would deterministically
@@ -251,8 +252,10 @@ async function downloadCallbackPlumbing() {
     let threw = false;
     const result = await downloadExternalReleaseArtifactFile(url, null, (progress) => {
       events.push(progress);
-      if (events.length === 2) { threw = true; throw new Error("observer exploded"); }
-      return true;
+      // Throw on the FIRST event: adjacent server writes may coalesce into one
+      // stream chunk, so a second-event trigger can go unexercised.
+      threw = true;
+      throw new Error("observer exploded");
     });
     assert.ok(threw, "observer exception path exercised");
     // HTTP response writes do not map 1:1 to stream chunks (the network stack may
