@@ -1,3 +1,4 @@
+import { AGENT_VERSION } from './agent-version.js';
 import type { AgentConfig } from './config.js';
 import type { AgentApiClient } from './api-client.js';
 import type { AgentStore } from './store.js';
@@ -153,7 +154,7 @@ export class AgentRunner {
       const bootId = String(this.store.healthSnapshot().bootId);
       const response = await this.api.heartbeat({
         bootId,
-        version: '0.1.0',
+        version: AGENT_VERSION,
         configRevision: this.store.getConfigRevision(),
         queueDepth: this.store.pendingBatchCount(),
         xrayStatus: this.xrayHealthy ? 'healthy' : 'offline',

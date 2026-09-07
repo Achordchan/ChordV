@@ -53,6 +53,11 @@ services:
       CHORDV_SYSTEM_STATE_DIR: /app/state
       CHORDV_SYSTEM_PUBLIC_STATE_DIR: /app/public-state
       CHORDV_SYSTEM_UPDATE_BACKUP_DIR: /app/backups
+      # Agent-native onboarding: public origin for generated install commands
+      # (CHORDV_PUBLIC_BASE_URL comes from .env) and the node-agent tarball
+      # distribution directory (files are dropped there by the release flow,
+      # independent of API releases).
+      CHORDV_AGENT_DIST_DIR: /app/agent-dist
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
@@ -64,6 +69,9 @@ services:
       # the previous compose used, so existing release-center artifacts and the
       # /data/releases/... paths stored in the DB remain valid after the switch.
       - ./releases:/data/releases
+      # Node-agent install tarballs (chordv-agent-linux-x64.tar.gz /
+      # chordv-agent-linux-arm64.tar.gz) served by /api/agent-download/:arch.
+      - ./api-agent-dist:/app/agent-dist
 
   admin:
     build:

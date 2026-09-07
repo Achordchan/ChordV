@@ -60,7 +60,7 @@ test('后台恢复且离线批次已确认后重新启用 Direct 用户', async 
     apiBaseUrl: 'http://127.0.0.1:3000',
     xrayApiAddress: '127.0.0.1:10085',
     xrayInboundTag: 'test-in',
-    databasePath: join(directory, 'agent.db'),
+    databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
     sampleIntervalMs: 60_000,
     heartbeatIntervalMs: 60_000,
     offlineAllowanceBytes: 64n * 1024n * 1024n,
@@ -115,7 +115,7 @@ test('Shadow 心跳发现更高 revision 后刷新完整用户快照且不写 Xr
   };
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
-    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 10, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -169,7 +169,7 @@ test('Direct 配置缩减时先从 Xray 清理已移除用户再替换本地快�
   };
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
-    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -221,7 +221,7 @@ test('采样耗尽与配置刷新串行执行，最终 Xray 状态保持停用',
   };
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
-    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
 
@@ -275,7 +275,7 @@ test('停用命令结果携带本机待上传批次序列水位', async () => {
   };
   const runner = new AgentRunner({
     agentId: 'agent-1', nodeId: 'node-1', token: 'token', apiBaseUrl: 'http://127.0.0.1:3000',
-    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'),
+    xrayApiAddress: '127.0.0.1:10085', xrayInboundTag: 'test-in', databasePath: join(directory, 'agent.db'), credentialsPath: join(directory, 'credentials.json'),
     sampleIntervalMs: 60_000, heartbeatIntervalMs: 60_000, offlineAllowanceBytes: 64n * 1024n * 1024n,
   }, store, api, xray);
   try {

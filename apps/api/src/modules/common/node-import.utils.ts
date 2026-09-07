@@ -259,6 +259,7 @@ export function toAdminNodeRecord(row: {
   panelError: string | null;
   controlMode?: "xui_primary" | "shadow_direct" | "direct_primary" | "rollback_pending";
   controlStatus?: string;
+  registrationStatus?: "pending_register" | "agent_ready" | null;
   agentLastSeenAt?: Date | null;
   agentConfigRevision?: bigint;
   nodeAgents?: Array<{
@@ -299,6 +300,7 @@ export function toAdminNodeRecord(row: {
     panelError: row.panelError,
     controlMode: row.controlMode ?? "xui_primary",
     controlStatus: row.controlStatus ?? "unknown",
+    registrationStatus: row.registrationStatus ?? null,
     agentLastSeenAt: row.agentLastSeenAt?.toISOString() ?? null,
     agentConfigRevision: row.agentConfigRevision?.toString() ?? "0",
     agent: agent ? {

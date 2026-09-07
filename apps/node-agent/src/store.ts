@@ -1,6 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
+import { archiveForeignState } from './credentials.js';
+import type { AgentConfig } from './config.js';
 import type {
   AbsoluteCounter,
   AgentCommand,
@@ -34,19 +36,117 @@ export interface StoreOptions {
   bootId: string;
   nodeId: string;
   defaultOfflineAllowanceBytes: bigint;
+  /**
+   * Open an EXISTING database without writing to it — no directory creation, no
+   * pragma/schema/boot writes. Used by `--health`, which may run as root: any
+   * file this process created there (db, -wal, -shm) would be owned by root and
+   * break the unprivileged service.
+   */
+  readonly?: boolean;
+}
+
+/** The database on disk belongs to another node; only an explicit reset may move it aside. */
+export class ForeignStateError extends Error {}
+
+/**
+ * Opens the service store, recovering from a foreign state database only when
+ * the operator asked for it. The identity reset cannot cover this case (the
+ * saved credentials already match the register token), so the same flag
+ * archives just the state and keeps the identity.
+ */
+export function openStore(config: AgentConfig, options: StoreOptions): AgentStore {
+  try {
+    return new AgentStore(config.databasePath, options);
+  } catch (error) {
+    if (!(error instanceof ForeignStateError) || !config.resetIdentity) throw error;
+    const archived = archiveForeignState(config);
+    console.warn(
+      `[node-agent] 已按 CHORDV_AGENT_RESET_IDENTITY 归档不属于本节点的运行状态（${archived.join('、')}）`,
+    );
+    return new AgentStore(config.databasePath, options);
+  }
 }
 
 export class AgentStore {
   private readonly db: Database.Database;
 
   constructor(databasePath: string, private readonly options: StoreOptions) {
+    if (options.readonly) {
+      // A read-only connection to a WAL database still needs the -shm segment,
+      // and SQLite would CREATE it when missing. Checking that the segment
+      // exists is NOT enough: the service may stop and remove its sidecars
+      // between the check and SQLite's open, and SQLite would then create them
+      // as whoever runs the probe. So the invariant is ownership — this process
+      // must BE the database's owner, i.e. the service user. Then whatever the
+      // race produces belongs to the service either way, and a probe run as
+      // root (or as any other account) is refused before SQLite is touched.
+      let owner: number;
+      try { owner = statSync(databasePath).uid; }
+      catch { throw new Error('本地状态库不存在（服务尚未启动过），健康检查不创建任何文件'); }
+      const euid = typeof process.geteuid === 'function' ? process.geteuid() : owner;
+      if (euid !== owner) {
+        throw new Error(
+          `健康检查必须以状态库所属用户（uid ${owner}）运行，当前 uid ${euid}：` +
+            '否则 SQLite 可能在数据目录里创建不属于服务的 WAL 文件（见 deploy/health-check.sh 的降权执行）',
+        );
+      }
+      if (!existsSync(`${databasePath}-shm`)) {
+        throw new Error('本地状态库未处于运行状态（缺少 WAL 共享段），健康检查不创建任何文件');
+      }
+      this.db = new Database(databasePath, { readonly: true, fileMustExist: true });
+      // The probe must reach the SAME verdict as a start would: a database
+      // belonging to another node makes the service refuse to boot, so
+      // reporting it healthy would hide exactly the state that keeps it down.
+      // Read the recorded identity only — the probe never adopts one.
+      try {
+        const recorded = this.getMeta('node_id');
+        if (recorded && recorded !== options.nodeId) {
+          throw new ForeignStateError(
+            `本地状态库属于节点 ${recorded}，与当前身份 ${options.nodeId} 不一致，服务无法启动：` +
+              '请停止服务后以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次（旧状态库会被改名保留）',
+          );
+        }
+      } catch (error) {
+        this.db.close();
+        throw error;
+      }
+      return;
+    }
     mkdirSync(dirname(databasePath), { recursive: true });
     this.db = new Database(databasePath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = FULL');
-    this.db.pragma('foreign_keys = ON');
-    this.migrate();
-    this.initializeBoot(options.bootId);
+    // Anything that rejects the database must not leave its connection open:
+    // the caller may go on to archive the files (and reopen a replacement at
+    // the same path), and a live connection would keep checkpointing into the
+    // new database's sidecar paths and make the archival depend on GC.
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = FULL');
+      this.db.pragma('foreign_keys = ON');
+      this.migrate();
+      // The database BELONGS to one node identity. Checking that here — rather
+      // than trusting whatever moved the files around — closes every variant of
+      // "new identity, old state": an interrupted reset, an installer that
+      // replaced an env-only identity, a restored backup, a hand-copied data
+      // directory. Inheriting it would hand the new node the old node's desired
+      // users, command history and unsettled usage batches.
+      this.assertOwnIdentity(options.nodeId);
+      this.initializeBoot(options.bootId);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+
+  private assertOwnIdentity(nodeId: string): void {
+    const recorded = this.getMeta('node_id');
+    if (recorded && recorded !== nodeId) {
+      throw new ForeignStateError(
+        `本地状态库属于节点 ${recorded}，与当前身份 ${nodeId} 不一致：` +
+          '请先归档或迁移本机运行状态（停止服务后以 CHORDV_AGENT_RESET_IDENTITY=1 启动一次，旧状态库会被改名保留），再重新接入'
+      );
+    }
+    // Databases created before this check simply adopt their current identity.
+    if (!recorded) this.setMeta('node_id', nodeId);
   }
 
   private migrate(): void {
@@ -366,7 +466,8 @@ export class AgentStore {
   healthSnapshot(): Record<string, unknown> {
     return {
       journalMode: this.db.pragma('journal_mode', { simple: true }),
-      bootId: this.options.bootId,
+      // A read-only probe reports the boot the SERVICE recorded, not its own.
+      bootId: this.options.readonly ? this.getMeta('boot_id') : this.options.bootId,
       configRevision: this.getConfigRevision(),
       desiredUsers: this.listDesiredUsers().length,
       pendingBatches: this.pendingBatchCount(),

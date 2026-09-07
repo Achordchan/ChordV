@@ -20,5 +20,5 @@ install -m 0644 ./deploy/chordv-node-agent.service /etc/systemd/system/chordv-no
 systemctl daemon-reload
 systemctl enable chordv-node-agent.service
 
-echo "systemd 服务已安装。请确认 /etc/chordv/node-agent.env 后手动启动："
+echo "systemd 服务已安装。请确认 /etc/chordv/node-agent.env（须 root 所有、0640）后手动启动："
 echo "  systemctl start chordv-node-agent"

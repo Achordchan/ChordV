@@ -1,3 +1,4 @@
+import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
@@ -427,6 +428,9 @@ export class AdminNodeService {
     const panelWillBeDisabled = Boolean(current?.panelEnabled && !nextPanelEnabled);
     const nodeWillBeDisabled = Boolean(current?.isActive && input.isActive === false);
 
+    if ((input.isActive ?? current?.isActive ?? true) && !isNodeOnboardingReady({ ...current, ...imported })) {
+      throw new BadRequestException("节点尚未完成 Agent 注册或入站配置，不能启用。");
+    }
     let row: any;
     try {
       row = await this.prisma.node.upsert({
@@ -745,6 +749,9 @@ export class AdminNodeService {
         })
       : null;
 
+    if ((input.isActive ?? current.isActive) && !isNodeOnboardingReady({ ...current, ...derived })) {
+      throw new BadRequestException("节点尚未完成 Agent 注册或入站配置，不能启用。");
+    }
     let row: any;
     try {
       row = await this.prisma.node.update({

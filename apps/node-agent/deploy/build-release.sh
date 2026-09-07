@@ -30,6 +30,7 @@ node_version=$(node --version 2>/dev/null || true)
 [[ "$node_version" =~ ^v20\.19\. ]] || fail "Node.js 版本为 ${node_version:-未安装}，要求 20.19.x"
 
 running_dir=/opt/chordv-node-agent
+if [[ -L "$running_dir/current" ]]; then running_dir="$running_dir/current"; fi
 if systemctl is-active --quiet chordv-node-agent 2>/dev/null && [[ -d "$running_dir/node_modules" ]]; then
   shared_native=$(find "$running_dir/node_modules" -type f -name '*.node' -links +1 -print -quit)
   [[ -z "$shared_native" ]] || fail "运行中的 Agent 仍使用 pnpm 硬链接原生模块，请先迁移到独立副本后再构建"

@@ -3,6 +3,8 @@ import type {
   AdminNodePanelInboundDto,
   AdminNodeRecordDto,
   AdminPanelSyncJobDto,
+  CreateAgentNodeInputDto,
+  CreateAgentNodeResultDto,
   ImportNodeInputDto,
   SwitchNodeControlModeInputDto,
   SwitchNodeControlModeResultDto,
@@ -63,6 +65,25 @@ export function importNode(input: ImportNodeInputDto) {
   return request<AdminNodeRecordDto>("/admin/nodes/import", {
     method: "POST",
     body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+// Agent-native onboarding: create a pending_register node + one-time
+// registration token. The plaintext token returns exactly once.
+export function createAgentNode(input: CreateAgentNodeInputDto) {
+  return request<CreateAgentNodeResultDto>("/admin/nodes/agent-native", {
+    method: "POST",
+    body: JSON.stringify(input),
+    timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
+  });
+}
+
+// Re-mint the registration token for a still-pending node (admin "regenerate
+// the install command"). Also returns the plaintext token exactly once.
+export function issueNodeRegisterToken(nodeId: string) {
+  return request<{ token: string; expiresAt: string }>(`/admin/nodes/${nodeId}/register-token`, {
+    method: "POST",
     timeoutMs: PANEL_SYNC_ACTION_TIMEOUT_MS
   });
 }

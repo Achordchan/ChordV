@@ -1,3 +1,4 @@
+import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import {
   ConflictException,
   ForbiddenException,
@@ -225,6 +226,7 @@ export class ClientAccessService {
 
     const nodeMap = new Map<string, NodeSummaryDto>();
     for (const row of rows) {
+      if (!isNodeOnboardingReady(row.node)) continue;
       if (!nodeMap.has(row.nodeId)) {
         nodeMap.set(row.nodeId, toNodeSummary(row.node));
       }
@@ -272,7 +274,7 @@ export class ClientAccessService {
       include: { node: true }
     });
 
-    const rowMap = new Map(rows.map((row) => [row.nodeId, row.node]));
+    const rowMap = new Map(rows.filter(row => isNodeOnboardingReady(row.node)).map((row) => [row.nodeId, row.node]));
     return mapWithConcurrency(requestedNodeIds, MAX_CONCURRENT_NODE_PROBES, async (nodeId) => {
         const node = rowMap.get(nodeId);
         if (!node) {

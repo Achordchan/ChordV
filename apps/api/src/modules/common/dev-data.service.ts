@@ -1,3 +1,4 @@
+import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import { workLifecycle } from "../../work-lifecycle";
 import {
   BadRequestException,
@@ -1762,6 +1763,9 @@ export class DevDataService implements OnModuleInit {
     const availableNodes = await this.prisma.node.findMany({
       where: { id: { in: requestedNodeIds } }
     });
+    if (availableNodes.some(node => !isNodeOnboardingReady(node))) {
+      throw new BadRequestException("所选节点尚未完成 Agent 注册或入站配置，不能分配给订阅。");
+    }
     const availableNodeIds = new Set(availableNodes.map((node) => node.id));
     const invalidAddedNodeIds = requestedNodeIds.filter((nodeId) => !availableNodeIds.has(nodeId) && !existingNodeIds.has(nodeId));
     const uniqueNodeIds = requestedNodeIds.filter((nodeId) => availableNodeIds.has(nodeId));

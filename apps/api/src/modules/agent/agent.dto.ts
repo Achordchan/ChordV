@@ -20,6 +20,12 @@ import type { NodeControlMode } from "@chordv/shared";
 
 const DECIMAL_INTEGER = /^(0|[1-9]\d*)$/;
 
+export interface AgentRegisterResultDto {
+  accepted: boolean;
+  agentId: string;
+  nodeId: string;
+}
+
 export class AgentHeartbeatDto {
   @IsString()
   @IsNotEmpty()
@@ -108,6 +114,46 @@ export class AgentCommandResultDto {
   @IsString()
   @MaxLength(4000)
   error?: string;
+}
+
+export class AgentRegisterDto {
+  // One-time registration token from the install command.
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  registerToken!: string;
+
+  // CLIENT-GENERATED persistent credential (chordv_agent_ prefix, >=32 bytes of
+  // entropy). The agent already holds the plaintext; the server stores only its
+  // hash. Replaying the same registration (response lost between commit and the
+  // agent's local persistence) is then IDEMPOTENT: the hash already exists, so
+  // the retry returns the same identity instead of bricking the node.
+  @IsString()
+  @Matches(/^chordv_agent_[A-Za-z0-9_-]{43,128}$/)
+  agentToken!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  hostname!: string;
+
+  @IsIn(["linux-x64", "linux-arm64"])
+  arch!: "linux-x64" | "linux-arm64";
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  agentVersion!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  xrayVersion?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  bootId!: string;
 }
 
 export class CreateAgentCredentialDto {

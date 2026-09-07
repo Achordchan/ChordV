@@ -6,8 +6,49 @@ import type {
   UsageBatch,
   UsageBatchAck,
 } from './types.js';
+import { randomBytes } from 'node:crypto';
 
 interface ApiClientOptions { baseUrl: string; token: string; agentId: string; nodeId: string }
+
+/** The pre-registration exchange: one-time token in, identity out. The agent
+ *  generates its persistent credential locally and sends it over the protected
+ *  registration request; the server stores only its hash. Retries reuse that secret. */
+export interface AgentRegisterRequest {
+  registerToken: string;
+  agentToken: string;
+  hostname: string;
+  arch: 'linux-x64' | 'linux-arm64';
+  agentVersion: string;
+  xrayVersion?: string;
+  bootId: string;
+}
+
+export interface AgentRegisterResponse {
+  accepted: boolean;
+  agentId: string;
+  nodeId: string;
+}
+
+export async function requestRegister(
+  baseUrl: string,
+  payload: AgentRegisterRequest
+): Promise<AgentRegisterResponse> {
+  const response = await fetch(`${baseUrl}/api/agent/v1/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Agent 注册失败 HTTP ${response.status} ${body.slice(0, 200)}`);
+  }
+  return response.json() as Promise<AgentRegisterResponse>;
+}
+
+export function generateAgentToken(): string {
+  return `chordv_agent_${randomBytes(32).toString('base64url')}`;
+}
 
 export class AgentApiClient {
   constructor(private readonly options: ApiClientOptions) {}
