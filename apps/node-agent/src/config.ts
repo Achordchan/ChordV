@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export interface AgentCredentials {
@@ -67,23 +68,33 @@ export function loadConfig(): AgentConfig {
   assertSafeApiBaseUrl(apiBaseUrl);
   // Credentials may be absent on FIRST boot when a one-time register token is
   // supplied instead; the register exchange persists credentials for later boots.
+  // A missing environment trio is NOT fatal by itself — the persisted credentials
+  // file may hold them (checked later in main.ts); only fail when no source at
+  // all is available.
   const agentId = process.env.CHORDV_AGENT_ID?.trim() || '';
   const nodeId = process.env.CHORDV_NODE_ID?.trim() || '';
   const token = process.env.CHORDV_AGENT_TOKEN?.trim() || '';
   const registerToken = process.env.CHORDV_REGISTER_TOKEN?.trim() || '';
-  if (!agentId || !nodeId || !token) {
-    if (!registerToken) {
-      throw new Error('缺少环境变量：需要 CHORDV_AGENT_ID/CHORDV_NODE_ID/CHORDV_AGENT_TOKEN，或首次启动提供 CHORDV_REGISTER_TOKEN');
-    }
-    if (agentId || nodeId || token) {
-      throw new Error('CHORDV_REGISTER_TOKEN 与既有凭据互斥：请仅提供注册令牌（首次接入）或完整凭据');
-    }
-  } else if (registerToken) {
+  const hasEnvCredentials = Boolean(agentId && nodeId && token);
+  const hasPartialCredentials = Boolean(agentId || nodeId || token);
+  const partialAndRegister = hasPartialCredentials && !hasEnvCredentials && registerToken;
+  if (partialAndRegister) {
+    throw new Error('CHORDV_REGISTER_TOKEN 与既有凭据互斥：请仅提供注册令牌（首次接入）或完整凭据');
+  }
+  if (hasEnvCredentials && registerToken) {
     // Complete credentials plus a register token is a misconfiguration: the
     // register token would silently win at registration time only if the
     // persisted-credentials file were also missing, which is never the intended
     // combination. Fail loudly instead.
     throw new Error('CHORDV_REGISTER_TOKEN 与既有凭据互斥：请仅提供注册令牌（首次接入）或完整凭据');
+  }
+  const hasCredentialsFile = existsSync(
+    resolve(process.env.AGENT_CREDENTIALS_PATH || './data/credentials.json')
+  );
+  if (!hasEnvCredentials && !registerToken && !hasCredentialsFile) {
+    throw new Error(
+      '缺少环境变量：需要 CHORDV_AGENT_ID/CHORDV_NODE_ID/CHORDV_AGENT_TOKEN，或首次启动提供 CHORDV_REGISTER_TOKEN，或存在已注册的本地凭据文件'
+    );
   }
   return {
     agentId,

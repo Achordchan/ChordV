@@ -87,42 +87,70 @@ export class AgentRegisterService {
    * admin's "regenerate the install command" affordance, so it is allowed while
    * the node is still pending. Plaintext returns once, only to the admin UI —
    * only the hash is stored.
+   *
+   * ONLY pending_register nodes qualify: a null registrationStatus marks a
+   * legacy (xui) node, and converting it here would silently mix a native
+   * agent into a legacy node's lifecycle. agent_ready nodes must go through
+   * credential revocation first. Serializable isolation re-checks the node
+   * inside the transaction, so a register commit racing this mint cannot be
+   * overwritten back to pending_register.
    */
   async issueRegisterToken(nodeId: string): Promise<{ token: string; expiresAt: Date }> {
-    return this.prisma.$transaction(async (tx) => {
-      const node = await tx.node.findUnique({
-        where: { id: nodeId },
-        select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true } } }
-      });
-      if (!node) throw new NotFoundException("节点不存在");
-      if (node.registrationStatus === "agent_ready") {
-        throw new BadRequestException("该节点已完成 Agent 注册；如需更换凭据请先撤销现有 Agent");
-      }
-      if (node.nodeAgents.length > 0) {
-        throw new BadRequestException("该节点存在历史 Agent 凭据，与 Agent 原生注册流程冲突");
-      }
-      // Invalidate any still-open tokens: only the newest install command works.
-      await tx.agentRegisterToken.updateMany({
-        where: { nodeId, usedAt: null },
-        data: { usedAt: new Date() }
-      });
-      const token = `chordv_register_${randomBytes(32).toString("base64url")}`;
-      const expiresAt = new Date(Date.now() + REGISTER_TOKEN_TTL_MS);
-      await tx.agentRegisterToken.create({
-        data: {
-          id: randomUUID(),
-          nodeId,
-          tokenHash: hashAgentToken(token),
-          tokenPrefix: token.slice(0, 24),
-          expiresAt
+    const token = `chordv_register_${randomBytes(32).toString("base64url")}`;
+    const expiresAt = new Date(Date.now() + REGISTER_TOKEN_TTL_MS);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.issueRegisterTokenOnce(nodeId, token, expiresAt);
+        return { token, expiresAt };
+      } catch (error) {
+        if (
+          attempt < MAX_REGISTER_ATTEMPTS &&
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2034"
+        ) {
+          await delay(25 * attempt);
+          continue;
         }
-      });
-      await tx.node.update({
-        where: { id: nodeId },
-        data: { registrationStatus: "pending_register" }
-      });
-      return { token, expiresAt };
-    });
+        throw error;
+      }
+    }
+  }
+
+  private async issueRegisterTokenOnce(nodeId: string, token: string, expiresAt: Date): Promise<void> {
+    await this.prisma.$transaction(
+      async (tx) => {
+        const node = await tx.node.findUnique({
+          where: { id: nodeId },
+          select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true } } }
+        });
+        if (!node) throw new NotFoundException("节点不存在");
+        if (node.registrationStatus !== "pending_register") {
+          throw new BadRequestException("仅待注册（pending_register）节点可生成注册令牌");
+        }
+        if (node.nodeAgents.length > 0) {
+          throw new BadRequestException("该节点存在历史 Agent 凭据，与 Agent 原生注册流程冲突");
+        }
+        // Invalidate any still-open tokens: only the newest install command works.
+        await tx.agentRegisterToken.updateMany({
+          where: { nodeId, usedAt: null },
+          data: { usedAt: new Date() }
+        });
+        await tx.agentRegisterToken.create({
+          data: {
+            id: randomUUID(),
+            nodeId,
+            tokenHash: hashAgentToken(token),
+            tokenPrefix: token.slice(0, 24),
+            expiresAt
+          }
+        });
+        await tx.node.update({
+          where: { id: nodeId },
+          data: { registrationStatus: "pending_register" }
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
   }
 
   /**
@@ -131,12 +159,31 @@ export class AgentRegisterService {
    * a replayed token (even racing the first use) cannot mint a second credential.
    */
   async register(input: AgentRegisterDto): Promise<AgentRegisterResultDto> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.registerOnce(input);
+      } catch (error) {
+        // A racing register/token-regen on the same rows (P2034) resolves itself
+        // on retry: the loser sees the token consumed or the node state moved.
+        // Bounded — a persistent serialization failure must not loop forever.
+        if (
+          attempt < MAX_REGISTER_ATTEMPTS &&
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2034"
+        ) {
+          await delay(25 * attempt);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async registerOnce(input: AgentRegisterDto): Promise<AgentRegisterResultDto> {
     const tokenHash = hashAgentToken(input.registerToken);
     const agentToken = `chordv_agent_${randomBytes(32).toString("base64url")}`;
     const agentId = `agent-${randomBytes(8).toString("hex")}`;
-    let nodeId: string | null = null;
-    try {
-      const result = await this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
         async (tx) => {
           const record = await tx.agentRegisterToken.findUnique({ where: { tokenHash } });
           if (!record) throw new UnauthorizedException("注册令牌无效");
@@ -178,21 +225,12 @@ export class AgentRegisterService {
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );
-      nodeId = result.node.id;
-      return {
-        accepted: true,
-        agentId: result.agent.agentId,
-        token: agentToken,
-        nodeId: result.node.id
-      };
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034" && MAX_REGISTER_ATTEMPTS > 1) {
-        // Serialization conflict (a racing register on the same token): retry
-        // once — the loser of the race will then see the token as used.
-        return this.register(input);
-      }
-      throw error;
-    }
+    return {
+      accepted: true,
+      agentId: result.agent.agentId,
+      token: agentToken,
+      nodeId: result.node.id
+    };
   }
 
   /**
@@ -212,4 +250,8 @@ export class AgentRegisterService {
       usable: !record.usedAt && record.expiresAt.getTime() > Date.now()
     };
   }
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

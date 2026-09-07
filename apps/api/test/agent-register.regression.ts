@@ -1,5 +1,9 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { UnauthorizedException } from "@nestjs/common";
 import { AdminAuthGuard } from "../src/modules/common/admin-auth.guard";
@@ -147,8 +151,18 @@ async function main() {
 
 // 3) Install-script rendering: usable token yields a script carrying the
 //    public base URL and the token; spent/unknown tokens yield a clear error
-//    script instead of a bare 404.
+//    script instead of a bare 404. The rendered install script must reference
+//    the /api global prefix and pass a bash syntax check.
 {
+  const { renderInstallScript } = await import("../src/modules/agent/agent-install.controller.js");
+  const script = renderInstallScript({ token: "chordv_register_render", apiBase: "https://v.example.com" });
+  assert.ok(script.includes('API_BASE="https://v.example.com/api"'), "script must target the /api global prefix");
+  assert.ok(script.includes('CHORDV_API_BASE_URL=${API_BASE%/api}'), "agent env must carry the un-prefixed origin");
+  assert.ok(script.includes("^v20"), "script must pin the Node 20 major version check");
+  assert.ok(script.includes("ExecStart=${NODE_BIN@Q}"), "systemd unit must use the probed node binary");
+  assert.ok(!script.includes("__CHORDV_API_BASE__"), "no placeholder may leak into rendered scripts");
+  const bashCheck = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
+  assert.equal(bashCheck.status, 0, bashCheck.stderr);
   const prisma = {
     agentRegisterToken: {
       findUnique: async ({ where }: { where: { tokenHash: string } }) => {
@@ -204,9 +218,23 @@ async function main() {
 
     apply({
       CHORDV_AGENT_ID: undefined, CHORDV_NODE_ID: undefined, CHORDV_AGENT_TOKEN: undefined,
+      CHORDV_REGISTER_TOKEN: undefined,
+      AGENT_CREDENTIALS_PATH: "/nonexistent/credentials.json"
+    });
+    assert.throws(() => loadConfig(), /CHORDV_AGENT_ID|凭据文件/);
+
+    // A persisted credentials file alone is a valid boot source (restart after
+    // registration removed the spent token from the env).
+    const credentialsDir = mkdtempSync(join(tmpdir(), "chordv-agent-creds-"));
+    writeFileSync(join(credentialsDir, "credentials.json"), "{}");
+    apply({
+      AGENT_CREDENTIALS_PATH: join(credentialsDir, "credentials.json"),
       CHORDV_REGISTER_TOKEN: undefined
     });
-    assert.throws(() => loadConfig(), /CHORDV_AGENT_ID/);
+    const withFileOnly = loadConfig();
+    assert.equal(withFileOnly.registerToken, undefined);
+    assert.equal(withFileOnly.agentId, "");
+    rmSync(credentialsDir, { recursive: true, force: true });
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];

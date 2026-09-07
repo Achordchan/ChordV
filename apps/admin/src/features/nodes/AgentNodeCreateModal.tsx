@@ -16,7 +16,7 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { AdminNodeRecordDto, CreateAgentNodeResultDto } from "@chordv/shared";
-import { createAgentNode } from "../../api/nodes";
+import { createAgentNode, issueNodeRegisterToken } from "../../api/nodes";
 
 type Stage = "form" | "awaiting" | "ready" | "failed";
 
@@ -58,6 +58,7 @@ export function AgentNodeCreateModal({
   const [result, setResult] = useState<CreateAgentNodeResultDto | null>(null);
   const [node, setNode] = useState<AdminNodeRecordDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
   const pollTimer = useRef<number | null>(null);
   const pollDeadline = useRef<number>(0);
   const mounted = useRef(true);
@@ -127,6 +128,29 @@ export function AgentNodeCreateModal({
     [onNodeRegistered]
   );
 
+  const regenerate = useCallback(async () => {
+    if (!node || regenerating) return;
+    setRegenerating(true);
+    try {
+      const fresh = await issueNodeRegisterToken(node.id);
+      if (!mounted.current) return;
+      setResult((current) => current
+        ? { ...current, registerToken: fresh.token, registerTokenExpiresAt: fresh.expiresAt }
+        : current);
+      notifications.show({
+        color: "teal",
+        title: "安装命令已重新生成",
+        message: "旧命令已作废，请使用新的命令（此前未使用的令牌随即失效）。"
+      });
+    } catch (err) {
+      if (mounted.current) {
+        notifications.show({ color: "red", title: "重新生成失败", message: parseErrorMessage(err) });
+      }
+    } finally {
+      if (mounted.current) setRegenerating(false);
+    }
+  }, [node, regenerating]);
+
   const submit = useCallback(async () => {
     if (!name.trim() || creating) return;
     setCreating(true);
@@ -154,9 +178,11 @@ export function AgentNodeCreateModal({
     }
   }, [creating, name, pollRegistration, provider, region, tags]);
 
-  // The install command references the origin the admin is already using.
+  // The install command references the origin the admin is already using. The
+  // API routes live under the global /api prefix (openresty fronts both the SPA
+  // and /api on one domain).
   const installCommand = result
-    ? `curl -fsSL ${window.location.origin}/agent-install/${result.registerToken}.sh | bash`
+    ? `curl -fsSL ${window.location.origin}/api/agent-install/${result.registerToken}.sh | bash`
     : "";
 
   return (
@@ -225,11 +251,22 @@ export function AgentNodeCreateModal({
               )}
             </CopyButton>
           </Group>
-          <Tooltip label="中止等待并关闭（节点保留，可稍后在节点列表重新生成安装命令）">
-            <Button variant="subtle" color="gray" size="xs" onClick={handleClose}>
-              稍后再说，关闭窗口
+          <Group justify="space-between">
+            <Button
+              variant="subtle"
+              size="xs"
+              color="blue"
+              loading={regenerating}
+              onClick={() => void regenerate()}
+            >
+              令牌过期/丢失？重新生成安装命令
             </Button>
-          </Tooltip>
+            <Tooltip label="中止等待并关闭（节点保留，安装命令可重新生成）">
+              <Button variant="subtle" color="gray" size="xs" onClick={handleClose}>
+                稍后再说，关闭窗口
+              </Button>
+            </Tooltip>
+          </Group>
         </Stack>
       ) : null}
 
