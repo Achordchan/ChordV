@@ -109,8 +109,8 @@ esac
 # VERSION before selecting it — a host with an old /usr/bin/node and a valid
 # Node 20 under /usr/local/bin must still install.
 NODE_BIN=""
-if ! command -v runuser >/dev/null 2>&1; then
-  echo "安装失败：缺少 runuser（util-linux），无法验证服务用户的运行环境。" >&2
+if ! command -v runuser >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1; then
+  echo "安装失败：缺少 runuser/flock（util-linux），无法验证服务用户的运行环境。" >&2
   exit 1
 fi
 if ! id "\$SERVICE_USER" >/dev/null 2>&1; then
@@ -132,15 +132,65 @@ if [[ -z "\$NODE_BIN" ]]; then
 fi
 
 echo "==> 下载 ChordV Node Agent (\$ARCH)…"
-mkdir -p "\$INSTALL_DIR"
-if ! curl -fsSL "\$API_BASE/agent-download/\$ARCH" | tar -xz -C "\$INSTALL_DIR"; then
-  echo "安装失败：无法下载或解压 Agent 安装包。" >&2
+RELEASES_DIR="\$INSTALL_DIR/releases"
+CURRENT_LINK="\$INSTALL_DIR/current"
+if [[ -L "\$INSTALL_DIR" || -L "\$RELEASES_DIR" || ( -e "\$CURRENT_LINK" && ! -L "\$CURRENT_LINK" ) ]]; then
+  echo "安装失败：安装目录布局异常，已保留现有文件，请人工检查。" >&2
   exit 1
 fi
-if [[ ! -f "\$INSTALL_DIR/dist/src/main.js" ]]; then
-  echo "安装失败：安装包不完整（缺少 dist/src/main.js）。" >&2
+install -d -m 0755 "\$RELEASES_DIR"
+exec 9>"\$RELEASES_DIR/.install.lock"
+flock -n 9 || { echo "安装失败：已有安装任务正在执行。" >&2; exit 1; }
+STAGING_DIR="\$(mktemp -d "\$RELEASES_DIR/.staging.XXXXXX")"
+STAGED_PACKAGE="\$STAGING_DIR/package"
+ARCHIVE="\$STAGING_DIR/archive.tar.gz"
+NEXT_LINK="\$INSTALL_DIR/.current-next.\${STAGING_DIR##*.}"
+cleanup_staging() { rm -f "\$NEXT_LINK"; rm -rf "\$STAGING_DIR"; }
+trap cleanup_staging EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Never extract over the running package. A failed or truncated transfer only
+# affects this private staging tree; previous flat installs remain untouched too.
+if ! curl -fsSL --connect-timeout 15 --max-time 600 "\$API_BASE/agent-download/\$ARCH" -o "\$ARCHIVE" ||
+   ! tar -tzf "\$ARCHIVE" >/dev/null; then
+  echo "安装失败：无法下载或验证 Agent 安装包，现有版本未修改。" >&2
   exit 1
 fi
+chgrp "\$SERVICE_USER" "\$STAGING_DIR"
+chmod 0710 "\$STAGING_DIR"
+chmod 0644 "\$ARCHIVE"
+install -d -m 0755 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$STAGED_PACKAGE"
+# Extract without root privileges; archive ownership cannot grant extra access.
+runuser -u "\$SERVICE_USER" -- tar --no-same-owner --no-same-permissions -xzf "\$ARCHIVE" -C "\$STAGED_PACKAGE"
+chown -hR root:root "\$STAGED_PACKAGE"
+chmod -R u+rwX,go+rX "\$STAGED_PACKAGE"
+"\$NODE_BIN" - "\$STAGED_PACKAGE" <<'VERIFY_AGENT'
+const fs = require('node:fs'), path = require('node:path');
+try {
+  const root = fs.realpathSync(process.argv[2]);
+  for (const name of ['dist/src/main.js', 'package.json', 'node_modules']) {
+    const file = fs.realpathSync(path.join(root, name));
+    if (!file.startsWith(root + path.sep)) throw new Error();
+    const stat = fs.statSync(file);
+    if (name === 'node_modules' ? !stat.isDirectory() : !stat.isFile()) throw new Error();
+  }
+  const metadata = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  if (metadata.name !== '@chordv/node-agent' || typeof metadata.version !== 'string' || !metadata.version.trim()) throw new Error();
+} catch {
+  console.error('安装失败：Agent 安装包结构无效，现有版本未修改。');
+  process.exitCode = 1;
+}
+VERIFY_AGENT
+runuser -u "\$SERVICE_USER" -- "\$NODE_BIN" --check "\$STAGED_PACKAGE/dist/src/main.js"
+RELEASE_DIR="\$RELEASES_DIR/release.\${STAGING_DIR##*.}"
+[[ ! -e "\$RELEASE_DIR" && ! -L "\$RELEASE_DIR" ]] || exit 1
+mv -T "\$STAGED_PACKAGE" "\$RELEASE_DIR"
+sync -f "\$RELEASE_DIR"
+ln -s "\$RELEASE_DIR" "\$NEXT_LINK"
+# GNU rename replaces the link itself, so readers always see a complete release.
+mv -fT "\$NEXT_LINK" "\$CURRENT_LINK"
+sync -f "\$INSTALL_DIR"
 
 install -d -m 0750 -o "\$SERVICE_USER" -g "\$SERVICE_USER" /var/lib/chordv-node-agent
 
@@ -150,6 +200,7 @@ CHORDV_API_BASE_URL=\${API_BASE%/api}
 CHORDV_REGISTER_TOKEN=\$REGISTER_TOKEN
 AGENT_DATABASE_PATH=/var/lib/chordv-node-agent/agent.db
 AGENT_CREDENTIALS_PATH=/var/lib/chordv-node-agent/credentials.json
+CHORDV_AGENT_NODE_BIN=\${NODE_BIN@Q}
 EOF
 chown "\$SERVICE_USER:\$SERVICE_USER" "\$ENV_FILE"
 chmod 0640 "\$ENV_FILE"
@@ -164,9 +215,9 @@ Wants=network-online.target
 Type=simple
 User=chordv-agent
 Group=chordv-agent
-WorkingDirectory=/opt/chordv-node-agent
+WorkingDirectory=/opt/chordv-node-agent/current
 EnvironmentFile=/etc/chordv/node-agent.env
-ExecStart=\${NODE_BIN@Q} /opt/chordv-node-agent/dist/src/main.js
+ExecStart=\${NODE_BIN@Q} /opt/chordv-node-agent/current/dist/src/main.js
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

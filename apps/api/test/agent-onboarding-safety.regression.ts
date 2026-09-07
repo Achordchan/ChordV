@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
+import { spawnSync } from "node:child_process";
 import { Module, BadRequestException, ForbiddenException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { WorkLifecycle } from "../src/work-lifecycle";
@@ -66,6 +67,38 @@ async function abortedDownloadDrain() {
     await app.listen(0, "127.0.0.1");
     const server = app.getHttpServer(), port = server.address().port;
     assert.equal(await (await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`)).text(), "complete artifact");
+    const secret = path.join(dir, "private-secret");
+    await fs.writeFile(secret, "PRIVATE_SENTINEL");
+    await fs.unlink(file); await fs.symlink(secret, file);
+    const linked = await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`);
+    assert.equal(linked.status, 404); assert.ok(!(await linked.text()).includes("PRIVATE_SENTINEL"));
+    await fs.unlink(file); await fs.mkdir(file);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`)).status, 404);
+    await fs.rmdir(file);
+    const fifo = spawnSync("mkfifo", [file]); assert.equal(fifo.status, 0);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`, { signal: AbortSignal.timeout(1500) })).status, 404);
+    await fs.unlink(file); await fs.writeFile(file, "original-opened-artifact");
+    const opened = path.join(dir, "opened-artifact");
+    const originalOpen = fs.open;
+    let swapped = false;
+    fs.open = (async (...args: Parameters<typeof fs.open>) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === file) {
+        const stat = handle.stat.bind(handle);
+        handle.stat = (async () => {
+          const result = await stat();
+          if (!swapped) { swapped = true; await fs.rename(file, opened); await fs.symlink(secret, file); }
+          return result;
+        }) as typeof handle.stat;
+      }
+      return handle;
+    }) as typeof fs.open;
+    try {
+      const raced = await fetch(`http://127.0.0.1:${port}/api/agent-download/linux-x64`);
+      assert.equal(await raced.text(), "original-opened-artifact", "filename replacement cannot redirect the opened descriptor");
+    } finally { fs.open = originalOpen; }
+    assert.equal(swapped, true);
+    await fs.unlink(file); await fs.rename(opened, file);
     const handle = await fs.open(file, "w"); await handle.truncate(128 * 1024 * 1024); await handle.close();
     for (let attempt = 0; attempt < 5; attempt++) {
       await new Promise<void>((resolve, reject) => {

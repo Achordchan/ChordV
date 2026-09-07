@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, NotFoundException, Param, Res } from "@nestjs/common";
+import { BadRequestException, Controller, Get, NotFoundException, ServiceUnavailableException, Param, Res } from "@nestjs/common";
 import type { Response } from "express";
 import { pipeline } from "node:stream/promises";
 
@@ -26,20 +26,30 @@ export class AgentDownloadController {
     const path = await import("node:path");
     // Explicit filename assembly (no user input beyond the allowlisted arch).
     const file = path.join(distDir, `chordv-agent-${arch}.tar.gz`);
-    if (!fs.existsSync(file)) {
-      throw new NotFoundException(`Agent 安装包（${arch}）尚未部署到该服务器。`);
+    if (typeof fs.constants.O_NOFOLLOW !== "number") {
+      throw new ServiceUnavailableException("当前平台不支持安全读取 Agent 安装包。");
     }
-    const stat = await fs.promises.stat(file);
-    response.setHeader("content-type", "application/gzip");
-    response.setHeader("content-length", stat.size);
-    response.setHeader("cache-control", "no-store");
-    // pipeline owns stream/response completion, including premature client close.
-    // An aborted download must release both its descriptor and lifecycle work item.
+    // Open once without following the artifact symlink. Stat and stream the same
+    // descriptor so an atomic publisher replacement cannot change what is served.
+    const handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+      .catch((error: NodeJS.ErrnoException) => {
+        if (["ENOENT", "ELOOP", "ENOTDIR", "EACCES"].includes(error.code ?? "")) {
+          throw new NotFoundException(`Agent 安装包（${arch}）不可用。`);
+        }
+        throw error;
+      });
     try {
-      await pipeline(fs.createReadStream(file), response);
-    } catch (error) {
-      if (response.destroyed && (error as NodeJS.ErrnoException).code === "ERR_STREAM_PREMATURE_CLOSE") return;
-      throw error;
-    }
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new NotFoundException("Agent 安装包必须为普通文件。");
+      response.setHeader("content-type", "application/gzip");
+      response.setHeader("content-length", stat.size);
+      response.setHeader("cache-control", "no-store");
+      try {
+        await pipeline(handle.createReadStream({ autoClose: false }), response);
+      } catch (error) {
+        if (response.destroyed && (error as NodeJS.ErrnoException).code === "ERR_STREAM_PREMATURE_CLOSE") return;
+        throw error;
+      }
+    } finally { await handle.close(); }
   }
 }

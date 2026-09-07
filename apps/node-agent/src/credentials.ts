@@ -54,6 +54,13 @@ const nonempty = (value: unknown): value is string => typeof value === 'string' 
 
 /** No registration request may run before its replay credential is safely persisted. */
 export async function resolveCredentials(config: AgentConfig, register = requestRegister): Promise<AgentCredentials> {
+  // A complete operator-managed tuple is an explicit override, including rotation.
+  // Do not read or overwrite an unrelated saved identity while this source is set.
+  const explicit = [config.agentId, config.nodeId, config.token];
+  if (explicit.some(nonempty)) {
+    if (!explicit.every(nonempty) || config.registerToken) throw new Error('环境凭据必须完整，且不能与注册令牌同时配置');
+    return { agentId: config.agentId, nodeId: config.nodeId, token: config.token };
+  }
   const saved = readSecret(config.credentialsPath);
   if (saved) {
     if (!nonempty(saved.agentId) || !nonempty(saved.nodeId) || !nonempty(saved.token)) throw new Error('Agent 凭据文件字段不完整');
@@ -81,6 +88,5 @@ export async function resolveCredentials(config: AgentConfig, register = request
     console.log(`[node-agent] 注册成功 agent=${response.agentId} node=${response.nodeId}（凭据已持久化）`);
     return credentials;
   }
-  if (config.agentId && config.nodeId && config.token) return { agentId: config.agentId, nodeId: config.nodeId, token: config.token };
   throw new Error('无可用凭据：本地凭据文件缺失且未提供 CHORDV_REGISTER_TOKEN');
 }

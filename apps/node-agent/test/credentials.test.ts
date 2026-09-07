@@ -156,3 +156,20 @@ test('visible newly-created parents must be re-synced after a previous failure',
     await resolveCredentials(config(file), async () => identity);
   } finally { failure.mock.restore(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test('complete environment credentials override saved or damaged credentials without rewriting them', async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'agent-credential-rotation-'));
+  const file = join(root, 'credentials.json');
+  const replacement = { agentId: 'rotated-agent', nodeId: 'rotated-node', token: 'rotated-secret' };
+  const options = { ...config(file), ...replacement, registerToken: undefined };
+  try {
+    for (const previous of [JSON.stringify({ agentId: 'old', nodeId: 'old', token: 'revoked' }), '{corrupt']) {
+      fs.writeFileSync(file, previous);
+      assert.deepEqual(await resolveCredentials(options, async () => { assert.fail('explicit rotation must not register'); }), replacement);
+      assert.equal(fs.readFileSync(file, 'utf8'), previous);
+    }
+    await assert.rejects(resolveCredentials({ ...options, token: '' }), /环境凭据必须完整/);
+    await assert.rejects(resolveCredentials({ ...options, registerToken: 'register' }), /不能与注册令牌/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -57,6 +57,7 @@ Agent 首次启动
 - `AgentRegisterToken` 表:tokenHash(不落明文)、tokenPrefix、nodeId、expiresAt、usedAt
 - agent 侧:启动时无凭据但有 `CHORDV_REGISTER_TOKEN` 环境变量 → 走 register → 先持久化客户端生成的待注册凭据，成功后将身份及凭据写入 AGENT_CREDENTIALS_PATH(JSON,权限 600)→ 后续启动直接用凭据
 - install 脚本注入注册 token 的方式:写入 `/etc/chordv/node-agent.env`
+- 完整管理员环境凭据优先于本地文件，轮换时不再被旧文件覆盖；部分配置和注册令牌冲突明确拒绝。安装包先在独立目录下载、验证并以服务用户解压，再发布不可变版本目录、原子切换current；旧版本与持久数据保留。公开下载通过O_NOFOLLOW打开并对同一文件句柄fstat/流式读取，拒绝符号链接及非普通文件。
 - 请求前持久化是强制前置条件：待注册与正式凭据共用原子写入、0600权限和文件/目录链同步；落盘失败不得发送注册请求，已有不可读/损坏记录不得被当成缺失后重新生成密钥。首次凭据签发在事务内要求pending_register；匹配已用令牌重试仍返回原身份。注册与心跳版本从部署包package.json读取。
 
 R1 安全与恢复边界：
