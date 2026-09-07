@@ -861,13 +861,19 @@ async function requestExternalReleaseArtifactFile(
           hash.update(buffer);
           await fileHandle.write(buffer);
           // Best-effort progress reporting only: an observer error must never fail
-          // the download itself.
+          // the download itself. Sync exceptions are caught here; an observer
+          // typed as void but implemented async would otherwise surface its
+          // rejection as an unhandled process-level event, so attach a handler
+          // for returned promises too.
           if (onProgress) {
             try {
-              onProgress({
+              const returned = onProgress({
                 downloadedBytes: Number(fileSizeBytes),
                 totalBytes: contentLength === null ? null : Number(contentLength)
-              });
+              }) as unknown;
+              if (typeof (returned as Promise<unknown> | undefined)?.then === "function") {
+                (returned as Promise<unknown>).catch(() => undefined);
+              }
             } catch {
             }
           }

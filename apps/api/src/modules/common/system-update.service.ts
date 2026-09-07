@@ -145,6 +145,14 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
   // AFTER a later phase transition (extracting/draining) and regress the row to
   // an earlier phase under DB/pool latency. Chaining preserves program order.
   private phaseWriteChain: Promise<unknown> = Promise.resolve();
+  // The single QUEUED-but-unstarted cosmetic write (see markPhase): merged into
+  // by subsequent snapshots so the chain never grows a backlog.
+  private pendingPhaseWrite: {
+    operationId: string;
+    data: { phase: SystemUpdateOperationPhase; progress?: number };
+    settled: Promise<void>;
+    settle: () => void;
+  } | null = null;
   // Serializes the signed manifest-floor compare-and-write so concurrent update checks
   // cannot interleave and move the anti-replay floor backward (it must only advance).
   private manifestFloorLock: Promise<unknown> = Promise.resolve();
@@ -1227,24 +1235,42 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
    */
   private markPhase(operationId: string, phase: SystemUpdateOperationPhase, progress?: number): Promise<void> {
     if (workLifecycle.isDraining || this.shutdownFailed) return Promise.resolve();
+    const data = { phase, ...(progress !== undefined ? { progress } : {}) };
+    // Coalesce: a QUEUED-but-unstarted write is superseded by this newer snapshot
+    // (same columns — dropping stale intermediates is lossless). This bounds the
+    // chain to at most one queued cosmetic write, so a DB slower than the 2s
+    // enqueue rate can never pile up a backlog that delays a later phase
+    // transition; only the currently-EXECUTING write is ever awaited. A write
+    // merged into an executing one resolves with it (same destination row).
+    if (this.pendingPhaseWrite) {
+      this.pendingPhaseWrite.data = data;
+      return this.pendingPhaseWrite.settled;
+    }
+    let settle: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    this.pendingPhaseWrite = { operationId, data, settled, settle };
     // Enqueue on the chain (never bypass it), so a slow fire-and-forget progress
     // write cannot reorder against a later phase transition.
     const run = this.phaseWriteChain.then(async () => {
+      const pending = this.pendingPhaseWrite;
+      this.pendingPhaseWrite = null;
+      if (!pending) return;
       try {
         await this.prisma.systemUpdateOperation.update({
-          where: phase === "checking"
-            ? { operationId, status: { in: ["pending", "running"] } }
-            : { operationId, status: "running" },
-          data: { phase, ...(progress !== undefined ? { progress } : {}) }
+          where: pending.data.phase === "checking"
+            ? { operationId: pending.operationId, status: { in: ["pending", "running"] } }
+            : { operationId: pending.operationId, status: "running" },
+          data: pending.data
         });
       } catch (error) {
         this.logger.warn(`Progress phase update failed (ignored): ${this.describeError(error)}`);
       }
+      pending.settle();
     });
     // The chain itself must never reject (a swallowed failure must not poison
-    // later enqueued writes); callers still get the awaited outcome via `run`.
+    // later enqueued writes); callers get the awaited outcome via `settled`.
     this.phaseWriteChain = run;
-    return run;
+    return settled;
   }
 
   /**

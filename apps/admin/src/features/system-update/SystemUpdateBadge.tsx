@@ -186,16 +186,28 @@ function OperationProgress({
       <Group gap={4} wrap="nowrap" align="center">
         {PHASE_STEPS.map((step, index) => {
           // Supervisor-owned stages only check-mark when a poll actually OBSERVED
-          // them: an update without migrations passes them silently, and that
-          // silent pass must read as "not run", not "completed".
-          const observed = observedPhases.has(step.phase);
+          // them AND a LATER phase was observed afterwards: snapshot/migrate are
+          // recorded when the command STARTS, so observing the phase alone does
+          // not prove it succeeded — the advancement (health-gating, or a
+          // rollback-* landing) is the completion signal. Without it (command
+          // failed → auto-rollback), the failed stage stays unmarked instead of
+          // wearing a ✓.
+          let observedAndAdvanced = false;
+          if (OBSERVED_ONLY_STEPS.has(step.phase) && observedPhases.has(step.phase)) {
+            for (const candidate of observedPhases) {
+              if (PHASE_STEPS.findIndex((s) => s.phase === candidate) > index) {
+                observedAndAdvanced = true;
+                break;
+              }
+            }
+          }
           const skipped = !applicable.has(step.phase);
           const state = skipped
             ? "skipped"
             : index === stepIndex
               ? "active"
               : OBSERVED_ONLY_STEPS.has(step.phase)
-                ? observed
+                ? observedAndAdvanced
                   ? "done"
                   : "todo"
                 : stepIndex >= 0 && index < stepIndex

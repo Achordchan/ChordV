@@ -182,27 +182,38 @@ async function progressWriterThrottleAndDrainGuard() {
   });
   await (failing as unknown as { markPhase(op: string, phase: string): Promise<void> }).markPhase("sysop-5", "extracting");
 
-  // FIFO serialization: a SLOW fire-and-forget progress write enqueued before a
-  // later phase transition must not let the transition land first — under DB/pool
-  // latency the row would otherwise regress to an earlier phase.
+  // FIFO serialization + coalescing: a SLOW fire-and-forget progress write
+  // enqueued before a later phase transition must not let the transition land
+  // first (reordering would regress the row), but a QUEUED-not-started write is
+  // superseded by a newer snapshot, so the slow DB can never build a backlog
+  // that delays a phase transition — cosmetic writes must not gate the update.
   const order: string[] = [];
   const serialized = buildService({
     systemUpdateOperation: {
       update: async (args: unknown) => {
-        const data = (args as { data: { phase: string } }).data;
+        const data = (args as { data: { phase: string; progress?: number } }).data;
         if (data.phase === "downloading") await new Promise((resolve) => setTimeout(resolve, 30));
-        order.push(data.phase);
+        order.push(data.phase + (data.progress !== undefined ? `:${data.progress}` : ""));
       }
     }
   });
   const serialSvc = serialized as unknown as { markPhase(op: string, phase: string, progress?: number): Promise<void> };
-  const slowWrite = serialSvc.markPhase("sysop-8", "downloading", 50); // fire-and-forget style: not awaited
-  void serialSvc.markPhase("sysop-8", "extracting"); // enqueued immediately after
-  void serialSvc.markPhase("sysop-8", "draining");
-  await slowWrite;
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.deepEqual(order, ["downloading", "extracting", "draining"],
-    "phase writes must commit in program order regardless of individual write latency");
+  const slowWrite = serialSvc.markPhase("sysop-8", "downloading", 50); // starts executing (30ms)
+  await new Promise((resolve) => setImmediate(resolve)); // let the chain pick it up
+  const queued = serialSvc.markPhase("sysop-8", "downloading", 70); // queued behind the executing write
+  const merged = serialSvc.markPhase("sysop-8", "downloading", 85); // coalesces INTO the queued one
+  const extracting = serialSvc.markPhase("sysop-8", "extracting"); // supersedes the queued snapshot too
+  await slowWrite; await queued; await merged; await extracting;
+  // All writes target the same row, so coalescing to the NEWEST queued state is
+  // lossless: the intermediate 70/85 and the extracting transition land as ONE
+  // update, in order after the already-committed 50. The phase transition itself
+  // is never dropped or reordered behind an older snapshot.
+  assert.deepEqual(order, ["downloading:50", "extracting"],
+    "queued writes coalesce to the newest state and never reorder against committed writes");
+  // No backlog: the moment the queue drains, the next write executes immediately.
+  const start = performance.now();
+  await serialSvc.markPhase("sysop-8", "draining");
+  assert.ok(performance.now() - start < 20, "a drained chain must not stall the next phase write");
 
   // The checking phase is written BEFORE markRunning lands, so its update must
   // target a still-pending row (a running-only filter would deterministically
