@@ -78,12 +78,24 @@ test('a failed packaging run leaves the published artifact untouched', () => {
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /打包失败/);
 
-    // tar fails mid-run (an unreadable file in the release): the staging file is
-    // cleaned up and the published tarball still serves the previous release.
-    const broken = release(root, 'broken');
-    fs.chmodSync(join(broken, 'dist/src/payload.txt'), 0o000);
-    const failed = spawnSync('bash', [script, broken, arch, out], { encoding: 'utf8' });
-    assert.notEqual(failed.status, 0, '不可读文件必须让打包失败');
+    // tar fails mid-run: the staging file is cleaned up and the published
+    // tarball still serves the previous release. The failure is INJECTED via a
+    // PATH shim rather than a 000-mode file — build-release.sh runs this suite
+    // and often runs as root, where file permissions would not stop tar and the
+    // release build would fail on this assertion instead of the code.
+    const shim = join(root, 'shim');
+    fs.mkdirSync(shim);
+    const realTar = spawnSync('sh', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
+    assert.ok(realTar, '未找到 tar');
+    fs.writeFileSync(join(shim, 'tar'), `#!/bin/sh
+case " $* " in *" -czf "*) echo 'injected tar failure' >&2; exit 2 ;; esac
+exec ${realTar} "$@"
+`, { mode: 0o755 });
+    const failed = spawnSync('bash', [script, release(root, 'broken'), arch, out], {
+      encoding: 'utf8', env: { ...process.env, PATH: `${shim}:${process.env.PATH}` }
+    });
+    assert.notEqual(failed.status, 0, '打包失败必须传播为非零退出码');
+    assert.match(failed.stderr, /injected tar failure/);
     assert.deepEqual(fs.readdirSync(out), [`chordv-agent-${arch}.tar.gz`], '失败的打包不得留下临时文件');
     assert.deepEqual(fs.readFileSync(tarball), published, '失败的打包不得改动已发布产物');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
