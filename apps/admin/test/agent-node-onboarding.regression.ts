@@ -1,0 +1,68 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import ts from "typescript";
+
+// Exercise the production async callbacks with controlled responses and session
+// refs. The mounted modal itself is also covered by the targeted browser check.
+const source = readFileSync(resolve(import.meta.dirname, "../src/features/nodes/useAgentNodeOnboarding.ts"), "utf8");
+const tree = ts.createSourceFile("hook.ts", source, ts.ScriptTarget.Latest, true);
+const expressions = new Map<string, string>();
+function visit(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer) && node.initializer.expression.getText(tree) === "useCallback") {
+    expressions.set(node.name.getText(tree), node.initializer.arguments[0].getText(tree));
+  }
+  ts.forEachChild(node, visit);
+}
+visit(tree);
+function callback(name: string, scope: Record<string, unknown>) {
+  const text = expressions.get(name); assert.ok(text);
+  const code = ts.transpileModule(`const fn = ${text};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function(...Object.keys(scope), `${code}; return fn;`)(...Object.values(scope));
+}
+function deferred() {
+  let resolve!: (value: unknown) => void, reject!: (error: Error) => void;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+const node = { id: "pending-node", registrationStatus: "pending_register", name: "node" };
+function fixture() {
+  const session = { current: 1 }, active = { current: true }, requestBusy = { current: false };
+  const mutations: Array<[string, unknown]> = [], notified: unknown[] = [], polls: unknown[] = [], changedNodes: unknown[] = [];
+  const scope: Record<string, unknown> = {
+    session, active, requestBusy, node,
+    current: (epoch: number) => active.current && session.current === epoch,
+    changed: { current: (value: unknown) => changedNodes.push(value) },
+    stopPolling: () => undefined, pollRegistration: (...args: unknown[]) => polls.push(args),
+    notifications: { show: (value: unknown) => notified.push(value) }, errorMessage: (error: Error) => error.message
+  };
+  for (const key of ["setCreating", "setError", "setNode", "setResult", "setStage", "setRegenerating"]) {
+    scope[key] = (value: unknown) => mutations.push([key, value]);
+  }
+  return { scope, session, active, requestBusy, mutations, notified, polls, changedNodes };
+}
+for (const request of ["submit", "regenerate"]) for (const outcome of ["resolve", "reject"]) {
+  const f = fixture(), pending = deferred();
+  f.scope.createAgentNode = () => pending.promise; f.scope.issueNodeRegisterToken = () => pending.promise;
+  const run = callback(request, f.scope);
+  const task = request === "submit" ? run({ name: "node" }) : run();
+  const beforeClose = f.mutations.length;
+  const close = callback("invalidate", f.scope); close();
+  // The next session is open and has its own active request.
+  f.session.current++; f.active.current = true; f.requestBusy.current = true;
+  if (outcome === "reject") pending.reject(new Error("late failure"));
+  else pending.resolve(request === "submit" ? { node, registerToken: "test", registerTokenExpiresAt: "future" } : { token: "fresh", expiresAt: "future" });
+  await task;
+  assert.equal(f.mutations.length, beforeClose, `${request} ${outcome} cannot mutate the new session`);
+  assert.equal(f.requestBusy.current, true, "stale finally cannot unlock a newer request");
+  assert.deepEqual(f.polls, []); assert.deepEqual(f.notified, []);
+  assert.equal(f.changedNodes.length, request === "submit" && outcome === "resolve" ? 1 : 0, "committed creation only refreshes parent data");
+}
+const resumed = fixture();
+resumed.scope.issueNodeRegisterToken = async () => ({ token: "new-token", expiresAt: "future" });
+await callback("regenerate", resumed.scope)();
+assert.deepEqual(resumed.mutations.find(([name]) => name === "setResult")?.[1], { node, registerToken: "new-token", registerTokenExpiresAt: "future" });
+assert.deepEqual(resumed.polls, [[node.id, 1]], "resume must work without a previous one-time result");
+assert.ok(resumed.mutations.some(([name, value]) => name === "setStage" && value === "awaiting"));
+assert.equal(resumed.requestBusy.current, false);
+console.log("agent-node-onboarding callbacks passed (late success/error/finally, close/reopen, pending resume)");

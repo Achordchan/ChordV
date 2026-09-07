@@ -1,5 +1,6 @@
 import { BadRequestException, Controller, Get, NotFoundException, Param, Res } from "@nestjs/common";
 import type { Response } from "express";
+import { pipeline } from "node:stream/promises";
 
 /**
  * Serves the node-agent release tarball for the install script. The tarball is
@@ -32,22 +33,13 @@ export class AgentDownloadController {
     response.setHeader("content-type", "application/gzip");
     response.setHeader("content-length", stat.size);
     response.setHeader("cache-control", "no-store");
-    // Streaming beats readFileSync for an ~80MB artifact behind a single
-    // process. pipe+destroy-on-close: an aborted client download must not leak
-    // a paused source stream with an open descriptor — repeated unauthenticated
-    // aborts could otherwise exhaust the process.
-    const stream = fs.createReadStream(file);
-    stream.pipe(response);
-    const cleanup = () => {
-      response.removeListener("close", cleanup);
-      response.removeListener("finish", cleanup);
-      if (!stream.destroyed && !stream.readableEnded) stream.destroy();
-    };
-    response.once("close", cleanup);
-    response.once("finish", cleanup);
-    await new Promise<void>((resolve, reject) => {
-      stream.on("error", reject);
-      response.on("finish", resolve);
-    });
+    // pipeline owns stream/response completion, including premature client close.
+    // An aborted download must release both its descriptor and lifecycle work item.
+    try {
+      await pipeline(fs.createReadStream(file), response);
+    } catch (error) {
+      if (response.destroyed && (error as NodeJS.ErrnoException).code === "ERR_STREAM_PREMATURE_CLOSE") return;
+      throw error;
+    }
   }
 }

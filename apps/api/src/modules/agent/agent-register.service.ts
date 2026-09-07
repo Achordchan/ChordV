@@ -39,10 +39,8 @@ export class AgentRegisterService {
           provider: input.provider?.trim() || "未指定",
           tags: input.tags ?? [],
           // Inactive until the agent registers AND reports usable connection
-          // parameters (R2's inbound deployment): a pending node has placeholder
-          // endpoint values, and availability/assignment paths do not gate on
-          // registrationStatus — publishing it would hand clients an unusable
-          // endpoint. The admin activates the node after onboarding completes.
+          // parameters (R2's inbound deployment). Activation, availability and
+          // assignment also enforce the shared onboarding/endpoint invariant.
           isActive: false,
           recommended: input.recommended ?? false,
           // Connection parameters are unknown until the agent reports them;
@@ -192,23 +190,19 @@ export class AgentRegisterService {
         async (tx) => {
           const record = await tx.agentRegisterToken.findUnique({ where: { tokenHash } });
           if (!record) throw new UnauthorizedException("注册令牌无效");
-          if (record.expiresAt.getTime() <= Date.now()) throw new UnauthorizedException("注册令牌已过期");
           const node = await tx.node.findUnique({
             where: { id: record.nodeId },
             select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true, agentId: true, tokenHash: true } } }
           });
           if (!node) throw new UnauthorizedException("注册令牌对应的节点不存在");
+          const existing = node.nodeAgents.find((agent) => agent.tokenHash === agentTokenHash);
+          if (record.usedAt && existing) {
+            // Replay proves possession of the already-issued live credential. It
+            // only returns existing IDs, including after the registration TTL.
+            return { agent: { agentId: existing.agentId }, replay: true as const, node };
+          }
+          if (record.expiresAt.getTime() <= Date.now()) throw new UnauthorizedException("注册令牌已过期");
           if (node.nodeAgents.length > 0) {
-            const existing = node.nodeAgents[0];
-            if (existing.tokenHash === agentTokenHash && record.usedAt) {
-              // IDEMPOTENT REPLAY: the agent generated its credential, the
-              // registration committed, but the response was lost before the
-              // agent persisted it (or it simply retried). The token hash
-              // matches the credential this very request presents, so this is
-              // the SAME agent — return its identity instead of bricking the
-              // node with a "token already used" dead end.
-              return { agent: { agentId: existing.agentId }, replay: true as const, node };
-            }
             throw new UnauthorizedException("该节点已存在有效 Agent，注册令牌不可复用");
           }
           if (record.usedAt) {
@@ -248,8 +242,8 @@ export class AgentRegisterService {
     return {
       accepted: true,
       agentId: result.agent.agentId,
-      // The credential itself is the agent's own secret (client-generated); the
-      // server never knew its plaintext, so there is nothing to echo.
+      // The agent already holds this client-generated secret. Only its hash is
+      // stored; the response returns identity fields rather than echoing it.
       nodeId: result.node.id
     };
   }

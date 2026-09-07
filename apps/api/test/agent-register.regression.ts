@@ -145,6 +145,16 @@ async function main() {
   await assert.rejects(() => service.register(input(token, "chordv_agent_" + "c".repeat(43))), /已被使用|不可复用/);
   assert.equal(createdAgents.length, agentsBefore, "foreign credential replay must not mint anything");
 
+  const usedAt = tokens.get(hashAgentToken(token))!.usedAt;
+  const updatesBeforeReplay = updatedNodes.length;
+  tokens.get(hashAgentToken(token))!.expiresAt = new Date(Date.now() - 1000);
+  const expiredReplay = await service.register(input(token, clientToken));
+  assert.equal(expiredReplay.agentId, result.agentId);
+  assert.equal(createdAgents.length, agentsBefore);
+  assert.equal(updatedNodes.length, updatesBeforeReplay);
+  assert.equal(tokens.get(hashAgentToken(token))!.usedAt, usedAt);
+  await assert.rejects(() => service.register(input(token, "chordv_agent_" + "z".repeat(43))), UnauthorizedException);
+
   // Expired token.
   const expired = "chordv_register_expired";
   tokens.set(hashAgentToken(expired), {
@@ -152,6 +162,10 @@ async function main() {
     expiresAt: new Date(Date.now() - 1_000), usedAt: null, createdAt: new Date()
   });
   await assert.rejects(() => service.register(input(expired)), /已过期/);
+  await assert.rejects(() => service.register(input(expired, clientToken)), /已过期/, "unused expired token cannot use replay shortcut");
+  const activeCredential = liveAgentRow; liveAgentRow = null;
+  await assert.rejects(() => service.register(input(token, clientToken)), UnauthorizedException, "revoked credential cannot replay");
+  liveAgentRow = activeCredential;
 
   // Node already holding a live agent registered by a DIFFERENT credential:
   // a new token (e.g. regenerated) must not register a second agent.

@@ -430,6 +430,7 @@ export function App() {
   const [teamUsageErrorByTeamId, setTeamUsageErrorByTeamId] = useState<Record<string, string | null>>({});
   const [probingNodeId, setProbingNodeId] = useState<string | null>(null);
   const [agentNodeCreateOpened, setAgentNodeCreateOpened] = useState(false);
+  const [agentNodeResumeId, setAgentNodeResumeId] = useState<string | null>(null);
   const [probingAll, setProbingAll] = useState(false);
   const probingBusyRef = useRef(false);
   const [refreshingNodeId, setRefreshingNodeId] = useState<string | null>(null);
@@ -3422,7 +3423,8 @@ export function App() {
             <AgentNodeCreateModal
               opened={agentNodeCreateOpened}
               onClose={() => setAgentNodeCreateOpened(false)}
-              onNodeRegistered={() => {
+              initialNode={snapshot.nodes.find(item => item.id === agentNodeResumeId) ?? null}
+              onNodeChanged={() => {
                 void fetchAdminNodes().then((updatedNodes) => {
                   mergeSnapshot({ nodes: updatedNodes });
                 }).catch(() => undefined);
@@ -3454,7 +3456,8 @@ export function App() {
                 onSwitchNodeControlMode={handleSwitchNodeControlMode}
                 onOpenNodeDrawer={(nodeId) => openDrawer("node", nodeId)}
                 onDeleteNode={setDeleteNodeTarget}
-                onOpenAgentNodeCreate={() => setAgentNodeCreateOpened(true)}
+                onOpenAgentNodeCreate={() => { setAgentNodeResumeId(null); setAgentNodeCreateOpened(true); }}
+                onResumeAgentNode={(nodeId) => { setAgentNodeResumeId(nodeId); setAgentNodeCreateOpened(true); }}
               />
             ) : null}
 

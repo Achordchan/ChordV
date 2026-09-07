@@ -1,3 +1,4 @@
+import { isNodeOnboardingReady } from "./node-onboarding-policy";
 import { workLifecycle, DrainableJob } from "../../work-lifecycle";
 import {
   BadGatewayException,
@@ -225,6 +226,9 @@ export class RuntimeSessionService {
     }
     if (!node.isActive) {
       throw new ForbiddenException("当前节点已禁用");
+    }
+    if (!isNodeOnboardingReady(node)) {
+      throw new ForbiddenException("当前节点尚未完成 Agent 注册或入站配置");
     }
     if (!canServeManagedClients(node.controlMode, node.panelEnabled)) {
       throw new ForbiddenException("当前节点未启用面板接入");
@@ -575,7 +579,7 @@ export class RuntimeSessionService {
 
     const allowedNodeIds = new Set(
       subscription.nodeAccesses
-        .filter((item: any) => item.node.isActive && canServeManagedClients(item.node.controlMode, item.node.panelEnabled))
+        .filter((item: any) => item.node.isActive && isNodeOnboardingReady(item.node) && canServeManagedClients(item.node.controlMode, item.node.panelEnabled))
         .map((item: any) => item.nodeId)
     );
     const bindings = ensureOnly
@@ -665,7 +669,7 @@ export class RuntimeSessionService {
         if (directOnly && access.node.controlMode !== "direct_primary") {
           continue;
         }
-        if (!access.node.isActive || !canServeManagedClients(access.node.controlMode, access.node.panelEnabled)) {
+        if (!access.node.isActive || !isNodeOnboardingReady(access.node) || !canServeManagedClients(access.node.controlMode, access.node.panelEnabled)) {
           continue;
         }
         const binding = await this.ensurePanelClientBinding(writer, {

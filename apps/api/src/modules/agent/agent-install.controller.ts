@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, HttpCode, Post, Body, Res } from "@nestjs/common";
+import { Controller, Headers, HttpCode, Post, Body, Res } from "@nestjs/common";
 import { IsNotEmpty, IsString, MaxLength } from "class-validator";
 import type { Response } from "express";
 import { AgentRegisterService } from "./agent-register.service";
@@ -109,16 +109,25 @@ esac
 # VERSION before selecting it — a host with an old /usr/bin/node and a valid
 # Node 20 under /usr/local/bin must still install.
 NODE_BIN=""
-for candidate in /usr/bin/node /usr/local/bin/node "\$(command -v node 2>/dev/null || true)"; do
-  [[ -n "\$candidate" && -x "\$candidate" ]] || continue
-  candidate_version="\$("\$candidate" --version 2>/dev/null || true)"
+if ! command -v runuser >/dev/null 2>&1; then
+  echo "安装失败：缺少 runuser（util-linux），无法验证服务用户的运行环境。" >&2
+  exit 1
+fi
+if ! id "\$SERVICE_USER" >/dev/null 2>&1; then
+  useradd --system --home /var/lib/chordv-node-agent --shell /usr/sbin/nologin "\$SERVICE_USER"
+fi
+for candidate in /usr/bin/node /usr/local/bin/node; do
+  [[ -x "\$candidate" ]] || continue
+  candidate="\$(readlink -f "\$candidate" 2>/dev/null || true)"
+  case "\$candidate" in /usr/*|/opt/*) ;; *) continue ;; esac
+  candidate_version="\$(runuser -u "\$SERVICE_USER" -- "\$candidate" --version 2>/dev/null || true)"
   if [[ "\$candidate_version" =~ ^v20\\. ]]; then
     NODE_BIN="\$candidate"
     break
   fi
 done
 if [[ -z "\$NODE_BIN" ]]; then
-  echo "安装失败：未找到 Node.js 20.x（要求 20.x，可用 node --version 检查已安装版本）。请安装 Node.js 20 后重试。" >&2
+  echo "安装失败：未找到 Node.js 20.x（要求 20.x，可用 node --version 检查已安装版本）。请将 Node.js 20 安装到服务用户可访问的系统目录（/usr/bin 或 /usr/local/bin），不要使用 root 的 nvm 路径。" >&2
   exit 1
 fi
 
@@ -133,9 +142,6 @@ if [[ ! -f "\$INSTALL_DIR/dist/src/main.js" ]]; then
   exit 1
 fi
 
-if ! id "\$SERVICE_USER" >/dev/null 2>&1; then
-  useradd --system --home /var/lib/chordv-node-agent --shell /usr/sbin/nologin "\$SERVICE_USER"
-fi
 install -d -m 0750 -o "\$SERVICE_USER" -g "\$SERVICE_USER" /var/lib/chordv-node-agent
 
 install -d -m 0750 /etc/chordv

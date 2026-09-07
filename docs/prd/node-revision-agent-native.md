@@ -25,14 +25,14 @@ ChordV 的节点管理当前以 3x-ui 面板为主轨(`xui_primary`):添加节�
   → 弹出接入引导:一条 install 命令(含一次性注册 token,短时效)
 
 VPS 上
-  curl -fsSL https://v.baymaxgroup.com/agent-install/<token>.sh | bash
+  curl -fsSL -X POST -H 'content-type: application/json' -d '{"token":"<register-token>"}' https://v.baymaxgroup.com/api/agent-install/script.sh | bash
   → 安装脚本:检测架构 → 下载 agent 发布包(release 中心托管) → 安装 Xray(官方脚本) →
      写 systemd 单元(agent 沙箱化,Requires=xray) → 起服务
 
 Agent 首次启动
-  无凭据,持注册 token → POST /agent/v1/register {token, hostname, arch, xrayVersion, bootInfo}
+  无凭据,持注册 token → POST /api/agent/v1/register {registerToken, agentToken, hostname, arch, agentVersion, bootId}
   → 控制面校验 token(一次性、未过期、对应 pending_register 节点)
-  → 签发持久凭据(agentId + chordv_agent_ token,SHA256+pepper 落库,复用现有 hashAgentToken)
+  → 保存客户端生成的持久凭据哈希(SHA256+pepper,复用 hashAgentToken),返回 agentId/nodeId
   → 节点置 agent_ready
 
 入站配置下发(管理员在节点详情触发"部署入站")
@@ -49,14 +49,20 @@ Agent 首次启动
 
 ### 2.1 新增:注册协议(控制面 + agent)
 
-- `POST /agent/v1/register`(无 Bearer,凭注册 token):
-  - 请求:`{registerToken, hostname, arch, agentVersion, xrayVersion?, bootId}`
+- `POST /api/agent/v1/register`(无 Bearer,凭注册 token):
+  - 请求:`{registerToken, agentToken, hostname, arch, agentVersion, xrayVersion?, bootId}`
   - 校验:token 存在、未用过、未过期(TTL 24h)、节点处于 `pending_register`
-  - 成功:创建 NodeAgent(现有表)、签发持久 token、节点置 `agent_ready`、置 token used
-  - 失败:401/410/409;注册 token 单次使用,防重放
-- `RegisterToken` 表:`tokenHash`(SHA256,不落明文)、nodeId、expiresAt、usedAt、singleUse
-- agent 侧:启动时无凭据但有 `CHORDV_REGISTER_TOKEN` 环境变量 → 走 register → 拿到凭据后持久化到本地 store(SQLite,权限 600)→ 后续启动直接用凭据
+  - 成功:创建 NodeAgent、保存客户端持久 token 哈希、节点置 `agent_ready`、置 token used；仅返回已有身份，不回传明文凭据
+  - 已使用令牌只允许持有匹配在册 Agent 凭据的幂等重试，即使原注册令牌已过期也只返回原身份；不同凭据、已撤销 Agent、未使用的过期令牌继续拒绝
+- `AgentRegisterToken` 表:tokenHash(不落明文)、tokenPrefix、nodeId、expiresAt、usedAt
+- agent 侧:启动时无凭据但有 `CHORDV_REGISTER_TOKEN` 环境变量 → 走 register → 先持久化客户端生成的待注册凭据，成功后将身份及凭据写入 AGENT_CREDENTIALS_PATH(JSON,权限 600)→ 后续启动直接用凭据
 - install 脚本注入注册 token 的方式:写入 `/etc/chordv/node-agent.env`
+
+R1 安全与恢复边界：
+
+- 创建的节点保持禁用；pending_register 不可启用或分配，agent_ready 还必须具备非占位地址、有效端口及完整 VLESS/Reality 参数。激活、订阅分配、客户端列表/探测/连接和用户下发共用该检查，R2 完成入站部署前不会向客户端提供 pending-agent:0。
+- 安装脚本仅探测 /usr/bin/node、/usr/local/bin/node，解析软链接后限定 /usr 或 /opt 系统路径，并以 chordv-agent 用户验证 Node 20.x 可执行；root nvm、ProtectHome 隐藏路径或仅 root 可执行的安装不被采用。
+- 关闭弹窗会使当前会话及轮询失效，迟到创建结果仅刷新节点列表，不恢复旧弹窗。待注册节点提供“继续接入”，可重新签发令牌；无需保留明文旧命令或创建重复节点。R1 尚无注册完成的 SSE 事件，沿用3秒检查、故障退避至30秒，关闭/换会话/就绪/15分钟等待期结束时停止。
 
 ### 2.2 新增:入站配置下发(agent)
 
@@ -68,7 +74,7 @@ Agent 首次启动
 ### 2.3 新增:agent 发布托管
 
 - agent 构建产物 tar.gz(linux-x64 + linux-arm64)挂到现有 release 中心(`releases` 存储,走 artifact 下载路由)或独立 GitHub Release
-- `GET /agent-install/:token.sh`:动态生成 install 脚本(嵌入 API base URL、注册 token、架构检测);脚本本身无密钥,token 即一次性凭据
+- `POST /api/agent-install/script.sh`:注册令牌放在 JSON 请求体中，禁止放入 URL；动态生成安装脚本。下载通过公开的 `GET /api/agent-download/:arch` 流式分发，断开连接也须结束控制器和生命周期工作。
 
 ### 2.4 修改:管理端"添加节点"
 

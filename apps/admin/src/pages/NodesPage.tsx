@@ -46,6 +46,7 @@ type NodesPageProps = {
   onOpenNodeDrawer: (nodeId: string) => void;
   onDeleteNode: (node: AdminNodeRecordDto) => void;
   onOpenAgentNodeCreate: () => void;
+  onResumeAgentNode: (nodeId: string) => void;
 };
 
 export function NodesPage(props: NodesPageProps) {
@@ -146,6 +147,9 @@ export function NodesPage(props: NodesPageProps) {
                   </Table.Td>
                   <Table.Td>
                     <RowActions>
+                      {item.registrationStatus === "pending_register" ? (
+                        <Button size="compact-xs" variant="light" onClick={() => props.onResumeAgentNode(item.id)}>继续接入</Button>
+                      ) : null}
                       <ActionIcon
                         variant="subtle"
                         title="探测节点连通性"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import {
   Alert,
   Badge,
@@ -14,180 +14,25 @@ import {
   Textarea,
   Tooltip
 } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
-import type { AdminNodeRecordDto, CreateAgentNodeResultDto } from "@chordv/shared";
-import { createAgentNode, issueNodeRegisterToken } from "../../api/nodes";
+import type { AdminNodeRecordDto } from "@chordv/shared";
+import { useAgentNodeOnboarding } from "./useAgentNodeOnboarding";
 
-type Stage = "form" | "awaiting" | "ready" | "failed";
-
-const POLL_INTERVAL_MS = 3_000;
-const POLL_TIMEOUT_MS = 15 * 60 * 1000;
-
-function parseErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  try {
-    const parsed = JSON.parse(raw) as { message?: unknown };
-    if (parsed && typeof parsed.message === "string") return parsed.message;
-  } catch {
-    // not JSON
-  }
-  return raw;
-}
-
-/**
- * Agent-native node onboarding (docs/prd/node-revision-agent-native.md, R1):
- * collect descriptive fields, create a pending_register node, then guide the
- * admin through running the generated install command on the VPS while this
- * modal polls for the agent's registration.
- */
-export function AgentNodeCreateModal({
-  opened,
-  onClose,
-  onNodeRegistered
-}: {
+export function AgentNodeCreateModal({ opened, onClose, onNodeChanged, initialNode = null }: {
   opened: boolean;
   onClose: () => void;
-  onNodeRegistered: (node: AdminNodeRecordDto) => void;
+  onNodeChanged: (node: AdminNodeRecordDto) => void;
+  initialNode?: AdminNodeRecordDto | null;
 }) {
-  const [stage, setStage] = useState<Stage>("form");
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
   const [provider, setProvider] = useState("");
   const [tags, setTags] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [result, setResult] = useState<CreateAgentNodeResultDto | null>(null);
-  const [node, setNode] = useState<AdminNodeRecordDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [regenerating, setRegenerating] = useState(false);
-  const pollTimer = useRef<number | null>(null);
-  const pollDeadline = useRef<number>(0);
-  // Bumped on every poll start/stop epoch: an in-flight fetch whose response
-  // lands after close (or after a new epoch) must not schedule further polls
-  // or clobber the new modal state.
-  const pollEpoch = useRef(0);
-  const mounted = useRef(true);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      if (pollTimer.current) window.clearTimeout(pollTimer.current);
-    };
-  }, []);
-
-  const reset = useCallback(() => {
-    if (pollTimer.current) window.clearTimeout(pollTimer.current);
-    pollTimer.current = null;
-    pollEpoch.current += 1;
-    setStage("form");
-    setResult(null);
-    setNode(null);
-    setError(null);
-    setCreating(false);
-  }, []);
-
-  const handleClose = useCallback(() => {
-    reset();
-    setName("");
-    setRegion("");
-    setProvider("");
-    setTags("");
-    onClose();
-  }, [onClose, reset]);
-
-  const pollRegistration = useCallback(
-    (nodeId: string) => {
-      pollEpoch.current += 1;
-      const epoch = pollEpoch.current;
-      pollDeadline.current = Date.now() + POLL_TIMEOUT_MS;
-      const tick = async () => {
-        if (!mounted.current || pollEpoch.current !== epoch) return;
-        try {
-          // Reuse the existing nodes list fetch: the node's registrationStatus
-          // flips to agent_ready when the agent registers.
-          const { fetchAdminNodes } = await import("../../api/nodes");
-          const nodes = await fetchAdminNodes();
-          if (!mounted.current || pollEpoch.current !== epoch) return;
-          const current = nodes.find((candidate) => candidate.id === nodeId) ?? null;
-          if (current?.registrationStatus === "agent_ready") {
-            setNode(current);
-            setStage("ready");
-            notifications.show({
-              color: "teal",
-              title: "节点已接入",
-              message: `v 节点「${current.name}」的 Agent 已完成注册。`
-            });
-            onNodeRegistered(current);
-            return;
-          }
-        } catch {
-          // transient poll failure: keep waiting within the deadline
-        }
-        if (Date.now() >= pollDeadline.current) {
-          setStage("failed");
-          setError("等待超时：15 分钟内未检测到 Agent 注册。请检查 VPS 上的安装输出，或重新生成安装命令。");
-          return;
-        }
-        pollTimer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
-      };
-      pollTimer.current = window.setTimeout(() => void tick(), POLL_INTERVAL_MS);
-    },
-    [onNodeRegistered]
-  );
-
-  const regenerate = useCallback(async () => {
-    if (!node || regenerating) return;
-    setRegenerating(true);
-    try {
-      const fresh = await issueNodeRegisterToken(node.id);
-      if (!mounted.current) return;
-      setResult((current) => current
-        ? { ...current, registerToken: fresh.token, registerTokenExpiresAt: fresh.expiresAt }
-        : current);
-      notifications.show({
-        color: "teal",
-        title: "安装命令已重新生成",
-        message: "旧命令已作废，请使用新的命令（此前未使用的令牌随即失效）。"
-      });
-      // Resume waiting with the fresh token (both from the failed timeout and
-      // while still awaiting) — regenerating is pointless unless we listen again.
-      setStage("awaiting");
-      pollRegistration(node.id);
-    } catch (err) {
-      if (mounted.current) {
-        notifications.show({ color: "red", title: "重新生成失败", message: parseErrorMessage(err) });
-      }
-    } finally {
-      if (mounted.current) setRegenerating(false);
-    }
-  }, [node, pollRegistration, regenerating]);
-
-  const submit = useCallback(async () => {
-    if (!name.trim() || creating) return;
-    setCreating(true);
-    setError(null);
-    try {
-      const created = await createAgentNode({
-        name: name.trim(),
-        region: region.trim() || undefined,
-        provider: provider.trim() || undefined,
-        tags: tags.trim() ? tags.split(/[,，\s]+/).filter(Boolean) : undefined
-      });
-      if (!mounted.current) return;
-      setResult(created);
-      setNode(created.node);
-      setStage("awaiting");
-      pollRegistration(created.node.id);
-    } catch (err) {
-      if (mounted.current) {
-        setError(parseErrorMessage(err));
-        setStage("form");
-        notifications.show({ color: "red", title: "创建节点失败", message: parseErrorMessage(err) });
-      }
-    } finally {
-      if (mounted.current) setCreating(false);
-    }
-  }, [creating, name, pollRegistration, provider, region, tags]);
+  const { stage, result, node, error, creating, regenerating, submit, regenerate, invalidate } =
+    useAgentNodeOnboarding(opened, initialNode, onNodeChanged);
+  useLayoutEffect(() => { setName(""); setRegion(""); setProvider(""); setTags(""); }, [opened, initialNode?.id]);
+  const handleClose = () => { invalidate(); onClose(); };
+  const create = () => submit({ name: name.trim(), region: region.trim() || undefined,
+    provider: provider.trim() || undefined, tags: tags.trim() ? tags.split(/[,，\s]+/).filter(Boolean) : undefined });
 
   // The install command references the origin the admin is already using. The
   // API routes live under the global /api prefix (openresty fronts both the SPA
@@ -202,7 +47,7 @@ export function AgentNodeCreateModal({
     <Modal
       opened={opened}
       onClose={handleClose}
-      title="添加节点（Agent 接入）"
+      title={initialNode ? "继续接入节点" : "添加节点（Agent 接入）"}
       centered
       size="lg"
       closeOnClickOutside={stage === "form" || stage === "ready" || stage === "failed"}
@@ -234,9 +79,19 @@ export function AgentNodeCreateModal({
             <Button variant="default" onClick={handleClose}>
               取消
             </Button>
-            <Button loading={creating} disabled={!name.trim()} onClick={() => void submit()}>
+            <Button loading={creating} disabled={!name.trim()} onClick={() => void create()}>
               创建并生成安装命令
             </Button>
+          </Group>
+        </Stack>
+      ) : null}
+
+      {stage === "resume" && node ? (
+        <Stack gap="sm">
+          <Text size="sm">节点「{node.name}」尚未注册。安装命令仅显示一次，重新生成会使旧命令失效。</Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={handleClose}>关闭</Button>
+            <Button loading={regenerating} onClick={() => void regenerate()}>重新生成安装命令并继续接入</Button>
           </Group>
         </Stack>
       ) : null}
@@ -302,14 +157,14 @@ export function AgentNodeCreateModal({
           <Alert color="red" variant="light">
             <Text size="sm">{error}</Text>
           </Alert>
-          <Textarea
+          {result ? <Textarea
             label="安装命令（保留备用）"
             value={installCommand}
             readOnly
             autosize
             minRows={2}
             styles={{ input: { fontFamily: "monospace", fontSize: 12 } }}
-          />
+          /> : null}
           <Group justify="space-between">
             <Button
               size="xs"
