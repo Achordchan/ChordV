@@ -392,13 +392,25 @@ install -m 0755 -o root -g root "\$XRAY_STAGING/xray" "\$XRAY_BIN"
 # Xray's configuration belongs to root. The agent must never be able to write
 # what root then runs, and must never be able to read the Reality private key.
 install -d -m 0755 -o root -g root /etc/chordv/xray "\$XRAY_CONF_DIR"
-install -m 0644 -o root -g root "\$CURRENT_LINK/deploy/xray-base.json" "\$XRAY_CONF_DIR/00-base.json"
-install -m 0644 -o root -g root "\$CURRENT_LINK/deploy/xray-api.fragment.json" "\$XRAY_CONF_DIR/10-api.json"
+# Everything root will execute or load is taken from the archive ROOT
+# downloaded, extracted by root into a root-only directory. The release tree is
+# briefly extracted by the service user, so copying from it would let a
+# compromised agent substitute the script root then runs — making the
+# destination root-owned would only preserve the attacker's file.
+TRUSTED_DIR="\$XRAY_STAGING/trusted"
+install -d -m 0700 -o root -g root "\$TRUSTED_DIR"
+tar --no-same-owner --no-same-permissions -xzf "\$ARCHIVE" -C "\$TRUSTED_DIR" \
+  ./deploy/xray-base.json ./deploy/xray-api.fragment.json ./dist/src/xray-apply.js
+for required in deploy/xray-base.json deploy/xray-api.fragment.json dist/src/xray-apply.js; do
+  [[ -f "\$TRUSTED_DIR/\$required" ]] || { echo "安装失败：Agent 包缺少 \$required。" >&2; exit 1; }
+done
+"\$NODE_BIN" --check "\$TRUSTED_DIR/dist/src/xray-apply.js"
 
-# The helper is copied OUT of the agent-owned release directory: run from there,
-# a compromised agent could rewrite the script root executes.
+install -m 0644 -o root -g root "\$TRUSTED_DIR/deploy/xray-base.json" "\$XRAY_CONF_DIR/00-base.json"
+install -m 0644 -o root -g root "\$TRUSTED_DIR/deploy/xray-api.fragment.json" "\$XRAY_CONF_DIR/10-api.json"
+
 install -d -m 0755 -o root -g root "\$HELPER_DIR"
-install -m 0755 -o root -g root "\$CURRENT_LINK/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
+install -m 0755 -o root -g root "\$TRUSTED_DIR/dist/src/xray-apply.js" "\$HELPER_DIR/xray-apply.js"
 install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"
 
 cat > "\$XRAY_UNIT" <<XRAYUNIT

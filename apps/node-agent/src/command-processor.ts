@@ -158,11 +158,13 @@ export class CommandProcessor {
     }
 
     const requestId = randomUUID();
-    const applied = await this.inbound.applier.apply(spec, requestId);
-    // The machine changed HERE. Record it before anything that can still fail,
-    // so a later failure cannot leave this agent believing it serves the
-    // previous spec — and mark it incomplete so the shortcut above refuses it.
+    // Record the INTENT before handing off: once the helper has the request the
+    // machine may change whether or not this process ever learns the outcome (a
+    // timeout, a lost result file, a crash). Anything but "this exact spec, and
+    // it completed" must therefore lead back through the helper rather than be
+    // answered from memory.
     this.store.setInboundState({ hash, report: {}, appliedRevision: command.targetRevision, complete: false });
+    const applied = await this.inbound.applier.apply(spec, requestId);
     if (applied.listenPort !== spec.listenPort) {
       throw new Error(`配置助手部署的端口 ${applied.listenPort} 与下发的 ${spec.listenPort} 不一致`);
     }

@@ -111,6 +111,7 @@ ARCH=linux-x64
 SERVICE_USER=chordv-agent
 NODE_BIN=/usr/local/bin/node
 STAGING_DIR="$(mktemp -d)"
+ARCHIVE=/tmp/agent.tgz
 CURRENT_LINK=/opt/chordv-node-agent/current
 ${renderXrayInstall()}
 `);
@@ -121,7 +122,10 @@ export PATH=/test-bin:$PATH
 id chordv-agent >/dev/null 2>&1 || useradd --system chordv-agent
 printf '{"log":{}}' > /release/deploy/xray-base.json
 printf '{"api":{}}' > /release/deploy/xray-api.fragment.json
-printf 'helper' > /release/dist/src/xray-apply.js
+printf 'console.log("helper");' > /release/dist/src/xray-apply.js
+# The section installs root-executed files from the ARCHIVE root downloaded,
+# never through the release tree the service user extracts.
+tar -czf /tmp/agent.tgz -C /release ./deploy/xray-base.json ./deploy/xray-api.fragment.json ./dist/src/xray-apply.js
 mkdir -p /opt/chordv-node-agent && ln -sfn /release /opt/chordv-node-agent/current
 mkdir -p /payload && printf '#!/bin/sh\necho stub-xray\n' > /payload/xray && chmod 0755 /payload/xray
 tar -czf /tmp/xray.tgz -C /payload xray
@@ -171,6 +175,11 @@ grep -q 'ReadOnlyPaths=/etc/chordv/xray' /etc/systemd/system/xray.service
 grep -q 'PathChanged=/var/lib/chordv-node-agent/xray/pending.json' /etc/systemd/system/chordv-xray-apply.path
 grep -q '/usr/local/lib/chordv/xray-apply.js' /etc/systemd/system/chordv-xray-apply.service
 grep -q 'chordv-managed: xray' /etc/systemd/system/xray.service
+# What root runs must come from the archive, not from the release tree: replace
+# the release copy with a marker and confirm it never reaches the helper path.
+printf 'ATTACKER' > /release/dist/src/xray-apply.js
+TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
+! grep -q ATTACKER /usr/local/lib/chordv/xray-apply.js
 # Re-running the installer over its OWN unit is a normal upgrade.
 TEST_PAYLOAD=/tmp/xray.tgz TEST_SHA=/tmp/xray.sha256 bash /test/xray.sh
 `], { encoding: "utf8" });

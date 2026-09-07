@@ -326,8 +326,18 @@ export function applyRequest(request: InboundRequest, deps: ApplyDeps): ApplyOut
   // no-op branch and report a port nothing serves. The pending record makes
   // that window recoverable: it is never answered with, only re-applied from.
   const record = { hash, keys, serverName, listen, listenPort: request.listenPort, appliedAt: deps.now() };
+  const committed = fs.existsSync(deps.stateFile) ? fs.readFileSync(deps.stateFile, 'utf8') : undefined;
   writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: true }, null, 2) + '\n', 0o600);
-  publishAndRestart(deps, target, rendered, owner, request.listenPort);
+  try {
+    publishAndRestart(deps, target, rendered, owner, request.listenPort);
+  } catch (error) {
+    // The configuration was rolled back, so the recorded keys must roll back
+    // too: a failed rotation that left the new keys behind would be reused by
+    // the next deployment and silently invalidate every issued subscription.
+    if (committed === undefined) { try { fs.unlinkSync(deps.stateFile); } catch { /* nothing to remove */ } }
+    else writeFileAtomic(deps.stateFile, committed, 0o600);
+    throw error;
+  }
   writeFileAtomic(deps.stateFile, JSON.stringify({ ...record, pending: false }, null, 2) + '\n', 0o600);
   return {
     listen,

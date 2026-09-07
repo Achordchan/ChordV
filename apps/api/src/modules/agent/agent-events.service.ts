@@ -66,22 +66,20 @@ export class AgentEventsService {
         select: { id: true, nodeId: true, dedupeKey: true, commandType: true }
       });
       if (exhausted.length > 0) {
-        const ids = exhausted.map((job) => job.id);
-        await this.prisma.nodeCommandJob.updateMany({
-          where: { id: { in: ids } },
-          data: { status: "cancelled", lastError: "Agent 命令重试次数已达到上限" }
-        });
         // Cancelling ends the operation, so an ENSURE_INBOUND's key must be
         // released or that deployment could never be ordered again on this
         // node. Other types keep their key: it is the caller's idempotency
-        // contract, not a lock on an outstanding operation.
-        for (const job of exhausted) {
-          if (job.commandType !== "ENSURE_INBOUND") continue;
-          await this.prisma.nodeCommandJob.update({
-            where: { id: job.id },
-            data: { dedupeKey: `${job.dedupeKey}:cancelled:${job.id}` }
-          });
-        }
+        // contract, not a lock on an outstanding operation. Both writes are one
+        // transaction — a cancelled job that kept its key would be excluded
+        // from every later sweep and would permanently block that deployment.
+        await this.prisma.$transaction(exhausted.map((job) => this.prisma.nodeCommandJob.update({
+          where: { id: job.id },
+          data: {
+            status: "cancelled",
+            lastError: "Agent 命令重试次数已达到上限",
+            ...(job.commandType === "ENSURE_INBOUND" ? { dedupeKey: `${job.dedupeKey}:cancelled:${job.id}` } : {})
+          }
+        })));
         await this.prisma.node.updateMany({
           where: {
             id: { in: Array.from(new Set(exhausted.map((job) => job.nodeId))) },

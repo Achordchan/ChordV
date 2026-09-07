@@ -267,8 +267,10 @@ test('入站部署失败必须响亮失败，且不留下已部署状态', async
     const failed = await fixture.processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
     assert.equal(failed.status, 'failed');
     assert.match(failed.error ?? '', /端口冲突/);
-    // The helper never got as far as changing anything, so nothing is recorded.
-    assert.equal(fixture.store.getInboundState(), undefined);
+    // The intent is recorded before the hand-off — once the helper has the
+    // request the machine may change regardless of what this process learns —
+    // but never as a complete deployment, so it can only be re-applied from.
+    assert.equal(fixture.store.getInboundState()?.complete, false);
 
     // Live verification is part of success: a helper that claims to have
     // applied while the tag never appears must not report completed.
@@ -408,5 +410,28 @@ test('每次真正部署都重新下发用户，并把新的 flow 应用到已�
     await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, flow: '' }, 'command-3'), true);
     assert.equal(fixture.store.listDesiredUsers()[0].flow, '');
     assert.ok(fixture.xray.ensureCalls > before, 'flow 变更必须重新安装用户');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
+
+test('助手请求超时后，旧规格也必须重新走助手而不是读缓存', async () => {
+  const fixture = setup();
+  const applier = new FakeApplier();
+  const processor = new CommandProcessor(fixture.store, fixture.xray, {
+    applier, inboundTag: 'vless-in', resolvePublicHost: async () => '203.0.113.7',
+    verifyAttempts: 3, verifyDelayMs: 1,
+  });
+  try {
+    await processor.execute(command('ENSURE_INBOUND', inboundPayload), true);
+
+    // The helper takes the request and may well deploy 8443; this process only
+    // learns that the wait timed out. What the machine runs is now unknown.
+    applier.failure = new Error('等待 Xray 配置助手超时（120 秒）');
+    const timedOut = await processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, listenPort: 8443 }, 'command-2'), true);
+    assert.equal(timedOut.status, 'failed');
+
+    applier.failure = undefined;
+    const restored = await processor.execute(command('ENSURE_INBOUND', inboundPayload, 'command-3'), true);
+    assert.equal(restored.status, 'completed');
+    assert.equal(applier.calls.length, 3, '不确定状态下不得用 tag 存活当作证据走捷径');
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });

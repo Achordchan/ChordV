@@ -265,9 +265,10 @@ test('首次部署失败时不留下半成品配置', () => {
     const applyDeps = deps(root, { isListening: () => false });
     assert.throws(() => applyRequest(request(), applyDeps), /开始监听/);
     assert.equal(fs.existsSync(join(applyDeps.confDir, '50-inbound.json')), false);
-    // The journal survives on purpose — it holds the generated keys so a retry
-    // reuses them — but stays pending, so it is never answered with.
-    assert.equal(JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')).pending, true);
+    // Nothing was committed before, so the rollback leaves no record at all:
+    // a first deployment has no issued subscriptions to protect, and keeping a
+    // half-written journal would only offer keys for a config that never ran.
+    assert.equal(fs.existsSync(applyDeps.stateFile), false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -316,5 +317,28 @@ test('配置已发布但状态未落盘时，重复下发旧规格必须重新�
     assert.equal(repeat.changed, true, '未提交的状态不得被当成已部署');
     assert.equal(applyDeps.restarts, 2);
     assert.equal(JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')).pending, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('轮换失败回滚时，新密钥不得留在状态里', () => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'xray-apply-rotate-rollback-'));
+  try {
+    const rotated = { privateKey: 'n'.repeat(43), publicKey: 'N'.repeat(43), shortId: 'ffeeddccbbaa9988' };
+    let generated = 0;
+    const applyDeps = deps(root, { generateKeys: () => (generated++ === 0 ? keys : rotated) });
+    applyRequest(request(), applyDeps);
+
+    const failing = deps(root, {
+      confDir: applyDeps.confDir, stateFile: applyDeps.stateFile, isListening: () => false,
+      generateKeys: () => rotated,
+    });
+    assert.throws(() => applyRequest(request({ rotateKeys: true }), failing), /开始监听/);
+    // The configuration rolled back, so the keys must roll back with it —
+    // otherwise the next deployment quietly adopts the rotated keys and
+    // invalidates every subscription already issued.
+    const state = JSON.parse(readFileSync(applyDeps.stateFile, 'utf8')) as { keys: typeof keys; pending: boolean };
+    assert.equal(state.keys.publicKey, keys.publicKey);
+    assert.equal(state.pending, false);
+    assert.equal(applyRequest(request(), deps(root, { confDir: applyDeps.confDir, stateFile: applyDeps.stateFile })).realityPublicKey, keys.publicKey);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

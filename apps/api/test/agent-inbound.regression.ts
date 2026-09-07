@@ -301,9 +301,14 @@ function testInstallerAndDownloadRoute() {
   assert.match(section, /sha256sum -c -/);
   // Xray's config belongs to root; the agent may not write what root runs.
   assert.match(section, /install -d -m 0755 -o root -g root \/etc\/chordv\/xray/);
-  assert.match(section, /install -m 0644 -o root -g root "\$CURRENT_LINK\/deploy\/xray-api.fragment.json"/);
+  assert.match(section, /install -m 0644 -o root -g root "\$TRUSTED_DIR\/deploy\/xray-api.fragment.json"/);
   // The helper is copied OUT of the agent-writable release directory.
-  assert.match(section, /install -m 0755 -o root -g root "\$CURRENT_LINK\/dist\/src\/xray-apply.js" "\$HELPER_DIR\/xray-apply.js"/);
+  // Root must not load anything through the release tree: the service user
+  // extracts it, so a compromised agent could substitute the script root runs.
+  assert.equal(/\$CURRENT_LINK/.test(section), false, "root 执行/加载的文件不得取自发布目录");
+  assert.match(section, /install -d -m 0700 -o root -g root "\$TRUSTED_DIR"/);
+  assert.match(section, /tar[^\n]*-xzf "\$ARCHIVE" -C "\$TRUSTED_DIR"/);
+  assert.match(section, /install -m 0755 -o root -g root "\$TRUSTED_DIR\/dist\/src\/xray-apply.js" "\$HELPER_DIR\/xray-apply.js"/);
   assert.match(section, /ExecStart=\$\{NODE_BIN@Q\} \$HELPER_DIR\/xray-apply.js/);
   assert.equal(/ExecStart=.*\$CURRENT_LINK/.test(section), false, "root 助手不得直接从发布目录执行");
   assert.match(section, /install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"/);
