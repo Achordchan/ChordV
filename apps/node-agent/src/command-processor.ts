@@ -186,11 +186,14 @@ export class CommandProcessor {
     // higher-revision row it already has.
     const flowChanged = stored.some((user) => (user.flow ?? '') !== spec.flow);
     const users = flowChanged
-      ? stored.map((user) => ({ ...user, flow: spec.flow as typeof user.flow, revision: command.targetRevision }))
+      ? stored.map((user) => ({ ...user, flow: spec.flow as typeof user.flow }))
       : stored;
     if (flowChanged) {
       for (const user of users) await this.xray.removeUser(user.email);
-      for (const user of users) this.store.upsertDesiredUser(user);
+      // Persist the flow WITHOUT a revision: a user whose revision is already
+      // higher than this deployment's would have an upsert rejected, and Xray
+      // would then run a flow the store does not know about.
+      for (const user of users) this.store.setUserFlow(user.bindingId, user.flow);
     }
     await this.reconcile(users);
 

@@ -440,7 +440,9 @@ XRAYUNIT
 cat > /etc/systemd/system/chordv-xray-apply.service <<APPLYUNIT
 [Unit]
 Description=Apply ChordV Xray inbound configuration
-After=xray.service
+# Deliberately NOT ordered after xray.service: this oneshot synchronously runs
+# "systemctl restart xray", and an ordering dependency lets systemd hold that
+# restart until this start job finishes — which is waiting on the restart.
 
 [Service]
 Type=oneshot

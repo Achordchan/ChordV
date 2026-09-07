@@ -313,6 +313,10 @@ function testInstallerAndDownloadRoute() {
   assert.equal(/ExecStart=.*\$CURRENT_LINK/.test(section), false, "root 助手不得直接从发布目录执行");
   assert.match(section, /install -d -m 0700 -o "\$SERVICE_USER" -g "\$SERVICE_USER" "\$REQUEST_DIR"/);
   assert.match(section, /PathChanged=\$REQUEST_DIR\/pending.json/);
+  // The oneshot helper synchronously restarts Xray; ordering it after
+  // xray.service lets systemd hold that restart until this start job finishes.
+  const applyUnit = section.slice(section.indexOf("chordv-xray-apply.service <<APPLYUNIT"), section.indexOf("APPLYUNIT\n\ncat"));
+  assert.equal(/After=xray.service/.test(applyUnit), false, "助手单元不得排在 xray.service 之后");
   assert.match(section, /ReadOnlyPaths=\/etc\/chordv\/xray/);
   // An operator's own Xray must not be taken over: replacing that unit points it
   // at a config directory with no user-facing inbound and restarts it.

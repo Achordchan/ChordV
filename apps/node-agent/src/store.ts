@@ -291,6 +291,17 @@ export class AgentStore {
     })();
   }
 
+  /**
+   * Changes only the flow of an existing user. The inbound deployment is not a
+   * user-config change, so it must not carry a revision: a user whose revision
+   * is already higher (a newer user command) would have the write rejected,
+   * leaving Xray on the new flow and the store on the old one — and the next
+   * restart would put the old, now-incompatible flow back.
+   */
+  setUserFlow(bindingId: string, flow: DesiredUser['flow']): void {
+    this.db.prepare('UPDATE desired_users_v2 SET flow = ? WHERE binding_id = ?').run(flow || '', bindingId);
+  }
+
   upsertDesiredUser(user: DesiredUser): void {
     const revision = decimal(user.revision);
     const current = this.getUserByBindingId(user.bindingId);

@@ -439,3 +439,20 @@ test('助手请求超时后，旧规格也必须重新走助手而不是读缓�
     assert.equal(applier.calls.length, 3, '不确定状态下不得用 tag 存活当作证据走捷径');
   } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
 });
+
+test('flow 变更对 revision 更高的用户同样落地', async () => {
+  const fixture = inboundSetup();
+  // A newer user command has already been applied: its revision is higher than
+  // this (older) deployment's, so a revision-carrying write would be rejected —
+  // and Xray would end up on a flow the store does not know about, which the
+  // next restart would silently undo.
+  const ahead = { ...desired(), revision: '900719925474099399999', flow: 'xtls-rprx-vision' as const };
+  fixture.store.replaceDesiredUsers([ahead], ahead.revision);
+  try {
+    const result = await fixture.processor.execute(command('ENSURE_INBOUND', { ...inboundPayload, flow: '' }), true);
+    assert.equal(result.status, 'completed');
+    const persisted = fixture.store.listDesiredUsers()[0];
+    assert.equal(persisted.flow, '', '持久化的 flow 必须与下发一致');
+    assert.equal(persisted.revision, ahead.revision, '不得压低用户自身的 revision');
+  } finally { fixture.store.close(); rmSync(fixture.directory, { recursive: true, force: true }); }
+});
