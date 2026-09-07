@@ -26,7 +26,12 @@ source "$env_file"
 set +a
 
 node_bin="${CHORDV_AGENT_NODE_BIN:-/usr/bin/node}"
-db_path="${AGENT_DATABASE_PATH:-/var/lib/chordv-node-agent/agent.db}"
+# Same default as src/config.ts (./data/node-agent.db resolved from the runtime
+# directory this script already cd'd into). A deployment predating
+# AGENT_DATABASE_PATH in the env file must still resolve its real database, or
+# the probe would keep running as root and the agent's ownership guard would
+# reject an otherwise healthy service.
+db_path="${AGENT_DATABASE_PATH:-$PWD/data/node-agent.db}"
 
 # The probe opens the service's sqlite database read-only. SQLite still needs
 # the WAL sidecars and CREATES them when they are missing, and the service can

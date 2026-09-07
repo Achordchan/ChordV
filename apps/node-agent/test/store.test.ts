@@ -212,6 +212,12 @@ test('换身份仅在显式重置时归档运行状态，凭据保持不动', ()
     // registered yet permanently unable to start.
     assert.throws(() => openStore(config, options), ForeignStateError);
     assert.equal(existsSync(config.databasePath), true, '未获授权时不得移动任何状态');
+    // The rejected connection must be closed, not left to the garbage
+    // collector: the caller may archive these files and reopen a replacement
+    // at the same path. A last connection that closes cleanly checkpoints and
+    // removes the sidecars, so their absence is the observable proof.
+    assert.equal(existsSync(`${config.databasePath}-wal`), false, '被拒绝的连接必须已关闭');
+    assert.equal(existsSync(`${config.databasePath}-shm`), false, '被拒绝的连接必须已关闭');
 
     const recovered = openStore({ ...config, resetIdentity: true }, options);
     try {

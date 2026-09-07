@@ -98,18 +98,27 @@ export class AgentStore {
     }
     mkdirSync(dirname(databasePath), { recursive: true });
     this.db = new Database(databasePath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('synchronous = FULL');
-    this.db.pragma('foreign_keys = ON');
-    this.migrate();
-    // The database BELONGS to one node identity. Checking that here — rather
-    // than trusting whatever moved the files around — closes every variant of
-    // "new identity, old state": an interrupted reset, an installer that
-    // replaced an env-only identity, a restored backup, a hand-copied data
-    // directory. Inheriting it would hand the new node the old node's desired
-    // users, command history and unsettled usage batches.
-    this.assertOwnIdentity(options.nodeId);
-    this.initializeBoot(options.bootId);
+    // Anything that rejects the database must not leave its connection open:
+    // the caller may go on to archive the files (and reopen a replacement at
+    // the same path), and a live connection would keep checkpointing into the
+    // new database's sidecar paths and make the archival depend on GC.
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = FULL');
+      this.db.pragma('foreign_keys = ON');
+      this.migrate();
+      // The database BELONGS to one node identity. Checking that here — rather
+      // than trusting whatever moved the files around — closes every variant of
+      // "new identity, old state": an interrupted reset, an installer that
+      // replaced an env-only identity, a restored backup, a hand-copied data
+      // directory. Inheriting it would hand the new node the old node's desired
+      // users, command history and unsettled usage batches.
+      this.assertOwnIdentity(options.nodeId);
+      this.initializeBoot(options.bootId);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   private assertOwnIdentity(nodeId: string): void {
