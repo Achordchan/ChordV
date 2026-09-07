@@ -430,6 +430,10 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
       toVersion: fromVersion
     });
     // Return the accepted response before waiting for HTTP drain (including this request).
+    // A restart has no app-side checking/download stages: persist it straight as
+    // draining so the UI's applicable steps (切换→健康检查→稳定观察) show the
+    // active step instead of crossing out an inapplicable "checking".
+    await this.markRunning(operationId, fromVersion, "draining");
     this.scheduleProcessExit(`restart requested (operation ${operationId})`, lock, operationId, {
       version: fromVersion, operationId, kind: "restart", migrationApplied: false
     });
@@ -1213,12 +1217,12 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async markRunning(operationId: string, toVersion: string) {
+  private async markRunning(operationId: string, toVersion: string, initialPhase: SystemUpdateOperationPhase = "checking") {
     this.lastProgressWriteAt = -Infinity;
     this.lastProgressWritten = -1;
     await this.prisma.systemUpdateOperation.update({
       where: { operationId },
-      data: { status: "running", toVersion, phase: "checking", progress: null }
+      data: { status: "running", toVersion, phase: initialPhase, progress: null }
     });
   }
 
@@ -1247,7 +1251,7 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     // merged into an executing one resolves with it (same destination row).
     if (this.pendingPhaseWrite) {
       this.pendingPhaseWrite.data = data;
-      return this.pendingPhaseWrite.settled;
+      return this.boundedPhaseWait(this.pendingPhaseWrite.settled);
     }
     let settle: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
@@ -1273,12 +1277,20 @@ export class SystemUpdateService implements OnModuleInit, OnModuleDestroy {
     // The chain itself must never reject (a swallowed failure must not poison
     // later enqueued writes); callers get the awaited outcome via `settled`.
     this.phaseWriteChain = run;
-    // The write is ENQUEUED and ordered the moment we reach this line — program
-    // order is already guaranteed here. Waiting for the DB round-trip is purely
-    // optional backpressure, so bound it: a row lock or wedged query must never
-    // stall a real phase transition (checking/extracting/process exit) on
-    // cosmetic telemetry. On expiry the write stays queued and will still land
-    // (or be coalesced by the next snapshot); only the caller's wait is given up.
+    return this.boundedPhaseWait(settled);
+  }
+
+  /**
+   * The write is ENQUEUED and ordered the moment markPhase reaches the chain —
+   * program order is already guaranteed by then. Waiting for the DB round-trip
+   * is purely optional backpressure, so bound it: a row lock or wedged query
+   * must never stall a real phase transition (checking/extracting/process
+   * exit) on cosmetic telemetry. On expiry the write stays queued and will
+   * still land (or be coalesced by the next snapshot); only the caller's wait
+   * is given up. Applied to BOTH return paths: a caller merging into an
+   * already-queued write must not become the one unbounded waiter either.
+   */
+  private boundedPhaseWait(settled: Promise<void>): Promise<void> {
     return Promise.race([
       settled,
       new Promise<void>((resolve) => {

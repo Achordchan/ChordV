@@ -215,6 +215,24 @@ async function progressWriterThrottleAndDrainGuard() {
   await serialSvc.markPhase("sysop-8", "draining");
   assert.deepEqual(order, ["downloading:50", "extracting", "draining"],
     "a drained chain executes each subsequent write exactly once, in order");
+  // Merging into an already-QUEUED write must be a BOUNDED wait too: the merge
+  // caller cannot become the one unbounded waiter while a blocked executing
+  // write holds the chain.
+  {
+    const stalled = buildService({
+      systemUpdateOperation: { update: async () => new Promise(() => undefined) } // never resolves
+    });
+    const stallSvc = stalled as unknown as { markPhase(op: string, phase: string): Promise<void> };
+    const first = stallSvc.markPhase("sysop-9", "checking");
+    await new Promise((resolve) => setImmediate(resolve)); // executing now
+    const queued = stallSvc.markPhase("sysop-9", "downloading", 10); // queued behind the stalled write
+    const merged = stallSvc.markPhase("sysop-9", "downloading", 20); // coalesces into the queued one
+    let mergedDone = false;
+    void Promise.race([merged, new Promise((resolve) => setTimeout(resolve, 8_000))]).then(() => { mergedDone = true; });
+    await new Promise((resolve) => setTimeout(resolve, 6_500)); // > budget (5s), < the 8s race bound
+    assert.equal(mergedDone, true, "a merge into a queued write must respect PHASE_WRITE_BUDGET_MS");
+    void queued; void first; // stalled forever by design; the unref'd timer keeps the process free to exit
+  }
 
   // The checking phase is written BEFORE markRunning lands, so its update must
   // target a still-pending row (a running-only filter would deterministically
