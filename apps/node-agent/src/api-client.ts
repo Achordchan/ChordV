@@ -6,12 +6,16 @@ import type {
   UsageBatch,
   UsageBatchAck,
 } from './types.js';
+import { randomBytes } from 'node:crypto';
 
 interface ApiClientOptions { baseUrl: string; token: string; agentId: string; nodeId: string }
 
-/** The pre-registration exchange: one-time token in, persistent credentials out. */
+/** The pre-registration exchange: one-time token in, identity out. The agent
+ *  generates its own persistent credential and only the server-side hash ever
+ *  leaves the machine — replaying the exchange (lost response) is idempotent. */
 export interface AgentRegisterRequest {
   registerToken: string;
+  agentToken: string;
   hostname: string;
   arch: 'linux-x64' | 'linux-arm64';
   agentVersion: string;
@@ -22,7 +26,6 @@ export interface AgentRegisterRequest {
 export interface AgentRegisterResponse {
   accepted: boolean;
   agentId: string;
-  token: string;
   nodeId: string;
 }
 
@@ -41,6 +44,10 @@ export async function requestRegister(
     throw new Error(`Agent 注册失败 HTTP ${response.status} ${body.slice(0, 200)}`);
   }
   return response.json() as Promise<AgentRegisterResponse>;
+}
+
+export function generateAgentToken(): string {
+  return `chordv_agent_${randomBytes(32).toString('base64url')}`;
 }
 
 export class AgentApiClient {

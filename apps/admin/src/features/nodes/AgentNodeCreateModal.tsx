@@ -61,6 +61,10 @@ export function AgentNodeCreateModal({
   const [regenerating, setRegenerating] = useState(false);
   const pollTimer = useRef<number | null>(null);
   const pollDeadline = useRef<number>(0);
+  // Bumped on every poll start/stop epoch: an in-flight fetch whose response
+  // lands after close (or after a new epoch) must not schedule further polls
+  // or clobber the new modal state.
+  const pollEpoch = useRef(0);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -74,6 +78,7 @@ export function AgentNodeCreateModal({
   const reset = useCallback(() => {
     if (pollTimer.current) window.clearTimeout(pollTimer.current);
     pollTimer.current = null;
+    pollEpoch.current += 1;
     setStage("form");
     setResult(null);
     setNode(null);
@@ -92,15 +97,17 @@ export function AgentNodeCreateModal({
 
   const pollRegistration = useCallback(
     (nodeId: string) => {
+      pollEpoch.current += 1;
+      const epoch = pollEpoch.current;
       pollDeadline.current = Date.now() + POLL_TIMEOUT_MS;
       const tick = async () => {
-        if (!mounted.current) return;
+        if (!mounted.current || pollEpoch.current !== epoch) return;
         try {
           // Reuse the existing nodes list fetch: the node's registrationStatus
           // flips to agent_ready when the agent registers.
           const { fetchAdminNodes } = await import("../../api/nodes");
           const nodes = await fetchAdminNodes();
-          if (!mounted.current) return;
+          if (!mounted.current || pollEpoch.current !== epoch) return;
           const current = nodes.find((candidate) => candidate.id === nodeId) ?? null;
           if (current?.registrationStatus === "agent_ready") {
             setNode(current);
@@ -142,6 +149,10 @@ export function AgentNodeCreateModal({
         title: "安装命令已重新生成",
         message: "旧命令已作废，请使用新的命令（此前未使用的令牌随即失效）。"
       });
+      // Resume waiting with the fresh token (both from the failed timeout and
+      // while still awaiting) — regenerating is pointless unless we listen again.
+      setStage("awaiting");
+      pollRegistration(node.id);
     } catch (err) {
       if (mounted.current) {
         notifications.show({ color: "red", title: "重新生成失败", message: parseErrorMessage(err) });
@@ -149,7 +160,7 @@ export function AgentNodeCreateModal({
     } finally {
       if (mounted.current) setRegenerating(false);
     }
-  }, [node, regenerating]);
+  }, [node, pollRegistration, regenerating]);
 
   const submit = useCallback(async () => {
     if (!name.trim() || creating) return;
@@ -180,9 +191,11 @@ export function AgentNodeCreateModal({
 
   // The install command references the origin the admin is already using. The
   // API routes live under the global /api prefix (openresty fronts both the SPA
-  // and /api on one domain).
+  // and /api on one domain). The token travels in the POST BODY, never the URL:
+  // access logs record paths and query strings, and a URL-embedded token would
+  // let a log reader race the installer.
   const installCommand = result
-    ? `curl -fsSL ${window.location.origin}/api/agent-install/${result.registerToken}.sh | bash`
+    ? `curl -fsSL -X POST -H 'content-type: application/json' -d '{"token":"${result.registerToken}"}' ${window.location.origin}/api/agent-install/script.sh | bash`
     : "";
 
   return (
@@ -297,7 +310,16 @@ export function AgentNodeCreateModal({
             minRows={2}
             styles={{ input: { fontFamily: "monospace", fontSize: 12 } }}
           />
-          <Group justify="flex-end">
+          <Group justify="space-between">
+            <Button
+              size="xs"
+              color="blue"
+              variant="light"
+              loading={regenerating}
+              onClick={() => void regenerate()}
+            >
+              重新生成安装命令并继续等待
+            </Button>
             <Button variant="default" onClick={handleClose}>
               关闭
             </Button>

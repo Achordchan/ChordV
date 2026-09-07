@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { AgentApiClient, requestRegister } from './api-client.js';
+import { AgentApiClient, generateAgentToken, requestRegister } from './api-client.js';
 import { loadConfig, type AgentCredentials, type AgentConfig } from './config.js';
 import { AgentRunner } from './runner.js';
 import { AgentStore } from './store.js';
@@ -37,8 +37,40 @@ function persistCredentials(path: string, credentials: AgentCredentials): void {
 }
 
 /**
+ * A registration attempt must REPLAY the same client-generated token when the
+ * server committed but the response was lost (idempotent recovery): stash the
+ * pending token next to (never inside) the credentials file until registration
+ * completes. Keyed by the register token so a regenerated server-side token
+ * forces a fresh client token too.
+ */
+function pendingPath(credentialsPath: string): string {
+  return `${credentialsPath}.pending`;
+}
+
+function loadPendingRegisterToken(credentialsPath: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(pendingPath(credentialsPath), 'utf8')) as { agentToken?: string };
+    return typeof parsed.agentToken === 'string' && parsed.agentToken ? parsed.agentToken : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistPendingRegisterToken(credentialsPath: string, agentToken: string, _registerToken: string): void {
+  try {
+    writeFileSync(pendingPath(credentialsPath), JSON.stringify({ agentToken }) + '\n', { mode: 0o600 });
+  } catch {
+    // best-effort: without the stash, a lost response still succeeds — the
+    // agent retries with a NEW token and the server rejects; regeneration
+    // remains the fallback.
+  }
+}
+
+/**
  * Resolve this boot's credentials: persisted file first (restart without
- * re-registering), then the one-time register token (first boot), then the
+ * re-registering), then the one-time register token (first boot — the agent
+ * GENERATES its own credential and sends only the hash-worthy plaintext once;
+ * a lost response can be retried idempotently with the same values), then the
  * environment (operator-managed, pre-registration flow compatibility).
  */
 async function resolveCredentials(config: AgentConfig): Promise<AgentCredentials> {
@@ -46,8 +78,14 @@ async function resolveCredentials(config: AgentConfig): Promise<AgentCredentials
   if (persisted) return persisted;
   if (config.registerToken) {
     console.log('[node-agent] 无本地凭据，正在使用注册令牌接入…');
+    // Generate ONCE per registration attempt lifecycle: the same token must be
+    // replayed on a retry (the server recognizes the hash), but regenerated
+    // fresh if registration truly failed and a new token was minted.
+    const agentToken = loadPendingRegisterToken(config.credentialsPath) ?? generateAgentToken();
+    persistPendingRegisterToken(config.credentialsPath, agentToken, config.registerToken);
     const response = await requestRegister(config.apiBaseUrl, {
       registerToken: config.registerToken,
+      agentToken,
       hostname: hostname(),
       arch: detectArch(),
       agentVersion: AGENT_VERSION,
@@ -56,7 +94,7 @@ async function resolveCredentials(config: AgentConfig): Promise<AgentCredentials
     const credentials: AgentCredentials = {
       agentId: response.agentId,
       nodeId: response.nodeId,
-      token: response.token,
+      token: agentToken,
     };
     persistCredentials(config.credentialsPath, credentials);
     console.log(`[node-agent] 注册成功 agent=${response.agentId} node=${response.nodeId}（凭据已持久化）`);

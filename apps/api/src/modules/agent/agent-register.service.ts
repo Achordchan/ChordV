@@ -38,7 +38,12 @@ export class AgentRegisterService {
           region: input.region?.trim() || "未指定",
           provider: input.provider?.trim() || "未指定",
           tags: input.tags ?? [],
-          isActive: input.isActive ?? true,
+          // Inactive until the agent registers AND reports usable connection
+          // parameters (R2's inbound deployment): a pending node has placeholder
+          // endpoint values, and availability/assignment paths do not gate on
+          // registrationStatus — publishing it would hand clients an unusable
+          // endpoint. The admin activates the node after onboarding completes.
+          isActive: false,
           recommended: input.recommended ?? false,
           // Connection parameters are unknown until the agent reports them;
           // placeholder values keep NOT NULL columns satisfied without
@@ -181,29 +186,44 @@ export class AgentRegisterService {
 
   private async registerOnce(input: AgentRegisterDto): Promise<AgentRegisterResultDto> {
     const tokenHash = hashAgentToken(input.registerToken);
-    const agentToken = `chordv_agent_${randomBytes(32).toString("base64url")}`;
+    const agentTokenHash = hashAgentToken(input.agentToken);
     const agentId = `agent-${randomBytes(8).toString("hex")}`;
     const result = await this.prisma.$transaction(
         async (tx) => {
           const record = await tx.agentRegisterToken.findUnique({ where: { tokenHash } });
           if (!record) throw new UnauthorizedException("注册令牌无效");
-          if (record.usedAt) throw new UnauthorizedException("注册令牌已被使用");
           if (record.expiresAt.getTime() <= Date.now()) throw new UnauthorizedException("注册令牌已过期");
           const node = await tx.node.findUnique({
             where: { id: record.nodeId },
-            select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true } } }
+            select: { id: true, registrationStatus: true, nodeAgents: { where: { revokedAt: null }, select: { id: true, agentId: true, tokenHash: true } } }
           });
           if (!node) throw new UnauthorizedException("注册令牌对应的节点不存在");
           if (node.nodeAgents.length > 0) {
+            const existing = node.nodeAgents[0];
+            if (existing.tokenHash === agentTokenHash && record.usedAt) {
+              // IDEMPOTENT REPLAY: the agent generated its credential, the
+              // registration committed, but the response was lost before the
+              // agent persisted it (or it simply retried). The token hash
+              // matches the credential this very request presents, so this is
+              // the SAME agent — return its identity instead of bricking the
+              // node with a "token already used" dead end.
+              return { agent: { agentId: existing.agentId }, replay: true as const, node };
+            }
             throw new UnauthorizedException("该节点已存在有效 Agent，注册令牌不可复用");
+          }
+          if (record.usedAt) {
+            // Token consumed but the node has NO live agent: the registered
+            // credential was revoked/lost, not retried. Dead end by design —
+            // regeneration is only offered for pending nodes.
+            throw new UnauthorizedException("注册令牌已被使用");
           }
           const agent = await tx.nodeAgent.create({
             data: {
               id: randomUUID(),
               agentId,
               nodeId: node.id,
-              tokenHash: hashAgentToken(agentToken),
-              tokenPrefix: agentToken.slice(0, 20),
+              tokenHash: agentTokenHash,
+              tokenPrefix: input.agentToken.slice(0, 20),
               version: input.agentVersion,
               bootId: input.bootId,
               status: "online",
@@ -221,14 +241,15 @@ export class AgentRegisterService {
               agentLastSeenAt: new Date()
             }
           });
-          return { agent, agentToken, node };
+          return { agent, replay: false as const, node };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );
     return {
       accepted: true,
       agentId: result.agent.agentId,
-      token: agentToken,
+      // The credential itself is the agent's own secret (client-generated); the
+      // server never knew its plaintext, so there is nothing to echo.
       nodeId: result.node.id
     };
   }

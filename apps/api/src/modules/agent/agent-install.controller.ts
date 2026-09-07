@@ -1,45 +1,57 @@
-import { Controller, Get, Headers, Param, Res } from "@nestjs/common";
+import { Controller, Get, Headers, HttpCode, Post, Body, Res } from "@nestjs/common";
+import { IsNotEmpty, IsString, MaxLength } from "class-validator";
 import type { Response } from "express";
 import { AgentRegisterService } from "./agent-register.service";
 
 /**
  * Renders the one-shot VPS install script for an agent-native node. UNAUTHENTICATED
- * by design: the script carries no secrets beyond the one-time registration token
- * already embedded in the URL, and `curl | bash` cannot authenticate. A spent or
- * expired token still renders a script — its very first action (registering) will
- * fail with a clear message, which beats an opaque 404 for an operator who lost
- * track of which command was which.
+ * by design: `curl | bash` cannot authenticate. The registration token is supplied
+ * via the POST BODY, never the URL — access logs and APM capture request paths and
+ * query strings, so a token in the URL would outlive the install in log storage
+ * and give a log reader a window to race the installer. A spent or expired token
+ * still renders a script — its very first action (registering) will fail with a
+ * clear message, which beats an opaque 404 for an operator who lost track of
+ * which command was which.
  *
  * The agent payload itself is served by the sibling agent-download route, so the
  * VPS only ever needs this single public origin.
  */
+class InstallScriptRequestDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  token!: string;
+}
+
 @Controller()
 export class AgentInstallController {
   constructor(private readonly registerService: AgentRegisterService) {}
 
-  @Get("agent-install/:token.sh")
+  @Post("agent-install/script.sh")
+  @HttpCode(200)
   async installScript(
-    @Param("token") token: string,
+    @Body() body: InstallScriptRequestDto,
     @Headers("x-forwarded-proto") forwardedProto: string | undefined,
     @Headers("host") host: string | undefined,
     @Res() response: Response
   ) {
-    const resolved = await this.registerService.resolveTokenNode(token).catch(() => null);
+    const resolved = await this.registerService.resolveTokenNode(body.token).catch(() => null);
     // The origin the script came FROM is the origin the agent talks to (the admin
     // proxy fronts both the SPA and /api on one domain). Behind the openresty
-    // terminator the scheme arrives via x-forwarded-proto, falling back to the
-    // direct TLS of the Node listener.
+    // terminator the scheme arrives via x-forwarded-proto; when absent (direct
+    // plain-HTTP access to the Node listener), fall back to the listener's own
+    // scheme instead of assuming HTTPS — the Node listener does no direct TLS.
     const configuredBase = process.env.CHORDV_PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
     const derivedBase = configuredBase || (host
-      ? `${(forwardedProto?.split(",")[0]?.trim() || "https")}://${host.trim()}`
+      ? `${(forwardedProto?.split(",")[0]?.trim() || "http")}://${host.trim()}`
       : "");
     if (!resolved) {
-      sendScript(response, renderErrorScript("该安装链接无效（注册令牌不存在）。请在后台重新生成安装命令。"));
+      sendScript(response, renderErrorScript("该安装令牌无效（不存在）。请在后台重新生成安装命令。"));
       return;
     }
     if (!resolved.usable) {
       sendScript(response, renderErrorScript(
-        "该安装链接已失效（注册令牌已被使用或已过期）。请在后台重新生成安装命令。"
+        "该安装令牌已失效（已被使用或已过期）。请在后台重新生成安装命令。"
       ));
       return;
     }
@@ -47,7 +59,7 @@ export class AgentInstallController {
       sendScript(response, renderErrorScript("服务器未配置公网访问地址（CHORDV_PUBLIC_BASE_URL），无法生成安装脚本。"));
       return;
     }
-    sendScript(response, renderInstallScript({ token, apiBase: derivedBase }));
+    sendScript(response, renderInstallScript({ token: body.token, apiBase: derivedBase }));
   }
 }
 
@@ -93,21 +105,20 @@ esac
 
 # The bundled native modules (better-sqlite3) and the systemd unit below both
 # require a Node 20.x runtime at a FIXED path: the service cannot resolve an
-# nvm/wrapped interpreter, and 18/22 fail the native ABI. Probe exactly what the
-# service will execute.
+# nvm/wrapped interpreter, and 18/22 fail the native ABI. Probe each candidate's
+# VERSION before selecting it — a host with an old /usr/bin/node and a valid
+# Node 20 under /usr/local/bin must still install.
 NODE_BIN=""
 for candidate in /usr/bin/node /usr/local/bin/node "\$(command -v node 2>/dev/null || true)"; do
   [[ -n "\$candidate" && -x "\$candidate" ]] || continue
-  NODE_BIN="\$candidate"
-  break
+  candidate_version="\$("\$candidate" --version 2>/dev/null || true)"
+  if [[ "\$candidate_version" =~ ^v20\\. ]]; then
+    NODE_BIN="\$candidate"
+    break
+  fi
 done
 if [[ -z "\$NODE_BIN" ]]; then
-  echo "安装失败：目标机器未安装 Node.js（要求 20.x）。请先安装 Node.js 20 后重试。" >&2
-  exit 1
-fi
-NODE_VERSION="\$("\$NODE_BIN" --version 2>/dev/null || true)"
-if [[ ! "\$NODE_VERSION" =~ ^v20\\. ]]; then
-  echo "安装失败：检测到 Node.js \${NODE_VERSION:-未知}，要求 20.x（\${NODE_BIN}）。请安装 Node.js 20 后重试。" >&2
+  echo "安装失败：未找到 Node.js 20.x（要求 20.x，可用 node --version 检查已安装版本）。请安装 Node.js 20 后重试。" >&2
   exit 1
 fi
 

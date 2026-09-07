@@ -1,10 +1,48 @@
 import { Body, Controller, Delete, Get, Param, Post, UseGuards } from "@nestjs/common";
-import type { CreateAgentNodeInputDto } from "@chordv/shared";
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 import { AdminAuthGuard } from "../common/admin-auth.guard";
 import { AgentRegisterDto, CreateAgentCredentialDto, QueueAgentCommandDto, SwitchNodeControlModeDto } from "./agent.dto";
 import { AgentControlModeService } from "./agent-control-mode.service";
 import { AgentRegisterService } from "./agent-register.service";
 import { AgentService } from "./agent.service";
+
+// A runtime class (not a TS interface): the global ValidationPipe only validates
+// class-decorated bodies — an interface-only DTO reaches the service as an
+// unvalidated Object.
+class CreateAgentNodeDto {
+  @IsString()
+  @MaxLength(120)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  countryCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  region?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  provider?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  tags?: string[];
+
+  @IsOptional()
+  @IsIn([true, false])
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsIn([true, false])
+  recommended?: boolean;
+}
 
 @Controller("admin/nodes")
 @UseGuards(AdminAuthGuard)
@@ -18,7 +56,7 @@ export class AgentAdminController {
   // Agent-native onboarding: create a pending_register node and mint the
   // one-time registration token the install command carries.
   @Post("agent-native")
-  createAgentNode(@Body() body: CreateAgentNodeInputDto) {
+  createAgentNode(@Body() body: CreateAgentNodeDto) {
     return this.registerService.createAgentNode(body);
   }
 

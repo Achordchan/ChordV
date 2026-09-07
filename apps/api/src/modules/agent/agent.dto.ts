@@ -23,7 +23,6 @@ const DECIMAL_INTEGER = /^(0|[1-9]\d*)$/;
 export interface AgentRegisterResultDto {
   accepted: boolean;
   agentId: string;
-  token: string;
   nodeId: string;
 }
 
@@ -123,6 +122,15 @@ export class AgentRegisterDto {
   @IsNotEmpty()
   @MaxLength(128)
   registerToken!: string;
+
+  // CLIENT-GENERATED persistent credential (chordv_agent_ prefix, >=32 bytes of
+  // entropy). The agent already holds the plaintext; the server stores only its
+  // hash. Replaying the same registration (response lost between commit and the
+  // agent's local persistence) is then IDEMPOTENT: the hash already exists, so
+  // the retry returns the same identity instead of bricking the node.
+  @IsString()
+  @Matches(/^chordv_agent_[A-Za-z0-9_-]{43,128}$/)
+  agentToken!: string;
 
   @IsString()
   @IsNotEmpty()

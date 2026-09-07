@@ -42,8 +42,8 @@ function routeMetadata(controller: object, method: string) {
   const installGuards = (Reflect.getMetadata(GUARDS_METADATA, AgentInstallController) ?? []) as unknown[];
   assert.equal(installGuards.length, 0, "install script must be public (curl | bash)");
   const installRoute = routeMetadata(AgentInstallController, "installScript");
-  assert.equal(installRoute.path, "agent-install/:token.sh");
-  assert.equal(installRoute.method, 0, "install script must be GET");
+  assert.equal(installRoute.path, "agent-install/script.sh");
+  assert.equal(installRoute.method, 1, "install script must be POST (token travels in the body, never the URL)");
 
   const adminGuards = (Reflect.getMetadata(GUARDS_METADATA, AgentAdminController) ?? []) as unknown[];
   assert.ok(adminGuards.includes(AdminAuthGuard), "token minting must stay behind AdminAuthGuard");
@@ -66,6 +66,7 @@ async function main() {
   const createdAgents: Array<{ data: Record<string, unknown> }> = [];
   const updatedNodes: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
   let nodeRow: Record<string, unknown> = { id: "node-1", registrationStatus: "agent_ready", nodeAgents: [] };
+  let liveAgentRow: Record<string, unknown> | null = null;
   const prisma = {
     agentRegisterToken: {
       findUnique: async ({ where }: { where: { tokenHash: string } }) => tokens.get(where.tokenHash) ?? null,
@@ -78,11 +79,12 @@ async function main() {
     nodeAgent: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         createdAgents.push({ data });
-        return { id: "agent-row-1", ...data };
+        liveAgentRow = { id: "agent-row-1", ...data };
+        return liveAgentRow;
       }
     },
     node: {
-      findUnique: async () => nodeRow,
+      findUnique: async () => ({ ...nodeRow, nodeAgents: liveAgentRow ? [liveAgentRow] : [] }),
       update: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         updatedNodes.push({ where, data });
         Object.assign(nodeRow, data);
@@ -98,8 +100,8 @@ async function main() {
   };
   const service = new AgentRegisterService(prisma as never);
 
-  const input = (token: string) => ({
-    registerToken: token, hostname: "vps-1", arch: "linux-x64" as const,
+  const input = (token: string, agentToken = "chordv_agent_" + "a".repeat(43)) => ({
+    registerToken: token, agentToken, hostname: "vps-1", arch: "linux-x64" as const,
     agentVersion: "0.1.0", bootId: "boot-1"
   });
 
@@ -112,24 +114,36 @@ async function main() {
     id: "t-1", nodeId: "node-1", tokenHash: hashAgentToken(token), tokenPrefix: "chordv_register_",
     expiresAt: new Date(Date.now() + 60_000), usedAt: null, createdAt: new Date()
   });
-  const result = await service.register(input(token));
+  const clientToken = "chordv_agent_" + "b".repeat(43);
+  const result = await service.register(input(token, clientToken));
   assert.equal(result.accepted, true);
   assert.equal(result.nodeId, "node-1");
   assert.match(result.agentId, /^agent-[0-9a-f]{16}$/);
-  assert.match(result.token, /^chordv_agent_/);
   assert.equal(
     (createdAgents[0].data as { tokenHash: string }).tokenHash,
-    hashAgentToken(result.token),
-    "minted agent credentials must be stored hashed with the agent-token pepper"
+    hashAgentToken(clientToken),
+    "the CLIENT-generated credential must be stored hashed with the agent-token pepper"
+  );
+  assert.equal(
+    (createdAgents[0].data as { tokenPrefix: string }).tokenPrefix,
+    clientToken.slice(0, 20)
   );
   assert.equal(tokens.get(hashAgentToken(token))?.usedAt instanceof Date, true, "token consumed");
   const readyUpdate = updatedNodes.find((update) => update.data.registrationStatus === "agent_ready");
   assert.ok(readyUpdate, "registration must flip the node to agent_ready");
 
-  // Replay: rejected, no second credential.
+  // IDMPOTENT REPLAY: the registration committed but the agent never received
+  // the response — retrying with the SAME client credential returns the same
+  // identity instead of a dead end (token already used).
   const agentsBefore = createdAgents.length;
-  await assert.rejects(() => service.register(input(token)), /已被使用/);
-  assert.equal(createdAgents.length, agentsBefore, "replayed token must not mint credentials");
+  const replay = await service.register(input(token, clientToken));
+  assert.equal(replay.accepted, true);
+  assert.equal(replay.agentId, result.agentId, "replay returns the SAME agent identity");
+  assert.equal(createdAgents.length, agentsBefore, "replay must not mint a second credential");
+
+  // Replay with a DIFFERENT credential (a thief racing the token): rejected.
+  await assert.rejects(() => service.register(input(token, "chordv_agent_" + "c".repeat(43))), /已被使用|不可复用/);
+  assert.equal(createdAgents.length, agentsBefore, "foreign credential replay must not mint anything");
 
   // Expired token.
   const expired = "chordv_register_expired";
@@ -139,9 +153,10 @@ async function main() {
   });
   await assert.rejects(() => service.register(input(expired)), /已过期/);
 
-  // Node already holding a live agent: token must not be reusable.
+  // Node already holding a live agent registered by a DIFFERENT credential:
+  // a new token (e.g. regenerated) must not register a second agent.
   const liveAgentToken = "chordv_register_live";
-  nodeRow = { id: "node-1", registrationStatus: "pending_register", nodeAgents: [{ id: "existing" }] };
+  nodeRow = { id: "node-1", registrationStatus: "agent_ready", nodeAgents: [{ id: "existing" }] };
   tokens.set(hashAgentToken(liveAgentToken), {
     id: "t-3", nodeId: "node-1", tokenHash: hashAgentToken(liveAgentToken), tokenPrefix: "chordv_register_",
     expiresAt: new Date(Date.now() + 60_000), usedAt: null, createdAt: new Date()
@@ -157,6 +172,7 @@ async function main() {
   const { renderInstallScript } = await import("../src/modules/agent/agent-install.controller.js");
   const script = renderInstallScript({ token: "chordv_register_render", apiBase: "https://v.example.com" });
   assert.ok(script.includes('API_BASE="https://v.example.com/api"'), "script must target the /api global prefix");
+  assert.ok(!script.includes("command -v node") || script.includes("candidate_version"), "node probing must check each candidate's version");
   assert.ok(script.includes('CHORDV_API_BASE_URL=${API_BASE%/api}'), "agent env must carry the un-prefixed origin");
   assert.ok(script.includes("^v20"), "script must pin the Node 20 major version check");
   assert.ok(script.includes("ExecStart=${NODE_BIN@Q}"), "systemd unit must use the probed node binary");
