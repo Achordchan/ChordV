@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import ts from "typescript";
 import { Controller, Get, Module, Post, UploadedFile, UseInterceptors } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FileInterceptor } from "@nestjs/platform-express";
@@ -365,27 +366,50 @@ async function assertBudgetWindowsAndNoRaceTrack() {
     ["src/modules/common/admin-node.service.ts", 2],        // runAfterLocalNodeSaveWithBudget, tryRunAfterLocalNodeSave
     ["src/modules/common/admin-subscription.service.ts", 1] // withSubscriptionFollowUpBudget
   ]);
+  // Match by AST, not by source text: a race split across lines, or with whitespace
+  // between the calls, is the same defect and a literal search would score it zero.
+  // Parsing also ignores the pattern inside comments and strings (this file included).
+  const isCall = (node: ts.Node, object: string, method: string) =>
+    ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) && node.expression.expression.text === object &&
+    node.expression.name.text === method;
+  const countTrackedRaces = (source: string, fileName: string) => {
+    let races = 0;
+    const visit = (node: ts.Node) => {
+      if (isCall(node, "Promise", "race")) {
+        let tracked = false;
+        const scan = (inner: ts.Node) => {
+          if (isCall(inner, "workLifecycle", "track")) tracked = true;
+          else ts.forEachChild(inner, scan);
+        };
+        node.arguments.forEach(scan);
+        if (tracked) races++;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true));
+    return races;
+  };
   const found = new Map<string, number>();
   const walk = async (dir: string) => {
     for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) { await walk(full); continue; }
       if (!entry.name.endsWith(".ts")) continue;
-      const hits = (await fs.readFile(full, "utf8")).split("Promise.race([workLifecycle.track(").length - 1;
+      const hits = countTrackedRaces(await fs.readFile(full, "utf8"), full);
       if (hits > 0) found.set(path.relative(path.join(__dirname, ".."), full), hits);
     }
   };
   await walk(path.join(__dirname, "../src"));
-  for (const [file, hits] of found) {
-    const allowed = keptTracked.get(file) ?? 0;
-    assert.ok(
-      hits <= allowed,
-      `${file} races ${hits} tracked task(s) but only ${allowed} are documented as durable-intent: ` +
-      "use awaitWithBudget/awaitWithBudgetElse, or keep the work tracked without a race"
+  // EXACT counts, both directions: `<=` would let a removed exception silently fund a
+  // new forbidden race in the same file, so fixing one must also shrink the list.
+  for (const file of new Set([...found.keys(), ...keptTracked.keys()])) {
+    assert.equal(
+      found.get(file) ?? 0, keptTracked.get(file) ?? 0,
+      `${file}: ${found.get(file) ?? 0} tracked-task race(s) found, ${keptTracked.get(file) ?? 0} documented as durable-intent. ` +
+      "Adding one: use awaitWithBudget/awaitWithBudgetElse, or keep the work tracked without a race. " +
+      "Removing one: decrement (or delete) its entry in keptTracked — this list must only shrink."
     );
-  }
-  for (const [file, allowed] of keptTracked) {
-    assert.ok((found.get(file) ?? 0) <= allowed, `stale exception for ${file}`);
   }
 }
 
